@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
 import { BadRequestError, UnprocessableEntityError } from '../../../../src/libs/errors/http.errors'
+import { getDocumentRepository } from '../../../../src/libs/repositories/document'
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
 import { StorageVendor } from '../../../../src/modules/storage/types/storage.service.types'
 import {
@@ -10,7 +11,6 @@ import {
   claimUpload,
   createDocumentOnce,
   getIdempotencyKey,
-  holdLeaseOnSave,
   releaseUpload,
   requestFingerprint,
 } from '../../../../src/modules/storage/utils/idempotency'
@@ -171,14 +171,16 @@ describe('storage idempotency', () => {
       expect(updateOne.firstCall.args[1]).to.deep.equal({ $unset: { uploadLeaseToken: '', uploadLeaseExpiresAt: '' } })
     })
 
-    it('makes the final save conditional on the lease and clears it', () => {
-      const document = { uploadLeaseToken: 't1', uploadLeaseExpiresAt: 1 } as any
+    it('makes the final save conditional on the lease and clears it', async () => {
+      const document = { uploadLeaseToken: 't1', uploadLeaseExpiresAt: 1, save: sinon.stub().resolves() } as any
+      sinon.stub(DocumentModel, 'findOne').resolves(document)
 
-      holdLeaseOnSave(document, 't1')
+      await getDocumentRepository().update(String(orgId), 'd1', {}, { holdLease: 't1' })
 
       expect(document.$where).to.deep.equal({ uploadLeaseToken: 't1' })
       expect(document.uploadLeaseToken).to.equal(undefined)
       expect(document.uploadLeaseExpiresAt).to.equal(undefined)
+      expect(document.save.calledOnce).to.equal(true)
     })
   })
 })

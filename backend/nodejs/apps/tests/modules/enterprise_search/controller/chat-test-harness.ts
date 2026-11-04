@@ -221,9 +221,10 @@ const assertSessionUsable = (options: SessionOption): void => {
 }
 
 const applyUpdate = (doc: SessionDoc | MessageDoc, update: Doc): void => {
-  const operators = Object.keys(update).some((key) => key.startsWith('$'))
-  const set = (operators ? update.$set : update) as Doc | undefined
-  for (const [path, value] of Object.entries(set ?? {})) doc.set(path, value)
+  // Like Mongoose, plain top-level keys are set next to any operators in the same update.
+  const plain = Object.fromEntries(Object.entries(update).filter(([key]) => !key.startsWith('$')))
+  const set = { ...plain, ...((update.$set as Doc | undefined) ?? {}) }
+  for (const [path, value] of Object.entries(set)) doc.set(path, value)
   for (const path of Object.keys((update.$unset as Doc | undefined) ?? {})) doc.set(path, undefined)
   for (const [path, value] of Object.entries((update.$inc as Doc | undefined) ?? {})) {
     doc.set(path, Number(doc.get(path) ?? 0) + Number(value))
@@ -424,6 +425,7 @@ export class InMemoryChatStore {
     }) as never)
     sinon.stub(Users, 'find').callsFake((() => new FakeQuery(() => [])) as never)
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+    sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
   }
 }
 

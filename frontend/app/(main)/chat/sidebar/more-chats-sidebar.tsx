@@ -10,6 +10,7 @@ import { SecondaryPanel, SidebarBackHeader } from '@/app/components/sidebar';
 import { useChatStore } from '@/chat/store';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { debugLog } from '@/chat/debug-logger';
 import { ChatApi } from '@/chat/api';
 import { ChatSectionElement } from './chat-section-element';
@@ -51,6 +52,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
 
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedSearch(searchInput, 300);
+  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
 
   // Independent local state — panel fetches its own data from page 1
   const [rows, setRows] = useState<Conversation[]>([]);
@@ -83,6 +85,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
         const result = await ChatApi.fetchConversations(1, MORE_CHATS_PAGE_SIZE, {
           source: sectionType === 'your' ? 'owned' : 'shared',
           search: debouncedSearch.trim() || undefined,
+          excludeProjectChats: sectionType === 'your' && projectsEnabled,
         });
         if (cancelled) return;
         setRows(result.conversations);
@@ -103,7 +106,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
     return () => {
       cancelled = true;
     };
-  }, [debouncedSearch, sectionType]);
+  }, [debouncedSearch, sectionType, projectsEnabled]);
 
   const handleSelect = (id: string) => {
     if (sectionType === 'your') {
@@ -125,6 +128,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
       const result = await ChatApi.fetchConversations(nextPage, MORE_CHATS_PAGE_SIZE, {
         source: sectionType === 'your' ? 'owned' : 'shared',
         search,
+        excludeProjectChats: sectionType === 'your' && projectsEnabled,
       });
       setRows((prev) => {
         const seen = new Set(prev.map((c) => c.id));
@@ -146,7 +150,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
     } finally {
       setIsLoadingMore(false);
     }
-  }, [sectionType, isLoadingMore, isLoading]);
+  }, [sectionType, isLoadingMore, isLoading, projectsEnabled]);
 
   // IntersectionObserver: fires loadMore when sentinel becomes visible
   useEffect(() => {

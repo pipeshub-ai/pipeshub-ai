@@ -11,6 +11,7 @@ from web_behaviour_fakes import (
     DRIVER_GONE,
     FakeWeb,
     Page,
+    VirtualClock,
     browser_crawler_class,
     html_page,
 )
@@ -19,8 +20,10 @@ from app.connectors.sources.web import browser_supervisor, crawl4ai_fetcher
 from app.connectors.sources.web.browser_supervisor import BrowserUnavailableError
 from app.connectors.sources.web.crawl4ai_fetcher import (
     Crawl4AIFetcher,
+    close_shared_fetcher,
     get_shared_fetcher,
     release_shared_fetcher,
+    shared_fetcher,
 )
 
 
@@ -160,7 +163,15 @@ async def test_closing_the_fetcher_stops_its_browser_thread(browser: FakeWeb) ->
     assert not thread.is_alive()
 
 
-async def test_the_shared_fetcher_starts_one_browser_and_closes_it_after_the_last_release(browser: FakeWeb) -> None:
+@pytest.fixture
+def idle_clock(monkeypatch: pytest.MonkeyPatch) -> VirtualClock:
+    """The idle grace passes at once, and the delay it waited is recorded."""
+    clock = VirtualClock()
+    monkeypatch.setattr(crawl4ai_fetcher, "asyncio", clock)
+    return clock
+
+
+async def test_the_shared_fetcher_starts_one_browser_and_keeps_it_while_any_caller_holds_it(browser: FakeWeb) -> None:
     first = await get_shared_fetcher()
     second = await get_shared_fetcher()
 
@@ -169,10 +180,173 @@ async def test_the_shared_fetcher_starts_one_browser_and_closes_it_after_the_las
 
     await release_shared_fetcher()
     assert crawl4ai_fetcher._shared_instance is first
+    assert crawl4ai_fetcher._idle_close is None
     await release_shared_fetcher()
-    assert crawl4ai_fetcher._shared_instance is None
     await release_shared_fetcher()
     assert crawl4ai_fetcher._ref_count == 0
+
+
+async def test_the_browser_closes_once_it_sat_unused_for_the_grace(browser: FakeWeb, idle_clock: VirtualClock) -> None:
+    fetcher = await get_shared_fetcher()
+    await release_shared_fetcher()
+    assert crawl4ai_fetcher._shared_instance is fetcher
+
+    await crawl4ai_fetcher._idle_close
+
+    assert idle_clock.slept(60)
+    assert crawl4ai_fetcher._shared_instance is None
+    assert fetcher._thread is None
+    assert await get_shared_fetcher() is not fetcher
+    assert browser.browser_starts == 2
+    await release_shared_fetcher()
+
+
+async def test_a_caller_within_the_grace_reuses_the_browser(browser: FakeWeb) -> None:
+    fetcher = await get_shared_fetcher()
+    await release_shared_fetcher()
+    idle_close = crawl4ai_fetcher._idle_close
+
+    assert await get_shared_fetcher() is fetcher
+
+    await asyncio.sleep(0)
+    assert idle_close is not None and idle_close.cancelled()
+    assert crawl4ai_fetcher._idle_close is None
+    assert browser.browser_starts == 1
+    await release_shared_fetcher()
+
+
+async def test_with_no_grace_the_last_release_closes_at_once(browser: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WEB_BROWSER_IDLE_CLOSE_SECONDS", "0")
+    await get_shared_fetcher()
+
+    await release_shared_fetcher()
+
+    assert crawl4ai_fetcher._shared_instance is None
+    assert crawl4ai_fetcher._idle_close is None
+
+
+async def test_a_caller_during_an_idle_close_gets_a_new_browser(
+    browser: FakeWeb, idle_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = await get_shared_fetcher()
+    closing, finish = asyncio.Event(), asyncio.Event()
+    close = first.close
+
+    async def slow_close() -> None:
+        closing.set()
+        await finish.wait()
+        await close()
+
+    monkeypatch.setattr(first, "close", slow_close)
+    await release_shared_fetcher()
+    idle_close = crawl4ai_fetcher._idle_close
+    await closing.wait()
+
+    second = await get_shared_fetcher()
+
+    assert second is not first
+    assert browser.browser_starts == 2
+    browser.html("http://site.test/", "Home")
+    assert (await second.fetch("http://site.test/")).success is True
+    finish.set()
+    await idle_close
+    assert crawl4ai_fetcher._shared_instance is second
+    await release_shared_fetcher()
+
+
+async def test_shared_fetcher_gives_the_reference_back_when_the_block_fails(browser: FakeWeb) -> None:
+    with pytest.raises(RuntimeError, match="boom"):
+        async with shared_fetcher():
+            assert crawl4ai_fetcher._ref_count == 1
+            raise RuntimeError("boom")
+
+    assert crawl4ai_fetcher._ref_count == 0
+
+
+async def test_a_cancelled_first_start_leaves_no_browser_behind(
+    browser: FakeWeb, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    starting = asyncio.Event()
+
+    async def hangs(self: Crawl4AIFetcher, *, browser_like: bool = True) -> None:
+        starting.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(Crawl4AIFetcher, "start", hangs)
+    getting = asyncio.ensure_future(get_shared_fetcher())
+    await starting.wait()
+
+    getting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await getting
+
+    assert crawl4ai_fetcher._shared_instance is None
+    assert crawl4ai_fetcher._ref_count == 0
+
+
+async def test_a_failed_start_on_an_idle_browser_keeps_its_idle_close(
+    browser: FakeWeb, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetcher = await get_shared_fetcher()
+    await release_shared_fetcher()
+    idle_close = crawl4ai_fetcher._idle_close
+
+    async def fails(*, browser_like: bool = True) -> None:
+        raise RuntimeError("Executable doesn't exist")
+
+    monkeypatch.setattr(fetcher, "start", fails)
+    with pytest.raises(RuntimeError):
+        await get_shared_fetcher(browser_like=False)
+
+    assert crawl4ai_fetcher._idle_close is idle_close
+    assert idle_close is not None and not idle_close.done()
+    assert crawl4ai_fetcher._ref_count == 0
+
+
+async def test_a_release_survives_the_holder_being_cancelled(browser: FakeWeb) -> None:
+    inside, leave = asyncio.Event(), asyncio.Event()
+
+    async def holder() -> None:
+        async with shared_fetcher():
+            inside.set()
+            await leave.wait()
+
+    task = asyncio.ensure_future(holder())
+    await inside.wait()
+    async with crawl4ai_fetcher._get_shared_lock():
+        leave.set()
+        await asyncio.sleep(0)  # the holder is now waiting for the lock to release
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert crawl4ai_fetcher._ref_count == 0
+
+
+async def test_shutdown_closes_the_browser_whoever_holds_it(browser: FakeWeb) -> None:
+    held = await get_shared_fetcher()
+    await get_shared_fetcher()
+    await release_shared_fetcher()
+
+    await close_shared_fetcher()
+
+    assert crawl4ai_fetcher._shared_instance is None
+    assert crawl4ai_fetcher._ref_count == 0
+    assert held._thread is None
+
+
+async def test_shutdown_stops_a_pending_idle_close(browser: FakeWeb) -> None:
+    await get_shared_fetcher()
+    await release_shared_fetcher()
+    idle_close = crawl4ai_fetcher._idle_close
+
+    await close_shared_fetcher()
+
+    await asyncio.sleep(0)
+    assert idle_close is not None and idle_close.cancelled()
+    assert crawl4ai_fetcher._shared_instance is None
 
 
 async def test_a_browser_that_fails_to_start_is_tried_again_next_time(browser: FakeWeb) -> None:

@@ -827,6 +827,21 @@ class TestOnEventEdgeCases:
             await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
 
     @pytest.mark.asyncio
+    async def test_a_record_deleted_mid_indexing_is_not_logged_as_an_error(self) -> None:
+        from app.exceptions.indexing_exceptions import RecordDeletedError
+
+        ep, logger, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_docx_document = MagicMock(side_effect=RecordDeletedError("rec-1"))
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             pytest.raises(RecordDeletedError):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+
+        logger.error.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_virtual_record_id_from_record_when_not_in_payload(self):
         """If virtualRecordId not in payload, it's taken from the DB record."""
         ep, _, processor, gp = _make_event_processor()
@@ -1203,6 +1218,30 @@ class TestOnEventEdgeCases:
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
              _pdf_inspection(needs_ocr=False):
             with pytest.raises(DoclingUnavailableError):
+                await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        processor.process_pdf_with_pdf_plumber.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_docling_failing_after_its_parse_completed_is_retried_not_parsed_again(self) -> None:
+        """A DOCLING_FAILED after PARSING_COMPLETE (block building or indexing) must not reach PdfPlumber."""
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        async def failed_after_parse(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id="rec-1"))
+
+        processor.process_pdf_with_docling = MagicMock(side_effect=failed_after_parse)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=False):
+            with pytest.raises(IndexingError, match="after parsing completed"):
                 await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
 
         processor.process_pdf_with_pdf_plumber.assert_not_called()
@@ -1954,6 +1993,19 @@ class TestOnEventEarlyReturns:
             IndexingEvent.PARSING_COMPLETE,
             IndexingEvent.INDEXING_COMPLETE,
         ]
+
+    @pytest.mark.asyncio
+    async def test_record_not_found_is_a_warning_not_an_error(self) -> None:
+        """Draining a deleted record must not reach error-level alerting; WARNING,
+        as the record handler's own read, since None cannot rule out an id that
+        never existed."""
+        ep, logger, _, gp = _make_event_processor()
+        gp.get_document.return_value = None
+
+        await _drain(ep.on_event(_make_event_payload()))
+
+        logger.error.assert_not_called()
+        logger.warning.assert_called_once_with("Record %s not found; dropping its event", "rec-1")
 
     @pytest.mark.asyncio
     async def test_a_failed_lookup_is_not_drained_as_a_deletion(self):

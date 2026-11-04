@@ -25,7 +25,6 @@ vi.mock('@/config', async () => {
 const { useAuthStore, ACCESS_TOKEN_STORAGE_KEY, REFRESH_TOKEN_STORAGE_KEY } = await import('@/lib/store/auth-store');
 const { apiClient } = await import('../axios-instance');
 const { ErrorType } = await import('../api-error');
-const { STREAM_ERROR_MESSAGES } = await import('../stream-errors');
 const { refreshAccessToken, isTokenExpired, decodeJwtPayload, REFRESH_TOKEN_ENDPOINT } = await import('../token-refresh');
 const scheduler = await import('../token-refresh-scheduler');
 const { useToastStore } = await import('@/lib/store/toast-store');
@@ -55,6 +54,23 @@ function fakeServer(...replies: Array<FakeReply | Error>) {
   };
   apiClient.defaults.adapter = adapter;
   return sent;
+}
+
+/** An unsigned JWT for `userId` in org `o1`. */
+function tokenFor(userId: string, secondsFromNow = 3600): string {
+  const claims = { exp: Math.floor(Date.now() / 1000) + secondsFromNow, userId, orgId: 'o1' };
+  return `header.${btoa(JSON.stringify(claims)).replace(/=+$/, '')}.signature`;
+}
+
+/** Whether a request settles within a few ticks; one that ended the session is dropped and never does. */
+async function settlesSoon(request: Promise<unknown>): Promise<boolean> {
+  let settled = false;
+  request.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  return settled;
 }
 
 const bearer = (config: InternalAxiosRequestConfig) => AxiosHeaders.from(config.headers).get('Authorization');
@@ -176,12 +192,8 @@ describe('apiClient requests', () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(401, {}));
     const sent = fakeServer();
 
-    // This used to reject with "Cannot read properties of undefined (reading
-    // 'suppressErrorToast')", which callers then showed as the error text.
-    await expect(apiClient.get('/api/v1/users')).rejects.toEqual({
-      type: ErrorType.AUTHENTICATION_ERROR,
-      message: STREAM_ERROR_MESSAGES.sessionExpired,
-    });
+    // The session is over, so the request is dropped: its caller writes nothing into the reset stores.
+    expect(await settlesSoon(apiClient.get('/api/v1/users'))).toBe(false);
 
     expect(sent).toHaveLength(0);
     expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
@@ -223,7 +235,7 @@ describe('a 401 from the server', () => {
     storage.set('workspace_session_token', 'x');
     fakeServer({ status: 401, data: { error: { message: 'Session expired, please login again' } } });
 
-    await expect(apiClient.get('/a')).rejects.toMatchObject({ type: ErrorType.AUTHENTICATION_ERROR });
+    expect(await settlesSoon(apiClient.get('/a'))).toBe(false);
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
@@ -233,7 +245,7 @@ describe('a 401 from the server', () => {
   it('logs out when the refresh fails', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(401, {}));
     fakeServer({ status: 401 });
-    await expect(apiClient.get('/a')).rejects.toMatchObject({ type: ErrorType.AUTHENTICATION_ERROR });
+    expect(await settlesSoon(apiClient.get('/a'))).toBe(false);
     expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
   });
 });
@@ -356,6 +368,26 @@ describe('the proactive refresh timer', () => {
       window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: fromOtherTab }));
       expect(useAuthStore.getState().accessToken).toBe(fromOtherTab);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('starts over on a fresh chat page when another tab signs in as someone else', () => {
+      const originalLocation = window.location;
+      const assign = vi.fn();
+      Object.defineProperty(window, 'location', { value: { assign }, configurable: true });
+      try {
+        useAuthStore.setState({ accessToken: tokenFor('user-a') });
+
+        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-a', 3000) }));
+        expect(assign).not.toHaveBeenCalled();
+
+        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-b') }));
+        // A page load drops every cache and store of the previous account, and the
+        // chat it had open, which belongs to that account.
+        expect(assign).toHaveBeenCalledWith('/chat/');
+        expect(useAuthStore.getState().accessToken).toBe(tokenFor('user-b'));
+      } finally {
+        Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
+      }
     });
 
     it('signs out here when another tab signs out', () => {

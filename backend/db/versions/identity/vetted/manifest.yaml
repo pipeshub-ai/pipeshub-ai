@@ -1,0 +1,32 @@
+# Vetted SECURITY DEFINER functions of schema identity. Format and rules: db/lib/vetted.py.
+# After editing: python -m db.lib.vetted render versions/identity/vetted/manifest.yaml
+#
+# The two questions asked before an organisation is bound: which one is the install's organisation, and how many are there.
+# Everything else in this schema is read and written as the organisation the unit runs as.
+functions:
+  - name: identity.oldest_org
+    class: read
+    scope: global
+    grants: [pipeshub_node]
+    args: []
+    returns: text
+    reads: [identity.orgs]
+    body: |
+      RETURN (SELECT o.org_id FROM identity.orgs o WHERE NOT o.is_deleted ORDER BY o.created_at, o.org_id LIMIT 1);
+    test:
+      checks: [privileges, catalog, shadowing]
+      args: []
+
+  - name: identity.org_count
+    class: read
+    scope: global
+    grants: [pipeshub_node]
+    args:
+      - {name: p_live_only, type: boolean}
+    returns: bigint
+    reads: [identity.orgs]
+    body: |
+      RETURN (SELECT count(*) FROM identity.orgs o WHERE NOT p_live_only OR NOT o.is_deleted);
+    test:
+      checks: [privileges, catalog, shadowing]
+      args: [true]

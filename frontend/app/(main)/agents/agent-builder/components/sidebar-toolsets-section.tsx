@@ -394,6 +394,8 @@ export function AgentBuilderToolsetsSection(props: {
         ? (() => {
             const typeEntries = Object.entries(toolsetsByType).sort(([, a], [, b]) => {
               const priority = (instances: BuilderSidebarToolset[]) => {
+                // The org's own API actions come first: appended last, they'd sit behind "Show more".
+                if (isApiToolsetRow(instances[0])) return -1;
                 if (instances.some((ts) => ts.isConfigured && ts.isAuthenticated)) return 0;
                 if (instances.some((ts) => ts.isConfigured)) return 1;
                 return 2;

@@ -8,11 +8,9 @@ import {
   TopicDefinition,
 } from '../types/messaging.types';
 import {
+  contextFromEnvelope,
   injectEnvelope,
   runWithRequestContext,
-  ENVELOPE_REQUEST_ID,
-  newAnonRoot,
-  sanitizeRootId,
 } from '../context/request-context';
 import {
   EnvelopeRejected,
@@ -121,15 +119,6 @@ function serializeValueWithTrace(value: unknown, topic: string): string {
     );
   }
   return JSON.stringify(value);
-}
-
-function contextFromValue(value: unknown): { rootId: string } {
-  const env = (value ?? {}) as Record<string, unknown>;
-  return {
-    rootId:
-      sanitizeRootId(env[ENVELOPE_REQUEST_ID] as string | undefined) ??
-      newAnonRoot(),
-  };
 }
 
 export abstract class BasePgQueueProducerConnection implements IMessageProducer {
@@ -518,7 +507,7 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
       if (r.headers)
         message.headers = JSON.parse(r.headers) as Record<string, string>;
       try {
-        await runWithRequestContext(contextFromValue(message.value), () =>
+        await runWithRequestContext(contextFromEnvelope(message.value), () =>
           runWithEnvelope(r.topic, message.value, (value) =>
             handler({ ...message, value }),
           ),

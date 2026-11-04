@@ -6,6 +6,7 @@ import { SelectedCollections } from '../selected-collections';
 import { AppliedFilters } from '../applied-filters';
 import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
+import { SearchDegradedNote } from './search-degraded-note';
 import { AnswerContent } from './answer-content';
 import { StatusMessageComponent } from './status-message';
 import { MessageActions } from './message-actions';
@@ -105,6 +106,8 @@ interface ChatResponseProps {
   citationMaps?: CitationMaps;
   citationCallbacks?: CitationCallbacks;
   confidence?: ConfidenceLevel;
+  /** A search behind this answer was served with less than the full search. */
+  searchDegraded?: boolean;
   isStreaming?: boolean;
   modelInfo?: ModelInfo;
   /** Collections attached to this message (e.g. KB filters the user selected) */
@@ -174,6 +177,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   citationMaps = EMPTY_CITATION_MAPS,
   citationCallbacks,
   confidence,
+  searchDegraded = false,
   isStreaming = false,
   modelInfo,
   collections,
@@ -867,6 +871,8 @@ export const ChatResponse = React.memo(function ChatResponse({
               </Box>
             )}
 
+            {!isStreaming && searchDegraded && <SearchDegradedNote />}
+
             {/* After an answered question the reply carries on in this row and can stop on an
                 approval: its card shows under the question. Only an unanswered question comes first. */}
             {toolApproval && !questionPending && (
@@ -1165,6 +1171,7 @@ export const ChatResponse = React.memo(function ChatResponse({
           appliedFilters={appliedFilters}
           feedbackInfo={feedbackInfo}
           canRegenerate={!ranApprovedCall}
+          parts={effectiveParts}
         />
       )}
 

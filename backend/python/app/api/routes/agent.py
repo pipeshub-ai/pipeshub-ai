@@ -58,6 +58,7 @@ from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
     UnreadableSourceLimitError,
     admit_caller_project_collections,
+    project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
 )
@@ -300,14 +301,12 @@ async def get_services(request: Request) -> dict[str, Any]:
 
     retrieval_service = await container.retrieval_service()
     graph_provider = await container.graph_provider()
-    reranker_service = container.reranker_service()
     config_service = container.config_service()
     logger = container.logger()
 
     return {
         "retrieval_service": retrieval_service,
         "graph_provider": graph_provider,
-        "reranker_service": reranker_service,
         "config_service": config_service,
         "logger": logger,
     }
@@ -4183,7 +4182,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         graph_provider = services["graph_provider"]
         retrieval_service = services["retrieval_service"]
-        reranker_service = services["reranker_service"]
+        reranker_service = None  # reranking is not wired; the slot is kept for call signatures
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
@@ -4746,6 +4745,18 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         protocol, CONNECTION_LIMIT_TOO_LARGE_MESSAGE, code="selection_too_large",
                     )
                     return
+                if chat_query.strictScope and caps.internal_search:
+                    agent_knowledge = [
+                        *agent_knowledge,
+                        *await project_files_knowledge(
+                            graph_provider,
+                            kb_ids=filters.get("kb") or [],
+                            known_ids=[
+                                k.get("connectorId") for k in agent_knowledge if isinstance(k, dict)
+                            ],
+                            logger=logger,
+                        ),
+                    ]
 
                 logger.info(f"Filters: {filters}")
 
@@ -4832,6 +4843,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "instructions": agent.get("instructions"),
                     "custom_instructions": custom_instructions,
                     "projectInstructions": chat_query.projectInstructions,
+                    "projectToolsSelected": chat_query.strictScope and chat_query.tools is not None,
                     "timezone": chat_query.timezone,
                     "currentTime": chat_query.currentTime,
                     "toolsets": agent_toolsets,

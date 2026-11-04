@@ -23,3 +23,18 @@ export const REMOVED_SIGN_IN_METHODS: readonly string[] = ['samlSso', 'oauth'];
 export const RENAMED_SIGN_IN_METHODS: Readonly<Record<string, string>> = {
   azureAd: 'microsoft',
 };
+
+/**
+ * Logging provider override, or `null` for the default text logging. Typed
+ * `unknown` so this file stays import-free; `getProvider` in
+ * `libs/services/structured-logging` checks the shape.
+ */
+export function structuredLoggingProvider(): unknown {
+  return null;
+}
+
+/**
+ * Keys inside an AI model's `configuration`, besides the built-in public ones,
+ * that hold settings rather than secrets, so reads return them as stored.
+ */
+export const EXTRA_AI_PUBLIC_CONFIG_KEYS: readonly string[] = [];

@@ -1,7 +1,5 @@
-import asyncio
 import base64
 import logging
-import os
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
@@ -483,61 +481,6 @@ class TestProcessGmailAttachmentException:
         }
         result = await connector._process_gmail_attachment("u@e.com", "msg-1", info, [], "u@e.com:OTHERS")
         assert result.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
-
-
-class TestConvertToPdf:
-    @pytest.mark.asyncio
-    async def test_successful_conversion(self, connector):
-        mock_process = AsyncMock()
-        mock_process.returncode = 0
-        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_process), \
-             patch("os.path.exists", return_value=True):
-            result = await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
-            assert result == os.path.join("/tmp", "test.pdf")
-
-    @pytest.mark.asyncio
-    async def test_conversion_timeout(self, connector):
-        mock_process = AsyncMock()
-        mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
-        mock_process.terminate = MagicMock()
-        mock_process.wait = AsyncMock(return_value=0)
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_process), \
-             patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
-            with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
-            assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-
-    @pytest.mark.asyncio
-    async def test_conversion_nonzero_return(self, connector):
-        mock_process = AsyncMock()
-        mock_process.returncode = 1
-        mock_process.communicate = AsyncMock(return_value=(b"", b"error msg"))
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_process), \
-             patch("asyncio.wait_for", return_value=(b"", b"error msg")):
-            mock_process.returncode = 1
-            with pytest.raises(HTTPException):
-                await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
-
-    @pytest.mark.asyncio
-    async def test_conversion_output_not_found(self, connector):
-        mock_process = AsyncMock()
-        mock_process.returncode = 0
-        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_process), \
-             patch("os.path.exists", return_value=False):
-            with pytest.raises(HTTPException):
-                await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
-
-    @pytest.mark.asyncio
-    async def test_conversion_general_exception(self, connector):
-        with patch("asyncio.create_subprocess_exec", side_effect=RuntimeError("exec fail")):
-            with pytest.raises(HTTPException):
-                await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
 
 
 class TestStreamFromDrive:

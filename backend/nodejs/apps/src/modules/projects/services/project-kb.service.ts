@@ -1,12 +1,15 @@
-import { NotFoundError, InternalServerError } from '../../../libs/errors/http.errors';
+import {
+  NotFoundError,
+  InternalServerError,
+} from '../../../libs/errors/http.errors';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
   executeConnectorCommand,
   handleBackendError,
 } from '../../tokens_manager/utils/connector.utils';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { Project } from '../schema/project.schema';
-import { IProjectDocument } from '../types/project.interfaces';
+import { getProjectRepository } from '../../../libs/repositories/project';
+import { ProjectDto } from '../types/project.interfaces';
 
 type KbRole = 'OWNER' | 'WRITER' | 'READER';
 
@@ -19,6 +22,69 @@ const KB_ROLE_BY_PROJECT_ROLE: Record<'editor' | 'viewer', KbRole> = {
 /** Deterministic id of the synthetic "every org member" team — see `ensure_all_team_with_users` (neo4j_provider.py ~6168). No lookup call needed; the id is a fixed `all_{orgId}` string. */
 function allOrgTeamId(orgId: string): string {
   return `all_${orgId}`;
+}
+
+/** Hidden-collection grants. The project owner is skipped — they stay KB OWNER. */
+function memberGrantBuckets(
+  project: ProjectDto,
+  asEditorUserIds: readonly string[] = [],
+): {
+  editorUserIds: string[];
+  viewerUserIds: string[];
+  teamIds: string[];
+} {
+  const editorUserIds: string[] = [];
+  const viewerUserIds: string[] = [];
+  const teamIds: string[] = [];
+  for (const member of project.members) {
+    if (member.principalType === 'team') {
+      teamIds.push(member.principalId);
+      continue;
+    }
+    if (member.principalId === project.userId) {
+      continue;
+    }
+    const asEditor =
+      member.role === 'editor' || asEditorUserIds.includes(member.principalId);
+    const bucket = asEditor ? editorUserIds : viewerUserIds;
+    bucket.push(member.principalId);
+  }
+  return { editorUserIds, viewerUserIds, teamIds };
+}
+
+/** POST /api/v1/kb/ body: project owner is createdBy/OWNER. */
+function hiddenKbCreateBody(
+  project: ProjectDto,
+  projectId: string,
+  callerUserId?: string,
+): Record<string, unknown> {
+  // ensureLinkedKb is editor-or-above. A direct viewer who is an editor
+  // through a team must stay WRITER — their member row alone says viewer.
+  const asEditorUserIds =
+    callerUserId && callerUserId !== project.userId ? [callerUserId] : [];
+  const { editorUserIds, viewerUserIds, teamIds } = memberGrantBuckets(
+    project,
+    asEditorUserIds,
+  );
+  const teams =
+    project.visibility === 'org'
+      ? [...teamIds, allOrgTeamId(project.orgId)]
+      : teamIds;
+  const body: Record<string, unknown> = {
+    name: `project:${projectId}`,
+    isHidden: true,
+    ownerUserId: project.userId,
+  };
+  if (editorUserIds.length > 0) {
+    body.writerUserIds = editorUserIds;
+  }
+  if (viewerUserIds.length > 0) {
+    body.readerUserIds = viewerUserIds;
+  }
+  if (teams.length > 0) {
+    body.teamIds = teams;
+  }
+  return body;
 }
 
 /**
@@ -51,7 +117,10 @@ export class ProjectKnowledgeBaseService {
       { userIds, teamIds: [], role },
     );
     if (response.statusCode !== 200 && response.statusCode !== 201) {
-      throw handleBackendError(response, 'sync project knowledge base user permissions');
+      throw handleBackendError(
+        response,
+        'sync project knowledge base user permissions',
+      );
     }
   }
 
@@ -75,7 +144,10 @@ export class ProjectKnowledgeBaseService {
       { userIds: [], teamIds },
     );
     if (response.statusCode !== 200 && response.statusCode !== 201) {
-      throw handleBackendError(response, 'sync project knowledge base team permissions');
+      throw handleBackendError(
+        response,
+        'sync project knowledge base team permissions',
+      );
     }
   }
 
@@ -95,12 +167,13 @@ export class ProjectKnowledgeBaseService {
     headers: Record<string, string>,
     orgId: string,
     projectId: string,
+    callerUserId?: string,
   ): Promise<string> {
-    const project = await Project.findOne({ _id: projectId, isDeleted: false });
+    const project = await getProjectRepository().getLive(projectId);
     // Tenant isolation defense-in-depth — callers normally reach this only
     // after `ProjectService.assertAccess`, but a caller-supplied `orgId`
     // must never be trusted to already match without a check here too.
-    if (!project || project.orgId.toString() !== orgId) {
+    if (!project || project.orgId !== orgId) {
       throw new NotFoundError('Project not found');
     }
 
@@ -112,6 +185,17 @@ export class ProjectKnowledgeBaseService {
         headers,
       );
       if (check.statusCode !== 404) {
+        // Collections created before ownerUserId kept the first opener as
+        // OWNER/createdBy. Re-sync when that opener (or the project owner)
+        // still holds OWNER so the real owner is granted and the opener can
+        // later be revoked. A WRITER opener is already the post-fix shape.
+        const role = (check.data as { userRole?: string } | undefined)
+          ?.userRole;
+        if (role === 'OWNER') {
+          await this.syncMemberPermissions(appConfig, headers, project).catch(
+            () => undefined,
+          );
+        }
         return previousKbId;
       }
       // Self-heal: Mongo points at a KB that no longer exists upstream —
@@ -122,20 +206,25 @@ export class ProjectKnowledgeBaseService {
       `${appConfig.connectorBackend}/api/v1/kb/`,
       HttpMethod.POST,
       headers,
-      { name: `project:${projectId}`, isHidden: true },
+      hiddenKbCreateBody(project, projectId, callerUserId),
     );
-    if (createResponse.statusCode !== 200 && createResponse.statusCode !== 201) {
+    if (
+      createResponse.statusCode !== 200 &&
+      createResponse.statusCode !== 201
+    ) {
       throw handleBackendError(createResponse, 'create project knowledge base');
     }
     const kbId = (createResponse.data as { id?: string } | undefined)?.id;
     if (!kbId) {
-      throw new InternalServerError('Knowledge base creation did not return an id');
+      throw new InternalServerError(
+        'Knowledge base creation did not return an id',
+      );
     }
 
-    const won = await Project.findOneAndUpdate(
-      { _id: projectId, linkedKnowledgeBaseId: previousKbId },
-      { $set: { linkedKnowledgeBaseId: kbId } },
-      { returnDocument: 'after' },
+    const won = await getProjectRepository().claimLinkedKb(
+      projectId,
+      previousKbId,
+      kbId,
     );
 
     if (!won) {
@@ -146,19 +235,17 @@ export class ProjectKnowledgeBaseService {
         HttpMethod.DELETE,
         headers,
       ).catch(() => undefined);
-      const winner = await Project.findOne({ _id: projectId, isDeleted: false });
+      const winner = await getProjectRepository().getLive(projectId);
       if (!winner?.linkedKnowledgeBaseId) {
         throw new InternalServerError('Failed to link project knowledge base');
       }
       return winner.linkedKnowledgeBaseId;
     }
 
-    // The KB creator (whoever's headers/identity made the call above) is
-    // its implicit OWNER — grant the project's real owner and every
-    // current member their role too, in the same call that just won the
-    // race, so a lazily-created-by-an-editor KB still ends up owned by
-    // the project owner as well (documented in the plan as acceptable).
-    await this.syncMemberPermissions(appConfig, headers, won);
+    // Create already recorded the project owner as createdBy/OWNER and
+    // granted current members. An editor's headers cannot share the KB
+    // (only OWNER may), so do not sync here — that would 403 and leave a
+    // linked collection the editor cannot finish setting up.
     return kbId;
   }
 
@@ -176,39 +263,47 @@ export class ProjectKnowledgeBaseService {
   static async syncMemberPermissions(
     appConfig: AppConfig,
     headers: Record<string, string>,
-    project: IProjectDocument,
+    project: ProjectDto,
   ): Promise<void> {
     const kbId = project.linkedKnowledgeBaseId;
     if (!kbId) return;
 
-    await this.grantUsers(appConfig, headers, kbId, [project.userId.toString()], 'OWNER');
+    await this.grantUsers(appConfig, headers, kbId, [project.userId], 'OWNER');
 
-    const editorUserIds: string[] = [];
-    const viewerUserIds: string[] = [];
-    const teamIds: string[] = [];
-    for (const member of project.members) {
-      const principalId = member.principalId.toString();
-      if (member.principalType === 'team') {
-        teamIds.push(principalId);
-        continue;
-      }
-      (member.role === 'editor' ? editorUserIds : viewerUserIds).push(principalId);
-    }
+    const { editorUserIds, viewerUserIds, teamIds } =
+      memberGrantBuckets(project);
 
-    await this.grantUsers(appConfig, headers, kbId, editorUserIds, KB_ROLE_BY_PROJECT_ROLE.editor);
-    await this.grantUsers(appConfig, headers, kbId, viewerUserIds, KB_ROLE_BY_PROJECT_ROLE.viewer);
+    await this.grantUsers(
+      appConfig,
+      headers,
+      kbId,
+      viewerUserIds,
+      KB_ROLE_BY_PROJECT_ROLE.viewer,
+    );
     await this.grantTeams(appConfig, headers, kbId, teamIds);
 
     if (project.visibility === 'org') {
-      await this.grantTeams(appConfig, headers, kbId, [allOrgTeamId(project.orgId.toString())]);
+      await this.grantTeams(appConfig, headers, kbId, [
+        allOrgTeamId(project.orgId),
+      ]);
     }
+
+    // Editors last so a repair of an old editor-created KB can grant the
+    // project owner and viewers first, then demote that leftover OWNER.
+    await this.grantUsers(
+      appConfig,
+      headers,
+      kbId,
+      editorUserIds,
+      KB_ROLE_BY_PROJECT_ROLE.editor,
+    );
   }
 
   /** Revokes one principal's KB permission — pair with every `ProjectService.removeMember` call so a removed member doesn't keep a stale READER/WRITER edge. No-op if the project has no linked KB yet, or if the principal never had a KB-level permission (upstream 404). */
   static async revokePrincipalPermission(
     appConfig: AppConfig,
     headers: Record<string, string>,
-    project: IProjectDocument,
+    project: ProjectDto,
     principalId: string,
     principalType: 'user' | 'team',
   ): Promise<void> {
@@ -225,7 +320,10 @@ export class ProjectKnowledgeBaseService {
       body,
     );
     if (response.statusCode !== 200 && response.statusCode !== 404) {
-      throw handleBackendError(response, 'revoke project knowledge base permission');
+      throw handleBackendError(
+        response,
+        'revoke project knowledge base permission',
+      );
     }
   }
 
@@ -233,7 +331,7 @@ export class ProjectKnowledgeBaseService {
   static async revokeOrgVisibility(
     appConfig: AppConfig,
     headers: Record<string, string>,
-    project: IProjectDocument,
+    project: ProjectDto,
   ): Promise<void> {
     const kbId = project.linkedKnowledgeBaseId;
     if (!kbId) return;
@@ -241,10 +339,13 @@ export class ProjectKnowledgeBaseService {
       `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
       HttpMethod.DELETE,
       headers,
-      { userIds: [], teamIds: [allOrgTeamId(project.orgId.toString())] },
+      { userIds: [], teamIds: [allOrgTeamId(project.orgId)] },
     );
     if (response.statusCode !== 200 && response.statusCode !== 404) {
-      throw handleBackendError(response, 'revoke project knowledge base org visibility');
+      throw handleBackendError(
+        response,
+        'revoke project knowledge base org visibility',
+      );
     }
   }
 
@@ -252,7 +353,7 @@ export class ProjectKnowledgeBaseService {
   static async deleteLinkedKb(
     appConfig: AppConfig,
     headers: Record<string, string>,
-    project: IProjectDocument,
+    project: ProjectDto,
   ): Promise<void> {
     const kbId = project.linkedKnowledgeBaseId;
     if (!kbId) return;

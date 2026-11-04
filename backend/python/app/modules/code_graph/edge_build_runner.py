@@ -5,7 +5,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from app.modules.code_graph import edge_build_trigger
+from app.modules.code_graph import deleted_files, edge_build_trigger
 from app.modules.code_graph.build_state import BuildStateStore, needs_full_build
 from app.modules.code_graph.edge_builder import (
     EdgeBuildTooLargeError,
@@ -191,6 +191,8 @@ class CodeEdgeBuildRunner:
         # invisible now and would otherwise also fall below the next run.
         started_at_ms = _now_ms()
 
+        # Read before the build: a file deleted while it runs is served by the next.
+        deleted = await deleted_files.pending(self._graph_provider, org_id, record_group_id)
         touched_record_ids = None
         if not needs_full_build(start):
             touched_record_ids = await edge_build_trigger.records_updated_since(
@@ -199,7 +201,7 @@ class CodeEdgeBuildRunner:
                 record_group_id,
                 start.last_build,
             )
-            if not touched_record_ids:
+            if not touched_record_ids and not deleted.keys:
                 await self._state.settle_built(
                     org_id, record_group_id, lease_token=token, start=start,
                     started_at_ms=started_at_ms, advance_watermark=False, full=False,
@@ -209,7 +211,7 @@ class CodeEdgeBuildRunner:
 
         self._log.info(
             "Automatic code edge build starting for org=%s record_group=%s "
-            "mode=%s touched_records=%s",
+            "mode=%s touched_records=%s deleted_files=%s",
             org_id,
             record_group_id,
             "incremental" if touched_record_ids is not None else "full",
@@ -218,6 +220,7 @@ class CodeEdgeBuildRunner:
                 if touched_record_ids is not None
                 else "all"
             ),
+            len(deleted.keys),
         )
         try:
             result = await build_code_graph_edges(
@@ -225,6 +228,7 @@ class CodeEdgeBuildRunner:
                 org_id=org_id,
                 record_group_id=record_group_id,
                 touched_record_ids=touched_record_ids,
+                deleted_names=deleted.names,
                 facts_source=self._facts_source,
                 log=self._log,
                 fence=lambda: edge_build_trigger.assert_lease_held(self._redis, *lease),
@@ -246,11 +250,15 @@ class CodeEdgeBuildRunner:
                 "without readable facts; the watermark stays where it was",
                 org_id, record_group_id, result.facts_missing,
             )
-        await self._state.settle_built(
+        settled = await self._state.settle_built(
             org_id, record_group_id, lease_token=token, start=start,
             started_at_ms=started_at_ms, advance_watermark=not result.facts_missing,
             full=touched_record_ids is None, result=result,
         )
+        if settled and not result.facts_missing:
+            # Kept while the watermark stays: the next build covers the same
+            # changes again and needs the names to find the same callers.
+            await deleted_files.forget(self._graph_provider, deleted.keys, self._log)
         code_graph_metrics.record_build(
             "ready", result, "incremental" if touched_record_ids is not None else "full")
         self._log.info(

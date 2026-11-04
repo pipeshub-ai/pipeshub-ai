@@ -8,13 +8,17 @@ suffix is a process-global set once per service via :func:`set_service_suffix`.
 import contextvars
 import re
 import uuid
+from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypeVar
 
 HEADER_REQUEST_ID = "x-request-id"
 ENVELOPE_REQUEST_ID = "requestId"
+ENVELOPE_ORG_ID = "orgId"
 HEADER_ADMITTED_IN = "x-pipeshub-admitted-in"
 NO_CONTEXT = "-"
+
+T = TypeVar("T")
 
 # `<objectId:24>-<nanoid:21>`
 _MAX_ROOT_ID_LEN = 64
@@ -31,6 +35,10 @@ def sanitize_root_id(raw: Optional[str]) -> Optional[str]:
 @dataclass
 class RequestContext:
     root_id: str
+    # Set by the auth layer once the JWT is decoded (context middleware runs
+    # before auth, so org is unknown at store-creation time). Never written to a
+    # log record raw: the logging provider decides how, or whether, to show it.
+    org_id: str | None = None
 
 
 _ctx: contextvars.ContextVar[Optional[RequestContext]] = contextvars.ContextVar(
@@ -62,8 +70,32 @@ def set_context(root_id: str) -> CtxToken:
     return _ctx.set(RequestContext(root_id=root_id))
 
 
+def bind_context(ctx: RequestContext) -> CtxToken:
+    """Install a full context (root + org), e.g. one built by
+    :func:`context_from_envelope`. ``set_context(ctx.root_id)`` would silently
+    drop the org — consumer paths must use this instead."""
+    return _ctx.set(ctx)
+
+
 def get_context() -> Optional[RequestContext]:
     return _ctx.get()
+
+
+def set_context_org(org_id: str | None) -> None:
+    """Attach the org to the in-flight context (no-op without a context).
+
+    Called by the auth layer after JWT decode; mutates the current
+    ``RequestContext`` in place so the ambient store the logging layer reads
+    picks it up without re-binding the contextvar.
+    """
+    ctx = _ctx.get()
+    if ctx is not None and org_id:
+        ctx.org_id = sanitize_root_id(org_id)
+
+
+def get_org_id() -> str | None:
+    ctx = _ctx.get()
+    return ctx.org_id if ctx is not None else None
 
 
 def reset_context(token: Optional[CtxToken]) -> None:
@@ -133,12 +165,14 @@ def inject_request_headers(
 
 
 def inject_envelope(message: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a copy of ``message`` with the root id stamped in (no mutation)."""
+    """Return a copy of ``message`` with root id and org stamped in (no mutation)."""
     ctx = _ctx.get()
     if ctx is None:
         return message
     out = dict(message)
     out.setdefault(ENVELOPE_REQUEST_ID, ctx.root_id)
+    if ctx.org_id:
+        out.setdefault(ENVELOPE_ORG_ID, ctx.org_id)
     return out
 
 
@@ -146,5 +180,23 @@ def context_from_envelope(message: Dict[str, Any]) -> RequestContext:
     # A message with no id is a propagation gap across the broker boundary
     # (the broker analogue of an inbound HTTP request with no header), not
     # self-initiated machine work — so it gets an `anon-` root, not `sys-`.
-    root_id = sanitize_root_id(message.get(ENVELOPE_REQUEST_ID))
-    return RequestContext(root_id=root_id or new_anon_root())
+    root_id = sanitize_root_id(_envelope_str(message, ENVELOPE_REQUEST_ID))
+    org_id = sanitize_root_id(_envelope_str(message, ENVELOPE_ORG_ID))
+    return RequestContext(root_id=root_id or new_anon_root(), org_id=org_id)
+
+
+def _envelope_str(message: dict[str, Any], key: str) -> str | None:
+    # Producer-supplied: anything but a string is ignored rather than raising.
+    value = message.get(key)
+    return value if isinstance(value, str) else None
+
+
+async def run_in_context(ctx: RequestContext, awaitable: Awaitable[T]) -> T:
+    """Await ``awaitable`` with ``ctx`` bound. Use it to hand a coroutine to
+    another loop or task, which would otherwise run it under its own context
+    and stamp that context onto anything it publishes."""
+    token = bind_context(ctx)
+    try:
+        return await awaitable
+    finally:
+        reset_context(token)

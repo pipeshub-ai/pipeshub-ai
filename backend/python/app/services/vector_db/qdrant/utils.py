@@ -19,7 +19,7 @@ from qdrant_client.http.models import (  # type: ignore
     ValuesCount,
 )
 
-from app.services.vector_db.filters import canonical_filter_key
+from app.services.vector_db.filters import build_generic_conditions, canonical_filter_key
 from app.services.vector_db.models import (
     FieldCondition as GenericFieldCondition,
     FilterExpression,
@@ -98,14 +98,13 @@ class QdrantUtils:
                 continue
             field_key = canonical_filter_key(key)
             if isinstance(value, (list, tuple)):
-                filtered = [v for v in value if v is not None]
-                if filtered:
-                    conditions.append(
-                        FieldCondition(
-                            key=field_key,
-                            match=MatchAny(any=filtered),
-                        )
+                # An empty list matches nothing; Qdrant's MatchAny(any=[]) does.
+                conditions.append(
+                    FieldCondition(
+                        key=field_key,
+                        match=MatchAny(any=[v for v in value if v is not None]),
                     )
+                )
             elif QdrantUtils._is_valid_value(value):
                 conditions.append(
                     FieldCondition(
@@ -118,22 +117,7 @@ class QdrantUtils:
     @staticmethod
     def build_conditions_generic(filters: Dict[str, Any]) -> List[GenericFieldCondition]:
         """Build generic FieldCondition list (provider-neutral) from a key→value dict."""
-        conditions: List[GenericFieldCondition] = []
-        for key, value in filters.items():
-            if value is None:
-                continue
-            field_key = canonical_filter_key(key)
-            if isinstance(value, (list, tuple)):
-                filtered = [v for v in value if v is not None]
-                if filtered:
-                    conditions.append(
-                        GenericFieldCondition(key=field_key, values=filtered)
-                    )
-            elif QdrantUtils._is_valid_value(value):
-                conditions.append(
-                    GenericFieldCondition(key=field_key, value=value)
-                )
-        return conditions
+        return build_generic_conditions(filters)
 
     @staticmethod
     def _is_valid_value(value: FilterValue) -> bool:

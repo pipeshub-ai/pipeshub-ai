@@ -86,6 +86,7 @@ EDGE_DEFINITIONS = [
             CollectionNames.MEETINGS.value,
             CollectionNames.ARTIFACTS.value,
             CollectionNames.SQL_TABLES.value,
+            CollectionNames.SQL_COLUMNS.value,
             CollectionNames.SQL_VIEWS.value,
         ],
     },

@@ -2056,27 +2056,35 @@ class TestBuildIssueRecordsCoverage:
         result, _soft = await connector._build_issue_records([issue], "proj-1", [])
         assert result[0][0].weburl is None
 
-    @pytest.mark.asyncio
-    async def test_task_with_epic_parent(self):
-        """A story under an epic hangs off its project: Jira does not give it the epic's level."""
+    @staticmethod
+    async def _story_under_epic(epic_security: dict | None) -> Record:
         connector = _make_connector()
         connector.site_url = "https://company.atlassian.net"
         connector.indexing_filters = None
-
-        issue = _make_issue(
-            issue_type="Story",
-            hierarchy_level=0,
-            parent_id="epic-100",
-            parent_key="PROJ-100",
-        )
+        epic = _make_issue(issue_id="epic-100", key="PROJ-100", issue_type="Epic", hierarchy_level=1,
+                           security=epic_security)
+        story = _make_issue(issue_type="Story", hierarchy_level=0, parent_id="epic-100", parent_key="PROJ-100")
 
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock(return_value=[])
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        result, _soft = await connector._build_issue_records([issue], "proj-1", [])
-        assert result[0][0].parent_external_record_id is None
-        assert result[0][0].parent_record_type is None
+        result, _soft = await connector._build_issue_records([epic, story], "proj-1", [])
+        return next(r for r, _, _ in result if r.external_record_id == story["id"])
+
+    @pytest.mark.asyncio
+    async def test_task_with_epic_parent(self):
+        """A story is filed under an epic with no level: everyone who reads the story reads it."""
+        story = await self._story_under_epic(None)
+        assert story.parent_external_record_id == "epic-100"
+        assert story.parent_record_type == RecordType.TICKET
+
+    @pytest.mark.asyncio
+    async def test_task_with_leveled_epic_parent(self) -> None:
+        """A story under an epic with a level hangs off its project: Jira does not give it the epic's level."""
+        story = await self._story_under_epic({"id": "10102", "name": "Leadership"})
+        assert story.parent_external_record_id is None
+        assert story.parent_record_type is None
 
 
 # ===========================================================================

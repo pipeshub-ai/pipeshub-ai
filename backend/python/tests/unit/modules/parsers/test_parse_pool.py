@@ -323,6 +323,15 @@ class TestWorkerCrash:
         assert container.blocks[0].data == "Still working"
         assert await parse_pool.submit(os.getpid) != crashed_pid
 
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux OOM killer")
+    async def test_the_oom_killer_picks_a_worker_before_its_service(
+        self, governor: MagicMock
+    ) -> None:
+        worker_pid = await parse_pool.submit(os.getpid)
+
+        with open(f"/proc/{worker_pid}/oom_score_adj") as adj:
+            assert adj.read().strip() == "1000"
+
     async def test_a_crashed_workers_processes_do_not_outlive_it(
         self, governor: MagicMock
     ) -> None:
@@ -526,6 +535,7 @@ class TestLifecycle:
         "app.modules.parsers.csv.table_detection",
         "app.modules.parsers.pdf.pdf_inspection",
         "app.modules.parsers.pdf.layout_pages",
+        "app.modules.parsers.pdf.pdf_rasterizer",
     ],
 )
 def test_what_a_worker_imports_stays_light(module: str) -> None:

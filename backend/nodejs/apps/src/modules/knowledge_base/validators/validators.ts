@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { extensionToMimeType } from '../../storage/mimetypes/mimetypes';
 import { FileRejectionReason } from '../../../libs/middlewares/file_processor/fp.constant';
 import { guidCheck, integerCheck } from '../../../libs/utils/zod-formats';
+import { containsFormatSpecifiers } from '../../../utils/xss-sanitization';
 
 const rejectedFileSchema = z.object({
   originalname: z.string(),
@@ -243,15 +244,7 @@ export const listKnowledgeBasesSchema = z.object({
             return false;
           }
           
-          // Check for format string specifiers (e.g., %s, %x, %n, %1$s, %1!s, etc.)
-          // More aggressive pattern to catch both standard and non-standard format specifiers
-          // Matches: % followed by digits and ! or $, or standard format specifiers, or %digits+letter
-          // Optimized to prevent ReDoS: limited quantifiers
-          const formatSpecifierPattern = /%(?:\d{1,10}[!$]|[#0\-+ ]{0,10}\d{0,10}\.?\d{0,10}[diouxXeEfFgGaAcspn%]|\d{1,10}[a-zA-Z])/;
-          if (formatSpecifierPattern.test(trimmed)) {
-            return false;
-          }
-          return true;
+          return !containsFormatSpecifiers(trimmed);
         },
         { message: 'Search parameter contains potentially dangerous content (HTML tags, scripts, or format specifiers are not allowed)' },
       )
@@ -307,10 +300,23 @@ export const deleteKBSchema = z.object({
   params: z.object({ kbId: z.string().min(1) }),
 });
 
+export const FOLDER_NAME_SEPARATOR_MESSAGE =
+  'Folder names cannot contain "/" or "\\".';
+
+// Folder uploads read a file's path as folder names joined by "/" (Windows
+// clients send "\\"), so a name holding a separator reads as two folders.
+const folderNameSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((name) => !/[\\/]/.test(name), {
+    message: FOLDER_NAME_SEPARATOR_MESSAGE,
+  });
+
 export const createFolderSchema = z.object({
   body: z
     .object({
-      folderName: z.string().min(1).max(255),
+      folderName: folderNameSchema,
       folderId: z.unknown().optional(),
       parentId: z.unknown().optional(),
       parent_id: z.unknown().optional(),
@@ -369,7 +375,7 @@ export const kbPermissionSchema = z.object({
 
 export const updateFolderSchema = z.object({
   body: z.object({
-    folderName: z.string().min(1).max(255),
+    folderName: folderNameSchema,
   }),
   params: z.object({ kbId: z.string().min(1), folderId: z.string().min(1) }),
 });

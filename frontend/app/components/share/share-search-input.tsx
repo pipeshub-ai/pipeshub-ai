@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { ShareRole, ShareSelection } from './types';
@@ -15,6 +16,10 @@ interface ShareSearchInputProps {
   selectedRole: ShareRole;
   /** Whether to show the role picker on chips */
   supportsRoles: boolean;
+  /** Whether teams can be picked; the placeholder only mentions teams when they can. */
+  supportsTeams?: boolean;
+  /** Teams carry a role too, so a team-only selection still shows the role picker. */
+  teamsHaveRoles?: boolean;
   roleOptions?: { roles: ShareRole[]; labels?: Record<ShareRole, { label: string; description: string }> };
   /** Callback when search query changes */
   onSearchChange: (query: string) => void;
@@ -33,6 +38,8 @@ export function ShareSearchInput({
   searchQuery,
   selectedRole,
   supportsRoles,
+  supportsTeams = true,
+  teamsHaveRoles = false,
   roleOptions,
   onSearchChange,
   onRemoveSelection,
@@ -40,8 +47,9 @@ export function ShareSearchInput({
   onRemoveLastSelection,
   onEmailSubmit,
 }: ShareSearchInputProps) {
+  const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
-  const hasUserSelection = selections.some((s) => s.type === 'user');
+  const hasRoleSelection = selections.some((s) => s.type === 'user' || (teamsHaveRoles && s.type === 'team'));
 
   return (
     <Flex
@@ -131,7 +139,7 @@ export function ShareSearchInput({
           }}
           placeholder={
             selections.length === 0
-              ? 'Emails, teams or names (separated by commas)'
+              ? t(supportsTeams ? 'shareSidebar.searchPlaceholderTeams' : 'shareSidebar.searchPlaceholderUsers')
               : ''
           }
           style={{
@@ -148,8 +156,8 @@ export function ShareSearchInput({
         />
       </Flex>
 
-      {/* Role picker — users only; teams do not have share roles */}
-      {hasUserSelection && supportsRoles && (
+      {/* Role picker — users, plus teams where the entity gives teams a role */}
+      {hasRoleSelection && supportsRoles && (
         <Box style={{ flexShrink: 0, paddingRight: 4 }}>
           <RoleDropdownMenu
             role={selectedRole}

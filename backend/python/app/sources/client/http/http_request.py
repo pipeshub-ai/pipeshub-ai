@@ -12,6 +12,8 @@ class HTTPRequest(BaseModel):
         method: The HTTP method to use
         headers: The headers to send with the request
         body: The body of the request (dict, bytes, or None)
+        files: Multipart file parts as (field, (filename, content, mime type)).
+            When set, a dict body is sent as the form fields of the same request.
         path_params: The path parameters to use
         query_params: The query parameters to use
     """
@@ -26,6 +28,7 @@ class HTTPRequest(BaseModel):
     method: str = Field(default="GET")
     headers: dict[str, str] = Field(default_factory=dict)
     body: dict[str, Any] | bytes | None = None
+    files: list[tuple[str, tuple[str, bytes, str]]] | None = None
     path_params: dict[str, str] = Field(default_factory=dict, alias="path")
     query_params: dict[str, str] | list[tuple[str, str]] = Field(
         default_factory=dict, alias="query"
@@ -36,6 +39,13 @@ class HTTPRequest(BaseModel):
         Bytes are encoded as Base64 to preserve data integrity.
         """
         data = self.model_dump(by_alias=True)
+        if self.files is None:
+            data.pop("files", None)
+        else:
+            data["files"] = [
+                {"field": field, "filename": filename, "content_type": mime, "size": len(content)}
+                for field, (filename, content, mime) in self.files
+            ]
 
         if isinstance(self.body, bytes):
             # Use Base64 encoding to preserve binary data integrity

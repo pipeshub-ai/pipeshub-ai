@@ -13,7 +13,7 @@ import {
   encodeRFC5987,
   extractOrgId,
   extractUserId,
-  toObjectId,
+  requireId,
   validateFileAndDocumentName,
   getDocumentInfo,
   generatePresignedUrlForDirectUpload,
@@ -273,11 +273,11 @@ describe('storage/utils/utils', () => {
   })
 
   // -------------------------------------------------------------------------
-  // toObjectId
+  // requireId
   // -------------------------------------------------------------------------
-  describe('toObjectId', () => {
-    it('should return an ObjectId for a valid id', () => {
-      expect(toObjectId('64d000000000000000000a01', 'organization').toHexString()).to.equal('64d000000000000000000a01')
+  describe('requireId', () => {
+    it('should return the id for a valid one', () => {
+      expect(requireId('64d000000000000000000a01', 'organization')).to.equal('64d000000000000000000a01')
     })
 
     // new ObjectId('user-123') throws a BSONError, which the error middleware answers with 500.
@@ -294,7 +294,7 @@ describe('storage/utils/utils', () => {
     ]
     for (const [id, kind] of malformed) {
       it(`should throw BadRequestError naming the ${kind} id for ${JSON.stringify(id)}`, () => {
-        expect(() => toObjectId(id, kind))
+        expect(() => requireId(id, kind))
           .to.throw(BadRequestError)
           .with.property('message')
           .that.contains(`The ${kind} id in the storage token isn't valid`)
@@ -398,7 +398,7 @@ describe('storage/utils/utils', () => {
   })
 
   describe('getDocumentInfo - a missing document', () => {
-    it('is a 404 marked to be logged at warn, not error', async () => {
+    it('is a 404, which the error middleware logs at warn', async () => {
       sinon.stub(DocumentModel, 'findOne').resolves(null)
       const next = sinon.stub()
       const req = {
@@ -414,10 +414,9 @@ describe('storage/utils/utils', () => {
 
       const error = next.firstCall.args[0]
       expect(error.statusCode).to.equal(404)
-      expect(error.metadata).to.deep.equal({ logLevel: 'warn' })
     })
 
-    it('leaves a failed lookup unmarked, so it is still logged at error', async () => {
+    it('answers a failed lookup with a 500, which is logged at error', async () => {
       sinon.stub(DocumentModel, 'findOne').rejects(new Error('mongo down'))
       const next = sinon.stub()
       const req = {

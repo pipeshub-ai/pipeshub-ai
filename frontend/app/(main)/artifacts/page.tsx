@@ -26,6 +26,7 @@ import type { ArtifactListItem, ArtifactsSortField } from './types';
 import { ArtifactsHeader } from './components/header';
 import { ArtifactsFilterBar } from './components/filter-bar';
 import { ArtifactsDataTable } from './components/artifacts-data-table';
+import { buildChatHref } from '@/chat/build-chat-url';
 
 function ArtifactsPageContent() {
   const { t } = useTranslation();
@@ -81,6 +82,7 @@ function ArtifactsPageContent() {
   const clearFilters = useArtifactsStore((s) => s.clearFilters);
 
   const hydratedRef = useRef(false);
+  const [isHydrated, setIsHydrated] = useState(false);
   const skipUrlSyncRef = useRef(true);
 
   useEffect(() => {
@@ -102,6 +104,7 @@ function ArtifactsPageContent() {
       setIsSearchActive(true);
     }
     hydratedRef.current = true;
+    setIsHydrated(true);
   }, [searchParams, hydrateFromUrl]);
 
   const listParams = useMemo(
@@ -137,9 +140,11 @@ function ArtifactsPageContent() {
     }
   }, [listParams, setError, setItems, setLoading, t]);
 
+  // Wait for the URL's filters: listing with the params from before hydration
+  // and again with the hydrated ones made two identical requests per visit.
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (isHydrated) void load();
+  }, [isHydrated, load]);
 
   useEffect(() => {
     if (!hydratedRef.current) return;
@@ -299,7 +304,19 @@ function ArtifactsPageContent() {
 
   const handleOpenChat = useCallback((item: ArtifactListItem) => {
     if (!item.conversationId) return;
-    router.push(`/chat/?conversationId=${encodeURIComponent(item.conversationId)}`);
+    if (item.conversationArchived) {
+      const q = new URLSearchParams({ conversationId: item.conversationId });
+      if (item.agentKey) q.set('agentKey', item.agentKey);
+      router.push(`/workspace/archived-chats/?${q.toString()}`);
+      return;
+    }
+    router.push(
+      buildChatHref({
+        agentId: item.agentKey,
+        projectId: item.projectId,
+        conversationId: item.conversationId,
+      }),
+    );
   }, [router]);
 
   const handleShare = useCallback((item: ArtifactListItem) => {

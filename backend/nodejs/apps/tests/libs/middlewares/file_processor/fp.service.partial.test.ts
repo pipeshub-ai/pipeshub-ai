@@ -569,6 +569,13 @@ describe('FileProcessorService - uploadErrorMessage', () => {
     )
   })
 
+  it('speaks of one file when the route takes a single file', () => {
+    const single = new FileProcessorService(createPartialConfig({ maxFileSize: 5 * ONE_MB, maxFilesAllowed: 1 }))
+    expect(single.uploadErrorMessage({ code: 'LIMIT_FILE_SIZE', message: 'File too large' })).to.equal(
+      'This file is larger than the 5 MB limit. Make it smaller or split it, then upload it again.',
+    )
+  })
+
   it('never shows the library text for anything else', () => {
     expect(service.uploadErrorMessage({ message: 'Unexpected end of form' })).to.equal(
       "The upload didn't complete. Check your connection and try again.",

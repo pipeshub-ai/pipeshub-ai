@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import AISettingsUnavailableError, DocumentProcessingError
 
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
 
@@ -192,15 +192,23 @@ class TestRenderPageBatchToBase64:
         mock_doc.pages = [MagicMock(), MagicMock(), MagicMock()]
         strategy.doc = mock_doc
 
-        async def fake_to_thread(fn, batch):
-            return {p: f"data:image/png;base64,page{p}" for p in batch}
+        dispatched = []
+
+        async def fake_to_thread(fn, *args):
+            dispatched.append(list(args[0]))
+            return fn(*args)
 
         with patch(
             "app.modules.parsers.pdf.vlm_ocr_strategy.asyncio.to_thread",
             side_effect=fake_to_thread,
+        ), patch.object(
+            strategy,
+            "_render_page_batch_to_base64",
+            side_effect=lambda batch: {p: f"data:image/png;base64,page{p}" for p in batch},
         ):
             await strategy._preload_page_images()
 
+        assert dispatched == [[1, 2], [3]]
         assert len(strategy._page_images) == 3
         assert strategy._page_images[1] == "data:image/png;base64,page1"
         assert strategy._page_images[3] == "data:image/png;base64,page3"
@@ -458,15 +466,16 @@ class TestGetMultimodalLLMEdgeCases:
 
     @pytest.mark.asyncio
     async def test_config_get_raises_exception(self):
-        """Exception from config.get_config is wrapped in ValueError."""
+        """A settings store that is down is an outage: retried, with its error as the cause."""
         logger = logging.getLogger("test")
         config = AsyncMock()
         config.get_config = AsyncMock(side_effect=RuntimeError("Config service down"))
 
         strategy = VLMOCRStrategy(logger, config)
 
-        with pytest.raises(DocumentProcessingError, match="Failed to get multimodal LLM"):
+        with pytest.raises(AISettingsUnavailableError, match="Could not read the workspace's AI settings") as exc_info:
             await strategy._get_multimodal_llm()
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
 # ============================================================================

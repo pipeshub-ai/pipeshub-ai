@@ -42,6 +42,7 @@ from app.modules.record_metadata.builtin import (
 )
 from app.modules.transformers import sink_orchestrator as sink_module
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from app.services.featureflag.platform_settings import ArtifactSettings
 from tests.unit.modules.artifacts.fake_storage import FakeStorage
 
 ORG = "org-1"
@@ -232,10 +233,11 @@ async def _index_through_process_blocks(ticket: TicketRecord, storage: FakeStora
     processor.graph_provider = graph
     processor.config_service = MagicMock()
     processor._pipeline = lambda: _Pipeline()  # type: ignore[method-assign]
-    processor._process_blockgroups = AsyncMock(side_effect=lambda containers, _name: containers)  # type: ignore[method-assign]
+    processor._process_blockgroups = AsyncMock(side_effect=lambda containers, _name, **_kw: containers)  # type: ignore[method-assign]
 
     with patch.object(processor_module, "enhance_tables_with_llm", AsyncMock()), \
             patch.object(sink_module, "is_artifact_write_enabled", AsyncMock(return_value=True)), \
+            patch.object(sink_module, "artifact_settings", AsyncMock(return_value=ArtifactSettings("cow", "gen"))), \
             patch.object(sink_module, "notify_record_indexed", AsyncMock()):
         async for _ in processor.process_blocks(
             ticket.record_name, ticket.id, 1, "CONNECTOR", ORG, _blocks().model_dump(mode="json", exclude_none=True),

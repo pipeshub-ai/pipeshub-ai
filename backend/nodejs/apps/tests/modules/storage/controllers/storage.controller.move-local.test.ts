@@ -23,7 +23,7 @@ describe('StorageController.moveTreeLocal on disk', () => {
   const base = `${orgId}/PipesHub/records/c1`
 
   const doc = (documentPath: string, name = 'record_v') => ({
-    _id: new mongoose.Types.ObjectId(),
+    _id: new mongoose.Types.ObjectId().toString(),
     documentPath,
     documentName: name,
     extension: '.json',
@@ -71,9 +71,9 @@ describe('StorageController.moveTreeLocal on disk', () => {
     await run([a, b])
 
     const sets = writtenPaths(bulk)
-    expect(sets[String(a._id)].documentPath).to.equal(`${base}/Renamed`)
-    expect(sets[String(b._id)].documentPath).to.equal(`${base}/Renamed/sub`)
-    expect(sets[String(b._id)]['local.localPath']).to.equal(
+    expect(sets[a._id].documentPath).to.equal(`${base}/Renamed`)
+    expect(sets[b._id].documentPath).to.equal(`${base}/Renamed/sub`)
+    expect(sets[b._id]['local.localPath']).to.equal(
       `file://${mount}/${base}/Renamed/sub/${b._id}/record_v.json`,
     )
     await fs.access(path.join(mount, `${base}/Renamed/sub/${b._id}/record_v.json`))
@@ -87,7 +87,7 @@ describe('StorageController.moveTreeLocal on disk', () => {
 
     await run([a])
 
-    expect(writtenPaths(bulk)[String(a._id)].documentPath).to.equal(`${base}/Renamed`)
+    expect(writtenPaths(bulk)[a._id].documentPath).to.equal(`${base}/Renamed`)
   })
 
   it('still fails when the files are at neither path', async () => {
@@ -111,7 +111,7 @@ describe('StorageController.moveTreeLocal on disk', () => {
 
     await run([a])
 
-    expect(writtenPaths(bulk)[String(late._id)].documentPath).to.equal(`${base}/Renamed/new`)
+    expect(writtenPaths(bulk)[late._id].documentPath).to.equal(`${base}/Renamed/new`)
   })
 
   it('writes the path a concurrent move left a document at, not the one it expected', async () => {
@@ -123,7 +123,7 @@ describe('StorageController.moveTreeLocal on disk', () => {
 
     await run([a])
 
-    const set = writtenPaths(bulk)[String(a._id)]
+    const set = writtenPaths(bulk)[a._id]
     expect(set.documentPath).to.equal(`${base}/Renamed/y`)
     expect(set['local.localPath']).to.equal(`file://${mount}/${base}/Renamed/y/${a._id}/record_v.json`)
   })
@@ -138,7 +138,7 @@ describe('StorageController.moveTreeLocal on disk', () => {
     await run([a, ghost])
 
     const sets = writtenPaths(bulk)
-    expect(sets).to.have.keys(String(a._id))
+    expect(sets).to.have.keys(a._id)
     expect(logger.warn.calledOnce).to.be.true
   })
 
@@ -150,7 +150,7 @@ describe('StorageController.moveTreeLocal on disk', () => {
 
     await run([a])
 
-    const set = writtenPaths(bulk)[String(a._id)]
+    const set = writtenPaths(bulk)[a._id]
     expect(set.documentPath).to.equal(`${base}/Renamed/Q1_ Plan 文档`)
     expect(decodeURIComponent(set['local.localPath'])).to.equal(
       `file://${mount}/${base}/Renamed/Q1_ Plan 文档/${a._id}/record_v.json`,
@@ -211,7 +211,7 @@ describe('StorageController.moveTree per-org serialization', () => {
         lean: async () => {
           const n = ++call
           events.push(`find${n}`)
-          return [{ _id: new mongoose.Types.ObjectId(), documentPath: `${orgId}/PipesHub/records/c/${n}`, documentName: 'record_v' }]
+          return [{ _id: new mongoose.Types.ObjectId().toString(), documentPath: `${orgId}/PipesHub/records/c/${n}`, documentName: 'record_v' }]
         },
       }),
     })) as any)
@@ -295,8 +295,8 @@ describe('StorageController.moveTreeLocal large trees', () => {
     const base = 'org1/PipesHub/records/c1/Big'
     const rows = []
     for (let i = 0; i < 2500; i++) {
-      const d = { _id: new mongoose.Types.ObjectId(), documentPath: `${base}/f${i % 50}`, documentName: 'record_v', extension: '.json' }
-      await fs.mkdir(path.join(mount, d.documentPath, String(d._id)), { recursive: true })
+      const d = { _id: new mongoose.Types.ObjectId().toString(), documentPath: `${base}/f${i % 50}`, documentName: 'record_v', extension: '.json' }
+      await fs.mkdir(path.join(mount, d.documentPath, d._id), { recursive: true })
       rows.push(d)
     }
     sinon.stub(DocumentModel, 'find').returns({ select: () => ({ lean: () => Promise.resolve([]) }) } as any)
@@ -316,10 +316,10 @@ describe('StorageController.moveTreeLocal large trees', () => {
     const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
     const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
     const base = 'org1/PipesHub/records/c1/A'
-    const here = { _id: new mongoose.Types.ObjectId(), documentPath: base, documentName: 'record_v1', extension: '.json' }
-    const gone = { _id: new mongoose.Types.ObjectId(), documentPath: base, documentName: 'record_v2', extension: '.json' }
-    const deleted = { ...gone, _id: new mongoose.Types.ObjectId(), isDeleted: true }
-    await fs.mkdir(path.join(mount, base, String(here._id)), { recursive: true })
+    const here = { _id: new mongoose.Types.ObjectId().toString(), documentPath: base, documentName: 'record_v1', extension: '.json' }
+    const gone = { _id: new mongoose.Types.ObjectId().toString(), documentPath: base, documentName: 'record_v2', extension: '.json' }
+    const deleted = { ...gone, _id: new mongoose.Types.ObjectId().toString(), isDeleted: true }
+    await fs.mkdir(path.join(mount, base, here._id), { recursive: true })
     sinon.stub(DocumentModel, 'find').returns({ select: () => ({ lean: () => Promise.resolve([]) }) } as any)
     sinon.stub(DocumentModel, 'bulkWrite').resolves({} as any)
 
@@ -327,6 +327,6 @@ describe('StorageController.moveTreeLocal large trees', () => {
       adapter, base, 'org1/PipesHub/records/c1/B', [here, gone, deleted], 'org1',
     )
 
-    expect(result.failedIds).to.deep.equal([String(gone._id)])
+    expect(result.failedIds).to.deep.equal([gone._id])
   })
 })

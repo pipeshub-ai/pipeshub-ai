@@ -4,6 +4,10 @@ import sinon from 'sinon';
 import mongoose from 'mongoose';
 import { NotificationConsumer } from '../../../../src/modules/notification/service/notification.consumer';
 import { NotificationService } from '../../../../src/modules/notification/service/notification.service';
+import { setNotificationRepository } from '../../../../src/libs/repositories/notification';
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
+import { DocStoreFencedError, DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors';
+import { GatewayTimeoutError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
 import * as NotificationSchema from '../../../../src/modules/notification/schema/notification.schema';
 import * as RecipientResolver from '../../../../src/modules/notification/utils/notification-recipient.resolver';
 
@@ -174,6 +178,64 @@ describe('notification/service/notification.consumer', () => {
       expect(createStub.called).to.be.false;
       expect(mockLogger.warn.called).to.be.true;
       expect(userHandler.calledOnce).to.be.true;
+    });
+
+    describe('the store', () => {
+      const orgId = new mongoose.Types.ObjectId().toString();
+      const user = new mongoose.Types.ObjectId().toString();
+      const event = { orgId, type: 'CONNECTOR_SYNC_ERROR', recipientUserIds: [user], recipientRoles: [] };
+      const run = async (insertMany: sinon.SinonStub, value: unknown = event) => {
+        mockConsumer.isConnected.returns(true);
+        sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').resolves([new mongoose.Types.ObjectId(user)]);
+        setNotificationRepository({ insertMany } as never);
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        const wrapped = mockConsumer.consume.firstCall.args[0];
+        return { handler, outcome: wrapped({ value }) as Promise<void> };
+      };
+      afterEach(() => setNotificationRepository());
+
+      it('writes in the org the event names', async () => {
+        let seen: string | undefined;
+        const insertMany = sinon.stub().callsFake(async () => {
+          seen = getCurrentOrgId();
+          return [];
+        });
+        const { handler, outcome } = await run(insertMany);
+        await outcome;
+        expect(seen).to.equal(orgId);
+        expect(handler.calledOnce).to.be.true;
+      });
+
+      for (const err of [new DocStoreReadOnlyError(), new DocStoreFencedError(), new ServiceUnavailableError('down'), new GatewayTimeoutError('slow')]) {
+        it(`re-throws ${err.constructor.name} and does not mark the message handled`, async () => {
+          const { handler, outcome } = await run(sinon.stub().rejects(err));
+          let thrown: unknown;
+          try {
+            await outcome;
+          } catch (e) {
+            thrown = e;
+          }
+          expect(thrown).to.equal(err);
+          expect(handler.called).to.be.false;
+        });
+      }
+
+      it('logs any other failure and still marks the message handled', async () => {
+        const { handler, outcome } = await run(sinon.stub().rejects(new Error('constraint')));
+        await outcome;
+        expect(mockLogger.error.calledOnce).to.be.true;
+        expect(handler.calledOnce).to.be.true;
+      });
+
+      it('skips an event without a valid org, and marks it handled', async () => {
+        const insertMany = sinon.stub();
+        const { handler, outcome } = await run(insertMany, { orgId: 'nope', type: 'X' });
+        await outcome;
+        expect(insertMany.called).to.be.false;
+        expect(mockLogger.warn.called).to.be.true;
+        expect(handler.calledOnce).to.be.true;
+      });
     });
   });
 });

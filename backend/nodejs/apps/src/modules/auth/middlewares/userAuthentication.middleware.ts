@@ -12,6 +12,11 @@ import {
   isUserOrgAdmin,
 } from '../../user_management/services/user-admin.service';
 import { AppConfig } from '../../tokens_manager/config/config';
+import {
+  asAccount,
+  makeOrgContext,
+  runWithOrgContext,
+} from '../../../libs/context/orgContext';
 
 export const userValidator = (
   req: AuthSessionRequest,
@@ -30,10 +35,27 @@ export const userValidator = (
       throw new UnauthorizedError('Invalid Token');
     }
     req.user = decodedData;
-    next();
+    bindVerified(decodedData as { orgId?: string; userId?: string }, next);
   } catch (error) {
     next(error);
   }
+};
+
+/** The token's signature is verified: its organisation and user are the ones the rest of the request runs as. */
+const bindVerified = (
+  claims: { orgId?: string; userId?: string },
+  next: NextFunction,
+): void => {
+  if (!claims.orgId || !claims.userId) return next();
+  runWithOrgContext(
+    makeOrgContext({
+      orgId: claims.orgId,
+      userId: claims.userId,
+      kind: 'user',
+      source: 'jwt',
+    }),
+    next,
+  );
 };
 
 export const adminValidator = async (
@@ -58,13 +80,15 @@ export const adminValidator = async (
       throw new NotFoundError('Account not found');
     }
 
-    const isAdmin = await isUserOrgAdmin(userId, orgId);
+    const isAdmin = await asAccount(String(orgId), String(userId), 'jwt', () =>
+      isUserOrgAdmin(userId, orgId),
+    );
 
     if (!isAdmin) {
       throw new ForbiddenError(ADMIN_ACCESS_REQUIRED_MESSAGE);
     }
 
-    next();
+    bindVerified(decodedData as { orgId?: string; userId?: string }, next);
   } catch (error) {
     next(error);
   }
@@ -90,6 +114,10 @@ export const authSessionMiddleware = async (
       throw new UnauthorizedError('Invalid session');
     }
     req.sessionInfo = session;
+    // A stored session names the account once the address was matched; before that there is no organisation to bind.
+    if (session.orgId && session.userId && session.userId !== 'NOT_FOUND') {
+      return asAccount(String(session.orgId), session.userId, 'session', next);
+    }
     next();
   } catch (error) {
     next(error);

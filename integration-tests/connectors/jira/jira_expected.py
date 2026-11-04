@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.config.constants.arangodb import (
+    AccessRule,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -64,6 +65,29 @@ class JiraExpected:
         overrides: dict[str, Any] | None = None,
     ) -> TicketRecord:
         """Build a ``TicketRecord`` from live Jira issue JSON (mirrors connector issue mapping)."""
+        record, _unsettled = await JiraExpected.ticket_record_and_unsettled(
+            issue_key,
+            connector_id=connector_id,
+            datasource=datasource,
+            site_base_url=site_base_url,
+            value_mapper=value_mapper,
+            connector_enum=connector_enum,
+            overrides=overrides,
+        )
+        return record
+
+    @staticmethod
+    async def ticket_record_and_unsettled(
+        issue_key: str,
+        *,
+        connector_id: str,
+        datasource: Any,
+        site_base_url: str | None = None,
+        value_mapper: ValueMapper | None = None,
+        connector_enum: Connectors | None = None,
+        overrides: dict[str, Any] | None = None,
+    ) -> tuple[TicketRecord, frozenset[str]]:
+        """``ticket_record``, plus the fields the issue JSON cannot settle, for ``skip_compare``."""
         vm = value_mapper or ValueMapper()
         ov = overrides or {}
 
@@ -119,13 +143,25 @@ class JiraExpected:
         ).rstrip("/")
         weburl = f"{base_url}/browse/{key}" if base_url and key else None
 
+        # As apply_issue_access_settled writes it for a team connector: an issue with
+        # a security level is limited to the level's members, and an explicit null
+        # level is open to its project and no further. A missing field depends on
+        # what the connector knows of the project's security scheme, which this JSON
+        # doesn't say, so the rule is left out of the comparison.
+        unsettled: frozenset[str] = frozenset()
+        security = fields.get("security")
+        has_level = isinstance(security, dict) and security.get("id") not in (None, "")
+        access_rule = AccessRule.RESTRICTED if has_level else AccessRule.STRICT
+        if "security" not in fields:
+            unsettled = frozenset({"access_rule"})
+
         external_group = ov.get("external_record_group_id")
         if external_group is None:
             project = fields.get("project") or {}
             pid = project.get("id")
             external_group = str(pid) if pid is not None else None
 
-        return TicketRecord(
+        record = TicketRecord(
             id="",
             org_id="",
             record_name=issue_name,
@@ -146,6 +182,7 @@ class JiraExpected:
             created_at=created_at,
             updated_at=updated_at,
             inherit_permissions=True,
+            access_rule=access_rule,
             preview_renderable=False,
             is_dependent_node=False,
             parent_node_id=None,
@@ -162,6 +199,7 @@ class JiraExpected:
             assignee_email=assignee_email,
             creator_email=creator_email,
         )
+        return record, unsettled
 
     @staticmethod
     async def placeholder_stub(

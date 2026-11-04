@@ -9,7 +9,7 @@ The directory is removed when the stream finishes or when conversion fails.
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import logging
 import os
 import shutil
 import tempfile
@@ -20,27 +20,14 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.utils import libreoffice_convert
 
 PDF_CONVERT_CHUNK_BYTES = 1024 * 1024
 DEFAULT_PDF_TIMEOUT_SECONDS = 60.0
-_STOP_GRACE_SECONDS = 5.0
+
+logger = logging.getLogger(__name__)
 
 WriteSource = Callable[[str], Awaitable[None]]
-
-
-async def _stop_process(process: asyncio.subprocess.Process) -> None:
-    """Terminate, then kill, then reap ``process``, never waiting without a bound."""
-    with contextlib.suppress(ProcessLookupError):
-        process.terminate()
-    try:
-        await asyncio.wait_for(process.wait(), timeout=_STOP_GRACE_SECONDS)
-        return
-    except asyncio.TimeoutError:
-        pass
-    with contextlib.suppress(ProcessLookupError):
-        process.kill()
-    with contextlib.suppress(asyncio.TimeoutError):
-        await asyncio.wait_for(process.wait(), timeout=_STOP_GRACE_SECONDS)
 
 
 def safe_conversion_input(directory: str, extension: str) -> str:
@@ -82,28 +69,34 @@ async def libreoffice_to_pdf(
     ]
 
     try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            _stdout, conversion_error = await asyncio.wait_for(
-                process.communicate(), timeout=timeout
+        async with libreoffice_convert.conversion_slots.slot():
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-        except asyncio.TimeoutError as error:
-            await _stop_process(process)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="PDF conversion timed out",
-            ) from error
-        except asyncio.CancelledError:
-            # The caller removes temp_dir next; soffice must not outlive it.
-            await _stop_process(process)
-            raise
+            try:
+                _stdout, conversion_error = await asyncio.wait_for(
+                    process.communicate(), timeout=timeout
+                )
+            except asyncio.TimeoutError as error:
+                await libreoffice_convert.stop_process(process)
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="PDF conversion timed out",
+                ) from error
+            except asyncio.CancelledError:
+                # The caller removes temp_dir next; soffice must not outlive it.
+                await libreoffice_convert.stop_process(process)
+                raise
 
         if process.returncode != 0:
-            _ = conversion_error.decode("utf-8", errors="replace") if conversion_error else ""
+            logger.error(
+                "LibreOffice PDF conversion failed (exit code %s): %s",
+                process.returncode,
+                (conversion_error or b"").decode("utf-8", errors="replace"),
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail="Failed to convert file to PDF",

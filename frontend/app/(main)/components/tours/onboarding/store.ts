@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { devtools, persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import type { TourState, TourStepId } from './types';
@@ -85,3 +86,5 @@ export const useOnboardingTourStore = create<OnboardingTourState>()(
     { name: 'OnboardingTourStore' }
   )
 );
+
+resetStoreOnSessionEnd(useOnboardingTourStore);

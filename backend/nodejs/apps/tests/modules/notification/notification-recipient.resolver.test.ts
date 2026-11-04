@@ -61,12 +61,12 @@ describe('notification/notification-recipient.resolver', () => {
       stubUserGroupsFind([]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
-      expect(result.map((id) => id.toString())).to.have.members([
+      expect(result.map((id) => id)).to.have.members([
         user1.toString(),
         user2.toString(),
       ]);
       expect(findStub.firstCall.args[0]).to.deep.equal({
-        orgId,
+        orgId: String(orgId),
         role: 'admin',
         isDeleted: { $ne: true },
         // "Notify the administrators" means people. A service account has no
@@ -139,7 +139,7 @@ describe('notification/notification-recipient.resolver', () => {
       stubUserGroupsFind([{ users: [groupAdmin] }]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
-      expect(result.map((id) => id.toString())).to.have.members([roleAdmin.toString()]);
+      expect(result.map((id) => id)).to.have.members([roleAdmin.toString()]);
     });
   });
 
@@ -150,7 +150,7 @@ describe('notification/notification-recipient.resolver', () => {
       const user2 = new mongoose.Types.ObjectId().toString();
 
       const result = await resolveNotificationRecipientUserIds(orgId, [user1, user2], []);
-      expect(result.map((id) => id.toString())).to.have.members([user1, user2]);
+      expect(result.map((id) => id)).to.have.members([user1, user2]);
       expect(findStub.called).to.be.false;
     });
 
@@ -160,7 +160,7 @@ describe('notification/notification-recipient.resolver', () => {
       stubUserGroupsFind([]);
 
       const result = await resolveNotificationRecipientUserIds(orgId, [], ['admin']);
-      expect(result.map((id) => id.toString())).to.include(user.toString());
+      expect(result.map((id) => id)).to.include(user.toString());
     });
 
     it('merges and deduplicates direct ids and role-resolved ids', async () => {
@@ -174,7 +174,7 @@ describe('notification/notification-recipient.resolver', () => {
         [shared.toString()],
         ['admin'],
       );
-      const strings = result.map((id) => id.toString());
+      const strings = result.map((id) => id);
       expect(strings).to.include(shared.toString());
       expect(strings).to.include(roleOnly.toString());
       expect(strings.filter((s) => s === shared.toString())).to.have.length(1);

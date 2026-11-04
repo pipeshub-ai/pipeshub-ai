@@ -24,6 +24,12 @@ redis.call('EXPIRE', KEYS[1], ARGV[1])
 return count
 """
 
+_DECR_OR_DELETE_SCRIPT = """
+local count = redis.call('DECR', KEYS[1])
+if count <= 0 then redis.call('DEL', KEYS[1]) end
+return count
+"""
+
 
 class RetryManager(IRetryTracker):
     """Redis-based retry tracking for message consumers.
@@ -40,6 +46,8 @@ class RetryManager(IRetryTracker):
     KEY_PREFIX = "messaging:retry"
     DELIVERY_KEY_PREFIX = "messaging:deliveries"
     HANDBACK_KEY_PREFIX = "messaging:handbacks"
+    # Per work key, not per message id, so not in _COUNTER_PREFIXES.
+    UNFINISHED_KEY_PREFIX = "messaging:unfinished"
     _COUNTER_PREFIXES = (KEY_PREFIX, DELIVERY_KEY_PREFIX, HANDBACK_KEY_PREFIX)
     DEFAULT_TTL_SECONDS = 86400  # 24 hours
 
@@ -209,6 +217,29 @@ class RetryManager(IRetryTracker):
             raise RuntimeError("RetryManager not initialized. Call initialize() first.")
         value = await self._client().get(self._build_key(message_id, prefix=self.HANDBACK_KEY_PREFIX))
         return int(value) if value else 0
+
+    async def unfinished_attempts(self, work_key: str) -> int:
+        """Attempts at *work_key* started and not finished; see ``IRetryTracker``."""
+        if self._redis is None and self._registry is None:
+            raise RuntimeError("RetryManager not initialized. Call initialize() first.")
+        value = await self._client().get(self._build_key(work_key, prefix=self.UNFINISHED_KEY_PREFIX))
+        return max(0, int(value)) if value else 0
+
+    async def start_attempt(self, work_key: str) -> int:
+        """Count an attempt at *work_key* as started; see ``IRetryTracker``."""
+        if self._redis is None and self._registry is None:
+            raise RuntimeError("RetryManager not initialized. Call initialize() first.")
+        return await self._incr_with_ttl(self._build_key(work_key, prefix=self.UNFINISHED_KEY_PREFIX)) - 1
+
+    async def finish_attempt(self, work_key: str, *, settled: bool) -> None:
+        """Count an attempt at *work_key* as finished; see ``IRetryTracker``."""
+        if self._redis is None and self._registry is None:
+            raise RuntimeError("RetryManager not initialized. Call initialize() first.")
+        key = self._build_key(work_key, prefix=self.UNFINISHED_KEY_PREFIX)
+        if settled:
+            await self._client().delete(key)
+        else:
+            await self._client().eval(_DECR_OR_DELETE_SCRIPT, 1, key)
 
     async def _incr_with_ttl(self, key: str) -> int:
         """INCR *key* and (re)set its TTL atomically; returns the new count.

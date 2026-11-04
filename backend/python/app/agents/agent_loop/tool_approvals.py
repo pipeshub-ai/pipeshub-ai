@@ -286,10 +286,16 @@ def starting_rule(*, kind: ToolKind, source: Source) -> Rule:
 
 def decide(
     *, own: Optional[Rule], kind: ToolKind, source: Source, watched: bool, approved_call: bool = False,
+    enabled_on_project: bool = False,
 ) -> Verdict:
     """The rule for one call. `approved_call`: this is the call a person just approved (it runs
-    unless something now blocks it)."""
+    unless something now blocks it). `enabled_on_project`: a project chat, where only the tools
+    the project enables are loaded; there a tool nobody set a rule for that would start at Block
+    asks instead, since enabling it on the project is a request to be able to use it. A Block
+    someone set still blocks, and an unwatched run still can't ask."""
     effective = own or starting_rule(kind=kind, source=source)
+    if own is None and effective == "block" and enabled_on_project:
+        effective = "ask"
     if effective == "block":
         return Verdict("block", "own" if own else "default")
     if effective == "allow" or approved_call:
@@ -499,6 +505,7 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
             source=target.defaults or target.source,
             watched=watched(context),
             approved_call=context.tool_state.get(_APPROVED_CALL) == _identity(target),
+            enabled_on_project=context.project_tools_selected,
         )
         if verdict.rule == "block":
             ctx.deny(_blocked_message(verdict.reason, target))

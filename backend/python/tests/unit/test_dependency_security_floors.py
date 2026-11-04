@@ -6,6 +6,8 @@ when the manifest names it.
 """
 
 import importlib.metadata
+import site
+import sys
 import tomllib
 from pathlib import Path
 
@@ -25,7 +27,23 @@ SECURITY_FLOORS = {
     "redshift-connector": Version("2.1.14"),
     # GHSA-vfmq-68hx-4jfw
     "lxml": Version("6.1.0"),
+    # GHSA-h35f-9h28-mq5c, GHSA-xmj3-9gf7-h52w
+    "setuptools": Version("84.1.0"),
 }
+
+# package -> malicious releases that must never resolve, whatever the floor.
+COMPROMISED_RELEASES = {
+    # 1.82.7 and 1.82.8 (March 2026) and 1.107.0 (October 2026) shipped credential stealers; 1.82.8 and 1.107.0
+    # also dropped a .pth that runs at every interpreter start.
+    "litellm": (Version("1.82.7"), Version("1.82.8"), Version("1.107.0")),
+}
+
+# Files those releases drop into site-packages; a .pth runs before any test does.
+COMPROMISED_FILES = ("cook.pth", "cook.py", "litellm_init.pth")
+# 1.107.0 also dropped a sitecustomize.py (it runs at every interpreter start too). Legitimate environments can hold
+# a file of that name, so it counts only when it carries the payload's markers: the lookalike exfiltration host and
+# the lock file its daemon holds.
+PAYLOAD_SITECUSTOMIZE_MARKERS = ("litellm.dev", "remote_code_loader")
 
 
 def _specifiers(manifest: Path) -> dict[str, str]:
@@ -47,3 +65,50 @@ def test_backend_manifest_does_not_admit_a_vulnerable_release(package: str) -> N
     ]
     assert lower_bounds
     assert min(lower_bounds) >= SECURITY_FLOORS[package]
+
+
+@pytest.mark.parametrize("package", sorted(COMPROMISED_RELEASES))
+def test_installed_release_is_not_a_compromised_one(package: str) -> None:
+    assert Version(importlib.metadata.version(package)) not in COMPROMISED_RELEASES[package]
+
+
+@pytest.mark.parametrize("package", sorted(COMPROMISED_RELEASES))
+def test_manifest_excludes_compromised_releases(package: str) -> None:
+    specifier = Requirement(f"{package}{_specifiers(BACKEND_MANIFEST)[package]}").specifier
+    for release in COMPROMISED_RELEASES[package]:
+        assert not specifier.contains(release, prereleases=True), f"{BACKEND_MANIFEST} admits {package} {release}"
+
+
+def _compromised_files(directories: set[Path]) -> list[str]:
+    found = [str(d / name) for d in directories for name in COMPROMISED_FILES if (d / name).exists()]
+    for d in directories:
+        custom = d / "sitecustomize.py"
+        if custom.is_file() and any(m in custom.read_text(encoding="utf-8", errors="replace") for m in PAYLOAD_SITECUSTOMIZE_MARKERS):
+            found.append(str(custom))
+    return found
+
+
+def test_no_compromised_file_in_site_packages() -> None:
+    directories = {Path(p) for p in [*site.getsitepackages(), site.getusersitepackages(), *sys.path] if p}
+    found = _compromised_files(directories)
+    # The payload sends credentials out and its files run at every Python start, this test run included.
+    # A loader the payload already started can outlive its files and take any credential rotated from this host.
+    assert not found, (
+        f"found {found}: treat this host or container as compromised. Isolate it and rebuild it from a clean image "
+        "(deleting these files does not stop a loader that is already running), then rotate every credential it "
+        "could reach, working from a different, clean machine"
+    )
+
+
+def test_the_check_finds_each_payload_file_and_leaves_a_legitimate_sitecustomize_alone(tmp_path: Path) -> None:
+    clean, dropped = tmp_path / "clean", tmp_path / "dropped"
+    clean.mkdir()
+    dropped.mkdir()
+    (clean / "sitecustomize.py").write_text("import os\nos.environ.setdefault('TZ', 'UTC')\n")
+    (dropped / "cook.pth").write_text("import cook\n")
+    (dropped / "litellm_init.pth").write_text("import os\n")
+    (dropped / "sitecustomize.py").write_text("LOCK = '/tmp/remote_code_loader.lock'\n")
+    assert _compromised_files({clean}) == []
+    assert sorted(_compromised_files({dropped})) == sorted(
+        str(dropped / name) for name in ("cook.pth", "litellm_init.pth", "sitecustomize.py")
+    )

@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import { Container } from 'inversify';
+import { readStoreEpoch } from '../../../libs/db/boot';
+import { pgRuntime } from '../../../libs/db/uow';
 import { MongoService } from '../../../libs/services/mongo.service';
+import { usesInProcessCache } from '../../../libs/services/redis.service';
 import { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { TokenEventProducer } from '../services/token-event.producer';
 import { Logger }  from '../../../libs/services/logger.service';
@@ -18,6 +21,13 @@ import { buildProxyHeaders } from '../controllers/connector.controllers';
 import { configuredLocalStorageReplicaProblem } from '../../storage/utils/replicas';
 
 const STORAGE_WARNING_TIMEOUT_MS = 2000;
+
+// The graph and vector stores are probed through the connector service. When
+// that service refuses the connection (it is still starting, or it is down) the
+// store was never asked, so its state is unknown rather than unhealthy; the
+// connector service itself is reported by GET /services.
+const connectorRefused = (error: unknown): boolean =>
+  (error as { code?: string } | null)?.code === 'ECONNREFUSED';
 
 const logger = Logger.getInstance({
   service: 'HealthStatus'
@@ -57,7 +67,10 @@ export function createHealthRouter(
   const router = Router();
   const redis = container.get<ICacheService>(TYPES.RedisService);
   const tokenEventProducer = container.get<TokenEventProducer>(TYPES.TokenEventProducer);
-  const mongooseService = container.get<MongoService>(TYPES.MongoService);
+  // Not bound when the document store is PostgreSQL.
+  const mongooseService = container.isBound(TYPES.MongoService)
+    ? container.get<MongoService>(TYPES.MongoService)
+    : null;
   const keyValueStoreService = configurationManagerContainer.get<KeyValueStoreService>(
     TYPES.KeyValueStoreService,
   );
@@ -101,18 +114,25 @@ export function createHealthRouter(
         vectorDb: 'unknown',
       };
 
-      const brokerName = deployment.messageBrokerType === 'redis' ? 'Redis Streams' : 'Kafka';
-      const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : 'Neo4j';
+      const brokerName =
+        deployment.messageBrokerType === 'redis'
+          ? 'Redis Streams'
+          : deployment.messageBrokerType === 'postgres'
+            ? 'PostgreSQL queue'
+            : 'Kafka';
+      const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : deployment.dataStoreType === 'postgres' ? 'PostgreSQL' : 'Neo4j';
       const vectorDbNames: Record<string, string> = {
         qdrant: 'Qdrant',
         opensearch: 'OpenSearch',
         redis: 'Redis',
+        pgvector: 'pgvector',
       };
       const vectorDbName = vectorDbNames[deployment.vectorDbType || ''] || 'VectorDB';
 
       const redisMode = process.env.REDIS_MODE || 'standalone';
       const redisDisplayName =
-        redisMode === 'cluster' ? 'Redis (Cluster)'
+        usesInProcessCache() ? 'In-process cache'
+        : redisMode === 'cluster' ? 'Redis (Cluster)'
         : redisMode === 'memorydb' ? 'Redis (MemoryDB)'
         : 'Redis';
 
@@ -148,13 +168,27 @@ export function createHealthRouter(
         overallHealthy = false;
       }
 
-      try {
-        const isMongoHealthy = await mongooseService.healthCheck();
-        services.mongodb = isMongoHealthy ? 'healthy' : 'unhealthy';
-        if (!isMongoHealthy) overallHealthy = false;
-      } catch (error) {
-        services.mongodb = 'unhealthy';
-        overallHealthy = false;
+      if (mongooseService) {
+        try {
+          const isMongoHealthy = await mongooseService.healthCheck();
+          services.mongodb = isMongoHealthy ? 'healthy' : 'unhealthy';
+          if (!isMongoHealthy) overallHealthy = false;
+        } catch (error) {
+          services.mongodb = 'unhealthy';
+          overallHealthy = false;
+        }
+      } else {
+        delete services.mongodb;
+        delete serviceNames.mongodb;
+        // The document store is PostgreSQL: report it in the place MongoDB would have been.
+        try {
+          await readStoreEpoch(pgRuntime());
+          services.postgres = 'healthy';
+        } catch {
+          services.postgres = 'unhealthy';
+          overallHealthy = false;
+        }
+        serviceNames.postgres = 'PostgreSQL';
       }
 
       // KV Store — only check separately when using etcd
@@ -174,11 +208,15 @@ export function createHealthRouter(
         // Python backend hasn't written dataStoreType to KV store yet
         services.graphDb = 'pending';
         logger.info('dataStoreType not yet available in deployment config — Python backend may not have started');
-      } else if (deployment.dataStoreType === 'neo4j' || deployment.dataStoreType === 'arangodb') {
+      } else if (
+        deployment.dataStoreType === 'neo4j' ||
+        deployment.dataStoreType === 'arangodb' ||
+        deployment.dataStoreType === 'postgres'
+      ) {
         try {
           // Delegate to the Python connector service which probes the graph DB
           // using the same driver the application uses (Bolt for Neo4j,
-          // python-arango for ArangoDB). This avoids the Node.js layer having
+          // python-arango for ArangoDB, the graph provider for PostgreSQL). This avoids the Node.js layer having
           // to manage DB credentials or knowing which HTTP ports to probe —
           // both of which break for managed cloud deployments (e.g. Neo4j Aura
           // doesn't expose the HTTP discovery ports 7474/7473).
@@ -198,16 +236,23 @@ export function createHealthRouter(
             );
           }
         } catch (error: unknown) {
-          services.graphDb = 'unhealthy';
           overallHealthy = false;
-          const axiosErr = error as { code?: string; message?: string };
-          const timedOut = axiosErr?.code === 'ECONNABORTED';
-          Logger.getInstance({ service: 'HealthStatus' }).error(
-            timedOut
-              ? 'graph-db health check timed out'
-              : 'graph-db health check failed',
-            axiosErr?.message ?? error,
-          );
+          if (connectorRefused(error)) {
+            services.graphDb = 'unknown';
+            logger.warn(
+              'graph-db not checked: the connector service is not accepting connections',
+            );
+          } else {
+            services.graphDb = 'unhealthy';
+            const axiosErr = error as { code?: string; message?: string };
+            const timedOut = axiosErr?.code === 'ECONNABORTED';
+            Logger.getInstance({ service: 'HealthStatus' }).error(
+              timedOut
+                ? 'graph-db health check timed out'
+                : 'graph-db health check failed',
+              axiosErr?.message ?? error,
+            );
+          }
         }
       }
 
@@ -225,7 +270,7 @@ export function createHealthRouter(
           services.vectorDb = vectorDbResp.status === 200 ? 'healthy' : 'unhealthy';
           if (vectorDbResp.status !== 200) overallHealthy = false;
         } catch (error) {
-          services.vectorDb = 'unhealthy';
+          services.vectorDb = connectorRefused(error) ? 'unknown' : 'unhealthy';
           overallHealthy = false;
         }
       }

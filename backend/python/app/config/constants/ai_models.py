@@ -11,6 +11,9 @@ EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS = 600.0
 # (embedding_main.EncodeGate); any other value, or none, is bulk.
 EMBEDDING_PRIORITY_HEADER = "X-Embedding-Priority"
 EMBEDDING_PRIORITY_QUERY = "query"
+# One /v1/tokenize request: the server rejects more (413), the indexing client splits to fit.
+TOKENIZE_MAX_ITEMS = 2048
+TOKENIZE_MAX_CHARS = 2_000_000
 
 # Bound on one HTTP attempt to a hosted embedding API. The provider SDKs
 # default to 600s and retry twice on top, so without this a single stalled

@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import json
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.api.routes.entity import (
+    TEAM_NAME_TAKEN,
     UserEmailUpdateRequest,
     _validate_and_filter_owner_updates,
     _validate_owner_removal,
@@ -24,7 +26,8 @@ from app.api.routes.entity import (
     update_team,
     update_user_email,
 )
-from app.utils.user_messages import DATABASE_UNREACHABLE
+from app.core.org_context import OrgContext, bind
+from app.utils.user_messages import DATABASE_UNREACHABLE, not_found
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +43,7 @@ def _make_request(body_dict=None, query_params=None):
     req.app.state.graph_provider = AsyncMock()
     # A mock's coroutine is truthy, which would read as "retry" to the idempotent writer.
     req.app.state.graph_provider.is_write_conflict = MagicMock(return_value=False)
+    req.app.state.graph_provider.find_team_by_name = AsyncMock(return_value=None)
 
     if body_dict is not None:
         body_bytes = json.dumps(body_dict).encode("utf-8")
@@ -53,6 +57,27 @@ def _make_request(body_dict=None, query_params=None):
         req.query_params = {}
 
     return req
+
+
+@pytest.fixture(autouse=True)
+def _caller_org_is_bound() -> Iterator[None]:
+    """The auth middleware binds the caller's org; these tests call handlers directly."""
+    with bind(OrgContext("org-1", "user-1", "user", "jwt", "req-test")):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _caller_is_a_member() -> Iterator[AsyncMock]:
+    """Every test runs as a plain member unless it patches the role itself."""
+    with patch(
+        "app.api.routes.entity._caller_is_an_administrator",
+        AsyncMock(return_value=False),
+    ) as role:
+        yield role
+
+
+def _as_admin(role_patch: AsyncMock) -> None:
+    role_patch.return_value = True
 
 
 def _graph_provider(request):
@@ -283,6 +308,60 @@ class TestCreateTeam:
         content = json.loads(resp.body.decode())
         assert content["status"] == "success"
         assert content["data"] == {"team": "data"}
+
+    @pytest.mark.asyncio
+    async def test_name_is_trimmed_and_checked_against_the_org(self) -> None:
+        req = _make_request({"name": "  QA Dup Team  "})
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.batch_upsert_nodes.return_value = True
+        gp.batch_create_edges.return_value = True
+        gp.get_team_with_users.return_value = {"id": "t"}
+
+        await create_team(req)
+
+        gp.find_team_by_name.assert_awaited_once_with(
+            org_id="org-1", name="QA Dup Team", exclude_team_id=None,
+        )
+        (nodes, _), _ = gp.batch_upsert_nodes.call_args
+        assert nodes[0]["name"] == "QA Dup Team"
+
+    @pytest.mark.asyncio
+    async def test_a_name_already_in_the_org_is_409(self) -> None:
+        req = _make_request({"name": "qa dup team"})
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.find_team_by_name.return_value = {"id": "team-2", "name": "QA Dup Team"}
+
+        with pytest.raises(HTTPException) as exc:
+            await create_team(req)
+        assert exc.value.status_code == 409
+        assert exc.value.detail == TEAM_NAME_TAKEN
+        gp.batch_upsert_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_blank_name_is_400(self) -> None:
+        req = _make_request({"name": "   "})
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+
+        with pytest.raises(HTTPException) as exc:
+            await create_team(req)
+        assert exc.value.status_code == 400
+        gp.batch_upsert_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_name_lookup_does_not_block_the_create(self) -> None:
+        req = _make_request({"name": "Team"})
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.find_team_by_name.side_effect = RuntimeError("db down")
+        gp.batch_upsert_nodes.return_value = True
+        gp.batch_create_edges.return_value = True
+        gp.get_team_with_users.return_value = {"id": "t"}
+
+        resp = await create_team(req)
+        assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_a_failed_user_read_is_not_a_404(self) -> None:
@@ -619,9 +698,12 @@ class _TeamGraph:
         self.edges.update((collection, e["from_id"], e["to_id"]) for e in edges)
         return True
 
+    async def find_team_by_name(self, org_id: str, name: str, exclude_team_id: str | None = None) -> None:
+        return None
+
     async def get_team_with_users(
         self, team_id: str, org_id: str, user_key: str,
-        *, include_service_accounts: bool = False,
+        *, include_service_accounts: bool = False, is_org_admin: bool = False,
     ) -> dict:
         self.read_back.append(team_id)
         return {"_key": team_id, "users": sorted(f for _, f, t in self.edges if t == team_id)}
@@ -639,6 +721,36 @@ class TestGetTeam:
         assert resp.status_code == 200
         content = json.loads(resp.body.decode())
         assert content["team"]["name"] == "T1"
+
+    @pytest.mark.asyncio
+    async def test_a_member_not_in_the_team_gets_404(self) -> None:
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_edge.return_value = None
+        gp.get_team_with_users.return_value = {"name": "T1"}
+
+        with pytest.raises(HTTPException) as exc:
+            await get_team(req, "team-1")
+        assert exc.value.status_code == 404
+        assert exc.value.detail == not_found("This team")
+        gp.get_team_with_users.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_admin_reads_any_team_in_their_org(self, _caller_is_a_member) -> None:
+        _as_admin(_caller_is_a_member)
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_edge.return_value = None
+        gp.get_team_with_users.return_value = {"name": "T1", "canEdit": True}
+
+        resp = await get_team(req, "team-1")
+
+        assert resp.status_code == 200
+        kwargs = gp.get_team_with_users.await_args.kwargs
+        assert kwargs["is_org_admin"] is True
+        assert kwargs["org_id"] == "org-1"
 
     @pytest.mark.asyncio
     async def test_scopes_lookup_to_callers_org(self) -> None:
@@ -740,6 +852,7 @@ class TestUpdateTeam:
 
     @pytest.mark.asyncio
     async def test_no_permission_edge(self):
+        """Answered like delete: no role on the team reads as no such team."""
         req = _make_request({"name": "X"})
         gp = _graph_provider(req)
         gp.get_user_by_user_id.return_value = {"_key": "uk"}
@@ -747,7 +860,98 @@ class TestUpdateTeam:
 
         with pytest.raises(HTTPException) as exc:
             await update_team(req, "team-1")
-        assert exc.value.status_code == 403
+        assert exc.value.status_code == 404
+        assert exc.value.detail == not_found("This team")
+        gp.update_node.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_team_that_is_not_there_is_404(self) -> None:
+        req = _make_request({"name": "X"})
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_document.return_value = None
+        gp.get_edge.return_value = None
+
+        with pytest.raises(HTTPException) as exc:
+            await update_team(req, "team-1")
+        assert exc.value.status_code == 404
+        gp.update_node.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_admin_can_update_a_team_they_are_not_in(self, _caller_is_a_member) -> None:
+        _as_admin(_caller_is_a_member)
+        req, gp = self._setup_authorized_request({
+            "name": "Renamed",
+            "addUserRoles": [{"userId": "user-1", "role": "READER"}],
+        })
+        gp.get_document.return_value = {"_key": "team-1", "orgId": "org-1"}
+        gp.get_edge.return_value = None
+
+        resp = await update_team(req, "team-1")
+
+        assert resp.status_code == 200
+        assert gp.update_node.await_args.args[2]["name"] == "Renamed"
+        assert gp.get_team_with_users.await_args.kwargs["is_org_admin"] is True
+        # with no role of their own to keep, the admin can add themselves
+        (edges, _), _ = gp.batch_create_edges.call_args
+        assert [e["from_id"] for e in edges] == ["user-key-1"]
+
+    @pytest.mark.asyncio
+    async def test_an_admin_cannot_update_a_team_in_another_org(self, _caller_is_a_member) -> None:
+        _as_admin(_caller_is_a_member)
+        req, gp = self._setup_authorized_request({"name": "X"})
+        gp.get_document.return_value = {"_key": "team-1", "orgId": "other-org"}
+        gp.get_edge.return_value = None
+
+        with pytest.raises(HTTPException) as exc:
+            await update_team(req, "team-1")
+        assert exc.value.status_code == 404
+        gp.update_node.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_admin_who_is_a_reader_may_still_update(self, _caller_is_a_member) -> None:
+        _as_admin(_caller_is_a_member)
+        req, gp = self._setup_authorized_request({"description": "d"})
+        gp.get_document.return_value = {"_key": "team-1", "orgId": "org-1"}
+        gp.get_edge.return_value = {"role": "READER"}
+
+        resp = await update_team(req, "team-1")
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_rename_is_trimmed(self) -> None:
+        req, gp = self._setup_authorized_request({"name": "  Spaced  "})
+        await update_team(req, "team-1")
+        assert gp.update_node.await_args.args[2]["name"] == "Spaced"
+        gp.find_team_by_name.assert_awaited_once_with(
+            org_id="org-1", name="Spaced", exclude_team_id="team-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_rename_to_a_name_taken_in_the_org_is_409(self) -> None:
+        req, gp = self._setup_authorized_request({"name": "qa dup team"})
+        gp.find_team_by_name.return_value = {"id": "team-2", "name": "QA Dup Team"}
+
+        with pytest.raises(HTTPException) as exc:
+            await update_team(req, "team-1")
+        assert exc.value.status_code == 409
+        assert exc.value.detail == TEAM_NAME_TAKEN
+        gp.update_node.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rename_to_blank_is_400(self) -> None:
+        req, gp = self._setup_authorized_request({"name": "   "})
+
+        with pytest.raises(HTTPException) as exc:
+            await update_team(req, "team-1")
+        assert exc.value.status_code == 400
+        gp.update_node.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_description_only_update_skips_the_name_check(self) -> None:
+        req, gp = self._setup_authorized_request({"description": "New"})
+        await update_team(req, "team-1")
+        gp.find_team_by_name.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_non_owner_permission(self):
@@ -1102,6 +1306,41 @@ class TestDeleteTeam:
         assert "permission" in exc.value.detail.lower()
 
     @pytest.mark.asyncio
+    async def test_an_admin_deletes_a_team_they_are_not_in(self, _caller_is_a_member) -> None:
+        _as_admin(_caller_is_a_member)
+        req, gp = self._setup()
+        gp.get_document.return_value = {"_key": "team-1", "orgId": "org-1"}
+        gp.get_edge.return_value = None
+        gp.delete_nodes.return_value = True
+
+        resp = await delete_team(req, "team-1")
+
+        assert resp.status_code == 200
+        gp.delete_nodes.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_admin_cannot_delete_a_team_in_another_org(self, _caller_is_a_member) -> None:
+        _as_admin(_caller_is_a_member)
+        req, gp = self._setup()
+        gp.get_document.return_value = {"_key": "team-1", "orgId": "other-org"}
+        gp.get_edge.return_value = None
+
+        with pytest.raises(HTTPException) as exc:
+            await delete_team(req, "team-1")
+        assert exc.value.status_code == 404
+        gp.delete_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_admin_still_cannot_delete_the_all_team(self, _caller_is_a_member) -> None:
+        _as_admin(_caller_is_a_member)
+        req, gp = self._setup()
+
+        with pytest.raises(HTTPException) as exc:
+            await delete_team(req, "all_org-1")
+        assert exc.value.status_code == 403
+        gp.delete_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_success(self):
         req, gp = self._setup()
         gp.delete_all_team_permissions.return_value = True
@@ -1201,6 +1440,33 @@ class TestGetUserTeams:
         assert resp.status_code == 200
         content = json.loads(resp.body.decode())
         assert len(content["teams"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_member_lists_only_their_own_teams(self) -> None:
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk", "orgId": "org-1"}
+        gp.get_user_teams.return_value = ([{"name": "T1"}], 1)
+
+        await get_user_teams(req, search=None, page=1, limit=100, created_by=None)
+
+        kwargs = gp.get_user_teams.await_args.kwargs
+        assert kwargs["is_org_admin"] is False
+        assert kwargs["include_service_accounts"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_admin_lists_every_team_in_the_org(self, _caller_is_a_member) -> None:
+        _as_admin(_caller_is_a_member)
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk", "orgId": "org-1"}
+        gp.get_user_teams.return_value = ([{"name": "T1"}], 1)
+
+        await get_user_teams(req, search=None, page=1, limit=100, created_by=None)
+
+        kwargs = gp.get_user_teams.await_args.kwargs
+        assert kwargs["is_org_admin"] is True
+        assert kwargs["org_id"] == "org-1"
 
     @pytest.mark.asyncio
     async def test_empty_results(self):
@@ -1357,6 +1623,31 @@ class TestGetTeamUsers:
         assert resp.status_code == 200
         content = json.loads(resp.body.decode())
         assert content["team"]["users"] == [{"name": "U1"}]
+
+    @pytest.mark.asyncio
+    async def test_a_member_not_in_the_team_gets_404(self) -> None:
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_edge.return_value = None
+
+        with pytest.raises(HTTPException) as exc:
+            await get_team_users(req, "team-1", search=None, page=1, limit=100)
+        assert exc.value.status_code == 404
+        gp.get_team_users.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_admin_reads_members_of_a_team_they_are_not_in(self, _caller_is_a_member) -> None:
+        _as_admin(_caller_is_a_member)
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_edge.return_value = None
+        gp.get_team_users.return_value = {"members": [], "memberCount": 0}
+
+        resp = await get_team_users(req, "team-1", search=None, page=1, limit=100)
+        assert resp.status_code == 200
+        assert gp.get_team_users.await_args.kwargs["include_service_accounts"] is True
 
     @pytest.mark.asyncio
     async def test_user_not_found(self):

@@ -238,6 +238,11 @@ class DomainAgentDefinition:
     Only domains whose work reads repository code get them; the rest paid
     their schemas on every turn for nothing (A-11)."""
 
+    reads_entities: bool = False
+    """Granted the named-entity and typed-value tools
+    (`register_domain_agents(entity_tool_names=...)`), shared and never claimed:
+    the parent keeps them for the questions it answers itself."""
+
     max_turns: int = _DEFAULT_CHILD_MAX_TURNS
 
     model: str | None = None
@@ -393,6 +398,7 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
         name="internal_exploration_agent",
         domain="internal knowledge exploration",
         reads_code=True,
+        reads_entities=True,
         description=(
             "Delegate exploration of the organization's internal knowledge to a "
             "sub-agent that iteratively searches, browses, and fetches records "
@@ -413,6 +419,7 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
             "knowledgegraph__search",
             "knowledgegraph__list_files",
             "knowledgegraph__fetch_record",
+            "knowledgegraph__find_records_by_person",
         }),
         instructions_factory=_internal_exploration_instructions,
         max_turns=_EXPLORATION_MAX_TURNS,
@@ -514,6 +521,7 @@ def register_domain_agents(
     lazy_tools: "Callable[[ToolRegistry, list[str]], tuple[list[str], str]] | None" = None,
     shared_tool_names: frozenset[str] = frozenset(),
     code_tool_names: frozenset[str] = frozenset(),
+    entity_tool_names: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Materializes `plan`: builds one ReAct child `AgentSpec` per claimed
     domain and registers each as an `AgentTool` on `tool_registry`. Returns
@@ -562,7 +570,11 @@ def register_domain_agents(
         delegate_names = [d for d in definition.delegate_agents if d in claims]
         # Sorted: a frozenset iterates in per-process hash order, and the tool
         # list is the start of every cached prompt prefix.
-        shared = shared_tool_names | (code_tool_names if definition.reads_code else frozenset())
+        shared = (
+            shared_tool_names
+            | (code_tool_names if definition.reads_code else frozenset())
+            | (entity_tool_names if definition.reads_entities else frozenset())
+        )
         shared_names = [n for n in sorted(shared) if n in registered]
         extra_instructions = _combine_instructions(
             definition.extra_instructions,
@@ -631,6 +643,7 @@ def compose_domain_agents(
     lazy_tools: "Callable[[ToolRegistry, list[str]], tuple[list[str], str]] | None" = None,
     shared_tool_names: frozenset[str] = frozenset(),
     code_tool_names: frozenset[str] = frozenset(),
+    entity_tool_names: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Convenience: plan + register in one call, for callers that don't
     need the plan/register split (e.g. tests, or a caller with no need to
@@ -640,6 +653,7 @@ def compose_domain_agents(
         plan, tool_registry, runtime, context,
         provider=provider, model_name=model_name, context_window=context_window, lazy_tools=lazy_tools,
         shared_tool_names=shared_tool_names, code_tool_names=code_tool_names,
+        entity_tool_names=entity_tool_names,
     )
 
 

@@ -9,6 +9,19 @@ import type {
 
 const BASE_URL = '/api/v1/teams';
 
+/**
+ * The team inside a team-service response: create answers `{ data: team }`,
+ * get and update answer `{ team }`, and older proxies answered the team bare.
+ */
+export function unwrapTeam(body: unknown): Team {
+  if (body && typeof body === 'object') {
+    const { team, data } = body as { team?: unknown; data?: unknown };
+    const inner = team ?? data;
+    if (inner && typeof inner === 'object') return inner as Team;
+  }
+  return body as Team;
+}
+
 export const TeamsApi = {
   /**
    * List teams for the current user.
@@ -41,11 +54,12 @@ export const TeamsApi = {
    * GET /api/v1/teams/:id (UUID)
    */
   async getTeam(id: string): Promise<Team> {
-    const { data } = await apiClient.get<{ team: Team } | Team>(`${BASE_URL}/${id}`);
-    if (data && typeof data === 'object' && 'team' in data) {
-      return (data as { team: Team }).team;
-    }
-    return data as Team;
+    // A team the caller is not in answers 404; every caller already falls back
+    // (unnamed share row, teams list), so a toast would only be noise.
+    const { data } = await apiClient.get<unknown>(`${BASE_URL}/${id}`, {
+      suppressErrorToast: (error) => error.statusCode === 404,
+    });
+    return unwrapTeam(data);
   },
 
   /**
@@ -54,11 +68,11 @@ export const TeamsApi = {
    * Body: { name, description?, userRoles?: [{ userId (UUID), role }] }
    */
   async createTeam(payload: CreateTeamPayload): Promise<Team> {
-    const { data } = await apiClient.post<{ team: Team } | Team>(BASE_URL, payload);
-    if (data && typeof data === 'object' && 'team' in data) {
-      return (data as { team: Team }).team;
-    }
-    return data as Team;
+    // The form shows the server's reason itself (e.g. a name already taken).
+    const { data } = await apiClient.post<unknown>(BASE_URL, payload, {
+      suppressErrorToast: true,
+    });
+    return unwrapTeam(data);
   },
 
   /**
@@ -68,15 +82,12 @@ export const TeamsApi = {
    *   removeUserIds?: [Mongo userId], updateUserRoles?: [{ userId (Mongo), role }] }
    */
   async updateTeam(id: string, payload: UpdateTeamPayload): Promise<Team> {
-    const { data } = await apiClient.put<{ team: Team } | Team>(
+    const { data } = await apiClient.put<unknown>(
       `${BASE_URL}/${id}`,
       payload,
       { suppressErrorToast: true }
     );
-    if (data && typeof data === 'object' && 'team' in data) {
-      return (data as { team: Team }).team;
-    }
-    return data as Team;
+    return unwrapTeam(data);
   },
 
   /**

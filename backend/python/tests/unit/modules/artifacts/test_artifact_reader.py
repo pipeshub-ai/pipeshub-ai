@@ -40,7 +40,6 @@ from app.modules.artifacts.reader import (
 from app.modules.artifacts.record_backend import (
     ArtifactRecordBackend,
     ArtifactUnavailable,
-    classification_sidecar_path,
 )
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter, canonical_json
@@ -60,6 +59,8 @@ if TYPE_CHECKING:
 ORG = "org-1"
 VRID = "vr-1"
 REV = "0123456789abcdef"
+GENERATION = "gen-1"
+RUN = f"{GENERATION}:0123456789abcdef0123456789abcdef"
 PNG = b"\x89PNG\r\n\x1a\n" + b"pixels" * 50
 JPEG = b"\xff\xd8\xff" + b"jpeg" * 40
 
@@ -104,12 +105,30 @@ class _Mappings:
     def __init__(self, mappings: dict[str, dict[str, Any]]) -> None:
         self.mappings = mappings
         self.single = AsyncMock(side_effect=lambda vrid: self.mappings.get(vrid))
+        # The settings one artifact read takes its generation from.
+        self.config_service = MagicMock()
+        self.config_service.get_config = AsyncMock(return_value={
+            "featureFlags": {"ENABLE_ARTIFACT_READ": True}, "artifactReadGeneration": GENERATION,
+        })
 
     async def get_document_ids_by_virtual_record_ids(self, vrids: list[str]) -> dict[str, dict[str, Any]]:
         return {v: self.mappings[v] for v in vrids if v in self.mappings}
 
     async def get_document_id_by_virtual_record_id(self, vrid: str) -> dict[str, Any] | None:
         return await self.single(vrid)
+
+@pytest.fixture(autouse=True)
+def _fresh_membership(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every indexing member follows the stored-write protocol, so artifact-first reads are not held."""
+    import time
+
+    from app.services.messaging import membership
+
+    async def fresh(_config_service: object) -> list[dict[str, object]]:
+        return [{"checkedAt": int(time.time() * 1000), "untagged": []}]
+
+    monkeypatch.setattr(membership, "read_entries_from_config", fresh)
+    membership._READERS.clear()
 
 
 @pytest.fixture
@@ -141,19 +160,28 @@ async def _write(storage: FakeStorage, record: Record) -> dict[str, Any]:
     store = NodeArtifactStore(storage.blob_storage())
     written = await ArtifactWriter(store).write_revision(
         record, ORG, VRID, REV, record.block_containers, semantic_metadata=record.semantic_metadata,
+        stored_run=RUN,
     )
     assert written is not None
     return {
-        "record_doc_id": "doc-1", "currentRev": REV, "storedRev": REV,
+        "record_doc_id": "doc-1", "currentRev": REV, "storedRev": REV, "storedRun": RUN, "currentRun": RUN,
         "manifestDocId": written.manifest_ref.document_id,
     }
 
 
-async def _write_sidecar(storage: FakeStorage, payload: dict[str, Any]) -> None:
+SIDECAR = "enrich/classification.0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f@4.json"
+
+
+async def _write_sidecar(
+    storage: FakeStorage, payload: dict[str, Any], *, path: str = SIDECAR, run: str | None = RUN,
+    named_path: str | None = None,
+) -> dict[str, Any]:
+    """File a classification sidecar the way a copy-on-write metadata write does; the lookup update that names it."""
     store = NodeArtifactStore(storage.blob_storage())
-    path = classification_sidecar_path()
     plan = await store.presign_revision(ORG, VRID, REV, [(path, "application/json")])
-    await store.put(plan.files[path], canonical_json(payload), "application/json")
+    body = {"storedRun": run, "storedMeta": named_path or path, "classification": payload}
+    await store.put(plan.files[path], canonical_json(body), "application/json")
+    return {"storedMeta": path}
 
 
 def _backend(storage: FakeStorage, mappings: _Mappings) -> ArtifactRecordBackend:
@@ -310,7 +338,10 @@ class TestSharedContent:
         bs = BlobStorage(logger=logging.getLogger("test-shared"), config_service=AsyncMock(), graph_provider=AsyncMock())
         bs.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-x", "rec-y"])
         bs._build_hierarchical_storage_path = AsyncMock(return_value=f"records/{VRID}")  # type: ignore[method-assign]
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value={"record_doc_id": "doc-1"})  # type: ignore[method-assign]
+        bs._mapping_node = AsyncMock(return_value={  # type: ignore[method-assign]
+            "id": VRID, "documentId": "doc-1", "record_doc_id": "doc-1", "storedRun": "none:p", "switchSeq": 2,
+        })
+        bs._switch_mapping = AsyncMock(return_value=True)  # type: ignore[method-assign]
         bs.get_record_from_storage = AsyncMock(return_value=owner_copy)  # type: ignore[method-assign]
 
         async def update(org_id: str, doc_id: str, record_dict: dict[str, Any], vrid: str) -> tuple[str, int]:
@@ -319,7 +350,6 @@ class TestSharedContent:
 
         bs.update_record_buffer = update  # type: ignore[method-assign]
         bs._get_current_document_path = AsyncMock(return_value=f"{ORG}/PipesHub/records/{VRID}")  # type: ignore[method-assign]
-        bs.store_virtual_record_mapping = AsyncMock(return_value=True)  # type: ignore[method-assign]
         return bs
 
     async def test_the_set_reads_back_as_the_owners_stored_copy(self, storage: FakeStorage) -> None:
@@ -335,10 +365,13 @@ class TestSharedContent:
         assert "block_containers" not in ctx.settings[STORED_RECORD_FIELDS]
         written = await ArtifactWriter(NodeArtifactStore(storage.blob_storage())).write_revision(
             reindexing, ORG, VRID, REV, reindexing.block_containers,
-            stored_record_fields=ctx.settings[STORED_RECORD_FIELDS],
+            stored_record_fields=ctx.settings[STORED_RECORD_FIELDS], stored_run=RUN,
         )
         assert written is not None
-        lookup = {"currentRev": REV, "storedRev": REV, "manifestDocId": written.manifest_ref.document_id}
+        lookup = {
+            "currentRev": REV, "storedRev": REV, "storedRun": RUN, "currentRun": RUN,
+            "manifestDocId": written.manifest_ref.document_id,
+        }
 
         read = await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup)
 
@@ -360,11 +393,11 @@ class TestSharedContent:
 
 
 class TestClassification:
-    async def test_the_sidecar_wins_over_metadata_json(self, storage: FakeStorage) -> None:
+    async def test_the_named_sidecar_wins_over_metadata_json(self, storage: FakeStorage) -> None:
         index_time = SemanticMetadata(named_entities={"organizations": ["Northwind"]})
         lookup = await _write(storage, _record(semantic=index_time))
         later = SemanticMetadata(summary="Vendor review", categories=["Procurement"], named_entities={"x": 1})
-        await _write_sidecar(storage, later.model_dump(mode="json", exclude={"named_entities"}))
+        lookup |= await _write_sidecar(storage, later.model_dump(mode="json", exclude={"named_entities"}))
 
         read = await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup)
 
@@ -377,12 +410,79 @@ class TestClassification:
 
     async def test_the_sidecar_alone_without_index_time_metadata(self, storage: FakeStorage) -> None:
         lookup = await _write(storage, _record())
-        await _write_sidecar(storage, {"summary": "Later", "categories": []})
+        lookup |= await _write_sidecar(storage, {"summary": "Later", "categories": []})
 
         read = await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup)
 
         assert read is not None
         assert read["semantic_metadata"] == {"summary": "Later", "categories": [], "named_entities": None}
+
+    async def test_a_sidecar_the_mapping_does_not_name_is_ignored(self, storage: FakeStorage) -> None:
+        """Rule 4: with ``storedMeta`` null the classification is metadata.json, whatever sidecars exist
+        (a same-revision re-parse cleared ``storedMeta``; the old classification must not return)."""
+        record = _record(semantic=SemanticMetadata(summary="At index time"))
+        lookup = await _write(storage, record)
+        await _write_sidecar(storage, {"summary": "Stale classification", "categories": []})
+
+        read = await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup)
+
+        assert read == _as_stored(record)
+
+    async def test_the_path_comes_from_the_mapping_not_from_the_reader(self, storage: FakeStorage) -> None:
+        """A reader one stage version ahead serves a sidecar of another version: the path is data."""
+        lookup = await _write(storage, _record())
+        other = "enrich/classification.abababababababababababababababab@2.json"
+        lookup |= await _write_sidecar(storage, {"summary": "From an older stage", "categories": []}, path=other)
+
+        read = await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup)
+
+        assert read is not None and read["semantic_metadata"]["summary"] == "From an older stage"
+
+    @pytest.mark.parametrize(("case", "kwargs"), [
+        ("another run", {"run": f"{GENERATION}:another"}),
+        ("no run", {"run": None}),
+        ("copied to another path", {"named_path": "enrich/classification.cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd@4.json"}),
+    ])
+    async def test_a_sidecar_that_is_not_of_this_stored_write_is_stale_sidecar(
+        self, storage: FakeStorage, outcomes: list[str], case: str, kwargs: dict[str, Any],
+    ) -> None:
+        lookup = await _write(storage, _record())
+        lookup |= await _write_sidecar(storage, {"summary": "x", "categories": []}, **kwargs)
+
+        assert await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup) is None, case
+        assert outcomes == ["stale_sidecar"], case
+
+    @pytest.mark.parametrize("missing_status", [404, 403])
+    async def test_a_named_sidecar_that_is_not_stored_is_stale_sidecar(
+        self, storage: FakeStorage, outcomes: list[str], missing_status: int,
+    ) -> None:
+        storage.missing_status = missing_status
+        lookup = {**await _write(storage, _record()), "storedMeta": SIDECAR}
+
+        assert await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup) is None
+        assert outcomes == ["stale_sidecar"]
+
+    async def test_a_name_that_is_no_sidecar_path_is_stale_sidecar(self, storage: FakeStorage, outcomes: list[str]) -> None:
+        lookup = {**await _write(storage, _record()), "storedMeta": "../record.json"}
+
+        assert await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup) is None
+        assert outcomes == ["stale_sidecar"]
+
+    async def test_the_sidecar_is_fetched_in_the_first_batch(self, storage: FakeStorage) -> None:
+        lookup = await _write(storage, _record())
+        lookup |= await _write_sidecar(storage, {"summary": "x", "categories": []})
+        backend = _backend(storage, _Mappings({}))
+        signed: list[list[str]] = []
+        real = backend._store.read_urls
+
+        async def spy(org_id: str, document_id: str, paths: list[str]) -> Any:  # noqa: ANN401
+            signed.append(list(paths))
+            return await real(org_id, document_id, paths)
+
+        backend._store.read_urls = spy  # type: ignore[method-assign]
+
+        assert await backend.read_record(VRID, ORG, lookup=lookup) is not None
+        assert SIDECAR in signed[0] and all(SIDECAR not in batch for batch in signed[1:])
 
     @pytest.mark.parametrize("missing_status", [404, 403])
     async def test_metadata_json_without_a_sidecar(self, storage: FakeStorage, missing_status: int) -> None:
@@ -622,6 +722,84 @@ class TestStaleRevision:
         assert await reader.read_record(VRID, ORG) is STORED
         assert outcomes == ["stale"]
         assert shadow_outcomes == [("unavailable", None)]
+
+
+class TestStoredWriteRules:
+    """A set is served only for the stored write it was built from (reader rules 1 to 3): the mapping's
+    run, the run's generation, the revision, and the manifest's run must all agree. A missing field is a mismatch."""
+
+    @staticmethod
+    def _mappings(blob: dict[str, Any] | None) -> _Mappings:
+        mappings = _Mappings({})
+        mappings.config_service.get_config = AsyncMock(return_value={} if blob is None else blob)
+        return mappings
+
+    @pytest.mark.parametrize(("change", "detail"), [
+        ({"currentRun": None}, "no current run"),
+        ({"storedRun": None}, "no stored run"),
+        ({"storedRun": f"{GENERATION}:another"}, "the stored record is another write"),
+        ({"currentRun": f"{GENERATION}:another"}, "the pointer is another write's"),
+        ({"storedRun": "none:abc", "currentRun": "none:abc"}, "an in-place write is never served"),
+        ({"storedRun": "gen-0:abc", "currentRun": "gen-0:abc"}, "another generation"),
+        ({"storedRev": "fedcba9876543210"}, "another revision"),
+    ])
+    async def test_a_mapping_that_is_not_the_write_the_set_came_from_is_stale(
+        self, storage: FakeStorage, outcomes: list[str], change: dict[str, Any], detail: str,
+    ) -> None:
+        lookup = {**await _write(storage, _record()), **change}
+        lookup = {k: v for k, v in lookup.items() if v is not None}
+
+        assert await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup) is None, detail
+        assert outcomes == ["stale"], detail
+
+    async def test_the_matching_write_is_served(self, storage: FakeStorage, outcomes: list[str]) -> None:
+        """Control for the rows above: nothing changed, the set is served."""
+        lookup = await _write(storage, _record())
+
+        assert await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup) is not None
+        assert outcomes == ["served"]
+
+    @pytest.mark.parametrize("blob", [
+        None,
+        {"featureFlags": {"ENABLE_ARTIFACT_READ": True}},
+        {"featureFlags": {"ENABLE_ARTIFACT_READ": True}, "artifactReadGeneration": "gen-0"},
+        {"featureFlags": {"ENABLE_ARTIFACT_READ": True}, "artifactReadGeneration": ""},
+    ], ids=["no settings", "no generation", "another generation", "empty generation"])
+    async def test_a_run_of_another_generation_than_the_settings_is_stale(
+        self, storage: FakeStorage, outcomes: list[str], blob: dict[str, Any] | None,
+    ) -> None:
+        lookup = await _write(storage, _record())
+
+        assert await _backend(storage, self._mappings(blob)).read_record(VRID, ORG, lookup=lookup) is None
+        assert outcomes == ["stale"]
+
+    async def test_a_set_built_from_another_write_than_the_pointer_names_is_stale(
+        self, storage: FakeStorage, outcomes: list[str],
+    ) -> None:
+        lookup = await _write(storage, _record())
+        stored = storage.puts[_key(MANIFEST_PATH)]
+        manifest = Manifest.model_validate_json(stored.data)
+        stored.data = canonical_json({**manifest.model_dump(mode="json", exclude_none=True), "storedRun": f"{GENERATION}:other"})
+
+        assert await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup) is None
+        assert outcomes == ["stale"]
+
+    async def test_a_manifest_without_a_run_is_not_a_manifest(self, storage: FakeStorage, outcomes: list[str]) -> None:
+        lookup = await _write(storage, _record())
+        stored = storage.puts[_key(MANIFEST_PATH)]
+        body = {k: v for k, v in Manifest.model_validate_json(stored.data).model_dump(mode="json", exclude_none=True).items() if k != "storedRun"}
+        stored.data = canonical_json(body)
+
+        assert await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup) is None
+        assert outcomes == ["invalid"]
+
+    async def test_the_settings_are_read_once_per_artifact_read(self, storage: FakeStorage) -> None:
+        lookup = await _write(storage, _record())
+        mappings = _Mappings({})
+
+        await _backend(storage, mappings).read_record(VRID, ORG, lookup=lookup)
+
+        assert mappings.config_service.get_config.await_count == 1
 
 
 def _blob(flags: dict[str, bool]) -> MagicMock:

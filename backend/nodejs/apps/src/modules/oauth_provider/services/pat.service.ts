@@ -1,16 +1,15 @@
 import { injectable, inject } from 'inversify'
 import crypto from 'crypto'
-import { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
 import { EncryptionService } from '../../../libs/encryptor/encryptor'
 import { ConfigService } from '../../tokens_manager/services/cm.service'
 import { OAuthTokenService } from './oauth_token.service'
 import { ScopeValidatorService } from './scope.validator.service'
 import {
-  OAuthApp,
-  IOAuthApp,
+  getOAuthAppRepository,
   OAuthAppStatus,
-} from '../schema/oauth.app.schema'
+  type OAuthAppDto,
+} from '../../../libs/repositories/oauth-app'
 import { NotFoundError } from '../../../libs/errors/http.errors'
 import {
   AdminPatListItem,
@@ -20,7 +19,7 @@ import {
   PatWithSecret,
 } from '../types/oauth.types'
 import { PAT_TOKEN_PREFIX, PAT_APP_CLIENT_ID_PREFIX } from '../constants/constants'
-import { Users } from '../../user_management/schema/users.schema'
+import { getUserRepository } from '../../../libs/repositories/user'
 
 const CLIENT_SECRET_BYTES = 32
 const SECONDS_PER_DAY = 86400
@@ -47,7 +46,7 @@ function patClientId(orgId: string): string {
  * revocation, the `/mcp` auth path) is reused unchanged from
  * {@link OAuthTokenService} rather than parallel token machinery. The one
  * gap is that `OAuthTokenService.generateTokens` requires a real
- * `IOAuthApp` (it reads `clientId`/`createdBy` off it), but a PAT isn't
+ * `OAuthAppDto` (it reads `clientId`/`createdBy` off it), but a PAT isn't
  * issued to a third-party app — so each org gets one lazily-created,
  * synthetic "Personal Access Tokens" app that every PAT in that org is
  * minted against. That keeps `OAuthAccessToken.clientId` a real,
@@ -77,9 +76,10 @@ export class PatService {
   private async getOrCreatePatApp(
     orgId: string,
     actingUserId: string,
-  ): Promise<IOAuthApp> {
+  ): Promise<OAuthAppDto> {
     const clientId = patClientId(orgId)
-    const existing = await OAuthApp.findOne({ clientId })
+    const repo = getOAuthAppRepository()
+    const existing = await repo.findByClientId(clientId)
     if (existing) {
       return existing
     }
@@ -88,7 +88,7 @@ export class PatService {
     const clientSecret = crypto.randomBytes(CLIENT_SECRET_BYTES).toString('hex')
 
     try {
-      return await OAuthApp.create({
+      return await repo.create({
         clientId,
         // Never used to authenticate anything — PATs don't go through the
         // /token endpoint's client-credential checks — but the schema
@@ -99,8 +99,8 @@ export class PatService {
           'Internal pseudo-client that owns user-issued personal access ' +
           'tokens for this org. Not a registered OAuth app: never used ' +
           'through the authorize or token-exchange endpoints.',
-        orgId: new Types.ObjectId(orgId),
-        createdBy: new Types.ObjectId(actingUserId),
+        orgId,
+        createdBy: actingUserId,
         redirectUris: [],
         allowedGrantTypes: [],
         allowedScopes: mcpScopes,
@@ -111,7 +111,7 @@ export class PatService {
       // Two users creating an org's first PAT concurrently can both pass
       // the findOne above; the unique clientId index fails the loser's
       // create() — fetch what the winner just inserted instead of erroring.
-      const createdByWinner = await OAuthApp.findOne({ clientId })
+      const createdByWinner = await repo.findByClientId(clientId)
       if (createdByWinner) {
         return createdByWinner
       }
@@ -189,7 +189,7 @@ export class PatService {
    */
   async listTokens(orgId: string, userId: string): Promise<PatListItem[]> {
     const clientId = patClientId(orgId)
-    const app = await OAuthApp.findOne({ clientId })
+    const app = await getOAuthAppRepository().findByClientId(clientId)
     if (!app) {
       return []
     }
@@ -221,7 +221,7 @@ export class PatService {
     reason?: string,
   ): Promise<void> {
     const clientId = patClientId(orgId)
-    const app = await OAuthApp.findOne({ clientId })
+    const app = await getOAuthAppRepository().findByClientId(clientId)
     if (!app) {
       throw new NotFoundError('Personal access token not found')
     }
@@ -259,7 +259,7 @@ export class PatService {
     limit = 100,
   ): Promise<PaginatedResponse<AdminPatListItem>> {
     const clientId = patClientId(orgId)
-    const app = await OAuthApp.findOne({ clientId })
+    const app = await getOAuthAppRepository().findByClientId(clientId)
     if (!app) {
       return { data: [], pagination: { page, limit, total: 0, totalPages: 0 } }
     }
@@ -275,13 +275,11 @@ export class PatService {
     // token is exactly the case this endpoint exists for, and it must
     // still show up (with ownerDeleted: true) rather than silently drop
     // the owner's name/email from the response.
-    const owners = await Users.find({
-      _id: { $in: tokens.map((t) => t.userId) as unknown as Types.ObjectId[] },
-    })
-      .select('email fullName isDeleted')
-      .lean()
-      .exec()
-    const ownersById = new Map(owners.map((u) => [u._id.toString(), u]))
+    const owners = await getUserRepository().listFieldsByIds(
+      tokens.map((t) => t.userId) as string[],
+      ['_id', 'email', 'fullName', 'isDeleted'],
+    )
+    const ownersById = new Map(owners.map((u) => [u._id, u]))
 
     const data = tokens.map((t): AdminPatListItem => {
       const owner = t.userId ? ownersById.get(t.userId) : undefined
@@ -320,7 +318,7 @@ export class PatService {
     reason?: string,
   ): Promise<void> {
     const clientId = patClientId(orgId)
-    const app = await OAuthApp.findOne({ clientId })
+    const app = await getOAuthAppRepository().findByClientId(clientId)
     if (!app) {
       throw new NotFoundError('Personal access token not found')
     }

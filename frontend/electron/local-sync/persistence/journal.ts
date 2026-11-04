@@ -19,6 +19,19 @@ export interface ConnectorMeta {
   includeSubfolders?: boolean;
   connectorDisplayType?: string;
   syncStrategy?: 'MANUAL' | 'SCHEDULED';
+  /**
+   * Set when the watcher had to rebuild its snapshot from the disk alone, with
+   * nothing to compare against (snapshot lost or unreadable, or the folder
+   * changed). The journal then cannot say what was deleted since the server
+   * last synced, so incremental pulls are refused until a full one completes.
+   */
+  fullSyncRequired?: boolean;
+  /**
+   * Which build's rules wrote this connector's history. A connector last run
+   * by an older build may have records on the server that those builds left
+   * wrong (see STATE_VERSION in manager.ts); one full sync puts them right.
+   */
+  stateVersion?: number;
 }
 
 export interface JournalCursor {

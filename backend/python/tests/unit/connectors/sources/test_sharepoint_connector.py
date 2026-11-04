@@ -16,6 +16,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     COMPOSITE_SITE_ID_COMMA_COUNT,
@@ -246,7 +247,7 @@ class TestSharePointConnectorInitMethod:
         connector = _make_connector()
         connector.config_service.get_config = AsyncMock(return_value=None)
 
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(ConnectorInitError, match="not found"):
             await connector.init()
 
     @pytest.mark.asyncio
@@ -254,7 +255,7 @@ class TestSharePointConnectorInitMethod:
         connector = _make_connector()
         connector.config_service.get_config = AsyncMock(return_value={"auth": {}})
 
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(ConnectorInitError, match="not found"):
             await connector.init()
 
     @pytest.mark.asyncio
@@ -264,7 +265,7 @@ class TestSharePointConnectorInitMethod:
             "auth": {"tenantId": "t1", "clientId": "c1"}
         })
 
-        with pytest.raises(ValueError, match="Incomplete"):
+        with pytest.raises(ConnectorInitError, match="Incomplete"):
             await connector.init()
 
     @pytest.mark.asyncio
@@ -278,7 +279,7 @@ class TestSharePointConnectorInitMethod:
             }
         })
 
-        with pytest.raises(ValueError, match="Authentication credentials missing"):
+        with pytest.raises(ConnectorInitError, match="Authentication credentials missing"):
             await connector.init()
 
     @pytest.mark.asyncio

@@ -36,7 +36,13 @@ function ProjectsPageContent() {
     );
   }
 
-  return projectId ? <ProjectWorkspaceRedesigned projectId={projectId} /> : <ProjectList />;
+  // Keyed by project so a save still in flight for the previous project lands
+  // on an unmounted workspace instead of replacing the new project's state.
+  return projectId ? (
+    <ProjectWorkspaceRedesigned key={projectId} projectId={projectId} />
+  ) : (
+    <ProjectList />
+  );
 }
 
 export default function ProjectsPage() {

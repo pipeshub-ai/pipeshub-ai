@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field
 from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflict
 from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
+from app.config.constants.service import config_node_constants
+from app.core import org_context
 from app.services.ai_models.decision import PredicateQuestion, get_decision_model
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
@@ -41,6 +43,11 @@ from app.utils.aimodels import (
     model_default_reasoning_effort,
     openai_async_client_kwargs,
     require_public_endpoint,
+)
+from app.utils.openai_hosts import (
+    endpoint_path_problem,
+    openai_wrong_host,
+    openai_wrong_host_message,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import bedrock_access_denied_cause, provider_error_code
@@ -282,6 +289,9 @@ def _rejected_settings_message(
     provider = _provider_display_name(model_config.get("provider"))
     configuration = model_config.get("configuration") or {}
     name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
+    wrong_host = openai_wrong_host(exc) if code == "auth_error" else None
+    if wrong_host is not None:
+        return openai_wrong_host_message(wrong_host, configuration.get("endpoint"), f"the API key for {name}")
     if _normalize_provider_key(model_config.get("provider")) == "bedrock":
         from app.utils.aimodels import (
             bedrock_inference_profile_hint,
@@ -483,6 +493,55 @@ async def _endpoint_refusal(config: dict) -> JSONResponse | None:
     return None
 
 
+def _endpoint_path_refusal(config: dict) -> JSONResponse | None:
+    """A 400 for an OpenAI-protocol endpoint that ends in an API operation path, else None."""
+    configuration = config.get("configuration")
+    if not isinstance(configuration, dict):
+        return None
+    problem = endpoint_path_problem(config.get("provider"), configuration.get("endpoint"))
+    if problem is None:
+        return None
+    return _config_error(
+        problem, config, configuration.get("model", ""), error_code="invalid_endpoint_path",
+    )
+
+
+async def _settings_refusal(model_type: str, config: dict) -> JSONResponse | None:
+    """A 400 for settings that need no provider call to reject, else None."""
+    return (
+        _endpoint_path_refusal(config)
+        or await _endpoint_refusal(config)
+        or _missing_credential_refusal(model_type, config)
+    )
+
+
+def _missing_credential_refusal(model_type: str, config: dict) -> JSONResponse | None:
+    """A 400 for a config whose required credential is empty, else None.
+
+    The provider SDKs fail on a blank key before any request ("Missing
+    credentials"), with an error that reads as PipesHub's fault. A field
+    cleared while editing a model reaches here as "".
+    """
+    from app.config.ai_models.providers import ai_model_registry
+    from app.config.ai_models.types import MODEL_TYPE_TO_CAPABILITY
+
+    configuration = config.get("configuration")
+    meta = ai_model_registry.get_provider(config.get("provider") or "")
+    if not isinstance(configuration, dict) or meta is None:
+        return None
+    for field in meta.get("fields", {}).get(MODEL_TYPE_TO_CAPABILITY.get(model_type, ""), []):
+        if not (field.get("required") and field.get("isSecret")):
+            continue
+        value = configuration.get(field["name"])
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return _config_error(
+                f"The {field.get('displayName') or field['name']} for {meta.get('name') or config.get('provider')} "
+                "is empty. Enter it in Workspace > AI Models, then try again.",
+                config, configuration.get("model", ""), error_code="missing_credentials",
+            )
+    return None
+
+
 def _config_error(
     message: str, config: dict, model_name: str, **extra: object
 ) -> JSONResponse:
@@ -670,7 +729,7 @@ async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)
         )
 
     for llm_config in llm_configs:
-        response = await _endpoint_refusal(llm_config) or await perform_llm_health_check(llm_config, logger)
+        response = await _settings_refusal("llm", llm_config) or await perform_llm_health_check(llm_config, logger)
         if response.status_code != 200:
             return response
 
@@ -778,6 +837,32 @@ def normalize_embedding_model_name(name: str | None) -> str | None:
     return normalized
 
 
+def _identity_of(config: dict | None) -> str | None:
+    """``provider:model`` of an embedding config, the way the entity store names what it embeds with (the first of a comma list)."""
+    if not config or not config.get("provider"):
+        return None
+    models = str((config.get("configuration") or {}).get("model") or "")
+    return f"{config['provider']}:{next((m.strip() for m in models.split(',') if m.strip()), '')}"
+
+
+async def _current_identity(retrieval_service: Any) -> str | None:  # noqa: ANN401
+    try:
+        ai_models = await retrieval_service.config_service.get_config(config_node_constants.AI_MODELS.value, use_cache=False)
+        configs = (ai_models or {}).get("embedding") or []
+        chosen = next((c for c in configs if c.get("isDefault", False)), configs[0] if configs else None)
+        return _identity_of(chosen)
+    except Exception:
+        return None
+
+
+EMBEDDING_CHANGE_UNSUPPORTED_CODE = "embedding_change_unsupported"      # the API gateway shows this refusal's own text
+
+
+def _spaces_per_org(retrieval_service: Any) -> bool:  # noqa: ANN401
+    caps = retrieval_service.vector_db_service.get_capabilities()
+    return getattr(caps, "spaces_per_org", False) is True
+
+
 async def handle_model_change(
     retrieval_service,
     current_model_name: str,
@@ -785,7 +870,9 @@ async def handle_model_change(
     existing_vector_size: int,
     points_count: int,
     embedding_size: int,
-    logger
+    logger,
+    current_identity: str | None = None,
+    new_identity: str | None = None,
 ) -> None:
     """Handle embedding model changes and collection recreation if needed."""
     current_model_name = normalize_embedding_model_name(current_model_name)
@@ -800,10 +887,25 @@ async def handle_model_change(
         existing_vector_size != 0 and existing_vector_size != embedding_size
     )
 
-    if not model_name_changed and not dimension_mismatch:
+    # With one vector space per org, what the entity store stamps on its points is the full ``provider:model`` (and the dimension
+    # is compared above), so a provider switch for the "same" model is a change as well.
+    identity_changed = (
+        _spaces_per_org(retrieval_service)
+        and current_identity is not None
+        and new_identity is not None
+        and current_identity != new_identity
+    )
+
+    changed = model_name_changed or dimension_mismatch or identity_changed
+    # The survey sees records only and the identities come from the config: where either is unavailable, an unchanged answer proves
+    # nothing about the org's space (entity points of another dimension or provider may be in it), so the space itself is asked.
+    unknown = _spaces_per_org(retrieval_service) and (
+        existing_vector_size == 0 or current_identity is None or new_identity is None
+    )
+    if not changed and not unknown:
         return
 
-    if model_name_changed:
+    if changed and model_name_changed:
         logger.warning(
             f"Detected embedding model change: '{current_model_name}' -> '{new_model_name}'"
         )
@@ -812,6 +914,45 @@ async def handle_model_change(
             f"Detected vector dimension mismatch: collection has {existing_vector_size}, "
             f"new model produces {embedding_size}"
         )
+
+    if _spaces_per_org(retrieval_service):
+        # The org's embedding space is tied to the model that first wrote to it, and it can hold entity points with no managed records
+        # collection (so no dimension above): the org's points decide, not the records survey. While the org holds no point at all (a
+        # model picked after the default one pinned an empty space) the change is allowed: the indexing service replaces the space on
+        # the first write that carries the new model, and the database refuses if a point exists by then. This is a read only.
+        identity = f"{new_identity}:{embedding_size}" if new_identity else None
+        current = f"{current_identity}:{existing_vector_size}" if current_identity and existing_vector_size else None
+        try:
+            holds_points = await retrieval_service.vector_db_service.org_holds_points()
+            # Going (back) to the model and dimension the space already takes changes nothing: an admin can always return to it.
+            accepts = not holds_points or await retrieval_service.vector_db_service.org_space_accepts(
+                identity, embedding_size, current
+            )
+        except Exception as e:  # a read that failed proves nothing: refuse (503) rather than let an unaccepted change through
+            raise CollectionSurveyError(f"could not read the organisation's vector space: {type(e).__name__}") from e
+        if accepts:
+            if existing_vector_size != 0 or not changed:
+                logger.info("The org's vector space accepts the embedding: allowed")
+                return
+        else:
+            logger.error(
+                "Rejected embedding change: the org's vector space is pinned to the previous model and there is no space flip yet."
+            )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "status": "not healthy",
+                    "code": EMBEDDING_CHANGE_UNSUPPORTED_CODE,
+                    "error": (
+                        "The embedding model cannot be changed yet: this installation keeps "
+                        "vectors in PostgreSQL (pgvector), where each organisation's vector "
+                        "space is tied to the model that first indexed it, and existing "
+                        "data cannot be re-embedded in place. Keep the current embedding "
+                        "model, or set up a new installation to use another one."
+                    ),
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
 
     if points_count > 0:
         logger.error(
@@ -950,9 +1091,27 @@ async def check_collection_info(
     retrieval_service,
     dense_embeddings,
     embedding_size,
-    logger
+    logger,
+    new_config: dict | None = None,
 ) -> None:
     """Check and validate collection information using provider-neutral get_collection_info()."""
+    if _spaces_per_org(retrieval_service):
+        # The survey of such a provider is the calling org's: with no org bound it sees no space and no point, which would read as
+        # "nothing indexed" and let the change through. Fail closed.
+        try:
+            org_context.current_org_id()
+        except (org_context.MissingOrgContext, org_context.SystemContextNotAllowed):
+            logger.error("Refusing to validate the embedding change: no organisation is bound to this request")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "not healthy",
+                    "error": (
+                        "Could not tell which organisation's vector space this embedding model change affects, "
+                        "so it cannot be validated. Retry the request."
+                    ),
+                },
+            ) from None
     try:
         existing_vector_size, points_count = await survey_managed_collections(
             retrieval_service, logger
@@ -972,7 +1131,9 @@ async def check_collection_info(
             existing_vector_size,
             points_count,
             embedding_size,
-            logger
+            logger,
+            current_identity=await _current_identity(retrieval_service),
+            new_identity=_identity_of(new_config),
         )
 
     except HTTPException:
@@ -1005,7 +1166,7 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
     logger = request.app.container.logger()
     try:
         for embedding_config in embedding_configs:
-            refusal = await _endpoint_refusal(embedding_config)
+            refusal = await _settings_refusal("embedding", embedding_config)
             if refusal is not None:
                 return refusal
 
@@ -1016,7 +1177,10 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
         embedding_size = await verify_embedding_health(dense_embeddings, logger)
 
         # Check collection info and handle model changes
-        await check_collection_info(retrieval_service, dense_embeddings, embedding_size, logger)
+        await check_collection_info(
+            retrieval_service, dense_embeddings, embedding_size, logger,
+            new_config=_chosen_embedding_config(embedding_configs),
+        )
 
         # Initialize vector store as None
         retrieval_service.vector_store = None
@@ -1551,6 +1715,7 @@ async def _probe_image_embedding(
 
 async def _check_collection_compatibility(
     request: Request, dense_embeddings: Embeddings, embedding_dimension: int, logger: Logger,
+    new_config: dict | None = None,
 ) -> JSONResponse | None:
     """Run the bulk route's collection guard for a single-model check.
 
@@ -1567,6 +1732,7 @@ async def _check_collection_compatibility(
     try:
         await check_collection_info(
             retrieval_service, dense_embeddings, embedding_dimension, logger,
+            new_config=new_config,
         )
     except HTTPException as he:
         detail = he.detail if isinstance(he.detail, dict) else {"message": str(he.detail)}
@@ -1712,7 +1878,7 @@ async def perform_embedding_health_check(
         # Only the model that will embed once saved may resize the collection.
         if embedding_config.get("becomesActive", True):
             collection_error = await _check_collection_compatibility(
-                request, active_model, active_dimension, logger,
+                request, active_model, active_dimension, logger, new_config=embedding_config,
             )
             if collection_error is not None:
                 return collection_error
@@ -2220,7 +2386,7 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
     try:
         logger.info(f"Health check endpoint called for {model_type}")
 
-        refusal = await _endpoint_refusal(model_config)
+        refusal = await _settings_refusal(model_type, model_config)
         if refusal is not None:
             return refusal
 

@@ -151,7 +151,9 @@ class LinearGateway:
             connection: Any = data
             for key in path:
                 connection = (connection or {}).get(key)
-            connection = connection or {}
+            if not isinstance(connection, dict):
+                # Linear's connections are non-null; read as an empty last page, this would cut the list short.
+                raise LinearPaginationError(f"{operation}: Linear returned no connection at {'.'.join(path)}")
             nodes = connection.get("nodes") or []
             info = connection.get("pageInfo") or {}
             has_next = bool(info.get("hasNextPage"))

@@ -38,6 +38,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _NO_KB_SENTINEL = "NO_KB_SELECTED"
+#: The current turn's readable attachments as virtual record ids, which chat
+#: mode also adds to ``filters["kb"]`` so search covers them.
+ATTACHMENT_RECORD_IDS_KEY = "attachment_record_ids"
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +128,33 @@ class KnowledgeScope:
 # ---------------------------------------------------------------------------
 
 
+def browsable_app_ids(state: "ChatState", scope: KnowledgeScope) -> list[str]:
+    """The scope's whole apps a listing may filter by connector id: connectors
+    and knowledge bases alike, since a knowledge base is an app whose id is its
+    records' ``connectorId``. A chat-mode turn adds its attachments' virtual
+    record ids to ``kb``; they are not apps, and as a connector filter they
+    would hide everything."""
+    attached = set(state.get(ATTACHMENT_RECORD_IDS_KEY) or ())
+    return [i for i in dict.fromkeys([*scope.app_ids, *scope.kb_ids]) if i not in attached]
+
+
+def selected_node_ids(state: "ChatState") -> list[str]:
+    """Every node the turn's selection below app level names, whole apps and
+    collections included, without the attachments chat mode adds to ``kb``."""
+    filters = state.get("filters") or {}
+    attached = set(state.get(ATTACHMENT_RECORD_IDS_KEY) or ())
+    return list(dict.fromkeys(
+        i for key in ("apps", "kb", *SELECTION_FILTER_KEYS) for i in filters.get(key) or ()
+        if isinstance(i, str) and i and i != _NO_KB_SENTINEL and i not in attached
+    ))
+
+
+def turn_picked_sources(state: "ChatState") -> bool:
+    """Whether the turn is limited to sources the user picked (or a project's,
+    under ``strictScope``), not counting the attachments chat mode adds."""
+    return _turn_picked_apps(state) is not None
+
+
 def _clean_kb(raw: list[str]) -> tuple[str, ...]:
     return tuple(k for k in raw if k and k != _NO_KB_SENTINEL)
 
@@ -133,14 +163,26 @@ def _has_selection(filters: Mapping[str, object]) -> bool:
     return any(filters.get(key) for key in SELECTION_FILTER_KEYS)
 
 
-def _navigation_is_limited(filters: Mapping[str, object]) -> bool:
+def _navigation_is_limited(state: "Mapping[str, object]") -> bool:
     """Whether a navigate answer has to stay inside a selection, a picked app,
     or a saved agent's or a project's sources."""
+    filters = state.get("filters") or {}
     return (
         _has_selection(filters)
-        or _picked_apps(filters) is not None
+        or _turn_picked_apps(state) is not None
         or any(key in filters for key in ALLOWED_FILTER_KEYS)
     )
+
+
+def _turn_picked_apps(state: "Mapping[str, object]") -> frozenset[str] | None:
+    """``_picked_apps`` without the attachments chat mode adds to ``kb``: they
+    are part of the question, and as picked apps they would hide every source.
+    A project's strict scope keeps what it names."""
+    filters = state.get("filters") or {}
+    picked = _picked_apps(filters)
+    if picked is None or filters.get(STRICT_SCOPE_FILTER_KEY):
+        return picked
+    return (picked - set(state.get(ATTACHMENT_RECORD_IDS_KEY) or ())) or None
 
 
 def _picked_apps(filters: Mapping[str, object]) -> frozenset[str] | None:
@@ -218,28 +260,6 @@ def derive_scope(state: "ChatState") -> KnowledgeScope:
     return KnowledgeScope(app_ids=tuple(app_ids), kb_ids=tuple(kb_ids))
 
 
-def apps_usable_whole(state: "ChatState", app_ids: Sequence[str]) -> list[str]:
-    """Of ``app_ids``, the apps a tool may work on as a whole.
-
-    The entity tools work per app and name records anywhere in it. So an app
-    is left out when the turn only reaches part of it: an app a selection
-    below app level merely touches, or one a bound (a saved agent's sources, a
-    project's) limits to some of its nodes. Without a selection or a bound
-    every app is kept.
-    """
-    from app.modules.retrieval.selection_scope import allowed_filters
-
-    filters = state.get("filters") or {}
-    kept = list(app_ids)
-    if _has_selection(filters):
-        selected_whole = {*(filters.get("apps") or []), *(filters.get("kb") or [])}
-        kept = [app_id for app_id in kept if app_id in selected_whole]
-    for bound in allowed_filters(filters):
-        whole = set(bound["apps"])
-        kept = [app_id for app_id in kept if app_id in whole]
-    return kept
-
-
 async def ids_within_scope(
     state: "ChatState",
     graph_provider: "IGraphDBProvider",
@@ -265,7 +285,7 @@ async def ids_within_scope(
 
     filters = state.get("filters") or {}
     ids = [node_id for node_id in dict.fromkeys(node_ids) if node_id]
-    picked = _picked_apps(filters)
+    picked = _turn_picked_apps(state)
     scoped = _has_selection(filters) or picked is not None or any(key in filters for key in ALLOWED_FILTER_KEYS)
     if not scoped or not ids:
         return set(ids)
@@ -331,8 +351,7 @@ async def navigation_nameable_ids(
     Children are always checked. The listing is not told the conversation's
     limit, and a child the user cannot read must not be offered to fetch.
     """
-    filters = state.get("filters") or {}
-    if _navigation_is_limited(filters):
+    if _navigation_is_limited(state):
         asked = list(dict.fromkeys([*ancestor_ids, *row_ids, *related_ids]))
         allowed = await ids_within_scope(state, graph_provider, user_key, org_id, asked) if asked else set()
         return allowed, allowed, allowed
@@ -352,7 +371,7 @@ async def ids_outside_scope(
     for a turn with neither, without asking the graph."""
     filters = state.get("filters") or {}
     scoped = (
-        _has_selection(filters) or _picked_apps(filters) is not None
+        _has_selection(filters) or _turn_picked_apps(state) is not None
         or any(key in filters for key in ALLOWED_FILTER_KEYS)
     )
     if not scoped:
@@ -428,12 +447,20 @@ async def _catalog_fallback(state: "ChatState") -> KnowledgeScope | None:
 # A conversation is limited by what the user selected or by what a saved agent
 # or a project may search; the wording fits both.
 SELECTION_BROWSE_HINT = (
-    "This conversation is limited to specific folders or items. Call "
-    "knowledgegraph__list_files to see them, then pass one of their ids as node_id."
+    "This conversation is limited to specific folders or items, listed in the prompt. "
+    "Pass one of their ids as node_id, or call knowledgegraph__list_files(query=..., "
+    "source_ids=[<id>]) to find something inside one by name."
 )
-SELECTION_OUTSIDE_MESSAGE = (
-    "That item is outside what this conversation is limited to."
+# A name passed as node_id ("Launch SaaS") lands here as often as a real id
+# outside the limit, so the text says what node_id takes.
+NODE_ID_HINT = (
+    "node_id takes an id from list_files, navigate or search results, not a name; "
+    "to find an item by name, call knowledgegraph__list_files(query=...)."
 )
+# One text whether the id is unknown or outside the limit: telling them apart
+# would show a connected app what exists beyond what it may see.
+SELECTION_OUTSIDE_MESSAGE = f"No item with that id is inside what this conversation is limited to. {NODE_ID_HINT}"
+NODE_NOT_FOUND_MESSAGE = f"No item this user can open has that id. {NODE_ID_HINT}"
 SELECTION_ALONE_MESSAGE = (
     "That item is part of this conversation on its own; what is under it is not."
 )
@@ -533,8 +560,8 @@ async def list_selected_nodes(
         start = _selection_offset(cursor) if cursor else 0
     except ValueError:
         return (
-            "That cursor is not a page of this selection. "
-            "Call knowledgegraph__list_files without a cursor to start again."
+            "That cursor is not a page of this selection. The selection is listed in the "
+            "prompt; to list it again, call knowledgegraph__list_files with no cursor and an empty query."
         )
     page = lines[start:start + page_size]
     if cursor and not page:
@@ -543,6 +570,7 @@ async def list_selected_nodes(
     more = _selection_cursor(nxt) if nxt < len(lines) else None
     hint = (
         "Pass one of these ids to knowledgegraph__navigate to see what is inside it, "
+        "to knowledgegraph__list_files(query=..., source_ids=[<id>]) to find something in it by name, "
         "or use knowledgegraph__search to search inside all of them."
     )
     if more or cursor:

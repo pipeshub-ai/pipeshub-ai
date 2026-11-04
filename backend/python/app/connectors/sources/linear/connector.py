@@ -99,6 +99,7 @@ from app.connectors.sources.linear.team_access import (
     team_permissions,
     visibility,
 )
+from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -642,13 +643,9 @@ class LinearConnector(BaseConnector):
                     {"key": {"containsIgnoreCase": term}},
                 ]}
 
-            # Fetch teams with pagination
-            # Use cursor if provided (for subsequent pages), otherwise start from beginning
-            response = await datasource.teams(
-                first=limit,
-                after=cursor,
-                filter=filter_dict
-            )
+            # Not through the gateway: its rate-limit retries outlast the UI's request timeout.
+            response = await datasource.execute_operation(
+                "teamList", {"first": limit, "after": cursor, "filter": filter_dict})
 
             if not response.success:
                 self.logger.error(f"❌ Failed to fetch teams: {response.message}")
@@ -656,15 +653,6 @@ class LinearConnector(BaseConnector):
 
             teams_data = response.data.get("teams", {}) if response.data else {}
             teams_list = teams_data.get("nodes", [])
-
-            # If server-side filtering didn't work or wasn't applied, do client-side filtering
-            if search and search.strip() and not filter_dict:
-                search_lower = search.strip().lower()
-                teams_list = [
-                    t for t in teams_list
-                    if search_lower in t.get("name", "").lower()
-                    or search_lower in t.get("key", "").lower()
-                ]
 
             # Get pagination info
             page_info = teams_data.get("pageInfo", {})
@@ -764,6 +752,8 @@ class LinearConnector(BaseConnector):
             if linear_users:
                 await self.data_entities_processor.on_new_app_users(linear_users)
                 self.logger.info(f"👥 Synced {len(linear_users)} Linear users")
+            # Also when nobody is eligible: everyone stored then loses the connector.
+            await self._withdraw_absent_app_users(linear_users)
 
             # Step 3: Get team_ids filter and fetch teams
             team_ids = None
@@ -978,6 +968,20 @@ class LinearConnector(BaseConnector):
         if await self._reconciler.due(forced=forced):
             await self._reconciler.run(synced_team_ids)
 
+    async def _withdraw_absent_app_users(self, listed: list[AppUser]) -> None:
+        """Take the connector away from stored users the complete user read no longer lists as
+        active: Linear leaves suspended accounts out of it. A failed read raises before this
+        runs, so an incomplete list never strips anyone. Reactivation saves the user again."""
+        # PipesHub finds a user by email, so an account whose email changed gets a second node
+        # while the old one keeps the connector: match the stored relation on both.
+        kept = {(u.email.lower(), u.source_user_id) for u in listed}
+        gone = [
+            u for u in await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+            if ((u.email or "").lower(), u.source_user_id) not in kept
+        ]
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+
     async def _fetch_users(self) -> List[AppUser]:
         """
         Fetch all Linear users using cursor-based pagination.
@@ -1090,15 +1094,14 @@ class LinearConnector(BaseConnector):
                 # Linear TeamFilter supports "in" for include
                 filter_dict = {"id": {"in": team_ids}}
 
-        # Fetch all teams with cursor-based pagination
-        # Note: filter_dict is sent on every request - Linear applies filter first, then paginates
         try:
             async for teams_list, _, _ in self._api.pages(
                 "teams", ["teams"], page_size=TEAM_PAGE_SIZE,
                 fetch=lambda ds, first, after: ds.teams(first=first, after=after, filter=filter_dict),
             ):
                 for team in teams_list:
-                    # A team lists 100 members inline; the rest come in further pages.
+                    # A team lists 10 members inline (Linear multiplies nested connection sizes into its
+                    # per-query complexity limit); the rest come in further pages.
                     await self._api.complete(team, "members", "teamMembers", ["team", "members"],
                                              page_size=NESTED_PAGE_SIZE)
                 all_teams.extend(teams_list)
@@ -3710,7 +3713,8 @@ class LinearConnector(BaseConnector):
 
         # Handle versioning: use existing record's id and increment version if changed
         is_new = existing_record is None
-        record_id = existing_record.id if existing_record else str(uuid4())
+        record_id = existing_record.id if existing_record else new_record_id(
+            self.connector_id, attachment_id)
 
         if is_new:
             version = 0
@@ -3797,7 +3801,8 @@ class LinearConnector(BaseConnector):
 
         # Handle versioning: use existing record's id and increment version if changed
         is_new = existing_record is None
-        record_id = existing_record.id if existing_record else str(uuid4())
+        record_id = existing_record.id if existing_record else new_record_id(
+            self.connector_id, document_id)
 
         if is_new:
             version = 0
@@ -3876,7 +3881,8 @@ class LinearConnector(BaseConnector):
 
         # Handle versioning
         is_new = existing_record is None
-        record_id = existing_record.id if existing_record else str(uuid4())
+        record_id = existing_record.id if existing_record else new_record_id(
+            self.connector_id, file_record_id(file_url, parent_external_id))
 
         if is_new:
             version = 0

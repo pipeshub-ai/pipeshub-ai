@@ -7,6 +7,8 @@ import {
 } from '@/lib/storage/chat-unread';
 import { getCurrentUserId } from './utils/current-user-id';
 import { orderPinnedFirst, withPinned } from './utils/pinned-conversations';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
+import { onSessionEnd } from '@/lib/api/session-cache';
 import {
   ChatKnowledgeFilters,
   CollectionMeta,
@@ -52,6 +54,23 @@ function lsGetAgentCapabilities(agentId?: string): AgentCapabilities {
   }
 }
 
+/**
+ * Key under which a project chat keeps its own "+" menu capabilities, beside
+ * the per-agent ones. Project chats used to send the global setting, so
+ * turning Internal search off anywhere stopped them reading the project's files.
+ */
+export function projectCapabilitiesKey(projectId: string): string {
+  return `project:${projectId}`;
+}
+
+/** The capabilities a project chat sends: its own choice, else everything on. */
+export function projectAgentCapabilities(
+  scoped: Record<string, AgentCapabilities>,
+  projectId: string,
+): AgentCapabilities {
+  return scoped[projectCapabilitiesKey(projectId)] ?? { ...DEFAULT_AGENT_CAPABILITIES };
+}
+
 function lsSetAgentCapabilities(caps: AgentCapabilities, agentId?: string): void {
   if (typeof window === 'undefined') return;
   try {
@@ -69,6 +88,8 @@ export interface ScopedToolGroupRow {
   toolDescriptions?: Record<string, string>;
   /** Display name per `fullNames` entry, where the full name doesn't read as one (MCP). */
   toolLabels?: Record<string, string>;
+  /** What a tool does to data, per `fullNames` entry, where it is known. */
+  toolKinds?: Record<string, 'read' | 'write' | 'destructive'>;
   toolsetSlug: string;
   instanceId?: string;
   iconPath?: string;
@@ -201,6 +222,17 @@ export interface ChatPreviewFile {
   isSwitchingVersion?: boolean;
 }
 
+interface ConversationsPage {
+  conversations: Conversation[];
+  pagination: ConversationsListResponse['pagination'];
+}
+
+export interface SidebarConversationLists {
+  owned: ConversationsPage;
+  shared: ConversationsPage;
+  excludeProjectChats: boolean;
+}
+
 /**
  * Temporary sidebar entry created when a new chat stream begins.
  *
@@ -311,6 +343,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     rawMessages: null,
     lastAccessedAt: Date.now(),
     isOwner: isNew ? true : null,
+    sharedWith: isNew ? [] : null,
   };
 }
 
@@ -357,6 +390,8 @@ interface ChatState {
   conversationsError: string | null;
   pagination: ConversationsListResponse['pagination'] | null;
   sharedPagination: ConversationsListResponse['pagination'] | null;
+  /** Which Recents filter the lists above were fetched with; null until the first load. */
+  sidebarListsExcludeProjectChats: boolean | null;
   pendingConversations: Record<string, PendingConversation>;
   /** IDs of conversations that just resolved from pending — triggers typing animation */
   newlyResolvedIds: Set<string>;
@@ -563,12 +598,10 @@ interface ChatState {
   invalidateConversation: (convId: string) => void;
 
   // ── Sidebar actions ──
-  setConversations: (conversations: Conversation[]) => void;
-  setSharedConversations: (conversations: Conversation[]) => void;
+  /** Replaces Recents (owned + shared, page 1) with a server response. */
+  setSidebarLists: (lists: SidebarConversationLists) => void;
   setIsConversationsLoading: (loading: boolean) => void;
   setConversationsError: (error: string | null) => void;
-  setPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
-  setSharedPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
   toggleMoreChatsPanel: (sectionType: 'shared' | 'your') => void;
   closeMoreChatsPanel: () => void;
   toggleAgentsSidebar: () => void;
@@ -741,6 +774,7 @@ interface ChatState {
   setReasoningEffortForCtx: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
   /** Store the agent-configured default reasoning effort for a context. */
   setAgentDefaultReasoningEffort: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
+  setNewChatDefaultModel: (model: import('./types').ModelOverride | null) => void;
   /** Update universal agent mode capability toggles and persist to localStorage. */
   setAgentCapabilities: (caps: Partial<import('./types').AgentCapabilities>) => void;
   /**
@@ -783,6 +817,7 @@ const initialState = {
   conversationsError: null as string | null,
   pagination: null as ConversationsListResponse['pagination'] | null,
   sharedPagination: null as ConversationsListResponse['pagination'] | null,
+  sidebarListsExcludeProjectChats: null as boolean | null,
   pendingConversations: {} as Record<string, PendingConversation>,
   newlyResolvedIds: new Set<string>(),
   unreadConversationIds: new Set<string>(),
@@ -882,6 +917,7 @@ const initialState = {
     availableModels: {} as Record<string, { models: import('./types').AvailableLlmModel[]; fetchedAt: number }>,
     reasoningEffort: {} as Record<string, import('./types').ReasoningEffort | null>,
     agentDefaultReasoningEffort: {} as Record<string, import('./types').ReasoningEffort | null>,
+    newChatDefaultModel: null as import('./types').ModelOverride | null,
   },
 
   scopedAgentCapabilities: {} as Record<string, AgentCapabilities>,
@@ -1058,17 +1094,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // ── Sidebar actions ──────────────────────────────────────────────
 
-  setConversations: (conversations) => set({ conversations }),
-
-  setSharedConversations: (conversations) => set({ sharedConversations: conversations }),
+  setSidebarLists: ({ owned, shared, excludeProjectChats }) =>
+    set({
+      conversations: owned.conversations,
+      sharedConversations: shared.conversations,
+      pagination: owned.pagination,
+      sharedPagination: shared.pagination,
+      sidebarListsExcludeProjectChats: excludeProjectChats,
+    }),
 
   setIsConversationsLoading: (loading) => set({ isConversationsLoading: loading }),
 
   setConversationsError: (error) => set({ conversationsError: error }),
-
-  setPagination: (pagination) => set({ pagination }),
-
-  setSharedPagination: (sharedPagination) => set({ sharedPagination }),
 
   toggleMoreChatsPanel: (sectionType) =>
     set((state) => {
@@ -1106,33 +1143,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   closeAgentsSidebar: () => set({ isAgentsSidebarOpen: false }),
 
+  // Resets only the sidebar's own state. The agent's tools, knowledge, name and access belong to
+  // the chat page, which sets and clears them from the agent detail as the URL's agent changes.
   setAgentSidebarAgentId: (id) =>
     set((state) => {
-      if (id === null) {
-        return {
-          agentSidebarAgentId: null,
-          agentConversations: [],
-          agentConversationsPagination: null,
-          agentConversationsError: null,
-          isAgentMoreChatsPanelOpen: false,
-          agentMoreChatsPagination: null,
-          agentStreamTools: null,
-          agentToolCatalogFullNames: [],
-          agentChatConnectors: [],
-          agentChatKbIds: [],
-          agentKnowledgeCollectionRows: [],
-          agentChatToolGroups: [],
-          agentChatMcpGroups: [],
-          agentKnowledgeDefaults: { apps: [], kb: [] },
-          agentKnowledgeScope: null,
-          agentContextDisplayName: null,
-          agentContextCreatedBy: null,
-          agentContextAccess: null,
-          agentDeprecatedToolNames: [],
-          isAgentsSidebarOpen: false,
-        };
-      }
-      if (state.agentSidebarAgentId === id) {
+      if (id !== null && state.agentSidebarAgentId === id) {
         return state.isAgentsSidebarOpen ? { isAgentsSidebarOpen: false } : state;
       }
       return {
@@ -1142,19 +1157,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentConversationsError: null,
         isAgentMoreChatsPanelOpen: false,
         agentMoreChatsPagination: null,
-        agentStreamTools: null,
-        agentToolCatalogFullNames: [],
-        agentChatConnectors: [],
-        agentChatKbIds: [],
-        agentKnowledgeCollectionRows: [],
-        agentChatToolGroups: [],
-        agentChatMcpGroups: [],
-        agentKnowledgeDefaults: { apps: [], kb: [] },
-        agentKnowledgeScope: null,
-        agentContextDisplayName: null,
-        agentContextCreatedBy: null,
-        agentContextAccess: null,
-        agentDeprecatedToolNames: [],
         isAgentsSidebarOpen: false,
       };
     }),
@@ -1491,8 +1493,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ),
     })),
 
-  bumpConversationsVersion: () =>
-    set((state) => ({ conversationsVersion: state.conversationsVersion + 1 })),
+  bumpConversationsVersion: () => {
+    set((state) => ({ conversationsVersion: state.conversationsVersion + 1 }));
+    revalidateSwrNamespace(SWR_NS.conversationLists);
+  },
 
   // ── Project actions ──────────────────────────────────────────────
 
@@ -1690,6 +1694,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     },
   })),
 
+  setNewChatDefaultModel: (model) => set((state) => ({
+    settings: { ...state.settings, newChatDefaultModel: model },
+  })),
+
   setAgentCapabilities: (caps) => set((state) => {
     const next: AgentCapabilities = { ...state.settings.agentCapabilities, ...caps };
     lsSetAgentCapabilities(next);
@@ -1733,6 +1741,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       searchResults: [],
       searchQuery: '',
+      isSearching: false,
       searchId: null,
       searchError: null,
       searchResponseMeta: null,
@@ -1766,9 +1775,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       slot.abortController?.abort();
     }
     unreadOwnerId = null;
-    set(initialState);
+    // The capability toggles are a device setting kept in localStorage; the
+    // snapshot taken at module load may be older than what was chosen since.
+    set({ ...initialState, settings: { ...initialState.settings, agentCapabilities: lsGetAgentCapabilities() } });
   },
 }));
+
+// Electron signs out without a page load: a stream or list left from the last
+// user must not reach the next one's chats.
+onSessionEnd(() => useChatStore.getState().reset());
 
 /**
  * Sentinel context key for the non-agent (Assistant) chat. Using a Unicode
@@ -1787,8 +1802,15 @@ export const ctxKeyFromAgent = (agentId: string | null | undefined): string =>
 export function getEffectiveModel(
   ctxKey: string,
 ): import('./types').ModelOverride | null {
-  const { selectedModels, defaultModels } = useChatStore.getState().settings;
-  return selectedModels[ctxKey] ?? defaultModels[ctxKey] ?? null;
+  const state = useChatStore.getState();
+  const { selectedModels, defaultModels, newChatDefaultModel } = state.settings;
+  const selected = selectedModels[ctxKey];
+  if (selected) return selected;
+  // Only a new assistant chat opens on it; a project keeps its concrete model.
+  if (ctxKey === ASSISTANT_CTX && newChatDefaultModel && !state.projectScope) {
+    return newChatDefaultModel;
+  }
+  return defaultModels[ctxKey] ?? null;
 }
 
 /**
@@ -1833,6 +1855,27 @@ export function getAgentDefaultReasoningEffort(
   ctxKey: string,
 ): import('./types').ReasoningEffort | null {
   return useChatStore.getState().settings.agentDefaultReasoningEffort[ctxKey] ?? null;
+}
+
+/**
+ * Effort to put on a chat request for `model` in `ctxKey`: the user's pick,
+ * else the agent default for a reasoning model, else none (backend default).
+ */
+export function getRequestReasoningEffort(
+  ctxKey: string,
+  model: import('./types').ModelOverride | null,
+): import('./types').ReasoningEffort | null {
+  const catalog = useChatStore.getState().settings.availableModels[ctxKey]?.models;
+  // Effort belongs to configured models; an edition entry sends none.
+  if (
+    model &&
+    catalog &&
+    !catalog.some((m) => m.modelKey === model.modelKey && m.modelName === model.modelName)
+  ) {
+    return null;
+  }
+  const picked = useChatStore.getState().settings.reasoningEffort[ctxKey] ?? null;
+  return picked ?? (isModelReasoningCapable(ctxKey, model) ? getAgentDefaultReasoningEffort(ctxKey) : null);
 }
 
 /**

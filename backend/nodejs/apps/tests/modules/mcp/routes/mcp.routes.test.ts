@@ -185,7 +185,7 @@ describe('MCP Routes — createMCPRouter', () => {
       expect(secondHandler).to.not.equal(mockAuthMiddleware.authenticate)
     })
 
-    it('should use handleMCPRequest handler as second handler on GET', () => {
+    it('should use a 405 handler as second handler on GET', () => {
       const router = createMCPRouter(container)
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
@@ -254,26 +254,31 @@ describe('MCP Routes — createMCPRouter', () => {
     })
   })
 
+  // The router behind an error handler shaped like the app's.
+  async function request(init: RequestInit, authError?: Error): Promise<Response> {
+    if (authError) {
+      mockAuthMiddleware.authenticate = (_req: any, _res: any, next: any) => next(authError)
+    }
+    mockAppConfig.oauthIssuer = 'https://pipeshub.example.com'
+    const app = express()
+    app.use('/mcp', createMCPRouter(container))
+    app.use((err: any, _req: any, res: any, _next: any) => {
+      res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
+    })
+    const server = app.listen(0)
+    try {
+      const { port } = server.address() as AddressInfo
+      return await fetch(`http://127.0.0.1:${port}/mcp`, init)
+    } finally {
+      server.close()
+    }
+  }
+
   // =========================================================================
   // 401 challenge: how an MCP client with no token finds where to authorize
   // =========================================================================
   describe('401 challenge', () => {
-    async function post(authError: Error): Promise<Response> {
-      mockAuthMiddleware.authenticate = (_req: any, _res: any, next: any) => next(authError)
-      mockAppConfig.oauthIssuer = 'https://pipeshub.example.com'
-      const app = express()
-      app.use('/mcp', createMCPRouter(container))
-      app.use((err: any, _req: any, res: any, _next: any) => {
-        res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
-      })
-      const server = app.listen(0)
-      try {
-        const { port } = server.address() as AddressInfo
-        return await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST', body: '{}' })
-      } finally {
-        server.close()
-      }
-    }
+    const post = (authError: Error) => request({ method: 'POST', body: '{}' }, authError)
 
     it('names the protected-resource metadata in WWW-Authenticate', async () => {
       const res = await post(new UnauthorizedError('No token provided'))
@@ -300,6 +305,34 @@ describe('MCP Routes — createMCPRouter', () => {
       const res = await post(new Error('boom'))
       expect(res.status).to.equal(500)
       expect(res.headers.get('www-authenticate')).to.equal(null)
+    })
+  })
+
+  // =========================================================================
+  // GET: a stateless server offers no SSE stream
+  // =========================================================================
+  describe('GET /', () => {
+    const get = (accept: string, authError?: Error) => request({ headers: { accept } }, authError)
+
+    for (const accept of ['text/event-stream', '*/*']) {
+      it(`answers 405 with Allow: POST (Accept: ${accept})`, async () => {
+        const res = await get(accept)
+        expect(res.status).to.equal(405)
+        expect(res.headers.get('allow')).to.equal('POST')
+        expect(await res.json()).to.deep.equal({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: 'Method not allowed.' },
+          id: null,
+        })
+      })
+    }
+
+    it('still challenges a caller with no token', async () => {
+      const res = await get('text/event-stream', new UnauthorizedError('No token provided'))
+      expect(res.status).to.equal(401)
+      expect(res.headers.get('www-authenticate')).to.equal(
+        'Bearer resource_metadata="https://pipeshub.example.com/.well-known/oauth-protected-resource/mcp"',
+      )
     })
   })
 })

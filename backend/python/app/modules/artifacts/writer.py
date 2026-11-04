@@ -352,6 +352,8 @@ class ArtifactWriter:
         reconciliation_metadata: dict[str, Any] | None = None,
         stored_record_fields: dict[str, Any] | None = None,
         properties: RecordMetadata | None = None,
+        *,
+        stored_run: str,
     ) -> WrittenRevision | None:
         """Store every file of revision ``rev``, the manifest last.
 
@@ -402,6 +404,7 @@ class ArtifactWriter:
             rev=rev,
             orgId=org_id,
             producedAt=get_epoch_timestamp_in_ms(),
+            storedRun=stored_run,
             producerVersions=self.producer_versions,
             artifacts=built.artifacts,
         )

@@ -1,6 +1,5 @@
 import { injectable, inject } from 'inversify';
 import crypto from 'crypto';
-import { Types } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { ConfigService } from '../../tokens_manager/services/cm.service';
@@ -8,10 +7,11 @@ import { OAuthTokenService } from './oauth_token.service';
 import { ScopeValidatorService } from './scope.validator.service';
 import { DelegationService } from './delegation.service';
 import {
-  OAuthApp,
-  IOAuthApp,
+  getOAuthAppRepository,
   OAuthAppStatus,
-} from '../schema/oauth.app.schema';
+  type OAuthAppDto,
+} from '../../../libs/repositories/oauth-app';
+import { isValidId } from '../../../libs/repositories/ids';
 import {
   BadRequestError,
   NotFoundError,
@@ -20,7 +20,7 @@ import {
   SERVICE_TOKEN_PREFIX,
   SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
 } from '../constants/constants';
-import { Users } from '../../user_management/schema/users.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
 
 const CLIENT_SECRET_BYTES = 32;
 const SECONDS_PER_DAY = 86400;
@@ -130,9 +130,10 @@ export class ServiceTokenService {
   private async getOrCreateServiceTokenApp(
     orgId: string,
     actingUserId: string,
-  ): Promise<IOAuthApp> {
+  ): Promise<OAuthAppDto> {
     const clientId = serviceTokenClientId(orgId);
-    const existing = await OAuthApp.findOne({ clientId });
+    const repo = getOAuthAppRepository();
+    const existing = await repo.findByClientId(clientId);
     if (existing) {
       return existing;
     }
@@ -143,7 +144,7 @@ export class ServiceTokenService {
       .toString('hex');
 
     try {
-      return await OAuthApp.create({
+      return await repo.create({
         clientId,
         // Never authenticates anything — service tokens do not go through the
         // /token endpoint — but the schema requires a value, so this is
@@ -154,8 +155,8 @@ export class ServiceTokenService {
           'Internal pseudo-client that owns service-account tokens for this ' +
           'org. Not a registered OAuth app: never used through the authorize ' +
           'or token-exchange endpoints.',
-        orgId: new Types.ObjectId(orgId),
-        createdBy: new Types.ObjectId(actingUserId),
+        orgId,
+        createdBy: actingUserId,
         redirectUris: [],
         allowedGrantTypes: [],
         allowedScopes: mcpScopes,
@@ -166,7 +167,7 @@ export class ServiceTokenService {
       // Two admins minting an org's first service token concurrently can both
       // pass the findOne above; the unique clientId index fails the loser's
       // create() — fetch what the winner inserted instead of erroring.
-      const createdByWinner = await OAuthApp.findOne({ clientId });
+      const createdByWinner = await repo.findByClientId(clientId);
       if (createdByWinner) {
         return createdByWinner;
       }
@@ -187,18 +188,15 @@ export class ServiceTokenService {
     serviceAccountId: string,
     options: { mustBeEnabled: boolean },
   ): Promise<{ id: string; fullName?: string }> {
-    if (!Types.ObjectId.isValid(serviceAccountId)) {
+    if (!isValidId(serviceAccountId)) {
       throw new NotFoundError('Service account not found');
     }
-    const account = await Users.findOne({
-      _id: serviceAccountId,
+    const account = await getUserRepository().getLiveFields(
       orgId,
-      kind: 'service',
-      isDeleted: false,
-    })
-      .select('fullName isDisabled')
-      .lean()
-      .exec();
+      serviceAccountId,
+      ['fullName', 'isDisabled'],
+      { serviceOnly: true },
+    );
 
     if (!account) {
       throw new NotFoundError('Service account not found');
@@ -357,7 +355,7 @@ export class ServiceTokenService {
       mustBeEnabled: false,
     });
     const clientId = serviceTokenClientId(orgId);
-    const app = await OAuthApp.findOne({ clientId });
+    const app = await getOAuthAppRepository().findByClientId(clientId);
     if (!app) {
       return [];
     }
@@ -413,16 +411,11 @@ export class ServiceTokenService {
     // authenticating as this account all the same. Deleting or restoring the
     // account has to reach those too, or an old bearer would come back to
     // life along with the name.
-    const actingApps = await OAuthApp.find({
-      tokenIdentityUserId: serviceAccountId,
-      isDeleted: false,
-    })
-      .select('clientId')
-      .lean()
-      .exec();
+    const actingClientIds =
+      await getOAuthAppRepository().listClientIdsActingAs(serviceAccountId);
 
-    for (const actingApp of actingApps) {
-      await this.oauthTokenService.revokeAllTokensForApp(actingApp.clientId);
+    for (const actingClientId of actingClientIds) {
+      await this.oauthTokenService.revokeAllTokensForApp(actingClientId);
     }
 
     // Tokens this account obtained to act as other people. They are stored
@@ -445,7 +438,7 @@ export class ServiceTokenService {
     this.logger.info('Revoked every token held by a service account', {
       orgId,
       serviceAccountId,
-      actingApps: actingApps.length,
+      actingClientIds: actingClientIds.length,
       delegatedTokensRevoked: delegated,
     });
   }
@@ -491,7 +484,7 @@ export class ServiceTokenService {
       mustBeEnabled: false,
     });
     const clientId = serviceTokenClientId(orgId);
-    const app = await OAuthApp.findOne({ clientId });
+    const app = await getOAuthAppRepository().findByClientId(clientId);
     if (!app) {
       throw new NotFoundError('Service token not found');
     }

@@ -101,7 +101,9 @@ async def test_next_version_size_matches_bytes_sent_to_cloud() -> None:
     with patch("app.modules.transformers.blob_storage.aiohttp.ClientSession", return_value=_session_cm()):
         _, size = await bs.upload_next_version("org-1", "rec-1", "doc-1", _record(), "vr-1")
 
-    assert size == len(json.dumps(_sent(_record())).encode("utf-8"))
+    sent = bs._upload_to_signed_url.await_args.args[2]
+    assert sent == _json_utf8_bytes(_sent(_record()))
+    assert size == len(sent)
 
 
 @pytest.mark.asyncio

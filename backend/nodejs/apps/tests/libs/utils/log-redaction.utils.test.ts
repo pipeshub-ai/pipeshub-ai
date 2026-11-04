@@ -899,14 +899,22 @@ describe('redactSecretsInText', () => {
 });
 
 describe('redaction on adversarial input', () => {
-  // Each of these took seconds before (ReDoS); linear code takes a few ms.
-  // The bound is loose so a loaded CI runner cannot fail it.
+  // Each of these took 300ms or more before (ReDoS); linear code takes about
+  // 13ms, and up to 100ms under c8 with four mocha workers on a CI runner.
+  // CPU time leaves out waiting for a core, and the fastest of three runs
+  // leaves out a one-off GC or JIT pause; a single wall-clock run hit 200.8ms.
   const BOUND_MS = 200
+  const RUNS = 3
   const N = 50_000
   const elapsedMs = (run: () => unknown): number => {
-    const started = process.hrtime.bigint()
-    run()
-    return Number(process.hrtime.bigint() - started) / 1e6
+    let fastest = Infinity
+    for (let i = 0; i < RUNS; i++) {
+      const started = process.cpuUsage()
+      run()
+      const used = process.cpuUsage(started)
+      fastest = Math.min(fastest, (used.user + used.system) / 1000)
+    }
+    return fastest
   }
 
   // `/^[^a-z0-9]+|[^a-z0-9]+$/gi` in isSensitiveQueryKey.

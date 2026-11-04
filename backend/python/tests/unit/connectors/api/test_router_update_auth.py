@@ -21,9 +21,11 @@ from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.redaction import REDACTED_PLACEHOLDER
 from app.connectors.api.router import (
+    _ensure_connector_initialized,
     _require_auth_is_object,
     update_connector_instance_auth_config,
 )
+from tests.unit.connectors.services.local_run_stub import end_local_run, local_run
 
 _ROUTER = "app.connectors.api.router"
 
@@ -683,6 +685,42 @@ class TestCleanupExistingConnector:
         mock_connector.cleanup.assert_called_once()
         # Connector should be removed from the map
         assert "conn1" not in connectors_map
+
+
+    async def test_a_credential_change_mid_sync_rebuilds_and_closes_the_old_instance_after_the_run(
+        self,
+    ) -> None:
+        """A kept instance would sync on with the old credentials after re-enable."""
+        old_connector = AsyncMock()
+        connectors_map = {"conn1": old_connector}
+        container = _make_container(_make_config_service(), connectors_map=connectors_map)
+        request = _make_request(
+            body={"auth": {"apiToken": "new-token"}},
+            container=container,
+            connector_registry=_make_connector_registry(),
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
+        fresh_connector = MagicMock()
+
+        with local_run() as run, \
+             patch(_PATCH_VALIDATE, new_callable=AsyncMock,
+                   return_value=_base_instance(authType="API_TOKEN")), \
+             patch(_PATCH_TIMESTAMP, return_value=1234567890), \
+             patch("app.connectors.api.router._build_and_store_connector",
+                   new_callable=AsyncMock, return_value=fresh_connector) as build:
+            await update_connector_instance_auth_config("conn1", request, graph_provider)
+            enabled = await _ensure_connector_initialized(
+                container, "conn1", "Jira", MagicMock(), graph_provider, "u1", "o1",
+                is_admin=True, logger=logging.getLogger("test"),
+            )
+
+            assert enabled is fresh_connector
+            build.assert_awaited_once()
+            old_connector.cleanup.assert_not_awaited()
+            await end_local_run(run)
+
+        old_connector.cleanup.assert_awaited_once()
 
 
 class TestCleanupErrorIsLoggedNotRaised:

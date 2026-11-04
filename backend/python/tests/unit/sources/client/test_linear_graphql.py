@@ -171,10 +171,10 @@ class TestGetOperationWithFragments:
         result = LinearGraphQLOperations.get_operation_with_fragments("query", "teams")
         assert "fragment TeamFields" in result
         assert "query teams" in result
-        # Members are listed inline, 100 at a time with a cursor; the rest come from
+        # Members are listed inline, 10 at a time with a cursor; the rest come from
         # the teamMembers operation, so the UserFields fragment is no longer attached.
         assert "fragment UserFields" not in result
-        assert "members(first: 100)" in result
+        assert "members(first: 10)" in result
         assert "guest" in result
 
     def test_mutation_with_fragments(self):
@@ -463,10 +463,10 @@ class TestGetOperationWithFragmentsFullCoverage:
         result = LinearGraphQLOperations.get_operation_with_fragments("query", "teams")
         assert "fragment TeamFields" in result
         assert "query teams" in result
-        # Members are listed inline, 100 at a time with a cursor; the rest come from
+        # Members are listed inline, 10 at a time with a cursor; the rest come from
         # the teamMembers operation, so the UserFields fragment is no longer attached.
         assert "fragment UserFields" not in result
-        assert "members(first: 100)" in result
+        assert "members(first: 10)" in result
         assert "guest" in result
 
     def test_mutation_with_fragments(self):

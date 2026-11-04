@@ -78,6 +78,84 @@ async def test_regex_search_and_its_guards() -> None:
                                              mode="text"))["error"]
 
 
+async def test_text_search_drops_a_checkout_prefix_the_index_lacks() -> None:
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="repo/src/**")
+    assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+    assert out["path"] == "src/**"
+
+
+async def test_text_search_on_a_missing_path_is_an_error_naming_what_exists() -> None:
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern="x", mode="text", path="src/nope/")
+    assert "nothing was searched" in out["error"]
+    assert "src/ holds: " in out["error"] and "b.py" in out["error"]
+    for wide in ("repo/nope/**", "nope/**"):  # never widened to `**`, the whole repo
+        out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                     pattern="x", mode="text", path=wide)
+        assert "nothing was searched" in out["error"], wide
+
+
+async def test_a_missing_path_names_only_what_this_connector_holds() -> None:
+    """The hint lists directories, so it is scoped like the search: another
+    connector's (or repo's) files may lie outside a connected app's limit."""
+    graph = QueryGraphProvider()
+    graph.code_files["rec-x"] = "other_secret/x.py"
+    graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "connectorId": "conn-2",
+                              "virtualRecordId": "v-x"}
+    out = await search_code_impl(**_ctx(graph), blob_store=_blobs(), pattern="x", mode="text", path="nope/")
+    assert "nothing was searched" in out["error"]
+    assert "other_secret" not in out["error"] and "src" in out["error"]
+
+
+async def test_another_repos_files_do_not_crowd_this_repos_directories_out(monkeypatch) -> None:
+    """The listing's scan is org-wide; at the 400-row default another repo's files,
+    sorted first, filled it and this repo's root was listed as nothing."""
+    from app.agents.actions.code_graph import query
+
+    monkeypatch.setattr(query, "_SELECT_SCAN_LIMIT", 1)
+    graph = QueryGraphProvider()
+    graph.code_files = {"rec-x": "a_other/x.py", **graph.code_files}
+    graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "connectorId": "conn-2", "virtualRecordId": "v-x"}
+    out = await search_code_impl(**_ctx(graph), blob_store=_blobs(), pattern="x", mode="text", path="nope/x/")
+    assert "The repo root holds: " in out["error"] and "src" in out["error"]
+    assert "a_other" not in out["error"]
+
+
+async def test_a_listing_from_a_capped_scan_says_it_may_be_partial(monkeypatch) -> None:
+    from app.agents.actions.code_graph import search
+
+    monkeypatch.setattr(search, "_TEXT_SCAN_LIMIT", 1)
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern="x", mode="text", path="src/nope/")
+    assert "src/ holds: " in out["error"] and ", ..." in out["error"]
+
+
+async def test_text_search_skips_a_suffix_only_another_connector_holds() -> None:
+    graph = QueryGraphProvider()
+    graph.code_files["rec-x"] = "repo/src/b.py"
+    graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "connectorId": "conn-2",
+                              "virtualRecordId": "v-x"}
+    out = await search_code_impl(**_ctx(graph), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="repo/src/b.py")
+    assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+
+
+async def test_files_without_stored_source_do_not_use_up_the_file_cap(monkeypatch) -> None:
+    """A repo's images and data files sort among its code; counted toward the cap they
+    left most of a large directory unread."""
+    from app.agents.actions.code_graph import search
+
+    monkeypatch.setattr(search, "_TEXT_SEARCH_FILES", 2)  # src/ holds a.py and b.py
+    graph = QueryGraphProvider()
+    graph.code_files["rec-img"] = "src/a_logo.png"  # sorts between them
+    graph.records["rec-img"] = {"_key": "rec-img", "orgId": ORG, "connectorId": CONN}
+    out = await search_code_impl(**_ctx(graph), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="src/")
+    assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+    assert not out.get("truncated")
+
+
 async def test_impact_groups_what_reaches_a_symbol_by_file() -> None:
     out = without_marker(await impact_impl(**_ctx(QueryGraphProvider()), file_path="src/b.py",
                                            qualified_name="function:target"))
@@ -146,3 +224,65 @@ async def test_hidden_test_neighbours_say_how_to_list_them() -> None:
                                    file_path="src/b.py", qualified_name="function:target",
                                    direction="inbound", edge_types=["CALLS"])
     assert out["hidden_tests"] == 1 and "include_tests=true" in out["hint"]
+
+
+async def test_a_capped_depth_is_reported_and_impact_walks_five_levels() -> None:
+    """A walk cut short silently reads as "nothing further up"."""
+    from app.agents.actions.code_graph.neighbours import get_neighbour_impl
+
+    ctx = _ctx(QueryGraphProvider())
+    out = await get_neighbour_impl(**ctx, file_path="src/b.py", qualified_name="function:target",
+                                   direction="inbound", depth=5)
+    assert "depth 5 asked, 3 walked" in out["depth_capped"]
+    five = await impact_impl(**ctx, file_path="src/b.py", qualified_name="function:target", depth=5)
+    assert "depth_capped" not in five
+    seven = await impact_impl(**ctx, file_path="src/b.py", qualified_name="function:target", depth=7)
+    assert "7 asked, 5 walked" in seven["depth_capped"]
+
+
+async def test_text_search_reuses_an_indexed_files_lines_until_the_record_changes(monkeypatch) -> None:
+    """Every caller list scans the repo's text; the blob fetch is the whole cost, so an
+    indexed file's lines are kept, and a newer record (reindexed) is read again."""
+    from app.agents.actions.code_graph import search
+
+    monkeypatch.setattr(search, "_LINE_CACHE", type(search._LINE_CACHE)())
+    graph = QueryGraphProvider()
+    graph.records["rec-b"].update(indexingStatus="COMPLETED", updatedAtTimestamp=1)
+    blobs = _blobs()
+    reads = []
+    original = blobs.get_record_from_storage
+
+    async def counted(virtual_record_id, org_id, lookup_result=None) -> dict | None:
+        reads.append(virtual_record_id)
+        return await original(virtual_record_id, org_id, lookup_result)
+
+    blobs.get_record_from_storage = counted
+    for _ in range(2):
+        out = await search_code_impl(**_ctx(graph), blob_store=blobs,
+                                     pattern='"payments"', mode="text", path="src/b.py")
+        assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+    assert reads == ["v-b"]
+    graph.records["rec-b"]["updatedAtTimestamp"] = 2
+    await search_code_impl(**_ctx(graph), blob_store=blobs, pattern='"payments"', mode="text", path="src/b.py")
+    assert reads == ["v-b", "v-b"]
+
+
+async def test_text_search_can_be_held_to_one_language_across_the_repo() -> None:
+    """`*.py` reads every Python file and nothing else, at any depth."""
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="*.py")
+    assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+    none = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                  pattern='"payments"', mode="text", path="*.ts")
+    assert not none.get("matches")
+
+
+async def test_a_capped_scan_that_matched_no_file_says_it_was_capped(monkeypatch) -> None:
+    """The path scan stops at its limit before the glob is applied: finding no file
+    there is not finding none in the repo."""
+    from app.agents.actions.code_graph import search
+
+    monkeypatch.setattr(search, "_TEXT_SCAN_LIMIT", 1)
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="*.tsx")
+    assert "error" in out and out["truncated"] is True

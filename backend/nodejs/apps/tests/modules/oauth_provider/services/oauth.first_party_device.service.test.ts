@@ -11,6 +11,9 @@ import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { AgentMcpScopes } from '../../../../src/modules/oauth_provider/config/scopes.config'
+import { setOAuthAppRepository } from '../../../../src/libs/repositories/oauth-app'
+import { setIdentityPort } from '../../../../src/libs/repositories/identity'
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 describe('FirstPartyDeviceAppService', () => {
@@ -36,9 +39,9 @@ describe('FirstPartyDeviceAppService', () => {
     const orgQuery: any = {
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
-      lean: sinon.stub().resolves([{ _id: orgId }]),
+      lean: sinon.stub().resolves({ _id: orgId }),
     }
-    sinon.stub(Org, 'find').returns(orgQuery)
+    sinon.stub(Org, 'findOne').returns(orgQuery)
     const userQuery: any = {
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
@@ -49,6 +52,25 @@ describe('FirstPartyDeviceAppService', () => {
 
   afterEach(() => {
     sinon.restore()
+    setOAuthAppRepository()
+    setIdentityPort()
+    delete process.env.DOC_STORE
+  })
+
+  // Discovery and the device endpoint have no session, so nothing is bound when this runs.
+  it('runs as the install organisation when nothing is bound (PostgreSQL)', async () => {
+    process.env.DOC_STORE = 'postgres'
+    setIdentityPort({ oldestOrgId: async () => 'org-1' } as any)
+    let bound: string | undefined
+    setOAuthAppRepository({
+      findByClientId: async () => {
+        bound = getCurrentOrgId()
+        return { _id: 'a', clientId: FIRST_PARTY_DEVICE_CLIENT_ID, allowedScopes: [...AgentMcpScopes] }
+      },
+    } as any)
+
+    expect(await service.getOrCreate()).to.equal(FIRST_PARTY_DEVICE_CLIENT_ID)
+    expect(bound).to.equal('org-1')
   })
 
   it('should return the existing client_id without creating another app', async () => {
@@ -80,7 +102,7 @@ describe('FirstPartyDeviceAppService', () => {
     await service.getOrCreate()
     expect(update.calledOnce).to.be.true
     expect(update.firstCall.args).to.deep.equal([
-      { _id: appId },
+      { _id: appId.toString() },
       { $addToSet: { allowedScopes: { $each: ['kb:write', 'kb:upload'] } } },
     ])
   })
@@ -106,7 +128,7 @@ describe('FirstPartyDeviceAppService', () => {
     const update = sinon.stub(OAuthApp, 'updateOne').resolves({} as any)
     await service.getOrCreate()
     expect(update.firstCall.args).to.deep.equal([
-      { _id: appId },
+      { _id: appId.toString() },
       { $addToSet: { allowedScopes: { $each: ['offline_access'] } } },
     ])
   })
@@ -165,10 +187,10 @@ describe('FirstPartyDeviceAppService', () => {
   })
 
   it('should return null when the instance has no org', async () => {
-    ;(Org.find as sinon.SinonStub).returns({
+    ;(Org.findOne as sinon.SinonStub).returns({
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
-      lean: sinon.stub().resolves([]),
+      lean: sinon.stub().resolves(null),
     })
     sinon.stub(OAuthApp, 'findOne').resolves(null)
     const create = sinon.stub(OAuthApp, 'create')

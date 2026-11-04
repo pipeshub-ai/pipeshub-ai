@@ -8,6 +8,8 @@ class FakeSyncPoints:
 
     def __init__(self) -> None:
         self.points: dict[str, dict] = {}
+        # Keys of records that exist, for the reads that ask whether one is gone.
+        self.records: set[str] = set()
         # Called after a settle reads state and before it writes: lets a test
         # land a request in exactly that window.
         self.before_cas = None
@@ -24,6 +26,15 @@ class FakeSyncPoints:
             sync_point_data
         )
         return True
+
+    async def get_nodes_by_field_in(self, collection, field_name, field_values,
+                                    return_fields=None, transaction=None, *,
+                                    raise_on_error=False) -> list[dict]:
+        assert (collection, field_name) == (CollectionNames.RECORDS.value, "_key")
+        return [{"_key": key} for key in field_values if key in self.records]
+
+    async def remove_sync_point(self, key, collection, transaction=None) -> None:
+        self.points.pop(key, None)
 
     async def update_sync_point_if(self, sync_point_key, expected, sync_point_data,
                                    collection) -> bool:

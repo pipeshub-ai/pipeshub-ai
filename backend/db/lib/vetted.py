@@ -11,7 +11,8 @@ A manifest is ``functions:`` and a list of entries::
       writer: pipeshub_node            # write class only: the one service role that may call it
       grants: [pipeshub_app]           # default: app group (read), the writer (write), the jobs role (jobs); none for a helper
       args: [{name: p_x, type: text, default: "'a'", nullable: false, length: [1, 64], range: [1, 100],
-              enum: [a, b], pattern: '^[0-9a-f]{24}$', max_items: 10}]
+              enum: [a, b], pattern: '^[0-9a-f]{24}$', max_items: 10,
+              item_not_null: true, item_length: [1, 64], item_range: [0, 9], item_enum: [1, 2]}]   # the item_* keys check every element of an array
       returns: "TABLE (id text, n int)" | "text[]" | boolean
       no_org: "false"                  # scalar functions: what a caller with no org gets (table functions return no rows)
       org_arg: p_org                   # lineage scope: the argument that must equal app.org_id
@@ -33,6 +34,10 @@ A manifest is ``functions:`` and a list of entries::
       requires_job: [kind]             # jobs import_*: refuses unless platform.jobs has a job with status 'running' of one of these kinds
       dedupe: schema.table             # write: may answer "already processed" for this external-issuer table (ON CONFLICT DO NOTHING)
       callers: [path]                  # dedupe: the only source paths (below backend/) that may call it
+      pins: [{op: delete, rel: s.t, key: [a, b]}, {op: upsert, rel: s.t, set: [c]}, {op: delete, rel: s.u, txn: txid}]
+                                       # write, org scope: the only way to DELETE or use ON CONFLICT. A pin is (function, relation, operation):
+                                       #   delete key: the primary key after org_id; txn: an xid8 column, the current transaction; max_items caps arrays (<= 5000)
+                                       #   upsert set: the DO UPDATE SET columns ([] = DO NOTHING); insert and update: no detail. See db/README.md "Pinned writes".
       body: |                          # PL/pgSQL statements; v_org is bound; static SQL, schema-qualified, ends with RETURN
       test: {...}                      # see db/README.md ("Vetted functions"): needle, args, own_result, other_result, ...
 
@@ -56,7 +61,7 @@ APP_GROUP = "pipeshub_app"
 JOBS = "pipeshub_jobs"
 VETTED_PREFIX = "pipeshub_vetted_"
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")
-_T = r"(?:text|int|integer|bigint|smallint|real|double precision|boolean|uuid|date|timestamptz|numeric|bytea)(?:\[\])?"
+_T = r"(?:text|int|integer|bigint|smallint|real|double precision|boolean|uuid|date|timestamptz|numeric|bytea|xid8|jsonb)(?:\[\])?"
 _TYPE = re.compile(rf"^{_T}$")
 _RETURNS = re.compile(rf"^(?:void|{_T}|SETOF {_T}|TABLE \([a-z_][a-z0-9_]* {_T}(?:, [a-z_][a-z0-9_]* {_T})*\))$")
 _LITERAL = re.compile(r"^(?:-?\d+(?:\.\d+)?|NULL|true|false|'[^'$\\;\x00]*')$")         # a number, NULL, a boolean or a plain quoted string
@@ -103,6 +108,24 @@ class Arg:
     enum: tuple[str, ...] | None = None
     pattern: str | None = None
     max_items: int | None = None
+    item_not_null: bool = False
+    item_length: tuple[int, int] | None = None
+    item_range: tuple[int, int] | None = None
+    item_enum: tuple[str, ...] | None = None
+
+
+PIN_OPS = ("insert", "upsert", "update", "delete")
+MAX_PIN_ITEMS = 5000
+
+
+@dataclass(frozen=True)
+class Pin:
+    op: str
+    rel: str
+    key: tuple[str, ...] | None = None
+    set: tuple[str, ...] | None = None
+    txn: str | None = None
+    max_items: int = MAX_PIN_ITEMS
 
 
 @dataclass(frozen=True)
@@ -136,6 +159,7 @@ class Fn:
     requires_job: tuple[str, ...] = ()
     dedupe: str | None = None
     callers: tuple[str, ...] = ()
+    pins: tuple[Pin, ...] = ()
     test: dict = field(default_factory=dict, compare=False)
     source: str = field(default="", compare=False)
 
@@ -232,6 +256,47 @@ def _callers(v: object, where: str) -> tuple[str, ...]:
     return tuple(v)
 
 
+def _cols(e: dict, k: str, where: str) -> tuple[str, ...] | None:
+    x = e.get(k)
+    if x is None:
+        return None
+    if not isinstance(x, list) or not all(isinstance(c, str) and _IDENT.match(c) and c != "org_id" for c in x):
+        raise ManifestError(f"{where}: pin {k} must be a list of column names (not org_id)")
+    return tuple(x)
+
+
+def _pins(v: object, fn_schema: str, cls: str, scope: str, where: str) -> tuple[Pin, ...]:
+    """The pinned operations of a write function (kernel.vetted_write_pins). The catalog checks 100-113 hold the body to them."""
+    if v is None:
+        return ()
+    if not isinstance(v, list) or not v:
+        raise ManifestError(f"{where}: pins must be a non-empty list")
+    if cls != "write" or scope != "org":
+        raise ManifestError(f"{where}: only an org-scoped write function carries pins")
+    out = []
+    for e in v:
+        if not isinstance(e, dict) or set(e) - {"op", "rel", "key", "set", "txn", "max_items"}:
+            raise ManifestError(f"{where}: bad pin {e!r}")
+        op, rel = e.get("op"), _one_table(e.get("rel"), "a pin's rel", where)
+        if op not in PIN_OPS or rel is None or rel.partition(".")[0] != fn_schema:
+            raise ManifestError(f"{where}: a pin names an operation of {PIN_OPS} on a table of the function's schema, got {e!r}")
+
+        key, st, txn = _cols(e, "key", where), _cols(e, "set", where), e.get("txn")
+        if txn is not None:
+            _ident(txn, "a pin's txn column", where)
+        items = e.get("max_items", MAX_PIN_ITEMS)
+        if not (isinstance(items, int) and not isinstance(items, bool) and 1 <= items <= MAX_PIN_ITEMS):
+            raise ManifestError(f"{where}: pin max_items is 1..{MAX_PIN_ITEMS}")
+        shape_ok = {"delete": (key is None) != (txn is None) and st is None and (key is None or 1 <= len(key) <= 8),
+                    "upsert": st is not None and key is None and txn is None}.get(op, key is None and st is None and txn is None)
+        if not shape_ok:
+            raise ManifestError(f"{where}: pin {e!r} has the wrong detail for {op} (delete: key or txn; upsert: set; insert and update: none)")
+        out.append(Pin(op, rel, key, st, txn, items))
+    if len({(p.rel, p.op) for p in out}) != len(out):
+        raise ManifestError(f"{where}: a (relation, operation) is pinned twice")
+    return tuple(out)
+
+
 def _check_identity(fn: Fn, where: str) -> None:
     """The rules of the person-level class, the jobs-only import/sweep functions and the dedupe exception."""
     plain = (fn.effect, fn.person_arg, fn.actor, fn.admin_check, fn.member, fn.audit, fn.admin_effect, fn.fanout)
@@ -280,8 +345,10 @@ def _check_identity(fn: Fn, where: str) -> None:
     if fn.dedupe:
         if fn.cls != "write" or fn.scope != "global" or fn.returns != "boolean" or not fn.callers or fn.dedupe.partition(".")[0] != fn.schema:
             raise ManifestError(f"{where}: a dedupe function is a global write returning boolean, on a table of its schema, with callers")
-    elif fn.callers:
-        raise ManifestError(f"{where}: callers belong to a dedupe function")
+    elif fn.pins and not fn.callers:
+        raise ManifestError(f"{where}: a function with pins names its callers (the source paths below backend/ that may call it)")
+    elif fn.callers and not fn.pins:
+        raise ManifestError(f"{where}: callers belong to a dedupe function or a function with pins")
     if fn.dedupe and set(fn.writes) != {fn.dedupe}:
         raise ManifestError(f"{where}: a dedupe function writes its dedupe table and nothing else")
     if fn.writes and fn.cls == "read":
@@ -297,8 +364,11 @@ def _check_identity(fn: Fn, where: str) -> None:
                     raise ManifestError(f"{where}: the body names {t}, which reads/writes/fanout/audit does not list")
 
 
-_TOKENS = re.compile(r"('(?:[^']|'')*')|--[^\n]*|/\*(?:[^*]|\*+[^*/])*\*+/")
+_TOKENS = re.compile(r"('(?:[^']|'')*')|--[^\n\r]*|/\*(?:[^*]|\*+[^*/])*\*+/")
+_POSITIONAL = re.compile(r"(?<![\w$])\$[0-9]+")      # $1, a parameter, is not a dollar quote
 _DOLLAR = re.compile(r"\$(?:[^\x01-\x7f]|[A-Za-z_$])")      # a dollar quote starts with $ and a tag (letters, any non-ASCII, or none); $1 and a regex's $' do not
+_STATEMENT = re.compile(r"(^|;|>>|\bbegin|\bthen|\belse|\bloop|\bexception) *(do|set|reset|prepare|load|listen|notify|discard|create|alter|drop|grant|revoke|copy|import|"
+                        r"refresh|reindex|vacuum|analyze|cluster|comment|lock|checkpoint)\b", re.I)       # statements no text check reads (catalog rule 130)
 _UNCLASSIFIABLE = re.compile(r"\b(merge|only|fetch|offset|call|execute)\b|\bformat\s*\(|\"|\bu&", re.I)
 _ESTRING = re.compile(r"(^|[^A-Za-z0-9_'.$])e'", re.I)       # an E'..' string: a backslash escape the checks do not read
 
@@ -316,21 +386,30 @@ def deny_unclassifiable(text: str | None, where: str) -> None:
     """Deny by default: the catalog checks read plain spellings (``INSERT INTO schema.table``, ``UPDATE schema.table``, ``LIMIT 5``).
     A construct they cannot classify is refused here instead of being taught to every check: dollar-quoted strings, E'' and U& strings,
     quoted identifiers, MERGE, ONLY, FETCH, OFFSET, CALL, EXECUTE and format(). Rewrite the statement in the plain form."""
+    if re.search(r"[\r\f\v]", text or ""):
+        raise ManifestError(f"{where}: a carriage return, form feed or vertical tab ends a comment or a line for PostgreSQL in ways the checks do not follow; use LF")
     if _DOLLAR.search(text or ""):
         raise ManifestError(f"{where}: a dollar-quoted string hides text from the checks; use ordinary '...' literals")
     if _ESTRING.search(text or ""):
         raise ManifestError(f"{where}: an E'...' string hides text from the checks; use an ordinary '...' literal")
+    if m := _STATEMENT.search(normalise(text)):
+        raise ManifestError(f"{where}: a statement may not start with {m.group(2).upper()}: DO, SET, RESET, PREPARE and DDL change the org, the search path or the schema "
+                            f"in ways the vetted-function checks do not read")
+    if re.search(r"\bset_config\b", normalise(text), re.I):
+        raise ManifestError(f"{where}: set_config changes the settings the org policy keys on; a vetted function does not call it")
     if m := _UNCLASSIFIABLE.search(normalise(text)):
         raise ManifestError(f"{where}: {m.group(0)!r} is a construct the vetted-function checks cannot classify; write the plain form "
                             f"(INSERT INTO / UPDATE / DELETE FROM schema.table, unquoted lower-case names, LIMIT <integer>, no MERGE, ONLY, FETCH, "
                             f"OFFSET, CALL, EXECUTE, format())")
+    if re.search(r"\$|[^\x01-\x7f]", _POSITIONAL.sub(" ", normalise(text))):
+        raise ManifestError(f"{where}: a $ or a non-ASCII character outside a string or a comment is read differently by the checks; use plain ASCII identifiers")
 
 
 def parse(entry: dict, source: str = "") -> Fn:
     where = f"{source}: {entry.get('name', '?')}"
     unknown = set(entry) - {"name", "class", "scope", "writer", "grants", "args", "returns", "no_org", "org_arg", "ext", "custom_plan",
                             "content_ok", "extends", "reads", "body", "test", "writes", "effect", "person_arg", "actor", "admin_check", "member", "audit",
-                            "admin_effect", "fanout", "requires_job", "dedupe", "callers", "audit_in_body"}
+                            "admin_effect", "fanout", "requires_job", "dedupe", "callers", "audit_in_body", "pins"}
     if unknown:
         raise ManifestError(f"{where}: unknown keys {sorted(unknown)}")
     schema, _, name = str(entry.get("name", "")).partition(".")
@@ -352,12 +431,13 @@ def parse(entry: dict, source: str = "") -> Fn:
         raise ManifestError(f"{where}: a helper is a read-class function with no grants")
     args = []
     for a in entry.get("args", []):
-        bad = set(a) - {"name", "type", "default", "nullable", "length", "range", "enum", "pattern", "max_items"}
+        bad = set(a) - {"name", "type", "default", "nullable", "length", "range", "enum", "pattern", "max_items",
+                        "item_not_null", "item_length", "item_range", "item_enum"}
         if bad or not isinstance(a.get("type"), str) or not _TYPE.match(a["type"]):
             raise ManifestError(f"{where}: bad argument {a}")
         enum = a.get("enum")
-        if enum is not None and not (isinstance(enum, list) and all(isinstance(v, str) and "\x00" not in v for v in enum)):
-            raise ManifestError(f"{where}: enum must be a list of strings")
+        if enum is not None and not (isinstance(enum, list) and enum and all(isinstance(v, str) and "\x00" not in v for v in enum)):
+            raise ManifestError(f"{where}: enum must be a non-empty list of strings")
         pattern = a.get("pattern")
         if pattern is not None and not (isinstance(pattern, str) and "\x00" not in pattern):
             raise ManifestError(f"{where}: pattern must be a string")
@@ -367,9 +447,17 @@ def parse(entry: dict, source: str = "") -> Fn:
         nullable = a.get("nullable", False)
         if not isinstance(nullable, bool):
             raise ManifestError(f"{where}: nullable must be true or false")
+        item_enum = a.get("item_enum")
+        if item_enum is not None and not (isinstance(item_enum, list) and item_enum and all(isinstance(v, (str, int)) and not isinstance(v, bool) and "\x00" not in str(v) for v in item_enum)):
+            raise ManifestError(f"{where}: item_enum must be a non-empty list of strings or numbers")
+        if (a.get("item_not_null") is not None and not isinstance(a["item_not_null"], bool)) or \
+                ((a.get("item_not_null") or a.get("item_length") or a.get("item_range") or item_enum) and not a["type"].endswith("[]")):
+            raise ManifestError(f"{where}: the item_* keys belong to an array argument (item_not_null is true or false)")
         args.append(Arg(_ident(a.get("name"), "an argument name", where), a["type"], _literal(a.get("default"), "a default", where), nullable,
                         _pair(a.get("length"), f"{where} length"), _pair(a.get("range"), f"{where} range"),
-                        tuple(enum) if enum else None, pattern, items))
+                        tuple(enum) if enum else None, pattern, items, bool(a.get("item_not_null")),
+                        _pair(a.get("item_length"), f"{where} item_length"), _pair(a.get("item_range"), f"{where} item_range"),
+                        tuple(str(v) for v in item_enum) if item_enum else None))
     returns = str(entry.get("returns", "")).strip()
     if not _RETURNS.match(returns):
         raise ManifestError(f"{where}: returns must be a type, SETOF type or TABLE (name type, ...) of the allowed types, got {returns!r}")
@@ -386,7 +474,7 @@ def parse(entry: dict, source: str = "") -> Fn:
             admin_effect=entry.get("admin_effect"), fanout=_tables(entry.get("fanout"), "fanout", where),
             requires_job=tuple(_ident(k, "a job kind", where) for k in entry.get("requires_job", ())),
             dedupe=_one_table(entry.get("dedupe"), "dedupe", where), callers=_callers(entry.get("callers"), where),
-            audit_in_body=_flag(entry, "audit_in_body", where))
+            audit_in_body=_flag(entry, "audit_in_body", where), pins=_pins(entry.get("pins"), schema, cls, scope, where))
     if not fn.body.strip() or "$fn$" in fn.body:
         raise ManifestError(f"{where}: body is required and may not contain $fn$")
     if raised := bad_raises(fn.body):
@@ -460,6 +548,17 @@ def _validation(fn: Fn) -> list[str]:
             refuse(f"{guard}{a.name} !~ {_lit(a.pattern)}", a.name, "does not match the expected format")
         if a.max_items is not None:
             refuse(f"{guard}cardinality({a.name}) > {a.max_items}", a.name, f"takes at most {a.max_items} items")
+        # every element of an array argument: a NULL, a length, a range or a value outside a list is refused with 22023 (not a constraint error later)
+        per_item = [("e IS NULL", "has a NULL item")] if a.item_not_null else []
+        if a.item_length:
+            per_item.append((f"e IS NOT NULL AND length(e) NOT BETWEEN {a.item_length[0]} AND {a.item_length[1]}", "has an item of the wrong length"))
+        if a.item_range:
+            per_item.append((f"e IS NOT NULL AND e NOT BETWEEN {a.item_range[0]} AND {a.item_range[1]}", "has an item out of range"))
+        if a.item_enum:
+            vals = ", ".join(_lit(v) for v in a.item_enum)    # a quoted literal takes the element type, so boolean[] and jsonb[] work as numbers do
+            per_item.append((f"e IS NOT NULL AND e NOT IN ({vals})", "has an item that is not one of the allowed values"))
+        for cond, why in per_item:
+            refuse(f"{guard}EXISTS (SELECT 1 FROM unnest({a.name}) e WHERE {cond})", a.name, why)
     return out
 
 
@@ -498,6 +597,15 @@ def _person(fn: Fn) -> tuple[str, list[str]]:
     else:
         lines = ["  " + refuse("v_org IS NOT NULL"), lock]
     return "DECLARE " + "\n  ".join(d + ";" for d in declare) + "\n", lines
+
+
+def _names(v: tuple[str, ...] | None) -> str:
+    return "NULL" if v is None else "ARRAY[" + ", ".join(_lit(c) for c in v) + "]::name[]"
+
+
+def pin_sql(sig: str, p: Pin) -> str:
+    return (f"SELECT kernel.allow_vetted_write_op({_lit(sig)}, {_lit(p.rel)}, {_lit(p.op)}, {_names(p.key)}, {_names(p.set)}, "
+            f"{_lit(p.txn) if p.txn else 'NULL'}, {p.max_items});\n")
 
 
 def render(fn: Fn, *, replace: bool = False) -> str:
@@ -546,7 +654,7 @@ REVOKE ALL ON FUNCTION {sig} FROM PUBLIC;
 REVOKE CREATE ON SCHEMA {schema} FROM {owner};
 REVOKE {owner} FROM {OWNER};
 SELECT kernel.register_function({_lit(sig)}, {_lit(fn.cls)}, {_lit(fn.writer) if fn.writer else 'NULL'}, {_lit(fn.registry_scope)}, {str(fn.content_ok).lower()});
-{annotate}"""
+{annotate}{"".join(pin_sql(sig, p) for p in fn.pins)}"""
 
 
 def render_all(fns: list[Fn], *, replace: bool = False) -> dict[str, str]:
@@ -560,6 +668,11 @@ def manifest_files() -> list[Path]:
 
 
 HAND_WRITTEN = frozenset({"kernel.profile_epoch()", "kernel.postgres_store_epoch()"})       # registered by a revision's SQL file, not by a manifest
+
+
+def _arr(v: tuple[str, ...] | None) -> str | None:
+    """A name[] as PostgreSQL prints it (key_cols::text), for comparing a pin with the registry."""
+    return None if v is None else "{" + ",".join(v) + "}"
 
 
 def problems(conn: psycopg.Connection, fns: dict[str, Fn] | None = None) -> list[tuple[str, str]]:
@@ -594,6 +707,11 @@ def problems(conn: psycopg.Connection, fns: dict[str, Fn] | None = None) -> list
             ok = conn.execute("SELECT EXISTS (SELECT 1 FROM kernel.rls_registry WHERE rel = to_regclass(%s) AND vetted_write)", (t,)).fetchone()[0]
             if not ok:
                 out.append(("71 function writes a table that did not opt into vetted_write", f"{canon} -> {t}"))
+        have = {(r[0], r[1], r[2] or None, r[3] or None, r[4] or None, r[5]) for r in conn.execute(
+            "SELECT rel::text, op, key_cols::text, set_cols::text, txn_col::text, max_items FROM kernel.vetted_write_pins WHERE proc = %s::regprocedure", (canon,))}
+        want = {(conn.execute("SELECT to_regclass(%s)::text", (p.rel,)).fetchone()[0], p.op, _arr(p.key), _arr(p.set), p.txn, p.max_items) for p in f.pins}
+        if have != want:
+            out.append(("71 manifest and pin registry disagree", canon))
         # org-scoped tables of any org: only the person writes with the proof, and only through fanout
         if f.scope in ("person", "global") or f.cls == "jobs":
             out += [("71 writes names an org-scoped table, which only fanout may", f"{canon} -> {t}") for t in f.writes
@@ -602,6 +720,8 @@ def problems(conn: psycopg.Connection, fns: dict[str, Fn] | None = None) -> list
         out += [("71 fanout names a table that is not an org-scoped table", f"{canon} -> {t}") for t in f.fanout
                 if not conn.execute("SELECT EXISTS (SELECT 1 FROM kernel.rls_registry WHERE rel = to_regclass(%s) AND class IN ('org', 'lineage'))", (t,)).fetchone()[0]]
     out += [("71 vetted function is not in any manifest", sig) for sig in sorted(set(registry) - seen)]
+    out += [("71 pin for a function that is not in any manifest", sig) for (sig,) in conn.execute("SELECT DISTINCT proc::text FROM kernel.vetted_write_pins")
+            if sig not in seen]
     return out
 
 
@@ -610,12 +730,12 @@ _SOURCE_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".sql",
 
 
 def callers_violations(fns: dict[str, Fn], root: Path) -> list[str]:
-    """A dedupe function answers "already processed" and so is an existence oracle for the issuer's ids: only the source paths its
-    manifest names (a file, or a directory below ``root``) may mention it. The bare function name is searched, so a name built by
+    """A dedupe function answers "already processed" and so is an existence oracle for the issuer's ids, and a function with pins writes
+    who-sees-what: only the source paths its manifest names (a file, or a directory below ``root``) may mention it. The bare function name is searched, so a name built by
     string interpolation is still seen; the test suites, the generated SQL and the manifests themselves are exempt."""
     out = []
     for f in fns.values():
-        if not f.dedupe:
+        if not (f.dedupe or f.pins):
             continue
         call = re.compile(rf"\b{re.escape(f.name)}\b")
         for dirpath, dirs, files in os.walk(root):

@@ -152,8 +152,8 @@ class ReposSync:
         return code_branch(self.c.sync_filters) or repo.default_branch
 
     async def run(self, repo: GhObject) -> bool:
-        """Sync a repo's code: incremental when a checkpoint exists and the
-        synced branch hasn't changed, full sync (re-baseline) otherwise.
+        """Sync a repo's code: incremental from the checkpoint's commit, full
+        sync when there is none or the incremental pass fails.
         Returns False when the code could not be brought up to date."""
         c = self.c
         owner, name = repo.owner.login, repo.name
@@ -201,16 +201,18 @@ class ReposSync:
             return ok
 
         if last_branch and last_branch != branch:
+            # The delta between the two branch heads is all that changes in the
+            # index. Compare reports a diverged or behind branch as untrusted, so
+            # `_incremental_sync` takes the two-tree diff for those, and a full
+            # walk stays the fallback below.
             self.logger.info(
-                "Synced branch changed for %s (%s -> %s); re-baselining with full sync",
+                "Synced branch changed for %s (%s -> %s); syncing the difference",
                 repo.full_name, last_branch, branch,
             )
-            ok = await self._full_sync(repo, current_sha)
-            if ok:
+            if last_sha == current_sha:
                 await self._update_checkpoint(repo, current_sha, branch)
-            return ok
-
-        if last_sha == current_sha:
+                return True
+        elif last_sha == current_sha:
             self.logger.debug("Code repo unchanged for %s (HEAD %s); skipping", repo.full_name, current_sha[:8])
             return True
 

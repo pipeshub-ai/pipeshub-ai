@@ -1095,6 +1095,24 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       expect(next.called).to.be.false
     })
 
+    it('forwards the chosen auth type', async () => {
+      const handler = testConnectorConnection(mockAppConfig)
+      req.params = { connectorType: 'Snowflake' }
+      req.body = { auth: { user: 'svc' }, authType: 'KEY_PAIR' }
+      const execute = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { success: true, message: 'Connected' },
+      })
+
+      await handler(req, res, next)
+
+      expect(execute.firstCall.args[3]).to.deep.equal({
+        auth: { user: 'svc' },
+        connectorId: undefined,
+        authType: 'KEY_PAIR',
+      })
+    })
+
     it('passes a backend rejection to next', async () => {
       const handler = testConnectorConnection(mockAppConfig)
       req.params = { connectorType: 'Jira' }

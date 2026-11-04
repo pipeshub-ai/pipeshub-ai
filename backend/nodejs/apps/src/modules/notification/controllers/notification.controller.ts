@@ -1,10 +1,7 @@
 import { Response, NextFunction } from 'express';
-import mongoose from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { Notifications } from '../schema/notification.schema';
+import { getNotificationRepository } from '../../../libs/repositories/notification';
 import {
-  buildCursorFilter,
-  buildRetentionFilter,
   clampPageSize,
   decodeCursor,
   InvalidNotificationCursorError,
@@ -23,22 +20,18 @@ export async function listNotifications(
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const { userOid, orgOid } = authContext;
+    const scope = authContext;
 
     const notificationStatus =
       typeof req.query.status === 'string' ? req.query.status : null;
     const limit = clampPageSize(req.query.limit);
-    const baseFilter = buildRetentionFilter(
-      orgOid,
-      userOid,
-      notificationStatus,
-    );
 
-    let cursorFilter: Record<string, unknown> = {};
+    let cursor: { createdAt: Date; id: string } | undefined;
     const rawCursor = req.query.cursor;
     if (rawCursor !== undefined && rawCursor !== '') {
       try {
-        cursorFilter = buildCursorFilter(decodeCursor(rawCursor as string));
+        const decoded = decodeCursor(rawCursor as string);
+        cursor = { createdAt: decoded.createdAt, id: decoded._id };
       } catch (err) {
         if (err instanceof InvalidNotificationCursorError) {
           res.status(400).json({ message: 'Invalid cursor' });
@@ -48,14 +41,18 @@ export async function listNotifications(
       }
     }
 
-    const filter = { ...baseFilter, ...cursorFilter };
-    const rows = await Notifications.find(filter)
-      .sort({ createdAt: -1, _id: -1 })
-      .limit(limit + 1)
-      .lean();
+    const rows = await getNotificationRepository().list(scope, {
+      status: notificationStatus,
+      cursor,
+      limit,
+    });
 
-    const { notifications, hasMore, cursor } = paginateResults(rows, limit);
-    res.json({ notifications, cursor, hasMore });
+    const page = paginateResults(rows, limit);
+    res.json({
+      notifications: page.notifications,
+      cursor: page.cursor,
+      hasMore: page.hasMore,
+    });
   } catch (err) {
     next(err);
   }
@@ -72,13 +69,12 @@ export async function getNotificationStats(
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const { userOid, orgOid } = authContext;
-    const base = buildRetentionFilter(orgOid, userOid, null);
-    const [unreadCount, readCount, archivedCount] = await Promise.all([
-      Notifications.countDocuments({ ...base, status: 'unread' }),
-      Notifications.countDocuments({ ...base, status: 'read' }),
-      Notifications.countDocuments({ ...base, status: 'archived' }),
-    ]);
+    const scope = authContext;
+    const {
+      unread: unreadCount,
+      read: readCount,
+      archived: archivedCount,
+    } = await getNotificationRepository().counts(scope);
     res.json({ unreadCount, readCount, archivedCount });
   } catch (err) {
     next(err);
@@ -96,10 +92,9 @@ export async function markAllRead(
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const { userOid, orgOid } = authContext;
-    const filter = buildRetentionFilter(orgOid, userOid, 'unread');
-    const result = await Notifications.updateMany(filter, { $set: { status: 'read' } });
-    res.json({ success: true, modifiedCount: result.modifiedCount });
+    const scope = authContext;
+    const modifiedCount = await getNotificationRepository().markAllRead(scope);
+    res.json({ success: true, modifiedCount });
   } catch (err) {
     next(err);
   }
@@ -116,15 +111,12 @@ export async function markRead(
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const { userOid, orgOid } = authContext;
-    const doc = await Notifications.findOneAndUpdate(
-      {
-        _id: new mongoose.Types.ObjectId(req.params.id),
-        ...buildRetentionFilter(orgOid, userOid, null),
-      },
-      { $set: { status: 'read' } },
-      { returnDocument: 'after' },
-    ).lean();
+    const scope = authContext;
+    const doc = await getNotificationRepository().setStatus(
+      scope,
+      req.params.id as string,
+      'read',
+    );
     if (!doc) {
       res.status(404).json({ message: 'Notification not found' });
       return;
@@ -146,15 +138,12 @@ export async function markUnread(
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const { userOid, orgOid } = authContext;
-    const doc = await Notifications.findOneAndUpdate(
-      {
-        _id: new mongoose.Types.ObjectId(req.params.id),
-        ...buildRetentionFilter(orgOid, userOid, null),
-      },
-      { $set: { status: 'unread' } },
-      { returnDocument: 'after' },
-    ).lean();
+    const scope = authContext;
+    const doc = await getNotificationRepository().setStatus(
+      scope,
+      req.params.id as string,
+      'unread',
+    );
     if (!doc) {
       res.status(404).json({ message: 'Notification not found' });
       return;
@@ -176,15 +165,12 @@ export async function archiveNotification(
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const { userOid, orgOid } = authContext;
-    const doc = await Notifications.findOneAndUpdate(
-      {
-        _id: new mongoose.Types.ObjectId(req.params.id),
-        ...buildRetentionFilter(orgOid, userOid, null),
-      },
-      { $set: { status: 'archived' } },
-      { returnDocument: 'after' },
-    ).lean();
+    const scope = authContext;
+    const doc = await getNotificationRepository().setStatus(
+      scope,
+      req.params.id as string,
+      'archived',
+    );
     if (!doc) {
       res.status(404).json({ message: 'Notification not found' });
       return;
@@ -206,15 +192,11 @@ export async function unarchiveNotification(
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const { userOid, orgOid } = authContext;
-    const doc = await Notifications.findOneAndUpdate(
-      {
-        _id: new mongoose.Types.ObjectId(req.params.id),
-        ...buildRetentionFilter(orgOid, userOid, 'archived'),
-      },
-      { $set: { status: 'read' } },
-      { returnDocument: 'after' },
-    ).lean();
+    const scope = authContext;
+    const doc = await getNotificationRepository().unarchive(
+      scope,
+      req.params.id as string,
+    );
     if (!doc) {
       res.status(404).json({ message: 'Notification not found' });
       return;
@@ -236,15 +218,11 @@ export async function deleteNotification(
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
-    const { userOid, orgOid } = authContext;
-    const doc = await Notifications.findOneAndUpdate(
-      {
-        _id: new mongoose.Types.ObjectId(req.params.id),
-        ...buildRetentionFilter(orgOid, userOid, null, true),
-      },
-      { $set: { isDeleted: true, deletedBy: userOid } },
-      { returnDocument: 'after' },
-    ).lean();
+    const scope = authContext;
+    const doc = await getNotificationRepository().softDelete(
+      scope,
+      req.params.id as string,
+    );
     if (!doc) {
       res.status(404).json({ message: 'Notification not found' });
       return;

@@ -28,6 +28,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.core.org_context import OrgContext, set_request_context
 from app.utils.request_context import get_context as get_request_context
+from app.utils.request_context import set_context_org
 
 # Marks the dependency that states which token classes a route accepts; the route
 # inventory test requires one on every route so no route admits service tokens by omission.
@@ -331,6 +332,8 @@ def _bind_org_context(request: Request, payload: dict[str, Any]) -> None:
         source="scoped_jwt" if scoped else "jwt",
         request_id=rc.root_id if rc else "-",
     ))
+    # Context middleware runs before auth, so this is the first point the org is known.
+    set_context_org(org_id)
 
 
 def is_request_admin(request: Request) -> bool:

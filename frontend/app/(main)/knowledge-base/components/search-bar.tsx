@@ -41,7 +41,7 @@ export function SearchBar({
       direction="column"
       style={{
         backgroundColor: 'var(--effects-translucent)',
-        backdropFilter: 'blur(8px)',
+        backdropFilter: 'var(--frost-filter-subtle)',
         borderBottom: '1px solid var(--olive-3)',
       }}
     >

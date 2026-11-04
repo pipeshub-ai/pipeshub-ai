@@ -86,3 +86,26 @@ class TestSymbolRead:
             assert "error" not in result, name
             assert result["code"] == TARGET_SRC
             assert result["qualified_name"] == "function:target"
+
+
+class TestCheckoutPaths:
+    async def test_a_path_with_a_prefix_the_index_lacks_still_reads(self) -> None:
+        for path in ("/home/me/repo/src/b.py", "repo/src/b.py", "./src/b.py"):
+            out = await _read(FakeGraphProvider(), file_path=path, qualified_name="function:target")
+            assert out.get("code") == TARGET_SRC, path
+
+    async def test_a_fallback_names_the_file_it_read(self) -> None:
+        graph = FakeGraphProvider()
+        symbol = await _read(graph, file_path="repo/src/b.py", qualified_name="function:target")
+        whole = await _read(graph, file_path="repo/src/b.py")
+        assert symbol["file_path"] == whole["file_path"] == "src/b.py"
+
+    async def test_a_suffix_only_another_connector_holds_is_skipped(self) -> None:
+        graph = FakeGraphProvider()
+        graph.code_files["rec-x"] = "repo/src/b.py"
+        graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "connectorId": "conn-2"}
+        out = await _read(graph, file_path="repo/src/b.py", qualified_name="function:target")
+        assert out.get("code") == TARGET_SRC
+
+    async def test_a_bare_file_name_is_not_guessed(self) -> None:
+        assert "error" in await _read(FakeGraphProvider(), file_path="b.py", qualified_name="function:target")

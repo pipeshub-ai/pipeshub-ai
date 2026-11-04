@@ -113,11 +113,12 @@ npx playwright show-trace test-results/<test-folder>/trace.zip
 Playwright is configured with these projects:
 
 1. **setup** — Logs in via the browser and saves auth state to `.auth/user.json`.
-2. **seed** — Seeds bulk data using UI interactions + API calls. Depends on `setup`.
-3. **authenticated** — All feature tests using saved auth state. Depends on `setup`.
-4. **ai** — Tests that need a real AI model (the cited answer and agent tests). They depend on **ai-models**, which adds a chat and an embedding model once if the org has none, and whose teardown (**ai-models-cleanup**) removes them after every `ai` test has finished. Without credentials the models aren't added and these tests skip with the reason.
-5. **unauthenticated** — Login page tests that run without saved auth.
-6. **first-run** — The first admin signing up on a fresh install and going through onboarding (AI model, embedding model, storage) into chat. It needs a stack with no organization, so it exists only when `E2E_FIRST_RUN=true` and runs with `--project=first-run`. It signs up with `TEST_USER_EMAIL` and `TEST_USER_PASSWORD`, so the other projects then sign in to the account it made. The smoke workflow runs it before it creates the org. Its models are "OpenAI Compatible" ones pointed at the stand-in served by the stack's `web-fixtures` service, so it needs no provider account.
+2. **embedding-model** — Adds the cloud embedding model the answering tests use, if the org has none, before anything uploads a file: once the built-in model has embedded a record, the backend refuses to switch embedding models. Its teardown (**embedding-model-cleanup**) removes it after every project that depends on it, unless its vectors are stored. If adding it fails, this step still passes so the UI tests run, and **ai-models** fails with the reason. Depends on `setup`.
+3. **seed** — Seeds bulk data using UI interactions + API calls. Depends on `setup` and `embedding-model`.
+4. **authenticated** — All feature tests using saved auth state. Depends on `setup` and `embedding-model`.
+5. **ai** — Tests that need a real AI model (the cited answer and agent tests). They depend on **ai-models**, which adds a chat model (and the embedding model, if it is still missing) once if the org has none, and whose teardown (**ai-models-cleanup**) removes them after every `ai` test has finished. Without credentials the models aren't added and these tests skip with the reason.
+6. **unauthenticated** — Login page tests that run without saved auth.
+7. **first-run** — The first admin signing up on a fresh install and going through onboarding (AI model, embedding model, storage) into chat. It needs a stack with no organization, so it exists only when `E2E_FIRST_RUN=true` and runs with `--project=first-run`. It signs up with `TEST_USER_EMAIL` and `TEST_USER_PASSWORD`, so the other projects then sign in to the account it made. The smoke workflow runs it before it creates the org. Its models are "OpenAI Compatible" ones pointed at the stand-in served by the stack's `web-fixtures` service, so it needs no provider account.
 
 ## Directory Structure
 

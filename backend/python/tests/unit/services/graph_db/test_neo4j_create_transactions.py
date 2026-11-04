@@ -23,6 +23,7 @@ from app.api.routes.agent import create_agent
 from app.api.routes.entity import create_team
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.core.org_context import OrgContext, bind
 from app.exceptions.graph_db_exceptions import GraphWriteError
 from app.services.graph_db.neo4j import neo4j_provider as provider_module
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
@@ -255,6 +256,8 @@ async def _create_team(provider: Neo4jProvider) -> None:
     provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
     provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(return_value={"user-2": "uk2"})
     provider.get_team_with_users = AsyncMock(return_value={"id": "team"})
+    # The duplicate-name read is not part of the create transaction these tests count.
+    provider.find_team_by_name = AsyncMock(return_value=None)
     request = MagicMock()
     request.state.user = {"userId": "user-1", "orgId": "org-1"}
     request.app.state.graph_provider = provider
@@ -262,7 +265,9 @@ async def _create_team(provider: Neo4jProvider) -> None:
     request.body = AsyncMock(return_value=json.dumps({
         "name": "Team", "userRoles": [{"userId": "user-2", "role": "READER"}],
     }).encode())
-    await create_team(request)
+    # The auth middleware binds the caller's org; this calls the route directly.
+    with bind(OrgContext("org-1", "user-1", "user", "jwt", "req-test")):
+        await create_team(request)
 
 
 async def _create_kb(provider: Neo4jProvider) -> None:

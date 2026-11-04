@@ -1,26 +1,45 @@
-# Weekly version updates, one grouped PR per ecosystem for minor and patch bumps.
+# Monthly version updates, one grouped PR per ecosystem for minor and patch bumps. Every
+# change to this file also starts a run, so batch edits to it.
 # Security updates are separate: Dependabot raises those as soon as an alert opens.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /backend/nodejs/apps
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 5
     groups:
       node-api-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # bullmq 5 pins ioredis 5.11.1, so ioredis 6 installs a second copy whose types the queue
+      # code cannot pass to bullmq. bullmq 6 takes ioredis as a peer but drops repeatable jobs.
+      - dependency-name: "ioredis"
+        versions: [">=6"]
 
   - package-ecosystem: npm
     directory: /frontend
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 5
     groups:
       frontend-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # 16.4 enables react-hooks rules (use-memo, immutability, purity) that fail next build in
+      # 14 places, each a change to component behaviour rather than a lint fix.
+      - dependency-name: "eslint-config-next"
+        versions: [">=16.4"]
+      # i18next and typescript-eslint require TypeScript 5, and next 15 type-checks through the
+      # JavaScript compiler API that TypeScript 7 no longer ships.
+      - dependency-name: "typescript"
+        versions: [">=7"]
+      # react-pdf-highlighter 7 brings its own pdfjs-dist 4. The worker this app loads has to
+      # be the same release as that copy, so pdfjs-dist moves when the highlighter does.
+      - dependency-name: "pdfjs-dist"
+        versions: [">=5"]
 
   - package-ecosystem: pip
     directory: /backend/python
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 5
     groups:
       python-minor-and-patch:
@@ -49,9 +68,9 @@ updates:
       # 2.9+ change compare_commits, which the GitHub source calls.
       - dependency-name: "PyGithub"
         versions: [">=2.9"]
-      # 1.2+ count cached tokens inside input tokens, so Bedrock usage would be counted twice.
+      # 1.1.1+ need langchain-core<1.2.5 (we pin 1.7.0); 1.2+ also double-count cached Bedrock tokens.
       - dependency-name: "langchain-aws"
-        versions: [">=1.2"]
+        versions: [">=1.1.1"]
       # 1.6+ move ChatAnthropic's HTTP clients, so the model egress guard is not installed.
       - dependency-name: "langchain-anthropic"
         versions: [">=1.6"]
@@ -63,7 +82,7 @@ updates:
   # moves the suites' own packages and the lock; backend/python above moves the rest.
   - package-ecosystem: uv
     directory: /integration-tests
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 3
     groups:
       integration-tests-minor-and-patch:
@@ -71,7 +90,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 3
     groups:
       actions:
@@ -79,7 +98,7 @@ updates:
 
   - package-ecosystem: docker
     directories: [/, /backend/nodejs/apps, /backend/python, /deployment/sandbox]
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 3
     groups:
       base-images:

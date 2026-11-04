@@ -383,7 +383,7 @@ def test_pooler_is_refused(monkeypatch):
 
 def test_schema_requirements_from_the_tree():
     from db import schema_requirements
-    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 14, "code": 14}}
+    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 17, "code": 17}}
     with pytest.raises(SystemExit):
         schema_requirements.requirements(["nope"])
 
@@ -460,3 +460,54 @@ def test_no_shipped_table_uses_the_lineage_class():
     found = [str(p.relative_to(versions)) for p in sorted(versions.rglob("*"))
              if p.suffix in (".sql", ".py") and use.search(p.read_text(encoding="utf-8"))]
     assert found == [], f"these revisions register the lineage class: {found}"
+
+
+def test_the_catalog_check_runs_with_jit_off():
+    # with JIT built in (the Debian/pgdg packages) the big catalog views compile for 10-30 s and save nothing
+    import inspect
+    src = inspect.getsource(migrate._report)
+    assert src.index('SET jit = off') < src.index('FROM kernel.rls_violations') < src.index('RESET jit')
+
+
+def _files_on_disk(tests_dir: Path) -> list[str]:
+    """Every test file under the tests directory, at any depth, as the workflow names it (tests/sub/test_x.py)."""
+    return sorted(f"tests/{p.relative_to(tests_dir).as_posix()}" for p in tests_dir.rglob("test_*.py"))
+
+
+def test_the_shard_guard_sees_a_test_file_in_a_subdirectory(tmp_path):
+    (tmp_path / "sub" / "deeper").mkdir(parents=True)
+    for rel in ("test_a.py", "sub/test_b.py", "sub/deeper/test_c.py", "sub/helper.py"):
+        (tmp_path / rel).write_text("")
+    assert _files_on_disk(tmp_path) == ["tests/sub/deeper/test_c.py", "tests/sub/test_b.py", "tests/test_a.py"]
+
+
+def test_every_test_file_is_in_exactly_one_shard_of_the_db_migrations_workflow():
+    """CI runs the tests in shards by file; a test file that no shard names would not run, and one named twice would run twice."""
+    import yaml
+
+    workflow = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "db-migrations.yml"
+    if not workflow.is_file():
+        pytest.skip("no workflow file in this checkout (the backend is packaged alone)")
+    matrix = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["migrations"]["strategy"]["matrix"]
+    named = [f for shard in matrix["include"] for f in shard["files"].split()]
+    assert sorted(named) == _files_on_disk(Path(__file__).parent), named
+    assert sorted(s["shard"] for s in matrix["include"]) == sorted(matrix["shard"])
+
+
+@pytest.mark.parametrize("typ", ["smallint[]", "boolean[]", "text[]"])
+def test_item_enum_values_are_quoted_literals_for_every_array_type(typ):
+    # an unquoted 0 on a boolean[] is "boolean = integer", which PostgreSQL has no operator for
+    from db.lib import vetted
+
+    fn = vetted.parse({"name": "kt.w_x", "class": "read", "scope": "org", "returns": "int", "no_org": "0", "body": "BEGIN RETURN 1; END;",
+                       "args": [{"name": "p_a", "type": typ, "max_items": 10, "item_enum": [0, 1]}]})
+    assert "NOT IN ('0', '1')" in vetted.render(fn)
+
+
+@pytest.mark.parametrize("key", ["enum", "item_enum"])
+def test_an_empty_enum_is_refused_rather_than_dropping_its_check(key):
+    from db.lib import vetted
+
+    arg = {"name": "p_a", "type": "text[]", "max_items": 10, key: []}
+    with pytest.raises(vetted.ManifestError, match="non-empty list"):
+        vetted.parse({"name": "kt.w_x", "class": "read", "scope": "org", "returns": "int", "no_org": "0", "body": "BEGIN RETURN 1; END;", "args": [arg]})

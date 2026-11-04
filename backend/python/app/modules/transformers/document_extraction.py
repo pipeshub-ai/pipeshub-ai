@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field, field_validator
 from pydantic_core import to_jsonable_python
 
+from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop.prompt_cache import (
     family_cache_strategy,
     forget_cache_params,
@@ -27,6 +28,7 @@ from app.modules.parsers.code_parser.classification_policy import (
     code_classification_skip_reason,
 )
 from app.modules.parsers.code_parser.models import FILLER_KINDS
+from app.modules.parsers.push_origin import record_is_push_origin
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.llm_gateway.gateway import (
@@ -34,7 +36,9 @@ from app.services.llm_gateway.gateway import (
     llm_call_site,
     provider_key,
 )
+from app.services.model_identity.errors import policy_error_from_exception
 from app.utils.aimodels import coerce_message_content_to_text
+from app.utils.image_utils import to_llm_image_format
 from app.utils.llm import (
     LLMNotConfiguredError,
     LLMUnavailableError,
@@ -42,6 +46,7 @@ from app.utils.llm import (
 )
 from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import invoke_with_structured_output_and_reflection
+from app.utils.user_errors import provider_error_code
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -202,6 +207,8 @@ def _downscale_base64_image(
 
         raw = base64.b64decode(b64_data)
         img = Image.open(io.BytesIO(raw))
+        # open() reads only the header; a truncated body would reach the provider.
+        img.load()
         w, h = img.size
 
         if w <= max_dim and h <= max_dim:
@@ -228,6 +235,26 @@ def _downscale_base64_image(
         logger.warning("Failed to downscale base64 image: %s", exc)
         return None
 
+def _images_rejected(exc: BaseException) -> bool:
+    """Whether the provider refused a request for its images, so the text alone may pass."""
+    code = provider_error_code(exc)
+    # Only text counts toward MAX_TOKENS, so the images are the likely overflow.
+    if code == "request_too_large":
+        return True
+    if code != "invalid_request":
+        return False
+    # Every other 400 lands here too (an unsupported parameter, a gateway's
+    # budget, a content filter); dropping images fixes only one that names them.
+    message = str(exc.__cause__ or exc)
+    return (
+        "image" in message.lower()
+        and policy_error_from_exception(exc) is None
+        and classify_error(message)[0] != "content_filter"
+    )
+
+MAX_DEPARTMENTS = 2
+
+
 class SubCategories(BaseModel):
     level1: str = Field(description="Level 1 subcategory")
     level2: str = Field(description="Level 2 subcategory")
@@ -235,7 +262,10 @@ class SubCategories(BaseModel):
 
 class DocumentClassification(BaseModel):
     departments: list[str] = Field(
-        description="The list of departments this document belongs to", max_items=3
+        description=(
+            "The department that owns the document (wrote it, maintains it or runs its work) first; "
+            "a second when it is also directly another department's work. At most 2."
+        )
     )
     category: str = Field(description="Main category this document belongs to")
     subcategories: SubCategories = Field(
@@ -245,7 +275,10 @@ class DocumentClassification(BaseModel):
         description="Natural languages the document is written in"
     )
     topics: list[str] = Field(
-        description="List of key topics/themes extracted from the document"
+        description=(
+            "2 to 5 (usually 2 or 3) reusable subjects a reader would look for across documents, lowercase except "
+            "acronyms; never a person, company, document title, date, amount or id"
+        )
     )
     summary: str = Field(
         description=(
@@ -260,6 +293,12 @@ class DocumentClassification(BaseModel):
             "recommendations, or unsupported claims."
         )
     )
+
+    @field_validator("departments", mode="after")
+    @classmethod
+    def _named_departments_once(cls, values: list[str]) -> list[str]:
+        kept = (v.strip() for v in values if isinstance(v, str) and v.strip())
+        return list(dict.fromkeys(kept))
 
     @field_validator("languages", mode="after")
     @classmethod
@@ -416,6 +455,7 @@ class DocumentExtraction(Transformer):
                 record_name=record.record_name,
                 record_type=record.record_type.value,
                 block_groups=record.block_containers.block_groups,
+                allow_remote_image_uri=not record_is_push_origin(record),
             )
         except LLMNotConfiguredError as e:
             self.logger.info("⏭️ Extraction skipped for record %s: %s", record.id, e)
@@ -431,7 +471,7 @@ class DocumentExtraction(Transformer):
         self.logger.debug("🎯 Document extraction completed successfully")
 
     def _prepare_content(
-        self, blocks: list[Block], *, is_multimodal_llm: bool, context_length: int,
+        self, blocks: list[Block], *, is_multimodal_llm: bool, context_length: int, allow_remote_image_uri: bool,
     ) -> list[dict]:
         MAX_TOKENS = int(context_length * CONTENT_TOKEN_RATIO)
         MAX_IMAGES = 50
@@ -469,11 +509,17 @@ class DocumentExtraction(Transformer):
                             continue
 
                         if image_data.startswith(("http://", "https://")):
-                            pass  # remote URLs are validated server-side
+                            # The provider fetches this URL itself, so pushed content never sends one.
+                            if not allow_remote_image_uri:
+                                self.logger.warning("⚠️ Skipping a remote image URL for this content")
+                                continue
                         elif image_data.startswith(SUPPORTED_LLM_IMAGE_PREFIXES):
-                            result = _downscale_base64_image(image_data)
+                            # Relabels bytes whose declared type is wrong, which providers reject.
+                            result = to_llm_image_format(image_data, max_long_edge_px=MAX_IMAGE_DIMENSION)
+                            if result is not None:
+                                result = _downscale_base64_image(result)
                             if result is None:
-                                self.logger.warning("⚠️ Skipping image that could not be downscaled")
+                                self.logger.warning("⚠️ Skipping an image that can't be sent to the model (unsupported or corrupt)")
                                 continue
                             image_data = result
                         elif image_data.startswith("data:image/"):
@@ -546,7 +592,18 @@ class DocumentExtraction(Transformer):
         return DocumentExtraction._fill_prompt("\n".join(f'     - "{dept}"' for dept in departments))
 
     @staticmethod
-    def to_semantic_metadata(classification: DocumentClassification) -> SemanticMetadata:
+    def to_semantic_metadata(
+        classification: DocumentClassification, departments: list[str] | None = None,
+    ) -> SemanticMetadata:
+        """``departments`` is the org's list the prompt offered: picks not on it are
+        dropped before the main-first list is cut to ``MAX_DEPARTMENTS``, so a
+        paraphrased first pick never pushes out a valid one. Cut, not rejected:
+        a third pick failing validation would cost the whole classification."""
+        if departments is not None:
+            canonical = {name.strip().casefold(): name for name in departments}
+            listed = (canonical.get(pick.casefold()) for pick in classification.departments)
+            kept = list(dict.fromkeys(name for name in listed if name))[:MAX_DEPARTMENTS]
+            classification = classification.model_copy(update={"departments": kept})
         return semantic_metadata_from_classification(classification)
 
     @staticmethod
@@ -588,6 +645,9 @@ class DocumentExtraction(Transformer):
             departments or [dept.value for dept in DepartmentNames],
             record_name,
             record_type,
+            # Blocks arrive over the wire without their record. Pushed content was
+            # asserted inline before it was stored, so none of it carries a remote URL.
+            allow_remote_image_uri=True,
         )
 
     async def extract_metadata(
@@ -596,6 +656,8 @@ class DocumentExtraction(Transformer):
         org_id: str,
         record_name: str = "",
         record_type: str = "",
+        *,
+        allow_remote_image_uri: bool,
     ) -> SemanticMetadata | None:
         """Extract metadata from document content, reading the org's departments."""
         self.logger.debug("🎯 Extracting departments for org_id: %s", org_id)
@@ -606,6 +668,7 @@ class DocumentExtraction(Transformer):
             departments or [dept.value for dept in DepartmentNames],
             record_name,
             record_type,
+            allow_remote_image_uri=allow_remote_image_uri,
         )
 
     async def _classify_blocks(
@@ -615,6 +678,8 @@ class DocumentExtraction(Transformer):
         departments: list[str],
         record_name: str,
         record_type: str,
+        *,
+        allow_remote_image_uri: bool,
     ) -> SemanticMetadata | None:
         """Classify *blocks*; ``None`` means there was nothing to classify.
 
@@ -632,6 +697,7 @@ class DocumentExtraction(Transformer):
         content = await asyncio.to_thread(
             self._prepare_content,
             blocks, is_multimodal_llm=bool(config.get("isMultimodal")), context_length=context_length,
+            allow_remote_image_uri=allow_remote_image_uri,
         )
         if len(content) == 0:
             self.logger.info("No content to process in document extraction")
@@ -649,26 +715,45 @@ class DocumentExtraction(Transformer):
             llm, family=PROMPT_FAMILY, org_id=org_id, shard_key=record_name, model_name=model_name,
         )
         system = cache.system(instructions, "")
+
+        async def classify(message: list[dict]) -> DocumentClassification | None:
+            try:
+                with llm_call_site("classify"):
+                    return await invoke_with_structured_output_and_reflection(
+                        llm, [*system, HumanMessage(content=message)], DocumentClassification, prompt_cache=cache,
+                        # Recorded under the name the strategy was chosen with, so the next record skips them.
+                        on_cache_rejected=lambda refused: forget_cache_params(llm, model_name, params=refused),
+                        raise_call_errors=True,
+                        raise_unavailable=True,
+                    )
+            except (NonRetryableError, LLMUnavailableError):
+                raise
+            except Exception as e:
+                # The model did not answer. The fallback would resend the whole
+                # document to the same model, doubling every record's cost while
+                # it is down; only a reply that did not fit the schema earns one.
+                # Not None: that reads as nothing to classify, which is final.
+                raise ExtractionLLMError(f"Document classification call failed: {e}") from e
+
         try:
-            with llm_call_site("classify"):
-                parsed_response = await invoke_with_structured_output_and_reflection(
-                    llm, [*system, HumanMessage(content=document)], DocumentClassification, prompt_cache=cache,
-                    # Recorded under the name the strategy was chosen with, so the next record skips them.
-                    on_cache_rejected=lambda refused: forget_cache_params(llm, model_name, params=refused),
-                    raise_call_errors=True,
-                    raise_unavailable=True,
-                )
-        except (NonRetryableError, LLMUnavailableError):
-            raise
-        except Exception as e:
-            # The model did not answer. The fallback would resend the whole
-            # document to the same model, doubling every record's cost while
-            # it is down; only a reply that did not fit the schema earns one.
-            # Not None: that reads as nothing to classify, which is final.
-            raise ExtractionLLMError(f"Document classification call failed: {e}") from e
+            parsed_response = await classify(document)
+        except ExtractionLLMError as e:
+            text_only = [part for part in document if part["type"] != "image_url"]
+            dropped = len(document) - len(text_only)
+            # One image the model cannot read fails the whole request, and every
+            # retry would resend it; the text alone still classifies the record.
+            # Without document text it would classify only the record's name.
+            has_text = any(part["type"] == "text" and part["text"].strip() for part in content)
+            if not dropped or not has_text or not _images_rejected(e):
+                raise
+            self.logger.warning(
+                "⚠️ Model rejected the document with %d image(s); classifying its text alone: %s", dropped, e,
+            )
+            document = text_only
+            parsed_response = await classify(document)
         if parsed_response is not None:
             self.logger.debug("✅ Document classification parsed successfully")
-            return self.to_semantic_metadata(parsed_response)
+            return self.to_semantic_metadata(parsed_response, departments)
         self.logger.warning(
             "⚠️ Structured extraction failed after all attempts. Falling back to plain LLM summary."
         )
@@ -739,12 +824,17 @@ class DocumentExtraction(Transformer):
         record_name: str = "",
         record_type: str = "",
         block_groups: list[BlockGroup] | None = None,
+        *,
+        allow_remote_image_uri: bool,
     ) -> SemanticMetadata | None:
         self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
         code = await self._classify_code(blocks, block_groups, record_type)
         if code is not _NOT_CODE:
             return code
-        return await self.extract_metadata(blocks, org_id, record_name=record_name, record_type=record_type)
+        return await self.extract_metadata(
+            blocks, org_id, record_name=record_name, record_type=record_type,
+            allow_remote_image_uri=allow_remote_image_uri,
+        )
 
     async def _classify_code(
         self, blocks: list[Block], block_groups: list[BlockGroup] | None, record_type: str

@@ -104,6 +104,7 @@ class TestRefusedPageIsShown:
         connector._normalize_url = lambda url: url
         connector._off_site = lambda url: False
         connector._excluded_by_url_should_contain = lambda url: False
+        connector._is_crawler_url = lambda url: False
         connector._record_final_failure = lambda *args, **kwargs: WebConnector._record_final_failure(
             connector, *args, **kwargs
         )

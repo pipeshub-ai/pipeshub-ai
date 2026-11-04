@@ -13,6 +13,7 @@ import React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 import { useUploadStore } from '@/lib/store/upload-store';
+import { clearSessionCache } from '@/lib/api/session-cache';
 
 vi.mock('@/lib/store/auth-store', () => ({
   useAuthStore: { getState: () => ({ isHydrated: true }) },
@@ -151,6 +152,54 @@ describe('useKbStreamUpload', () => {
     expect(items[0]!.errors?.[0]).toContain('connection dropped');
   });
 
+  it('keeps a finished upload completed when the connection drops after `done`', async () => {
+    // The server finished the batch, then the response closed uncleanly.
+    scriptedEvents = [{ event: 'done', data: {} }];
+    scriptedError = new Error('The connection to PipesHub dropped before this finished. Please try again.');
+    const getKbId = vi.fn().mockResolvedValue('kb1');
+    const onUploaded = vi.fn();
+    const hook = mountHook(() => useKbStreamUpload({ getKbId, onUploaded }));
+
+    await act(async () => {
+      await hook.current.uploadFiles([makeFile('a.txt')]);
+    });
+
+    const items = useUploadStore.getState().items;
+    expect(items[0]!.status).toBe('completed');
+    expect(onUploaded).toHaveBeenCalledTimes(1);
+  });
+
+  it('never fails a row the server already reported as succeeded', async () => {
+    scriptedEvents = [{ event: 'file:succeeded', data: { filePath: 'a.txt' } }];
+    scriptedError = new Error('connection dropped');
+    const getKbId = vi.fn().mockResolvedValue('kb1');
+    const hook = mountHook(() => useKbStreamUpload({ getKbId }));
+
+    await act(async () => {
+      await hook.current.uploadFiles([makeFile('a.txt')]);
+    });
+
+    expect(useUploadStore.getState().items[0]!.status).toBe('completed');
+  });
+
+  it('matches a succeeded event whose path the server prefixed', async () => {
+    scriptedEvents = [
+      { event: 'file:succeeded', data: { filePath: '/a.txt' } },
+      { event: 'file:failed', data: { filePath: 'dir/b.txt', errors: ['Too big'] } },
+    ];
+    scriptedError = new Error('connection dropped');
+    const getKbId = vi.fn().mockResolvedValue('kb1');
+    const hook = mountHook(() => useKbStreamUpload({ getKbId }));
+
+    await act(async () => {
+      await hook.current.uploadFiles([makeFile('a.txt'), makeFile('b.txt')]);
+    });
+
+    const byName = Object.fromEntries(useUploadStore.getState().items.map((i) => [i.name, i]));
+    expect(byName['a.txt']!.status).toBe('completed');
+    expect(byName['b.txt']!.errors).toEqual(['Too big']);
+  });
+
   it('is a no-op for an empty file list', async () => {
     const getKbId = vi.fn();
     const hook = mountHook(() => useKbStreamUpload({ getKbId }));
@@ -161,5 +210,54 @@ describe('useKbStreamUpload', () => {
 
     expect(getKbId).not.toHaveBeenCalled();
     expect(useUploadStore.getState().items).toHaveLength(0);
+  });
+
+  it('cancels the upload at sign-out and writes no result for the next person', async () => {
+    const { KnowledgeBaseApi } = await import('@/knowledge-base/api');
+    let signal: AbortSignal | undefined;
+    vi.mocked(KnowledgeBaseApi.streamUpload).mockImplementationOnce(
+      (_kb, _folder, _files, _meta, options) =>
+        new Promise<void>((_resolve, reject) => {
+          signal = options.signal;
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    const onUploaded = vi.fn();
+    const hook = mountHook(() => useKbStreamUpload({ getKbId: vi.fn().mockResolvedValue('kb1'), onUploaded }));
+
+    let upload!: Promise<boolean>;
+    await act(async () => {
+      upload = hook.current.uploadFiles([makeFile('a.txt')]);
+    });
+    clearSessionCache();
+    let finished: boolean | undefined;
+    await act(async () => {
+      finished = await upload;
+    });
+
+    // Tells the caller, so it sends nothing more for this upload.
+    expect(finished).toBe(false);
+    expect(signal?.aborted).toBe(true);
+    expect(useUploadStore.getState().items).toEqual([]);
+    expect(onUploaded).not.toHaveBeenCalled();
+  });
+
+  it('keeps working after an upload that finished within the session', async () => {
+    scriptedEvents = [
+      { event: 'file:succeeded', data: { filePath: 'a.txt' } },
+      { event: 'done', data: {} },
+    ];
+    const hook = mountHook(() => useKbStreamUpload({ getKbId: vi.fn().mockResolvedValue('kb1') }));
+    let finished: boolean | undefined;
+    await act(async () => {
+      finished = await hook.current.uploadFiles([makeFile('a.txt')]);
+    });
+    expect(finished).toBe(true);
+
+    // The finished upload no longer listens for the session end.
+    clearSessionCache();
+    expect(useUploadStore.getState().items).toEqual([]);
+    const { KnowledgeBaseApi } = await import('@/knowledge-base/api');
+    expect(vi.mocked(KnowledgeBaseApi.streamUpload).mock.calls[0][4].signal?.aborted).toBe(false);
   });
 });

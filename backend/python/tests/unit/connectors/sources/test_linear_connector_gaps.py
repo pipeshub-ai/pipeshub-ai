@@ -86,6 +86,7 @@ def _make_connector() -> LinearConnector:
     dep.org_id = "org-linear-gaps"
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.on_new_app_users = AsyncMock()
+    dep.get_all_app_users = AsyncMock(return_value=[])
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
@@ -287,7 +288,7 @@ class TestFilterOptionsAndUsers:
         conn.data_source = None
         conn.init = AsyncMock(return_value=True)
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(return_value=_teams_resp([
+        mock_ds.execute_operation = AsyncMock(return_value=_teams_resp([
             {"id": "t1", "name": "Eng", "key": "ENG"},
         ]))
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):

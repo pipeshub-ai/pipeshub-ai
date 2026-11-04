@@ -327,6 +327,60 @@ async def test_a_password_required_answer_becomes_the_typed_error_and_is_not_ret
 
 
 @pytest.mark.asyncio
+async def test_no_model_that_reads_images_is_not_retried_and_tells_what_to_fix() -> None:
+    """The parse route's answer when OCR has no multimodal model: one call,
+    terminal, and the record stores the reason the route sent."""
+    from app.config.constants.arangodb import OriginTypes, RecordTypes
+    from app.services.messaging.error_classifier import (
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
+    from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR, to_user_reason
+
+    client = ParsingClient(
+        service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0,
+        config_service=_SecretsConfigService(),
+    )
+    calls = 0
+
+    async def _request(method, url, **kwargs) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _make_response(
+            422,
+            {"success": False, "error": {
+                "code": "PARSE_FAILED",
+                "message": SCANNED_DOCUMENT_NEEDS_OCR,
+                "details": {"required": "multimodal LLM"},
+            }},
+        )
+
+    fake_httpx = AsyncMock()
+    fake_httpx.__aenter__ = AsyncMock(return_value=fake_httpx)
+    fake_httpx.__aexit__ = AsyncMock(return_value=False)
+    fake_httpx.request = _request
+
+    with patch.object(client, "_make_client", return_value=fake_httpx):
+        with pytest.raises(ParsingClientError) as exc_info:
+            await client.parse(file_content=b"data", record_name="scan.pdf")
+
+    assert calls == 1
+    assert not client.circuit_breaker.is_open
+    assert client.circuit_breaker._consecutive_failures == 0
+    # How the record handler sees it (record.py wraps unknown errors this way).
+    try:
+        raise Exception(str(exc_info.value)) from exc_info.value
+    except Exception as wrapped:
+        handled = wrapped
+    assert MessageErrorClassifier.classify_by_exception(handled) == MessageErrorType.TERMINAL
+    assert to_user_reason(handled) == SCANNED_DOCUMENT_NEEDS_OCR
+    uploaded = {"origin": OriginTypes.UPLOAD.value, "recordType": RecordTypes.FILE.value}
+    synced = {"origin": OriginTypes.CONNECTOR.value, "recordType": RecordTypes.FILE.value}
+    assert to_user_reason(handled, record=uploaded) == SCANNED_DOCUMENT_NEEDS_OCR
+    assert to_user_reason(handled, record=synced, source="Drive") == SCANNED_DOCUMENT_NEEDS_OCR
+
+
+@pytest.mark.asyncio
 async def test_an_unexpected_parser_failure_is_retried_and_stored_as_temporary() -> None:
     """The parsing service answers an unexpected exception with a 500 and a
     generic body. The client retries it as transient, and the record is told

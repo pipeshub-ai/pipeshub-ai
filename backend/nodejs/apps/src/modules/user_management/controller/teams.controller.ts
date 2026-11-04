@@ -14,7 +14,7 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { inject, injectable } from 'inversify';
-import { UserDisplayPicture } from '../schema/userDp.schema';
+import { getPictureRepository } from '../../../libs/repositories/picture';
 import type {
   TeamCreatedByUser,
   TeamResponse,
@@ -84,13 +84,7 @@ async function enrichTeamsProfilePictures(
   const uniqueIds = [...new Set(userIds)];
   let dpDocs;
   try {
-    dpDocs = await UserDisplayPicture.find({
-      orgId,
-      userId: { $in: uniqueIds },
-      pic: { $ne: null },
-    })
-      .lean()
-      .exec();
+    dpDocs = await getPictureRepository().listSet(orgId, uniqueIds);
   } catch (error) {
     logger.warn('Could not look up team profile pictures', {
       orgId,
@@ -103,7 +97,7 @@ async function enrichTeamsProfilePictures(
   for (const dp of dpDocs) {
     if (dp.userId && dp.pic) {
       const mime = dp.mimeType || 'image/jpeg';
-      dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+      dpMap.set(dp.userId, `data:${mime};base64,${dp.pic}`);
     }
   }
 

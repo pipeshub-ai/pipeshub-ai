@@ -192,6 +192,24 @@ class TestContextFromEnvelope:
         ctx = rc.context_from_envelope({rc.ENVELOPE_REQUEST_ID: "@@@ ///"})
         assert ctx.root_id.startswith("anon-")
 
+    def test_non_string_ids_are_ignored(self) -> None:
+        ctx = rc.context_from_envelope({rc.ENVELOPE_REQUEST_ID: 7, rc.ENVELOPE_ORG_ID: {"a": 1}})
+        assert ctx.root_id.startswith("anon-")
+        assert ctx.org_id is None
+
+
+class TestRunInContext:
+    @pytest.mark.asyncio
+    async def test_binds_for_the_awaitable_then_restores(self) -> None:
+        rc.set_context("outer")
+
+        async def read() -> "rc.RequestContext | None":
+            return rc.get_context()
+
+        seen = await rc.run_in_context(rc.RequestContext(root_id="inner", org_id="org-1"), read())
+        assert seen == rc.RequestContext(root_id="inner", org_id="org-1")
+        assert rc.get_context() == rc.RequestContext(root_id="outer")
+
 
 class TestAdmittedInPropagation:
     def test_an_admission_stamp_rides_on_outbound_headers(self) -> None:
@@ -201,3 +219,69 @@ class TestAdmittedInPropagation:
         finally:
             rc.reset_admitted_in(token)
         assert rc.HEADER_ADMITTED_IN not in rc.inject_request_headers({})
+
+
+class TestOrgOnContext:
+    def test_set_context_org_attaches_to_current_context(self) -> None:
+        rc.set_context("root-1")
+        rc.set_context_org("org-1")
+        assert rc.get_org_id() == "org-1"
+        assert rc.get_context().org_id == "org-1"
+
+    def test_set_context_org_without_context_is_noop(self) -> None:
+        rc.set_context_org("org-1")
+        assert rc.get_context() is None
+        assert rc.get_org_id() is None
+
+    def test_empty_org_is_ignored(self) -> None:
+        rc.set_context("root-1")
+        rc.set_context_org("")
+        rc.set_context_org(None)
+        assert rc.get_org_id() is None
+
+    def test_org_is_sanitized(self) -> None:
+        rc.set_context("root-1")
+        rc.set_context_org("org\r\n-1")
+        assert rc.get_org_id() == "org-1"
+
+    def test_new_context_starts_without_org(self) -> None:
+        rc.set_context("root-1")
+        rc.set_context_org("org-1")
+        rc.set_context("root-2")
+        assert rc.get_org_id() is None
+
+
+class TestOrgOnEnvelope:
+    def test_inject_envelope_adds_org(self) -> None:
+        rc.set_context("root-7")
+        rc.set_context_org("org-7")
+        out = rc.inject_envelope({"recordId": "r1"})
+        assert out[rc.ENVELOPE_ORG_ID] == "org-7"
+
+    def test_inject_envelope_without_org_leaves_key_out(self) -> None:
+        rc.set_context("root-7")
+        out = rc.inject_envelope({"recordId": "r1"})
+        assert rc.ENVELOPE_ORG_ID not in out
+
+    def test_inject_envelope_keeps_existing_org(self) -> None:
+        rc.set_context("root-7")
+        rc.set_context_org("org-7")
+        out = rc.inject_envelope({rc.ENVELOPE_ORG_ID: "org-producer"})
+        assert out[rc.ENVELOPE_ORG_ID] == "org-producer"
+
+    def test_context_from_envelope_reads_org(self) -> None:
+        ctx = rc.context_from_envelope({rc.ENVELOPE_REQUEST_ID: "root-1", rc.ENVELOPE_ORG_ID: "org-1"})
+        assert (ctx.root_id, ctx.org_id) == ("root-1", "org-1")
+
+    def test_context_from_envelope_without_org(self) -> None:
+        assert rc.context_from_envelope({rc.ENVELOPE_REQUEST_ID: "root-1"}).org_id is None
+
+    def test_bind_context_keeps_org(self) -> None:
+        """set_context(ctx.root_id) would drop the org; consumers must bind the whole context."""
+        token = rc.bind_context(rc.context_from_envelope({rc.ENVELOPE_REQUEST_ID: "root-1", rc.ENVELOPE_ORG_ID: "org-1"}))
+        try:
+            assert rc.get_org_id() == "org-1"
+            assert rc.get_context().root_id == "root-1"
+        finally:
+            rc.reset_context(token)
+        assert rc.get_context() is None

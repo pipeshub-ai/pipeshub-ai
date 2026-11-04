@@ -79,10 +79,29 @@ def adapt_schema(arango_schema: dict | None) -> dict | None:
     return schema
 
 
+#: A projected property value on a Neo4j record: a flat ``p_<name>`` key holding a scalar or a list of
+#: scalars; null is allowed because an update removes a key by setting it to null. (ArangoDB keeps the
+#: values in the ``recordProps`` sub-document, which the shared record schema declares.)
+RECORD_PROPERTY_KEY_PATTERN = r"^p_[a-zA-Z0-9_]{1,64}$"
+_RECORD_PROPERTY_VALUE = {
+    "type": ["string", "number", "boolean", "null"],
+}
+_RECORD_PROPERTY_LIST = {"type": "array", "items": {"type": "string"}}
+
+
+def _with_record_property_keys(schema: dict | None) -> dict | None:
+    if schema is None:
+        return None
+    schema["patternProperties"] = {
+        RECORD_PROPERTY_KEY_PATTERN: {"anyOf": [_RECORD_PROPERTY_VALUE, _RECORD_PROPERTY_LIST]},
+    }
+    return schema
+
+
 # Build the node schema registry mapping collection names to adapted schemas
 # This mirrors the NODE_COLLECTIONS list defined by CollectionNames in app/config/constants/arangodb.py
 NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
-    CollectionNames.RECORDS.value: adapt_schema(record_schema),
+    CollectionNames.RECORDS.value: _with_record_property_keys(adapt_schema(record_schema)),
     CollectionNames.STAGE_STATES.value: adapt_schema(stage_state_schema),
     CollectionNames.DRIVES.value: None,  # No schema
     CollectionNames.FILES.value: adapt_schema(file_record_schema),
@@ -184,6 +203,9 @@ JSON_ENCODED_FIELDS: dict[str, frozenset[str]] = {
         **{c: _json_object_fields(s) for c, s in NODE_SCHEMA_REGISTRY.items()},
         CollectionNames.BLOCKS.value: _json_object_fields(block_schema),
         CollectionNames.SQL_TABLES.value: _json_object_fields(sql_table_record_schema),
+        # Has no schema. ``retired`` is a list of maps, so Neo4j stores it as a JSON
+        # string; no compare-and-set ever compares it (``switchSeq`` is the guard).
+        CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value: frozenset({"retired"}),
     }.items()
     if fields
 }

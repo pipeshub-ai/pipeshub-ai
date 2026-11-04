@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["DEFAULT_NEIGHBOR_LIMIT", "IMPACT_RELATIONS", "MAX_NEIGHBOUR_DEPTH", "get_neighbour_impl", "impact_impl", "DEFAULT_IMPACT_DEPTH"]
+__all__ = ["DEFAULT_NEIGHBOR_LIMIT", "IMPACT_RELATIONS", "MAX_NEIGHBOUR_DEPTH", "MAX_IMPACT_DEPTH", "get_neighbour_impl", "impact_impl", "DEFAULT_IMPACT_DEPTH"]
 
 DEFAULT_NEIGHBOR_LIMIT = 100
 # A neighbour walk is for tracing a specific chain, not surveying the repo:
@@ -66,8 +66,9 @@ async def _resolve_anchors(
     *,
     repo: str | None,
     access: RecordAccess,
-) -> list[dict[str, Any]]:
-    """The symbols a walk starts from: one named symbol, or the whole file.
+) -> tuple[list[dict[str, Any]], str]:
+    """The symbols a walk starts from: one named symbol, or the whole file,
+    and the indexed path they came from (a checkout prefix the index lacks is dropped).
 
     Whole-file is the shape a caller has right after a search or a listing —
     a path, and no symbol yet. Without it, "what does this file talk to" costs
@@ -84,14 +85,17 @@ async def _resolve_anchors(
             graph_provider, org_id, file_path, qualified_name, connector_id,
             repo=repo, access=access,
         )
-        return [anchor] if anchor else []
+        return ([anchor] if anchor else []), file_path
 
-    record_ids = await _choose_records(
-        graph_provider, org_id, await _records_for_path(graph_provider, org_id, file_path),
-        connector_id, file_path=file_path, repo=repo, access=access,
+    record_ids, matched_path = await _records_for_path(
+        graph_provider, org_id, file_path,
+        choose=lambda ids: _choose_records(
+            graph_provider, org_id, ids, connector_id,
+            file_path=file_path, repo=repo, access=access,
+        ),
     )
     if not record_ids:
-        return []
+        return [], file_path
     rows = await graph_provider.get_nodes_by_field_in(
         collection=_BLOCKS, field_name="recordId", field_values=record_ids, raise_on_error=True
     )
@@ -101,7 +105,7 @@ async def _resolve_anchors(
         (row.get("kind") or "").lower() in FILLER_KINDS, row.get("startLine") or 0,
     ))
     # One past the cap, so the caller can tell "exactly 200" from "more".
-    return mine[:_NEIGHBOUR_FANOUT + 1]
+    return mine[:_NEIGHBOUR_FANOUT + 1], matched_path
 
 
 # Candidates a bare name may resolve to before the walk gives up and asks which
@@ -272,6 +276,7 @@ async def get_neighbour_impl(
     offset: int = 0,
     include_tests: bool = False,
     repo: str | None = None,
+    max_depth: int = MAX_NEIGHBOUR_DEPTH,
 ) -> dict[str, Any]:
     if offset < 0:
         return {"error": "offset must be 0 or greater"}
@@ -287,7 +292,8 @@ async def get_neighbour_impl(
             f"unknown edge_types {unknown}. Valid: {', '.join(CODE_RELATIONS)}"
         )}
     relations = list(edge_types) if edge_types else list(CODE_RELATIONS)
-    depth = max(1, min(int(depth or 1), MAX_NEIGHBOUR_DEPTH))
+    asked = int(depth or 1)
+    depth = max(1, min(asked, max_depth))
 
     if not file_path and not qualified_name:
         return {"error": (
@@ -303,12 +309,12 @@ async def get_neighbour_impl(
     }
     by_name = not file_path
     access = RecordAccess(graph_provider, org_id, user_id)
-    anchors = await (
-        _resolve_anchors_by_name(graph_provider, org_id, qualified_name, connector_id)
-        if by_name else
-        _resolve_anchors(graph_provider, org_id, file_path, qualified_name, connector_id,
-                         repo=repo, access=access)
-    )
+    if by_name:
+        anchors = await _resolve_anchors_by_name(graph_provider, org_id, qualified_name, connector_id)
+    else:
+        anchors, file_path = await _resolve_anchors(
+            graph_provider, org_id, file_path, qualified_name, connector_id, repo=repo, access=access,
+        )
     if not anchors:
         return empty
 
@@ -473,6 +479,9 @@ async def get_neighbour_impl(
         "neighbors": neighbors,
         **({"offset": offset} if offset else {}),
         "total": total,
+        # A deeper walk cut short silently reads as "nothing further up".
+        **({"depth_capped": f"depth {asked} asked, {depth} walked (the most this tool follows)"}
+           if asked > depth else {}),
         **({"hidden_tests": len(hidden_tests),
             # A bare count reads as "no test callers worth listing"; say how to see them.
             "hint": (f"{len(hidden_tests)} neighbour(s) in test code are hidden; "
@@ -525,6 +534,8 @@ IMPACT_RELATIONS = [
     RecordRelations.OVERRIDES.value,
 ]
 DEFAULT_IMPACT_DEPTH = 2
+# An inbound call walk stays narrow enough for five levels; get_neighbour's any-edge walk does not.
+MAX_IMPACT_DEPTH = 5
 _IMPACT_ROWS = 500
 # Reached through these, a symbol builds on the target rather than calling it.
 _BUILT_ON = frozenset({RecordRelations.INHERITS.value, RecordRelations.IMPLEMENTS.value,
@@ -560,7 +571,7 @@ async def impact_impl(
             graph_provider=graph_provider, connector_id=connector_id, org_id=org_id,
             user_id=user_id, file_path=file_path, qualified_name=qualified_name,
             direction="inbound", edge_types=edge_types or IMPACT_RELATIONS, depth=depth,
-            limit=_IMPACT_ROWS, include_tests=tests, repo=repo,
+            limit=_IMPACT_ROWS, include_tests=tests, repo=repo, max_depth=MAX_IMPACT_DEPTH,
         )
 
     walk = await walk_with(tests=include_tests)

@@ -4,7 +4,7 @@ import { applyStoreUmbrella } from './libs/config/storeUmbrella';
 import { Logger } from './libs/services/logger.service';
 
 // Loads environment variables
-config();
+config({ quiet: true });
 applyStoreUmbrella();
 import { Application } from './app';
 import { createGracefulShutdown } from './shutdown';

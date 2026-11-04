@@ -18,9 +18,12 @@ if TYPE_CHECKING:
 
 def node(
     node_id: str, name: str, node_type: str = "record", *,
-    parent_id: str | None = None, origin: str = "CONNECTOR",
+    parent_id: str | None = None, origin: str = "CONNECTOR", record_type: str | None = None,
 ) -> dict[str, Any]:
-    return {"id": node_id, "name": name, "nodeType": node_type, "origin": origin, "parentId": parent_id}
+    return {
+        "id": node_id, "name": name, "nodeType": node_type, "origin": origin, "parentId": parent_id,
+        "recordType": record_type,
+    }
 
 
 def _passes(row: dict[str, Any], filters: dict[str, Any]) -> bool:
@@ -34,6 +37,9 @@ def _passes(row: dict[str, Any], filters: dict[str, Any]) -> bool:
         return False
     query = filters.get("search_query")
     if query and query.lower() not in row["name"].lower():
+        return False
+    record_types = filters.get("record_types")
+    if record_types and row.get("recordType") not in record_types:
         return False
     node_types = filters.get("node_types")
     return not node_types or row["nodeType"] in node_types
@@ -92,7 +98,13 @@ def stub_listing(graph: MagicMock, user_key: str, sources: dict[str, list[dict[s
             return {"rows": [], "hasMore": False, "total": 0, "counts": {}, "scope": scope}
         rows = inside[start["connectorId"]]
         if not (flatten and start["nodeType"] == "app"):
-            rows = [r for r in rows if r["parentId"] == start["id"]]
+            under = {start["id"]}
+            if flatten:
+                # Rows are listed parent first, so one pass reaches every descendant.
+                for r in rows:
+                    if r["parentId"] in under:
+                        under.add(r["id"])
+            rows = [r for r in rows if r["parentId"] in under]
         scope = None
         if include_scope:
             current = {"id": start["id"], "name": start["name"], "nodeType": start["nodeType"]}

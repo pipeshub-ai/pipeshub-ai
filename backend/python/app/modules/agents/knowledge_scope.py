@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.modules.agents.capability_summary import PROJECT_FILES_KEY
 from app.modules.agents.qna.chat_state import (
     _extract_kb_app_ids,
     _extract_knowledge_connector_ids,
@@ -262,13 +263,60 @@ async def admit_caller_project_collections(
     return admitted
 
 
+PROJECT_FILES_LABEL = "Project files"
+
+
+async def project_files_knowledge(
+    graph_provider: IGraphDBProvider,
+    *,
+    kb_ids: Iterable[str],
+    known_ids: Iterable[str],
+    logger: Logger,
+) -> list[dict[str, Any]]:
+    """A knowledge entry for each hidden collection in the turn's ``kb``
+    filter that ``known_ids`` does not already list: a project's own file
+    collection, which Node adds to ``kb`` for every project chat.
+
+    Hidden collections are left out of the user's listed collections, so
+    without this the agent neither lists nor searches the files uploaded to
+    the project (search scopes to the knowledge list). A lookup failure adds
+    nothing.
+    """
+    known = set(known_ids)
+    candidates = [
+        k for k in dict.fromkeys(kb_ids)
+        if k and k != NO_KB_SELECTED_FILTER and k not in known
+    ][:MAX_COLLECTION_CANDIDATES]
+    if not candidates:
+        return []
+    try:
+        hidden = set(await graph_provider.get_hidden_app_ids(candidates))
+    except Exception:
+        logger.warning("Could not look up project file collections %s", candidates, exc_info=True)
+        return []
+    return [
+        {
+            "connectorId": kb_id,
+            "name": PROJECT_FILES_LABEL,
+            "displayName": PROJECT_FILES_LABEL,
+            "type": Connectors.KNOWLEDGE_BASE.value,
+            "filters": {},
+            "filtersParsed": {"records": []},
+            PROJECT_FILES_KEY: True,
+        }
+        for kb_id in candidates if kb_id in hidden
+    ]
+
+
 __all__ = [
     "MAX_CALLER_COLLECTIONS",
     "MAX_COLLECTION_CANDIDATES",
     "NO_KB_SELECTED_FILTER",
+    "PROJECT_FILES_LABEL",
     "AgentScope",
     "UnreadableSourceLimitError",
     "admit_caller_project_collections",
+    "project_files_knowledge",
     "read_source_limit",
     "resolve_agent_filters",
 ]

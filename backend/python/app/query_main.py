@@ -21,6 +21,7 @@ from app.core.org_context import spawn_detached
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
+    ai_models_registry_router,
     authMiddleware,
     chatbot_router,
     ensure_org_context,
@@ -34,9 +35,9 @@ from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
-from app.api.routes.ai_models_registry import router as ai_models_registry_router
 from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.health import router as health_router
+from app.api.routes.knowledge_search import router as knowledge_search_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
@@ -206,6 +207,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    # Chat attachments parse PDFs in parse workers sized from this governor, so
+    # one slow or huge file costs only its own upload: a worker can be killed on
+    # a deadline and is what runs out of memory, where a thread is neither. No
+    # admission gates are taken here, so its sampling loop is not started.
+    from app.modules.parsers import parse_pool
+    from app.modules.parsers.pdf.pdf_rasterizer import (
+        set_resource_governor as set_pdf_rasterizer_governor,
+    )
+    from app.services.messaging.config import messaging_env
+    from app.services.resource_governor import ResourceGovernor
+    from app.utils.llm import is_local_cpu_embedding_configured
+
+    governor = ResourceGovernor(
+        logger=logger,
+        env_parse=messaging_env.env_max_concurrent_parsing,
+        worker_count=configured_worker_count(),
+        reserve_embedding_cpus=await is_local_cpu_embedding_configured(
+            app_container.config_service(), logger
+        ),
+    )
+    set_pdf_rasterizer_governor(governor)
+    parse_pool.set_resource_governor(governor)
+
     # KB uploads made through chat index in this process, so it invalidates too.
     try:
         from app.services.cache.invalidation_hooks import (
@@ -216,6 +240,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
     except Exception as e:
         logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
+
+    from app.services.permissions.wiring import register_viewer_scope_version
+
+    await register_viewer_scope_version(app_container.config_service(), logger)
+    from app.services.permissions.wiring import register_scope_generation
+
+    await register_scope_generation(app_container.config_service(), logger)
 
     # Start all message consumers centrally
     try:
@@ -434,11 +465,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error closing configuration service: {e}")
 
     try:
+        from app.modules.parsers import parse_pool
+        parse_pool.set_resource_governor(None)
+        if parse_pool.shutdown_parse_pool():
+            logger.info("✅ Parse worker pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down the parse worker pool: {e}")
+
+    try:
         from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool
         if shutdown_pdf_raster_pool():
             logger.info("✅ PDF rasterization process pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
+
+    try:
+        from app.connectors.sources.web.crawl4ai_fetcher import close_shared_fetcher
+        await close_shared_fetcher()
+    except Exception as e:
+        logger.error(f"❌ Error closing the shared headless browser: {e}")
 
     try:
         from app.modules.transformers.blob_storage import (
@@ -550,6 +595,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
+app.include_router(knowledge_search_router, prefix="/api/v1")
 app.include_router(records_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")

@@ -138,6 +138,10 @@ class _Env:
         return [{**d, "id": d.get("id") or d.get("_key")} for d in docs
                 if not d.get("isPlaceholder") and not d.get("isDeleted")]
 
+    async def gate(self) -> set[str]:
+        """Emails of the users the connector is attached to (the app-user relation)."""
+        return {u.email for u in await self.processor.get_all_app_users(self.connector_id, raise_on_error=True)}
+
     async def ticket_names(self) -> set[str]:
         return {d["recordName"] for d in await self.records() if d["recordType"] == "TICKET"}
 
@@ -348,16 +352,17 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
                   "filters": {"sync": {"values": {}}, "indexing": {"values": {}}}}
         environment = _Env(graph, ws, org_id, connector_id, processor, config, {})
 
-        async def add_user(email: str) -> None:
+        async def add_user(email: str, *, in_org: bool = True) -> None:
             key, user_id = f"{run}-{uuid.uuid4().hex[:8]}", f"user-{uuid.uuid4().hex[:10]}"
             user_keys.append(key)
             assert await graph.batch_upsert_nodes(
                 [{"id": key, "userId": user_id, "orgId": org_id, "email": email, "fullName": email, "isActive": True,
                   "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.USERS.value)
-            assert await graph.batch_create_edges(
-                [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": org_id,
-                  "to_collection": CollectionNames.ORGS.value, "entityType": "ORGANIZATION",
-                  "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.BELONGS_TO.value)
+            if in_org:
+                assert await graph.batch_create_edges(
+                    [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": org_id,
+                      "to_collection": CollectionNames.ORGS.value, "entityType": "ORGANIZATION",
+                      "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.BELONGS_TO.value)
             environment.user_ids[email] = user_id
 
         environment.add_user = add_user  # type: ignore[attr-defined]
@@ -593,6 +598,70 @@ async def test_membership_and_visibility_changes_reach_access(env: _Env) -> None
 
     p["alice"].active = False  # suspended in Linear
     await env.sync()
+    await env.assert_matches_linear()
+
+
+async def test_a_deactivated_person_loses_the_connector_and_gets_it_back(env: _Env) -> None:
+    """A suspended Linear account is gone from Linear's user list. Its connector access goes
+    with it on the next sync; reactivating the account brings the access back."""
+    p = await _people(env, "alice", "bob")
+    ws = env.ws
+    eng = ws.team("ENG", members=[p["sync"], p["alice"], p["bob"]])
+    ws.issue(eng, "Roadmap")
+    await env.sync()
+    assert {p["alice"].email, p["bob"].email} <= await env.gate()
+    await env.assert_matches_linear()
+
+    p["alice"].active = False
+    await env.sync()
+    assert p["alice"].email not in await env.gate()
+    assert p["bob"].email in await env.gate()
+    assert not await env.readable(p["alice"].email)
+    await env.assert_matches_linear()
+
+    p["alice"].active = True
+    await env.sync()
+    assert p["alice"].email in await env.gate()
+    await env.assert_matches_linear()
+
+
+async def test_a_changed_email_moves_the_connector_to_the_new_account(env: _Env) -> None:
+    """Linear keeps the account (same id) when its email changes; PipesHub finds users by email."""
+    p = await _people(env, "alice")
+    ws = env.ws
+    ws.issue(ws.team("ENG", members=[p["sync"], p["alice"]]), "Roadmap")
+    await env.sync()
+    old = p["alice"].email
+    assert old in await env.gate()
+
+    new = f"alice.new@{ws.url_key}.example"
+    await env.add_user(new)  # type: ignore[attr-defined]
+    p["alice"].email = new
+    await env.sync()
+
+    gate = await env.gate()
+    assert old not in gate
+    assert new in gate
+    assert not await env.readable(old)
+    await env.assert_matches_linear()
+
+
+async def test_a_deactivated_person_outside_the_organization_reads_nothing(env: _Env) -> None:
+    """A user node with no organization edge (kept so grants to it resolve) is not listed as an
+    app user, so it is never withdrawn; its access still ends with its group memberships."""
+    p = await _people(env, "alice")
+    ws = env.ws
+    ws.issue(ws.team("ENG", members=[p["sync"], p["alice"]]), "Roadmap")
+    dora = ws.user("Dora")
+    ws.teams[0].members.append(dora)
+    await env.add_user(dora.email, in_org=False)  # type: ignore[attr-defined]
+    await env.sync()
+    assert await env.readable(dora.email), "an active member reads the team"
+
+    dora.active = False
+    await env.sync()
+
+    assert not await env.readable(dora.email)
     await env.assert_matches_linear()
 
 
@@ -887,7 +956,7 @@ async def test_failing_to_read_teams_or_people_keeps_access(env: _Env, operation
     (after the retries). Access stays as it was; the next sync catches up."""
     p = await _people(env, "alice", "bob")
     ws = env.ws
-    crowd = [ws.user(f"Member{n:03d}") for n in range(120)]  # past the 100 members a team lists inline
+    crowd = [ws.user(f"Member{n:03d}") for n in range(120)]  # past the 10 members a team lists inline
     eng = ws.team("ENG", members=[p["sync"], p["alice"], p["bob"]])
     sec = ws.team("SEC", visibility="private", members=[p["sync"], p["alice"], *crowd])
     ws.issue(eng, "Roadmap", attachments=[Attachment("Deck", "https://deck.example/r")])

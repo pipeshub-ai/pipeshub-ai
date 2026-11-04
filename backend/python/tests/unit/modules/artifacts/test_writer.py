@@ -94,6 +94,17 @@ async def storage() -> AsyncIterator[FakeStorage]:
     await fake.stop()
 
 
+@pytest.fixture(autouse=True)
+def _run_for_every_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every write names the stored write it was built from; most of these tests do not care which."""
+    real = ArtifactWriter.write_revision
+
+    async def write_revision(self, *args, stored_run: str = "gen:run", **kwargs):  # noqa: ANN202
+        return await real(self, *args, stored_run=stored_run, **kwargs)
+
+    monkeypatch.setattr(ArtifactWriter, "write_revision", write_revision)
+
+
 def _writer(fake: FakeStorage, **kwargs: int) -> ArtifactWriter:
     logger = logging.getLogger("artifact-writer-test")
     return ArtifactWriter(NodeArtifactStore(fake.blob_storage(), logger), logger, **kwargs)

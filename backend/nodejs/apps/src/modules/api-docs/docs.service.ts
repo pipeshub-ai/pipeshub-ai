@@ -15,11 +15,9 @@ export interface ModuleInfo {
   id: string;
   name: string;
   description: string;
-  version: string;
-  basePath: string;
+  icon?: string;
+  /** The accordions under this nav item, in sidebar order. */
   tags: string[];
-  source: 'nodejs' | 'python';
-  order: number;
 }
 
 /**
@@ -36,6 +34,8 @@ export interface EndpointInfo {
   requestBody?: any;
   responses: any;
   security?: any[];
+  /** Path prefix from the operation's `servers` (or the spec's), e.g. `/api/v1`. */
+  basePath: string;
   moduleId: string;
 }
 
@@ -68,7 +68,38 @@ export interface UnifiedApiDocs {
   schemas: Record<string, any>;
 }
 
+/** An entry of the spec's `x-pipeshub-nav`: a sidebar heading, its nav items and their tags. */
+interface NavCategorySpec {
+  name?: string;
+  description?: string;
+  modules?: NavModuleSpec[];
+}
+
+interface NavModuleSpec {
+  name?: string;
+  description?: string;
+  icon?: string;
+  tags?: string[];
+}
+
 const specOverlays: string[] = [];
+
+const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'];
+
+/** Heading of the sidebar for tags with endpoints that the nav does not list. */
+const OTHER_CATEGORY = 'Other';
+
+const slug = (name: string): string =>
+  name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+
+/** `{instance_url}/api/v1` -> `/api/v1`; an absolute URL is kept whole. */
+const serverBasePath = (servers: unknown): string => {
+  const url = Array.isArray(servers) ? (servers[0] as { url?: unknown } | undefined)?.url : undefined;
+  return typeof url === 'string' ? url.replace(/^\{[^}]+\}/, '').replace(/\/$/, '') : '';
+};
 
 type SpecNode = Record<string, unknown>;
 
@@ -118,6 +149,8 @@ export class ApiDocsService {
   }
 
   private mergedSpec: Record<string, any> | null = null;
+  private endpoints: EndpointInfo[] = [];
+  private categories: CategoryInfo[] = [];
   private modules: ModuleInfo[] = [];
   private logger: Logger;
   private initialized: boolean = false;
@@ -138,8 +171,8 @@ export class ApiDocsService {
       // Load the merged OpenAPI spec
       this.loadMergedSpec();
 
-      // Define module metadata
-      this.initializeModules();
+      this.endpoints = this._extractEndpoints();
+      this._buildNavigation();
 
       this.initialized = true;
       this.logger.info('ApiDocsService initialized successfully');
@@ -193,174 +226,14 @@ export class ApiDocsService {
   }
 
   /**
-   * Initialize module metadata
-   */
-  private initializeModules(): void {
-    this.modules = [
-      {
-        id: 'auth',
-        name: 'Authentication',
-        description: 'User authentication, authorization, and session management',
-        version: '1.0.0',
-        basePath: '/api/v1',
-        tags: ['User Account', 'Organization Auth Config', 'SAML', 'OAuth'],
-        source: 'nodejs',
-        order: 1,
-      },
-      {
-        id: 'oauth-app-management',
-        name: 'OAuth App Management',
-        description: 'OAuth 2.0 authorization server, app registration, and OpenID Connect',
-        version: '1.0.0',
-        basePath: '/api/v1',
-        tags: ['OAuth Provider', 'OAuth Apps', 'OpenID Connect'],
-        source: 'nodejs',
-        order: 2,
-      },
-      {
-        id: 'user-management',
-        name: 'User Management',
-        description: 'User, team, and organization management',
-        version: '1.0.0',
-        basePath: '/api/v1',
-        tags: ['Users', 'Teams', 'Organizations', 'User Groups'],
-        source: 'nodejs',
-        order: 3,
-      },
-      {
-        id: 'storage',
-        name: 'Storage',
-        description: 'Service-to-service document storage (not callable with a user token)',
-        version: '1.0.0',
-        basePath: '/api/v1/document',
-        tags: ['Internal Storage'],
-        source: 'nodejs',
-        order: 4,
-      },
-      {
-        id: 'knowledge-base',
-        name: 'Knowledge Base',
-        description: 'Knowledge base and folder management',
-        version: '1.0.0',
-        basePath: '/api/v1/knowledgeBase',
-        tags: ['Knowledge Bases', 'Knowledge Hub', 'Folders', 'Records', 'Permissions', 'Upload', 'Connector'],
-        source: 'nodejs',
-        order: 5,
-      },
-      {
-        id: 'enterprise-search',
-        name: 'Enterprise Search',
-        description: 'Conversational AI and semantic search',
-        version: '1.0.0',
-        basePath: '/api/v1',
-        tags: ['Conversations', 'Semantic Search'],
-        source: 'nodejs',
-        order: 6,
-      },
-      {
-        id: 'connector-manager',
-        name: 'Connector Manager',
-        description: 'Third-party integrations, OAuth flows, and data synchronization',
-        version: '1.0.0',
-        basePath: '/api/v1/connectors',
-        tags: ['Connector Instances', 'Core Connectors', 'Connector Configuration', 'Connector Control', 'Connector OAuth', 'Connector Filters', 'Connector Records', 'Connector Statistics', 'Connector Streaming', 'Connector Webhooks'],
-        source: 'nodejs',
-        order: 7,
-      },
-      {
-        id: 'configuration-manager',
-        name: 'Configuration Manager',
-        description: 'System-wide configuration management',
-        version: '1.0.0',
-        basePath: '/api/v1/configurationManager',
-        tags: ['Storage Configuration', 'SMTP Configuration', 'Auth Configuration', 'Database Configuration', 'Platform Settings', 'AI Models Configuration', 'Branding Configuration', 'Metrics Collection'],
-        source: 'nodejs',
-        order: 8,
-      },
-      {
-        id: 'crawling-manager',
-        name: 'Crawling Manager',
-        description: 'Data crawling job scheduling and monitoring',
-        version: '1.0.0',
-        basePath: '/api/v1/crawlingManager',
-        tags: ['Crawling Jobs', 'Queue Management'],
-        source: 'nodejs',
-        order: 9,
-      },
-      {
-        id: 'mail',
-        name: 'Mail Service',
-        description: 'Email sending and SMTP configuration',
-        version: '1.0.0',
-        basePath: '/api/v1/mail',
-        tags: ['Email Operations', 'Email Configuration'],
-        source: 'nodejs',
-        order: 10,
-      },
-      // ==================== INTERNAL PYTHON SERVICES ====================
-      // These are internal PipesHub microservices that require scoped service tokens
-      {
-        id: 'query-service',
-        name: 'Query Service',
-        description: 'AI search, RAG, and conversational AI (Port 8000). Requires scoped service token.',
-        version: '1.0.0',
-        basePath: 'http://localhost:8000',
-        tags: ['Query Service'],
-        source: 'python',
-        order: 11,
-      },
-      {
-        id: 'indexing-service',
-        name: 'Indexing Service',
-        description: 'Document processing and embeddings (Port 8091). Requires scoped service token.',
-        version: '1.0.0',
-        basePath: 'http://localhost:8091',
-        tags: ['Indexing Service'],
-        source: 'python',
-        order: 12,
-      },
-      {
-        id: 'connector-service-internal',
-        name: 'Connector Service',
-        description: 'Data source integrations and OAuth (Port 8088). Requires scoped service token.',
-        version: '1.0.0',
-        basePath: 'http://localhost:8088',
-        tags: ['Connector Service'],
-        source: 'python',
-        order: 13,
-      },
-      {
-        id: 'docling-service',
-        name: 'Docling Service',
-        description: 'Advanced PDF/document parsing (Port 8081). Internal only.',
-        version: '1.0.0',
-        basePath: 'http://localhost:8081',
-        tags: ['Docling Service'],
-        source: 'python',
-        order: 14,
-      },
-      {
-        id: 'embedding-service',
-        name: 'Embedding Service',
-        description: 'Local dense embedding server (Port 8002). OpenAI-compatible /v1/embeddings. Internal only.',
-        version: '1.0.0',
-        basePath: 'http://localhost:8002',
-        tags: ['Embedding Service'],
-        source: 'python',
-        order: 15,
-      },
-    ];
-  }
-
-  /**
    * Get unified API documentation
    */
   getUnifiedDocs(): UnifiedApiDocs {
     return {
       info: this._buildApiInfo(),
-      categories: this._buildCategories(),
-      modules: this.modules.sort((a, b) => a.order - b.order),
-      endpoints: this._extractEndpoints(),
+      categories: this.categories,
+      modules: this.modules,
+      endpoints: this.endpoints,
       schemas: this._extractSchemas(),
     };
   }
@@ -378,24 +251,21 @@ export class ApiDocsService {
     for (const [pathKey, pathValue] of Object.entries(this.mergedSpec.paths)) {
       const pathObj = pathValue as any;
       for (const [method, operation] of Object.entries(pathObj)) {
-        if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
+        if (HTTP_METHODS.includes(method)) {
           const op = operation as any;
-          const tags = op.tags || [];
-          // Use x-service-id extension if present, otherwise fall back to tag-based matching
-          const xServiceId = op['x-service-id'] as string | undefined;
-          const moduleId = this.findModuleByTags(tags, pathKey, op.summary, xServiceId);
           endpoints.push({
             path: pathKey,
             method: method.toUpperCase(),
             summary: op.summary || '',
             description: op.description || '',
             operationId: op.operationId || '',
-            tags,
+            tags: op.tags?.length ? op.tags : [OTHER_CATEGORY],
             parameters: op.parameters || [],
             requestBody: op.requestBody,
             responses: op.responses || {},
             security: op.security,
-            moduleId,
+            basePath: serverBasePath(op.servers || pathObj.servers || this.mergedSpec.servers),
+            moduleId: '',
           });
         }
       }
@@ -415,53 +285,90 @@ export class ApiDocsService {
   }
 
   /**
-   * Build category groupings for modules
+   * Build the sidebar from the spec's `x-pipeshub-nav` (overlays add to it): heading -> nav item -> tags.
+   * A tag belongs to the first nav item that lists it; a tag without endpoints is
+   * dropped, then an empty nav item or heading. A tag with endpoints listed nowhere
+   * gets its own nav item under "Other", so no endpoint is ever left out.
    */
-  private _buildCategories(): CategoryInfo[] {
-    return [
-      {
-        id: 'identity',
-        name: 'Identity & Access',
-        description: 'Authentication, users, and permissions',
-        modules: this.modules.filter(m => ['auth', 'user-management'].includes(m.id)),
-      },
-      {
-        id: 'data',
-        name: 'Data Management',
-        description: 'Storage, knowledge bases, and records',
-        modules: this.modules.filter(m => ['storage', 'knowledge-base'].includes(m.id)),
-      },
-      {
-        id: 'search',
-        name: 'Search & AI',
-        description: 'Enterprise search and conversational AI',
-        modules: this.modules.filter(m => ['enterprise-search'].includes(m.id)),
-      },
-      {
-        id: 'integrations',
-        name: 'Integrations',
-        description: 'Third-party connectors and data sync',
-        modules: this.modules.filter(m => ['connector-manager'].includes(m.id)),
-      },
-      {
-        id: 'system',
-        name: 'System',
-        description: 'Configuration, crawling, and mail services',
-        modules: this.modules.filter(m => ['configuration-manager', 'crawling-manager', 'mail'].includes(m.id)),
-      },
-      {
-        id: 'oauth',
-        name: 'OAuth App Management',
-        description: 'OAuth 2.0 authorization server and app management',
-        modules: this.modules.filter(m => ['oauth-app-management'].includes(m.id)),
-      },
-      {
-        id: 'internal-services',
-        name: 'Internal Services',
-        description: 'Internal PipesHub microservices (requires scoped token)',
-        modules: this.modules.filter(m => ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service', 'embedding-service'].includes(m.id)),
-      },
-    ];
+  private _buildNavigation(): void {
+    const usedTags = new Set(this.endpoints.flatMap((e) => e.tags));
+    const claimed = new Set<string>();
+    const categories: CategoryInfo[] = [];
+
+    // The nav is unchecked YAML, so any entry of it may be missing.
+    const nav: unknown = this.mergedSpec?.['x-pipeshub-nav'];
+    const navSpec = (Array.isArray(nav) ? nav : []) as (
+      | NavCategorySpec
+      | undefined
+    )[];
+    for (const categorySpec of navSpec) {
+      if (typeof categorySpec?.name !== 'string' || !categorySpec.name) continue;
+      // Merge by name, so an overlay can add nav items to a heading of the base spec.
+      let category = categories.find((c) => c.name === categorySpec.name);
+      if (!category) {
+        category = {
+          id: slug(categorySpec.name),
+          name: categorySpec.name,
+          description: categorySpec.description || '',
+          modules: [],
+        };
+        categories.push(category);
+      }
+      const moduleSpecs = Array.isArray(categorySpec.modules) ? categorySpec.modules : [];
+      for (const moduleSpec of moduleSpecs as (NavModuleSpec | undefined)[]) {
+        if (typeof moduleSpec?.name !== 'string' || !moduleSpec.name) continue;
+        const tags = (Array.isArray(moduleSpec.tags) ? moduleSpec.tags : []).filter(
+          (t) => usedTags.has(t) && !claimed.has(t),
+        );
+        tags.forEach((t) => claimed.add(t));
+        const existing = category.modules.find((m) => m.name === moduleSpec.name);
+        if (existing) {
+          existing.tags.push(...tags);
+        } else {
+          category.modules.push({
+            id: slug(moduleSpec.name),
+            name: moduleSpec.name,
+            description: moduleSpec.description || '',
+            icon: moduleSpec.icon,
+            tags,
+          });
+        }
+      }
+    }
+
+    const specTags: unknown = this.mergedSpec?.tags;
+    const declaredTags = (Array.isArray(specTags) ? specTags : []).filter(
+      (t): t is { name: string; description?: string } => typeof t?.name === 'string',
+    );
+    const unlisted = [...new Set([...declaredTags.map((t) => t.name), ...usedTags])]
+      .filter((t) => usedTags.has(t) && !claimed.has(t));
+    if (unlisted.length > 0) {
+      let other = categories.find((c) => c.name === OTHER_CATEGORY);
+      if (!other) {
+        other = { id: slug(OTHER_CATEGORY), name: OTHER_CATEGORY, description: '', modules: [] };
+        categories.push(other);
+      }
+      for (const tag of unlisted) {
+        other.modules.push({
+          // Prefixed so it cannot clash with a nav item of the same name.
+          id: `tag-${slug(tag)}`,
+          name: tag,
+          description: declaredTags.find((t) => t.name === tag)?.description || '',
+          tags: [tag],
+        });
+      }
+    }
+
+    for (const category of categories) {
+      category.modules = category.modules.filter((m) => m.tags.length > 0);
+    }
+    this.categories = categories.filter((c) => c.modules.length > 0);
+    this.modules = this.categories.flatMap((c) => c.modules);
+
+    for (const endpoint of this.endpoints) {
+      const [firstTag = ''] = endpoint.tags;
+      endpoint.moduleId = this.modules.find((m) => m.tags.includes(firstTag))?.id || '';
+    }
   }
 
   /**
@@ -480,88 +387,6 @@ export class ApiDocsService {
   }
 
   /**
-   * Find module ID by endpoint tags
-   * @param tags - The tags associated with the endpoint
-   * @param path - The endpoint path (optional, for legacy fallback)
-   * @param summary - The endpoint summary (optional, for legacy fallback)
-   * @param xServiceId - The x-service-id extension value if present (preferred)
-   */
-  private findModuleByTags(tags: string[], path?: string, summary?: string, xServiceId?: string): string {
-    // First priority: use x-service-id extension if present (most reliable)
-    if (xServiceId) {
-      const validServiceIds = this.modules.map(m => m.id);
-      if (validServiceIds.includes(xServiceId)) {
-        return xServiceId;
-      }
-    }
-
-    // Second priority: direct tag matching
-    for (const module of this.modules) {
-      for (const tag of tags) {
-        if (module.tags.includes(tag)) {
-          return module.id;
-        }
-      }
-    }
-
-    // Legacy fallback: for 'Internal Services' tag, use path/summary to determine the service
-    if (tags.includes('Internal Services') && path) {
-      return this.getInternalServiceModuleId(path, summary || '');
-    }
-
-    return 'unknown';
-  }
-
-  /**
-   * Determine which internal service module an endpoint belongs to based on path and summary.
-   *
-   * @deprecated This method uses brittle string matching as a legacy fallback.
-   * Prefer adding `x-service-id` extension to OpenAPI operations for explicit service association.
-   * This method is only used for backwards compatibility with specs that don't have x-service-id.
-   */
-  private getInternalServiceModuleId(path: string, summary: string): string {
-    const pathLower = path.toLowerCase();
-    const summaryLower = summary.toLowerCase();
-
-    // Check path prefix first
-    if (pathLower.startsWith('/query/') || pathLower.includes('/search') || pathLower.includes('/chat')) {
-      return 'query-service';
-    }
-    if (pathLower.startsWith('/indexing/')) {
-      return 'indexing-service';
-    }
-    if (pathLower.startsWith('/connector/')) {
-      return 'connector-service-internal';
-    }
-    if (pathLower.startsWith('/docling/')) {
-      return 'docling-service';
-    }
-    if (pathLower.startsWith('/v1/embeddings') || pathLower.startsWith('/embedding/')) {
-      return 'embedding-service';
-    }
-
-    // Check summary for service indicators
-    if (summaryLower.includes('[query service]')) {
-      return 'query-service';
-    }
-    if (summaryLower.includes('[indexing service]')) {
-      return 'indexing-service';
-    }
-    if (summaryLower.includes('[connector service]')) {
-      return 'connector-service-internal';
-    }
-    if (summaryLower.includes('[docling service]')) {
-      return 'docling-service';
-    }
-    if (summaryLower.includes('[embedding service]')) {
-      return 'embedding-service';
-    }
-
-    // Default to query service for unmatched internal endpoints
-    return 'query-service';
-  }
-
-  /**
    * Get a specific module's OpenAPI spec (filtered from merged spec)
    */
   getModuleSpec(moduleId: string): any | null {
@@ -570,122 +395,35 @@ export class ApiDocsService {
       return null;
     }
 
-    // For internal service modules, filter from merged spec by tags or path/summary patterns
-    const internalServiceIds = ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service', 'embedding-service'];
-    const internalServiceTags: Record<string, string> = {
-      'query-service': 'Query Service',
-      'indexing-service': 'Indexing Service',
-      'connector-service-internal': 'Connector Service',
-      'docling-service': 'Docling Service',
-      'embedding-service': 'Embedding Service',
-    };
-
-    if (internalServiceIds.includes(moduleId)) {
-      const serviceTag = internalServiceTags[moduleId];
-      // Filter paths from merged spec that belong to this internal service
-      const filteredPaths: Record<string, any> = {};
-      if (this.mergedSpec?.paths) {
-        for (const [pathKey, pathValue] of Object.entries(this.mergedSpec.paths)) {
-          const pathObj = pathValue as any;
-          const filteredMethods: Record<string, any> = {};
-
-          for (const [method, operation] of Object.entries(pathObj)) {
-            if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
-              const op = operation as any;
-              const opTags = op.tags || [];
-              const xServiceId = op['x-service-id'] as string | undefined;
-
-              // First priority: use x-service-id extension if present
-              if (xServiceId) {
-                if (xServiceId === moduleId) {
-                  filteredMethods[method] = operation;
-                }
-                continue;
-              }
-
-              // Second priority: check if endpoint belongs to this service's tag
-              if (opTags.includes(serviceTag)) {
-                filteredMethods[method] = operation;
-                continue;
-              }
-
-              // Legacy fallback: for 'Internal Services' tag, use path/summary to determine service
-              if (opTags.includes('Internal Services')) {
-                const endpointModuleId = this.getInternalServiceModuleId(pathKey, op.summary || '');
-                if (endpointModuleId === moduleId) {
-                  filteredMethods[method] = operation;
-                }
-              }
-            }
-          }
-
-          if (Object.keys(filteredMethods).length > 0) {
-            filteredPaths[pathKey] = filteredMethods;
-          }
-        }
-      }
-
-      return {
-        openapi: '3.0.0',
-        info: {
-          title: module.name,
-          version: module.version,
-          description: module.description,
-        },
-        servers: [{ url: module.basePath, description: `${module.name} (Internal)` }],
-        tags: [{ name: serviceTag, description: module.description }],
-        paths: filteredPaths,
-        components: this.mergedSpec?.components || {},
+    const filteredPaths: Record<string, any> = {};
+    for (const endpoint of this.endpoints) {
+      if (!endpoint.tags.some((tag) => module.tags.includes(tag))) continue;
+      const method = endpoint.method.toLowerCase();
+      filteredPaths[endpoint.path] = {
+        ...filteredPaths[endpoint.path],
+        [method]: this.mergedSpec?.paths?.[endpoint.path]?.[method],
       };
     }
-
-    // Filter paths by module tags
-    const filteredPaths: Record<string, any> = {};
-    if (this.mergedSpec?.paths) {
-      for (const [pathKey, pathValue] of Object.entries(this.mergedSpec.paths)) {
-        const pathObj = pathValue as any;
-        const filteredMethods: Record<string, any> = {};
-
-        for (const [method, operation] of Object.entries(pathObj)) {
-          if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
-            const op = operation as any;
-            const opTags = op.tags || [];
-            if (opTags.some((tag: string) => module.tags.includes(tag))) {
-              filteredMethods[method] = operation;
-            }
-          }
-        }
-
-        if (Object.keys(filteredMethods).length > 0) {
-          filteredPaths[pathKey] = filteredMethods;
-        }
-      }
-    }
-
-    // Filter tags
-    const filteredTags = this.mergedSpec?.tags?.filter(
-      (t: any) => module.tags.includes(t.name)
-    ) || [];
 
     return {
       openapi: '3.0.0',
       info: {
         title: module.name,
-        version: module.version,
+        version: this.mergedSpec?.info?.version || '1.0.0',
         description: module.description,
       },
-      servers: [{ url: module.basePath, description: `${module.name} API` }],
-      tags: filteredTags,
+      servers: this.mergedSpec?.servers || [],
+      tags: this.mergedSpec?.tags?.filter((t: any) => module.tags.includes(t.name)) || [],
       paths: filteredPaths,
       components: this.mergedSpec?.components || {},
     };
   }
 
   /**
-   * Get all modules metadata
+   * Get all modules metadata, in sidebar order
    */
   getModules(): ModuleInfo[] {
-    return this.modules.sort((a, b) => a.order - b.order);
+    return this.modules;
   }
 
   /**

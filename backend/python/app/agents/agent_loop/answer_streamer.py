@@ -132,7 +132,9 @@ class TerminalAnswerStreamer:
                 await self._drop_carried_text()
             else:
                 await self._clear_preamble()
-        elif event.event_type == EventType.AGENT_COMPLETE:
+        elif event.event_type in (EventType.AGENT_COMPLETE, EventType.CANCELLATION):
+            # A stopped run ends in CANCELLATION, never AGENT_COMPLETE; without
+            # this the finalizer saw "" and saved the stopped answer empty.
             self.streamed_answer = self._buffer
             # Flush only what the limiter actually withheld, so a turn it
             # never throttled does not pay for a second full-size frame.

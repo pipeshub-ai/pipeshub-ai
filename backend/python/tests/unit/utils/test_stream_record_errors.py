@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
 from app.connectors.core.base.error.stream_errors import (
+    SOURCE_REFUSAL_HEADER,
     connector_not_ready,
     extract_source_status,
     map_source_status,
@@ -55,11 +56,11 @@ class TestMapSourceStatus:
 
     def test_rate_limit_forwards_retry_after(self) -> None:
         assert map_source_status(429, connector="Slack", retry_after="30").headers == {
-            "Retry-After": "30"
+            SOURCE_REFUSAL_HEADER: "1", "Retry-After": "30"
         }
 
     def test_retry_after_ignored_for_other_statuses(self) -> None:
-        assert not map_source_status(404, connector="Slack", retry_after="30").headers
+        assert "Retry-After" not in map_source_status(404, connector="Slack", retry_after="30").headers
 
     @pytest.mark.parametrize("status", [None, "403", object(), True])
     def test_unusable_status_falls_back_to_500(self, status: object) -> None:
@@ -106,7 +107,7 @@ class TestRaiseForStreamFetch:
                 retry_after=retry_after,
             )
         assert exc_info.value.status_code == 429
-        assert exc_info.value.headers == {"Retry-After": "1800"}
+        assert exc_info.value.headers == {SOURCE_REFUSAL_HEADER: "1", "Retry-After": "1800"}
 
     def test_failure_without_status_raises_runtime_error(self) -> None:
         """No proven status must not invent a 404 — to_stream_error maps this to 500."""

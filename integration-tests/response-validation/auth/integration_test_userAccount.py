@@ -79,6 +79,10 @@ from config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD  # noqa: E402
 
 logger = logging.getLogger("user-account-integration-test")
 
+# MAX_WRONG_CREDENTIAL_ATTEMPTS in the Node credential types: the tenth wrong
+# password locks the account.
+WRONG_ATTEMPTS_TO_BLOCK = 10
+
 
 # ------------------------------------------------------------------ #
 # Base test class
@@ -597,7 +601,7 @@ class TestBlockInvalidatesExistingSessions(UserAccountTestBase):
     once the block takes effect — see issue #3239."""
 
     def test_a_token_issued_before_the_block_is_rejected(self) -> None:
-        """Log in once (valid token). Trigger a real auto-block via 5 wrong
+        """Log in once (valid token). Trigger a real auto-block via 10 wrong
         passwords through the actual API. The pre-block token must then
         be rejected, not accepted until its natural 24h expiry."""
         client = self.client
@@ -659,10 +663,10 @@ class TestBlockInvalidatesExistingSessions(UserAccountTestBase):
                 f"{baseline_resp.status_code}: {baseline_resp.text}"
             )
             
-            # 3. Trigger the real auto-block path: 5 wrong-password
+            # 3. Trigger the real auto-block path: 10 wrong-password
             #    attempts through the actual authenticate route — this
             #    exercises the exact controller code the fix touches.
-            for attempt in range(5):
+            for attempt in range(WRONG_ATTEMPTS_TO_BLOCK):
                 init_resp = self.account.init_auth(email)
                 assert init_resp.status_code == 200, init_resp.text
                 session_token = init_resp.headers.get("x-session-token")

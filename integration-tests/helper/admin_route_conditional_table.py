@@ -94,12 +94,14 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     # reads. Its address is what a listing is searched for, and `all_team` is
     # the organisation's All team, which it joins on the way in.
     "service_accounts": ("service_account", "service_account_email", "all_team"),
+    # A team the creator made and owns; the other member has no role on it.
+    "teams": ("creator_team",),
 }
 # Made new each time they are asked for: a connector, or an MCP server (the
 # admin's, or the creator's personal one) for a case that deletes it.
 FRESH_KEYS = frozenset({
     "fresh_team", "fresh_personal", "fresh_mcp", "fresh_personal_mcp",
-    "fresh_toolset", "fresh_personal_toolset", "unique_name",
+    "fresh_toolset", "fresh_personal_toolset", "fresh_creator_team", "unique_name",
 })
 DERIVED_KEYS = frozenset({"target", "target_name", "target_state"})
 
@@ -621,6 +623,11 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
     _mcp_owned("get_oauth_config", "GET", "/oauth-config", "view the OAuth app of", 200, '"redirectUri"'),
     _mcp_owned("update_oauth_config", "PUT", "/oauth-config", "configure the OAuth app of", 200, _MCP_SUCCESS,
                body={"clientId": "it-admin-probe", "clientSecret": "it-admin-probe"}),
+    # Not a data URL: refused for that once past the check, so no logo is stored.
+    _mcp_owned("set_instance_logo", "PUT", "/logo", "change the logo of", 400, "Send the logo as a base64 data URL",
+               body={"logo": "it-admin-probe"}),
+    # None of these servers has a logo, so removing it changes nothing.
+    _mcp_owned("remove_instance_logo", "DELETE", "/logo", "change the logo of", 200, _MCP_SUCCESS),
     # Each case deletes a server made for it. A user's personal server is theirs alone: an admin
     # doesn't find it (and it is removed by its creator afterwards).
     ConditionalRoute(
@@ -734,6 +741,29 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("all_team", ADMIN, True, 200, "{service_account_email}"),
         ),
         params={"limit": "100"},
+        service=CONNECTOR_SERVICE,
+    ),
+    # A team's OWNER may change or delete it, and so may any org admin; a member
+    # with no role on the team gets the same 404 a missing team gets. The update
+    # sends a blank name, so a caller who passes the check is stopped by the
+    # name rule and nothing changes.
+    ConditionalRoute(
+        "api/routes/entity.py::update_team", "PUT", "/api/v1/entity/team/{target}",
+        cases=(
+            Case("creator_team", MEMBER, False, 404, "This team was removed"),
+            Case("creator_team", CREATOR, True, 400, "Give the team a name."),
+            Case("creator_team", ADMIN, True, 400, "Give the team a name."),
+        ),
+        body={"name": ""},
+        service=CONNECTOR_SERVICE,
+    ),
+    ConditionalRoute(
+        "api/routes/entity.py::delete_team", "DELETE", "/api/v1/entity/team/{target}",
+        cases=(
+            Case("fresh_creator_team", MEMBER, False, 404, "This team was removed"),
+            Case("fresh_creator_team", CREATOR, True, 200, "Team deleted successfully"),
+            Case("fresh_creator_team", ADMIN, True, 200, "Team deleted successfully"),
+        ),
         service=CONNECTOR_SERVICE,
     ),
 )

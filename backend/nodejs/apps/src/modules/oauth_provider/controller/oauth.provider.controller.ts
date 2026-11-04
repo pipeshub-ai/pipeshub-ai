@@ -1,6 +1,9 @@
 import { injectable, inject } from 'inversify';
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
+import { forOrg } from '../../../libs/context/orgContext';
+import { getIdentityLookup } from '../../../libs/repositories/identity-lookup';
+import { docStore } from '../../../libs/repositories/store-select';
 import {
   OAuthAppService,
   APP_WORKSPACE_MISMATCH_MESSAGE,
@@ -32,12 +35,12 @@ import {
   ConsentData,
   OAuthErrorResponse,
 } from '../types/oauth.types';
-import { Users } from '../../user_management/schema/users.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { getOrgRepository } from '../../../libs/repositories/org';
 import {
   isKnowledgeLimitWithin,
   toKnowledgeLimit,
-} from '../schema/knowledge_limit.schema';
-import { Org } from '../../user_management/schema/org.schema';
+} from '../types/knowledge_limit';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
 import { OAuthDeviceService } from '../services/oauth.device.service';
 import { TokenExchangeService } from '../services/token-exchange.service';
@@ -159,10 +162,7 @@ export class OAuthProviderController {
           description: s.description,
           category: s.category,
         }));
-      const org = await Org.findOne({ _id: user.orgId, isDeleted: false })
-        .select('registeredName shortName')
-        .lean()
-        .exec();
+      const org = await getOrgRepository().getNames(user.orgId);
       const workspaceName = org?.shortName || org?.registeredName;
 
       const consentData: ConsentData = {
@@ -365,46 +365,51 @@ export class OAuthProviderController {
         throw new InvalidClientError('client_id is required');
       }
 
-      let tokenResponse: TokenResponse;
+      const grant = async (): Promise<TokenResponse> => {
+        switch (tokenRequest.grant_type) {
+          case 'authorization_code':
+            return await this.handleAuthorizationCodeGrant(
+              clientId,
+              clientSecret,
+              tokenRequest,
+            );
 
-      switch (tokenRequest.grant_type) {
-        case 'authorization_code':
-          tokenResponse = await this.handleAuthorizationCodeGrant(
-            clientId,
-            clientSecret,
-            tokenRequest,
-          );
-          break;
+          case 'client_credentials':
+            return await this.handleClientCredentialsGrant(
+              clientId,
+              clientSecret!,
+              tokenRequest,
+            );
 
-        case 'client_credentials':
-          tokenResponse = await this.handleClientCredentialsGrant(
-            clientId,
-            clientSecret!,
-            tokenRequest,
-          );
-          break;
+          case 'refresh_token':
+            return await this.handleRefreshTokenGrant(
+              clientId,
+              clientSecret,
+              tokenRequest,
+            );
 
-        case 'refresh_token':
-          tokenResponse = await this.handleRefreshTokenGrant(
-            clientId,
-            clientSecret,
-            tokenRequest,
-          );
-          break;
+          case 'urn:ietf:params:oauth:grant-type:device_code':
+            return await this.oauthDeviceService.poll(
+              clientId,
+              clientSecret,
+              tokenRequest.device_code || '',
+            );
 
-        case 'urn:ietf:params:oauth:grant-type:device_code':
-          tokenResponse = await this.oauthDeviceService.poll(
-            clientId,
-            clientSecret,
-            tokenRequest.device_code || '',
-          );
-          break;
+          case 'urn:ietf:params:oauth:grant-type:token-exchange': // answered above
+          default:
+            throw new UnsupportedGrantTypeError(
+              `Unsupported grant_type: ${tokenRequest.grant_type}`,
+            );
+        }
+      };
 
-        default:
-          throw new UnsupportedGrantTypeError(
-            `Unsupported grant_type: ${tokenRequest.grant_type}`,
-          );
-      }
+      // The endpoint has no session: on PostgreSQL the grant runs as the org that granted it (the org of the authorization code or the
+      // refresh token). A device poll finds the approving org itself, after the approval is claimed.
+      const tokenResponse = await this.runGrantInOrg(
+        tokenRequest,
+        clientId,
+        grant,
+      );
 
       // Set cache headers as per RFC 6749
       res.setHeader('Cache-Control', 'no-store');
@@ -425,6 +430,31 @@ export class OAuthProviderController {
       const oauthError = this.buildErrorResponse(error as Error);
       res.status(this.getErrorStatusCode(error as Error)).json(oauthError);
     }
+  }
+
+  /** Runs a grant as the org that granted it (PostgreSQL); Mongo needs no org. */
+  private async runGrantInOrg(
+    tokenRequest: {
+      grant_type: string;
+      code?: string;
+      refresh_token?: string;
+    },
+    clientId: string,
+    grant: () => Promise<TokenResponse>,
+  ): Promise<TokenResponse> {
+    if (docStore() !== 'postgres') return grant();
+    const lookup = getIdentityLookup();
+    let orgId: string | null = null;
+    if (tokenRequest.grant_type === 'authorization_code' && tokenRequest.code)
+      orgId = await lookup.resolveCodeOrg(tokenRequest.code, clientId);
+    else if (
+      tokenRequest.grant_type === 'refresh_token' &&
+      tokenRequest.refresh_token
+    )
+      orgId = await lookup.resolveRefreshOrg(tokenRequest.refresh_token);
+    else if (tokenRequest.grant_type === 'client_credentials')
+      orgId = (await lookup.resolveClient(clientId))?.orgId ?? null;
+    return orgId ? forOrg(orgId, 'oauth.token', grant) : grant();
   }
 
   /**
@@ -713,27 +743,18 @@ export class OAuthProviderController {
     let fullName: string | undefined;
     let accountType: string | undefined;
     if (codeResult.userId) {
-      const user = await Users.findOne({
-        _id: codeResult.userId,
-        orgId: codeResult.orgId,
-        isDeleted: false,
-      })
-        .select('fullName')
-        .lean()
-        .exec();
+      const user = await getUserRepository().getLiveFields(
+        codeResult.orgId,
+        codeResult.userId,
+        ['fullName'],
+      );
       if (user) {
         fullName = user.fullName;
       }
 
-      const org = await Org.findOne({
-        _id: codeResult.orgId,
-        isDeleted: false,
-      })
-        .select('accountType')
-        .lean()
-        .exec();
+      const org = await getOrgRepository().getAccountType(codeResult.orgId);
       if (org) {
-        accountType = (org as any).accountType;
+        accountType = org.accountType;
       }
     }
 
@@ -835,14 +856,11 @@ export class OAuthProviderController {
     // authenticates as that identity for as long as it lives.
     const identityId = app.tokenIdentityUserId ?? app.createdBy;
     if (identityId) {
-      const identity = await Users.findOne({
-        _id: identityId,
-        orgId: app.orgId,
-        isDeleted: false,
-      })
-        .select('fullName isDisabled restoreOpId')
-        .lean()
-        .exec();
+      const identity = await getUserRepository().getLiveFields(
+        app.orgId,
+        identityId,
+        ['fullName', 'isDisabled', 'restoreOpId'],
+      );
 
       // Refused rather than issued against an identity that cannot be used.
       // A client_credentials token is stored without a userId, so it is not
@@ -867,22 +885,16 @@ export class OAuthProviderController {
       fullName = identity.fullName;
     }
 
-    const org = await Org.findOne({
-      _id: app.orgId,
-      isDeleted: false,
-    })
-      .select('accountType')
-      .lean()
-      .exec();
+    const org = await getOrgRepository().getAccountType(app.orgId);
     if (org) {
-      accountType = (org as any).accountType;
+      accountType = org.accountType;
     }
 
     // Generate tokens (no refresh token for client_credentials)
     const tokens = await this.oauthTokenService.generateTokens(
       app,
       null, // No user
-      app.orgId.toString(),
+      app.orgId,
       filteredScopes,
       false, // No refresh token
       fullName,

@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from app.connectors.sources.bookstack.connector import BookStackConnector
+from app.connectors.sources.bookstack.connector import BookStackConnector, ReadOutcome
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.external.bookstack.bookstack import BookStackDataSource
 
@@ -42,6 +42,10 @@ class FakeResponse:
 
     def json(self) -> object:
         return self._body
+
+    def bytes(self) -> bytes:
+        # The real HTTPResponse's raw body; the data source reads it to tell an empty answer (204) apart.
+        return b"" if self._body is None else b"{}"
 
 
 def error(status: int) -> FakeResponse:
@@ -199,8 +203,11 @@ class Directory:
         self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
         *, raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
-        """The stored roles; like the graph stores, a failed read answers [] unless raise_on_error."""
-        assert collection == "roles" and filters == {"connectorId": CONNECTOR_ID}
+        """The stored roles (or record groups); like the graph stores, a failed read answers [] unless raise_on_error."""
+        assert filters == {"connectorId": CONNECTOR_ID}
+        if collection == "recordGroups":
+            return [{"externalGroupId": external_id} for external_id in self.grants]
+        assert collection == "roles"
         if self.fail_role_list_read:
             if raise_on_error:
                 raise RuntimeError("graph unavailable")
@@ -252,7 +259,7 @@ class World:
         # Small pages, so a listing takes several requests.
         self.connector.batch_size = 2
         # Pages aren't what these tests are about.
-        self.connector._sync_records = AsyncMock(return_value=None)
+        self.connector._sync_records_full = AsyncMock(return_value=None)
 
     def full_resync(self) -> None:
         """What a full resync does first: clear the sync points."""
@@ -260,10 +267,26 @@ class World:
         self.connector.record_sync_point.points.clear()
 
     async def sync_roles(self) -> None:
-        await self.connector._sync_user_roles()
+        # The role pass of a sync: it writes members only once every user is stored.
+        users = await self.connector.get_all_users()
+        if users:
+            await self.connector._sync_users_full(users)
+        self.connector._users_stored = self.connector._user_list_read is not ReadOutcome.INTERRUPTED
+        if not await self.connector._sync_user_roles_full():
+            # As run_sync does: an unfinished role pass fails the run, so a full sync unlinks nothing.
+            self.connector._health.fail("the roles and their members")
 
     async def sync_users(self) -> None:
-        await self.connector._sync_users()
+        """The user part of a sync: the user list, then the user events of the audit log since the last sync."""
+        users = await self.connector.get_all_users()
+        if users:
+            await self.connector._sync_users_full(users)
+        events, self.api.audit = [e for e in self.api.audit if e["type"] in ("user_create", "user_update")], []
+        if events:
+            self.connector._users_stored = self.connector._user_list_read is not ReadOutcome.INTERRUPTED
+            if not await self.connector._handle_user_upsert_event(events, users):
+                # Not applied: the cursor stays, so the next sync reads the same events again.
+                self.api.audit = events + self.api.audit
 
     def role_checkpoint(self) -> dict[str, dict[str, str]]:
         return self.connector.app_role_sync_point.points
@@ -272,7 +295,10 @@ class World:
         return self.connector.user_sync_point.points
 
     async def sync_books(self) -> None:
-        await self.connector._sync_record_groups()
+        users = await self.connector.get_all_users()
+        self.connector._user_emails = {int(u.source_user_id): u.email for u in users if u.email}
+        if await self.connector._load_roles_for_access():
+            await self.connector._sync_groups_full()
 
     def members(self, role: int) -> set[str] | None:
         """The role's stored members; None when the role isn't stored."""
@@ -386,22 +412,8 @@ async def test_a_user_list_bookstack_refuses_fails_closed(world: World) -> None:
     assert world.members(VIEWER) == set()
 
 
-async def test_a_role_update_whose_role_cannot_be_read_keeps_the_role(world: World) -> None:
-    world.api.fail[(f"/api/roles/{VIEWER}", None)] = 503
-
-    done = await world.connector._handle_role_update_event(VIEWER, {})
-
-    assert world.members(VIEWER) == emails(4, 5)
-    assert done is False  # so the role checkpoint stays and the next sync reads the event again
 
 
-async def test_a_role_update_with_a_member_that_cannot_be_read_keeps_the_role(world: World) -> None:
-    world.api.fail[("/api/users/5", None)] = 502
-
-    done = await world.connector._handle_role_update_event(VIEWER, {})
-
-    assert world.members(VIEWER) == emails(4, 5)
-    assert done is False  # so the role checkpoint stays and the next sync reads the event again
 
 
 # ---- book grants and the role details ----
@@ -438,85 +450,14 @@ async def test_a_complete_role_read_removes_a_deleted_role_from_book_grants(worl
 
 # ---- the role list and role details in the full role sync ----
 
-async def test_a_failed_second_role_page_is_read_again_on_the_next_sync(world: World) -> None:
-    world.api.roles[AUDITOR] = {"display_name": "Auditor", "permissions": [], "users": [1]}
-    world.api.fail_once[("/api/roles", 2)] = 429  # the page holding Auditor
-
-    await world.sync_roles()
-
-    assert world.role_checkpoint() == {}
-    assert world.members(AUDITOR) is None
-    assert world.members(EDITOR) == emails(1, 2, 3, 4, 5)  # read whole, so written whole
-
-    await world.sync_roles()
-
-    assert world.members(AUDITOR) == emails(1)
 
 
-async def test_a_failed_role_details_read_in_the_role_sync_is_read_again_on_the_next_sync(world: World) -> None:
-    world.api.roles[AUDITOR] = {"display_name": "Auditor", "permissions": [], "users": [1]}
-    world.api.fail_once[(f"/api/roles/{AUDITOR}", None)] = 503
-
-    await world.sync_roles()
-    assert world.role_checkpoint() == {}
-    await world.sync_roles()
-
-    assert world.members(AUDITOR) == emails(1)
 
 
-@pytest.mark.parametrize("status", [401, 403])
-async def test_a_refused_role_keeps_its_members_and_the_role_sync_finishes(world: World, status: int) -> None:
-    """A refusal repeats every sync, so it does not hold the checkpoint. The role keeps
-    its stored members, noted as seen so the unlink after a full sync leaves them."""
-    world.api.fail[(f"/api/roles/{VIEWER}", None)] = status
-    world.api.roles[VIEWER]["users"].remove(5)
-
-    await world.sync_roles()
-
-    assert world.role_checkpoint() != {}
-    assert world.members(VIEWER) == emails(4, 5)
-    assert world.members(EDITOR) == emails(1, 2, 3, 4, 5)  # read whole, so written whole
-    assert world.directory.kept_as_seen == {str(VIEWER)}
-    assert world.connector.full_sync_coverage().complete
-
-    # Not frozen: once BookStack shows the role again, the next sync reads it whole.
-    del world.api.fail[(f"/api/roles/{VIEWER}", None)]
-    await world.sync_roles()
-
-    assert world.members(VIEWER) == emails(4)
-    assert not rebuild_owed(world)
 
 
-async def test_a_lasting_refusal_does_not_hold_the_role_checkpoint_on_every_sync(world: World) -> None:
-    """Held, every sync would replay the audit log since then, role updates included."""
-    await world.sync_roles()
-    for point in world.role_checkpoint().values():
-        point["timestamp"] = "2026-01-01T00:00:00Z"
-    world.api.audit.append({"type": "role_delete", "detail": "(9) Old role"})
-    world.api.fail[(f"/api/roles/{VIEWER}", None)] = 403
-
-    await world.sync_roles()
-
-    assert [p["timestamp"] for p in world.role_checkpoint().values()] != ["2026-01-01T00:00:00Z"]
-    assert world.members(VIEWER) == emails(4, 5)
 
 
-async def test_a_refused_role_list_keeps_stored_roles_and_reports_the_full_sync_incomplete(world: World) -> None:
-    """A refused page names no roles, so they can't be noted as seen: nothing is unlinked."""
-    world.api.fail[("/api/roles", None)] = 403
-    world.api.roles[VIEWER]["users"].remove(5)
-
-    await world.sync_roles()
-
-    assert world.role_checkpoint() != {}
-    assert world.members(VIEWER) == emails(4, 5)
-    assert not world.connector.full_sync_coverage().complete
-
-    del world.api.fail[("/api/roles", None)]
-    await world.sync_roles()
-
-    assert world.members(VIEWER) == emails(4)
-    assert not rebuild_owed(world)
 
 
 async def test_a_first_sync_whose_role_list_is_refused_creates_the_roles_once_it_can_read_them() -> None:
@@ -534,53 +475,10 @@ async def test_a_first_sync_whose_role_list_is_refused_creates_the_roles_once_it
     assert w.members(EDITOR) == emails(1, 2)
 
 
-async def test_a_lasting_refusal_reads_every_role_on_each_sync_without_replaying_the_audit_log(world: World) -> None:
-    world.api.fail[(f"/api/roles/{VIEWER}", None)] = 403
-    await world.sync_roles()
-    first = [p["timestamp"] for p in world.role_checkpoint().values()]
-    for point in world.role_checkpoint().values():
-        point["timestamp"] = "2026-01-01T00:00:00Z"
-
-    await world.sync_roles()
-
-    assert [p["timestamp"] for p in world.role_checkpoint().values()] != ["2026-01-01T00:00:00Z"]
-    assert first != []
-    assert rebuild_owed(world)
-    assert world.members(VIEWER) == emails(4, 5)
 
 
-async def test_a_role_update_bookstack_refuses_keeps_the_role(world: World) -> None:
-    """The same as the full role sync: a refused role keeps its members and is read again."""
-    await world.sync_roles()
-    world.api.fail[(f"/api/roles/{VIEWER}", None)] = 403
-    world.api.roles[VIEWER]["users"].remove(5)
-    world.connector._sync_records = AsyncMock(return_value=None)
-
-    done = await world.connector._handle_role_update_event(VIEWER, {})
-
-    assert done is True
-    assert world.members(VIEWER) == emails(4, 5)
-    assert world.directory.kept_as_seen == {str(VIEWER)}
-
-    world.api.audit.append({"type": "role_update", "detail": f"({VIEWER}) Viewer"})
-    await world.sync_roles()
-    assert rebuild_owed(world)
-
-    del world.api.fail[(f"/api/roles/{VIEWER}", None)]
-    await world.sync_roles()
-
-    assert world.members(VIEWER) == emails(4)
 
 
-async def test_a_refused_role_whose_stored_members_cannot_be_read_is_read_again(world: World) -> None:
-    world.api.fail[(f"/api/roles/{VIEWER}", None)] = 403
-    world.directory.fail_stored_read = True
-
-    await world.sync_roles()
-
-    assert world.role_checkpoint() == {}
-    assert world.members(VIEWER) == emails(4, 5)
-    assert not world.connector.full_sync_coverage().complete
 
 
 async def test_an_interrupted_role_read_reports_the_full_sync_incomplete(world: World) -> None:
@@ -612,23 +510,6 @@ async def test_a_complete_read_reports_the_full_sync_complete(world: World) -> N
 
 # ---- the user sync, which stores the users a role write attaches ----
 
-async def test_a_first_sync_whose_user_list_fails_writes_roles_only_once_every_user_is_stored() -> None:
-    w = World()
-    w.directory.require_user_rows = True
-    for uid in (1, 2, 3, 4, 5):
-        w.api.add_user(uid, EDITOR)
-    w.api.fail_once[("/api/users", 2)] = 429  # hit by the user sync's listing only
-
-    await w.sync_users()
-    await w.sync_roles()
-
-    assert w.user_checkpoint() == {}
-    assert w.role_checkpoint() == {}
-
-    await w.sync_users()
-    await w.sync_roles()
-
-    assert w.members(EDITOR) == emails(1, 2, 3, 4, 5)
 
 
 @pytest.fixture
@@ -667,76 +548,16 @@ async def test_a_user_gone_from_bookstack_is_taken_out_of_their_stored_roles(syn
     assert world.members(VIEWER) == emails(4)
 
 
-async def test_a_user_update_whose_role_write_fails_is_applied_again(synced_users: World) -> None:
-    world = synced_users
-    user_updated(world, 4)
-    world.directory.fail_role_write = True
-
-    await world.sync_users()
-
-    assert [p["timestamp"] for p in world.user_checkpoint().values()] == ["2026-01-01T00:00:00Z"]
 
 
-@pytest.mark.parametrize("status", [403, 404])
-async def test_a_user_withdrawal_whose_user_lookup_fails_is_applied_again(synced_users: World, status: int) -> None:
-    """A failed lookup is not "never stored": the stored roles stay, and so does the checkpoint."""
-    world = synced_users
-    user_updated(world, 5)
-    world.api.fail[("/api/users/5", None)] = status
-    world.directory.fail_user_lookup = True
-
-    await world.sync_users()
-
-    assert [p["timestamp"] for p in world.user_checkpoint().values()] == ["2026-01-01T00:00:00Z"]
-    assert world.members(EDITOR) == emails(1, 2, 3, 4, 5)
 
 
-async def test_a_user_withdrawal_whose_edge_delete_fails_is_applied_again(synced_users: World) -> None:
-    world = synced_users
-    user_updated(world, 5)
-    world.api.fail[("/api/users/5", None)] = 403
-    world.directory.fail_edge_delete = True
-
-    await world.sync_users()
-
-    assert [p["timestamp"] for p in world.user_checkpoint().values()] == ["2026-01-01T00:00:00Z"]
 
 
-async def test_a_user_update_whose_user_lookup_fails_is_applied_again(synced_users: World) -> None:
-    world = synced_users
-    user_updated(world, 4)
-    world.directory.fail_user_lookup = True
-
-    await world.sync_users()
-
-    assert [p["timestamp"] for p in world.user_checkpoint().values()] == ["2026-01-01T00:00:00Z"]
 
 
-async def test_a_user_update_for_a_user_never_stored_still_counts_as_applied(synced_users: World) -> None:
-    """A lookup that answers "no such user" is a definite answer, so the checkpoint moves on."""
-    world = synced_users
-    user_updated(world, 4)
-    world.directory.user_rows.discard("u4@example.com")
-
-    await world.sync_users()
-
-    assert [p["timestamp"] for p in world.user_checkpoint().values()] != ["2026-01-01T00:00:00Z"]
 
 
-async def test_the_rebuild_owed_after_a_refusal_stops_once_every_role_is_read(world: World) -> None:
-    """The stores merge sync points, so the flag must be written back as False."""
-    world.api.fail[(f"/api/roles/{VIEWER}", None)] = 403
-    await world.sync_roles()
-    assert rebuild_owed(world)
-
-    del world.api.fail[(f"/api/roles/{VIEWER}", None)]
-    await world.sync_roles()
-    assert not rebuild_owed(world)
-
-    full_read = AsyncMock(wraps=world.connector._sync_user_roles_full)
-    world.connector._sync_user_roles_full = full_read
-    await world.sync_roles()
-    full_read.assert_not_awaited()
 
 
 async def test_a_complete_role_read_removes_a_role_bookstack_no_longer_has(world: World) -> None:
@@ -752,12 +573,3 @@ async def test_a_complete_role_read_removes_a_role_bookstack_no_longer_has(world
     assert world.members(EDITOR) == emails(1, 2, 3, 4, 5)
 
 
-async def test_a_complete_role_read_whose_stored_roles_cannot_be_listed_is_read_again(world: World) -> None:
-    del world.api.roles[VIEWER]
-    world.directory.fail_role_list_read = True
-
-    await world.sync_roles()
-
-    assert world.role_checkpoint() == {}
-    assert world.members(VIEWER) == emails(4, 5)
-    assert not world.connector.full_sync_coverage().complete

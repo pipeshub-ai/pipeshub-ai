@@ -59,7 +59,7 @@ describe('ToolApprovalCard', () => {
     expect(screen.getByText('Jira')).toBeTruthy();
     expect(screen.getByText(/^Needs your approval · expires in 15 min$/)).toBeTruthy();
     expect(screen.getByText('Login fails')).toBeTruthy();
-    expect(screen.getByText('["bug"]')).toBeTruthy();
+    expect(screen.getByText('bug')).toBeTruthy();
     expect(screen.queryByText("Can't be undone")).toBeNull();
   });
 

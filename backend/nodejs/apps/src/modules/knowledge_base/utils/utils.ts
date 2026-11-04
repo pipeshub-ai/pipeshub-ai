@@ -88,6 +88,18 @@ export interface ProcessedFile {
 }
 
 /**
+ * The name the user picked, extension included. recordName has the extension
+ * stripped, and names that differ only by extension may live side by side, so a
+ * message naming recordName alone is ambiguous.
+ */
+export const displayFileName = (pf: ProcessedFile): string => {
+  const base = pf.filePath.split(/[\\/]/).pop();
+  if (base) return base;
+  const ext = pf.fileRecord.extension;
+  return ext ? `${pf.record.recordName}.${ext}` : pf.record.recordName;
+};
+
+/**
  * Creates a placeholder document and returns metadata.
  * If a redirect URL is provided (for direct upload), returns an upload promise that must be awaited.
  * Event publishing is handled by Python service after all uploads complete.
@@ -607,7 +619,7 @@ export const processUploadsInBackground = async (
             fileName: pf.record.recordName,
             filePath: pf.filePath,
           },
-          `A file named "${pf.record.recordName}" already exists in this location; it was skipped.`,
+          `A file named "${displayFileName(pf)}" already exists in this location; it was skipped.`,
           'index',
           'DUPLICATE_NAME',
         );

@@ -13,9 +13,17 @@ name: Release Changelog
 # skill runs under workflow_dispatch. Dispatching by hand with a tag
 # regenerates a missed changelog.
 #
+# The same run also converts changelog/<version>.md to the docs format
+# (.github/scripts/changelog-to-mdx.py, from main) and opens a PR on
+# pipeshub-ai/documentation that adds changelog/platform/<version>.mdx. The
+# conversion has its own job, so a file it rejects stops only the docs PR.
+#
 # Claude reads contributor-written release notes and PR text, so it runs in a
-# read-only job and hands over a patch; a separate job checks that the patch
-# touches only the changelog files before it commits with a write token.
+# read-only job and hands over a patch; separate jobs check it before they
+# push with a write token.
+#
+# Secrets: ANTHROPIC_API_KEY (Claude API key) and DOCS_REPO_TOKEN (a token that
+# can push branches and open PRs on pipeshub-ai/documentation).
 on:
   release:
     types: [published]
@@ -25,8 +33,16 @@ on:
         description: Tag of an existing release, e.g. v0.9.1
         required: true
         type: string
+      model:
+        description: Claude model ID or alias used for the skill run
+        required: false
+        default: claude-sonnet-5-5
+        type: string
 
-# Dispatched runs take turns across both jobs, so each builds on the branch the
+env:
+  DOCS_REPO: pipeshub-ai/documentation
+
+# Dispatched runs take turns across all jobs, so each builds on the branch the
 # previous one pushed. `queue: max` keeps every waiting run; the default keeps
 # only the newest pending one and cancels the rest.
 concurrency:
@@ -59,6 +75,7 @@ jobs:
       pull-requests: read
     outputs:
       tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
       branch: ${{ steps.branch.outputs.name }}
       base_sha: ${{ steps.branch.outputs.base_sha }}
       remote_sha: ${{ steps.branch.outputs.remote_sha }}
@@ -68,9 +85,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
+          # A release-triggered run is dispatched without a model, so use the default.
+          MODEL: ${{ inputs.model || 'claude-sonnet-5-5' }}
           HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
           set -euo pipefail
+          # The values reach a command line, a prompt and a docs branch name, so allow plain characters only.
+          if ! [[ "$TAG" =~ ^[0-9A-Za-z._-]+$ ]]; then
+            echo "::error::Tag \"$TAG\" has characters that are not allowed."
+            exit 1
+          fi
+          if ! [[ "$MODEL" =~ ^[0-9A-Za-z._:/-]+$ ]]; then
+            echo "::error::Model \"$MODEL\" has characters that are not allowed."
+            exit 1
+          fi
           if [ "$HAS_API_KEY" != "true" ]; then
             echo "::error::The ANTHROPIC_API_KEY repository secret is not set. Add it under Settings > Secrets and variables > Actions, then re-run this workflow."
             exit 1
@@ -89,6 +117,8 @@ jobs:
             --jq 'map(select(.isDraft | not)) | max_by(.publishedAt) | .tagName')"
           {
             echo "tag=$TAG"
+            echo "version=${TAG#v}"
+            echo "model=$MODEL"
             echo "newest=$newest"
           } >> "$GITHUB_OUTPUT"
 
@@ -127,6 +157,19 @@ jobs:
             echo "base_sha=$(git rev-parse HEAD)"
           } >> "$GITHUB_OUTPUT"
 
+      # The skill's own `gh release view ... > file` is denied in a headless run
+      # (shell redirects are not covered by a tool allow rule), so save it here.
+      - name: Save the release for the skill
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,name,publishedAt,isPrerelease,body > "$RUNNER_TEMP/release/release.json"
+          mkdir -p tmp-release
+          cp "$RUNNER_TEMP/release/release.json" tmp-release/release.json
+
       - name: Run the release-changelog skill
         uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1
         env:
@@ -156,9 +199,13 @@ jobs:
             Unreleased compare link must start from that tag, even when it is not the
             release you are writing.
 
+            For Step 1, the output of the gh release view command is already saved at
+            tmp-release/release.json: read it with the Read tool instead of running
+            gh release view.
+
             Do NOT run git commit or git push, and do NOT open a PR — a later
             workflow job handles that. Your only output is the edited files.
-          claude_args: '--allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(gh release view:*),Bash(gh pr view:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(grep:*),Bash(mkdir:*),Bash(python3:*)"'
+          claude_args: '--model ${{ steps.release.outputs.model }} --allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(gh release view:*),Bash(gh pr view:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(grep:*),Bash(mkdir:*),Bash(python3:*)"'
 
       - name: Save the changelog edits as a patch
         run: |
@@ -171,6 +218,65 @@ jobs:
         with:
           name: changelog-patch
           path: ${{ runner.temp }}/changelog.patch
+          if-no-files-found: error
+          retention-days: 7
+
+  # Converts the changelog to the docs format. Only publish-docs needs this
+  # job, so a changelog the converter rejects still gets its changelog PR.
+  convert:
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # The converter comes from main (the changelog branch can be older).
+      - name: Checkout the converter from main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: main
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Checkout the base the patch was made on
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.generate.outputs.base_sha }}
+          path: work
+          persist-credentials: false
+
+      - name: Download the patch
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: changelog-patch
+          path: ${{ runner.temp }}/patch
+
+      - name: Convert to the docs format
+        working-directory: work
+        env:
+          VERSION: ${{ needs.generate.outputs.version }}
+        run: |
+          set -euo pipefail
+          patch="$RUNNER_TEMP/patch/changelog.patch"
+          # An empty patch means the changelog is already on the branch.
+          if [ -s "$patch" ]; then
+            git apply "$patch"
+          fi
+          # The patch came from the job that read untrusted text: read only regular files.
+          for file in "changelog/${VERSION}.md" CHANGELOG.md; do
+            if [ ! -f "$file" ] || [ -L "$file" ]; then
+              echo "::error::$file is missing or is not a regular file."
+              exit 1
+            fi
+          done
+          python3 -I "$GITHUB_WORKSPACE/main/.github/scripts/changelog-to-mdx.py" "changelog/${VERSION}.md" "$RUNNER_TEMP/docs-changelog"
+
+      - name: Upload the docs file
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docs-changelog
+          path: ${{ runner.temp }}/docs-changelog/${{ needs.generate.outputs.version }}.mdx
           if-no-files-found: error
           retention-days: 7
 
@@ -270,3 +376,80 @@ jobs:
           else
             gh pr create --base main --head "$BRANCH" --title "$title" --body "$body"
           fi
+
+  publish-docs:
+    needs: [generate, convert]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Download the docs file
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: docs-changelog
+          path: ${{ runner.temp }}/file
+
+      - name: Checkout the docs repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.DOCS_REPO }}
+          ref: main
+          token: ${{ secrets.DOCS_REPO_TOKEN }}
+          path: docs
+
+      - name: Open the docs PR
+        working-directory: docs
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
+          VERSION: ${{ needs.generate.outputs.version }}
+          TAG: ${{ needs.generate.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # Exactly one regular file, named for the version.
+          mapfile -t files < <(find "$RUNNER_TEMP/file" -type f)
+          if [ "${#files[@]}" -ne 1 ] || [ "$(basename "${files[0]}")" != "${VERSION}.mdx" ]; then
+            echo "::error::Expected only ${VERSION}.mdx from the convert job."
+            exit 1
+          fi
+          # The converter writes a page per release (description is the headline,
+          # links go to /changelog/platform/<version>). An older docs main reads
+          # summary as the headline and would accept the file but render it wrong.
+          if ! grep -Eq "^const REQUIRED = .*'description'" scripts/changelog/build-index.mjs; then
+            echo "::error::${DOCS_REPO} main does not use the page-per-release changelog format yet (scripts/changelog/SPEC.md). Merge that first, then re-run."
+            exit 1
+          fi
+
+          mkdir -p changelog/platform
+          cp "${files[0]}" "changelog/platform/${VERSION}.mdx"
+          # Validate the file with the docs repo's own script. Its page is
+          # regenerated by the docs workflow, so only the version file is committed.
+          node scripts/changelog/build-index.mjs
+          git add "changelog/platform/${VERSION}.mdx"
+          if git diff --cached --quiet; then
+            echo "::warning::changelog/platform/${VERSION}.mdx is already on main; nothing to do."
+            exit 0
+          fi
+
+          branch="changelog/platform-${VERSION}"
+          # Never overwrite the branch: reviewers may have pushed edits to it.
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null; then
+            echo "::error::Branch ${branch} already exists on ${DOCS_REPO}. Merge or delete it (closing its PR) before running again."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b "$branch"
+          git commit -q -m "docs(changelog): add platform ${VERSION}"
+          git push origin "HEAD:refs/heads/${branch}"
+
+          title="docs(changelog): platform ${VERSION}"
+          body="Adds \`changelog/platform/${VERSION}.mdx\` for [${TAG}](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}). Generated by the \`release-changelog\` skill ([workflow run](${RUN_URL})). The changelog page is regenerated by the docs workflow on this PR.
+
+          Review checklist:
+          - [ ] The headline captures the biggest story of the release
+          - [ ] Breaking changes and upgrade notes are complete
+          - [ ] Links and code samples render"
+          gh pr create --repo "$DOCS_REPO" --base main --head "$branch" --title "$title" --body "$body"

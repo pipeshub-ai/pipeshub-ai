@@ -19,6 +19,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.sources.client.redshift import redshift as redshift_client_module
 from app.sources.client.redshift.redshift import RedshiftClient
 from app.utils.conversation_tasks import pop_tasks
+from app.utils.sql_limits import SQL_MAX_ROWS, SQL_QUERY_TIMEOUT_S
 
 PASSWORD = "rs-Pa55word!secret"
 
@@ -38,6 +39,9 @@ class _FakeCursor:
 
     def execute(self, query: str, params: tuple | None = None) -> None:
         params = tuple(params or ())
+        if query.startswith("SET LOCAL statement_timeout"):
+            self._conn.timeouts.append(query)
+            return
         self._conn.calls.append((_flat(query), params))
         rows = self._conn.responder(_flat(query), params)
         if rows is None:
@@ -48,7 +52,12 @@ class _FakeCursor:
         self._rows = [tuple(r.get(c) for c in columns) for r in rows]
 
     def fetchall(self) -> list[tuple]:
+        self._conn.fetched.append(len(self._rows))
         return list(self._rows)
+
+    def fetchmany(self, size: int) -> list[tuple]:
+        self._conn.fetched.append(min(size, len(self._rows)))
+        return list(self._rows[:size])
 
     def close(self) -> None:
         return None
@@ -58,6 +67,8 @@ class _FakeConnection:
     def __init__(self, responder: Responder) -> None:
         self.responder = responder
         self.calls: list[tuple[str, tuple]] = []
+        self.timeouts: list[str] = []  # SET LOCAL statement_timeout statements
+        self.fetched: list[int] = []  # rows the driver was asked to hand over, per fetch
         self.commits = 0
         self.rollbacks = 0
 
@@ -282,6 +293,33 @@ class TestExecuteQuery:
         assert body["row_count"] == 2
         assert body["data"][1] == {"id": 1, "email": "user1@example.com"}
         assert conn.commits == 1
+
+    async def test_statement_timeout_is_set_on_the_server_before_the_query(self, make_tool) -> None:
+        tool, conn = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: _rows(1)))
+        await tool.execute_query(query="SELECT 1")
+        assert conn.timeouts == [f"SET LOCAL statement_timeout TO {SQL_QUERY_TIMEOUT_S * 1000}"]
+
+    async def test_at_most_the_cap_plus_one_rows_are_read_and_the_cut_is_reported(self, make_tool) -> None:
+        tool, conn = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: _rows(SQL_MAX_ROWS + 500)))
+        body = _body(await tool.execute_query(query="SELECT * FROM public.customers"))
+
+        assert conn.fetched == [SQL_MAX_ROWS + 1]
+        assert (body["row_count"], body["rows_cut_at"]) == (SQL_MAX_ROWS, SQL_MAX_ROWS)
+        assert f"cut at {SQL_MAX_ROWS} rows" in body["message"]
+
+    async def test_long_text_is_clipped_for_the_model(self, make_tool) -> None:
+        tool, _ = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: [{"id": 1, "email": "x" * 500}]))
+        body = _body(await tool.execute_query(query="SELECT * FROM public.customers"))
+        assert len(body["data"][0]["email"]) == 100
+
+    async def test_a_server_timeout_is_a_tool_error(self, make_tool) -> None:
+        def stopped(q: str, p: tuple) -> None:
+            raise RuntimeError("ProgrammingError: canceling statement due to statement timeout")
+
+        tool, _ = make_tool(_Catalog(WAREHOUSE, on_query=stopped))
+        ok, payload = await tool.execute_query(query="SELECT * FROM public.customers")
+        assert ok is False
+        assert f"up to {SQL_QUERY_TIMEOUT_S}s" in json.loads(payload)["error"]
 
     async def test_display_is_capped_at_100_rows(self, make_tool) -> None:
         tool, _ = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: _rows(150)))

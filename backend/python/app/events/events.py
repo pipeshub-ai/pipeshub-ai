@@ -33,6 +33,7 @@ from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import (
     IndexingError,
     ProcessingError,
+    RecordDeletedError,
 )
 from app.models.entities import Record
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
@@ -45,7 +46,7 @@ from app.modules.pipeline.ingress import StageIngress
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
+from app.modules.transformers.transformer import ENRICHMENT_DEFERRED, ENRICHMENT_FOLLOWS
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.docling.client import (
@@ -67,6 +68,7 @@ from app.services.messaging.config import (
     PipelineEventData,
     messaging_env,
 )
+from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider
 from app.services.resource_governor import classify
@@ -285,6 +287,8 @@ class EventProcessor:
                 event_type=event_type,
                 prev_virtual_record_id=prev_virtual_record_id,
             ):
+                if event.event == IndexingEvent.PARSING_COMPLETE:
+                    pdf_binary = inspected = None
                 yield event
             return
 
@@ -317,6 +321,8 @@ class EventProcessor:
                         docling_failed = True
                     else:
                         yielded = True
+                        if event.event == IndexingEvent.PARSING_COMPLETE:
+                            pdf_binary = inspected = None
                         yield event
             except DoclingUnavailableError as exc:
                 # Only before Docling produced anything: after PARSING_COMPLETE a
@@ -329,6 +335,14 @@ class EventProcessor:
             else:
                 if not docling_failed:
                     return
+                if yielded:
+                    # Docling failed after its parse completed (building blocks or
+                    # indexing): the file is released, and parsing it again would
+                    # index the record twice. Retry the record instead.
+                    raise IndexingError(
+                        "Docling failed after parsing completed",
+                        details={"record_id": record_id},
+                    )
                 self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
 
         async for event in self.processor.process_pdf_with_pdf_plumber(
@@ -339,6 +353,8 @@ class EventProcessor:
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
         ):
+            if event.event == IndexingEvent.PARSING_COMPLETE:
+                pdf_binary = inspected = None
             yield event
 
     @staticmethod
@@ -358,11 +374,13 @@ class EventProcessor:
             mime_type == MimeTypes.PLAIN_TEXT.value or is_generated_file_name(record_name)
         )
 
-    async def _dispatch_stages(self, record: Record, event_type: str | None) -> None:
+    async def _dispatch_stages(
+        self, record: Record, event_type: str | None, *, defer_classify: bool = False
+    ) -> None:
         """Hand the now-searchable record to the stage runtime."""
         if self.stage_ingress is None:
             raise RuntimeError("the pipeline stage runtime is not wired into this EventProcessor")
-        _ = await self.stage_ingress.on_indexed(record, trigger=event_type)
+        _ = await self.stage_ingress.on_indexed(record, trigger=event_type, defer_classify=defer_classify)
 
     @staticmethod
     def _scans_for_secrets(record_type: str | None, *, reads_as_code_file: bool) -> bool:
@@ -445,6 +463,8 @@ class EventProcessor:
             provider=provider,
             file_path=file_path,
         )
+        # The parsing service has the file; the blocks are what is left to index.
+        file_content = None
         block_container = parse_result.block_container
         if block_container is None:
             raise RuntimeError(f"Parsing service returned no block container for record {record_id}")
@@ -473,7 +493,7 @@ class EventProcessor:
             raise_on_error=True,
         )
         if record_doc is None:
-            raise RuntimeError(f"Record {record_id} not found after parsing")
+            raise RecordDeletedError(record_id)
 
         await self.update_record_fields(
             record_doc,
@@ -565,7 +585,9 @@ class EventProcessor:
         self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
         # ── Step 3: classification runs as a pipeline stage, on its own permits ──
-        await self._dispatch_stages(record, event_type)
+        await self._dispatch_stages(
+            record, event_type, defer_classify=bool(ctx.settings.get(ENRICHMENT_DEFERRED))
+        )
 
         yield PipelineEvent(
             event=IndexingEvent.INDEXING_COMPLETE,
@@ -1332,7 +1354,9 @@ class EventProcessor:
                 # Legitimately reachable: a record can be deleted between an
                 # event being published and consumed. There is nothing to index
                 # and nothing to fail, so drain the message rather than retry it.
-                self.logger.error("❌ Record %s not found", record_id)
+                # WARNING, as the record handler's own read: None cannot tell a
+                # deletion from an id that never existed (a producer bug).
+                self.logger.warning("Record %s not found; dropping its event", record_id)
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id=record_id),
@@ -1679,6 +1703,8 @@ class EventProcessor:
                             event_type=event_type,
                             prev_virtual_record_id=prev_virtual_record_id,
                         ):
+                            if event.event == IndexingEvent.PARSING_COMPLETE:
+                                file_content = content_bytes = None
                             yield event
                         return
                     if plan.route in (CodeFileRoute.DELIMITED, CodeFileRoute.STRUCTURED):
@@ -1706,6 +1732,8 @@ class EventProcessor:
                     is_code=is_code,
                     file_path=event_data.get("filePath"),
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1727,6 +1755,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1743,6 +1773,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1759,6 +1791,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1774,6 +1808,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1790,6 +1826,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1808,6 +1846,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1824,6 +1864,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1839,6 +1881,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1854,6 +1898,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.EPUB.value or mime_type == MimeTypes.EPUB.value:
@@ -1868,6 +1914,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
@@ -1882,6 +1930,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.DOC.value or mime_type == MimeTypes.DOC.value:
@@ -1896,6 +1946,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.XLSX.value or mime_type == MimeTypes.XLSX.value:
@@ -1910,6 +1962,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.XLS.value or mime_type == MimeTypes.XLS.value:
@@ -1924,6 +1978,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.CSV.value or mime_type == MimeTypes.CSV.value:
@@ -1935,6 +1991,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.TSV.value or mime_type == MimeTypes.TSV.value:
@@ -1947,6 +2005,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.HTML.value or mime_type == MimeTypes.HTML.value:
@@ -1961,6 +2021,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.PPTX.value or mime_type == MimeTypes.PPTX.value:
@@ -1975,6 +2037,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.PPT.value or mime_type == MimeTypes.PPT.value:
@@ -1989,6 +2053,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.MD.value or mime_type == MimeTypes.MARKDOWN.value:
@@ -2000,6 +2066,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.MDX.value or mime_type == MimeTypes.MDX.value:
@@ -2014,6 +2082,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.TXT.value or mime_type == MimeTypes.PLAIN_TEXT.value:
@@ -2031,6 +2101,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
 
@@ -2045,6 +2117,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif mime_type == MimeTypes.SQL_VIEW.value or extension == ExtensionTypes.SQL_VIEW.value:
@@ -2058,6 +2132,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.JSON.value or mime_type == MimeTypes.JSON.value:
@@ -2070,6 +2146,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension in {ExtensionTypes.YAML.value, ExtensionTypes.YML.value} or mime_type == MimeTypes.YAML.value:
@@ -2082,6 +2160,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif (
@@ -2108,6 +2188,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             else:
@@ -2119,7 +2201,8 @@ class EventProcessor:
 
         except Exception as e:
             # Let the error bubble up to Kafka consumer
-            self.logger.error(f"❌ Error in event processor: {repr(e)}")
+            if not is_expected_outcome(e):  # the record handler logs it once
+                self.logger.error(f"❌ Error in event processor: {repr(e)}")
             raise
         finally:
             if forced_record_id is not None and self.stage_ingress is not None:

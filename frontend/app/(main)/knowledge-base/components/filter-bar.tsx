@@ -17,6 +17,7 @@ import type {
 } from '../types';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
+import { KbSortMenu } from './kb-sort-menu';
 
 interface KBFilterBarProps {
   pageViewMode: PageViewMode;
@@ -74,6 +75,11 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
     // Table data for available filters
     tableData,
     allRecordsTableData,
+    // Sort (shared with the sortable column headers)
+    sort,
+    setSort,
+    allRecordsSort,
+    setAllRecordsSort,
   } = useKnowledgeBaseStore();
 
   const isCollectionsMode = pageViewMode === 'collections';
@@ -312,7 +318,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
               padding: '8px 16px',
               borderBottom: '1px solid var(--olive-3)',
               backgroundColor: 'var(--olive-2)',
-              backdropFilter: 'blur(8px)',
+              backdropFilter: 'var(--frost-filter-subtle)',
               flexWrap: 'wrap',
             }
       }
@@ -407,6 +413,12 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         defaultDateType="between"
       />
 
+      {/* Sort applies at once, like the column headers; it follows the last filter */}
+      <KbSortMenu
+        value={isCollectionsMode ? sort : allRecordsSort}
+        onChange={(next) => (isCollectionsMode ? setSort(next) : setAllRecordsSort(next))}
+      />
+
       {!scrollRow && actions}
     </Flex>
   );
@@ -423,7 +435,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         padding: isMobile ? 'var(--space-2)' : '8px 16px',
         borderBottom: '1px solid var(--olive-3)',
         backgroundColor: 'var(--olive-2)',
-        backdropFilter: 'blur(8px)',
+        backdropFilter: 'var(--frost-filter-subtle)',
       }}
     >
       {scroller}

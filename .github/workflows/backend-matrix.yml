@@ -48,11 +48,22 @@ on:
       - 'backend/python/app/connectors/core/base/data_processor/**'
       - 'backend/python/app/connectors/core/base/data_store/**'
       - 'backend/python/app/modules/transformers/**'
+      # Knowledge-base push: its real-graph tests (graph_db/test_kb_push_*) drive the push service itself.
+      - 'backend/python/app/connectors/sources/localKB/**'
+      - 'backend/python/app/services/storage_documents.py'
+      - 'backend/python/app/modules/indexing/record_republish.py'
+      # Entity search and named-entity linking: graph_db/test_permitted_entity_records_* reads through them.
+      - 'backend/python/app/modules/retrieval/**'
+      - 'backend/python/app/modules/named_entities/**'
       # Connectors whose real-graph tests drive the connector itself (graph_db/test_<name>_*).
       - 'backend/python/app/connectors/sources/linear/**'
       - 'backend/python/app/sources/client/linear/**'
       - 'backend/python/app/sources/external/linear/**'
       - 'backend/python/app/indexing_main.py'
+      # The recovery sweeps graph_db/test_recovery_sweeps_real_backends.py drives.
+      - 'backend/python/app/modules/indexing/lane_upkeep.py'
+      - 'backend/python/app/modules/indexing/duplicate_reconcile.py'
+      - 'backend/python/app/modules/indexing/named_entity_persist_retry.py'
       - 'backend/python/tests/integration/messaging/**'
       - 'backend/python/tests/integration/vector_db/**'
       - 'backend/python/tests/integration/kv/**'
@@ -71,7 +82,14 @@ on:
       - 'backend/nodejs/apps/src/libs/services/keyValueStore.service.ts'
       - 'backend/nodejs/apps/src/libs/services/logger.service.ts'
       - 'backend/nodejs/apps/src/libs/services/mongo.service.ts'
+      - 'backend/nodejs/apps/src/libs/repositories/**'
+      - 'backend/nodejs/apps/src/libs/db/uow.ts'
+      - 'backend/nodejs/apps/src/libs/errors/storage.errors.ts'
+      - 'backend/nodejs/apps/src/libs/context/**'
       - 'backend/nodejs/apps/tests/support/**'
+      # The storage fingerprint: its reference model, the integration test that replays the model, the table it adds and the checker.
+      - 'backend/nodejs/apps/tests/storage/fingerprint-model/**'
+      - 'backend/nodejs/apps/tests/stores/storage-fingerprint.itest.ts'
       - 'backend/nodejs/apps/package.json'
       - 'backend/nodejs/apps/package-lock.json'
       - 'backend/nodejs/apps/tsconfig.json'
@@ -101,11 +119,33 @@ on:
       - 'backend/python/app/modules/parsers/code_parser/**'
       - 'backend/python/app/connectors/core/base/sync_point/**'
       - 'backend/python/app/connectors/core/registry/filters.py'
+      # Helpers outside tests/integration that the suites import.
+      - 'backend/python/tests/conftest.py'
+      - 'backend/python/tests/support/**'
+      - 'backend/python/tests/unit/agents/adapter/conftest.py'
+      - 'backend/python/tests/unit/agents/adapter/support/scripted_transport.py'
+      - 'backend/python/tests/unit/connectors/sources/localKB/push/bodies.py'
+      - 'backend/python/tests/unit/connectors/sources/localKB/push/fake_storage.py'
+      - 'backend/python/tests/unit/connectors/sources/localKB/push/image_harness.py'
+      - 'backend/python/tests/unit/connectors/sources/test_connector_workflow_integration.py'
+      - 'backend/python/tests/unit/modules/entity_resolution/conftest.py'
+      - 'backend/python/tests/unit/modules/indexing/test_entity_index_rebuild.py'
+      - 'backend/python/tests/unit/modules/pipeline/fakes.py'
+      - 'backend/python/tests/unit/modules/transformers/test_entity_vectorstore_delete.py'
+      - 'backend/python/tests/unit/services/artifact_registry/fakes.py'
+      - 'backend/python/tests/unit/services/vector_db/test_strategy_contract.py'
+      - 'backend/python/tests/unit/web/qa/lab.py'
+      - 'backend/python/tests/permissions/graph.py'
+      - 'backend/python/tests/permissions/model.py'
+      - 'backend/python/tests/permissions/runner.py'
+      - 'backend/python/tests/permissions/scenario.py'
       - 'backend/python/pyproject.toml'
       - 'deployment/docker-compose/docker-compose.integration.messaging.yml'
       - 'deployment/docker-compose/docker-compose.integration.vector-db.yml'
       - 'deployment/docker-compose/docker-compose.integration.graph-db.yml'
       - 'deployment/docker-compose/docker-compose.integration.kv.yml'
+      - 'scripts/pr_changes.py'
+      - '.github/actions/pr-changes/**'
       - '.github/workflows/backend-matrix.yml'
   schedule:
     - cron: '0 3 * * *'
@@ -119,10 +159,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which suites below this pull request's changes can affect
+  # (scripts/pr_changes.py); every other event runs them all. The backend job's
+  # matrix cannot be filtered, so a leg whose suite did not change starts and
+  # skips every step (SUITE_RUNS) in a few seconds.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix_messaging: ${{ steps.changes.outputs.matrix_messaging }}
+      matrix_vector: ${{ steps.changes.outputs.matrix_vector }}
+      matrix_kv: ${{ steps.changes.outputs.matrix_kv }}
+      matrix_graph: ${{ steps.changes.outputs.matrix_graph }}
+      matrix_gitlab: ${{ steps.changes.outputs.matrix_gitlab }}
+      matrix_storage: ${{ steps.changes.outputs.matrix_storage }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github/actions
+      - id: changes
+        uses: ./.github/actions/pr-changes
+
   backend:
     name: ${{ matrix.suite }} · ${{ matrix.backend }}
+    needs: changes
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The graph jobs take 27-28 minutes of a 30-minute limit, so any new graph test pushed them over it.
+    timeout-minutes: 45
 
     strategy:
       fail-fast: false
@@ -194,6 +263,9 @@ jobs:
             select: etcd
 
     env:
+      # 'true' when this pull request changes code this suite covers
+      # (scripts/pr_changes.py); every other event runs every suite.
+      SUITE_RUNS: ${{ needs.changes.outputs[format('matrix_{0}', matrix.suite)] }}
       COMPOSE: ${{ matrix.compose }}
       SERVICES: ${{ matrix.services }}
       TESTS: ${{ matrix.tests }}
@@ -213,33 +285,39 @@ jobs:
 
     steps:
       - name: Checkout code
+        if: env.SUITE_RUNS == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Python 3.12
+        if: env.SUITE_RUNS == 'true'
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
       - name: Install system dependencies
+        if: env.SUITE_RUNS == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
+        if: env.SUITE_RUNS == 'true'
         run: pip install uv
 
       # The dependencies below, CUDA torch among them, can leave a hosted runner's
       # disk about 96% full: past OpenSearch's 95% flood stage, where the node
       # refuses to create any index. None of these jobs use Android or .NET.
       - name: Free disk space
+        if: env.SUITE_RUNS == 'true'
         run: |
           df -h /
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet
           df -h /
 
       - name: Install dependencies
+        if: env.SUITE_RUNS == 'true'
         working-directory: backend/python
         run: |
           uv pip install --system pytest pytest-asyncio pytest-timeout
@@ -247,6 +325,7 @@ jobs:
           df -h /
 
       - name: Start ${{ matrix.backend }}
+        if: env.SUITE_RUNS == 'true'
         working-directory: deployment/docker-compose
         run: |
           files=()
@@ -255,6 +334,7 @@ jobs:
           docker compose "${files[@]}" up -d --wait --wait-timeout 300 $SERVICES
 
       - name: Run ${{ matrix.suite }} tests on ${{ matrix.backend }}
+        if: env.SUITE_RUNS == 'true'
         working-directory: backend/python
         run: |
           if [ -n "$DISCOVER" ]; then
@@ -267,6 +347,7 @@ jobs:
           pytest $TESTS -m integration -k "$SELECT" -v -rs --timeout=300 --junitxml="$REPORT"
 
       - name: Fail if anything skipped
+        if: env.SUITE_RUNS == 'true'
         run: |
           python - <<'EOF'
           import os
@@ -290,7 +371,7 @@ jobs:
           EOF
 
       - name: Dump service logs
-        if: failure()
+        if: failure() && env.SUITE_RUNS == 'true'
         working-directory: deployment/docker-compose
         run: |
           files=()
@@ -298,7 +379,7 @@ jobs:
           docker compose "${files[@]}" logs --no-color --timestamps
 
       - name: Tear down
-        if: always()
+        if: always() && env.SUITE_RUNS == 'true'
         working-directory: deployment/docker-compose
         run: |
           files=()
@@ -309,6 +390,8 @@ jobs:
   # same tests against one file store.
   storage:
     name: storage · ${{ matrix.backend }}
+    needs: changes
+    if: needs.changes.outputs.matrix_storage == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -458,6 +541,62 @@ jobs:
           TESTS=$(cat "$RUNNER_TEMP/storage-discovered.txt")
           # shellcheck disable=SC2086
           pytest $TESTS -m integration -v -rs --timeout=300 --junitxml="$REPORT"
+
+      # The storage fingerprint (writer windows, verified document read) against this leg's file store and MongoDB. The reference
+      # model runs once per workflow run, on the local leg.
+      - name: Fingerprint reference model
+        if: always() && matrix.backend == 'local'
+        working-directory: backend/nodejs/apps
+        run: python3 tests/storage/fingerprint-model/model.py --ci
+
+      - name: Fingerprint integration tests
+        if: always()
+        working-directory: backend/nodejs/apps
+        env:
+          STORAGE_TYPE: ${{ matrix.storage_type }}
+          DOC_STORE: mongo
+          MONGO_IT_URI: mongodb://127.0.0.1:${{ env.MONGO_STORAGE_IT_PORT }}
+          TS_NODE_PROJECT: tsconfig.test.json
+          NODE_OPTIONS: ${{ matrix.backend == 's3' && format('--require {0}/backend/nodejs/apps/tests/support/vhost-pin.js', github.workspace) || '' }}
+        run: >-
+          npx mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --exit --timeout 180000
+          --forbid-only --forbid-pending --reporter xunit --reporter-option output="$RUNNER_TEMP/fingerprint-${{ matrix.backend }}.xml"
+          tests/stores/storage-fingerprint.itest.ts
+
+      # The number of cases is whatever the file defines for this leg (some exist only for local disk, some only for S3 and Azure), counted
+      # by a dry run of the same file with the same environment; the run must have executed exactly that many, none skipped or failed.
+      - name: Fingerprint tests ran, none skipped
+        if: always()
+        working-directory: backend/nodejs/apps
+        env:
+          STORAGE_TYPE: ${{ matrix.storage_type }}
+          DOC_STORE: mongo
+          MONGO_IT_URI: mongodb://127.0.0.1:${{ env.MONGO_STORAGE_IT_PORT }}
+          TS_NODE_PROJECT: tsconfig.test.json
+        run: |
+          npx mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --dry-run --reporter json \
+            --reporter-option output="$RUNNER_TEMP/fingerprint-defined.json" tests/stores/storage-fingerprint.itest.ts > /dev/null
+          N=$(python3 -c "import json,os; print(json.load(open(os.environ['RUNNER_TEMP'] + '/fingerprint-defined.json'))['stats']['tests'])")
+          echo "defined for ${{ matrix.backend }}: $N"
+          cd "$GITHUB_WORKSPACE"
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/fingerprint-${{ matrix.backend }}.xml" --expect-suite "document fingerprint=$N"
+
+      # The mocha report is a file, so a red run would say only "exit code N"; this prints each failed case and its message.
+      - name: Show the failed fingerprint cases
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          import xml.etree.ElementTree as ET
+          path = os.path.join(os.environ["RUNNER_TEMP"], "fingerprint-${{ matrix.backend }}.xml")
+          if not os.path.exists(path):
+              sys.exit(0)
+          for case in ET.parse(path).getroot().iter("testcase"):
+              for bad in list(case.findall("failure")) + list(case.findall("error")):
+                  print("FAILED:", case.get("name"))
+                  print((bad.get("message") or "")[:600])
+                  print((bad.text or "")[:1500])
+          PY
 
       # Every skip fails, and so does a discovered file that contributed no test.
       # The one allowance: a test that cannot apply to this store says so with a

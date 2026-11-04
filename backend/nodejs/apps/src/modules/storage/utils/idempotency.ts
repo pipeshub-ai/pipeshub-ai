@@ -1,4 +1,3 @@
-import type { Types } from 'mongoose';
 import { createHash } from 'crypto';
 import { IncomingHttpHeaders } from 'http';
 import {
@@ -9,15 +8,13 @@ import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
-import { DocumentModel } from '../schema/document.schema';
+import { getDocumentRepository } from '../../../libs/repositories/document';
 import { Document, StorageVendor } from '../types/storage.service.types';
 
 export const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
 
 // Room for a UUID or a composite key, bounded so it cannot bloat the index.
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
-
-const MONGO_DUPLICATE_KEY = 11000;
 
 // How long a keyed upload attempt owns a document it has not finished storing.
 // Longer than any attempt runs; once it lapses, a retry may take over from an
@@ -81,9 +78,9 @@ export function requestFingerprint(
 }
 
 function replay(
-  document: DocumentModel,
+  document: Document,
   idempotency: IdempotentCreate,
-): { document: DocumentModel; replayed: boolean } {
+): { document: Document; replayed: boolean } {
   if (document.idempotencyFingerprint !== idempotency.fingerprint) {
     throw new UnprocessableEntityError(
       'Idempotency-Key was already used for a different request',
@@ -107,45 +104,21 @@ export async function createDocumentOnce(
   idempotency: IdempotentCreate | undefined,
   // Written by the first attempt only, e.g. an upload's lease.
   firstAttemptFields: Partial<Document> = {},
-): Promise<{ document: DocumentModel; replayed: boolean }> {
+): Promise<{ document: Document; replayed: boolean }> {
+  const repo = getDocumentRepository();
   if (idempotency === undefined) {
     return {
-      document: await DocumentModel.create(documentInfo),
+      document: await repo.create(documentInfo),
       replayed: false,
     };
   }
-  // Indexes build in the background after connect, and the replay below is
-  // only sound once the unique index exists. Mongoose caches this promise.
-  await DocumentModel.init();
-  const scope = {
-    orgId: documentInfo.orgId,
-    initiatorUserId: documentInfo.initiatorUserId ?? null,
-    // $type repeats the index's partial filter: without it the planner cannot
-    // tell the query stays inside that index, and scans the org instead.
-    idempotencyKey: { $eq: idempotency.key, $type: 'string' as const },
-  };
-  const existing = await DocumentModel.findOne(scope);
-  if (existing) {
-    return replay(existing, idempotency);
-  }
-  try {
-    const document = await DocumentModel.create({
-      ...documentInfo,
-      ...firstAttemptFields,
-      idempotencyKey: idempotency.key,
-      idempotencyFingerprint: idempotency.fingerprint,
-    });
-    return { document, replayed: false };
-  } catch (error) {
-    if ((error as { code?: number }).code !== MONGO_DUPLICATE_KEY) {
-      throw error;
-    }
-    const winner = await DocumentModel.findOne(scope);
-    if (!winner) {
-      throw error;
-    }
-    return replay(winner, idempotency);
-  }
+  await repo.ensureIndexes();
+  const result = await repo.createIdempotent(
+    documentInfo,
+    idempotency,
+    firstAttemptFields,
+  );
+  return result.replayed ? replay(result.document, idempotency) : result;
 }
 
 /**
@@ -154,52 +127,23 @@ export async function createDocumentOnce(
  * retries arriving together only one gets it. Returns the claimed document,
  * or null while another attempt still holds it.
  */
-export async function claimUpload(
-  document: DocumentModel,
+export function claimUpload(
+  document: Document,
   storageVendor: StorageVendor,
   leaseToken: string,
-): Promise<DocumentModel | null> {
-  const now = Date.now();
-  return DocumentModel.findOneAndUpdate(
-    {
-      _id: document._id,
-      [storageVendor]: { $exists: false },
-      $or: [
-        { uploadLeaseExpiresAt: { $exists: false } },
-        { uploadLeaseExpiresAt: { $lte: now } },
-      ],
-    },
-    {
-      $set: {
-        uploadLeaseToken: leaseToken,
-        uploadLeaseExpiresAt: now + UPLOAD_LEASE_MS,
-      },
-    },
-    { returnDocument: 'after' },
+): Promise<Document | null> {
+  return getDocumentRepository().claimUpload(
+    document._id,
+    storageVendor,
+    leaseToken,
+    UPLOAD_LEASE_MS,
   );
 }
 
 /** A failed attempt: let the next retry take over now, not when the lease lapses. */
 export async function releaseUpload(
-  documentId: unknown,
+  documentId: string,
   leaseToken: string,
 ): Promise<void> {
-  await DocumentModel.updateOne(
-    { _id: documentId as Types.ObjectId, uploadLeaseToken: leaseToken },
-    { $unset: { uploadLeaseToken: '', uploadLeaseExpiresAt: '' } },
-  );
-}
-
-/**
- * Make the next save of an upload's document apply only while this attempt
- * still holds its lease, and clear the lease in that same write. A save that
- * lost the lease to a later attempt fails with DocumentNotFoundError.
- */
-export function holdLeaseOnSave(
-  document: DocumentModel,
-  leaseToken: string,
-): void {
-  document.$where = { uploadLeaseToken: leaseToken };
-  document.uploadLeaseToken = undefined;
-  document.uploadLeaseExpiresAt = undefined;
+  await getDocumentRepository().releaseUpload(documentId, leaseToken);
 }

@@ -538,6 +538,7 @@ export function ConnectorPanel() {
       try {
         const result = await ConnectorsApi.testConnection(connectorType, {
           auth,
+          ...(selectedAuthType ? { authType: selectedAuthType } : {}),
           ...(panelConnectorId ? { connectorId: panelConnectorId } : {}),
         });
         if (isStale()) return false;
@@ -561,7 +562,7 @@ export function ConnectorPanel() {
       });
       return false;
     },
-    [connectorType, panelConnectorId, setConnectionCheck, t]
+    [connectorType, panelConnectorId, selectedAuthType, setConnectionCheck, t]
   );
 
   /** Edit mode: PUT /config/auth, then reload so the Configure tab reflects the saved credentials. */
@@ -1088,6 +1089,7 @@ export function ConnectorPanel() {
       primaryTooltip={footerConfig.primaryTooltip}
       onPrimaryClick={footerConfig.onPrimary}
       secondaryLabel={footerConfig.secondaryLabel}
+      secondaryIcon={footerConfig.secondaryIcon}
       onSecondaryClick={footerConfig.onSecondary}
     >
       {isLoading ? (
@@ -1213,6 +1215,7 @@ interface FooterConfig {
   primaryTooltip?: string;
   onPrimary?: () => void;
   secondaryLabel: string;
+  secondaryIcon?: string;
   onSecondary?: () => void;
 }
 
@@ -1305,6 +1308,7 @@ function getFooterConfig({
           : undefined,
       onPrimary: onContinueFromAuthorize,
       secondaryLabel: labels.backToAuth,
+      secondaryIcon: 'arrow_back',
       onSecondary: () => {
         void onBackFromAuthorize();
       },
@@ -1336,6 +1340,7 @@ function getFooterConfig({
     primaryTooltip: configTooltip,
     onPrimary: onSave,
     secondaryLabel: labels.backFromConfigure,
+    secondaryIcon: 'arrow_back',
     onSecondary: () => {
       void onBackFromConfigure();
     },

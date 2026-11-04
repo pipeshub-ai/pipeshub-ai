@@ -366,6 +366,7 @@ class TestSpaces:
     async def test_private_space_uses_graphql_members(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
+        connector._disabled_emails = set()
         connector.graphql = MagicMock()
         connector.graphql.get_space_members = AsyncMock(return_value={
             "access_status": "PRIVATE",
@@ -386,6 +387,7 @@ class TestSpaces:
     async def test_member_fetch_failure_leaves_space_untouched(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
+        connector._disabled_emails = set()
         connector.graphql = MagicMock()
         connector.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLError("denied"))
         connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([
@@ -420,6 +422,7 @@ class TestSpaces:
         # The group has to exist so its pages have somewhere to belong. Granting
         # someone the read right later then only adds an edge, instead of needing a
         # full resync to discover a space that was never created.
+        connector._disabled_emails = set()
         connector.graphql.get_space_members = AsyncMock(return_value={"users": [], "groups": []})
         connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([
             {"id": 7, "name": "Nobody's space", "type": "BASIC", "accessStatus": "PRIVATE"},
@@ -438,6 +441,7 @@ class TestSpaces:
     ) -> None:
         # Unknown audience is not the same as no audience: writing it with no grants
         # would strip whatever access it already had, so it is left untouched.
+        connector._disabled_emails = set()
         connector.graphql.get_space_members = AsyncMock(
             side_effect=DrupalWikiGraphQLError("graphql 502")
         )
@@ -455,6 +459,7 @@ class TestSpaces:
     async def test_every_space_type_is_synced(self, connector: DrupalWikiConnector) -> None:
         # No type is filtered out: which spaces are worth syncing is the user's call,
         # made through the space filter, exactly as the Confluence connector does it.
+        connector._disabled_emails = set()
         connector.graphql.get_space_members = AsyncMock(return_value={
             "access_status": "PRIVATE",
             "users": [{"email": "a@example.com", "roles": [{"machine": "space_read"}]}],
@@ -1319,14 +1324,35 @@ class TestDisabledMembers:
     async def test_without_a_directory_nobody_is_dropped(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
-        # No definite answer from the wiki, so no grant is taken away on a guess.
+        # No directory this run: writing the GraphQL member list would guess who
+        # is still enabled, so the space is left exactly as it was.
         connector._disabled_emails = None
         self._private_space(connector, "alice@example.com", "dave@example.com")
 
-        await connector._sync_spaces()
+        spaces = await connector._sync_spaces()
 
-        _, permissions = processor.on_new_record_groups.await_args.args[0][0]
-        assert {p.email for p in permissions} == {"alice@example.com", "dave@example.com"}
+        assert spaces == {}
+        processor.on_new_record_groups.assert_not_awaited()
+        assert connector._failures
+
+    @pytest.mark.asyncio
+    async def test_without_a_directory_open_spaces_still_get_the_org_grant(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        connector._disabled_emails = None
+        self._private_space(connector, "alice@example.com")
+        connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([
+            {"id": 3, "name": "Blog", "type": "CORPORATEBLOG", "accessStatus": "AUTHENTICATED"},
+            {"id": 12, "name": "HR", "type": "BASIC", "accessStatus": "PRIVATE"},
+        ])))
+
+        spaces = await connector._sync_spaces()
+
+        assert set(spaces) == {3}
+        group, permissions = processor.on_new_record_groups.await_args.args[0][0]
+        assert group.external_group_id == "3"
+        assert permissions[0].entity_type == EntityType.ORG
+        assert connector._failures
 
     @pytest.mark.asyncio
     async def test_an_address_an_enabled_account_also_uses_is_kept(

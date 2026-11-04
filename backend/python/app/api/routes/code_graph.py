@@ -11,12 +11,16 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.agents.actions.code_graph.code_graph import CodeGraph
-from app.agents.actions.code_graph.neighbours import DEFAULT_NEIGHBOR_LIMIT
+from app.agents.actions.code_graph.neighbours import (
+    DEFAULT_IMPACT_DEPTH,
+    DEFAULT_NEIGHBOR_LIMIT,
+    MAX_IMPACT_DEPTH,
+)
 from app.agents.actions.code_graph.path import DEFAULT_MAX_DEPTH
 from app.agents.actions.code_graph.query import DEFAULT_QUERY_LIMIT
 from app.agents.actions.code_graph.repos import (
@@ -28,7 +32,8 @@ from app.agents.actions.code_graph.repos import (
     repo_for_record,
     repo_not_found_message,
 )
-from app.api.middlewares.auth import require_scopes
+from app.api.connection_limit import ids_outside_connection
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.service import OAuthScopes
 from app.modules.code_graph.build_state import BuildStateStore, graph_status
 from app.modules.transformers.blob_storage import BlobStorage
@@ -96,6 +101,11 @@ class SearchBody(RepoRef):
     limit: int = Field(default=50, ge=1, le=200)
 
 
+class SemanticSearchBody(RepoRef):
+    query: str = Field(min_length=1, max_length=500)
+    limit: int = Field(default=15, ge=1, le=50)
+
+
 class OutlineBody(RepoRef):
     file_path: str | None = None
     record_id: str | None = None
@@ -105,7 +115,7 @@ class ImpactBody(RepoRef):
     file_path: str | None = None
     record_id: str | None = None
     qualified_name: str | None = None
-    depth: int = Field(default=2, ge=1, le=3)
+    depth: int = Field(default=DEFAULT_IMPACT_DEPTH, ge=1, le=MAX_IMPACT_DEPTH)
 
 
 class EntryPointsBody(RepoRef):
@@ -160,19 +170,36 @@ async def _deps(request: Request) -> tuple["QueryAppContainer", "IGraphDBProvide
     return container, graph_provider, org_id, user_id
 
 
+async def _inside_limit(
+    request: Request, graph_provider: "IGraphDBProvider", org_id: str, user_id: str, repos: list[CodeRepo],
+) -> list[CodeRepo]:
+    """Of ``repos``, those a connected app's knowledge limit reaches; all of them without a limit."""
+    outside = await ids_outside_connection(request, graph_provider, org_id, user_id, [r.group_id for r in repos])
+    return [r for r in repos if r.group_id not in outside]
+
+
 async def _target(
-    graph_provider: "IGraphDBProvider", org_id: str, user_id: str, repo: str | None, record_id: str | None = None,
+    request: Request, graph_provider: "IGraphDBProvider", org_id: str, user_id: str,
+    repo: str | None, record_id: str | None = None,
 ) -> CodeRepo | JSONResponse:
     """The repo a request names, or the 404/409 that says why there is none.
 
-    The messages are built from the request, not from an exception.
+    The messages are built from the request, not from an exception. A repo
+    outside the caller's knowledge limit reads as absent, like one it cannot read.
     """
-    if not repo and record_id:
+    # A tool reads a record_id's own repo even when ``repo`` names another, so
+    # under a limit the record's repo is checked too.
+    if record_id and (not repo or connection_limit(request.state.user) is not None):
         try:
-            return await repo_for_record(graph_provider, org_id, user_id, record_id)
+            found = await repo_for_record(graph_provider, org_id, user_id, record_id)
         except RepoNotFoundError:
-            return _response({"error": repo_not_found_message(repo, record_id)}, 404)
+            found = None
+        if not found or not await _inside_limit(request, graph_provider, org_id, user_id, [found]):
+            return _response({"error": repo_not_found_message(None, record_id)}, 404)
+        if not repo:
+            return found
     matches = await matching_code_repos(graph_provider, org_id, user_id, repo or "")
+    matches = await _inside_limit(request, graph_provider, org_id, user_id, matches)
     if not matches:
         return _response({"error": repo_not_found_message(repo, record_id)}, 404)
     if len(matches) > 1:
@@ -183,7 +210,7 @@ async def _target(
 
 def _toolset(
     container: "QueryAppContainer", graph_provider: "IGraphDBProvider",
-    org_id: str, user_id: str, repo: CodeRepo,
+    org_id: str, user_id: str, repo: CodeRepo, retrieval_service: object = None,
 ) -> CodeGraph:
     logger = container.logger()
     return CodeGraph({  # type: ignore[arg-type]
@@ -195,20 +222,26 @@ def _toolset(
         "blob_store": BlobStorage(
             logger=logger, config_service=container.config_service(), graph_provider=graph_provider,
         ),
+        "retrieval_service": retrieval_service,
     })
 
 
-async def _run(request: Request, body: RepoRef, record_id: str | None, call: ToolCall) -> JSONResponse:
+async def _run(request: Request, body: RepoRef, record_id: str | None, call: ToolCall,
+               *, semantic: bool = False) -> JSONResponse:
     container, graph_provider, org_id, user_id = await _deps(request)
     try:
-        repo = await _target(graph_provider, org_id, user_id, body.repo, record_id)
+        repo = await _target(request, graph_provider, org_id, user_id, body.repo, record_id)
+    except HTTPException:
+        raise
     except Exception:
         container.logger().exception("code-graph repo lookup failed")
         return _response({"error": "graph unavailable"}, 503)
     if isinstance(repo, JSONResponse):
         return repo
     try:
-        toolset = _toolset(container, graph_provider, org_id, user_id, repo)
+        # Only the semantic search needs it, and building it costs an embedding-model lookup.
+        retrieval_service = await container.retrieval_service() if semantic else None
+        toolset = _toolset(container, graph_provider, org_id, user_id, repo, retrieval_service)
         _ok, raw = await call(toolset, repo)
         result = json.loads(raw)
     except Exception:
@@ -224,6 +257,9 @@ async def code_repos(request: Request) -> JSONResponse:
     container, graph_provider, org_id, user_id = await _deps(request)
     try:
         repos = await list_code_repos(graph_provider, org_id, user_id)
+        repos = await _inside_limit(request, graph_provider, org_id, user_id, repos)
+    except HTTPException:
+        raise
     except Exception:
         container.logger().exception("code-graph repo listing failed")
         return _response({"error": "graph unavailable"}, 503)
@@ -297,6 +333,14 @@ async def code_search(request: Request, body: SearchBody) -> JSONResponse:
         connector_id=repo.connector_id, pattern=body.pattern, mode=body.mode, path=body.path,
         limit=body.limit, include_tests=body.include_tests, repo=repo.group_id,
     ))
+
+
+@router.post("/semantic-search")
+async def code_semantic_search(request: Request, body: SemanticSearchBody) -> JSONResponse:
+    return await _run(request, body, None, lambda t, repo: t.search_semantic(
+        connector_id=repo.connector_id, query=body.query, limit=body.limit,
+        include_tests=body.include_tests, repo=repo.group_id,
+    ), semantic=True)
 
 
 @router.post("/outline")

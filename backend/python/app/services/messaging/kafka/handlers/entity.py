@@ -16,7 +16,6 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.connector.connector_service import (
     connector_sync_lock,
-    dispose_connector,
 )
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
@@ -27,11 +26,13 @@ from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.sync_coordinator import get_coordinator, stop_wait_sec
 from app.connectors.core.sync.task_manager import reindex_task_manager
+from app.connectors.services.event_service import evict_cached_connector
 from app.containers.connector import (
     ConnectorAppContainer,
 )
 from app.edition_services import get_data_entities_processor_cls
 from app.modules.indexing.record_republish import record_event
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     is_live_record,
@@ -57,6 +58,11 @@ _PARKED_WHILE_OFF = {
 }
 
 
+# Events that change who a person is or which apps they reach, and with it what they may read. Each moves the
+# viewer-scope version (tests/unit/services/permissions/test_permission_writers_bump.py keeps this list complete).
+PRINCIPAL_EVENTS = frozenset({"userAdded", "userUpdated", "userDeleted", "appEnabled", "appDisabled", "orgDeleted"})
+
+
 class EntityEventService(BaseEventService):
     def __init__(
         self,
@@ -74,6 +80,17 @@ class EntityEventService(BaseEventService):
         """Handle entity-related events by calling appropriate handlers"""
         try:
             self.logger.info(f"Processing entity event: {event_type}")
+            handled = await self._dispatch(event_type, payload)
+            if event_type in PRINCIPAL_EVENTS:
+                # Success or not: a handler that failed half way may have changed edges. Nothing here widens access.
+                await notify_principals_changed(payload.get("orgId") if isinstance(payload, dict) else None)
+            return handled
+        except Exception as e:
+            self.logger.error(f"Error processing entity event: {str(e)}")
+            return False
+
+    async def _dispatch(self, event_type: str, payload: dict) -> bool:
+        try:
             if event_type == "orgCreated":
                 return await self._handle_org_created(payload)
             elif event_type == "orgUpdated":
@@ -133,8 +150,9 @@ class EntityEventService(BaseEventService):
             else AccountType.INDIVIDUAL.value
         )
         try:
+            org_id = payload["orgId"]
             org_data = {
-                "_key": payload["orgId"],
+                "_key": org_id,
                 "name": payload.get("registeredName", "Individual Account"),
                 "accountType": accountType,
                 "isActive": True,
@@ -223,8 +241,9 @@ class EntityEventService(BaseEventService):
         """Handle organization deletion event"""
         try:
             self.logger.info(f"📥 Processing org deleted event: {payload}")
+            org_id = payload["orgId"]
             org_data = {
-                "_key": payload["orgId"],
+                "_key": org_id,
                 "isActive": False,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
@@ -236,6 +255,7 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [org_data], CollectionNames.ORGS.value
             )
+            await notify_principals_changed(org_id)  # before the cleanup below; see process_event
             self.logger.info(
                 f"✅ Successfully soft-deleted organization: {payload['orgId']}"
             )
@@ -524,9 +544,10 @@ class EntityEventService(BaseEventService):
                 self.logger.error(f"User not found with mail: {payload['email']}")
                 return False
 
+            org_id = payload["orgId"]
             user_data = {
                 "id": existing_user_id,
-                "orgId": payload["orgId"],
+                "orgId": org_id,
                 "email": payload["email"],
                 "isActive": False,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -536,6 +557,8 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
+            # At once, not after the cleanup below: until it moves, a scope read before the delete is still served.
+            await notify_principals_changed(org_id)
             self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
             if payload.get("userId"):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
@@ -674,6 +697,7 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 app_updates, CollectionNames.APPS.value
             )
+            await notify_principals_changed(org_id)  # before the (slow) cleanup below; see process_event
 
             # Stop any running sync/reindex and wait for it to unwind, bounded:
             # the sweep and the cleanup below must not run while the sync is
@@ -745,16 +769,7 @@ class EntityEventService(BaseEventService):
                     f"connector {connector_id}: {sweep_err}"
                 )
 
-            if (
-                hasattr(self.app_container, "connectors_map")
-                and connector_id in self.app_container.connectors_map
-            ):
-                existing_connector = self.app_container.connectors_map.pop(connector_id)
-                try:
-                    await dispose_connector(existing_connector)
-                    self.logger.info(f"Cleaned up connector instance {connector_id}")
-                except Exception as cleanup_err:
-                    self.logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
+            await evict_cached_connector(self.app_container, connector_id, self.logger)
 
             self.logger.info(f"✅ Successfully disabled apps for org: {org_id}")
             return True

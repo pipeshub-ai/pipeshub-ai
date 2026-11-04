@@ -91,30 +91,24 @@ def test_worker_render_page_from_bytes_with_reportlab_pdf():
     assert scale == 1.0
 
 
-def test_count_chars_per_page_from_bytes_sync_uses_process_pool() -> None:
-    with patch.object(rasterizer, "_run_in_pool", return_value=[5, 0]) as mock_run:
-        result = rasterizer.count_chars_per_page_from_bytes_sync(b"%PDF")
-
-    mock_run.assert_called_once_with(rasterizer._worker_count_chars_from_bytes, b"%PDF")
-    assert result == [5, 0]
-
-
-def test_worker_count_chars_from_bytes_with_reportlab_pdf() -> None:
+def test_render_all_pages_as_png_renders_in_this_process() -> None:
     pytest.importorskip("reportlab")
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
 
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=letter)
-    c.drawString(72, 700, "hello")
-    c.showPage()
-    c.rect(72, 600, 200, 100, fill=1)
-    c.showPage()
+    for _ in range(2):
+        c.drawString(72, 700, "hello")
+        c.showPage()
     c.save()
 
-    text_page, shapes_page = rasterizer._worker_count_chars_from_bytes(buf.getvalue())
-    assert text_page >= len("hello")
-    assert shapes_page == 0
+    with patch.object(rasterizer, "_run_in_pool") as pool:
+        pngs = rasterizer.render_all_pages_as_png(buf.getvalue(), 72)
+
+    pool.assert_not_called()
+    assert len(pngs) == 2
+    assert all(png.startswith(b"\x89PNG") for png in pngs)
 
 
 def test_effective_resolution_leaves_standard_pages_untouched():

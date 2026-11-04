@@ -160,11 +160,46 @@ CONNECTOR_NOTION_TEAM_ACCESS_INFO = (
 )
 
 
-# The permission lists must match what test_connection_and_access checks.
+# These sources have no per-user access rules PipesHub can apply, so a team
+# connector's data is readable by the whole organization.
+_PERSONAL_CONNECTOR_HINT = (
+    "A team connector is for data the whole organization may read. To keep the data to "
+    "yourself, set it up as a personal connector instead."
+)
 _OBJECT_STORE_TEAM_ACCESS_INFO = (
     "If you create a team connector, everyone in your organization can search every bucket it "
-    "syncs. With Bucket Names empty, that is every bucket the key can list."
+    "syncs. With Bucket Names empty, that is every bucket the key can list. "
+    + _PERSONAL_CONNECTOR_HINT
 )
+CONNECTOR_AZURE_BLOB_TEAM_ACCESS_INFO = (
+    "If you create a team connector, everyone in your organization can search every container "
+    "it syncs. With Container Names empty, that is every container the credentials can list. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_AZURE_FILES_TEAM_ACCESS_INFO = (
+    "If you create a team connector, everyone in your organization can search every file share "
+    "it syncs. With File Share Names empty, that is every share the credentials can list. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_GCS_INFO = (
+    "If you create a team connector, everyone in your organization can search every bucket it "
+    "syncs. With Bucket Names empty, that is every bucket the service account can list. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_POSTGRES_INFO = (
+    "If you create a team connector, everyone in your organization can search every table it "
+    "syncs; table and database permissions are not applied. With Schemas and Tables empty, that "
+    "is every table the database user can read. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_MARIADB_INFO = (
+    "If you create a team connector, everyone in your organization can search every table it "
+    "syncs; table and database permissions are not applied. With Tables empty, that is every "
+    "table the database user can read. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+
+# The permission lists must match what test_connection_and_access checks.
 CONNECTOR_S3_INFO = (
     "This connector only lists and reads objects, so give it a read-only key. Its IAM policy "
     "needs s3:ListBucket, s3:GetBucketLocation and s3:GetObject on the buckets to sync. It needs "
