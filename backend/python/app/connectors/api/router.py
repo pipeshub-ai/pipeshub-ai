@@ -2395,7 +2395,9 @@ async def delete_record(
         if result["success"]:
             # a structural write made outside the transaction store: move the connector's structure generation (never fails the
             # request, the delete is done; a connector it cannot record is marked unsafe, and one it cannot mark is logged at error)
-            await note_structure_change(graph_provider, result.get("connectorId") or record.get("connectorId"), logger)
+            # a KB is an app whose records carry its id as their connector, so the KB the access check found is the last resort
+            kb = has_access.get("knowledgeBase") or {}
+            await note_structure_change(graph_provider, result.get("connectorId") or record.get("connectorId") or kb.get("id"), logger)
 
         if result["success"] and result.get("softDeleted"):
             # In the trash: vectors go now, the record and its files at the purge.
