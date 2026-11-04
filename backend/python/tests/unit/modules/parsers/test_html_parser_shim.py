@@ -10,26 +10,29 @@ import pytest
 
 class TestHTMLParserProtocol:
     def test_protocol_clean_html_body(self):
+        """Verify protocol clean html body behavior."""
         from app.modules.parsers.html_parser.html_parser import HTMLParserProtocol
 
         class _Concrete(HTMLParserProtocol):
-            pass
+            """Inherits the Protocol's default method bodies unchanged."""
 
         assert _Concrete().clean_html("") is None
 
     def test_protocol_replace_relative_image_urls_body(self):
+        """Verify protocol replace relative image urls body behavior."""
         from app.modules.parsers.html_parser.html_parser import HTMLParserProtocol
 
         class _Concrete(HTMLParserProtocol):
-            pass
+            """Inherits the Protocol's default method bodies unchanged."""
 
         assert _Concrete().replace_relative_image_urls("") is None
 
     def test_protocol_extract_and_replace_images_body(self):
+        """Verify protocol extract and replace images body behavior."""
         from app.modules.parsers.html_parser.html_parser import HTMLParserProtocol
 
         class _Concrete(HTMLParserProtocol):
-            pass
+            """Inherits the Protocol's default method bodies unchanged."""
 
         assert _Concrete().extract_and_replace_images("") is None
 
