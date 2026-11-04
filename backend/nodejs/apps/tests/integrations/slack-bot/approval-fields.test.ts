@@ -49,4 +49,22 @@ describe('slack-bot/utils/approval-fields', () => {
     expect(l.meta.map((f) => f.label)).to.deep.equal(['Project', 'Issue type', 'Paid']);
     expect(l.details.map((f) => f.label)).to.deep.equal(['Cloud ID']);
   });
+
+  it('takes the title by the last word, as the web card does: mail_subject, event_title, topic; name only whole', () => {
+    const gmail = approvalLayout({ mail_to: ['sam@example.com'], mail_subject: 'Leave request', mail_body: 'Hi Sam' }, undefined);
+    expect(gmail.headline?.name).to.equal('mail_subject');
+    expect(gmail.body.map((f) => f.name)).to.deep.equal(['mail_body']);
+    expect(gmail.meta).to.deep.equal([]);
+    expect(approvalLayout({ event_start_time: '10:00', event_title: 'Design review' }, undefined).headline?.name).to.equal('event_title');
+    const zoom = approvalLayout({ topic: 'Weekly sync', agenda: 'Status' }, undefined);
+    expect([zoom.headline?.name, zoom.body.map((f) => f.name)]).to.deep.equal(['topic', ['agenda']]);
+    const named = approvalLayout({ assignee_name: 'Sam', file_name: 'a.txt' }, undefined);
+    expect([named.headline, named.meta.map((f) => f.name)]).to.deep.equal([null, ['assignee_name', 'file_name']]);
+  });
+
+  it('reads code, a query and a prompt to run as text, but not a product code or a search term', () => {
+    const l = approvalLayout({ query: 'select 1', code: 'print(1)', prompt: 'A cat', product_code: 'X1', assignee_query: 'sam' }, undefined);
+    expect(l.body.map((f) => f.name)).to.deep.equal(['query', 'code', 'prompt']);
+    expect(l.meta.map((f) => f.name)).to.deep.equal(['product_code', 'assignee_query']);
+  });
 });

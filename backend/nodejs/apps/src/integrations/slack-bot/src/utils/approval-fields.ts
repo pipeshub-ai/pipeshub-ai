@@ -132,10 +132,23 @@ const LONG_TEXT_WORD = new Set([
   'comment',
   'markdown',
   'html',
+  'agenda',
+  'commentary',
+  'note',
+  'notes',
+  'reason',
+  'justification',
+  'signature',
+  'sql',
 ]);
+// Whole names only: `product_code` and `assignee_query` are short.
+const LONG_TEXT_NAME = new Set(['code', 'query', 'prompt']);
 const LONG_TEXT_FORMAT = new Set(['markdown', 'html', 'textarea']);
 const RECIPIENT_WORD = new Set(['to', 'cc', 'bcc', 'recipients', 'attendees']);
-const HEADLINE_NAME = /^(title|subject|summary|name)$/i;
+// The last word too, so `mail_subject`, `event_title` and `page_title` are the title; `name` only
+// whole, since `assignee_name` or `file_name` are not.
+const HEADLINE_WORD = new Set(['title', 'subject', 'summary', 'topic']);
+const HEADLINE_NAME = /^(name|display_?name)$/i;
 const ID_WORD = new Set(['id', 'ids', 'uuid', 'guid']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -211,13 +224,18 @@ export function approvalLayout(
     )
       layout.recipients.push(field);
     else if (isTechnical(word, prop, value)) layout.details.push(field);
-    else if (!layout.headline && isText(value) && HEADLINE_NAME.test(name))
+    else if (
+      !layout.headline &&
+      isText(value) &&
+      (HEADLINE_WORD.has(word) || HEADLINE_NAME.test(name))
+    )
       layout.headline = field;
     else if (
       isText(value) &&
       (LONG_TEXT_FORMAT.has(prop.format ?? '') ||
         (prop.maxLength ?? 0) > 200 ||
-        LONG_TEXT_WORD.has(word))
+        LONG_TEXT_WORD.has(word) ||
+        LONG_TEXT_NAME.has(name.toLowerCase()))
     )
       layout.body.push(field);
     else if (value !== null && typeof value === 'object' && !isTextList(value))
