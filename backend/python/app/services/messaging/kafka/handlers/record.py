@@ -1633,7 +1633,7 @@ class RecordEventHandler(BaseEventService):
 
                 # `bulk_delete_embeddings` reports success=False when it left
                 # points behind: it refused because no managed collection
-                # resolved, or a graph read failed and it skipped an id. Yielding
+                # resolved, or a graph read or vector delete failed for an id. Yielding
                 # the completion events below would ack that as done and retire
                 # the only event that can finish the job. Raise so the consumer
                 # redelivers; IndexingError classifies as transient, and every
@@ -1778,7 +1778,7 @@ class RecordEventHandler(BaseEventService):
                 if result.get("virtual_record_ids_skipped"):
                     raise IndexingError(
                         f"Deleted record {record_id}: its vector points were left "
-                        "in place because a graph read failed",
+                        "in place because a graph read or vector delete failed",
                         record_id=record_id,
                         details={"result": result},
                     )

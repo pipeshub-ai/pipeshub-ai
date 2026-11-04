@@ -1165,7 +1165,7 @@ class IndexingPipeline:
         Returns:
             Dict with deletion statistics:
                 - virtual_record_ids_processed: Number of virtual record IDs eligible for deletion
-                - virtual_record_ids_skipped: Number left untouched because a check failed
+                - virtual_record_ids_skipped: Number whose points stayed because a check or a delete failed
                 - success: False when a skipped id or a refusal left points behind. The
                   sweeper cannot reach a skipped id that a record, live or trashed, still
                   holds, so the caller must retry; acknowledging would strand its points.
@@ -1354,6 +1354,7 @@ class IndexingPipeline:
 
                 except Exception as e:
                     self.logger.error(f"❌ Failed to delete embeddings for batch {batch_num}: {e}")
+                    skipped_virtual_record_ids.extend(batch)
                     # Continue with next batch even if one fails
                     continue
 
