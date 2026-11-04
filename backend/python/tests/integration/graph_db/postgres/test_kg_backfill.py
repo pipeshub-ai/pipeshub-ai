@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.org_context import spawn_detached
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import drainer, flush, modes
 from app.services.graph_db.postgres.kg.drainer import drain_org
@@ -342,3 +343,155 @@ async def test_writers_running_while_a_backfill_copies_leave_kg_equal_to_the_gra
     await task
     final = await bf.backfill(pg_db, org, "app1", page=2)
     assert final.flipped and (await verify(pg_db, org, "app1")).ok
+
+
+# ---- a take-back in another process while a flip or a promotion verifies ----------------------------------------------------------------------------------------------------------
+async def interleave(p, org: str) -> None:
+    """What a process whose projection is off does while the flip runs: a change commits (its log row is written), and the sweep tries to take the row back and demote."""
+    await OPS[5](p, org)                                   # a record moves into app2
+    await flush._sweep(p._db, org)
+
+
+@pytest.mark.parametrize("where", ["after_verify", "after_state_read"])
+@pytest.mark.parametrize("which", ["promote", "flip"])
+async def test_a_take_back_cannot_slip_between_a_verify_and_the_write_that_trusts_it(pg_db, monkeypatch, which: str, where: str) -> None:
+    """The flip holds the connector's lock from before its verify to its write: a take-back that would delete a change's log row and demote must leave the row (so the flip sees a
+    change is waiting) or wait; it must never demote between the verify and the write and be overwritten by ``shadow`` or ``enforce`` while the log is empty."""
+    p, org = await fresh_world(pg_db)
+    if which == "promote":
+        assert (await bf.backfill(pg_db, org, "app1", page=4)).flipped
+    real_verify, real_state, hit = bf.verify_app, modes.state, {"verified": False, "fired": False}
+
+    async def verify_then(tx, o, a) -> Result:
+        res = await real_verify(tx, o, a)
+        hit["verified"] = True
+        if where == "after_verify" and not hit["fired"]:
+            hit["fired"] = True
+            await spawn_detached(interleave(p, org))         # another process: its own context, its own units
+        return res
+
+    async def state_then(tx, o, sk) -> tuple:
+        got = await real_state(tx, o, sk)
+        if where == "after_state_read" and hit["verified"] and not hit["fired"]:
+            hit["fired"] = True
+            await spawn_detached(interleave(p, org))
+        return got
+    monkeypatch.setattr(bf, "verify_app", verify_then)
+    monkeypatch.setattr(modes, "state", state_then)
+    try:
+        if which == "promote":
+            if where == "after_verify":          # the change is in the log when the flip counts it: refused
+                with pytest.raises(bf.Refused):
+                    await bf.promote(pg_db, org, "app1")
+            else:                                # it commits after the count: the state may be written, with the change still in the log (not current until drained)
+                await bf.promote(pg_db, org, "app1")
+        else:
+            out = await bf.backfill(pg_db, org, "app1", page=4)
+            assert out.flipped is (where == "after_state_read")
+    finally:
+        monkeypatch.undo()
+        monkeypatch.setenv("PG_KG_PROJECT", "1")
+    assert hit["fired"]
+    cursor, mode, _ = await state(pg_db, org, "app1")
+    waiting = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
+    res = await verify(pg_db, org, "app1")
+    assert mode == "legacy" or res.ok or waiting, f"{mode} with {waiting} rows in the log while kg differs from the graph: {res.summary()}"
+    assert waiting or mode == "legacy"                      # either the change is still visible in the log, or the connector went back to the walk
+
+
+# ---- T1: the verify names an extra grant and an extra closure row; an unreadable row makes the connector not current --------------------------------------------------------------
+async def test_the_verify_names_a_grant_no_node_explains_and_a_closure_row_no_user_explains(pg_db) -> None:
+    p, org = await shadowed(pg_db)
+    app = await sk_of(pg_db, org, ("apps", "app1"))
+    user = await sk_of(pg_db, org, ("users", "u1"))
+    gone = await KgWriterNodes.make(pg_db, org, ("records", "never-a-node"))
+    ghost_user = await KgWriterNodes.make(pg_db, org, ("users", "never-a-user"))
+    await corrupt(pg_db, org, lambda tx, w: w.grants_set([(user, gone, "USER", "READER", app, False)]))
+    res = await verify(pg_db, org, "app1")
+    assert not res.ok and any(m.startswith(f"g|{user}|{gone}|USER") for m in res.extra), res.extra
+    await corrupt(pg_db, org, lambda tx, w: w.grants_delete([(user, gone, "USER")]))
+    assert (await verify(pg_db, org, "app1")).ok
+    await corrupt(pg_db, org, lambda tx, w: w.closure_set([(ghost_user, user, 0, "membership")]))
+    res = await verify(pg_db, org, "app1")
+    assert not res.ok and any(m.startswith(f"c|{ghost_user}|{user}|0") for m in res.extra), res.extra
+
+
+async def test_a_row_of_the_log_that_cannot_be_read_makes_the_connector_not_current_even_when_nothing_else_does(pg_db) -> None:
+    """The row is logged under a connector that is known and links nothing, so the poison check is the only thing that can refuse."""
+    p, org = await fresh_world(pg_db)
+    assert (await bf.backfill(pg_db, org, "app1", page=4)).flipped and (await bf.backfill(pg_db, org, "app2", page=4)).flipped
+
+    async def log_row(tx, ends: str) -> None:
+        await tx.execute("/* pipeshub:test.row */ INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES ($1, 'app2', ARRAY[$2])", org, ends)
+    await run_in(pg_db, org, lambda tx: log_row(tx, "3:x1"), write=True)
+    assert await is_current(pg_db, org, "app1")                               # a readable change of another known connector that links nothing
+    await run_in(pg_db, org, lambda tx: log_row(tx, "nope"), write=True)
+    assert not await is_current(pg_db, org, "app1")
+
+
+# ---- F2: the reader's question ------------------------------------------------------------------------------------------------------------------------------------------------------
+async def serves(db, org: str, app_id: str) -> bool:
+    return await run_in(db, org, lambda tx: drainer.serves(tx, org, app_id))
+
+
+async def set_state(db, org: str, app_id: str | None, **kw: object) -> None:
+    async def go(tx) -> None:
+        sk = 0 if app_id is None else (await load_sks(tx, org, {("apps", app_id)}))[("apps", app_id)]
+        await KgWriter(tx).projection_set(sk, **kw)
+    await run_in(db, org, go, write=True)
+
+
+async def test_kg_answers_for_a_connector_only_in_enforce_at_this_code_verified_with_the_principals_copied_and_current(pg_db) -> None:
+    import datetime as dt
+    p, org = await fresh_world(pg_db)
+    assert not await serves(pg_db, org, "app1")                                 # legacy
+    assert (await bf.backfill(pg_db, org, "app1", page=4)).flipped
+    assert await is_current(pg_db, org, "app1") and not await serves(pg_db, org, "app1")     # shadow only compares
+    await bf.promote(pg_db, org, "app1")
+    assert await serves(pg_db, org, "app1")
+    now = dt.datetime.now(dt.timezone.utc)
+    await set_state(pg_db, org, "app1", epoch=CODE_EPOCH - 1, mode="enforce", digest=None, cursor="done", verified_at=now)
+    assert not await serves(pg_db, org, "app1")                                 # verified by older code
+    await set_state(pg_db, org, "app1", epoch=CODE_EPOCH, mode="enforce", digest=None, cursor="done", verified_at=None)
+    assert not await serves(pg_db, org, "app1")                                 # never verified
+    await set_state(pg_db, org, "app1", epoch=CODE_EPOCH, mode="enforce", digest=None, cursor="done", verified_at=now)
+    assert await serves(pg_db, org, "app1")
+    await set_state(pg_db, org, None, epoch=0, mode="legacy", digest=None, cursor="Z|nothing", verified_at=None)
+    assert not await serves(pg_db, org, "app1")                                 # the principals' copy is not finished
+    await set_state(pg_db, org, None, epoch=0, mode="legacy", digest=None, cursor="done", verified_at=None)
+    assert await serves(pg_db, org, "app1")
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "f1", "orgId": org, "recordName": "Renamed", "connectorId": "app1", "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+    assert not await serves(pg_db, org, "app1")                                 # a change waits
+
+
+# ---- F3: what the verify also names ----------------------------------------------------------------------------------------------------------------------------------------------
+async def test_the_verify_names_a_link_whose_child_is_gone_and_a_grant_on_a_gone_node_that_has_no_connector(pg_db) -> None:
+    p, org = await shadowed(pg_db)
+    fold = await sk_of(pg_db, org, ("records", "fold"))
+    user = await sk_of(pg_db, org, ("users", "u1"))
+    child = await KgWriterNodes.make(pg_db, org, ("records", "deleted-child"))
+    node = await KgWriterNodes.make(pg_db, org, ("records", "deleted-node"))
+    await corrupt(pg_db, org, lambda tx, w: w.links_set([(fold, 1, child)]))
+    res = await verify(pg_db, org, "app1")
+    assert not res.ok and any(m.startswith(f"l|{fold}|1|{child}") for m in res.extra), res.extra
+    await corrupt(pg_db, org, lambda tx, w: w.links_delete([(fold, 1, child)]))
+    await corrupt(pg_db, org, lambda tx, w: w.grants_set([(user, node, "USER", "READER", None, False)]))
+    res = await verify(pg_db, org, "app1")
+    assert not res.ok and any(m.startswith(f"g|{user}|{node}|USER") for m in res.extra), res.extra
+    await corrupt(pg_db, org, lambda tx, w: w.grants_delete([(user, node, "USER")]))
+    assert (await verify(pg_db, org, "app1")).ok
+
+
+async def test_a_demotion_made_while_a_backfill_is_ending_is_not_undone_by_its_flip(pg_db, monkeypatch) -> None:
+    """The demotion clears the copy cursor; a flip that finds the cursor gone verifies, but does not make a copy of it that somebody has just taken away."""
+    p, org = await fresh_world(pg_db)
+    real = bf.drain_org
+
+    async def demote_then_drain(db, o, **k) -> object:
+        await bf.demote(db, o, "app1")
+        return await real(db, o, **k)
+    monkeypatch.setattr(bf, "drain_org", demote_then_drain)
+    out = await bf.backfill(pg_db, org, "app1", page=4)
+    assert not out.flipped and out.result.ok
+    assert (await state(pg_db, org, "app1"))[:2] == (None, "legacy")
