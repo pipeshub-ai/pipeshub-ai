@@ -7,7 +7,7 @@ import type { AgentConfiguredModel } from '@/app/(main)/agents/types';
 import { chatModelOptions } from '@/config';
 import { isModelInList } from './model-in-list';
 import { onSwrNamespaceRevalidate, SWR_NS } from '@/lib/api/swr-cache';
-import { onSessionEnd } from '@/lib/api/session-cache';
+import { captureSession, onSessionEnd } from '@/lib/api/session-cache';
 
 /**
  * Freshness window for agent model lists: within this many milliseconds the
@@ -22,9 +22,8 @@ const inflight = new Map<string, Promise<AvailableLlmModel[]>>();
 /** Agent contexts whose list is the org list (the agent has no models of its own). */
 const orgListContexts = new Set<string>();
 
-// Bumped when the org's model config changes / when the session ends: a response started before is not cached.
+// Bumped when the org's model config changes: a response started before is not cached.
 let configGeneration = 0;
-let sessionGeneration = 0;
 
 /**
  * Convert an agent-configured model (from AgentsApi.getAgent) into the shared
@@ -127,7 +126,7 @@ export async function fetchModelsForContext(
   }
 
   const startedInConfig = configGeneration;
-  const startedInSession = sessionGeneration;
+  const stillInSession = captureSession();
   const promise: Promise<AvailableLlmModel[]> = (async () => {
     let models: AvailableLlmModel[];
     let newChatDefault: ModelOverride | null = null;
@@ -160,7 +159,7 @@ export async function fetchModelsForContext(
     }
 
     // A response from before sign-out belongs to the last user: keep it out of the store.
-    if (startedInSession !== sessionGeneration) return models;
+    if (!stillInSession()) return models;
     // The org's models changed while this was in flight: ask again instead of caching the old list.
     // An agent's own models are not the org's, so they are kept.
     if (startedInConfig !== configGeneration && (ctxKey === ASSISTANT_CTX || usesOrgList)) {
@@ -232,7 +231,6 @@ onSwrNamespaceRevalidate(SWR_NS.aiModelConfig, () => {
 
 // The store copy is reset with the chat store; the requests of the last session must not be joined.
 onSessionEnd(() => {
-  sessionGeneration += 1;
   inflight.clear();
   orgListContexts.clear();
 });
