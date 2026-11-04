@@ -23927,8 +23927,12 @@ components:
           default: false
           description: |
             Read `pattern` as a regular expression (Python syntax, including
-            `\d`, `\w`, `\b`, lookarounds and `(?i)`). Back-references are not
-            supported. A line matches when the expression matches within it.
+            `\d`, `\w`, `\b`, lookarounds and `(?i)`). Refused with `400`: a
+            back-reference or any reference to an earlier group; a counted
+            repeat above 100; a counted repeat inside another counted repeat or
+            after a group that holds one; groups nested deeper than 20; and any
+            `(?` form other than a plain group, look-around, a named group or
+            `(?i)`. A line matches when the expression matches within it.
         caseSensitive:
           type: boolean
           default: false
@@ -72533,7 +72537,7 @@ paths:
         code, where meaning-based search ranks the wrong things.
 
         The pattern is literal text unless `regex` is `true`, when it is a
-        regular expression (no back-references).
+        regular expression (see `regex` on the request for what is refused).
         Matching ignores case unless `caseSensitive` is `true`. Any characters
         can be searched, including `<`, `>`, `&`, `;` and `->`. A pattern that
         is one line, at most 500 characters, and a valid regular expression is
@@ -72557,8 +72561,9 @@ paths:
         the record was indexed as code. For other records they count lines of
         the record's indexed text.
 
-        **Completeness:** the whole request, including reading the records, stops
-        at `timeBudgetMs`. When it stopped early or could not cover every
+        **Completeness:** searching and reading the records stops at
+        `timeBudgetMs`; the access check that decides which records the caller
+        can read has no deadline of its own. When it stopped early or could not cover every
         source, `coverage.complete` is `false` and `coverage.note` says what was
         missed; a record missing from the result is then not evidence that the
         text is absent. `coverage` describes only records the caller can read. Nothing is saved
@@ -72599,9 +72604,16 @@ paths:
                 $ref: '#/components/schemas/GrepResponse'
         '400':
           description: |
-            The request is invalid, or the pattern cannot be searched: an
-            invalid regular expression or a back-reference. The message says
-            which.
+            The request is invalid, or the pattern cannot be searched. With
+            `regex: true` the pattern is refused when it is an invalid regular
+            expression; has a back-reference or any other reference to an earlier
+            group (`\1`, `\g<name>`, `\k<name>`, `(?P=name)`, recursion); has a
+            counted repeat above 100 (`{101}`, `{1,101}`); has a counted repeat
+            inside another counted repeat, or after a group that holds one
+            (`(a{2}){3}`); nests groups deeper than 20; or uses a `(?` form other
+            than a plain group, look-around, a named group or `(?i)` (so flags
+            other than `(?i)`, comments and scoped flags are refused). The message
+            says which.
           content:
             application/json:
               schema:

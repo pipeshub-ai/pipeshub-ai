@@ -74,6 +74,7 @@ def _retrieval() -> MagicMock:
          "code_metadata": {"start_line": 7, "end_line": 8, "kind": "function",
                            "qualified_name": "function:compute_invoice_total_v2", "language": "python"}},
     ]}})
+    retrieval.blob_store.get_document_ids_by_virtual_record_ids = AsyncMock(return_value={})
     return retrieval
 
 
@@ -691,6 +692,16 @@ async def test_a_record_with_too_much_text_is_not_searched_and_the_answer_says_s
     ]}})
     with patch.object(ks, "MAX_RECORD_CHARS", 100):
         out = await _grep(True, retrieval=retrieval)
+    assert out["records"] == [] and out["coverage"]["complete"] is False
+    assert "too large" in out["coverage"]["note"]
+
+
+async def test_a_record_whose_stored_size_is_over_the_limit_is_not_loaded_at_all() -> None:
+    retrieval = _retrieval()
+    retrieval.blob_store.get_document_ids_by_virtual_record_ids = AsyncMock(return_value={VRID: {"fileSizeBytes": 401}})
+    with patch.object(ks, "MAX_STORED_BYTES", 400):
+        out = await _grep(True, retrieval=retrieval)
+    retrieval.blob_store.get_record_from_storage.assert_not_awaited()
     assert out["records"] == [] and out["coverage"]["complete"] is False
     assert "too large" in out["coverage"]["note"]
 

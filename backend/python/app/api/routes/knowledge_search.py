@@ -93,6 +93,8 @@ MAX_GROUP_DEPTH = 20
 # Characters of one response, and of one record's text, searched; past them the answer says it is incomplete.
 MAX_RESPONSE_CHARS = 1_000_000
 MAX_RECORD_CHARS = 5_000_000
+# shortcut: the stored JSON carries structure around the text, so its size is bounded at 4 times the text limit; tighten when the stored size is the text size.
+MAX_STORED_BYTES = 4 * MAX_RECORD_CHARS
 _QUANTIFIER = re.compile(r"\{(\d*)(?:,(\d*))?\}")
 _REFERENCE_ESCAPES = frozenset("123456789gk")
 # The only ``(?`` forms a pattern may use: plain, look-around, named and case-insensitive groups. Every other form changes how the
@@ -299,8 +301,13 @@ def _path_matches(globs: list[str] | None, record: dict[str, Any]) -> bool:
     return any(fnmatch.fnmatchcase(n.lower(), g.lower()) for g in globs for n in names if n)
 
 
-async def _load_blocks(blob_store: Any, vrid: str, org_id: str) -> list[dict[str, Any]]:  # noqa: ANN401
-    stored = await record_artifact_reader(blob_store).read_record(vrid, org_id)
+async def _load_blocks(blob_store: Any, vrid: str, org_id: str) -> list[dict[str, Any]] | None:  # noqa: ANN401
+    """The record's blocks, or None when its stored size says it is too large to read (so it is never loaded into memory)."""
+    reader = record_artifact_reader(blob_store)
+    lookup = (await reader.lookup_many([vrid])).get(vrid)
+    if lookup and (lookup.get("fileSizeBytes") or 0) > MAX_STORED_BYTES:
+        return None
+    stored = await reader.read_record(vrid, org_id, lookup=lookup)
     containers = (stored or {}).get("block_containers") or {}
     blocks = containers.get("blocks") if isinstance(containers, dict) else None
     return blocks if isinstance(blocks, list) else []
@@ -370,7 +377,7 @@ async def grep(
                     log.warning("grep: could not read record %s", graph_rec.get("_key"), exc_info=True)
                     coverage.stop("some records could not be read in time")
                     return None
-                if sum(len(str(b.get("data", ""))) for b in blocks if isinstance(b, dict)) > MAX_RECORD_CHARS:
+                if blocks is None or sum(len(str(b.get("data", ""))) for b in blocks if isinstance(b, dict)) > MAX_RECORD_CHARS:
                     coverage.stop("some records were too large to search")
                     return None
                 matches, total, language, complete = await find_matches_bounded(
