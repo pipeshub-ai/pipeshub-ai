@@ -183,7 +183,7 @@ describe('OAuthAuthorizeView scope choice', () => {
     cleanup();
   });
 
-  it('groups scopes by category in the OAuth app form order, collapsed, with only the defaults ticked', async () => {
+  it('groups scopes by category in the OAuth app form order, collapsed, with every requested scope ticked', async () => {
     get.mockResolvedValue(consentResponse([], false, scopes));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
@@ -197,14 +197,14 @@ describe('OAuthAuthorizeView scope choice', () => {
     expect(groups.map((g) => header(g).getAttribute('aria-expanded'))).toEqual(['false', 'false', 'false']);
     expect(screen.queryByText('kb:write')).toBeNull();
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
-    expect(screen.getByText('1/2')).toBeTruthy();
+    expect(screen.getByText('2/2')).toBeTruthy();
 
     groups.forEach((g) => fireEvent.click(header(g)));
     expect(['offline_access', 'kb:read', 'kb:write', 'team:read'].map(state)).toEqual([
       'true',
       'true',
-      'false',
-      'false',
+      'true',
+      'true',
     ]);
     expect(screen.queryAllByRole('checkbox')).toHaveLength(4);
   });
@@ -217,31 +217,32 @@ describe('OAuthAuthorizeView scope choice', () => {
     fireEvent.click(box('kb:write'));
     fireEvent.click(header('Knowledge Base'));
     expect(screen.queryByText('kb:write')).toBeNull();
-    expect(screen.getByText('2/2')).toBeTruthy();
+    expect(screen.getByText('1/2')).toBeTruthy();
   });
 
-  it('ticks scopes one by one and posts what the person chose', async () => {
+  it('unticks scopes one by one and posts what the person kept', async () => {
     get.mockResolvedValue(consentResponse([], false, scopes));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
     await expand('Identity', 'Knowledge Base');
     fireEvent.click(box('kb:write'));
-    expect(state('kb:write')).toBe('true');
+    expect(state('kb:write')).toBe('false');
     fireEvent.click(box('offline_access'));
     fireEvent.click(allow());
 
     await waitFor(() => expect(post).toHaveBeenCalled());
-    expect((post.mock.calls[0][1] as { scope: string }).scope).toBe('kb:read kb:write');
+    expect((post.mock.calls[0][1] as { scope: string }).scope).toBe('kb:read team:read');
   });
 
-  it('ticks every scope when none of them is a default', async () => {
-    get.mockResolvedValue(consentResponse([], false, [scopes[3]]));
+  it('posts every requested scope when the person changes nothing', async () => {
+    get.mockResolvedValue(consentResponse([], false, scopes));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
-    await screen.findByRole('button', { name: /^Teams/ });
-    fireEvent.click(header('Teams'));
-    expect(state('team:read')).toBe('true');
-    expect(allow().disabled).toBe(false);
+    await expand();
+    fireEvent.click(allow());
+
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect((post.mock.calls[0][1] as { scope: string }).scope).toBe('offline_access kb:read kb:write team:read');
   });
 
   it('keeps openid ticked, so an OIDC sign-in always gets it', async () => {
@@ -260,16 +261,15 @@ describe('OAuthAuthorizeView scope choice', () => {
     fireEvent.click(allow());
 
     await waitFor(() => expect(post).toHaveBeenCalled());
-    expect((post.mock.calls[0][1] as { scope: string }).scope).toBe('openid kb:read');
+    expect((post.mock.calls[0][1] as { scope: string }).scope).toBe('openid kb:read kb:write team:read');
   });
 
   it('disables Allow when every scope is unticked', async () => {
     get.mockResolvedValue(consentResponse([], false, scopes));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
-    await expand('Identity', 'Knowledge Base');
-    fireEvent.click(box('offline_access'));
-    fireEvent.click(box('kb:read'));
+    await expand('Identity', 'Knowledge Base', 'Teams');
+    ['offline_access', 'kb:read', 'kb:write', 'team:read'].forEach((name) => fireEvent.click(box(name)));
     expect(allow().disabled).toBe(true);
   });
 });

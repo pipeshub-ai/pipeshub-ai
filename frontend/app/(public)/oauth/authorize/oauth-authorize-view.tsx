@@ -19,7 +19,6 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { KnowledgeLimitNotice } from '@/app/components/knowledge-limit/knowledge-limit-summary';
 import type { KnowledgeLimit } from '@/app/components/knowledge-limit/knowledge-limit';
 import { OAuthConnectionOutcome } from '@/app/(public)/oauth/components/oauth-connection-outcome';
-import { DEFAULT_SELECTED_SCOPES } from '@/lib/constants/oauth-default-scopes';
 
 const OAUTH_AUTHORIZE_PATH = '/oauth/authorize';
 const AUTHORIZE_API = '/api/v1/oauth2/authorize';
@@ -67,17 +66,6 @@ interface AuthorizeResponse {
 
 // OIDC needs openid for the ID token and /userinfo, so the person cannot untick it.
 const REQUIRED_SCOPES = new Set<string>(['openid']);
-
-/** The default scopes among those listed; every listed scope when none of them is a default, so Allow is not left disabled. Required scopes stay ticked. */
-function initiallyTicked(scopes: ScopeInfo[] | undefined): Set<string> {
-  const names = asArray(scopes).map((s) => s.name);
-  const defaults = new Set<string>(DEFAULT_SELECTED_SCOPES);
-  const picked = names.filter((name) => defaults.has(name));
-  return new Set([
-    ...(picked.length > 0 ? picked : names),
-    ...names.filter((name) => REQUIRED_SCOPES.has(name)),
-  ]);
-}
 
 function normalizeScopeForPost(scopeFromUrl: string | null): string {
   if (!scopeFromUrl) return '';
@@ -192,7 +180,7 @@ export function OAuthAuthorizeView() {
   const [reloadKey, setReloadKey] = useState(0);
   // Categories start collapsed; the count on each header shows what is ticked inside.
   const [openCategories, setOpenCategories] = useState<ReadonlySet<string>>(new Set());
-  // Starts as the default scopes once the consent data loads; the person ticks more if they want.
+  // Every requested scope starts ticked once the consent data loads; the person unticks what they don't want.
   const [ticked, setTicked] = useState<Set<string>>(() => new Set());
   const triedWorkspaceSwitchRef = useRef(false);
 
@@ -269,7 +257,7 @@ export function OAuthAuthorizeView() {
 
         if (data.requiresConsent && data.consentData) {
           setConsentData(data.consentData);
-          setTicked(initiallyTicked(data.consentData.scopes));
+          setTicked(new Set(asArray(data.consentData.scopes).map((s) => s.name)));
           setCodeChallenge(data.codeChallenge ?? '');
           setCodeChallengeMethod(data.codeChallengeMethod ?? '');
         } else {

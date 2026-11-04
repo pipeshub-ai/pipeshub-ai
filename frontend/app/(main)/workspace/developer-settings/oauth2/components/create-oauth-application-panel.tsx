@@ -1,6 +1,5 @@
 'use client';
 
-import { DEFAULT_SELECTED_SCOPES } from '@/lib/constants/oauth-default-scopes';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box,
@@ -111,7 +110,22 @@ export interface CreateOAuthApplicationPanelProps {
 
 type CreateTab = 'general' | 'scopes' | 'granular';
 
-/** The default scopes, less any the instance does not offer this user. */
+/**
+ * Ticked when the form opens: the least an MCP client needs to search and
+ * chat, with or without an agent. Search needs semantic:write, not read: the
+ * Python route it forwards to requires write. Scopes the instance does not
+ * offer this user are dropped.
+ */
+export const DEFAULT_SELECTED_SCOPES = [
+  'offline_access',
+  'kb:read',
+  'connector:read',
+  'semantic:write',
+  'conversation:chat',
+  'agent:read',
+  'agent:execute',
+] as const;
+
 function defaultScopeSelection(
   scopes: Record<string, OAuthScopeItem[]>
 ): Set<string> {
