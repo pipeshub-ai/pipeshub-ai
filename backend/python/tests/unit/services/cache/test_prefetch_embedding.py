@@ -19,7 +19,9 @@ from app.modules.retrieval.context.builder import KnowledgeContext
 from app.modules.retrieval.retrieval_service import RetrievalService
 
 
-def _mock_prefetch_render(vr_to_result: dict[str, object], text: str = "policy text"):
+def _mock_prefetch_render(
+    vr_to_result: dict[str, object], text: str = "policy text"
+) -> tuple[MagicMock, MagicMock]:
     mock_builder = MagicMock()
     mock_builder.build = AsyncMock(
         return_value=KnowledgeContext(
