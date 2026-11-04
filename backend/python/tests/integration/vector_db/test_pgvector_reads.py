@@ -145,3 +145,22 @@ async def test_retrieve_answers_for_the_requests_org_only_in_the_order_asked(sto
             await store.retrieve_points("nope", ids)
     with org_context.bind(org_context.OrgContext(C, None, "service", "t", "-")):
         assert await store.retrieve_points("records", ids) == []
+
+
+async def test_a_real_time_read_does_not_trust_a_cached_miss_of_the_orgs_space(store, env) -> None:  # noqa: F811
+    """The first point of an org written by another service must be visible at once to retrieve, scroll and the collection info, even
+    though this service cached "no space" a moment before (the space list is cached for ``catalog_ttl`` seconds)."""
+    with org_context.bind(org_context.OrgContext(C, None, "service", "t", "-")):
+        assert await store.retrieve_points("records", [pid(f"{C}/first")]) == []                       # caches the org's empty space list
+        assert (await store.scroll("records", flt(C), 10)).points == []
+        assert (await store.get_collection_info("records")).dense_dimension is None
+        port = env.start_bouncer()
+        other = await PgVectorService.create(PgVectorConfig(dsn=env.dsn("indexing", port), jobs_dsn=env.dsn("jobs", port), pool_max=2, placement="none"))
+        try:
+            await other.upsert_points("records", [point(C, "first")])
+        finally:
+            await other.disconnect()
+        assert [p.id for p in await store.retrieve_points("records", [pid(f"{C}/first")])] == [pid(f"{C}/first")]
+        assert [p.id for p in (await store.scroll("records", flt(C), 10)).points] == [pid(f"{C}/first")]
+        info = await store.get_collection_info("records")
+        assert (info.dense_dimension, info.points_count) == (DIM, 1)
