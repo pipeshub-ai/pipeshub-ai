@@ -810,6 +810,18 @@ export function describeAnswerWiring(
       }
     });
 
+    it('finishes the reply when a saved citation lost its document', async () => {
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(ANSWER),
+        // The saved conversation sends citationData undefined when its document is gone.
+        finished(NORMALIZED_ANSWER, [{ citationId: 'gone' }, ...CITATIONS]),
+      ]);
+      expect(visibleText(client)).to.include(SHOWN_ANSWER);
+      expect(JSON.stringify(replyBlocks(client))).to.include('Q3 report');
+    });
+
     it('shows citation placeholders as [n] markers that match a numbered Sources list with real links', async () => {
       const answer =
         'Revenue grew [source](ref1). The [Asana Trust Center](https://ref2.xyz) lists the report https://ref1.xyz.';
