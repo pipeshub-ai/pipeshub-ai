@@ -65,8 +65,10 @@ class TestSearchWithFiltersByteIdenticalResponse:
     async def test_search_api_response_never_contains_query_embedding(self) -> None:
         """Default callers receive a dictionary that NEVER contains 'query_embedding' key."""
         retrieval_service = RetrievalService.__new__(RetrievalService)
+        retrieval_service.config_service = AsyncMock()
         retrieval_service.graph_provider = AsyncMock()
         retrieval_service.graph_provider.get_record_adjacency = AsyncMock(return_value={"nodes": {}})
+        retrieval_service.graph_provider.get_record_parent_adjacency = AsyncMock(return_value={"nodes": {}})
         retrieval_service.vector_db_service = AsyncMock()
         retrieval_service.logger = MagicMock()
         retrieval_service._cached_embedding_is_local = True
@@ -120,8 +122,10 @@ class TestSearchWithFiltersByteIdenticalResponse:
     async def test_opt_in_out_query_embedding_populates_vector_without_modifying_dict(self) -> None:
         """Opt-in out_query_embedding extracts dense vector into holder while response dict stays untouched."""
         retrieval_service = RetrievalService.__new__(RetrievalService)
+        retrieval_service.config_service = AsyncMock()
         retrieval_service.graph_provider = AsyncMock()
         retrieval_service.graph_provider.get_record_adjacency = AsyncMock(return_value={"nodes": {}})
+        retrieval_service.graph_provider.get_record_parent_adjacency = AsyncMock(return_value={"nodes": {}})
         retrieval_service.vector_db_service = AsyncMock()
         retrieval_service.logger = MagicMock()
         retrieval_service._cached_embedding_is_local = True
