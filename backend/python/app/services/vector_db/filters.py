@@ -54,6 +54,7 @@ def canonical_filter_key(key: str) -> str:
 
 
 ORG_FIELD = "metadata.orgId"
+_ORG_KEY = "orgId"      # the key inside ``metadata``; a read of a payload being checked, not a source of the request's org
 
 
 def is_missing(value: object) -> bool:
@@ -111,8 +112,8 @@ def require_filter_org(expr: FilterExpression) -> str:
 def _org_in_payload(payload: dict) -> tuple[bool, object]:
     """Whether a payload names ``orgId`` (nested under ``metadata``, dotted, or as the flattened Redis field) and what it says."""
     meta = payload.get("metadata")
-    if isinstance(meta, dict) and "orgId" in meta:
-        return True, meta["orgId"]
+    if isinstance(meta, dict) and _ORG_KEY in meta:
+        return True, meta[_ORG_KEY]
     for key in ("metadata.orgId", "metadata_orgId"):
         if key in payload:
             return True, payload[key]
