@@ -1754,6 +1754,14 @@ class TestQueryAndFilterHelpers:
             await neo4j_provider.get_nodes_by_filters("apps", {"status": "ACTIVE"}, raise_on_error=True)
 
     @pytest.mark.asyncio
+    async def test_get_edges_from_node_raises_when_asked(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("edges fail"))
+
+        assert await neo4j_provider.get_edges_from_node("records/r1", "belongsTo") == []
+        with pytest.raises(RuntimeError, match="edges fail"):
+            await neo4j_provider.get_edges_from_node("records/r1", "belongsTo", raise_on_error=True)
+
+    @pytest.mark.asyncio
     async def test_get_edges_from_node_with_target_name_raises_when_asked(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("edges fail"))
 
