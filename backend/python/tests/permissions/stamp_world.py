@@ -45,6 +45,7 @@ class WorldGraph:
 
     def __init__(self) -> None:
         self.stamps = InMemoryStampGraph(ORG)
+        self.app_docs: dict[str, dict] = {}
 
     def add(self, world: World, prefix: str, vrids: dict[str, str] | None = None) -> None:
         g = stamp_graph(world, prefix, vrids)
@@ -68,9 +69,15 @@ class WorldGraph:
         return [d["_key"] for d in self.docs(vrid)]
 
     async def get_document(self, key: str, collection: str, *args: object, **kwargs: object) -> dict | None:
+        if collection == "apps":
+            return self.app_docs.get(key)
         return self.doc(key)
 
     async def get_edges_from_node(self, node_id: str, edge_collection: str, *args: object, **kwargs: object) -> list[dict]:
         key = node_id.split("/", 1)[1]
         n = self.stamps.node_map.get(key)
         return [{"_from": node_id, "_to": f"recordGroups/{g}"} for g in (n.groups if n else ())]
+
+    async def update_node(self, key: str, collection: str, updates: dict, *args: object) -> bool:
+        self.app_docs.setdefault(key, {"_key": key}).update(updates)
+        return True

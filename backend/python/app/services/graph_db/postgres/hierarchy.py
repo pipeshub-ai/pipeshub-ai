@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 _ORG_FIELD = "orgId"  # the org property of a graph document
-_EDGE_COLLS = sorted({*EDGE_COLLECTION_TO_RELATIONSHIP, CollectionNames.RECORD_LINKS.value})
+_EDGE_COLLS = sorted({*EDGE_COLLECTION_TO_RELATIONSHIP, CollectionNames.RECORD_LINKS.value, CollectionNames.INTER_CATEGORY_RELATIONS.value})
 _NODE_COLLS = ["records", "blocks", *_TYPE_COLLS]
 
 
