@@ -3560,6 +3560,7 @@
         "disconnected": "Desconectado correctamente",
         "disconnectError": "No se pudo desconectar",
         "credentialsSaveError": "Servidor guardado, pero no se pudieron guardar las credenciales. Puedes añadirlas más tarde desde Gestionar.",
+        "logoSaveError": "Servidor guardado, pero no se pudo guardar su logotipo. Puedes volver a intentarlo desde Gestionar.",
         "credentialsSaved": "Credenciales guardadas",
         "credentialsReset": "Servidor MCP actualizado. Se eliminaron las credenciales guardadas porque la conexión cambió; vuelve a conectarte para usarlo.",
         "oauthTimedOut": "El inicio de sesión tardó demasiado y se detuvo. Inténtalo de nuevo.",
@@ -3574,6 +3575,16 @@
       "form": {
         "name": "Nombre",
         "description": "Descripción",
+        "logo": "Logotipo",
+        "logoHint": "PNG, JPEG, WebP, GIF o SVG, hasta 2 MB. Una imagen cuadrada se ve mejor.",
+        "logoUpload": "Subir logotipo",
+        "logoChange": "Cambiar logotipo",
+        "logoRemove": "Quitar",
+        "logoErrors": {
+          "type": "Usa una imagen PNG, JPEG, WebP, GIF o SVG.",
+          "size": "Usa una imagen de 2 MB o menos.",
+          "unreadable": "No se pudo leer esta imagen. Prueba con otro archivo."
+        },
         "transport": "Transporte",
         "command": "Comando",
         "args": "Argumentos",

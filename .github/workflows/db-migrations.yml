@@ -16,23 +16,37 @@ permissions:
 
 jobs:
   migrations:
+    name: migrations (${{ matrix.pg }}, ${{ matrix.shard }})
     runs-on: ubuntu-latest
+    # The tests run in shards, each with its own PostgreSQL (the tests drop and recreate the cluster's roles, so two runs must not share a
+    # cluster). tests/test_unit.py::test_every_test_file_is_in_exactly_one_shard keeps the lists complete.
+    # min_tests are the case counts of the files, so the shards sum to the total; a suite that did not run fails its shard.
     strategy:
       fail-fast: false
       matrix:
         pg: ['17', '18']
-    services:
-      postgres:
-        image: pgvector/pgvector:0.8.7-pg${{ matrix.pg }}-bookworm      # the retrieval module needs pgvector
-        env:
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+        shard: [rls, integration, graph, vetted, placement]
+        include:
+          - shard: rls
+            files: tests/test_rls.py tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
+            min_tests: 440
+            suites: ''
+          - shard: integration
+            files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py
+            min_tests: 54
+            suites: ''
+          - shard: graph
+            files: tests/test_graph.py tests/test_retrieval.py
+            min_tests: 55
+            suites: '--expect-suite tests.test_graph=34 --expect-suite tests.test_retrieval=21'
+          - shard: vetted
+            files: tests/test_vetted.py tests/test_vetted_kernel.py tests/test_change_log.py
+            min_tests: 423
+            suites: ''
+          - shard: placement
+            files: tests/test_placement.py
+            min_tests: 16
+            suites: '--expect-suite tests.test_placement=16'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,7 +63,19 @@ jobs:
           pip install -r backend/db/requirements.txt pytest
           sudo apt-get update -qq && sudo apt-get install -y -qq pgbouncer
 
+      - name: Start PostgreSQL ${{ matrix.pg }} in memory, with no fsync
+        # The tests create and drop databases and run migrations all the time. A runner's disk made each commit wait for a flush, and a
+        # container's layered filesystem is slower still: the cluster lives on a tmpfs and is started without the flushes, because it is
+        # thrown away after the job. JIT is off: the planted-defect tests query a catalog view that PostgreSQL compiles with JIT on every call,
+        # 14 s with JIT against 0.17 s without in the same image. (The image's data directory differs between majors, so PGDATA is set.)
+        run: |
+          docker run -d --name pg --network host --tmpfs /pgdata:rw,mode=0700 -e PGDATA=/pgdata -e POSTGRES_HOST_AUTH_METHOD=trust \
+            pgvector/pgvector:0.8.7-pg${{ matrix.pg }}-bookworm -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c jit=off
+          for _ in $(seq 1 60); do pg_isready -h 127.0.0.1 -U postgres && break; sleep 1; done
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA -c 'SELECT version()' -c 'SHOW fsync' -c 'SHOW synchronous_commit' -c "SHOW jit" -c 'SHOW data_directory'
+
       - name: Lints
+        if: ${{ matrix.shard == 'rls' && matrix.pg == '17' }}      # the lints do not depend on the PostgreSQL major
         working-directory: backend
         run: |
           python -m db.epoch_lint
@@ -60,6 +86,7 @@ jobs:
           python -m db.lib.vetted check db/versions/retrieval/vetted/manifest.yaml
 
       - name: Empty database to heads, then the org isolation catalog check
+        if: ${{ matrix.shard == 'rls' }}
         # python -m db.migrate exits 4 when kernel.rls_violations returns any row.
         working-directory: backend
         env:
@@ -79,15 +106,19 @@ jobs:
         env:
           MIGRATE_TEST_PG_EXTERNAL: 127.0.0.1:5432
           MIGRATE_TEST_PGBOUNCER: /usr/sbin/pgbouncer
-        run: python -m pytest -q --junitxml="$RUNNER_TEMP/db-junit.xml"
+          FILES: ${{ matrix.files }}
+        run: python -m pytest -q --durations=25 --junitxml="$RUNNER_TEMP/db-junit.xml" $FILES
 
       - name: No unexpected skips
         # The generated vetted-function suite skips the checks that do not apply to a function by design (a function with no organisation
         # argument has no foreign-organisation case); those are listed by function. Anything else skipped, or fewer cases than
         # expected, or a graph suite that did not run, fails the job.
         if: ${{ always() }}
+        env:
+          SUITES: ${{ matrix.suites }}
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/db-junit.xml" --min-tests 970 --expect-suite 'tests.test_graph=34' --expect-suite 'tests.test_retrieval=21' \
+          # shellcheck disable=SC2086
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/db-junit.xml" --min-tests ${{ matrix.min_tests }} $SUITES \
             --allow='-kernel.org_parent_ids]' --allow='-kernel.org_lineage]' --allow='-platform.job_start]' --allow='-platform.job_finish]' \
             --allow='-platform.job_checkpoint]' --allow='-identity.oldest_org]' --allow='-identity.org_count]' \
             --allow='-kt.set_note_title]' --allow='-kt.token_owner]' --allow='-ku.item_labels]' \

@@ -15,7 +15,8 @@
 import {
   REFRESH_TOKEN_STORAGE_KEY,
 } from '@/lib/store/auth-store';
-import { useAuthStore } from '@/config';
+import { useAuthStore, logoutAndRedirect } from '@/config';
+import { onSessionEnd, captureSession } from '@/lib/api/session-cache';
 
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 
@@ -72,6 +73,10 @@ export function isTokenExpired(
 // call to /refresh/token is never duplicated within a tab.
 let refreshPromise: Promise<boolean> | null = null;
 
+function readStoredRefreshToken(): string | null {
+  return typeof window !== 'undefined' ? window.localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY) : null;
+}
+
 /** True while a refresh network call is in flight. Used by the axios response interceptor. */
 export function isRefreshInProgress(): boolean {
   return refreshPromise !== null;
@@ -92,13 +97,11 @@ export async function refreshAccessToken(): Promise<boolean> {
     return refreshPromise;
   }
 
-  refreshPromise = (async () => {
+  const current = captureSession();
+  const storedRefreshToken = readStoredRefreshToken();
+  const promise = (async () => {
     try {
-      const refreshToken =
-        useAuthStore.getState().refreshToken ??
-        (typeof window !== 'undefined'
-          ? window.localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY)
-          : null);
+      const refreshToken = useAuthStore.getState().refreshToken ?? storedRefreshToken;
 
       if (!refreshToken) {
         console.log('No refresh token available');
@@ -122,6 +125,10 @@ export async function refreshAccessToken(): Promise<boolean> {
       const data = await response.json();
       const newAccessToken: string | undefined = data.accessToken;
 
+      // Signed out while the refresh was out, here or in another tab this one has not heard
+      // from yet: storing the token would sign the last user back in, in every tab.
+      if (!current() || readStoredRefreshToken() !== storedRefreshToken) return false;
+
       if (newAccessToken) {
         useAuthStore.getState().setTokens(newAccessToken, refreshToken);
         return true;
@@ -134,9 +141,29 @@ export async function refreshAccessToken(): Promise<boolean> {
     }
   })();
 
+  refreshPromise = promise;
   try {
-    return await refreshPromise;
+    return await promise;
   } finally {
-    refreshPromise = null;
+    if (refreshPromise === promise) refreshPromise = null;
   }
+}
+
+// The next person must not wait on, or be answered by, the last person's refresh.
+onSessionEnd(() => {
+  refreshPromise = null;
+});
+
+export type RefreshOutcome = 'refreshed' | 'signed-out' | 'session-ended';
+
+/**
+ * Refreshes the access token. On failure it signs out, unless the session that
+ * asked has already ended: then signing out again would sign out the next person.
+ */
+export async function refreshOrSignOut(): Promise<RefreshOutcome> {
+  const current = captureSession();
+  if (await refreshAccessToken()) return 'refreshed';
+  if (!current()) return 'session-ended';
+  logoutAndRedirect();
+  return 'signed-out';
 }

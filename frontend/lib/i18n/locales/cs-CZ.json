@@ -3780,6 +3780,7 @@
         "disconnected": "Odpojení proběhlo úspěšně",
         "disconnectError": "Odpojení se nezdařilo",
         "credentialsSaveError": "Server byl uložen, ale přihlašovací údaje se nepodařilo uložit. Můžete je přidat později v části Spravovat.",
+        "logoSaveError": "Server byl uložen, ale jeho logo se nepodařilo uložit. Můžete to zkusit znovu v části Spravovat.",
         "credentialsSaved": "Přihlašovací údaje byly uloženy",
         "credentialsReset": "MCP server byl aktualizován. Uložené přihlašovací údaje byly odebrány, protože se změnilo připojení; pro další používání se připojte znovu.",
         "oauthTimedOut": "Přihlášení trvalo příliš dlouho a bylo zastaveno. Zkuste to znovu.",
@@ -3794,6 +3795,16 @@
       "form": {
         "name": "Název",
         "description": "Popis",
+        "logo": "Logo",
+        "logoHint": "PNG, JPEG, WebP, GIF nebo SVG, nejvýše 2 MB. Nejlépe vypadá čtvercový obrázek.",
+        "logoUpload": "Nahrát logo",
+        "logoChange": "Změnit logo",
+        "logoRemove": "Odebrat",
+        "logoErrors": {
+          "type": "Použijte obrázek PNG, JPEG, WebP, GIF nebo SVG.",
+          "size": "Použijte obrázek o velikosti nejvýše 2 MB.",
+          "unreadable": "Tento obrázek se nepodařilo načíst. Zkuste jiný soubor."
+        },
         "transport": "Transport",
         "command": "Příkaz",
         "args": "Argumenty",

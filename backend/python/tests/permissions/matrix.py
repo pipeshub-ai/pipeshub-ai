@@ -146,7 +146,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("salesforce", "item-acl", OVERRIDE, "salesforce/connector.py:3722", "records inherit=False; org grant on product groups (:2536)", read=False),
     Connector("servicenow/servicenow", "item-acl", OVERRIDE, "servicenow/servicenow/connector.py:3737", "an article inherits unless it has read criteria: Can Read only is inherit and a grant, Cannot Read or an ownership group computes the users", read=False),
     Connector("zendesk", "item-acl", OVERRIDE, "zendesk/connector.py:2056", "ticket folders inherit=False, opened to the requester", read=False),
-    Connector("zammad", "item-acl", OVERRIDE, "zammad/connector.py:1876", "PUBLIC/ARCHIVED/DRAFT explicit, INTERNAL inherits the category", read=False),
+    Connector("zammad", "item-acl", OVERRIDE, "zammad/connector.py:2003", "PUBLIC/ARCHIVED/DRAFT explicit, INTERNAL inherits the category", read=False),
     Connector("zoom", "item-acl", OVERRIDE, "zoom/connector.py:907", "per-user groups, inherit=False", read=False),
     Connector("drupal_wiki", "item-acl", OVERRIDE, "drupal_wiki/connector.py:769", "spaces inherit=False with org, user and group grants", read=False),
     Connector("bookstack", "item-acl", OVERRIDE, "bookstack/connector.py:1224", "each chapter and page carries its own access (inherit=False): BookStack decides it apart from its book's", read=False),
