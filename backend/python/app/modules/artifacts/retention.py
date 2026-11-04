@@ -244,10 +244,16 @@ class RevisionRetentionSweep:
         failing_run: list[int] = []
         tried = 0
 
-        def stop_starting() -> bool:
+        started: set[str] = set()
+
+        def stop_starting(vrid: str) -> bool:
             # The deadline never stops the first vrid of a page: when the page's own
             # graph reads used up the budget, the walk would otherwise re-read the
-            # same page every tick and never move.
+            # same page every tick and never move. Nor does it stop in the middle of
+            # the organisations that share a vrid: the cursor is a vrid, so a walk cut
+            # inside the group could only resume before it and would start it again.
+            if vrid in started:
+                return False
             if len(failing_run) >= self.max_consecutive_failures or (
                 deadline is not None and tried > 0 and time.monotonic() >= deadline
             ):
@@ -261,9 +267,10 @@ class RevisionRetentionSweep:
             if key is None:      # a pointer without an organisation starts out finished
                 return
             async with gate:
-                if not leader() or stop_starting():
+                if not leader() or stop_starting(vrid):
                     return
                 tried += 1
+                started.add(vrid)
                 try:
                     with for_org(key[0], job="revision_retention"):
                         ok = await self._retire_virtual_record(
@@ -288,10 +295,8 @@ class RevisionRetentionSweep:
         if report.cut_short:
             done = next((i for i, f in enumerate(finished) if not f), len(pointers))
             if done < len(pointers):
-                # Not the id of the unfinished pointer: another organisation's pointer of the same id may be before it, and the next page reads the ids after the cursor.
-                unfinished = pointers[done].get("virtualRecordId")
                 resume = next(
-                    (str(p["virtualRecordId"]) for p in reversed(pointers[:done]) if p.get("virtualRecordId") and p["virtualRecordId"] != unfinished),
+                    (str(p["virtualRecordId"]) for p in reversed(pointers[:done]) if p.get("virtualRecordId")),
                     after_key,
                 )
                 return resume, report

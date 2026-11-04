@@ -878,15 +878,21 @@ async def test_two_orgs_that_share_a_virtual_record_id_never_touch_each_others_s
 
 
 @pytest.mark.asyncio
-async def test_a_deadline_between_two_orgs_pointers_of_one_virtual_record_resumes_before_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The next page reads the ids after the cursor, so a cursor equal to the id of the unfinished organisation's pointer would skip that organisation."""
+async def test_a_deadline_never_cuts_inside_the_organisations_that_share_a_virtual_record_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cursor is a virtual record id, so a walk cut between two organisations' pointers of one id could only resume before the group and start it again, and a group
+    wider than a walk's budget would never be passed. The group is finished, and the cursor moves past it."""
     graph, store = _TwoOrgGraph(), FakeStore()
-    graph.pointers = [{"virtualRecordId": v, "orgId": o, "currentRev": "r2", "previousRev": None} for v, o in (("a", "org-a"), ("v", "org-a"), ("v", "org-b"))]
-    graph.org_states = {"org-a": [], "org-b": []}
-    clock = iter([0.0])           # the second pointer starts in time, the third is past the deadline
-    monkeypatch.setattr(retention_module, "time", types.SimpleNamespace(monotonic=lambda: next(clock, 100.0)))
+    orgs = ("org-a", "org-b", "org-c")
+    graph.pointers = [{"virtualRecordId": "v", "orgId": o, "currentRev": "r2", "previousRev": None} for o in orgs] + [
+        {"virtualRecordId": "w", "orgId": "org-a", "currentRev": "r2", "previousRev": None}]
+    graph.org_states = {o: [("v", "r1", OLD), ("w", "r1", OLD)] for o in orgs}
+    monkeypatch.setattr(retention_module, "time", types.SimpleNamespace(monotonic=lambda: 100.0))          # the budget is spent from the first pointer on
 
     with org_context.system("retention_test"):
         key, report = await _sweep(graph, store, concurrency=1).run_page(None, deadline=50.0)
+        after_first = {o: [s[0] for s in states] for o, states in graph.org_states.items()}
+        second, _ = await _sweep(graph, store, concurrency=1).run_page(key, deadline=50.0)
 
-    assert report.cut_short and key == "a"                    # not "v": org-b's pointer of "v" is still to do
+    assert report.cut_short and key == "v"                                   # cut after the whole group, before "w"
+    assert after_first == {"org-a": ["w"], "org-b": ["w"], "org-c": ["w"]}   # every organisation of "v" was done in the first walk
+    assert second is None and graph.org_states["org-a"] == [] and graph.org_states["org-b"] == [("w", "r1", OLD)]      # "w" has one pointer, in org-a
