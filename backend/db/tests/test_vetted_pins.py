@@ -60,8 +60,8 @@ def conn(cluster):
 
 
 def violations(c: psycopg.Connection, full: bool = False) -> list[tuple[str, str]]:
-    """The pin checks alone (a second), or, with ``full``, the whole catalog view the migrate job reads (tens of seconds on a loaded host)."""
-    views = ("kernel.rls_violations",) if full else ("kernel.pin_violations",)
+    """The pin and org-policy checks alone (a second), or, with ``full``, the whole catalog view the migrate job reads (tens of seconds on a loaded host)."""
+    views = ("kernel.rls_violations",) if full else ("kernel.pin_violations", "kernel.org_policy_violations")
     return [tuple(r) for v in views for r in c.execute(f"SELECT rule, object FROM {v} ORDER BY 1, 2")] + vetted.problems(c, FNS)
 
 
