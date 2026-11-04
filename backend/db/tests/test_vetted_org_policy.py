@@ -94,7 +94,8 @@ REFUSED = [
     ("a table without vetted_write", "SELECT kernel.require_vetted_org_policy('kt.secrets')"),
     ("a global table", "SELECT kernel.require_vetted_org_policy('kt.tokens')"),
     ("a table nobody registered", "CREATE TABLE kt.nobody (org_id text NOT NULL); SELECT kernel.require_vetted_org_policy('kt.nobody')"),
-    ("a lineage table", "SELECT kernel.require_vetted_org_policy('kt.cfg')"),
+    ("a lineage table", "CREATE TABLE kt.cfg (org_id text NOT NULL, id bigint NOT NULL, PRIMARY KEY (org_id, id)); "
+                        "SELECT kernel.apply_rls('kt.cfg', 'lineage', p_vetted_write => true); SELECT kernel.require_vetted_org_policy('kt.cfg')"),
 ]
 
 
@@ -104,7 +105,8 @@ def test_require_vetted_org_policy_refuses(pdb, case):
         c.execute("BEGIN")
         try:
             c.execute("SET LOCAL ROLE pipeshub_owner")
-            with pytest.raises((pg.RaiseException, pg.UndefinedTable)):
+            # the guard's own error: a missing table (UndefinedTable) would mean the case never reached the guard
+            with pytest.raises(pg.RaiseException, match="is not a registered org table"):
                 for st in case[1].split("; "):
                     c.execute(st)
         finally:
