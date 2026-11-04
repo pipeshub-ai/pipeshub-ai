@@ -25139,8 +25139,9 @@ paths:
             maxLength: 2048
           description: |
             RFC 8707 resource indicator. When present it must be this instance's `/mcp` URL (the
-            `resource` in `/.well-known/oauth-protected-resource/mcp`), otherwise the client is
-            redirected with `invalid_target`. The audience itself is set at the token endpoint.
+            `resource` in `/.well-known/oauth-protected-resource/mcp`). Any other value is answered
+            with `200` and a `redirectUrl` carrying `error=invalid_target`, which the consent page
+            shows instead of redirecting. The audience itself is set at the token endpoint.
       responses:
         '302':
           description: |

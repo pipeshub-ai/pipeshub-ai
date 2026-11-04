@@ -22,6 +22,7 @@ import { resolveOAuthTokenService } from '../services/oauth-token-service.provid
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextOrgId } from '../context/request-context';
+import { MCP_PATH } from './rate-limit.middleware';
 
 const CLIENT_NAME_HEADER = 'client-name';
 const WEB_CLIENT_NAME = 'pipeshub-ai';
@@ -144,6 +145,16 @@ export class AuthMiddleware {
 
     // verify the oauth token (checks signature, expiry, revocation status)
     const payload = await oauthTokenService.verifyAccessToken(token);
+
+    // Audience-bound tokens (RFC 8707) are only issued for /mcp, so one works elsewhere only
+    // as part of an /mcp tool call.
+    if (
+      payload.aud !== undefined &&
+      `${req.baseUrl}${req.path}`.replace(/\/$/, '') !== MCP_PATH &&
+      !this.tokenService.isMcpRelay(req)
+    ) {
+      throw new UnauthorizedError('This token is only valid at /mcp');
+    }
 
     const tokenScopes = parseScopeString(payload.scope);
     if (tokenScopes.length === 0) {

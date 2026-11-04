@@ -22,7 +22,7 @@ describe('noFraming', () => {
     }
   }
 
-  for (const path of ['/login', '/login/', '/oauth/authorize/', '/oauth/device/']) {
+  for (const path of ['/login', '/login/', '/sign-up/', '/oauth/authorize/', '/oauth/device/']) {
     it(`forbids framing ${path} and keeps the existing policy`, async () => {
       const h = await headersFor(path)
       expect(h.get('x-frame-options')).to.equal('DENY')

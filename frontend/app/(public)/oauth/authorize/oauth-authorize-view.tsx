@@ -604,7 +604,7 @@ export function OAuthAuthorizeView() {
           ) : null}
 
           {consentData.app.clientIdHost ? (
-            <Text as="p" size="2" color="gray">
+            <Text as="p" size="2" color="gray" style={{ wordBreak: 'break-all' }}>
               {t('oauthConsent.clientIdHost', { host: consentData.app.clientIdHost })}
             </Text>
           ) : null}

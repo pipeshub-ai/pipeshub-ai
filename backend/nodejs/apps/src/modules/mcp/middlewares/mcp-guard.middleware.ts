@@ -59,7 +59,8 @@ const respond = (res: Response, message: string): void => {
 };
 
 /**
- * The two /mcp limits. Before authentication, an address is counted only on rejected tokens,
+ * The two /mcp limits. Before authentication, an address is counted only on rejected tokens
+ * (a request with no token at all is not counted),
  * so everyone behind one address (a hosted AI client, an office) is not throttled together,
  * while a flood of bad tokens still is. After it, each account gets its own budget.
  */
@@ -74,7 +75,10 @@ export function mcpRateLimiters(
       message:
         'Too many requests with an invalid or expired token from this address. Try again in a minute.',
       countOnlyFailures: true,
-      isFailure: (res) => res.statusCode === 401,
+      // A request with no token is the discovery probe every MCP client sends first; only a
+      // token that was refused counts.
+      isFailure: (req, res) =>
+        res.statusCode === 401 && req.headers.authorization !== undefined,
       respond,
     }),
     perAccount: createKeyedRateLimiter(logger, {

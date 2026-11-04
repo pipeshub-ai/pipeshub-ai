@@ -1,7 +1,7 @@
 import { RequestHandler } from 'express';
 
 /** Pages that must never render inside another site's frame. */
-export const UNFRAMEABLE_PAGE_PATHS = ['/login', '/oauth'];
+export const UNFRAMEABLE_PAGE_PATHS = ['/login', '/sign-up', '/oauth'];
 
 /**
  * Forbids framing, so a page cannot be overlaid and clickjacked, e.g. a consent page tricked

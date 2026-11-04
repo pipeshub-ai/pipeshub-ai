@@ -463,9 +463,12 @@ describe('MCP Routes — createMCPRouter', () => {
           expect((await get()).status).to.equal(405)
         }
         authFails = true
-        expect((await get()).status).to.equal(401)
-        expect((await get()).status).to.equal(401)
-        expect((await get()).status).to.equal(429)
+        // The token-less discovery probe is not counted.
+        for (let i = 0; i < 4; i++) expect((await get()).status).to.equal(401)
+        const bad = { authorization: 'Bearer bad' }
+        expect((await get(bad)).status).to.equal(401)
+        expect((await get(bad)).status).to.equal(401)
+        expect((await get(bad)).status).to.equal(429)
       } finally {
         close()
       }

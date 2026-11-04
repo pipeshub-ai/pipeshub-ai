@@ -23,7 +23,7 @@ const nextConfig = {
               async headers() {
                   return [
                       {
-                          source: '/(login|oauth)(/.*)?',
+                          source: '/(login|sign-up|oauth)(/.*)?',
                           headers: [
                               { key: 'X-Frame-Options', value: 'DENY' },
                               { key: 'Content-Security-Policy', value: "frame-ancestors 'none'" },

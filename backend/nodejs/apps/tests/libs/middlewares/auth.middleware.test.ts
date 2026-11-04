@@ -536,6 +536,70 @@ describe('AuthMiddleware', () => {
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
     })
 
+    describe('a token bound to /mcp', () => {
+      const MCP = 'https://example.com/mcp'
+
+      beforeEach(() => {
+        mockOAuthTokenService.mcpResource = MCP
+        sinon.stub(jwt, 'decode').returns({
+          tokenType: 'oauth',
+          client_id: 'client123',
+          iss: 'https://example.com',
+        })
+        mockOAuthTokenService.verifyAccessToken.resolves({
+          userId: 'user1',
+          orgId: 'org1',
+          client_id: 'client123',
+          scope: 'kb:read',
+          aud: MCP,
+        })
+        sinon.stub(Users, 'findOne').returns(
+          createMockQuery({ email: 'test@example.com', role: 'member' }),
+        )
+      })
+
+      const run = async (req: any) => {
+        const next = createMockNext()
+        await authMiddleware.authenticate(req, createMockResponse(), next)
+        return next.firstCall.args[0]
+      }
+
+      it('is refused on another API route', async () => {
+        const error = await run(
+          createMockRequest({
+            headers: { authorization: 'Bearer oauth-token' },
+            baseUrl: '/api/v1/knowledgeBase',
+            path: '/',
+          }),
+        )
+        expect(error).to.be.instanceOf(UnauthorizedError)
+        expect(error.message).to.equal('This token is only valid at /mcp')
+      })
+
+      it('is accepted at /mcp', async () => {
+        const error = await run(
+          createMockRequest({
+            headers: { authorization: 'Bearer oauth-token' },
+            baseUrl: '/mcp',
+            path: '/',
+          }),
+        )
+        expect(error).to.be.undefined
+      })
+
+      it('is accepted on an API call relayed by an /mcp tool call', async () => {
+        tokenService.isMcpRelay.returns(true)
+        const error = await run(
+          createMockRequest({
+            headers: { authorization: 'Bearer oauth-token' },
+            baseUrl: '/api/v1/knowledgeBase',
+            path: '/',
+          }),
+        )
+        expect(error).to.be.undefined
+      })
+    })
+
     it('should reject an OAuth token that carries no scopes', async () => {
       sinon.stub(jwt, 'decode').returns({
         tokenType: 'oauth',

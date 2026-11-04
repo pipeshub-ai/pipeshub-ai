@@ -174,7 +174,7 @@ export interface KeyedRateLimiterOptions {
   message: string;
   countOnlyFailures?: boolean;
   // With `countOnlyFailures`: which responses count (default: any status of 400 or more).
-  isFailure?: (res: Response) => boolean;
+  isFailure?: (req: Request, res: Response) => boolean;
   // Narrows an anonymous caller's per-IP bucket, e.g. to the account it names.
   anonymousSubKey?: (req: Request) => string | undefined;
   // Writes the 429 body, for surfaces whose clients expect another shape than the REST error.
@@ -219,8 +219,8 @@ export function createKeyedRateLimiter(
     skipSuccessfulRequests: countOnlyFailures,
     ...(isFailure
       ? {
-          requestWasSuccessful: (_req: Request, res: Response) =>
-            !isFailure(res),
+          requestWasSuccessful: (req: Request, res: Response) =>
+            !isFailure(req, res),
         }
       : {}),
     keyGenerator: keyFor,
