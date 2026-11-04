@@ -12509,7 +12509,8 @@ components:
             Present only when records match the query by name or meaning but their content is not
             indexed yet (just synced, queued, or with automatic indexing off). Search reads
             only indexed text, so these are never in `searchResults`; they are found by their
-            names. Best match first, up to 10, only records the caller may read, and never a
+            names, and the name must be close in meaning to the query (a shared word alone does not
+            count). Best match first, up to 10, only records the caller may read, and never a
             record `searchResults` already cites. Each carries the reason its content is
             missing; pass it on, and do not read a missing passage as a missing record.
             Omitted when there are none, when the search has date bounds or `filters.entityFilters`,

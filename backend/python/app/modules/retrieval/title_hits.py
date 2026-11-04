@@ -10,7 +10,6 @@ the public search response, labelled with ``utils.not_indexed``.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -84,12 +83,6 @@ def _one_line(name: str) -> str:
     return text if len(text) <= _MAX_NAME_CHARS else text[: _MAX_NAME_CHARS - 1] + "…"
 
 
-def _names_the_query(query: str, name: str) -> bool:
-    """Whether the name contains a word of the query: a literal match always passes."""
-    text = name.casefold()
-    return any(word in text for word in re.findall(r"\w{3,}", query.casefold()))
-
-
 def unindexed_matches(
     hits: Iterable[EntityHit], context: EntityAccessContext, limit: int = MAX_UNINDEXED_MATCHES,
 ) -> list[UnindexedMatch]:
@@ -142,7 +135,7 @@ async def find_unindexed_matches(
     cosines = await store.dense_similarities(query, [m.name for m in candidates])
     return [
         m for m, cosine in zip(candidates, cosines)
-        if cosine >= MIN_TITLE_COSINE or _names_the_query(query, m.name)
+        if cosine >= MIN_TITLE_COSINE
     ][:limit]
 
 

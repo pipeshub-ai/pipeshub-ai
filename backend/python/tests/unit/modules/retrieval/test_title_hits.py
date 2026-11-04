@@ -210,7 +210,7 @@ class TestEveryStatusRenders:
 
 
 class TestRelevance:
-    """Rank-fused scores say nothing about relevance: the dense cosine decides, or a literal word of the name."""
+    """Rank-fused scores say nothing about relevance: the dense cosine decides."""
 
     async def _find(self, query: str, cosine: float) -> list[str]:
         rows = {"r1": _row("r1", recordName="Quarterly planning", indexingStatus=QUEUED)}
@@ -227,8 +227,8 @@ class TestRelevance:
         assert await self._find("zzqx nonexistent", 0.25) == []
 
     @pytest.mark.asyncio
-    async def test_an_exact_word_always_passes(self) -> None:
-        assert await self._find("PLANNING notes", 0.1) == ["r1"]
+    async def test_a_shared_word_alone_does_not_pass(self) -> None:
+        assert await self._find("PLANNING notes", 0.35) == []
 
 
 class TestTheTitleBlock:
