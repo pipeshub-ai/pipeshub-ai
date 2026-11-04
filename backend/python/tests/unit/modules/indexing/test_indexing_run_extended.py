@@ -126,12 +126,12 @@ class TestBulkDeleteBatchError:
 
     @pytest.mark.asyncio
     async def test_batch_exception_continues(self):
-        """A failing batch is logged and the run carries on to the next one.
+        """A failing batch is logged, reported as a failure, and the run carries on.
 
-        The failed batch's ids are not counted as processed, and — the part
-        that matters — their mapping rows are kept. The points are still in the
-        store, and that mapping is the only handle the orphan sweeper has on
-        them.
+        The failed batch's ids are not counted as processed, and their mapping
+        rows are kept: the points are still in the store, and that mapping is
+        the only handle the orphan sweeper has on them. The sweeper skips an id
+        a trashed record holds, so a soft delete has only the redelivery.
         """
         pipeline = _make_pipeline()
         pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(
@@ -144,9 +144,28 @@ class TestBulkDeleteBatchError:
 
         result = await pipeline.bulk_delete_embeddings(["vr-1"])
 
-        assert result["success"] is True
+        assert result["success"] is False
+        assert result["virtual_record_ids_skipped"] == 1
         assert result["virtual_record_ids_processed"] == 0
         pipeline.graph_provider.delete_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_batch_beside_a_good_one_fails_and_keeps_only_its_mapping(self) -> None:
+        pipeline = _make_pipeline()
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        pipeline._forget_virtual_record_mappings = AsyncMock(return_value=[])
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value={})
+        pipeline.vector_db_service.delete_points = AsyncMock(
+            side_effect=[RuntimeError("store down"), None]
+        )
+
+        with patch("app.modules.indexing.run.QDRANT_BULK_DELETE_BATCH_SIZE", 1):
+            result = await pipeline.bulk_delete_embeddings(["vr-fails", "vr-ok"])
+
+        assert result["success"] is False
+        assert result["virtual_record_ids_skipped"] == 1
+        assert result["virtual_record_ids_deleted"] == 1
+        assert pipeline._forget_virtual_record_mappings.await_args.args[0] == ["vr-ok"]
 
 
 # ===================================================================
