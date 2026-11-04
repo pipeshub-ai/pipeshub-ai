@@ -476,6 +476,8 @@ class PgVectorService(IVectorDBService):
         org = _filter_org(req.filter)
         if not 1 <= req.limit <= MAX_SEARCH_LIMIT:
             raise ValueError(f"a search limit must be between 1 and {MAX_SEARCH_LIMIT}")
+        if req.sparse_query is not None and len(req.sparse_query.indices) != len(req.sparse_query.values):
+            raise ValueError("a sparse query's indices and values must have the same length")        # as Qdrant refuses it; [] and [] is the empty query
         sparse = req.sparse_query if req.sparse_query is not None and req.sparse_query.indices and coll.sparse_enabled else None
         if req.dense_query is None and sparse is None:
             return []
