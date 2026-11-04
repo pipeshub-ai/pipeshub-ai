@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
+import asyncpg
 import pytest
 
 from app.core import org_context
@@ -276,16 +278,17 @@ async def test_the_first_of_two_duplicate_edges_in_a_batch_wins(pg_db) -> None:
     assert edges["BOOKMARK"]["note"] == "first" and edges["PARENT_CHILD"]["to_id"] == "b" and "ATTACHMENT" not in edges      # one hierarchy edge per pair: the first
 
 
-async def a_backend_waits_on_a_lock(pg_db, seconds: float = 15) -> None:
-    """Wait, from a connection of its own, until a backend is waiting for a lock: the interleaving the test is about, seen and not timed (pg_locks is readable by any role;
-    pg_stat_activity shows the waits of other roles only to a monitoring role)."""
-    async def waiting() -> bool:
-        async with pg_db.runtime_uow() as tx:
-            return bool(await tx.fetchval("SELECT 1 FROM pg_locks WHERE NOT granted AND locktype IN ('transactionid', 'tuple') LIMIT 1"))
-    for _ in range(int(seconds / 0.05)):
-        if await waiting():
-            return
-        await asyncio.sleep(0.05)
+async def a_backend_waits_on_a_lock(seconds: float = 15) -> None:
+    """Wait until a backend is waiting for a lock: the interleaving the test is about, seen and not timed. The observer has a connection of its own, outside the pool the writer and
+    the delete use (a pool of two would leave it none), and reads pg_locks, which any role may read (pg_stat_activity shows the waits of other roles only to a monitoring role)."""
+    con = await asyncpg.connect(os.environ["PG_CORE_URL"])
+    try:
+        for _ in range(int(seconds / 0.05)):
+            if await con.fetchval("SELECT 1 FROM pg_locks WHERE NOT granted AND locktype IN ('transactionid', 'tuple') LIMIT 1"):
+                return
+            await asyncio.sleep(0.05)
+    finally:
+        await con.close()
     raise AssertionError("no backend waited for a lock")
 
 
@@ -299,7 +302,7 @@ async def test_a_recursive_delete_waits_for_a_writer_that_is_attaching_a_type_do
         await p.batch_upsert_nodes([{"_key": "typedoc", "name": "t"}], "files", transaction=txn)
         await p.batch_create_edges([{"from_id": "w", "from_collection": "records", "to_id": "typedoc", "to_collection": "files"}], "isOfType", transaction=txn)
         deleting = asyncio.create_task(p.delete_records_recursive(["w"], "c1"))
-        await a_backend_waits_on_a_lock(pg_db)                                                              # it waits on the record's row before it reads what hangs on it
+        await a_backend_waits_on_a_lock()                                                              # it waits on the record's row before it reads what hangs on it
         assert not deleting.done()
         await p.commit_transaction(txn)
         out = await asyncio.wait_for(deleting, 20)
