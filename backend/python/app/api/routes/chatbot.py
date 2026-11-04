@@ -1783,6 +1783,7 @@ async def _stream_chat_via_agent_loop(
         "keywordSearchBudget": query_info.keywordSearchBudget,
         "runId": query_info.runId,
         "is_service_account": bool(user.get("isServiceAccount")),
+        "reasoningEffort": query_info.reasoningEffort,
     }
     user_info = {
         "userId": user_id,

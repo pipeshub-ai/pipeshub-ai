@@ -181,6 +181,8 @@ def evaluate_cacheability(
     query_info: dict[str, Any],
     prefetch_result: PrefetchResult | None,
     config_params: SemanticCacheConfigHashParams | None,
+    *,
+    user_context_enabled: bool = False,
 ) -> tuple[bool, str | None]:
     """Check all cacheability preconditions and return reason code on bypass."""
     if config.mode == "off":
@@ -220,6 +222,8 @@ def evaluate_cacheability(
         return False, "fingerprints_none"
 
     if config.share_across_org:
+        if user_context_enabled:
+            return False, "user_context_shared"
         for record in prefetch_result.tool_records:
             conn = record.get("connector") or record.get("connector_name") or ""
             if conn in GMAIL_CONNECTORS or conn in (
@@ -296,13 +300,13 @@ def build_replay_events(
     )
     confidence = completion_data.get("confidence")
 
-    # Author user rule: do not replay reasoning/parts for cross-user hits
+    # Author user rule: do not replay reasoning/parts when author is empty or cross-user
     cached_author = str(
         lookup_result.author_user_id
         or completion_data.get("author_user_id")
         or ""
     )
-    if cached_author and cached_author != current_user_id:
+    if not cached_author or cached_author != current_user_id:
         _ = completion_data.pop("reasoning", None)
         _ = completion_data.pop("parts", None)
 

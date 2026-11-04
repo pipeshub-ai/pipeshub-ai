@@ -662,6 +662,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                             cache_query_info,
                             prefetch_result,
                             config_params,
+                            user_context_enabled=context.send_user_info,
                         )
                         if not is_cacheable:
                             record_event(

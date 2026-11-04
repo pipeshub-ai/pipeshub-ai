@@ -423,6 +423,40 @@ class TestEvaluateCacheability:
         assert is_cacheable is True
         assert reason is None
 
+    def test_bypass_shared_caching_when_user_context_enabled(
+        self,
+        base_config: SemanticCacheConfig,
+        base_prefetch: PrefetchResult,
+        base_config_params: SemanticCacheConfigHashParams,
+    ) -> None:
+        is_cacheable, reason = evaluate_cacheability(
+            base_config,
+            "what is the mobile device policy?",
+            {"chatMode": "internal_search"},
+            base_prefetch,
+            base_config_params,
+            user_context_enabled=True,
+        )
+        assert is_cacheable is False
+        assert reason == "user_context_shared"
+
+    def test_per_user_caching_allowed_when_user_context_enabled(
+        self,
+        base_prefetch: PrefetchResult,
+        base_config_params: SemanticCacheConfigHashParams,
+    ) -> None:
+        per_user_config = SemanticCacheConfig(mode="serve", share_across_org=False)
+        is_cacheable, reason = evaluate_cacheability(
+            per_user_config,
+            "what is the mobile device policy?",
+            {"chatMode": "internal_search"},
+            base_prefetch,
+            base_config_params,
+            user_context_enabled=True,
+        )
+        assert is_cacheable is True
+        assert reason is None
+
 
 class TestConfigHashResolution:
     def test_resolve_config_hash_params_complete(self) -> None:
@@ -874,6 +908,44 @@ class TestReplayCachedTurn:
 
         assert "reasoning" in replayed
         assert replayed["reasoning"] == [{"step": "my thoughts"}]
+
+    @pytest.mark.asyncio
+    async def test_empty_author_hit_strips_reasoning(self) -> None:
+        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        sink = QueueEventSink(q)
+        context = AgentContext(
+            org_id="org_test",
+            user_id="user_viewer",
+            user_email="viewer@example.com",
+            conversation_id="conv-1",
+            run_id="run-fresh",
+            formatter=LegacyFormatter(),
+            event_sink=sink,
+        )
+
+        lookup_result = CacheLookupResult(
+            hit=True,
+            kind="exact",
+            score=1.0,
+            entry_id="entry-empty-author",
+            author_user_id="",
+            completion_data={
+                "answer": "Universal answer.",
+                "reasoning": [{"step": "confidential thought"}],
+                "parts": [{"type": "reasoning", "text": "secret"}],
+            },
+        )
+
+        replayed = await replay_cached_turn(
+            context,
+            lookup_result,
+            query="common query",
+            current_user_id="user_viewer",
+        )
+
+        assert "reasoning" not in replayed
+        assert "parts" not in replayed
+        assert replayed["answer"] == "Universal answer."
 
 
 class TestShadowComparison:
