@@ -595,7 +595,7 @@ class LookupsMixin(PgBase):
                 await self.batch_upsert_nodes([p.to_arango_person() for p in people], CollectionNames.PEOPLE.value, transaction)
         except Exception as e:
             self.logger.error(f"❌ Batch upsert people failed: {e}")
-            return False  # type: ignore[return-value]  # as the Neo4j provider answers
+            raise      # as the Neo4j and Arango providers: the caller must not add edges for people that were not written
 
     async def update_node_if_match(self, key: str, collection: str, node: dict, match_field: str, match_value: Any,  # noqa: ANN401
                                    transaction: str | None = None) -> bool:

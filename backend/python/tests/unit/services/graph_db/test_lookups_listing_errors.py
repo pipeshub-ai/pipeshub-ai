@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -34,3 +34,10 @@ async def test_records_linking_to_weburls_reads_inside_the_given_transaction() -
     with patch("app.services.graph_db.postgres.lookups.current_org_id", return_value="o"):
         await m.get_records_linking_to_weburls(["u"], "o", ["GITHUB"], transaction="tx1")
     assert m._lrows.await_args.kwargs["transaction"] == "tx1"
+
+
+async def test_a_failed_people_upsert_is_raised_not_answered_false() -> None:
+    m = _lookups()
+    m.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("write failed"))
+    with patch("app.services.graph_db.postgres.lookups.current_org_id", return_value="o"), pytest.raises(RuntimeError, match="write failed"):
+        await m.batch_upsert_people([MagicMock()])
