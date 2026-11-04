@@ -300,7 +300,7 @@ class PgVectorService(IVectorDBService):
         if row is None:
             return VectorCollectionInfo(name=collection_name, exists=False)
         org = ambient_org()
-        space = await catalog.active_space(org) if org else None
+        space = await catalog.active_space(org, real_time=True) if org else None
         if space is None:
             return VectorCollectionInfo(name=collection_name, exists=True)
         points = await db.run(lambda tx: reads.count(tx, org, row.collection_id, space.space_id), custom_plan=True)
@@ -312,7 +312,7 @@ class PgVectorService(IVectorDBService):
         """Whether changing to ``identity`` (``provider:model:dimension``) of ``dimension`` fits the org's active space. A named space
         takes its own model only. A nameless space (written before records were stamped) that holds points is read as named by the
         model configured now (``current_identity``): what the config says is what wrote them. Without it, it takes any model."""
-        space = await self._assert_connected()[1].active_space(require_org(ambient_org()))
+        space = await self._assert_connected()[1].active_space(require_org(ambient_org()), real_time=True)
         if space is None or space.dim != dimension:
             return False
         if space.effective_model != UNKNOWN_MODEL:
@@ -415,7 +415,7 @@ class PgVectorService(IVectorDBService):
             raise ValueError(f"scroll limit must be between 1 and {MAX_SCROLL_LIMIT}")
         coll = await catalog.require_collection(collection_name)
         with org_scope(org):
-            space = await catalog.active_space(org)
+            space = await catalog.active_space(org, real_time=True)
             if space is None:
                 return ScrollResult(points=[], next_offset=None)
             compiled = compile_filter(scroll_filter, first_param=5)
@@ -431,7 +431,7 @@ class PgVectorService(IVectorDBService):
         db, catalog = self._assert_connected()
         org = ambient_or_required()
         coll = await catalog.require_collection(collection_name)
-        space = await catalog.active_space(org)
+        space = await catalog.active_space(org, real_time=True)
         wanted = _ids(ids)
         if space is None or not wanted:
             return []
