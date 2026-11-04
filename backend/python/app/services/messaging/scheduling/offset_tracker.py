@@ -112,7 +112,8 @@ class PartitionOffsetTracker:
         offset + 1) if it advanced past the last one reported, else ``None``
         -- so the caller only issues a commit when there is genuine progress.
         """
-        self._resolve(tp, offset, "mark_done")
+        if self._resolve(tp, offset, "mark_done") is None:
+            return None
         return self._advance(tp)
 
     def mark_redeliver(
@@ -139,6 +140,8 @@ class PartitionOffsetTracker:
         commits until then, which is the situation the sweep exists for.
         """
         held_since = self._resolve(tp, offset, "mark_redeliver")
+        if held_since is None:
+            return None
         self._redeliver.setdefault(tp, {})[offset] = (
             None if awaiting_reread else held_since
         )
@@ -152,11 +155,14 @@ class PartitionOffsetTracker:
 
     def _resolve(
         self, tp: "TopicPartition", offset: int, caller: str
-    ) -> float:
+    ) -> float | None:
         """Drop ``offset`` from the outstanding set, returning when it was
-        first tracked. Resolving an offset that was never tracked means a
-        caller resolved something the watermark never knew about, which is
-        how offsets get silently skipped -- loud rather than lenient."""
+        first tracked, or ``None`` if it was not tracked.
+
+        An untracked offset is typically a job that outlived a rebalance,
+        which wiped this partition's state: older offsets may be waiting to be
+        re-read, with no floor yet to hold the watermark below them. So it
+        must not move the watermark, or a commit would skip them."""
         outstanding = self._outstanding.get(tp)
         tracked = outstanding is not None and offset in outstanding
         held_since = outstanding.pop(offset, None) if outstanding is not None else None
@@ -172,16 +178,17 @@ class PartitionOffsetTracker:
                 held_since = floored_since
             tracked = True
 
-        self._high_water_seen[tp] = max(self._high_water_seen.get(tp, -1), offset)
         if not tracked:
             if self._logger is not None:
                 self._logger.error(
                     "%s called for untracked offset %s-%s; the commit "
-                    "watermark never saw this offset enter the buffer",
+                    "watermark never saw this offset enter the buffer, so "
+                    "it commits nothing",
                     caller,
                     tp,
                     offset,
                 )
+            return None
         return held_since if held_since is not None else self._clock()
 
     def _advance(self, tp: "TopicPartition") -> int | None:
