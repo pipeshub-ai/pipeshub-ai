@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, TypedDict
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import ProgressStatus
 from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.modules.artifacts.sidecars import ArtifactSidecars
+from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.duplicates import QueuedCopies
 from app.modules.pipeline.ingress import EMBED, StageIngress
@@ -108,7 +110,9 @@ def build_pipeline_runtime(
                 record_name=record_name,
                 record_type=record_type,
             )
-        return await document_extraction.classify(blocks.blocks, org_id, departments, record_name, record_type)
+        return await document_extraction.classify(
+            blocks.blocks, org_id, departments, record_name, record_type, block_groups=blocks.block_groups
+        )
 
     classify = classifier or default_classifier
     registry = StageRegistry()
@@ -121,6 +125,7 @@ def build_pipeline_runtime(
     headlines = GraphHeadlineStatusWriter(graph)
     publisher = DeferredPublisher()
     record_leases = RecordLeases()
+    sidecars = ArtifactSidecars(NodeArtifactStore(sink.blob_storage, logger), config_service, logger)
     queued_copies = QueuedCopies(graph, sink, logger)
     coordinator = Coordinator(
         registry, states, headlines, publisher, policy_for=lambda _org: DEFAULT_POLICY, logger=logger
@@ -140,6 +145,7 @@ def build_pipeline_runtime(
                 record_leases=record_leases,
                 extraction_client=extraction_client if use_service else None,
                 logger=logger,
+                sidecars=sidecars,
             )
         return GraphClassifyIO(
             job,
@@ -152,6 +158,7 @@ def build_pipeline_runtime(
             config_service=config_service,
             record_from_document=record_from_document,
             record_leases=record_leases,
+            sidecars=sidecars,
         )
 
     async def on_headline_settled(job: StageJob, record_ids: Sequence[str], status: ProgressStatus) -> None:

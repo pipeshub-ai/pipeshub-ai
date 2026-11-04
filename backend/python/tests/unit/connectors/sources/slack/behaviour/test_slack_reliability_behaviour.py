@@ -27,7 +27,11 @@ from slack_behaviour_setup import (
     workspace_connector,
 )
 
-from app.connectors.sources.slack.team.connector import SlackConnector
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.sources.slack.team.connector import (
+    SlackConnector,
+    SlackTokenRefusedError,
+)
 from app.sources.client.slack.slack import (
     SlackClient,
     SlackRESTClientViaToken,
@@ -117,12 +121,14 @@ class TestTokens:
         records = dict(store.records)
 
         workspace.valid_tokens = set()
-        await connector.run_sync()
+        with pytest.raises(SlackTokenRefusedError, match="invalid_auth"):
+            await connector.run_sync()
 
         assert store.group_access == access
         assert store.roles["workspace_member"][1] == role_members
         assert store.records == records
-        assert await connector.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="Slack refused the token"):
+            await connector.test_connection_and_access()
 
     async def test_a_token_that_is_not_a_slack_token_is_refused_at_setup(self, workspace, store, checkpoints) -> None:
         config_service = FakeConfigService(WORKSPACE_CONNECTOR_ID, workspace_config(token="not-a-slack-token"))
@@ -131,7 +137,8 @@ class TestTokens:
             WORKSPACE_CONNECTOR_ID, "team", "creator-1",
         )
 
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="Invalid Slack token format"):
+            await connector.init()
         assert workspace.calls == []
 
 
@@ -146,10 +153,6 @@ class TestRateLimits:
             False, "ratelimited", 429, "42",
         )
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "A 429 from Slack is not retried: the connector ignores Retry-After, gives up on the "
-        "channel for this run and, on a later page, also moves the checkpoint past unread messages."
-    ))
     async def test_a_rate_limited_read_is_retried_after_the_wait_slack_asks_for(self, workspace, store, checkpoints, waits) -> None:
         ts = ts_minutes_ago(10)
         workspace.post(GENERAL, ts, ALICE, "eventually")
@@ -159,7 +162,8 @@ class TestRateLimits:
         await connector.run_sync()
 
         assert ts in store.records
-        assert 30 in waits
+        # Retry-After, plus at most a quarter second of jitter.
+        assert any(30 <= w <= 30.25 for w in waits)
 
     async def test_tier_two_methods_pause_once_the_per_minute_budget_is_spent(self, workspace, store, checkpoints, waits) -> None:
         for n in range(15):

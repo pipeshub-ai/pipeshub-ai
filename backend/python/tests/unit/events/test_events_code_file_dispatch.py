@@ -42,6 +42,7 @@ def _repository_event(name: str, mime_type: str, content: bytes) -> dict[str, An
 def _legacy_processor() -> MagicMock:
     processor = MagicMock()
     processor.indexing_pipeline = AsyncMock()
+    processor.project_code_blocks_to_graph = AsyncMock()
     for method in (
         "process_code_document", "process_txt_document", "process_structured_document",
         "process_delimited_document", "process_md_document",
@@ -243,3 +244,88 @@ async def test_source_and_small_text_files_are_sent_unchanged(name: str) -> None
     sent = parsing_client.parse.await_args.kwargs
     assert (sent["extension"], sent["mime_type"]) == (name.rsplit(".", 1)[-1], "text/plain")
     processor.process_code_document.assert_not_called()
+
+
+# -- secrets (S-2) -------------------------------------------------------------
+
+_LEAKY = b'import os\nPAYMENTS_API_KEY = os.getenv("PAYMENTS_API_KEY", "CANARYSECRET-7f3a9c1e5b2d4086")\n'
+
+
+def _recorded_redactions(ep: EventProcessor) -> list[int]:
+    return [
+        call.args[2]["secretsRedacted"]
+        for call in ep.graph_provider.update_node.await_args_list
+        if "secretsRedacted" in call.args[2]
+    ]
+
+
+async def test_secrets_are_redacted_before_the_code_file_path_sees_the_bytes() -> None:
+    processor = _legacy_processor()
+    ep = _make_event_processor(processor=processor)
+    _as_code_file(ep, "text/plain")
+
+    await _drain(ep, _repository_event("settings.py", "text/plain", _LEAKY))
+
+    sent = processor.process_code_document.call_args.kwargs["code_binary"]
+    assert b"CANARYSECRET" not in sent
+    assert "«REDACTED:generic-secret»".encode() in sent
+    assert _recorded_redactions(ep) == [1]
+
+
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_secrets_are_redacted_before_the_parsing_service_sees_the_bytes() -> None:
+    processor = _legacy_processor()
+    ep, parsing_client = _service_processor(processor)
+    _as_code_file(ep, "text/plain")
+
+    await _drain(ep, _repository_event("settings.py", "text/plain", _LEAKY))
+
+    sent = parsing_client.parse.await_args.kwargs
+    payload = next(v for v in sent.values() if isinstance(v, (bytes, bytearray)))
+    assert b"CANARYSECRET" not in payload
+
+
+async def test_a_clean_file_records_that_it_was_scanned() -> None:
+    processor = _legacy_processor()
+    ep = _make_event_processor(processor=processor)
+    _as_code_file(ep, "text/plain")
+
+    await _drain(ep, _repository_event("main.py", "text/plain", b"x = 1\n"))
+
+    assert processor.process_code_document.call_args.kwargs["code_binary"] == b"x = 1\n"
+    # 0, not absent: dedup reuses only twins that carry the mark.
+    assert _recorded_redactions(ep) == [0]
+
+
+_LEAKY_COMPOSE = b'services:\n  db:\n    environment:\n      DB_PASSWORD: "CANARYSECRET-7f3a9c1e5b2d4086"\n'
+
+
+@pytest.mark.parametrize(("name", "mime_type"), [
+    ("docker-compose.yml", "application/yaml"),
+    ("appsettings.json", "application/json"),
+    ("README.md", "text/markdown"),
+])
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_a_repository_config_file_is_scanned_whatever_parser_reads_it(
+    name: str, mime_type: str,
+) -> None:
+    """These reach the YAML/JSON/Markdown parsers, not the code one, and used
+    to be indexed with their credentials in place."""
+    processor = _legacy_processor()
+    ep, parsing_client = _service_processor(processor)
+    _as_code_file(ep, mime_type)
+
+    await _drain(ep, _repository_event(name, mime_type, _LEAKY_COMPOSE))
+
+    sent = parsing_client.parse.await_args.kwargs
+    payload = next(v for v in sent.values() if isinstance(v, (bytes, bytearray)))
+    assert b"CANARYSECRET" not in payload
+    assert _recorded_redactions(ep) == [1]
+
+
+@pytest.mark.parametrize(("record_type", "expected"), [
+    ("CODE_FILE", True), ("FILE", False), (None, False),
+])
+def test_only_repository_files_are_scanned_unless_read_as_code(record_type, expected) -> None:
+    assert EventProcessor._scans_for_secrets(record_type, reads_as_code_file=False) is expected
+    assert EventProcessor._scans_for_secrets(record_type, reads_as_code_file=True) is True

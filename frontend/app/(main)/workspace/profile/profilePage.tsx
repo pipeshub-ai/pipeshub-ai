@@ -15,6 +15,7 @@ import {
 import { LottieLoader } from "@/app/components/ui/lottie-loader";
 import { useProfilePage } from "./hooks/use-profile-page";
 import { USER_ROLES } from "../constants";
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Main Page
@@ -26,6 +27,14 @@ export default function ProfilePage() {
     avatarInputRef,
     userId,
     changePasswordOpen,
+    hasPassword,
+    passwordStatusFailed,
+    retryPasswordStatus,
+    settingPassword,
+    setPasswordDialogOpen,
+    setSetPasswordDialogOpen,
+    handleSetPasswordClick,
+    handleSetPasswordConfirm,
     setChangePasswordOpen,
     changeEmailOpen,
     setChangeEmailOpen,
@@ -76,7 +85,7 @@ export default function ProfilePage() {
       />
 
       {/* Page content */}
-      <Box style={{ padding: "64px 100px" }}>
+      <SettingsPageContainer>
         {/* ── Page header ── */}
         <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
@@ -122,15 +131,31 @@ export default function ProfilePage() {
         <Box style={{ marginBottom: 80 }}>
           <PasswordSecuritySection
             onChangePasswordClick={() => setChangePasswordOpen(true)}
+            hasPassword={hasPassword}
+            statusFailed={passwordStatusFailed}
+            onRetryStatus={retryPasswordStatus}
+            onSetPasswordClick={handleSetPasswordClick}
           />
         </Box>
-      </Box>
+      </SettingsPageContainer>
 
       {/* ── Change Password Dialog ── */}
       <ChangePasswordDialog
         open={changePasswordOpen}
         onOpenChange={setChangePasswordOpen}
         onSuccess={handlePasswordChangeSuccess}
+      />
+
+      {/* ── Set Password Confirmation Dialog ── */}
+      <ConfirmationDialog
+        open={setPasswordDialogOpen}
+        onOpenChange={setSetPasswordDialogOpen}
+        title={t('workspace.profile.passwordSecurity.setPasswordDialogTitle')}
+        message={t('workspace.profile.passwordSecurity.setPasswordDialogMessage')}
+        confirmLabel={t('workspace.profile.passwordSecurity.setPasswordDialogConfirm')}
+        confirmVariant="primary"
+        isLoading={settingPassword}
+        onConfirm={handleSetPasswordConfirm}
       />
 
       {/* ── Change Email Dialog ── */}

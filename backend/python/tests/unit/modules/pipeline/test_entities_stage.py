@@ -1,12 +1,14 @@
 """EntitiesStage: a sibling of classify with its own fingerprint, outcomes and kept output."""
 
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
 
 from app.models.blocks import BlocksContainer
-from app.modules.named_entities.domain.models import NamedEntityExtraction
+from app.modules.named_entities.domain.models import (
+    ExtractionStats,
+    NamedEntityExtraction,
+)
 from app.modules.pipeline.leases import RecordBusy, RevisionSuperseded
 from app.modules.pipeline.models import Priority, StageJob, StageOutcome
 from app.modules.pipeline.policy import DEFAULT_POLICY, PipelinePolicy
@@ -35,8 +37,7 @@ class _IO:
         self.outcome = "written"
         self.save_error: BaseException | None = None
         self.saved: list[list[str]] = []
-        self.present = True
-        self.restored: list[dict[str, Any]] = []
+        self.saved_blocks: list[BlocksContainer] = []
 
     @property
     def policy(self) -> PipelinePolicy:
@@ -61,20 +62,13 @@ class _IO:
     async def extract(self, job: StageJob, blocks: BlocksContainer) -> NamedEntityExtraction:
         return self.extraction
 
-    async def stored_entities_present(self, job: StageJob) -> bool:
-        return self.present
-
-    async def restore_stored_entities(
-        self, job: StageJob, extraction: dict[str, Any], *, still_current: Callable[[], Awaitable[bool]] | None = None
-    ) -> None:
-        if self.save_error is not None:
-            raise self.save_error
-        self.restored.append(extraction)
-
-    async def save(self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction) -> str:
+    async def save(
+        self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction, blocks: BlocksContainer,
+    ) -> str:
         if self.save_error is not None:
             raise self.save_error
         self.saved.append(record_ids)
+        self.saved_blocks.append(blocks)
         return self.outcome
 
 
@@ -112,11 +106,81 @@ async def test_a_completed_run_keeps_the_extraction_as_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_entities_are_saved_with_the_blocks_they_came_from() -> None:
+    # The persist also dates a knowledge-base upload by what its text states.
+    io = _IO()
+    await EntitiesStage().run(_job(), io)
+    assert io.saved_blocks == [io.blocks]
+
+
+@pytest.mark.asyncio
 async def test_a_failed_extraction_is_retried_and_writes_nothing() -> None:
     io = _IO()
     io.extraction = NamedEntityExtraction(status="FAILED", termination_reason="llm_error")
     assert (await EntitiesStage().run(_job(), io)).outcome is StageOutcome.RETRY
     assert io.saved == []
+
+
+@pytest.mark.parametrize("outcome", ["written", "kept"])
+@pytest.mark.asyncio
+async def test_a_model_failure_with_deterministic_hits_saves_them_and_is_retried(outcome: str) -> None:
+    # "written": a first index keeps its amounts and dates meanwhile; "kept": an edited record
+    # keeps its last good names. Either way the fingerprint is not stored, so the names come later.
+    io = _IO()
+    io.outcome = outcome
+    io.extraction = NamedEntityExtraction(status="PARTIAL", termination_reason="llm_error", strategy="deterministic")
+    result = await EntitiesStage().run(_job(), io)
+    assert result.outcome is StageOutcome.RETRY and result.output is None
+    assert io.saved == [["rec-1"]]
+
+
+@pytest.mark.asyncio
+async def test_a_single_call_with_a_failed_window_is_retried() -> None:
+    io = _IO()
+    io.extraction = NamedEntityExtraction(
+        status="PARTIAL", termination_reason="single_call", strategy="single_call",
+        stats=ExtractionStats(windows_total=3, windows_run=3, windows_failed=1),
+    )
+    assert (await EntitiesStage().run(_job(), io)).outcome is StageOutcome.RETRY
+
+
+@pytest.mark.parametrize(("status", "saved"), [("PARTIAL", [["rec-1"]]), ("FAILED", [])])
+@pytest.mark.asyncio
+async def test_a_provider_outage_pauses_instead_of_spending_attempts(status: str, saved: list) -> None:
+    # FAILED: nothing deterministic was found either, so nothing is written meanwhile.
+    io = _IO()
+    io.extraction = NamedEntityExtraction(
+        status=status, termination_reason="llm_error", strategy="deterministic",
+        stats=ExtractionStats(windows_total=2, windows_run=2, windows_failed=2, windows_unavailable=2),
+    )
+    result = await EntitiesStage().run(_job(), io)
+    assert result.outcome is StageOutcome.PAUSED and io.saved == saved
+
+
+@pytest.mark.asyncio
+async def test_an_outage_mixed_with_other_failures_still_counts_toward_the_attempt_limit() -> None:
+    io = _IO()
+    io.extraction = NamedEntityExtraction(
+        status="PARTIAL", termination_reason="llm_error", strategy="deterministic",
+        stats=ExtractionStats(windows_total=3, windows_run=3, windows_failed=3, windows_unavailable=1),
+    )
+    assert (await EntitiesStage().run(_job(), io)).outcome is StageOutcome.RETRY
+
+
+@pytest.mark.parametrize("reason", ["timeout", "no_progress", "budget_turns"])
+@pytest.mark.asyncio
+async def test_an_agent_that_gave_up_settles_rather_than_repeating_itself(reason: str) -> None:
+    io = _IO()
+    io.extraction = NamedEntityExtraction(status="PARTIAL", termination_reason=reason, strategy="agent")
+    assert (await EntitiesStage().run(_job(), io)).outcome is StageOutcome.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_a_model_failure_while_turned_off_is_skipped_not_retried() -> None:
+    io = _IO()
+    io.outcome = "disabled"
+    io.extraction = NamedEntityExtraction(status="PARTIAL", termination_reason="llm_error")
+    assert (await EntitiesStage().run(_job(), io)).outcome is StageOutcome.SKIPPED
 
 
 @pytest.mark.asyncio
@@ -147,12 +211,10 @@ async def test_a_superseded_revision_is_stale() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_kept_extraction_goes_back_without_a_model_call() -> None:
-    io = _IO()
-    io.present = False
+async def test_the_extraction_is_kept_as_the_stage_output_only() -> None:
+    """Nothing to put back into the stored record: the stage state holds the extraction, so the
+    worker never asks whether a re-index left it in place."""
     stage = EntitiesStage()
-    assert not await stage.output_present(_job(), io)
-    kept = NamedEntityExtraction(status="COMPLETED").model_dump_json()
-    assert await stage.restore_output(_job(), io, kept)
-    assert io.restored[0]["status"] == "COMPLETED"
-    assert not await stage.restore_output(_job(), io, "not json")
+    assert not hasattr(stage, "output_present") and not hasattr(stage, "restore_output")
+    result = await stage.run(_job(), _IO())
+    assert NamedEntityExtraction.model_validate_json(result.output or "").status == "COMPLETED"

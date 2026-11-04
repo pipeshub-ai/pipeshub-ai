@@ -43,7 +43,7 @@ class TestCompressDecompress:
         bs = _make_blob_storage()
         record = {"blocks": [{"text": "hello world " * 100}]}
         compressed = bs._compress_record(record)
-        assert isinstance(compressed, str)  # base64 encoded
+        assert isinstance(compressed, bytes)  # base64 encoded
         assert len(compressed) > 0
 
     def test_decompress_bytes(self):

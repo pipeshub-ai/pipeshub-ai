@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.events.base import EventEmitter, EventType, ToolCallStatus
 from app.agents.agent_loop.protocol.agui import AGUIEventType, frame, new_id
 from app.agents.agent_loop.protocol.result_views import ResultViewBudget
+from app.agents.agent_loop.protocol.transcript_collector import serialize_tool_args
 from app.utils.streaming import parse_confidence_from_answer, strip_partial_confidence_trailer
 
 if TYPE_CHECKING:
@@ -136,12 +137,16 @@ class AGUIEventEmitter(EventEmitter):
                 start_kwargs["approved"] = True
             if payload.get("approval_answer") in _APPROVAL_ANSWERS:
                 start_kwargs["approvalAnswer"] = payload["approval_answer"]
+            args = payload.get("args", {})
             return [
                 frame(AGUIEventType.TOOL_CALL_START, **start_kwargs),
                 frame(
                     AGUIEventType.TOOL_CALL_ARGS, toolCallId=tool_call_id,
-                    delta=json.dumps(payload.get("args", {}), default=str), runId=run_id,
+                    delta=json.dumps(args, default=str), runId=run_id,
                     argsSummary=payload.get("args_summary"),
+                    # Shortened as the saved part's `args` are: cutting `delta` to that size broke
+                    # its JSON. `delta` stays whole; the Slack bot reads ask_user's questions from it.
+                    argsPreview=serialize_tool_args(args),
                 ),
             ]
 

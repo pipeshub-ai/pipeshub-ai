@@ -1,15 +1,13 @@
-import asyncio
 import base64
+import math
 import os
 import re
 from urllib.parse import unquote, urlparse
 
 from app.utils.logger import create_logger
-from app.utils.url_fetcher import FetchError, fetch_url
 
 logger = create_logger(__name__)
 
-HTTP_STATUS_OK = 200
 _BASE64_CHARSET_RE = re.compile(r"[A-Za-z0-9+/=_-]+")
 
 
@@ -230,7 +228,20 @@ def downscale_to_limits(
         from PIL import Image
 
         with Image.open(io.BytesIO(base64.b64decode(b64))) as source:
-            image = source.convert("RGB") if source.mode not in ("RGB", "L") else source.copy()
+            # A JPEG decodes at a fraction of its size when asked, as long as
+            # the result still covers the size asked for in both directions:
+            # a 48 MP photo is then 9 MB of pixels, not 144.
+            ratio = max_long_edge_px / max(source.size)
+            if ratio < 1:
+                source.draft(source.mode, (math.ceil(source.width * ratio), math.ceil(source.height * ratio)))
+            if source.mode in ("RGBA", "LA", "PA") or "transparency" in source.info:
+                # JPEG has no alpha, and dropping it shows the colour stored
+                # under each transparent pixel, usually black: lay it on white.
+                rgba = source.convert("RGBA")
+                image = Image.new("RGB", rgba.size, (255, 255, 255))
+                image.paste(rgba, mask=rgba.getchannel("A"))
+            else:
+                image = source.convert("RGB") if source.mode not in ("RGB", "L") else source.copy()
         if max(image.size) > max_long_edge_px:
             ratio = max_long_edge_px / max(image.size)
             image = image.resize(
@@ -252,6 +263,51 @@ def downscale_to_limits(
         # the original rather than paying more bytes for fewer pixels.
         return image_uri
     return f"data:image/jpeg;base64,{encoded}"
+
+
+# What indexing keeps of an image. Nothing downstream uses more (chat sends at
+# most 1568 px, classification shrinks to 2000), and a page of full-size photos
+# held several copies of each at once.
+INDEX_IMAGE_LONG_EDGE_PX = 2000
+INDEX_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+# Images one record keeps, as data-URI characters; the pixels of the rest are not kept.
+INDEX_RECORD_IMAGE_BYTES = 50 * 1024 * 1024
+
+
+def fit_image_for_index(image_uri: str) -> str:
+    """``image_uri`` within what indexing keeps; CPU-bound, so callers on an event loop run it in a thread."""
+    return downscale_to_limits(
+        image_uri, max_long_edge_px=INDEX_IMAGE_LONG_EDGE_PX, max_bytes=INDEX_IMAGE_MAX_BYTES,
+    )
+
+
+# Unwrapped base64 only: a payload broken into lines is left as it is.
+_INLINE_IMAGE_RE = re.compile(r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/]{1024,}={0,2}")
+
+
+def fit_inline_images(text: str) -> str:
+    """*text* (an HTML page, a Markdown document) with every inline base64
+    image shrunk to what indexing keeps, and those past
+    ``INDEX_RECORD_IMAGE_BYTES`` taken out. The parsers then drop such an
+    image, its alt text included, as they drop one whose download failed; a
+    caption written in the page stays.
+
+    Every parsing pass copies the whole document, so a page carrying its
+    photos inline (a crawled page, an exported document) was copied with all
+    of them: about nine times its size at the peak. Shrunk first, those copies
+    are of little more than the text. CPU-bound: run it in a thread.
+    """
+    kept = 0
+
+    def fit(match: re.Match[str]) -> str:
+        nonlocal kept
+        if kept >= INDEX_RECORD_IMAGE_BYTES:
+            return ""
+        uri = fit_image_for_index(match.group(0))
+        kept += len(uri)
+        return uri
+
+    return _INLINE_IMAGE_RE.sub(fit, text)
 
 
 # The formats OpenAI, Azure OpenAI and Anthropic all accept. Anything else in
@@ -383,51 +439,6 @@ def get_image_info_from_url(url: str) -> tuple[str | None, str | None]:
 
 
 supported_mime_types = ["image/png", "image/jpeg", "image/webp"]
-
-
-async def _fetch_image_as_base64(img_url: str) -> tuple[str, str] | None:
-    """
-    Fetch an image from http(s) URL and return (base64_string, mime_type).
-    Returns None on failure.
-    """
-    try:
-
-        _, mime_type = get_image_info_from_url(img_url)
-
-        if mime_type and mime_type not in supported_mime_types:
-            logger.warning("Image mime type not supported, skipping fetch: %s", mime_type)
-            return None
-
-        result = await asyncio.to_thread(
-            fetch_url,
-            img_url,
-            max_retries=0,
-            strategy="curl_cffi_h2",
-            profile="chrome120",
-            block_private_hosts=True,  # the URL comes from a third-party page
-        )
-        if result.status_code != HTTP_STATUS_OK or not result.content:
-            logger.warning("Failed to fetch image as base64 from %s: %s", img_url, f"status_code: {result.status_code}, content: {result.content[:100]}")
-            return None
-        b64 = base64.b64encode(result.content).decode("utf-8")
-
-        mime_type = None
-        if b64.startswith("data:image/"):
-            mime_type = b64.split(";")[0].split(":")[1]
-
-        if not mime_type:
-            mime_type = get_mime_type_from_base64(b64)
-
-
-        if not mime_type or not mime_type.startswith("image/") or mime_type not in supported_mime_types:
-            logger.warning("Failed to fetch image as base64 from %s: %s", img_url, f"mime_type not found/supported, mimeType: {mime_type}")
-            return None
-
-        return (b64, mime_type)
-    except (FetchError, Exception) as e:
-        logger.warning("Failed to fetch image as base64 from %s: %s", img_url, e)
-        return None
-
 
 
 # extension -> MIME mapping

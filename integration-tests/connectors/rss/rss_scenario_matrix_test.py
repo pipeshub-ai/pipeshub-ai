@@ -145,8 +145,4 @@ class TestRSSScenarioMatrix(ConnectorScenarioMatrix):
             "a feed has no per-item access"
         ),
         Action.SET_FILTER.value: "the connector declares no sync filters",
-        Action.SET_INDEXING.value: (
-            "the connector declares no indexing filters (no enable_manual_sync), so indexing "
-            "cannot be switched to manual"
-        ),
     }

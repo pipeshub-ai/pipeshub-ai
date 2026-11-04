@@ -205,3 +205,59 @@ async def test_a_classifier_answer_that_is_not_a_failure_kind_is_ignored() -> No
     service = MagicMock()  # transient_search_error returns a MagicMock
 
     assert classify_search_error(service, RuntimeError("boom")) is None
+
+
+async def _hang(**_: Any) -> list[list[Any]]:  # noqa: ANN401
+    # asyncio.sleep is patched out for the back-off, so wait on an event instead.
+    await asyncio.Event().wait()
+    return []
+
+
+async def test_under_a_request_deadline_the_budget_is_cut_to_fit_it() -> None:
+    from app.utils.request_deadline import deadline_after
+
+    service = _service(None, name="p-deadline")
+    service.query_nearest_points = AsyncMock(side_effect=_hang)
+    loop = asyncio.get_running_loop()
+
+    with deadline_after(search_retry.DEADLINE_RESERVE_SECONDS + 1.5):
+        started = loop.time()
+        with pytest.raises(VectorSearchUnavailableError) as raised:
+            await query_nearest_points_with_retry(service, "records", ["req"], logger=_LOGGER)
+
+    # Not the 60 s budget: what the deadline left after the reserve.
+    assert loop.time() - started < 5
+    assert raised.value.kind is SearchFailureKind.TIMEOUT
+    assert service.query_nearest_points.await_count == 1
+
+
+async def test_with_too_little_left_it_fails_at_once_without_asking_the_store(caplog) -> None:
+    from app.utils.request_deadline import deadline_after
+
+    service = _service([[[MagicMock()]]], name="p-no-time")
+
+    with deadline_after(search_retry.DEADLINE_RESERVE_SECONDS + 0.2), caplog.at_level(logging.WARNING, logger=_LOGGER.name):
+        with pytest.raises(VectorSearchUnavailableError) as raised:
+            await query_nearest_points_with_retry(service, "records", ["req"], logger=_LOGGER)
+
+    assert raised.value.kind is SearchFailureKind.TIMEOUT
+    service.query_nearest_points.assert_not_awaited()
+    assert "before the request's deadline" in caplog.text
+
+
+async def test_without_a_deadline_the_budget_is_unchanged() -> None:
+    results = [[MagicMock()]]
+    service = _service([results], name="p-no-deadline")
+    with patch.object(search_retry.asyncio, "wait_for", wraps=asyncio.wait_for) as wait_for:
+        assert await query_nearest_points_with_retry(service, "records", ["req"], logger=_LOGGER) is results
+    timeout = wait_for.call_args.kwargs["timeout"]
+    assert timeout > search_retry._first_attempt_seconds(search_retry.SEARCH_RETRY_BUDGET_SECONDS) - 1
+
+
+async def test_the_search_is_timed_as_a_vector_span() -> None:
+    from app.utils.stage_timer import collect_spans
+
+    service = _service([[[MagicMock()]]], name="p-span")
+    with collect_spans() as spans:
+        await query_nearest_points_with_retry(service, "records", ["req"], logger=_LOGGER)
+    assert len(spans["vector"]) == 1

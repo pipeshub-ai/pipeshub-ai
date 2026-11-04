@@ -61,7 +61,7 @@ test.describe('Workspace Prompts', () => {
   test('reset to default works', async ({ page }) => {
     const section = page.getByTestId('prompt-section-agent');
     const textarea = section.locator('textarea');
-    const resetButton = section.getByRole('button', { name: 'Reset to Default', exact: true });
+    const resetButton = section.getByRole('button', { name: 'Reset to default', exact: true });
 
     await expect(textarea).toHaveCount(1);
     await expect(resetButton).toHaveCount(1);

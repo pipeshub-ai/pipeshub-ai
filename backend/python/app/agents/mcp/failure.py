@@ -35,6 +35,12 @@ class MCPFailureReason(str, Enum):
     ERROR = "error"
 
 
+SIGN_IN_FAILURES = frozenset({
+    MCPFailureReason.AUTH_EXPIRED, MCPFailureReason.UNAUTHORIZED, MCPFailureReason.NEEDS_PERMISSION,
+})
+"""The server wants a (new) sign-in: a person can fix these by signing in, unless the instance
+has no authentication to sign in with."""
+
 _POLICY_ERRORS = (MCPUrlBlockedError, MCPLaunchRefusedError)
 _SIGN_IN_ERRORS = (MCPTokenRefreshError, MCPOAuthError)
 

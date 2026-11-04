@@ -33,6 +33,7 @@ import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
+from app.services.model_identity.errors import classify_for_user
 from app.utils.log_redaction import redact_secrets_in_text
 
 if TYPE_CHECKING:
@@ -70,6 +71,9 @@ _REQUEST_TOO_LARGE_HINTS = (
     "reduce your message size",
     "context length exceeded",
     "maximum context length",
+    # `Agent.step` ends the run with this when the shapers cannot fit the
+    # context into the model's window (see agent_loop_lib/context/errors.py).
+    "context could not be shaped",
 )
 # Checked BEFORE rate_limit: OpenAI reports a used-up balance as a 429 too, but
 # waiting a minute never fixes it.
@@ -233,6 +237,13 @@ def classify_error(error_msg: str) -> tuple[str, str]:
             continue
         if hit is not None:
             return hit
+
+    # A gateway that enforces per-user budgets and model access answers with the
+    # statuses broken providers use; read before the generic 429/403 hints, whose
+    # advice ("wait a minute", "the API key is wrong") would be wrong for these.
+    gateway = classify_for_user(error_msg)
+    if gateway is not None:
+        return gateway
 
     lower = error_msg.lower()
 

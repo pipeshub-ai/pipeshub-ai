@@ -5,7 +5,11 @@ from app.web.chain import ChainFailed
 from app.web.errors import AccessDenied, Blocked, RateLimited
 from app.web.models import Attempt, CallerContext, WebResult
 from app.web.services import SearchOutcome
-from app.web.tools.web_search import WebSearchArgs, create_web_search_tool
+from app.web.tools.web_search import (
+    MAX_UNPRODUCTIVE_SEARCHES,
+    WebSearchArgs,
+    create_web_search_tool,
+)
 
 CALLER = CallerContext(org_id="org-1", user_id="user-1")
 
@@ -65,3 +69,57 @@ async def test_a_refused_search() -> None:
     payload = json.loads(await tool.ainvoke({"query": "q"}))
     assert payload["error_type"] == "access_denied"
     assert payload["attempts"] == []
+
+
+def outcome_with(*results: WebResult) -> SearchOutcome:
+    return SearchOutcome(query="q", results=results, served_by="ddgs", attempts=(Attempt("ddgs", None, 0.1),))
+
+
+HIT = WebResult("https://www.example.com/a", "T", "S", "ddgs", None)
+
+
+async def test_stops_searching_after_searches_in_a_row_found_nothing() -> None:
+    fake = service(outcome_with())
+    tool = create_web_search_tool(fake, CALLER)
+    outputs = [json.loads(await tool.ainvoke({"query": f"q{i}"})) for i in range(MAX_UNPRODUCTIVE_SEARCHES + 2)]
+
+    assert fake.search.await_count == MAX_UNPRODUCTIVE_SEARCHES
+    assert all(o["ok"] for o in outputs[:MAX_UNPRODUCTIVE_SEARCHES])
+    assert outputs[MAX_UNPRODUCTIVE_SEARCHES]["ok"] is False
+    assert outputs[MAX_UNPRODUCTIVE_SEARCHES]["error_type"] == "budget_exhausted"
+    assert "turned off for the rest of this answer" in outputs[MAX_UNPRODUCTIVE_SEARCHES]["error"]
+    assert outputs[-1] == outputs[MAX_UNPRODUCTIVE_SEARCHES]
+
+
+async def test_stops_searching_after_searches_in_a_row_failed() -> None:
+    error = ChainFailed([Blocked("bot check")], (Attempt("ddgs", "blocked", 0.5),))
+    fake = service(error)
+    tool = create_web_search_tool(fake, CALLER)
+    for i in range(MAX_UNPRODUCTIVE_SEARCHES + 2):
+        await tool.ainvoke({"query": f"q{i}"})
+
+    assert fake.search.await_count == MAX_UNPRODUCTIVE_SEARCHES
+
+
+async def test_a_search_that_finds_something_starts_the_count_again() -> None:
+    answers = (
+        [outcome_with()] * (MAX_UNPRODUCTIVE_SEARCHES - 1) + [outcome_with(HIT)]
+        + [outcome_with()] * (MAX_UNPRODUCTIVE_SEARCHES - 1) + [outcome_with(HIT)]
+    )
+    fake = MagicMock()
+    fake.search = AsyncMock(side_effect=answers)
+    tool = create_web_search_tool(fake, CALLER)
+    outputs = [json.loads(await tool.ainvoke({"query": f"q{i}"})) for i in range(len(answers))]
+
+    assert fake.search.await_count == len(answers)
+    assert all(o["ok"] for o in outputs)
+
+
+async def test_each_tool_counts_its_own_answer() -> None:
+    fake = service(outcome_with())
+    first = create_web_search_tool(fake, CALLER)
+    for i in range(MAX_UNPRODUCTIVE_SEARCHES):
+        await first.ainvoke({"query": f"q{i}"})
+    output = json.loads(await create_web_search_tool(fake, CALLER).ainvoke({"query": "fresh"}))
+
+    assert output["ok"] is True

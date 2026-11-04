@@ -20,7 +20,6 @@ from uuid import uuid4
 
 import httpx
 from fastapi.responses import StreamingResponse
-from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -38,7 +37,10 @@ from app.connectors.core.base.connector.connector_service import (
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.data_store.data_store import (
+    DataStoreProvider,
+    TransactionStore,
+)
 from app.connectors.core.base.error.stream_errors import (
     map_source_status,
     not_found_at_source,
@@ -107,6 +109,10 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType
+from app.sources.client.http.address_guard import (
+    AddressNotAllowedError,
+    guarded_async_client,
+)
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_retry import call_with_retry
 from app.sources.client.zendesk.zendesk import (
@@ -116,6 +122,7 @@ from app.sources.client.zendesk.zendesk import (
     redact_attachment_url,
 )
 from app.sources.external.zendesk.zendesk import ZendeskDataSource
+from app.utils.html_markdown import html_to_markdown_async
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -2760,7 +2767,7 @@ class ZendeskConnector(BaseConnector):
         self, groups: list[tuple[RecordGroup, list[Permission]]]
     ) -> None:
         """Replace a section's old parent/app edge when its hierarchy changes."""
-        async with self.data_store_provider.transaction() as tx_store:
+        async def detach(tx_store: TransactionStore) -> None:
             for group, _ in groups:
                 existing = await tx_store.get_record_group_by_external_id(
                     connector_id=self.connector_id,
@@ -2790,6 +2797,8 @@ class ZendeskConnector(BaseConnector):
                         collection,
                         CollectionNames.BELONGS_TO.value,
                     )
+
+        await self.data_store_provider.execute_in_transaction(detach)
 
     @staticmethod
     def _section_depth(
@@ -3045,7 +3054,7 @@ class ZendeskConnector(BaseConnector):
         for index, comment in enumerate(comments):
             body = comment.get("html_body") or comment.get("body") or ""
             if "<" in body and ">" in body:
-                body = html_to_markdown(await self._inline_images_as_base64(body))
+                body = await html_to_markdown_async(await self._inline_images_as_base64(body))
             children_records = await self._build_attachment_child_records(
                 comment, record, permissions, publish_records=False
             )
@@ -3104,7 +3113,7 @@ class ZendeskConnector(BaseConnector):
         if not self._is_article_in_scope(article):
             raise not_found_at_source(self.display_name)
         body = article.get("body") or ""
-        body_md = html_to_markdown(await self._inline_images_as_base64(body)) if body else ""
+        body_md = await html_to_markdown_async(await self._inline_images_as_base64(body)) if body else ""
         children_records = await self._build_article_attachment_child_records(
             article_id,
             record,
@@ -3138,7 +3147,7 @@ class ZendeskConnector(BaseConnector):
         for index, comment in enumerate(comments, start=1):
             comment_body = comment.get("body") or ""
             if "<" in comment_body and ">" in comment_body:
-                comment_body = html_to_markdown(
+                comment_body = await html_to_markdown_async(
                     await self._inline_images_as_base64(comment_body)
                 )
             author = self._user_data(comment.get("author_id"))
@@ -3391,7 +3400,7 @@ class ZendeskConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         # Same host rule as _fetch_asset; httpx drops the header on a cross-host redirect.
         headers = dict(datasource.http.headers) if self._is_tenant_api_url(content_url) else None
-        client = httpx.AsyncClient(
+        client = guarded_async_client(
             follow_redirects=True, timeout=CDN_FETCH_TIMEOUT_SECONDS, headers=headers
         )
         try:
@@ -3466,7 +3475,7 @@ class ZendeskConnector(BaseConnector):
         if self._is_tenant_api_url(url):
             response = await datasource.http.execute(HTTPRequest(url=url, method="GET"))
             return response.status, response.bytes(), response.content_type
-        async with httpx.AsyncClient(
+        async with guarded_async_client(
             follow_redirects=True, timeout=CDN_FETCH_TIMEOUT_SECONDS
         ) as cdn_client:
             cdn_response = await cdn_client.get(url)
@@ -3569,7 +3578,7 @@ class ZendeskConnector(BaseConnector):
         host = f"{self._subdomain()}.zendesk.com"
         try:
             response = await self._call_api(self._show_current_token)
-        except ZendeskAuthError as e:
+        except (ZendeskAuthError, AddressNotAllowedError) as e:
             raise ConnectorInitError(str(e)) from e
         except httpx.HTTPStatusError as e:
             raise ConnectorInitError(

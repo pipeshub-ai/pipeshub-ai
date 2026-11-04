@@ -33,15 +33,23 @@ from app.models.blocks import BlocksContainer  # noqa: TC001  # pydantic field t
 from app.modules.named_entities.domain.config import (
     NamedEntityBudgets,  # noqa: TC001  # pydantic field type
 )
-from app.modules.named_entities.domain.kinds import EntityKind
+from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_kinds
 from app.modules.transformers.document_extraction import (
     ExtractionLLMError,
 )
+from app.services.model_identity.propagation import scope_from_claims
+from app.services.model_identity.workload import Workload
+from app.utils.env_utils import env_positive_int
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 logger = logging.getLogger(__name__)
 
 require_classify_token = require_service_token(TokenScopes.DOCUMENT_CLASSIFY)
+
+# A block container for a very large document is tens of MB of JSON. The cap
+# is above that and below what would exhaust the process when parsed.
+MAX_CLASSIFY_REQUEST_BYTES = env_positive_int("EXTRACTION_MAX_REQUEST_BYTES", 128 * 1024 * 1024)
+CLASSIFY_PATH = "/api/v1/extract/classify"
 
 # On the router, not the app, so the checks hold wherever this router is included.
 router = APIRouter(
@@ -49,6 +57,11 @@ router = APIRouter(
     tags=["extraction"],
     dependencies=[Depends(authMiddleware), Depends(require_classify_token)],
 )
+
+
+def _config_service(request: Request) -> Any:  # noqa: ANN401
+    container = getattr(request.app, "container", None)
+    return container.config_service() if container is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +102,10 @@ async def classify(
 ) -> JSONResponse:
     """Classify a document (departments, categories, topics, summary).
 
+    ``record_type`` (``CODE_FILE``) selects the code prompt, which returns a
+    different field set -- hence the shared mapper rather than an inline
+    SemanticMetadata construction here.
+
     ``departments`` should be pre-fetched by the caller (e.g. from the graph
     DB) to avoid introducing a graph connection dependency here.
     """
@@ -96,13 +113,20 @@ async def classify(
     document_extraction = request.app.state.document_extraction
 
     try:
-        metadata = await document_extraction.classify(
-            blocks=body.block_container.blocks,
-            org_id=org_id,
-            departments=body.departments or None,
-            record_name=body.record_name,
-            record_type=body.record_type,
-        )
+        async with scope_from_claims(
+            claims,
+            Workload.EXTRACTION,
+            fallback_service="extraction",
+            config_service=_config_service(request),
+        ):
+            metadata = await document_extraction.classify(
+                blocks=body.block_container.blocks,
+                org_id=org_id,
+                departments=body.departments or None,
+                record_name=body.record_name,
+                record_type=body.record_type,
+                block_groups=body.block_container.block_groups,
+            )
     except LLMNotConfiguredError as exc:
         # 4xx: a configuration state, not an outage — the client must neither retry it
         # nor count it against its circuit breaker.
@@ -212,7 +236,7 @@ async def extract_entities(
         from app.modules.named_entities.extractor import (
             NamedEntityExtractor,
             NamedEntityRequest,
-            indexing_llm,
+            indexing_llm_or_none,
         )
 
         enabled = None
@@ -225,32 +249,34 @@ async def extract_entities(
                     continue
             enabled = frozenset(parsed)
         config_service = request.app.container.config_service()
-        llm = transport = None
-        provider = model = "indexing"
-        try:
-            llm, transport, provider, model = await indexing_llm(
-                config_service, org_id=org_id, shard_key=body.record_name,
-            )
-        except Exception as exc:
-            # As in-process extraction does: without a model the deterministic
-            # entities still count, and the record is PARTIAL, not failed.
-            logger.warning("Named-entity model unavailable for org '%s': %s", org_id, type(exc).__name__)
-        extraction = await NamedEntityExtractor().extract(
-            NamedEntityRequest(
-                blocks=body.block_container.blocks,
+        async with scope_from_claims(
+            claims,
+            Workload.EXTRACTION,
+            fallback_service="extraction",
+            config_service=config_service,
+        ):
+            llm, transport, provider, model, enabled = await indexing_llm_or_none(
+                config_service,
+                enabled if enabled is not None else default_enabled_kinds(),
                 org_id=org_id,
-                record_name=body.record_name,
-                record_type=body.record_type,
-                reference_time_ms=body.reference_time_ms,
-                tz=body.tz,
-                enabled=enabled,
-                budgets=body.budgets,
-                llm=llm,
-                transport=transport,
-                provider_name=provider,
-                model_name=model,
+                shard_key=body.record_name,
             )
-        )
+            extraction = await NamedEntityExtractor().extract(
+                NamedEntityRequest(
+                    blocks=body.block_container.blocks,
+                    org_id=org_id,
+                    record_name=body.record_name,
+                    record_type=body.record_type,
+                    reference_time_ms=body.reference_time_ms,
+                    tz=body.tz,
+                    enabled=enabled,
+                    budgets=body.budgets,
+                    llm=llm,
+                    transport=transport,
+                    provider_name=provider,
+                    model_name=model,
+                )
+            )
     except Exception as exc:
         # The exception text can quote document content; report the type only.
         logger.warning("Named-entity extraction failed for org '%s': %s", org_id, type(exc).__name__)

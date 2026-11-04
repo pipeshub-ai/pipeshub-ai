@@ -115,6 +115,17 @@ class TestOutsideBounds:
         assert outside_bounds(record, _WEEK)
         assert not outside_bounds(record, {"source_updated_after_ms": _ms("2026-01-01")})
 
+    @pytest.mark.parametrize(("switch", "after_the_end_is_outside"), [("true", False), ("", True)])
+    def test_an_upload_dated_only_by_its_upload_is_judged_as_the_filter_judges_it(
+        self, monkeypatch: pytest.MonkeyPatch, switch: str, after_the_end_is_outside: bool,
+    ) -> None:
+        # With content dates on, the filter keeps it unless it was uploaded before the start.
+        monkeypatch.setenv("CONTENT_DOCUMENT_DATES", switch)
+        uploaded_later = {**_record("u", "2026-05-21"), "sourceTimestampOrigin": "upload"}
+        uploaded_before = {**_record("u", "2025-12-01"), "sourceTimestampOrigin": "upload"}
+        assert outside_bounds(uploaded_later, _WEEK) is after_the_end_is_outside
+        assert outside_bounds(uploaded_before, _WEEK)
+
 
 class TestPickOutsideDates:
     def test_the_best_few_outside_the_dates_in_rank_order(self) -> None:
@@ -181,6 +192,12 @@ class TestLabels:
             "created 2026-05-21, last changed 2026-06-02"
         )
         assert record_dates_label({}) == "no source date"
+
+    def test_a_knowledge_base_upload_names_what_its_date_is(self) -> None:
+        uploaded = _ms("2026-10-15") + 40
+        kb = {"connectorName": "KB", "origin": "UPLOAD", "createdAtTimestamp": uploaded}
+        assert record_dates_label({**_record("u", "2026-10-15"), **kb}) == "uploaded 2026-10-15"
+        assert record_dates_label({**_record("f", "2025-03-03"), **kb}) == "file last modified 2025-03-03"
 
     def test_the_assistants_list(self) -> None:
         picked = pick_outside_dates(_response(("release", _record("release", "2026-05-21"))), _WEEK)

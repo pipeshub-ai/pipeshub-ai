@@ -407,3 +407,36 @@ async def test_a_record_refused_for_a_day_ends_failed_with_its_wait_cleared(env:
     assert "kept limiting" in stored["reason"]
     assert stored.get("retryNotBefore") is None
     assert stored.get("rateLimitedSince") is None
+
+
+async def test_a_record_waiting_behind_its_connectors_backlog_waits_again(env: _Env) -> None:
+    """A day of 429s while the connector's other records were indexed: the
+    record is waiting its turn, so its wait starts again instead of failing.
+    Also reads the provider's answer on each side of the wait's start."""
+    ahead = _jira_issue(env.connector_id)
+    issue = _jira_issue(env.connector_id)
+    await env.processor.on_new_records([(ahead, []), (issue, [])])
+    now = get_epoch_timestamp_in_ms()
+    since = now - 23 * HOUR_MS - 45 * 60 * 1000
+    await env.graph.update_node(
+        ahead.id,
+        CollectionNames.RECORDS.value,
+        {"indexingStatus": ProgressStatus.COMPLETED.value, "lastIndexTimestamp": since + 2 * HOUR_MS},
+    )
+    await env.graph.update_node(
+        issue.id, CollectionNames.RECORDS.value, {"rateLimitedSince": since, "retryNotBefore": now - 60_000}
+    )
+
+    assert await env.graph.has_records_indexed_since(env.connector_id, since) is True
+    assert await env.graph.has_records_indexed_since(env.connector_id, since + 3 * HOUR_MS) is False
+    assert await env.graph.has_records_indexed_since(f"{env.connector_id}-other", since) is False
+
+    assert await _record_handler(env.graph)._defer_rate_limited_record(
+        _rate_limited(1800), record_id=issue.id, record=await env.stored(issue.id), source="Jira"
+    )
+
+    stored = await env.stored(issue.id)
+    assert stored["indexingStatus"] == ProgressStatus.QUEUED.value
+    assert stored["reason"].startswith("Jira is limiting how often PipesHub can read from it")
+    assert stored["rateLimitedSince"] >= now
+    assert stored["retryNotBefore"] >= now + 1790 * 1000

@@ -1053,6 +1053,24 @@ class TestSupportsMultipartToolResult:
 
         assert _supports_multipart_tool_result(AzureChatOpenAI()) is True
 
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        (
+            ("us.openai.gpt-6-luna", False),
+            ("global.openai.gpt-5.6-luna", False),
+            ("openai.gpt-oss-120b-1:0", True),
+            ("us.anthropic.claude-sonnet-5", True),
+        ),
+    )
+    def test_bedrock_converse_openai_gpt_rejects_tool_images(self, model_id: str, expected: bool) -> None:
+        """GPT-5.x / GPT-6 on Converse reject an image inside a toolResult."""
+        class ChatBedrockConverse(_FakeModel):
+            pass
+
+        model = ChatBedrockConverse()
+        model.model_id = model_id
+        assert _supports_multipart_tool_result(model) is expected
+
     async def test_complete_keeps_multipart_content_for_non_ollama(self) -> None:
         class ChatCapture(_FakeModel):
             def __init__(self, *a, **kw) -> None:
@@ -1468,12 +1486,13 @@ class TestToolImageRelocationRespectsTheCap:
         from langchain_core.messages import HumanMessage
         from langchain_core.messages import ToolMessage as LCToolMessage
 
-        from app.agents.agent_loop.converters import _RELOCATED_IMAGES_PREFIX
+        from app.agent_loop_lib.transport.tool_images import RELOCATED_IMAGES_NOTE
 
         retry = self._retry(self._transport(2), RuntimeError(self.CONFLICT), self._messages())
 
         assert isinstance(retry[-1], HumanMessage)
-        assert retry[-1].content[0] == {"type": "text", "text": _RELOCATED_IMAGES_PREFIX}
+        assert retry[-1].content[0]["type"] == "text"
+        assert RELOCATED_IMAGES_NOTE in retry[-1].content[0]["text"]
         assert all(isinstance(m.content, str) for m in retry if isinstance(m, LCToolMessage))
 
     def test_no_retry_when_the_cap_already_removed_every_tool_image(self) -> None:

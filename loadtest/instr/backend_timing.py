@@ -8,6 +8,11 @@ takes and how many are made per second:
   BACKENDAGG pid=<pid> kind=blob_url  ...        (signed-URL downloads)
   BACKENDAGG pid=<pid> kind=http_other ...       (any other aiohttp traffic)
   LOOPLAG    pid=<pid> n=.. ms_mean=.. ms_p95=.. ms_max=..
+  BACKENDOP  pid=<pid> kind=neo4j op=<provider method> n=.. ms=..   (per window)
+
+BACKENDOP names the graph-provider method that issued each Neo4j query (the
+first caller frame in `neo4j_provider.py`), so the ~50 queries a turn makes can
+be ranked by who makes them instead of read as one total.
 
 Notes on semantics:
   - neo4j ms  = await of AsyncSession.run (round trip until result ready).
@@ -25,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 import time
 
 logger = logging.getLogger("backend_timing")
@@ -32,12 +38,32 @@ logger = logging.getLogger("backend_timing")
 _WINDOW = 5.0
 _PID = os.getpid()
 _stats: dict[str, list[float]] = {}
+_ops: dict[tuple[str, str], list[float]] = {}
 _probed_loops: set[int] = set()
 
 
-def _record(kind: str, ms: float) -> None:
+def _record(kind: str, ms: float, op: str | None = None) -> None:
     _stats.setdefault(kind, []).append(ms)
+    if op:
+        _ops.setdefault((kind, op), []).append(ms)
     _ensure_probes()
+
+
+def _neo4j_caller() -> str:
+    """`<provider method><-<first caller outside the graph layer>`."""
+    f = sys._getframe(2)
+    method = None
+    for _ in range(40):
+        if f is None:
+            break
+        name = f.f_code.co_filename
+        if method is None:
+            if name.endswith("neo4j_provider.py"):
+                method = f.f_code.co_name
+        elif "/graph_db/" not in name and "/app/" in name:
+            return f"{method}<-{name.rsplit('/', 1)[-1][:-3]}.{f.f_code.co_name}"
+        f = f.f_back
+    return method or "other"
 
 
 def _ensure_probes() -> None:
@@ -86,6 +112,11 @@ async def _flusher() -> None:
                 _PID, kind, n, n / _WINDOW,
                 arr[n // 2], arr[max(int(n * 0.95) - 1, 0)], arr[-1],
             )
+        for (kind, op), arr in list(_ops.items()):
+            if arr:
+                _ops[(kind, op)] = []
+                logger.info("BACKENDOP pid=%d kind=%s op=%s n=%d ms=%.0f",
+                            _PID, kind, op, len(arr), sum(arr))
 
 
 def _classify_url(url: object) -> str:
@@ -102,11 +133,12 @@ def _patch_neo4j() -> None:
     orig = AsyncSession.run
 
     async def timed_run(self, *a, **k):  # noqa: ANN001
+        op = _neo4j_caller()
         t0 = time.perf_counter()
         try:
             return await orig(self, *a, **k)
         finally:
-            _record("neo4j", (time.perf_counter() - t0) * 1000.0)
+            _record("neo4j", (time.perf_counter() - t0) * 1000.0, op)
 
     AsyncSession.run = timed_run
     logger.info("backend_timing: neo4j AsyncSession.run patched pid=%d", _PID)

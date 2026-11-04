@@ -24,7 +24,9 @@ memory. When they do not, each new query reads them back from disk, and queries
 running at the same time wait on that disk.
 
 The full-precision vectors are not part of this working set. A query reads only
-the few dozen it rescores, so they can stay on disk without slowing search.
+the few dozen it rescores (about 1.5 times the requested depth; see
+[tuning Qdrant search accuracy](qdrant-search-tuning.md)), so they can stay on
+disk without slowing search.
 
 ## How much memory
 

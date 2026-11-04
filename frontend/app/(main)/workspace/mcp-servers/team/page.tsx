@@ -264,6 +264,7 @@ function TeamMcpServersPageContent() {
           onEditInstance={(instance) => store.openEditInstance(instance)}
           onDeleteInstance={(instance) => store.openDeleteDialog(instance)}
           onRefresh={() => void loadData()}
+          onOpenPersonal={() => router.push('/workspace/mcp-servers/personal/')}
         />
       )}
 

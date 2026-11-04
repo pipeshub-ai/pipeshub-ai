@@ -3,7 +3,7 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from typing import Any
 from uuid import uuid4
 
@@ -33,20 +33,29 @@ from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import (
     IndexingError,
     ProcessingError,
+    RecordDeletedError,
 )
 from app.models.entities import Record
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
+from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
+from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
+from app.modules.transformers.transformer import ENRICHMENT_DEFERRED, ENRICHMENT_FOLLOWS
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
-from app.services.docling.client import within_docling_size_limit
+from app.services.docling.client import (
+    MAX_PAGES_ENV,
+    DoclingUnavailableError,
+    docling_max_pages,
+    docling_takes,
+    within_docling_size_limit,
+)
 from app.services.extraction.client import ExtractionClient
 from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
@@ -59,6 +68,7 @@ from app.services.messaging.config import (
     PipelineEventData,
     messaging_env,
 )
+from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider
 from app.services.resource_governor import classify
@@ -88,6 +98,22 @@ def _parsed_like(twin: dict[str, Any]) -> dict[str, str]:
     status = twin.get("parsingStatus")
     return {"parsingStatus": status} if status in _PARSE_DONE else {}
 
+
+def _is_code_file(mime_type: str | None, code_ext: str | None) -> bool:
+    """Whether this record should be parsed as source and projected into the code graph.
+
+    Keyed on mime/extension rather than recordType because a connector can hand
+    us a code blob without one; every site that decides "is this code" reads this
+    so the dispatch and the projection cannot drift apart.
+    """
+    return (
+        mime_type in CODE_FILE_MIME_TYPE_VALUES
+        or normalize_file_extension(code_ext) in CODE_FILE_EXTENSION_VALUES
+    )
+
+
+# Storage cleanups of abandoned virtual record ids still running in the background.
+_ABANDONED_VRID_CLEANUPS: set[asyncio.Task] = set()
 
 class EventProcessor:
     def __init__(
@@ -173,6 +199,16 @@ class EventProcessor:
                 "Failed to rewrite/delete vectors for %s: %s", virtual_record_id, e
             )
 
+    def _spawn_abandoned_vrid_cleanup(self, org_id: str, virtual_record_id: str) -> asyncio.Task:
+        task = asyncio.create_task(
+            self._cleanup_abandoned_vrid_storage(org_id, virtual_record_id),
+            name=f"abandoned-vrid-cleanup-{virtual_record_id}",
+        )
+        # Held until done: the event loop keeps only weak references to tasks.
+        _ABANDONED_VRID_CLEANUPS.add(task)
+        task.add_done_callback(_ABANDONED_VRID_CLEANUPS.discard)
+        return task
+
     async def _cleanup_abandoned_vrid_storage(
         self, org_id: str, virtual_record_id: str
     ) -> None:
@@ -251,6 +287,8 @@ class EventProcessor:
                 event_type=event_type,
                 prev_virtual_record_id=prev_virtual_record_id,
             ):
+                if event.event == IndexingEvent.PARSING_COMPLETE:
+                    pdf_binary = inspected = None
                 yield event
             return
 
@@ -262,23 +300,50 @@ class EventProcessor:
             self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
         elif not within_docling_size_limit(len(pdf_binary)):
             self.logger.info("📄 PDF is larger than Docling accepts; using the PdfPlumber+OpenCV processor")
+        elif not docling_takes(len(pdf_binary), inspected.page_count):
+            self.logger.info(
+                "📄 PDF has %d pages, more than Docling takes (%s=%d); using the PdfPlumber+OpenCV processor",
+                inspected.page_count, MAX_PAGES_ENV, docling_max_pages(),
+            )
         else:
             docling_failed = False
-            async for event in self.processor.process_pdf_with_docling(
-                recordName=record_name,
-                recordId=record_id,
-                pdf_binary=pdf_binary,
-                virtual_record_id=virtual_record_id,
-                event_type=event_type,
-                prev_virtual_record_id=prev_virtual_record_id,
-            ):
-                if event.event == IndexingEvent.DOCLING_FAILED:
-                    docling_failed = True
-                else:
-                    yield event
-            if not docling_failed:
-                return
-            self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
+            yielded = False
+            try:
+                async for event in self.processor.process_pdf_with_docling(
+                    recordName=record_name,
+                    recordId=record_id,
+                    pdf_binary=pdf_binary,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    if event.event == IndexingEvent.DOCLING_FAILED:
+                        docling_failed = True
+                    else:
+                        yielded = True
+                        if event.event == IndexingEvent.PARSING_COMPLETE:
+                            pdf_binary = inspected = None
+                        yield event
+            except DoclingUnavailableError as exc:
+                # Only before Docling produced anything: after PARSING_COMPLETE a
+                # second parse would index the record twice.
+                if yielded:
+                    raise
+                self.logger.warning(
+                    "⚠️ Docling is unavailable (%s); using the PdfPlumber+OpenCV processor", exc
+                )
+            else:
+                if not docling_failed:
+                    return
+                if yielded:
+                    # Docling failed after its parse completed (building blocks or
+                    # indexing): the file is released, and parsing it again would
+                    # index the record twice. Retry the record instead.
+                    raise IndexingError(
+                        "Docling failed after parsing completed",
+                        details={"record_id": record_id},
+                    )
+                self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
 
         async for event in self.processor.process_pdf_with_pdf_plumber(
             recordName=record_name,
@@ -288,6 +353,8 @@ class EventProcessor:
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
         ):
+            if event.event == IndexingEvent.PARSING_COMPLETE:
+                pdf_binary = inspected = None
             yield event
 
     @staticmethod
@@ -301,20 +368,45 @@ class EventProcessor:
         (``package-lock.json`` would reach the JSON parser): that method caps
         the first and skips the second.
         """
-        if (
-            mime_type in CODE_FILE_MIME_TYPE_VALUES
-            or normalize_file_extension(code_ext) in CODE_FILE_EXTENSION_VALUES
-        ):
+        if _is_code_file(mime_type, code_ext):
             return True
         return record_type == RecordTypes.CODE_FILE.value and (
             mime_type == MimeTypes.PLAIN_TEXT.value or is_generated_file_name(record_name)
         )
 
-    async def _dispatch_stages(self, record: Record, event_type: str | None) -> None:
+    async def _dispatch_stages(
+        self, record: Record, event_type: str | None, *, defer_classify: bool = False
+    ) -> None:
         """Hand the now-searchable record to the stage runtime."""
         if self.stage_ingress is None:
             raise RuntimeError("the pipeline stage runtime is not wired into this EventProcessor")
-        _ = await self.stage_ingress.on_indexed(record, trigger=event_type)
+        _ = await self.stage_ingress.on_indexed(record, trigger=event_type, defer_classify=defer_classify)
+
+    @staticmethod
+    def _scans_for_secrets(record_type: str | None, *, reads_as_code_file: bool) -> bool:
+        """Every file from a code repository, whatever parser reads it (S-2).
+
+        Credentials sit in docker-compose.yml, values.yaml and appsettings.json
+        at least as often as in source; those reach the JSON/YAML/XML/Markdown
+        parsers, not the code one. Binary content is left as it is by the scanner.
+        """
+        return reads_as_code_file or record_type == RecordTypes.CODE_FILE.value
+
+    async def _redact_code_secrets(
+        self, doc: dict[str, Any], record_name: str, content: bytes | str
+    ) -> bytes | str:
+        """Strip credentials from a code file before anything indexes it (S-2)."""
+        raw = content.encode("utf-8") if isinstance(content, str) else content
+        redacted, result = await asyncio.to_thread(redact_secrets_bytes, raw)
+        if result.count:
+            self.logger.info(
+                "Redacted %s secret(s) (%s) from %s before indexing",
+                result.count, ", ".join(result.kinds), record_name,
+            )
+        # Written even when 0: its presence is what tells dedup the content was scanned.
+        if result.count != doc.get("secretsRedacted"):
+            await self.update_record_fields(doc, {"secretsRedacted": result.count})
+        return redacted if result.count else content
 
     def _use_service_pipeline(self) -> bool:
         """Return True when the new HTTP service pipeline should be used."""
@@ -336,6 +428,9 @@ class EventProcessor:
         event_type: str,
         prev_virtual_record_id: str | None,
         file_content: bytes,
+        *,
+        is_code: bool = False,
+        file_path: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """New orchestration path: parse → index → enrich via standalone services.
 
@@ -366,7 +461,10 @@ class EventProcessor:
             extension=extension,
             org_id=org_id,
             provider=provider,
+            file_path=file_path,
         )
+        # The parsing service has the file; the blocks are what is left to index.
+        file_content = None
         block_container = parse_result.block_container
         if block_container is None:
             raise RuntimeError(f"Parsing service returned no block container for record {record_id}")
@@ -395,7 +493,7 @@ class EventProcessor:
             raise_on_error=True,
         )
         if record_doc is None:
-            raise RuntimeError(f"Record {record_id} not found after parsing")
+            raise RecordDeletedError(record_id)
 
         await self.update_record_fields(
             record_doc,
@@ -411,6 +509,10 @@ class EventProcessor:
             self.logger.info(
                 "⚠️ Empty document for %s — marking EMPTY", record_id
             )
+            if is_code:
+                # As process_code_document does: an emptied file kept its last
+                # version's blocks, and their calls and imports stayed (B3).
+                await self.processor._drop_code_blocks(record_id)
             await self._drop_the_previous_vectors_of_an_emptied_record(
                 record_doc, prev_virtual_record_id or virtual_record_id, event_type
             )
@@ -459,13 +561,33 @@ class EventProcessor:
         # The classify stage enriches the record once it is searchable.
         ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: True}
 
+        # Before indexing, which marks the record COMPLETED, and so also before
+        # enrichment. COMPLETED is what tells the edge builder the repo has
+        # drained; a file carrying it while its blocks are still missing gets
+        # the whole repo resolved against a symbol table it does not appear in.
+        # Being ahead of enrichment additionally means a deferred or failing
+        # extraction still leaves the code graph populated.
+        if is_code:
+            await self.processor.project_code_blocks_to_graph(
+                record_id=record_id,
+                org_id=org_id,
+                record_group_id=record_doc.get("recordGroupId"),
+                connector_id=record_doc.get("connectorId"),
+                record_name=record_name,
+                file_path=file_path,
+                block_containers=block_container,
+                propagate_failure=True,
+            )
+
         # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────
         self.logger.debug("📥 Indexing record %s (making searchable)", record_id)
         await self.sink_orchestrator.index(ctx)
         self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
         # ── Step 3: classification runs as a pipeline stage, on its own permits ──
-        await self._dispatch_stages(record, event_type)
+        await self._dispatch_stages(
+            record, event_type, defer_classify=bool(ctx.settings.get(ENRICHMENT_DEFERRED))
+        )
 
         yield PipelineEvent(
             event=IndexingEvent.INDEXING_COMPLETE,
@@ -735,14 +857,19 @@ class EventProcessor:
         if blob_storage is None:
             # Cannot check; keep reusing the duplicate as before.
             return True
+        # Raises StorageLookupUnavailableError when storage cannot tell (a 503
+        # mid-move): neither "present" nor "gone" is safe to assume, so the event
+        # fails and is retried.
         return await blob_storage.get_actual_content_path(org_id, virtual_record_id) is not None
 
     async def _check_duplicate_by_md5(
         self,
         content: bytes | str | dict | list | None,
         doc: dict[str, Any],
+        before_reusing_status: Callable[[], Awaitable[None]] | None = None,
         *,
         content_rev: str | None = None,
+        scans_for_secrets: bool = False,
     ) -> DedupDecision:
         """Check for duplicate records by MD5 hash and decide whether to skip indexing.
 
@@ -754,6 +881,13 @@ class EventProcessor:
         indexed anyway, since its target collection has no vectors for it yet.
         Under the default SingleCollectionStrategy every record resolves to the
         same collection, so this degenerates to the original skip-or-not behaviour.
+
+        ``before_reusing_status`` runs just before a finished duplicate's
+        ``indexingStatus`` is copied onto this record, for work that has to be
+        in place by the time the record reads as done.
+
+        ``scans_for_secrets`` records are not attached to a finished twin
+        that was never scanned: its vectors and blob hold the raw content.
         """
         # Calculate MD5 from content
         existing_md5_checksum = doc.get("md5Checksum")
@@ -820,7 +954,9 @@ class EventProcessor:
             return DedupDecision()
 
         if match.is_processed:
-            return await self._reuse_finished_duplicate(doc, match, content_rev=content_rev)
+            return await self._reuse_finished_duplicate(
+                doc, match, before_reusing_status, content_rev=content_rev, scans_for_secrets=scans_for_secrets
+            )
 
         if not match.same_collection:
             # In flight, but for a different collection — waiting would buy
@@ -832,6 +968,11 @@ class EventProcessor:
             f"🚀 Duplicate record {_record_key(match.record)} is being processed "
             "into the same collection, changing status to QUEUED."
         )
+        # Before QUEUED: the twin's completion promotes this record straight
+        # to COMPLETED, which nothing on that path follows with blocks (R-5).
+        if before_reusing_status is not None:
+            await before_reusing_status()
+            before_reusing_status = None
         self._require_persisted(
             await self.update_record_fields(
                 doc,
@@ -866,7 +1007,11 @@ class EventProcessor:
         if is_finished(twin):
             self.logger.info("Duplicate %s finished while %s was being queued; reusing it now", twin_key, _record_key(doc))
             return await self._reuse_finished_duplicate(
-                doc, DuplicateMatch(record=twin, same_collection=True, is_processed=True), content_rev=content_rev
+                doc,
+                DuplicateMatch(record=twin, same_collection=True, is_processed=True),
+                before_reusing_status,
+                content_rev=content_rev,
+                scans_for_secrets=scans_for_secrets,
             )
         if will_promote_queued_copies(twin, enrichment_live_after_ms):
             return DedupDecision(skip_indexing=True)
@@ -897,9 +1042,27 @@ class EventProcessor:
         )
 
     async def _reuse_finished_duplicate(
-        self, doc: dict[str, Any], match: DuplicateMatch, *, content_rev: str | None = None
+        self,
+        doc: dict[str, Any],
+        match: DuplicateMatch,
+        before_reusing_status: Callable[[], Awaitable[None]] | None = None,
+        *,
+        content_rev: str | None = None,
+        scans_for_secrets: bool = False,
     ) -> DedupDecision:
         attached_vrid = match.record.get("virtualRecordId")
+
+        if scans_for_secrets and match.record.get("secretsRedacted") is None:
+            # Indexed before redaction existed: reusing it would keep the
+            # secrets searchable for good. Rebuilding a shared VRID redacts
+            # the twin's copy too.
+            self.logger.info(
+                "Duplicate %s was never scanned for secrets; indexing %s instead of reusing it",
+                _record_key(match.record), _record_key(doc),
+            )
+            return DedupDecision(
+                rebuild_shared_vrid=doc.get("virtualRecordId") == attached_vrid
+            )
 
         if (
             attached_vrid
@@ -921,6 +1084,8 @@ class EventProcessor:
 
         if match.same_collection:
             # The vectors this record needs already exist.
+            if before_reusing_status is not None:
+                await before_reusing_status()
             await self._attach_to_finished_twin(match.record, doc, content_rev=content_rev)
         else:
             if attached_vrid:
@@ -1025,6 +1190,11 @@ class EventProcessor:
                     {
                         "virtualRecordId": vrid,
                         "summaryDocumentId": twin.get("summaryDocumentId"),
+                        # Lets this copy be reused as a scanned twin in turn.
+                        **(
+                            {"secretsRedacted": twin["secretsRedacted"]}
+                            if twin.get("secretsRedacted") is not None else {}
+                        ),
                     },
                 ),
                 "Failed to persist duplicate record fields",
@@ -1184,7 +1354,9 @@ class EventProcessor:
                 # Legitimately reachable: a record can be deleted between an
                 # event being published and consumed. There is nothing to index
                 # and nothing to fail, so drain the message rather than retry it.
-                self.logger.error("❌ Record %s not found", record_id)
+                # WARNING, as the record handler's own read: None cannot tell a
+                # deletion from an id that never existed (a producer bug).
+                self.logger.warning("Record %s not found; dropping its event", record_id)
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id=record_id),
@@ -1232,7 +1404,6 @@ class EventProcessor:
                     code_ext = fp_base.rsplit(".", 1)[-1].lower()
                 elif "." in rn_base and rn_base.rsplit(".", 1)[-1]:
                     code_ext = rn_base.rsplit(".", 1)[-1].lower()
-
             file_content = event_data.get("buffer")
 
             # Connector streaming or JSON API responses may deliver already-parsed
@@ -1255,11 +1426,54 @@ class EventProcessor:
             )
             self.logger.debug(f"file_content type: {type(file_content)} length: {content_len}")
             record_type = doc.get("recordType")
+            is_code = _is_code_file(mime_type, code_ext)
+            reads_as_code_file = self._reads_as_code_file(
+                record_type, mime_type, code_ext, record_name
+            )
+            scans_for_secrets = self._scans_for_secrets(
+                record_type, reads_as_code_file=reads_as_code_file
+            )
+
+            # The blob and the vectors are shared through the duplicate's
+            # virtualRecordId, but block nodes are keyed by record, so a deduped
+            # code file would otherwise be searchable and yet missing from the
+            # code graph. Projected before the duplicate's COMPLETED status is
+            # copied over: that status is what tells the edge builder the repo
+            # has drained, so it must not precede the blocks. For the same
+            # reason a failure propagates instead of leaving a COMPLETED record
+            # with no blocks.
+            before_reusing_status: Callable[[], Awaitable[None]] | None = None
+            if is_code:
+                # `_check_duplicate_by_md5` encodes only its own local binding,
+                # so a str buffer reaches here unconverted and `decode_source`
+                # (tree-sitter indexes by byte offset) would fail on it.
+                code_bytes = (
+                    file_content.encode("utf-8")
+                    if isinstance(file_content, str)
+                    else file_content
+                )
+
+                async def _project_duplicate_code() -> None:
+                    await self.processor.project_code_blocks_to_graph(
+                        record_id=record_id,
+                        org_id=org_id,
+                        record_group_id=doc.get("recordGroupId"),
+                        connector_id=doc.get("connectorId"),
+                        record_name=record_name,
+                        file_path=event_data.get("filePath"),
+                        content=code_bytes,
+                        propagate_failure=True,
+                    )
+
+                before_reusing_status = _project_duplicate_code
 
             rebuild_shared_vrid = False
             # Calculate MD5 hash and check for duplicates for ALL record types
             try:
-                dedup_decision = await self._check_duplicate_by_md5(file_content, doc, content_rev=content_rev)
+                dedup_decision = await self._check_duplicate_by_md5(
+                    file_content, doc, before_reusing_status=before_reusing_status,
+                    content_rev=content_rev, scans_for_secrets=scans_for_secrets,
+                )
                 if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")
                     await notify_record_indexed(
@@ -1284,6 +1498,9 @@ class EventProcessor:
                 file_content = file_content.strip()
 
             if not file_content or file_content == b"":
+                if is_code:
+                    # A file emptied to zero bytes is caught here, before parsing (B3).
+                    await self.processor._drop_code_blocks(record_id)
                 await self._drop_the_previous_vectors_of_an_emptied_record(
                     doc, virtual_record_id, event_type
                 )
@@ -1424,9 +1641,9 @@ class EventProcessor:
                 abandoned_virtual_record_id
                 and abandoned_virtual_record_id != virtual_record_id
             ):
-                await self._cleanup_abandoned_vrid_storage(
-                    org_id, abandoned_virtual_record_id
-                )
+                # Off the indexing slot: the cleanup waits to confirm no record
+                # still uses the vrid, and backs off on errors, before deleting.
+                self._spawn_abandoned_vrid_cleanup(org_id, abandoned_virtual_record_id)
                 await self._rewrite_or_delete_vrid_vectors(abandoned_virtual_record_id)
 
             # Ask the consumer for a nested parsing slot only after the record
@@ -1451,9 +1668,10 @@ class EventProcessor:
                 ),
             )
 
-            reads_as_code_file = self._reads_as_code_file(
-                record_type, mime_type, code_ext, record_name
-            )
+            if scans_for_secrets:
+                # Once, ahead of both pipelines: blocks, embeddings, LLM
+                # extraction and read_code all derive from these bytes.
+                file_content = await self._redact_code_secrets(doc, record_name, file_content)
 
             # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──
             if self._use_service_pipeline():
@@ -1485,6 +1703,8 @@ class EventProcessor:
                             event_type=event_type,
                             prev_virtual_record_id=prev_virtual_record_id,
                         ):
+                            if event.event == IndexingEvent.PARSING_COMPLETE:
+                                file_content = content_bytes = None
                             yield event
                         return
                     if plan.route in (CodeFileRoute.DELIMITED, CodeFileRoute.STRUCTURED):
@@ -1509,11 +1729,19 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                     file_content=content_bytes,
+                    is_code=is_code,
+                    file_path=event_data.get("filePath"),
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
             # ── Legacy per-format dispatch (existing behaviour) ──────────────
+            # The parsing service makes the same check on its own side.
+            raise_if_password_protected_office(
+                file_content, extension=extension, mime_type=mime_type
+            )
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
                 async for event in self.processor.process_pptx_document(
@@ -1527,6 +1755,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1543,6 +1773,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1559,6 +1791,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1574,6 +1808,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1590,6 +1826,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1608,6 +1846,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1624,6 +1864,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1639,6 +1881,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1654,6 +1898,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.EPUB.value or mime_type == MimeTypes.EPUB.value:
@@ -1668,6 +1914,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
@@ -1682,6 +1930,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.DOC.value or mime_type == MimeTypes.DOC.value:
@@ -1696,6 +1946,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.XLSX.value or mime_type == MimeTypes.XLSX.value:
@@ -1710,6 +1962,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.XLS.value or mime_type == MimeTypes.XLS.value:
@@ -1724,6 +1978,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.CSV.value or mime_type == MimeTypes.CSV.value:
@@ -1735,6 +1991,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.TSV.value or mime_type == MimeTypes.TSV.value:
@@ -1747,6 +2005,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.HTML.value or mime_type == MimeTypes.HTML.value:
@@ -1761,6 +2021,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.PPTX.value or mime_type == MimeTypes.PPTX.value:
@@ -1775,6 +2037,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.PPT.value or mime_type == MimeTypes.PPT.value:
@@ -1789,6 +2053,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.MD.value or mime_type == MimeTypes.MARKDOWN.value:
@@ -1800,6 +2066,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.MDX.value or mime_type == MimeTypes.MDX.value:
@@ -1814,6 +2082,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.TXT.value or mime_type == MimeTypes.PLAIN_TEXT.value:
@@ -1831,6 +2101,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
 
@@ -1845,6 +2117,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif mime_type == MimeTypes.SQL_VIEW.value or extension == ExtensionTypes.SQL_VIEW.value:
@@ -1858,6 +2132,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.JSON.value or mime_type == MimeTypes.JSON.value:
@@ -1870,6 +2146,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension in {ExtensionTypes.YAML.value, ExtensionTypes.YML.value} or mime_type == MimeTypes.YAML.value:
@@ -1882,6 +2160,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif (
@@ -1908,6 +2188,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             else:
@@ -1919,7 +2201,8 @@ class EventProcessor:
 
         except Exception as e:
             # Let the error bubble up to Kafka consumer
-            self.logger.error(f"❌ Error in event processor: {repr(e)}")
+            if not is_expected_outcome(e):  # the record handler logs it once
+                self.logger.error(f"❌ Error in event processor: {repr(e)}")
             raise
         finally:
             if forced_record_id is not None and self.stage_ingress is not None:

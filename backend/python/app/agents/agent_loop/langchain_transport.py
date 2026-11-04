@@ -59,20 +59,23 @@ from app.agent_loop_lib.transport.content_filter import (
     gemini_prompt_block_reason,
 )
 from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
-from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
+from app.agent_loop_lib.transport.prompt_cache import (
+    REJECTED_CACHE_PARAMS,
+    split_system_prompt,
+)
 from app.agent_loop_lib.transport.provider_conflicts import (
     API_SHAPE_CONFLICT_MARKERS,
     REASONING_MANDATORY_CONFLICT_MARKERS,
     is_api_shape_conflict,
-    is_prompt_cache_param_conflict,
     is_reasoning_mandatory_conflict,
     is_tool_result_image_conflict,
+    refused_cache_params,
 )
+from app.agent_loop_lib.transport.tool_images import has_tool_result_images
 from app.agents.agent_loop.converters import (
     convert_assistant_message_from_langchain,
     convert_messages_to_langchain,
     convert_tool_schemas_to_langchain,
-    has_tool_result_images,
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
@@ -120,6 +123,10 @@ _NETWORK_ERROR_NAME_HINTS = (
     "connectionerror", "connecttimeout", "readtimeout", "timeouterror",
     "apitimeouterror", "apiconnectionerror", "protocolerror", "incompleteread",
 )
+# httpx's `NetworkError` family (`ReadError`, `WriteError`, `CloseError`), raised unwrapped from a stream whose
+# connection the provider dropped mid-answer; matched by exact class name anywhere in the MRO ("readerror" as a
+# substring would also match unrelated names such as a `ThreadError`).
+_NETWORK_ERROR_CLASS_NAMES = frozenset({"NetworkError", "ReadError", "WriteError", "CloseError"})
 
 # Substrings providers/gateways actually emit when reasoning + bound function
 # tools can't both go through the API shape the request used. Matched
@@ -206,6 +213,8 @@ def _content_filter_detail(metadata: dict[str, Any]) -> str | None:
 def _is_network_error(exc: Exception) -> bool:
     if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
         return True
+    if {cls.__name__ for cls in type(exc).__mro__} & _NETWORK_ERROR_CLASS_NAMES:
+        return True
     type_name = type(exc).__name__.lower()
     return any(hint in type_name for hint in _NETWORK_ERROR_NAME_HINTS)
 
@@ -237,6 +246,7 @@ def _is_transient_provider_error(exc: Exception) -> bool:
 # falling through to the permissive default.
 _OLLAMA_CLASS_NAME = "ChatOllama"
 _OPENAI_CLASS_NAMES = frozenset({"BaseChatOpenAI", "ChatOpenAI", "AzureChatOpenAI"})
+_BEDROCK_CONVERSE_CLASS_NAME = "ChatBedrockConverse"
 
 # `tool_choice` asking each `cache_target` family for a reply without tool
 # calls. Bedrock Converse has no such value, and an unknown provider is never
@@ -267,16 +277,23 @@ def _supports_multipart_tool_result(chat_model: "BaseChatModel") -> bool:
       unsupported here and delivers its images through the user-message
       fallback instead — a redundant relocation, not a broken call.
 
+    - OpenAI GPT-5.x / GPT-6 on Bedrock Converse reject an `image` block
+      inside a `toolResult` with a ValidationException.
+
     Every other LangChain-wrapped provider PipesHub configures (Anthropic,
-    Gemini, Bedrock, ...) accepts multipart tool results. Whatever this gets
-    wrong for an unknown gateway is recovered at runtime off the provider's
-    own error — see `LangChainTransport._relocates_tool_images`.
+    Gemini, other Bedrock models, ...) accepts multipart tool results.
+    Whatever this gets wrong for an unknown gateway is recovered at runtime
+    off the provider's own error — see `LangChainTransport._relocates_tool_images`.
     """
     mro_names = {cls.__name__ for cls in type(chat_model).__mro__}
     if _OLLAMA_CLASS_NAME in mro_names:
         return False
     if mro_names & _OPENAI_CLASS_NAMES:
         return bool(getattr(chat_model, "use_responses_api", False))
+    if _BEDROCK_CONVERSE_CLASS_NAME in mro_names:
+        from app.utils.aimodels import bedrock_is_openai_gpt
+
+        return not bedrock_is_openai_gpt(getattr(chat_model, "model_id", None))
     return True
 
 
@@ -297,14 +314,6 @@ def responses_api_copy(llm: "BaseChatModel") -> "BaseChatModel":
     })
 
 
-def _system_prompt(system: str | None, system_blocks: list[str] | None) -> tuple[str, str]:
-    """`(stable, volatile)`: the agent's blocks when given (the first is the
-    stable one), else the whole `system` as one stable block."""
-    if system_blocks:
-        return system_blocks[0] or "", "\n\n".join(block for block in system_blocks[1:] if block)
-    return system or "", ""
-
-
 class LangChainTransport(LLMTransport):
     """Bridges a LangChain `BaseChatModel` to agent-loop's `LLMTransport`."""
 
@@ -321,8 +330,8 @@ class LangChainTransport(LLMTransport):
         self._llm = chat_model
         self._model = model_name
         # How this provider is asked to cache the tools, the system prompt and
-        # the history (`prompt_cache.cache_strategy_for`). Swapped for
-        # `NoCacheStrategy` if the provider rejects a cache parameter.
+        # the history (`prompt_cache.cache_strategy_for`). Narrowed by
+        # `CacheStrategy.without` if the provider rejects a cache parameter.
         self._cache: CacheStrategy = cache_strategy or NoCacheStrategy()
         self._cache_target = cache_target(chat_model, model_name)
         # Bedrock reports input without cached tokens; every other provider
@@ -465,8 +474,8 @@ class LangChainTransport(LLMTransport):
             messages,
             system,
             strip_tool_images=not self._supports_multipart_tool_result,
-            # The cap may keep a tool copy and discard its injected user copy.
-            # Move surviving tool images instead of silently stripping them.
+            # A provider that rejects images in a tool result gets them in one
+            # user message after the results, its only delivery path.
             relocate_tool_images=(
                 not self._supports_multipart_tool_result or self._tool_images_relocated
             ) if relocate is None else relocate,
@@ -478,19 +487,22 @@ class LangChainTransport(LLMTransport):
         """The LangChain messages and call kwargs for one provider call, shaped
         by the cache strategy. Rebuilt for every attempt, so a retry after the
         strategy changed sends what the new one asks for."""
-        system_message = self._cache.system(*prompt)
         converted = self._to_langchain(messages, None, relocate=relocate)
-        return self._cache.finalize([system_message, *converted] if system_message else converted)
+        return self._cache.finalize([*self._cache.system(*prompt), *converted])
 
     def _drop_cache_params(self, exc: Exception) -> bool:
         """Whether `exc` is the provider refusing a cache parameter this request
-        carried. If so, the rest of this run is sent without cache parameters,
+        carried. If so, the rest of this run is sent without the ones it named,
         and so is every later run for this model and endpoint in this process."""
-        if not is_prompt_cache_param_conflict(exc, self._cache.sent_params):
+        refused = refused_cache_params(exc, self._cache.sent_params)
+        if not refused:
             return False
-        logger.warning("LangChainTransport: prompt-cache parameters rejected; resending without them: %s", redact_error_for_log(str(exc)))
-        REJECTED_CACHE_PARAMS.record(self._cache_target.model, self._cache_target.base_url)
-        self._cache = NoCacheStrategy()
+        logger.warning(
+            "LangChainTransport: prompt-cache parameters %s rejected; resending without them: %s",
+            sorted(refused), redact_error_for_log(str(exc)),
+        )
+        REJECTED_CACHE_PARAMS.record(self._cache_target.model, self._cache_target.base_url, refused)
+        self._cache = self._cache.without(refused)
         self._bound_by_tools.clear()
         return True
 
@@ -504,8 +516,8 @@ class LangChainTransport(LLMTransport):
         llm: BaseChatModel | None = None,
         tool_choice: ToolChoice | None = None,
     ) -> AIMessage:
-        """One `ainvoke`, resent once without cache parameters if the provider
-        rejects one (the second pass has none, so it cannot loop)."""
+        """One `ainvoke`, resent without each cache parameter the provider
+        refuses (every pass sends fewer, so it cannot loop)."""
         while True:
             lc_messages, call_kwargs = self._request(messages, prompt, relocate=relocate)
             bound = self._bind_tools(tools, llm=llm, tool_choice=tool_choice)
@@ -520,10 +532,10 @@ class LangChainTransport(LLMTransport):
         provider rejected an image inside a tool result.
 
         The images move to a trailing user message rather than being dropped
-        (`convert_messages_to_langchain`'s `relocate_tool_images`): a run that
-        got here has no `shape_retrieved_image_injection` hook registered to
-        re-deliver them, since the factory registers that hook only for
-        providers `_supports_multipart_tool_result` already rejects. Returns
+        (`convert_messages_to_langchain`'s `relocate_tool_images`): this
+        provider was expected to take images in a tool result
+        (`_supports_multipart_tool_result`), so nothing else delivers them.
+        Returns
         False once the shape is pinned, so a rejection that merely repeats
         the same marker can't retry forever.
         """
@@ -744,7 +756,7 @@ class LangChainTransport(LLMTransport):
         # configured once at model-construction time in PipesHub's existing
         # LLM factory, not per-call — silently ignored here per the
         # LLMTransport contract ("unsupported knobs must not raise").
-        prompt = _system_prompt(system, system_blocks)
+        prompt = split_system_prompt(system, system_blocks)
         # Bound up front so a bind failure surfaces as itself, not as a
         # provider error; the binding is cached for the calls below.
         self._bind_tools(tools, tool_choice=tool_choice)
@@ -936,7 +948,7 @@ class LangChainTransport(LLMTransport):
         *,
         tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        prompt = _system_prompt(system, system_blocks)
+        prompt = split_system_prompt(system, system_blocks)
         lc_messages, call_kwargs = self._request(messages, prompt)
         lc_llm = self._bind_tools(tools, tool_choice=tool_choice)
         relocate: bool | None = None

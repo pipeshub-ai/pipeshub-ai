@@ -108,6 +108,15 @@ _REDIS_CAPABILITIES = VectorDBCapabilities(
 # RediSearch caps offset+limit at MAXSEARCHRESULTS; the default is 10000.
 _MAX_SEARCH_RESULTS = 10000
 
+# Scans that select points to act on (delete, payload write, scroll) must see
+# every match. RediSearch's default ON_TIMEOUT is RETURN: a query past its
+# timeout (500 ms by default) answers with the rows it had, and a RESP2 reply
+# carries no flag saying so, so a delete or payload write would quietly miss
+# points. ``TIMEOUT 0`` lifts the limit for these page-bounded queries. Newer
+# servers cap a foreground (``search-workers 0``) query at 60 s, so operators who
+# want a hard guarantee can also set ``search-on-timeout FAIL``.
+_NO_TIMEOUT = ("TIMEOUT", "0")
+
 # Page size for paged deletes and aggregate-cursor reads.
 _DELETE_PAGE_SIZE = 500
 
@@ -680,6 +689,7 @@ class RedisVectorService(IVectorDBService):
                     "FT.SEARCH", idx, query,
                     "NOCONTENT",
                     "LIMIT", "0", str(_DELETE_PAGE_SIZE),
+                    *_NO_TIMEOUT,
                 )
             except Exception as e:
                 # Do not swallow: callers treat a returned delete as complete and
@@ -701,8 +711,7 @@ class RedisVectorService(IVectorDBService):
 
             await self.client.delete(*page_keys)  # type: ignore
             total_deleted += len(page_keys)
-            if len(page_keys) < _DELETE_PAGE_SIZE:
-                break
+            # No short-page exit: only an empty re-query proves nothing is left.
         return total_deleted
 
     async def _delete_filtered(
@@ -722,6 +731,7 @@ class RedisVectorService(IVectorDBService):
             raw = await self.client.execute_command(  # type: ignore
                 "FT.AGGREGATE", idx, query,
                 "LOAD", str(len(load)), *load,
+                *_NO_TIMEOUT,
                 "WITHCURSOR", "COUNT", str(_DELETE_PAGE_SIZE),
                 "MAXIDLE", str(_CURSOR_MAX_IDLE_MS),
             )
@@ -800,6 +810,7 @@ class RedisVectorService(IVectorDBService):
                     "FT.SEARCH", idx, query,
                     "RETURN", str(len(return_fields)), *return_fields,
                     "LIMIT", str(offset), str(_DELETE_PAGE_SIZE),
+                    *_NO_TIMEOUT,
                 )
             except Exception as e:
                 raise RuntimeError(
@@ -972,11 +983,13 @@ class RedisVectorService(IVectorDBService):
                 "FT.SEARCH", idx, query,
                 "RETURN", str(len(return_fields)), *return_fields,
                 "LIMIT", str(int_offset), str(limit),
+                *_NO_TIMEOUT,
             )
         else:
             raw = await self.client.execute_command(  # type: ignore
                 "FT.SEARCH", idx, query,
                 "LIMIT", str(int_offset), str(limit),
+                *_NO_TIMEOUT,
             )
 
         points: list[VectorPoint] = []
@@ -1190,49 +1203,68 @@ class RedisVectorService(IVectorDBService):
     ) -> list[bytes]:
         """Return all Redis keys in a collection matching a filter expression.
 
-        Uses iterative re-query-from-offset-0 after each page deletion to avoid
-        the stale-offset problem that arises when keys are deleted mid-iteration.
-        For pure reads (delete_points = False context), returns all matching keys.
+        Read through an aggregate cursor, not ``FT.SEARCH ... LIMIT offset``: an unsorted offset page is not
+        stable across calls (documents still settling in the index move between pages), so a page-by-page
+        scan repeats some keys and misses others, and a payload write would then skip the missed points.
+        A cursor can still repeat a key, so keys are de-duplicated, and a scan that ends with fewer distinct
+        keys than a count query reported for the same filter raises instead of answering with a part. The
+        count is a separate ``FT.SEARCH ... LIMIT 0 0``: the first integer of an aggregate reply is not
+        defined as the number of matches. Documents may change between the two calls, so only a scan that
+        finds fewer than counted raises (a retry by the caller then sees a settled index).
         """
         idx = self._index_name(collection_name)
         query = filter_expression_to_redis_query(filter_expr)
 
-        # Single bulk read: paginate until exhausted.
-        # Caller is responsible for not modifying the index between calls.
-        page_size = 1000
-        offset = 0
-        all_keys: list[bytes] = []
-
-        while True:
-            try:
-                raw = await self.client.execute_command(  # type: ignore
-                    "FT.SEARCH", idx, query,
-                    "NOCONTENT",
-                    "LIMIT", str(offset), str(page_size),
+        found: dict[bytes, None] = {}
+        total = 0
+        cursor = 0
+        try:
+            counted = await self.client.execute_command(  # type: ignore
+                "FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
+            )
+            if not isinstance(counted, (list, tuple)) or not counted:
+                raise RuntimeError(f"unexpected count reply {counted!r}")
+            total = int(counted[0])
+            reply = await self.client.execute_command(  # type: ignore
+                "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key",
+                "WITHCURSOR", "COUNT", "1000", *_NO_TIMEOUT,
+            )
+            while True:
+                if not isinstance(reply, (list, tuple)) or len(reply) != 2:
+                    raise RuntimeError(f"unexpected reply {reply!r}")
+                rows, cursor = reply
+                for row in rows[1:]:
+                    fields = dict(zip(row[::2], row[1::2]))
+                    key = fields.get(b"__key") or fields.get("__key")
+                    if key is not None:
+                        found[key if isinstance(key, bytes) else key.encode()] = None
+                if not cursor:
+                    break
+                reply = await self.client.execute_command(  # type: ignore
+                    "FT.CURSOR", "READ", idx, cursor, "COUNT", "1000",
                 )
-            except Exception as e:
-                # A partial key list would silently update only some of a VRID's
-                # chunks while reporting success.
-                raise RuntimeError(
-                    f"Key lookup on '{collection_name}' failed after "
-                    f"{len(all_keys)} key(s): {e}"
-                ) from e
+        except asyncio.CancelledError:
+            # Not an Exception: a cancelled scan would leave its cursor open until the server expires it,
+            # and cursors are limited per shard. The delete itself is shielded from the cancellation.
+            if cursor:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(self.client.execute_command("FT.CURSOR", "DEL", idx, cursor))  # type: ignore
+            raise
+        except Exception as e:
+            if cursor:
+                with contextlib.suppress(Exception):  # best effort; the cursor expires on its own
+                    await self.client.execute_command("FT.CURSOR", "DEL", idx, cursor)  # type: ignore
+            # A partial key list would silently update only some of a VRID's
+            # chunks while reporting success.
+            raise RuntimeError(
+                f"Key lookup on '{collection_name}' failed after {len(found)} key(s): {e}"
+            ) from e
 
-            if not raw or not isinstance(raw, (list, tuple)):
-                break
-            total = int(raw[0]) if raw else 0
-            keys_in_page = [
-                k if isinstance(k, bytes) else k.encode()
-                for k in raw[1:]
-            ]
-            if not keys_in_page:
-                break
-            all_keys.extend(keys_in_page)
-            offset += len(keys_in_page)
-            if offset >= total:
-                break
-
-        return all_keys
+        if len(found) < total:
+            raise RuntimeError(
+                f"Key lookup on '{collection_name}' returned {len(found)} of {total} counted key(s)"
+            )
+        return list(found)
 
     # ------------------------------------------------------------------
     # Internal guards

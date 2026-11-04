@@ -19,6 +19,7 @@ from app.agent_loop_lib.agent.tool_loop import (
     tool_schemas_for_turn,
 )
 from app.agent_loop_lib.context.base import ContextBudget
+from app.agent_loop_lib.context.errors import ContextError
 from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.exceptions import AgentError, HookBlocked, RunCancelled, TransportError
 from app.agent_loop_lib.core.tokens import count_schema_tokens, count_text_tokens
@@ -31,6 +32,7 @@ from app.agent_loop_lib.core.messages import (
     ToolMessage,
     UserMessage,
     add_loop_note,
+    dedupe_tool_call_ids,
 )
 from app.agent_loop_lib.core.responses import RunUsage, StopReason
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
@@ -649,7 +651,7 @@ class Agent:
                     return result
 
                 if not _skip_user_message:
-                    await self._context.add(UserMessage(content=goal.description))
+                    await self._context.add(UserMessage(content=goal.request_text()))
 
             result = await self._spec.loop.run(self, goal)
             try:
@@ -737,9 +739,24 @@ class Agent:
             spec.model.model, context_window=spec.model.context_window,
             reserved_prompt_tokens=count_text_tokens(system_prompt or "") + count_schema_tokens(tool_schemas),
         )
-        messages = await hooks.dispatch_pre_model(
-            self._hooks, messages, budget, turn_index=turn_index, max_turns=spec.max_turns, scope=turn_scope,
-        )
+        try:
+            messages = await hooks.dispatch_pre_model(
+                self._hooks, messages, budget, turn_index=turn_index, max_turns=spec.max_turns, scope=turn_scope,
+            )
+        except ContextError as e:
+            # The shaped request would be rejected by the provider (or lose the
+            # question), so this turn makes no model call. On the wrap-up turn
+            # the caller falls back to what the run already has.
+            if final_answer_only:
+                await obs.append_timeline(
+                    self, "final_answer_turn_failed", f"Context could not be shaped: {e}",
+                    "calling_llm", {"turn_index": turn_index, "error": str(e)},
+                )
+                return StepOutcome("continue")
+            return StepOutcome("stop", result=await self.fail(
+                goal, f"Context could not be shaped: {e}", event="context_budget_exceeded",
+                summary=f"Context could not be shaped: {e}",
+            ))
         if final_answer_only:
             carried_before = len(messages)
             if add_loop_note(messages, _FINAL_ANSWER_NOTE) != "step_footer":
@@ -940,6 +957,19 @@ class Agent:
                 response.usage.cache_read_tokens, response.usage.cache_write_tokens,
             )
 
+        if isinstance(response_msg, AssistantMessage) and response_msg.tool_calls:
+            history_ids = {
+                call.id
+                for msg in await context.messages()
+                if isinstance(msg, AssistantMessage)
+                for call in msg.tool_calls or ()
+            }
+            renamed = dedupe_tool_call_ids([response_msg], history_ids)
+            if renamed:
+                logger.info(
+                    "agent %s turn %d: renamed %d of %d tool call id(s) that were empty or already in the conversation",
+                    self.spec.name, turn_index, renamed, len(response_msg.tool_calls),
+                )
         await context.add(response_msg)
 
         if response.stop_reason == StopReason.CANCELLED:

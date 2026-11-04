@@ -524,7 +524,7 @@ class TestNestedTableInCell:
         assert nested_rows[0].data["cells"] == ["inner"]
 
     async def test_nested_list_in_cell(self):
-        """List in cell is parsed as blocks, not flattened to text."""
+        """A text-only list in a cell is kept once, in the row, not again as list blocks."""
         parser = _parser()
         adf = {
             "type": "doc",
@@ -556,13 +556,13 @@ class TestNestedTableInCell:
         
         blocks, block_groups = await parser.parse_adf(adf, page_id="p1", page_title=None)
         
-        # Check that cell has nested content with text blocks
         table_rows = [b for b in blocks if b.type == BlockType.TABLE_ROW]
         assert len(table_rows) == 1
-        
+        assert [b.type for b in blocks] == [BlockType.TABLE_ROW]
+
         cell_details = table_rows[0].data["cell_details"]
-        assert cell_details[0]["type"] == "nested"
-        assert len(cell_details[0]["block_indices"]) > 0
+        assert cell_details[0]["type"] == "text"
+        assert cell_details[0]["text"] == "- item1 - item2"
 
     async def test_mixed_text_and_nested_cells(self):
         """Table row with both simple text and nested content cells."""
@@ -611,9 +611,9 @@ class TestNestedTableInCell:
         assert cell_details[0]["type"] == "text"
         assert cell_details[0]["text"] == "Simple"
         
-        # Second cell: nested list
-        assert cell_details[1]["type"] == "nested"
-        assert len(cell_details[1]["block_indices"]) > 0
+        # Second cell: text-only list, kept in the row only
+        assert cell_details[1]["type"] == "text"
+        assert len(blocks) == 1
         
         # Third cell: text only
         assert cell_details[2]["type"] == "text"
@@ -664,9 +664,9 @@ class TestNestedTableInCell:
         ]
         assert list_groups == []
 
-        list_items = [b for b in blocks if b.list_metadata]
-        assert len(list_items) == 2
-        assert all(item.parent_index == table_group.index for item in list_items)
+        assert [b for b in blocks if b.list_metadata] == []
+        assert blocks[0].parent_index == table_group.index
+        assert blocks[0].data["cells"] == ["- item1 - item2"]
 
     async def test_page_level_list_still_grouped_after_post_process(self):
         """List items outside tables are still wrapped in LIST groups."""
@@ -1191,10 +1191,15 @@ class TestExtractTextFromContent:
         content = [{"type": "mention", "attrs": {"text": "Alice"}}]
         assert parser._extract_text_from_content(content) == "@Alice"
 
-    def test_mention_fallback_to_id(self):
+    def test_mention_without_text_never_shows_account_id(self) -> None:
         parser = _parser()
         content = [{"type": "mention", "attrs": {"id": "user-42"}}]
-        assert parser._extract_text_from_content(content) == "@user-42"
+        assert parser._extract_text_from_content(content) == ""
+
+    def test_mention_text_already_prefixed(self) -> None:
+        parser = _parser()
+        content = [{"type": "mention", "attrs": {"id": "user-42", "text": "@Alice"}}]
+        assert parser._extract_text_from_content(content) == "@Alice"
 
     def test_emoji_short_name(self):
         parser = _parser()
@@ -1927,7 +1932,7 @@ class TestAttachInlineComments:
         await parser.attach_inline_comments_to_blocks(blocks, comments)
         assert len(blocks[0].comments[0]) == 2
 
-    async def test_target_block_not_found_leaves_blocks_unchanged(self):
+    async def test_unmatched_thread_attaches_at_page_level(self) -> None:
         parser = _parser()
         blocks = [Block(
             index=0,
@@ -1947,8 +1952,8 @@ class TestAttachInlineComments:
             },
         }]
         await parser.attach_inline_comments_to_blocks(blocks, comments)
-        assert blocks[0].comments == []
-        parser.logger.debug.assert_called()
+        assert len(blocks[0].comments) == 1
+        assert blocks[0].comments[0][0].quoted_text == "does not exist"
 
 
 @pytest.mark.asyncio
@@ -2805,8 +2810,9 @@ class TestInlineCodeTableAndLayoutParsing:
                 }],
             }],
         }, page_id="p1")
-        columns = [g for g in groups if g.type == GroupType.COLUMN]
+        columns = [g for g in groups if g.parent_index is not None and groups[g.parent_index].type == GroupType.COLUMN_LIST]
         assert len(columns) == 1
+        assert columns[0].type == GroupType.TEXT_SECTION
         assert columns[0].children is not None
 
     async def test_group_list_items_flushes_before_table_cell_list(self):
@@ -2885,3 +2891,507 @@ class TestInlineCodeTableAndLayoutParsing:
             }],
         }, page_id="p1")
         assert any("heading in item" in str(b.data) for b in blocks)
+
+
+def _comment(cid: str, text: str, **extra) -> dict:
+    body = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]}
+    return {
+        "id": cid,
+        "version": {"authorId": "u1", "createdAt": extra.pop("created", "2026-01-01T00:00:00.000Z")},
+        "body": {"atlas_doc_format": {"value": json.dumps(body)}},
+        **extra,
+    }
+
+
+def _annotated(text: str, ref: str) -> dict:
+    return {
+        "type": "text",
+        "text": text,
+        "marks": [{"type": "annotation", "attrs": {"annotationType": "inlineComment", "id": ref}}],
+    }
+
+
+@pytest.mark.asyncio
+class TestInlineCommentAnchoring:
+    async def test_marker_ref_anchors_to_annotated_block(self) -> None:
+        parser = _parser()
+        adf = {"type": "doc", "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "the same words"}]},
+            {"type": "bulletList", "content": [{"type": "listItem", "content": [
+                {"type": "paragraph", "content": [
+                    {"type": "text", "text": "the "},
+                    _annotated("same", "ref-1"),
+                    {"type": "text", "text": " words", "marks": [{"type": "strong"}]},
+                ]},
+            ]}]},
+        ]}
+        blocks, _ = await parser.parse_adf(adf, page_id="p1", page_title="Title")
+        comments = [_comment("c1", "Note", properties={
+            "inlineMarkerRef": "ref-1", "inlineOriginalSelection": "same",
+        })]
+        await parser.attach_inline_comments_to_blocks(blocks, comments)
+        commented = [b for b in blocks if b.comments]
+        assert len(commented) == 1
+        assert commented[0] is not blocks[1]
+        assert "same" in str(commented[0].data)
+
+    async def test_marker_ref_in_table_cell_anchors_to_row(self) -> None:
+        parser = _parser()
+        adf = {"type": "doc", "content": [{"type": "table", "content": [
+            {"type": "tableRow", "content": [
+                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+            ]},
+            {"type": "tableRow", "content": [
+                {"type": "tableCell", "content": [{"type": "paragraph", "content": [_annotated("b", "ref-t")]}]},
+            ]},
+        ]}]}
+        blocks, _ = await parser.parse_adf(adf, page_id="p1")
+        await parser.attach_inline_comments_to_blocks(
+            blocks, [_comment("c1", "Cell note", properties={"inlineMarkerRef": "ref-t"})]
+        )
+        commented = [b for b in blocks if b.comments]
+        assert len(commented) == 1
+        assert commented[0].data["cells"] == ["b"]
+
+    async def test_text_fallback_strips_markup_on_both_sides_and_skips_title(self) -> None:
+        parser = _parser()
+        adf = {"type": "doc", "content": [{"type": "paragraph", "content": [
+            {"type": "text", "text": "Plan", "marks": [{"type": "strong"}]},
+            {"type": "text", "text": " for "},
+            {"type": "text", "text": "Q3", "marks": [{"type": "link", "attrs": {"href": "https://x.test"}}]},
+        ]}]}
+        blocks, _ = await parser.parse_adf(adf, page_id="p1", page_title="Plan")
+        await parser.attach_inline_comments_to_blocks(
+            blocks, [_comment("c1", "Hi", properties={"inlineOriginalSelection": "Plan  for **Q3**"})]
+        )
+        assert blocks[0].comments == []
+        assert len(blocks[1].comments) == 1
+
+    async def test_selection_spanning_blocks_matches_first_line(self) -> None:
+        parser = _parser()
+        adf = {"type": "doc", "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "first paragraph end"}]},
+            {"type": "paragraph", "content": [{"type": "text", "text": "second start"}]},
+        ]}
+        blocks, _ = await parser.parse_adf(adf, page_id="p1")
+        await parser.attach_inline_comments_to_blocks(
+            blocks, [_comment("c1", "Hi", properties={"inlineOriginalSelection": "paragraph end\nsecond"})]
+        )
+        assert len(blocks[0].comments) == 1
+
+    async def test_unmatched_thread_goes_to_title_block(self) -> None:
+        parser = _parser()
+        adf = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "body"}]}]}
+        blocks, _ = await parser.parse_adf(adf, page_id="p1", page_title="T")
+        await parser.attach_inline_comments_to_blocks(
+            blocks, [_comment("c1", "Hi", properties={"inlineOriginalSelection": "gone", "inlineMarkerRef": "x"})]
+        )
+        assert len(blocks[0].comments) == 1
+        assert blocks[1].comments == []
+
+    async def test_reply_to_reply_stays_in_root_thread(self) -> None:
+        parser = _parser()
+        blocks = [Block(index=0, type=BlockType.TEXT, format=DataFormat.MARKDOWN, data="anchor text")]
+        comments = [
+            _comment("r2", "Reply 2", parentCommentId="r1", created="2026-01-03T00:00:00.000Z"),
+            _comment("root", "Root", properties={"inlineOriginalSelection": "anchor"}),
+            _comment("r1", "Reply 1", parentCommentId="root", created="2026-01-02T00:00:00.000Z"),
+        ]
+        await parser.attach_inline_comments_to_blocks(blocks, comments)
+        assert len(blocks[0].comments) == 1
+        thread = blocks[0].comments[0]
+        assert [c.text for c in thread] == ["Root", "Reply 1", "Reply 2"]
+        assert thread[0].quoted_text == "anchor"
+        assert thread[2].created_at is not None
+
+    async def test_comment_image_kept_as_text_reference(self) -> None:
+        parser = _parser()
+        blocks = [Block(index=0, type=BlockType.TEXT, format=DataFormat.MARKDOWN, data="anchor")]
+        body = {"type": "doc", "content": [
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "m", "__fileName": "shot.png"}}]},
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {
+                "type": "external", "url": "https://img.test/a.png",
+            }}]},
+        ]}
+        comment = _comment("c1", "", properties={"inlineOriginalSelection": "anchor"})
+        comment["body"]["atlas_doc_format"]["value"] = json.dumps(body)
+        await parser.attach_inline_comments_to_blocks(blocks, [comment])
+        text = blocks[0].comments[0][0].text
+        assert "shot.png" in text
+        assert "[https://img.test/a.png](https://img.test/a.png)" in text
+
+    async def test_external_image_reference_survives_awkward_urls(self) -> None:
+        from app.connectors.sources.atlassian.core.adf_markdown import media_reference
+
+        assert media_reference({"type": "external", "url": "https://img.test/a (1).png", "alt": "x]y"}) == (
+            r"[x\]y](<https://img.test/a (1).png>)"
+        )
+
+    async def test_external_image_without_id_or_name_is_kept_in_the_page(self) -> None:
+        parser = _parser()
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {
+                "type": "external", "url": "https://img.test/b.png",
+            }}]},
+        ]})
+        assert any("https://img.test/b.png" in str(b.data) for b in blocks)
+
+
+@pytest.mark.asyncio
+class TestCommentCreatedAt:
+    async def test_v2_version_created_at_is_used(self) -> None:
+        parser = _parser()
+        comment = _comment("c1", "x", created="2026-02-03T04:05:06.000Z")
+        assert "createdAt" not in comment
+        result = await parser._parse_confluence_comment_to_block_comment(comment)
+        assert result.created_at is not None
+        assert result.created_at.year == 2026 and result.created_at.month == 2
+
+    async def test_top_level_created_at_wins(self) -> None:
+        comment = {"createdAt": "a", "version": {"createdAt": "b"}}
+        assert ConfluenceBlockParser.comment_created_at(comment) == "a"
+        assert ConfluenceBlockParser.comment_created_at({}) is None
+
+
+@pytest.mark.asyncio
+class TestContentKeptFromCardsExtensionsMedia:
+    async def test_block_and_embed_cards_keep_url_and_title(self) -> None:
+        parser = _parser()
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "blockCard", "attrs": {"url": "https://a.test", "data": {"name": "Design doc"}}},
+            {"type": "embedCard", "attrs": {"url": "https://b.test"}},
+            {"type": "paragraph", "content": [{"type": "inlineCard", "attrs": {"url": "https://c.test"}}]},
+        ]}, page_id="p1")
+        assert [b.data for b in blocks] == [
+            "[Design doc](https://a.test)",
+            "[https://b.test](https://b.test)",
+            "[https://c.test](https://c.test)",
+        ]
+        assert blocks[0].link_metadata.link_text == "Design doc"
+
+    async def test_layout_only_macros_are_dropped_quietly(self) -> None:
+        parser = _parser()
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "extension", "attrs": {"extensionKey": "toc"}},
+            {"type": "extension", "attrs": {"extensionKey": "children"}},
+            {"type": "paragraph", "content": [
+                {"type": "text", "text": "see"},
+                {"type": "inlineExtension", "attrs": {"extensionKey": "anchor"}},
+            ]},
+        ]}, page_id="p1")
+        assert [b.data for b in blocks] == ["see"]
+
+    async def test_extension_keeps_title_and_params(self) -> None:
+        parser = _parser()
+        attrs = {
+            "extensionKey": "jira",
+            "parameters": {
+                "macroMetadata": {"title": "Jira"},
+                "macroParams": {"jqlQuery": {"value": "project = ABC"}, "_parentId": {"value": "9"}},
+            },
+        }
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "extension", "attrs": attrs},
+            {"type": "paragraph", "content": [
+                {"type": "text", "text": "x "},
+                {"type": "inlineExtension", "attrs": attrs},
+            ]},
+            {"type": "inlineExtension", "attrs": attrs},
+        ]}, page_id="p1")
+        assert blocks[0].data == "[Jira] jqlQuery: project = ABC"
+        assert blocks[1].data == "x [Jira] jqlQuery: project = ABC"
+        assert blocks[2].data == "[Jira] jqlQuery: project = ABC"
+
+    async def test_media_inline_kept_in_paragraph(self) -> None:
+        parser = _parser()
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [{"type": "paragraph", "content": [
+            {"type": "text", "text": "see "},
+            {"type": "mediaInline", "attrs": {"id": "m1", "alt": "spec.pdf"}},
+        ]}]}, page_id="p1")
+        assert blocks[0].data == "see spec.pdf"
+
+    async def test_failed_image_fetch_keeps_text_reference(self) -> None:
+        parser = _parser()
+
+        async def failing_fetcher(_mid: str, _fn: str) -> None:
+            raise RuntimeError("download failed")
+
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "m1", "alt": "diagram.png"}}]},
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {
+                "type": "external", "url": "https://img.test/x.png", "alt": "logo",
+            }}]},
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "only-an-id"}}]},
+        ]}, page_id="p1", media_fetcher=failing_fetcher)
+        assert [b.data for b in blocks] == ["diagram.png", "[logo](https://img.test/x.png)"]
+        assert all(b.type == BlockType.TEXT for b in blocks)
+
+
+@pytest.mark.asyncio
+class TestTableHeaderAndCells:
+    async def test_first_row_of_plain_cells_is_not_a_header(self) -> None:
+        parser = _parser()
+        cell = lambda t: {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": t}]}]}  # noqa: E731
+        long_text = "y" * 500
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [{"type": "table", "content": [
+            {"type": "tableRow", "content": [cell("r1a"), cell("r1b")]},
+            {"type": "tableRow", "content": [cell(long_text), cell("r2b")]},
+        ]}]}, page_id="p1")
+        table = groups[0]
+        assert table.table_metadata.has_header is False
+        assert table.data["column_headers"] == []
+        lines = table.data["table_markdown"].splitlines()
+        assert lines[0].replace("|", "").strip() == ""
+        assert "r1a" in lines[2]
+        assert long_text in lines[3]
+
+    async def test_header_row_of_table_header_cells(self) -> None:
+        parser = _parser()
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [{"type": "table", "content": [
+            {"type": "tableRow", "content": [
+                {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "H"}]}]},
+            ]},
+            {"type": "tableRow", "content": [
+                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "v"}]}]},
+            ]},
+        ]}]}, page_id="p1")
+        table = groups[0]
+        assert table.table_metadata.has_header is True
+        assert table.data["column_headers"] == ["H"]
+        assert table.data["table_markdown"].splitlines() == ["| H |", "| --- |", "| v |"]
+
+
+def _p(text: str, **extra) -> dict:
+    return {"type": "paragraph", "content": [{"type": "text", "text": text, **extra}]}
+
+
+def _li(text: str, *nested: dict) -> dict:
+    return {"type": "listItem", "content": [_p(text), *nested]}
+
+
+@pytest.mark.asyncio
+class TestAnswerVisibleGroupsAndOrdering:
+    async def test_every_text_block_parent_is_answer_visible(self) -> None:
+        from app.utils.chat_helpers import valid_group_labels
+
+        parser = _parser()
+        cell = lambda *c: {"type": "tableCell", "content": list(c)}  # noqa: E731
+        adf = {"type": "doc", "content": [
+            {"type": "layoutSection", "content": [
+                {"type": "layoutColumn", "content": [_p("left col"), {"type": "bulletList", "content": [_li("a")]}]},
+                {"type": "layoutColumn", "content": [
+                    {"type": "panel", "attrs": {"panelType": "info"}, "content": [_p("in panel")]},
+                    {"type": "expand", "attrs": {"title": "More"}, "content": [_p("hidden")]},
+                ]},
+            ]},
+            {"type": "orderedList", "content": [_li("one", {"type": "bulletList", "content": [_li("one.a")]})]},
+            {"type": "table", "content": [{"type": "tableRow", "content": [
+                cell(_p("plain")),
+                cell({"type": "bulletList", "content": [_li("cell item")]}),
+            ]}]},
+        ]}
+        blocks, groups = await parser.parse_adf(adf, page_id="p1", page_title="T")
+        parser.post_process_blocks(blocks, groups)
+        texts = [b for b in blocks if b.type == BlockType.TEXT]
+        assert {"left col", "in panel", "hidden", "More"} <= {b.data for b in texts}
+        for b in texts:
+            if b.parent_index is None:
+                continue
+            group_type = groups[b.parent_index].type
+            assert group_type.value in valid_group_labels or group_type == GroupType.TABLE, (b.data, group_type)
+
+    async def test_expand_title_is_first_text_block(self) -> None:
+        parser = _parser()
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "expand", "attrs": {"title": "Rollback steps"}, "content": [_p("run it")]},
+        ]})
+        assert [b.data for b in blocks] == ["Rollback steps", "run it"]
+        assert blocks[0].sub_type == BlockSubType.HEADING
+        assert all(b.parent_index == 0 for b in blocks)
+        assert groups[0].children.block_ranges[0].start == 0
+
+    async def test_expand_without_title_adds_no_block(self) -> None:
+        parser = _parser()
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [{"type": "expand", "content": [_p("x")]}]})
+        assert [b.data for b in blocks] == ["x"]
+
+    async def test_list_item_precedes_nested_items_and_claims_its_annotation(self) -> None:
+        parser = _parser()
+        mark = {"marks": [{"type": "annotation", "attrs": {"id": "ann-1", "annotationType": "inlineComment"}}]}
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [{"type": "orderedList", "content": [
+            {"type": "listItem", "content": [
+                _p("parent", **mark),
+                {"type": "orderedList", "content": [_li("child")]},
+            ]},
+            _li("second"),
+        ]}]})
+        parser.post_process_blocks(blocks, groups)
+        assert [b.data for b in blocks] == ["1. parent", "1. child", "2. second"]
+        assert parser._annotation_blocks["ann-1"] is blocks[0]
+
+    async def test_lists_under_different_parents_are_not_merged(self) -> None:
+        parser = _parser()
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "panel", "content": [{"type": "bulletList", "content": [_li("in panel")]}]},
+            {"type": "bulletList", "content": [_li("outside")]},
+        ]})
+        parser.post_process_blocks(blocks, groups)
+        list_groups = [g for g in groups if g.type == GroupType.LIST]
+        assert len(list_groups) == 2
+        assert blocks[0].parent_index != blocks[1].parent_index
+        assert groups[blocks[0].parent_index].parent_index == 0
+        assert groups[blocks[1].parent_index].parent_index is None
+
+    def test_group_list_items_splits_on_parent_change(self) -> None:
+        parser = _parser()
+        meta = ListMetadata(list_style="bullet", indent_level=1)
+        groups = [
+            BlockGroup(index=0, type=GroupType.TEXT_SECTION, sub_type=GroupSubType.COMMENT),
+            BlockGroup(index=1, type=GroupType.TEXT_SECTION, sub_type=GroupSubType.COMMENT),
+        ]
+        blocks = [
+            Block(index=i, type=BlockType.TEXT, format=DataFormat.MARKDOWN, data=f"- {i}", parent_index=p, list_metadata=meta)
+            for i, p in enumerate([0, 0, 1])
+        ]
+        parser._group_list_items(blocks, groups)
+        assert blocks[0].parent_index == blocks[1].parent_index != blocks[2].parent_index
+        assert groups[blocks[2].parent_index].parent_index == 1
+
+    def test_block_children_are_space_separated(self) -> None:
+        parser = _parser()
+        content = [_p("alpha"), _p("beta"), {"type": "text", "text": "x"}, {"type": "text", "text": "y"}]
+        assert parser._extract_text_from_content(content) == "alpha beta xy"
+
+    def test_emoji_prefers_text_and_does_not_double_colons(self) -> None:
+        parser = _parser()
+        assert parser._extract_text_from_content(
+            [{"type": "emoji", "attrs": {"shortName": ":smile:", "text": "😄"}}]
+        ) == "😄"
+        assert parser._extract_text_from_content([{"type": "emoji", "attrs": {"shortName": ":smile:"}}]) == ":smile:"
+
+    async def test_header_column_rows_are_not_header_rows(self) -> None:
+        parser = _parser()
+        hdr = {"type": "tableHeader", "content": [_p("Name")]}
+        val = {"type": "tableCell", "content": [_p("Ana")]}
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [{"type": "table", "content": [
+            {"type": "tableRow", "content": [hdr, val]},
+            {"type": "tableRow", "content": [hdr, val]},
+        ]}]})
+        assert [b.table_row_metadata.is_header for b in blocks] == [False, False]
+
+    def test_comment_thread_group_is_top_level(self) -> None:
+        thread = _parser().create_comment_thread_group("t1", 3, "inline", "Page")
+        assert thread.parent_index is None
+
+
+class TestCommentHeaderText:
+    def test_footer_comment_with_iso_date(self) -> None:
+        assert ConfluenceBlockParser.comment_header_text(
+            "Ana Silva", "2024-05-01T10:00:00.000Z"
+        ) == "Comment by Ana Silva on 2024-05-01"
+
+    def test_inline_comment_with_epoch_ms_and_quote(self) -> None:
+        assert ConfluenceBlockParser.comment_header_text(
+            "Ana Silva", 1714557600000, " the  quoted\ntext "
+        ) == 'Comment by Ana Silva on 2024-05-01 on "the quoted text"'
+
+    def test_missing_author_and_bad_date(self) -> None:
+        assert ConfluenceBlockParser.comment_header_text(None, "not a date") == "Comment by Unknown"
+
+    def test_comment_group_spans_header_block(self) -> None:
+        from app.models.blocks import BlockComment
+
+        group = _parser().create_comment_group(
+            block_comment=BlockComment(text="", format=DataFormat.MARKDOWN, author_id="u1", author_name="Ana"),
+            group_index=4,
+            parent_group_index=None,
+            source_id="c1",
+            block_indices=(7, 9),
+        )
+        assert [(r.start, r.end) for r in group.children.block_ranges] == [(7, 9)]
+
+
+@pytest.mark.asyncio
+class TestParserEdgeCases:
+    async def test_null_attrs_and_bad_values_keep_the_table(self) -> None:
+        parser = _parser()
+        cell = {"type": "tableCell", "attrs": None, "content": [{"type": "paragraph", "content": [
+            {"type": "text", "text": "due"},
+            {"type": "date", "attrs": {"timestamp": "9" * 30}},
+        ]}]}
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "table", "attrs": None, "content": [{"type": "tableRow", "attrs": None, "content": [cell]}]},
+            {"type": "heading", "attrs": {"level": "x"}, "content": [{"type": "text", "text": "H"}]},
+        ]})
+        assert len(groups) == 1
+        assert blocks[0].data["cells"] == ["due" + "9" * 30]
+        assert blocks[1].data == "# H"
+
+    def test_adf_markdown_heading_with_bad_level(self) -> None:
+        from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
+
+        assert adf_to_markdown({"type": "doc", "content": [
+            {"type": "heading", "attrs": {"level": "x"}, "content": [{"type": "text", "text": "H"}]},
+            {"type": "paragraph", "content": None},
+        ]}) == "# H"
+
+    async def test_inline_comment_matching_normalizes_blocks_once(self) -> None:
+        parser = _parser()
+        blocks = [
+            Block(index=i, type=BlockType.TEXT, format=DataFormat.MARKDOWN, data=f"block number {i}")
+            for i in range(3)
+        ]
+        body = {"atlas_doc_format": {"value": {"type": "doc", "content": [_p("ok")]}}}
+        comments = [
+            {"id": f"c{i}", "properties": {"inlineOriginalSelection": f"number {i}"}, "body": body}
+            for i in range(3)
+        ]
+        calls = 0
+        original = parser._searchable_text_for_comment_match
+
+        def counting(block: object) -> str:
+            nonlocal calls
+            calls += 1
+            return original(block)
+
+        parser._searchable_text_for_comment_match = counting
+        await parser.attach_inline_comments_to_blocks(blocks, comments)
+        assert calls == len(blocks)
+        assert [len(b.comments) for b in blocks] == [1, 1, 1]
+
+    async def test_numbering_continues_after_nested_bullet_list(self) -> None:
+        parser = _parser()
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [{"type": "orderedList", "content": [
+            _li("one", {"type": "bulletList", "content": [_li("sub")]}),
+            _li("two"),
+        ]}]})
+        parser.post_process_blocks(blocks, groups)
+        assert [b.data for b in blocks] == ["1. one", "- sub", "2. two"]
+
+    async def test_nested_list_group_hangs_under_its_parent_list(self) -> None:
+        parser = _parser()
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [{"type": "panel", "content": [
+            {"type": "bulletList", "content": [
+                _li("a", {"type": "bulletList", "content": [_li("a1")]}),
+                _li("b"),
+            ]},
+        ]}]})
+        parser.post_process_blocks(blocks, groups)
+        outer, inner = (groups[blocks[0].parent_index], groups[blocks[1].parent_index])
+        assert blocks[2].parent_index == outer.index
+        assert inner.parent_index == outer.index
+        assert [(r.start, r.end) for r in outer.children.block_group_ranges] == [(inner.index, inner.index)]
+        assert outer.parent_index == 0
+        # The panel reaches the items as its own blocks, once: not also through the list group.
+        assert [(r.start, r.end) for r in groups[0].children.block_ranges] == [(0, 2)]
+        assert not any(r.start <= outer.index <= r.end for r in groups[0].children.block_group_ranges)
+
+    async def test_macro_in_list_item_is_kept(self) -> None:
+        parser = _parser()
+        macro = {"type": "extension", "attrs": {"extensionKey": "jira", "parameters": {
+            "macroParams": {"key": {"value": "PROJ-1"}},
+        }}}
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [{"type": "bulletList", "content": [
+            {"type": "listItem", "content": [_p("see"), macro]},
+        ]}]})
+        assert blocks[0].data == "- see [Extension: jira] key: PROJ-1"

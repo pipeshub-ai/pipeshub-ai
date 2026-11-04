@@ -136,6 +136,7 @@ function MarkdownEditorToolbar({ editor }: { editor: ReturnType<typeof useEditor
 
   return (
     <Flex
+      className="touch-row"
       align="center"
       gap="1"
       wrap="wrap"
@@ -147,7 +148,7 @@ function MarkdownEditorToolbar({ editor }: { editor: ReturnType<typeof useEditor
     >
       {items.map((item) => (
         <Tooltip key={item.icon} content={item.label}>
-          <IconButton
+          <IconButton className="touch-hit"
             type="button"
             variant={item.isActive() ? 'solid' : 'ghost'}
             color={item.isActive() ? undefined : 'gray'}
@@ -161,12 +162,12 @@ function MarkdownEditorToolbar({ editor }: { editor: ReturnType<typeof useEditor
       ))}
       <Separator orientation="vertical" size="1" style={{ margin: '0 4px' }} />
       <Tooltip content="Undo">
-        <IconButton type="button" variant="ghost" color="gray" size="1" onClick={() => editor.chain().focus().undo().run()} style={{ cursor: 'pointer' }}>
+        <IconButton className="touch-hit" type="button" variant="ghost" color="gray" size="1" onClick={() => editor.chain().focus().undo().run()} style={{ cursor: 'pointer' }}>
           <MaterialIcon name="undo" size={15} color="var(--slate-11)" />
         </IconButton>
       </Tooltip>
       <Tooltip content="Redo">
-        <IconButton type="button" variant="ghost" color="gray" size="1" onClick={() => editor.chain().focus().redo().run()} style={{ cursor: 'pointer' }}>
+        <IconButton className="touch-hit" type="button" variant="ghost" color="gray" size="1" onClick={() => editor.chain().focus().redo().run()} style={{ cursor: 'pointer' }}>
           <MaterialIcon name="redo" size={15} color="var(--slate-11)" />
         </IconButton>
       </Tooltip>

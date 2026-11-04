@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, override
 
 from pydantic import JsonValue
 
+from app.core.envelope import sign_message
 from app.services.messaging.config import RedisStreamsConfig
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
@@ -14,7 +15,10 @@ from app.utils.request_context import inject_envelope
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient
+    from app.services.redis.connection_provider import (
+        IRedisConnectionProvider,
+        RedisClient,
+    )
 
 
 class RedisStreamsProducer(IMessagingProducer):
@@ -35,6 +39,17 @@ class RedisStreamsProducer(IMessagingProducer):
         self._owner_loop: asyncio.AbstractEventLoop | None = None
         self._lock = asyncio.Lock()
 
+    def _xadd_trim(self) -> dict[str, object]:
+        """Producer-side trimming applies only in legacy ``maxlen`` mode.
+
+        By default nothing is trimmed on write: ``MAXLEN`` ignores consumer
+        progress and drops unconsumed events. ``StreamRetention`` trims
+        behind the consumer groups instead.
+        """
+        if self.config.retention_mode != "maxlen":
+            return {}
+        return {"maxlen": self.config.max_len, "approximate": True}
+
     @override
     async def initialize(self) -> None:
         if self.redis is not None:
@@ -51,6 +66,12 @@ class RedisStreamsProducer(IMessagingProducer):
                 self.redis = self._provider.create_client(ClientOptions(decode_responses=True))
                 await self.redis.ping()
                 self._owner_loop = asyncio.get_running_loop()
+                if self.config.retention_mode == "maxlen":
+                    self.logger.warning(
+                        "REDIS_STREAMS_RETENTION_MODE=maxlen: streams are capped at ~%d entries "
+                        "and unconsumed events beyond that are dropped",
+                        self.config.max_len,
+                    )
                 self.logger.info(
                     "Redis Streams producer initialized at %s:%s",
                     self.config.host,
@@ -92,7 +113,7 @@ class RedisStreamsProducer(IMessagingProducer):
     ) -> bool:
         # Stamped before the hop: the owner loop's context has no request id.
         return await run_on_loop(
-            self._owner_loop, self._send_message(topic, inject_envelope(message), key)
+            self._owner_loop, self._send_message(topic, sign_message(topic, inject_envelope(message)), key)
         )
 
     async def _send_message(
@@ -114,8 +135,7 @@ class RedisStreamsProducer(IMessagingProducer):
             await self.redis.xadd(  # type: ignore
                 topic,
                 fields,
-                maxlen=self.config.max_len,
-                approximate=True,
+                **self._xadd_trim(),
             )
 
             self.logger.debug("Message successfully published to Redis stream %s", topic)
@@ -139,7 +159,7 @@ class RedisStreamsProducer(IMessagingProducer):
         """
         if not messages:
             return []
-        stamped = [(key, inject_envelope(dict(message))) for key, message in messages]
+        stamped = [(key, sign_message(topic, inject_envelope(dict(message)))) for key, message in messages]
         try:
             return await run_on_loop(self._owner_loop, self._send_messages(topic, stamped))
         except Exception as e:
@@ -165,8 +185,7 @@ class RedisStreamsProducer(IMessagingProducer):
                 pipeline.xadd(
                     topic,
                     fields,
-                    maxlen=self.config.max_len,
-                    approximate=True,
+                    **self._xadd_trim(),
                 )
             # Per-message results, not one all-or-nothing raise: callers use
             # them to record exactly which records were accepted.

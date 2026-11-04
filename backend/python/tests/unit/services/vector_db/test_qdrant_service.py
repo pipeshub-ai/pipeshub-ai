@@ -181,6 +181,13 @@ class TestConnect:
 
     @pytest.mark.asyncio
     @patch("app.services.vector_db.qdrant.qdrant.AsyncQdrantClient")
+    async def test_connect_passes_configured_grpc_port(self, mock_client_cls: MagicMock) -> None:
+        svc = QdrantService(QdrantConfig(host="h", port=16333, grpc_port=16334))
+        await svc.connect()
+        assert mock_client_cls.call_args[1]["grpc_port"] == 16334
+
+    @pytest.mark.asyncio
+    @patch("app.services.vector_db.qdrant.qdrant.AsyncQdrantClient")
     async def test_connect_with_config_service(self, mock_client_cls, mock_config_service):
         mock_client_cls.return_value = MagicMock()
 

@@ -1,4 +1,6 @@
 import mongoose, { Document, Schema, Model, Types } from 'mongoose';
+import { KnowledgeLimit } from '../types/oauth.types';
+import { knowledgeLimitField } from './knowledge_limit.schema';
 
 export interface IOAuthAccessToken extends Document {
   tokenHash: string;
@@ -28,6 +30,8 @@ export interface IOAuthAccessToken extends Document {
    * that column names the borrowed identity rather than the borrower.
    */
   actorUserId?: Types.ObjectId;
+  /** What the token may see; absent for everything its user can. */
+  knowledgeLimit?: KnowledgeLimit;
   createdAt: Date;
 }
 
@@ -70,6 +74,7 @@ const OAuthAccessTokenSchema = new Schema<IOAuthAccessToken>(
     name: { type: String, trim: true, maxlength: 100 },
     lastUsedAt: { type: Date },
     actorUserId: { type: Schema.Types.ObjectId, ref: 'users' },
+    knowledgeLimit: knowledgeLimitField,
   },
   { timestamps: true },
 );

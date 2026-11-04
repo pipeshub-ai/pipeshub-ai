@@ -8011,9 +8011,9 @@ class TestGetAuthenticatedToolsets:
 class TestIsActionsEnabled:
     """No env override exists — resolution is `config_service` (via the shared
     `read_platform_feature_flag` helper) -> `FeatureFlagService` fallback ->
-    default True. Every "no signal" path must resolve to `True` here (the
-    opposite of `is_mcp_enabled`'s `False`), since Actions/toolsets are
-    pre-existing functionality rather than an opt-in feature."""
+    default True. Every "no signal" path must resolve to `True`, since
+    Actions/toolsets are pre-existing functionality rather than an opt-in
+    feature."""
 
     @pytest.mark.asyncio
     async def test_reads_platform_settings_flag_true(self) -> None:

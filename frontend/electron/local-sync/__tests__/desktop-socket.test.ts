@@ -120,6 +120,104 @@ test('a pull that throws still names the answering device', async () => {
   assert.equal(acks[0].deviceId, 'dev-1');
 });
 
+type Listener = (...args: unknown[]) => void;
+
+interface ListenedSocket {
+  active: boolean;
+  connected: boolean;
+  connects: number;
+  handlers: Map<string, Listener>;
+  on: (event: string, listener: Listener) => void;
+  connect: () => void;
+  removeAllListeners: () => void;
+  disconnect: () => void;
+  io: { opts: { reconnection: boolean } };
+}
+
+function listenedSocket(): ListenedSocket {
+  const socket: ListenedSocket = {
+    active: false,
+    connected: false,
+    connects: 0,
+    handlers: new Map(),
+    on: (event, listener) => socket.handlers.set(event, listener),
+    connect: () => { socket.connects += 1; },
+    removeAllListeners: () => socket.handlers.clear(),
+    disconnect: () => { /* unused */ },
+    io: { opts: { reconnection: true } },
+  };
+  return socket;
+}
+
+/** Wires the client's listeners onto a fake socket and captures the timers it sets. */
+function withListeners(socket: ListenedSocket) {
+  const client = makeClient();
+  attachSocket(client, socket as unknown as FakeSocket);
+  (client as unknown as { attachListeners: (s: ListenedSocket) => void }).attachListeners(socket);
+  const timers: Array<{ fn: () => void; delay: number }> = [];
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((fn: () => void, delay: number) => {
+    timers.push({ fn, delay });
+    return timers.length as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+  const restore = () => { globalThis.setTimeout = realSetTimeout; };
+  const refuse = (message: string) => socket.handlers.get('connect_error')!(new Error(message));
+  return { client, timers, refuse, restore };
+}
+
+test('a handshake refused for a non-auth reason is retried with a growing delay', () => {
+  const socket = listenedSocket();
+  const { timers, refuse, restore } = withListeners(socket);
+  try {
+    refuse('Unable to check the session right now');
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0].delay, 2_000);
+    timers[0].fn();
+    assert.equal(socket.connects, 1);
+
+    refuse('Unable to check the session right now');
+    assert.equal(timers[1].delay, 4_000);
+  } finally {
+    restore();
+  }
+});
+
+test('a handshake refused as an auth failure is not retried', () => {
+  const socket = listenedSocket();
+  const { timers, refuse, restore } = withListeners(socket);
+  try {
+    refuse('Authentication refused: User not found, please login again');
+    assert.equal(timers.length, 0);
+  } finally {
+    restore();
+  }
+});
+
+test('a transport error is left to socket.io, which is still reconnecting', () => {
+  const socket = listenedSocket();
+  socket.active = true;
+  const { timers, refuse, restore } = withListeners(socket);
+  try {
+    refuse('websocket error');
+    assert.equal(timers.length, 0);
+  } finally {
+    restore();
+  }
+});
+
+test('disconnect cancels a pending handshake retry', () => {
+  const socket = listenedSocket();
+  const { client, timers, refuse, restore } = withListeners(socket);
+  try {
+    refuse('Unable to check the session right now');
+    client.disconnect();
+    timers[0].fn();
+    assert.equal(socket.connects, 0);
+  } finally {
+    restore();
+  }
+});
+
 test('register returns null when the socket is not connected and never connects', async () => {
   const client = makeClient();
   attachSocket(client, {

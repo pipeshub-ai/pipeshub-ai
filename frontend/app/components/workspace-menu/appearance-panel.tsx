@@ -9,13 +9,14 @@ import { SubPanel, SubPanelItem } from './sub-panel';
 
 interface AppearancePanelProps {
   isOpen: boolean;
+  onBack: () => void;
 }
 
 /**
  * Floating sub-panel for choosing appearance mode.
  * Options: System, Light, Dark.
  */
-export function AppearancePanel({ isOpen }: AppearancePanelProps) {
+export function AppearancePanel({ isOpen, onBack }: AppearancePanelProps) {
   const { preference, setPreference } = useThemeAppearance();
   const { t } = useTranslation();
 
@@ -26,7 +27,7 @@ export function AppearancePanel({ isOpen }: AppearancePanelProps) {
   ];
 
   return (
-    <SubPanel isOpen={isOpen}>
+    <SubPanel isOpen={isOpen} title={t('workspaceMenu.appearance')} onBack={onBack}>
       {APPEARANCE_OPTIONS.map((opt) => (
         <SubPanelItem
           key={opt.value}

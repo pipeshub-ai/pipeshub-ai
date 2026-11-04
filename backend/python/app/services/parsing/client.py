@@ -22,6 +22,7 @@ from docling_core.types.doc.document import DoclingDocument
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from app.config.constants.service import TokenScopes
+from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.models.blocks import BlocksContainer
 from app.services.base_client import (
     BaseServiceClient,
@@ -142,6 +143,7 @@ class ParsingClient(BaseServiceClient):
         org_id: str | None = None,
         provider: ParserProvider | None = None,
         skip_table_enrichment: bool = False,
+        file_path: str | None = None,
     ) -> ParseResult:
         """Parse *file_content* by calling the Parsing Service.
 
@@ -167,6 +169,8 @@ class ParsingClient(BaseServiceClient):
             form_data["org_id"] = org_id
         if provider is not None:
             form_data["provider"] = provider.value
+        if file_path:
+            form_data["file_path"] = file_path
 
         record_budget = messaging_env.record_processing_timeout_for(extension, mime_type)
         try:
@@ -205,6 +209,12 @@ class ParsingClient(BaseServiceClient):
                 code = ParseErrorCode(code_str)
             except ValueError:
                 code = ParseErrorCode.PARSE_FAILED
+            if code == ParseErrorCode.PASSWORD_REQUIRED:
+                # The typed error the legacy pipeline raises for the same file.
+                raise PasswordProtectedError(
+                    error.get("message", "The file is password-protected"),
+                    details=error.get("details", {}),
+                )
             raise ParsingClientError(
                 code=code,
                 message=error.get("message", "Parsing failed"),

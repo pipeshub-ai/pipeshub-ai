@@ -280,5 +280,13 @@
     "snippet": "ภาษาไทยไม\u0e48ม\u0e35ช\u0e48องว\u0e48างระหว\u0e48างคำ แต\u0e48ย\u0e31งคงต\u0e49องม\u0e35ขอบเขตของคำท\u0e35\u0e48ช\u0e31ดเจน",
     "expected_highlight": "ภาษาไทยไม\u0e48ม\u0e35ช\u0e48องว\u0e48างระหว\u0e48างคำ แต\u0e48ย\u0e31งคงต\u0e49องม\u0e35ขอบเขตของคำท\u0e35\u0e48ช\u0e31ดเจน",
     "expected_url": "https://pages.example.test/international.html#:~:text=%E0%B8%A0%E0%B8%B2%E0%B8%A9%E0%B8%B2%E0%B9%84%E0%B8%97%E0%B8%A2%E0%B9%84%E0%B8%A1%E0%B9%88%E0%B8%A1%E0%B8%B5%E0%B8%8A%E0%B9%88%E0%B8%AD%E0%B8%87%E0%B8%A7%E0%B9%88%E0%B8%B2%E0%B8%87%E0%B8%A3%E0%B8%B0%E0%B8%AB%E0%B8%A7%E0%B9%88%E0%B8%B2%E0%B8%87%E0%B8%84%E0%B8%B3,%E0%B9%81%E0%B8%95%E0%B9%88%E0%B8%A2%E0%B8%B1%E0%B8%87%E0%B8%84%E0%B8%87%E0%B8%95%E0%B9%89%E0%B8%AD%E0%B8%87%E0%B8%A1%E0%B8%B5%E0%B8%82%E0%B8%AD%E0%B8%9A%E0%B9%80%E0%B8%82%E0%B8%95%E0%B8%82%E0%B8%AD%E0%B8%87%E0%B8%84%E0%B8%B3%E0%B8%97%E0%B8%B5%E0%B9%88%E0%B8%8A%E0%B8%B1%E0%B8%94%E0%B9%80%E0%B8%88%E0%B8%99"
+  },
+  {
+    "id": "fetched-docs-page-article",
+    "fixture": "webpage",
+    "format": "plain",
+    "snippet": "What are Connectors?\n\nConnectors are software components that sync and index data from external applications into the workspace. They let chat and agents search through an organization's knowledge without anyone copying files by hand, and they keep that knowledge current as the source changes.",
+    "expected_highlight": "What are Connectors? Connectors are software components that sync and index data from external applications into the workspace. They let chat and agents search through an organization's knowledge without anyone copying files by hand, and they keep that knowledge current as the source changes",
+    "expected_url": "https://pages.example.test/webpage.html#:~:text=What%20are%20Connectors,as%20the%20source%20changes"
   }
 ]

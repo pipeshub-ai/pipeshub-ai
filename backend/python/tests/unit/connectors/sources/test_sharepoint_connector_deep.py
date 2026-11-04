@@ -16,46 +16,27 @@ Covers additional methods not exercised by existing test suites:
 - CountryToRegionMapper.get_region_string / is_valid_region / get_all_*
 """
 
-import asyncio
 import logging
-import os
-import uuid
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
     FilterCollection,
-    FilterOperator,
-    IndexingFilterKey,
     SyncFilterKey,
 )
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    COMPOSITE_SITE_ID_COMMA_COUNT,
-    COMPOSITE_SITE_ID_PARTS_COUNT,
+    PERMISSION_MODEL_VERSION,
     CountryToRegionMapper,
-    MicrosoftRegion,
     SharePointConnector,
-    SharePointCredentials,
-    SharePointRecordType,
-    SiteMetadata,
+)
+from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
+    SharePointSyncIncomplete,
 )
 from app.models.entities import (
-    AppUser,
-    AppUserGroup,
-    FileRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
     RecordType,
-    SharePointListItemRecord,
-    SharePointListRecord,
-    SharePointPageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-
 
 # ===========================================================================
 # Helpers
@@ -96,6 +77,30 @@ def _make_connector():
     logger, dep, dsp, cs, tx = _make_mock_deps()
     c = SharePointConnector(logger, dep, dsp, cs, "conn-sp-deep", "team", "test-user-id")
     return c, dep, dsp, cs, tx
+
+
+def _stub_run_sync_parts(c) -> None:
+    """Stub the parts of run_sync around the site loop (users, groups, deleted sites, site permissions)."""
+    c.drive_delta_sync_point = MagicMock()
+    c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value={"version": PERMISSION_MODEL_VERSION})
+    c.drive_delta_sync_point.update_sync_point = AsyncMock()
+    c._sync_users = AsyncMock()
+    c._sync_user_groups = AsyncMock()
+    c._remove_deleted_sites = AsyncMock()
+    c._get_site_permissions = AsyncMock(return_value=[])
+    c.notify = AsyncMock()
+
+
+def _make_sync_site(site_id, display_name, name) -> MagicMock:
+    site = MagicMock()
+    site.id = site_id
+    site.display_name = display_name
+    site.name = name
+    site.description = None
+    site.web_url = f"https://contoso.sharepoint.com/sites/{name}"
+    site.created_date_time = None
+    site.last_modified_date_time = None
+    return site
 
 
 # ===========================================================================
@@ -252,8 +257,8 @@ class TestConvertToPermissions:
         bad_perm.granted_to_v2.group = None
         bad_perm.granted_to_identities_v2 = None
         bad_perm.link = None
-        # Make roles access raise
-        type(bad_perm).roles = PropertyMock(side_effect=Exception("bad"))
+        # A permission in a shape the code does not know: reading its roles raises
+        type(bad_perm).roles = PropertyMock(side_effect=AttributeError("bad"))
 
         result = await c._convert_to_permissions([bad_perm])
         # Should not raise, returns empty or partial
@@ -669,28 +674,35 @@ class TestRunIncrementalSync:
     @pytest.mark.asyncio
     async def test_success(self):
         c, *_ = _make_connector()
+        _stub_run_sync_parts(c)
         c._reinitialize_credential_if_needed = AsyncMock()
-        mock_site = MagicMock()
+        mock_site = _make_sync_site("site-1", "Site 1", "site1")
         c._get_all_sites = AsyncMock(return_value=[mock_site])
         c._sync_site_content = AsyncMock()
 
-        await c.run_incremental_sync()
+        with patch(
+            "app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
+            new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection()),
+        ):
+            await c.run_incremental_sync()
         c._sync_site_content.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_site_error_continues(self):
         c, *_ = _make_connector()
+        _stub_run_sync_parts(c)
         c._reinitialize_credential_if_needed = AsyncMock()
-        site1 = MagicMock()
-        site1.display_name = "S1"
-        site1.name = "s1"
-        site2 = MagicMock()
-        site2.display_name = "S2"
-        site2.name = "s2"
+        site1 = _make_sync_site("site-1", "S1", "s1")
+        site2 = _make_sync_site("site-2", "S2", "s2")
         c._get_all_sites = AsyncMock(return_value=[site1, site2])
         c._sync_site_content = AsyncMock(side_effect=[Exception("fail"), None])
 
-        await c.run_incremental_sync()
+        # The run goes on to the next site, then fails because one site was skipped.
+        with patch(
+            "app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
+            new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection()),
+        ), pytest.raises(SharePointSyncIncomplete, match="site S1: fail"):
+            await c.run_incremental_sync()
         assert c._sync_site_content.call_count == 2
 
     @pytest.mark.asyncio
@@ -812,8 +824,11 @@ class TestHandleRecordUpdates:
             permissions_changed=False
         )
         dep.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
+        dep.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
         await c._handle_record_updates(update)
-        dep.on_record_deleted.assert_called_once_with(record_id="rec-1")
+        dep.on_records_deleted_cascade.assert_called_once_with(
+            ["rec-1"], "conn-sp-deep", cascade_children=True, include_trashed_roots=True
+        )
 
     @pytest.mark.asyncio
     async def test_metadata_and_permissions_changed(self):
@@ -855,10 +870,11 @@ class TestHandleRecordUpdates:
         dep.on_record_content_update.assert_called_once_with(record)
 
     @pytest.mark.asyncio
-    async def test_error_does_not_raise(self):
+    async def test_error_raises(self):
         c, dep, *_ = _make_connector()
         from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-        dep.on_record_deleted.side_effect = Exception("fail")
+        dep.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
+        dep.on_records_deleted_cascade = AsyncMock(side_effect=Exception("fail"))
         update = RecordUpdate(
             record=None,
             external_record_id="ext-1",
@@ -869,5 +885,6 @@ class TestHandleRecordUpdates:
             content_changed=False,
             permissions_changed=False
         )
-        # Should not raise
-        await c._handle_record_updates(update)
+        # A failed write must stop the run so the delta token does not move past it
+        with pytest.raises(Exception, match="fail"):
+            await c._handle_record_updates(update)

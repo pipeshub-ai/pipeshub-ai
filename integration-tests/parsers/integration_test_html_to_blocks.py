@@ -173,3 +173,27 @@ async def test_html_to_blocks_snapshot(
     actual = _normalize_container(await _parse_html_via_processor(processor, html_path))
     expected = _load_snapshot(snapshot_path)
     assert actual == expected, f"Output mismatch for {html_path.name}"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_docling_path_drops_page_chrome_but_keeps_form_and_hidden_text() -> None:
+    """The docling parser runs ``clean_html`` (removes ``<header>``), then the Markdown
+    converter, which must not drop anything else. The processor above defaults to
+    the selectolax parser, which never calls the converter, so this builds the
+    docling parser directly.
+    """
+    from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
+
+    parser = DoclingHtmlParser(logger=logging.getLogger("integration-test-html-parser"), config_service=MagicMock())
+    html = (_FIXTURES_DIR / "header_form_hidden_html.html").read_text(encoding="utf-8")
+    prepared, _ = parser.extract_and_replace_images(
+        parser.replace_relative_image_urls(parser.clean_html(html))
+    )
+
+    container = await parser.parse_to_blocks(prepared, name="header_form_hidden_html.html")
+    text = "\n".join(block.data for block in container.blocks if isinstance(block.data, str))
+
+    assert "Acme Support Portal chrome" not in text
+    for kept in ("Order number A-1042", "Escalated to tier 2", "Renewal list customer"):
+        assert kept in text

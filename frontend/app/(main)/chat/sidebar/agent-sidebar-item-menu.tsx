@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { DropdownMenu, Flex, Text, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
 import type { ViewAgentTooltipVariant } from './agent-sidebar-row-access';
 
 interface AgentSidebarItemMenuProps {
@@ -41,7 +42,8 @@ export function AgentSidebarItemMenu({
     : '';
   const [isOpen, setIsOpen] = useState(false);
   const [isMeatballHovered, setIsMeatballHovered] = useState(false);
-  const visible = isParentHovered || isOpen;
+  const canHover = useCanHover();
+  const visible = isParentHovered || isOpen || !canHover;
 
   const handleOpenChange = (open: boolean) => {
     setIsOpen(open);
@@ -56,6 +58,7 @@ export function AgentSidebarItemMenu({
       <DropdownMenu.Trigger>
         <button
           type="button"
+          className="touch-hit"
           onMouseEnter={() => setIsMeatballHovered(true)}
           onMouseLeave={() => setIsMeatballHovered(false)}
           onClick={(e) => {

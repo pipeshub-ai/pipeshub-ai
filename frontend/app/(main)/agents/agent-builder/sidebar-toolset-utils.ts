@@ -1,5 +1,6 @@
 import type { BuilderSidebarToolset, BuilderToolsetTool } from '@/app/(main)/toolsets/api';
 import { normalizePaletteLabel } from './display-utils';
+import { isApiToolsetNode } from './api-toolset-attachments';
 
 /** @deprecated Prefer {@link normalizePaletteLabel} from `./display-utils`; kept for call-site imports. */
 export function formatToolsetTypeLabel(toolsetTypeValue: string): string {
@@ -26,6 +27,8 @@ export function collectActiveToolsetTypeKeysFromNodes(nodes: ToolsetTypeKeyFlowN
     const nodeType = String(node.data?.type ?? '');
     if (!nodeType.startsWith('toolset-')) continue;
     const config = (node.data?.config || {}) as Record<string, unknown>;
+    // API toolsets share one type but each instance is its own node.
+    if (isApiToolsetNode(config)) continue;
     const raw =
       (config.toolsetType as string) ||
       (config.toolsetName as string) ||

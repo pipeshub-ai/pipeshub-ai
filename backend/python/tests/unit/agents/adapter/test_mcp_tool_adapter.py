@@ -317,7 +317,133 @@ class TestValidate:
             }),
             _FakeSessionManager(),
         )
-        adapter.validate({"query": "x", "limit": None})  # must not raise
+        kwargs = {"query": "x", "limit": None}
+        adapter.validate(kwargs)  # must not raise
+        assert kwargs == {"query": "x"}
+
+
+def _adapter_with(properties: dict[str, Any], required: list[str], manager: _FakeSessionManager | None = None) -> MCPToolAdapter:
+    return MCPToolAdapter(
+        _server(),
+        _tool_info(input_schema={"type": "object", "properties": properties, "required": required}),
+        manager or _FakeSessionManager(),
+    )
+
+
+class TestUnsetOptionalArgumentsAreLeftOut:
+    """Models write `null` (or the string `"null"`) for optional arguments they
+    mean to leave unset. In JSON Schema an absent key and a null differ, so a
+    server that checks its own schema (Metabase's `browse_data`) refused the
+    whole call — `"limit": should be an integer` — and after three refusals
+    `ToolErrorTracker` blocked the tool for the rest of the conversation."""
+
+    BROWSE_DATA = {
+        "query": {"type": "string"},
+        "limit": {"type": "integer"},
+        "database_id": {"type": "integer"},
+        "table_ids": {"type": "array", "items": {"type": "integer"}},
+        "fields": {"type": "object"},
+        "response_format": {"type": "string", "enum": ["concise", "detailed"]},
+    }
+
+    async def test_the_server_never_sees_the_nulls(self) -> None:
+        manager = _FakeSessionManager(result=_call_result(texts=("ok",)))
+        adapter = _adapter_with(self.BROWSE_DATA, ["query"], manager)
+        registry = ToolRegistry()
+        registry.register_tool(adapter)
+        arguments = {
+            "query": "orders", "limit": None, "database_id": None, "table_ids": None,
+            "fields": None, "response_format": "null",
+        }
+
+        result = await ToolExecutor(registry).call_tool(ToolCall(id="c1", name=adapter.name, arguments=arguments))
+
+        assert result.is_error is False
+        assert manager.calls[0][2] == {"query": "orders"}
+
+    def test_an_omitted_argument_stays_omitted(self) -> None:
+        kwargs = {"query": "orders"}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": "orders"}
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"type": ["string", "null"]},
+            {"type": "string", "nullable": True},
+            {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+            {"oneOf": [{"type": "string"}, {"type": "null"}]},
+            {"enum": ["alice", None]},
+            {"description": "anything"},
+            # OpenAPI 3.0's way to write a nullable reference.
+            {"nullable": True, "allOf": [{"type": "object"}]},
+        ],
+    )
+    def test_a_schema_that_accepts_null_still_gets_it(self, schema: dict[str, Any]) -> None:
+        """Here null can mean "clear this field" (unassign), so leaving it out would turn
+        the call into "change nothing"."""
+        kwargs = {"assignee": None}
+        _adapter_with({"assignee": schema}, []).validate(kwargs)
+        assert kwargs == {"assignee": None}
+
+    def test_a_union_without_a_null_arm_drops_it(self) -> None:
+        kwargs = {"fields": None}
+        _adapter_with({"fields": {"anyOf": [{"type": "string"}, {"type": "array"}]}}, []).validate(kwargs)
+        assert kwargs == {}
+
+    def test_an_all_of_that_refuses_null_drops_it(self) -> None:
+        """No top-level `type`, but every `allOf` arm must hold, and this one refuses null."""
+        kwargs = {"limit": None}
+        _adapter_with({"limit": {"allOf": [{"type": "integer"}]}}, []).validate(kwargs)
+        assert kwargs == {}
+
+    def test_the_enclosing_type_refuses_null_even_when_the_arms_are_untyped(self) -> None:
+        """JSON Schema applies the property's own type and its union together."""
+        kwargs = {"owner": None}
+        _adapter_with(
+            {"owner": {"type": "object", "anyOf": [{"required": ["id"]}, {"required": ["name"]}]}}, [],
+        ).validate(kwargs)
+        assert kwargs == {}
+
+    def test_the_string_null_for_an_enum_holding_null_is_left_out(self) -> None:
+        """The fuzzy enum match used to call `.lower()` on the null member and crash."""
+        kwargs = {"assignee": "null"}
+        _adapter_with({"assignee": {"enum": ["alice", None]}}, []).validate(kwargs)
+        assert kwargs == {}
+
+    def test_a_wrong_value_for_a_numeric_enum_is_a_validation_error(self) -> None:
+        with pytest.raises(ToolValidationError, match=r"must be one of \[1, 2\], got 'three'"):
+            _adapter_with({"level": {"enum": [1, 2]}}, []).validate({"level": "three"})
+
+    def test_null_for_a_required_argument_is_still_sent(self) -> None:
+        """Leaving it out would only swap the server's answer for "missing"."""
+        kwargs = {"query": None}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": None}
+
+    @pytest.mark.parametrize("text", ["null", " NULL "])
+    def test_the_string_null_for_an_optional_enum_is_left_out(self, text: str) -> None:
+        kwargs = {"query": "orders", "response_format": text}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": "orders"}
+
+    def test_the_string_null_for_an_optional_integer_is_left_out(self) -> None:
+        kwargs = {"query": "orders", "limit": "null"}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": "orders"}
+
+    def test_the_string_null_is_kept_where_the_schema_takes_a_string(self) -> None:
+        kwargs = {"query": "null"}
+        _adapter_with(self.BROWSE_DATA, []).validate(kwargs)
+        assert kwargs == {"query": "null"}
+
+    def test_the_string_null_for_a_required_enum_still_fails(self) -> None:
+        with pytest.raises(ToolValidationError, match=r"must be one of \['concise', 'detailed'\], got 'null'"):
+            _adapter_with(self.BROWSE_DATA, ["response_format"]).validate({"response_format": "null"})
+
+    def test_any_other_wrong_value_for_an_optional_enum_still_fails(self) -> None:
+        with pytest.raises(ToolValidationError, match="must be one of"):
+            _adapter_with(self.BROWSE_DATA, []).validate({"response_format": "short"})
 
 
 class TestValidateSkipsNonAuthoritativeTypes:
@@ -388,6 +514,38 @@ class TestValidateSkipsNonAuthoritativeTypes:
         adapter.validate({"assignee": None})  # must not raise
         with pytest.raises(ToolValidationError, match="expected type 'string'"):
             adapter.validate({"assignee": {"id": 1}})
+
+    def test_a_union_is_not_held_to_its_first_arms_enum(self) -> None:
+        """`parameters` copies the enum of the first arm only; the integer arm takes any
+        integer, and the server decides about a string."""
+        adapter = _adapter_with(
+            {"order": {"anyOf": [{"type": "string", "enum": ["asc", "desc"]}, {"type": "integer"}]}}, [],
+        )
+        for value in (5, "null"):
+            kwargs = {"order": value}
+            adapter.validate(kwargs)
+            assert kwargs == {"order": value}
+
+    def test_a_unions_own_enum_is_enforced(self) -> None:
+        """An enum beside the union applies to every arm, so it is checked, and "null" outside
+        it is left out like any other optional "null"."""
+        adapter = _adapter_with(
+            {"mode": {"anyOf": [{"type": "string"}, {"type": "integer"}], "enum": ["allowed"]}}, [],
+        )
+        with pytest.raises(ToolValidationError, match=r"must be one of \['allowed'\], got 7"):
+            adapter.validate({"mode": 7})
+        kwargs = {"mode": "null"}
+        adapter.validate(kwargs)
+        assert kwargs == {}
+
+    def test_a_nullable_enum_is_still_enforced(self) -> None:
+        """One non-null arm is the whole contract, so its enum still applies."""
+        adapter = _adapter_with({"status": {"anyOf": [{"type": "string", "enum": ["open", "closed"]}, {"type": "null"}]}}, [])
+        kwargs = {"status": "Open"}
+        adapter.validate(kwargs)
+        assert kwargs == {"status": "open"}
+        with pytest.raises(ToolValidationError, match="must be one of"):
+            adapter.validate({"status": "archived"})
 
     def test_enum_is_enforced_even_on_an_untyped_property(self) -> None:
         """Skipping the TYPE check must not skip the enum check — an `enum`

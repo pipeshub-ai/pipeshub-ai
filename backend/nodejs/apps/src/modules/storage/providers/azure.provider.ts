@@ -12,6 +12,8 @@ import {
   FilePayload,
   StorageServiceResponse,
   Document,
+  SignObjectUrlOptions,
+  SignedObjectUrl,
 } from '../types/storage.service.types';
 import {
   StorageError,
@@ -20,11 +22,13 @@ import {
   StorageDownloadError,
   StorageNotFoundError,
   StorageValidationError,
+  StorageUrlParseError,
   MultipartUploadError,
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
 import { AzureBlobStorageConfig } from '../config/storage.config';
 import { encodeRFC5987 } from '../utils/utils';
+import { normalizeEtag, type ObjectStat } from '../utils/storage-fingerprint';
 
 @injectable()
 class AzureBlobStorageAdapter implements StorageServiceInterface {
@@ -290,6 +294,33 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
   }
 
   /**
+   * Size and ETag of the current blob (properties). Null when the blob or the stored URL is absent; any other failure rejects.
+   */
+  async statObject(document: Document): Promise<ObjectStat | null> {
+    if (!document.azureBlob?.url) return null;
+    const blobPath = this.getBlobPath(document.azureBlob.url);
+    await this.waitForContainer();
+    try {
+      const props = await this.blobAt(blobPath).getProperties();
+      const etag = normalizeEtag(props.etag);
+      if (etag === '' || typeof props.contentLength !== 'number')
+        throw new StorageDownloadError(
+          'Storage returned no size or ETag for the object',
+        );
+      return {
+        size: props.contentLength,
+        etag,
+        lastModified: props.lastModified
+          ? props.lastModified.toISOString()
+          : null,
+      };
+    } catch (error) {
+      if ((error as { statusCode?: number }).statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  /**
    * Retrieve document content
    * @param document Document metadata
    * @param version Optional version number
@@ -499,6 +530,48 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     }
   }
 
+  async signObjectUrl(
+    storageKey: string,
+    options: SignObjectUrlOptions,
+  ): Promise<SignedObjectUrl> {
+    try {
+      await this.waitForContainer();
+      const blobClient = (
+        this.containerClient as ContainerClient
+      ).getBlockBlobClient(storageKey);
+      const url = await blobClient.generateSasUrl({
+        permissions: BlobSASPermissions.from(
+          options.method === 'PUT'
+            ? { create: true, write: true }
+            : { read: true },
+        ),
+        expiresOn: new Date(Date.now() + options.expiresInSeconds * 1000),
+      });
+      if (options.method === 'PUT') {
+        return {
+          url,
+          // Put Blob refuses a request that does not name the blob type.
+          headers: {
+            'x-ms-blob-type': 'BlockBlob',
+            'Content-Type': options.contentType ?? 'application/octet-stream',
+          },
+        };
+      }
+      return { url, headers: {} };
+    } catch (error) {
+      if (error instanceof StorageError) {
+        throw error;
+      }
+      throw new PresignedUrlError(
+        'Failed to generate signed URL for Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
+    }
+  }
+
   async deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {
     try {
       await this.waitForContainer();
@@ -671,15 +744,12 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       }
       return name;
     } catch (error) {
-      throw new StorageValidationError(
-        'Invalid Azure Blob Storage URL format',
-        {
-          url,
-          container: this.containerName,
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
-        },
-      );
+      // A URL outside the configured container cannot be checked, which a verified read says as "unverifiable", not as an outage.
+      throw new StorageUrlParseError('Invalid Azure Blob Storage URL format', {
+        url,
+        container: this.containerName,
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
     }
   }
 }

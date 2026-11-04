@@ -265,7 +265,8 @@ class MockTransactionStore:
     # -- records ---
 
     async def get_record_by_external_id(
-        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL,
+        *, raise_on_error: bool = False,
     ) -> Record | None:
         for doc in self._s.collections.get(CollectionNames.RECORDS.value, {}).values():
             if (

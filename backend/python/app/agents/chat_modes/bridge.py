@@ -37,6 +37,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.context import CancellationToken
+from app.agents.actions.knowledge_graph.ops.scope import ATTACHMENT_RECORD_IDS_KEY
 from app.agents.agent_loop.answer_rules import (
     READ_RECORDS_IN_FULL_STATE_KEY,
     answer_composition_rules_enabled,
@@ -58,6 +59,7 @@ from app.agents.agent_loop.respond import AnswerFinalizer, _tool_names_from_stat
 from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
+    _await_tasks_draining,
     _cancel_orphaned_agent_tasks,
     _heartbeat,
     _pre_stream_error_frame,
@@ -92,6 +94,7 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.modules.retrieval import degraded_notice
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.modules.retrieval.selection_scope import (
     SelectionNotReadyError,
@@ -110,9 +113,11 @@ from app.services.cache.semantic_cache_service import (
 from app.telemetry.event_buffer import record_event
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
+from app.utils.conversation_tasks import begin_run, discard_tasks
 from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
+from app.utils.turn_memo import per_turn_lookups
 from app.web.config import resolve_web_search
 
 _BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
@@ -252,11 +257,11 @@ def _apply_policy_to_chat_state(
 ) -> None:
     """Forces the tool-availability flags `PipesHubToolLoader`/`AgentContext.
     from_chat_state` read, per `policy.py`'s module docstring. Chat modes
-    have no per-agent "knowledge scope" the way agents do, so SQL/Slack
+    have no per-agent "knowledge scope" the way agents do, so SQL/Slack/code
     tool availability mirrors connector PRESENCE (`has_sql_connector`/
-    `has_slack_connector`, already resolved by the caller), not a
-    knowledge-attachment concept that doesn't exist here. For the same
-    reason the SQL tool's connector allowlist is the user's own SQL
+    `has_slack_connector`/`has_code_connector`, already resolved by the
+    caller), not a knowledge-attachment concept that doesn't exist here. For
+    the same reason the SQL tool's connector allowlist is the user's own SQL
     connector instances (`sql_connector_ids`)."""
     chat_state["has_knowledge"] = policy.has_knowledge
     chat_state["has_sql_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_sql_connector"))
@@ -264,6 +269,7 @@ def _apply_policy_to_chat_state(
         sql_connector_ids if chat_state["has_sql_knowledge"] else frozenset()
     )
     chat_state["has_slack_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_slack_connector"))
+    chat_state["has_code_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_code_connector"))
     chat_state["web_search_config"] = web_search_config if policy.include_web_search else None
     chat_state["deep_research"] = policy.deep_research and chat_state["web_search_config"] is not None
     chat_state["chat_mode"] = policy.name
@@ -376,7 +382,9 @@ async def _run_no_tools_degradation(
         yield create_sse_event("error", {"error": f"Stream error: {exc}"})
 
 
-async def run_chat_stream(
+@degraded_notice.scoped
+@per_turn_lookups  # knowledge-hub access is asked about by several stages of a turn
+async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's call-site symmetry
     query_info: dict[str, Any],
     user_info: dict[str, Any],
     llm: "BaseChatModel",
@@ -410,6 +418,7 @@ async def run_chat_stream(
     are not granted (see ``factory._initial_entity_tool_grant``).
     """
     from app.modules.agents.qna.chat_state import build_initial_state, remember_shown_results
+    from app.modules.code_graph.connectors import connector_instances_have_code
     from app.modules.transformers.blob_storage import BlobStorage
     from app.utils.execute_query import (
         connector_instances_have_sql,
@@ -466,8 +475,8 @@ async def run_chat_stream(
                 ),
                 resolve_web_search(config_service, log, use_cache=True) if policy.include_web_search else _none(),
                 resolve_attachments(
-                    query_info.get("attachments"), blob_store=blob_store,
-                    org_id=user_info.get("orgId", ""), ref_mapper=ref_mapper, logger=log,
+                    query_info.get("attachments"),
+                    org_id=user_info.get("orgId", ""), logger=log,
                     user_id=user_info.get("userId") or "",
                     graph_provider=graph_provider,
                     is_service_account=bool(user_info.get("isServiceAccount")),
@@ -487,11 +496,13 @@ async def run_chat_stream(
         )
         has_sql_connector = connector_instances_have_sql(connector_instances)
         has_slack_connector = connector_instances_have_slack(connector_instances)
+        has_code_connector = connector_instances_have_code(connector_instances)
         project_sources = query_info.get("allowedFilters")
         filters = await prepare_turn_scope(
             graph_provider, user_info.get("userId", ""), user_info.get("orgId", ""),
             query_info.get("filters"),
             project_sources=project_sources if isinstance(project_sources, dict) else None,
+            connection_sources=query_info.get("connectionLimit"),
         )
         # A turn that can only search, over sources the user cannot read, would
         # otherwise retry its search tools until the run's time budget is spent.
@@ -522,7 +533,8 @@ async def run_chat_stream(
             query_info, user_info, llm, log, retrieval_service, graph_provider,
             reranker_service, config_service, model_name or "", model_key or "", org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
-            has_slack_connector=has_slack_connector, client_name=client_name,
+            has_slack_connector=has_slack_connector,
+            has_code_connector=has_code_connector, client_name=client_name,
             entity_vector_store=entity_vector_store,
         )
         _apply_policy_to_chat_state(
@@ -532,6 +544,7 @@ async def run_chat_stream(
         _apply_mode_instructions(chat_state, policy)
         chat_state["custom_instructions"] = _resolve_custom_instructions(system_prompts_config, policy)
         chat_state["citation_ref_mapper"] = ref_mapper
+        chat_state[ATTACHMENT_RECORD_IDS_KEY] = resolved_attachments.virtual_record_ids
         # Read by `ConnectorCatalog.build`, which skips its own DB round-trip
         # when this key is present.
         if available_connectors is not None:
@@ -571,6 +584,7 @@ async def run_chat_stream(
         # weekday included. Set inside this task so it reaches every tool
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
+        begin_run()
         agent: Any = None
         shadow_lookup_task: asyncio.Task[CacheLookupResult] | None = None
         try:
@@ -875,9 +889,6 @@ async def run_chat_stream(
             await emit_prefetch_retrieval_context(
                 context, scheduled=prefetch_task is not None, result=prefetch_result,
             )
-            if resolved_attachments.context_text:
-                goal.constraints.append(resolved_attachments.context_text)
-
             if clarifying_questions:
                 await emit_pre_run_clarification(
                     context, goal.description, clarifying_questions, event_sink=context.event_sink,
@@ -1032,6 +1043,9 @@ async def run_chat_stream(
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            # First, and without awaiting: a disconnect can cancel the awaits
+            # below, and this must still run.
+            discard_tasks(query_info.get("conversationId"))
             if shadow_lookup_task is not None and not shadow_lookup_task.done():
                 _ = shadow_lookup_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -1063,7 +1077,7 @@ async def run_chat_stream(
         tasks = [producer]
         if heartbeat:
             tasks.append(heartbeat)
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await _await_tasks_draining(queue, tasks)
 
 
 __all__ = ["run_chat_stream"]

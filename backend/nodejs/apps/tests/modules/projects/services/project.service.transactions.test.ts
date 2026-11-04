@@ -27,12 +27,26 @@ function makeProjectDoc(overrides: Record<string, any> = {}): any {
 }
 
 function makeSession() {
-  return {
+  const session: any = {
     startTransaction: sinon.stub(),
     commitTransaction: sinon.stub().resolves(),
     abortTransaction: sinon.stub().resolves(),
     endSession: sinon.stub().resolves(),
   };
+  // The unit of work runs the callback through the driver's withTransaction:
+  // commit when it returns, abort and rethrow when it throws.
+  session.withTransaction = async (fn: () => Promise<unknown>) => {
+    session.startTransaction();
+    try {
+      const result = await fn();
+      await session.commitTransaction();
+      return result;
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    }
+  };
+  return session;
 }
 
 describe('ProjectService.softDelete on a replica set', () => {

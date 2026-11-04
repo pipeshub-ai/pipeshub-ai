@@ -85,14 +85,20 @@ class _Hub:
             "lineage": [{"ancestors": ["a1"], "declared": ["g1"]}],
             "browse_start": [{"handle": "records/f1", "fromApp": from_app, "crumbNodes": [], "crumbEdges": []}],
             "enrich": [{"i": 0, "row": row}],
+            "enrich_exact": [{"i": 0, "row": row}],
             "check:targets": [target],
             "check:seeds": [{"node": "p1", "seed": "s2"}],
             "slim": [["records/r1", "record", "a"]],
             "connector": ["app1"],
+            "name_matches": ["records/r1"],
+            "own_groups": ["recordGroups/g1"],
         }
         # A walk asks level by level until a level finds nothing new.
         self._levels = {"step_app": ["records/r1"], "step_open": ["records/r2"],
-                        "step_browse": ["records/r3"], "step_browse_open": ["records/r3"]}
+                        "step_browse": ["records/r3"], "step_browse_open": ["records/r3"],
+                        "step_up": ["records/s1"],
+                        "step_app_within": ["records/r1"], "step_open_within": ["records/r2"],
+                        "step_hier": ["records/r1"]}
 
     async def __call__(self, query: str, bind_vars: dict[str, Any] | None = None, **_: object) -> list[Any]:
         self.calls.append((query, dict(bind_vars or {})))
@@ -101,7 +107,8 @@ class _Hub:
             name = "slim" if "kh_handles" in query else "connector"
         self.sent.add(name)
         if name in self._levels:
-            found = [h for h in self._levels[name] if h not in bind_vars["kh_frontier"]]
+            frontier = bind_vars.get("kh_frontier") or bind_vars.get("kh_front") or []
+            found = [h for h in self._levels[name] if h not in frontier]
             self._levels[name] = []
             return found
         return list(self._answers.get(name, []))
@@ -132,7 +139,9 @@ async def test_all_records_sends_exactly_the_binds_it_declares(view, opens, from
     )
 
     assert [row["id"] for row in page["rows"]] == ["r1"], "the listing stopped before its page"
-    assert {"app", "slim", "enrich", "check:targets"} <= hub.sent, hub.sent
+    assert {"app", "slim", "check:targets"} <= hub.sent, hub.sent
+    # A browse reads the exact arrows, a flatten the strict ones.
+    assert hub.sent & {"enrich", "enrich_exact"} == ({"enrich"} if flatten else {"enrich_exact"}), hub.sent
     for query, binds in hub.calls:
         assert _declared(query) == set(binds), query
 
@@ -143,12 +152,14 @@ async def test_every_knowledge_hub_statement_is_reached_by_some_view() -> None:
     for start_id, start_type, flatten in HUB_VIEWS.values():
         for opens in (False, True):
             for from_app in (False, True):
-                provider, hub = _arango_hub(opens=opens, from_app=from_app)
-                await provider.get_knowledge_hub_connector_page_v3(
-                    "app1", "org1", ["uk1", "org1"], ["app1"], ["s1", "g1"], 10,
-                    flatten=flatten, start_id=start_id, start_type=start_type, include_scope=True,
-                )
-                reached |= hub.sent
+                for filters in (None, {"search_query": "report"}):
+                    provider, hub = _arango_hub(opens=opens, from_app=from_app)
+                    await provider.get_knowledge_hub_connector_page_v3(
+                        "app1", "org1", ["uk1", "org1"], ["app1"], ["s1", "g1"], 10,
+                        flatten=flatten, start_id=start_id, start_type=start_type, include_scope=True,
+                        filters=filters, max_depth=2,
+                    )
+                    reached |= hub.sent
     provider = _arango()
     statements = {*provider._kh_v3_listing_aql(), *(f"check:{n}" for n in provider._kh_v3_check_aql())}
     assert statements <= reached, sorted(statements - reached)

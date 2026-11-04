@@ -141,11 +141,9 @@ class BlobStoreProbe:
         # apart from a permission or mount failure. Collapsing the two would let
         # a probe that never ran report "no files", which is the pass condition
         # for assert_blobs_gone.
-        script = (
-            f"if [ ! -d '{target}' ]; then exit {_MISSING_DIRECTORY_EXIT}; fi; "
-            f"find '{target}' -type f"
-        )
-        result = self._run_docker(["exec", "-i", self.container(), "sh", "-c", script])
+        # The path goes in as $1, never into the script: a name like "it's Files" would end a quote.
+        script = f'if [ ! -d "$1" ]; then exit {_MISSING_DIRECTORY_EXIT}; fi; find "$1" -type f'
+        result = self._run_docker(["exec", "-i", self.container(), "sh", "-c", script, "sh", target])
 
         if result.returncode == _MISSING_DIRECTORY_EXIT:
             return []

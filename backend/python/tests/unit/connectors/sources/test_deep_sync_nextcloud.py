@@ -9,19 +9,19 @@ import pytest
 from app.config.constants.arangodb import MimeTypes
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.nextcloud.connector import (
-    NextcloudConnector,
+    FULL_SYNC_INTERVAL_MS,
+    NextcloudSyncError,
     extract_response_body,
     get_file_extension,
     get_mimetype_enum_for_nextcloud,
     get_parent_path_from_path,
     get_path_depth,
     is_response_successful,
-    nextcloud_permissions_to_permission_type,
     parse_webdav_propfind_response,
 )
 from app.models.entities import AppUser, RecordGroupType
 from app.models.permission import EntityType, PermissionType
-
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -92,7 +92,7 @@ def connector():
         conn.current_user_email = "admin@nc.example.com"
         conn.connector_name = "Nextcloud"
         conn.activity_sync_point = mock_sp
-        conn._path_to_external_id_cache = {}
+        conn.creator_email = "creator@pipeshub.test"
         yield conn
 
 
@@ -113,7 +113,7 @@ class TestNextcloudRunSync:
            new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection()))
     async def test_incremental_sync_when_cursor_exists(self, mock_filters, connector):
         connector.activity_sync_point.read_sync_point = AsyncMock(
-            return_value={"cursor": "12345"}
+            return_value={"cursor": "12345", "last_full_sync_ms": get_epoch_timestamp_in_ms()}
         )
         with patch.object(connector, "_run_incremental_sync_internal", new_callable=AsyncMock) as m_inc:
             await connector.run_sync()
@@ -121,19 +121,33 @@ class TestNextcloudRunSync:
 
     @patch("app.connectors.sources.nextcloud.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection()))
-    async def test_no_user_id_returns(self, mock_filters, connector):
+    async def test_no_user_id_fails_the_run(self, mock_filters, connector):
         connector.current_user_id = None
+        connector._read_current_user = AsyncMock(return_value=(None, None))
         with patch.object(connector, "_run_full_sync_internal", new_callable=AsyncMock) as m_full:
-            await connector.run_sync()
+            with pytest.raises(NextcloudSyncError):
+                await connector.run_sync()
             m_full.assert_not_called()
+
+    @patch("app.connectors.sources.nextcloud.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection()))
+    async def test_a_day_old_full_listing_runs_again(self, mock_filters, connector):
+        connector.activity_sync_point.read_sync_point = AsyncMock(
+            return_value={"cursor": "12345", "last_full_sync_ms": get_epoch_timestamp_in_ms() - FULL_SYNC_INTERVAL_MS}
+        )
+        with patch.object(connector, "_run_full_sync_internal", new_callable=AsyncMock) as m_full, \
+             patch.object(connector, "_run_incremental_sync_internal", new_callable=AsyncMock) as m_inc:
+            await connector.run_sync()
+        m_full.assert_called_once()
+        m_inc.assert_not_called()
 
     @patch("app.connectors.sources.nextcloud.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection()))
     async def test_data_source_none_tries_init(self, mock_filters, connector):
         connector.data_source = None
         with patch.object(connector, "init", new_callable=AsyncMock, return_value=False):
-            await connector.run_sync()
-            # Should return without error
+            with pytest.raises(NextcloudSyncError, match="Could not connect"):
+                await connector.run_sync()
 
     @patch("app.connectors.sources.nextcloud.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection()))
@@ -144,14 +158,6 @@ class TestNextcloudRunSync:
             with pytest.raises(RuntimeError, match="fail"):
                 await connector.run_sync()
 
-    @patch("app.connectors.sources.nextcloud.connector.load_connector_filters",
-           new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection()))
-    async def test_cache_cleared_after_sync(self, mock_filters, connector):
-        connector._path_to_external_id_cache = {"key": "val"}
-        connector.activity_sync_point.read_sync_point = AsyncMock(return_value=None)
-        with patch.object(connector, "_run_full_sync_internal", new_callable=AsyncMock):
-            await connector.run_sync()
-        assert connector._path_to_external_id_cache == {}
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +166,8 @@ class TestNextcloudRunSync:
 
 class TestNextcloudFullSync:
     async def test_full_sync_creates_user_and_group(self, connector):
-        with patch.object(connector, "_sync_user_files", new_callable=AsyncMock), \
+        with patch.object(connector, "_sync_user_files", new_callable=AsyncMock, return_value=True), \
+             patch.object(connector, "_remove_records_not_listed", new_callable=AsyncMock, return_value=True), \
              patch.object(connector, "_parse_activity_response", return_value=[]):
             resp = MagicMock()
             resp.success = True
@@ -168,15 +175,19 @@ class TestNextcloudFullSync:
             await connector._run_full_sync_internal()
 
         connector.data_entities_processor.on_new_app_users.assert_called_once()
+        [users] = connector.data_entities_processor.on_new_app_users.call_args.args
+        assert [u.email for u in users] == ["creator@pipeshub.test"], "never the Nextcloud profile email"
         connector.data_entities_processor.on_new_record_groups.assert_called_once()
 
-    async def test_full_sync_no_user_id_returns(self, connector):
+    async def test_full_sync_no_user_id_fails(self, connector):
         connector.current_user_id = None
-        await connector._run_full_sync_internal()
+        with pytest.raises(NextcloudSyncError):
+            await connector._run_full_sync_internal()
         connector.data_entities_processor.on_new_app_users.assert_not_called()
 
     async def test_full_sync_anchors_cursor(self, connector):
-        with patch.object(connector, "_sync_user_files", new_callable=AsyncMock):
+        with patch.object(connector, "_sync_user_files", new_callable=AsyncMock, return_value=True), \
+             patch.object(connector, "_remove_records_not_listed", new_callable=AsyncMock, return_value=True):
             resp = MagicMock()
             resp.success = True
             connector.data_source.get_activities = AsyncMock(return_value=resp)
@@ -191,14 +202,15 @@ class TestNextcloudFullSync:
 # ---------------------------------------------------------------------------
 
 class TestNextcloudIncrementalSync:
-    async def test_no_data_source_returns(self, connector):
+    async def test_no_data_source_fails(self, connector):
         connector.data_source = None
-        await connector._run_incremental_sync_internal()
-        # Should return without errors
+        with pytest.raises(NextcloudSyncError):
+            await connector._run_incremental_sync_internal()
 
-    async def test_no_user_id_returns(self, connector):
+    async def test_no_user_id_fails(self, connector):
         connector.current_user_id = None
-        await connector._run_incremental_sync_internal()
+        with pytest.raises(NextcloudSyncError):
+            await connector._run_incremental_sync_internal()
 
     async def test_no_record_group_falls_back_to_full(self, connector):
         connector.activity_sync_point.read_sync_point = AsyncMock(
@@ -240,13 +252,7 @@ class TestNextcloudHelperFunctions:
         result = get_mimetype_enum_for_nextcloud("text/plain", False)
         assert result == MimeTypes.PLAIN_TEXT
 
-    def test_permissions_create_is_write(self):
-        # CREATE = 4
-        assert nextcloud_permissions_to_permission_type(4) == PermissionType.WRITE
 
-    def test_permissions_read_create_is_write(self):
-        # READ (1) | CREATE (4) = 5
-        assert nextcloud_permissions_to_permission_type(5) == PermissionType.WRITE
 
 
 # ---------------------------------------------------------------------------

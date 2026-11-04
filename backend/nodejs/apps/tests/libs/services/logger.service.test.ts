@@ -81,6 +81,18 @@ describe('Logger', () => {
       expect(logger1).to.equal(logger2);
     });
 
+    it('takes its level from LOG_LEVEL when created without a config', () => {
+      process.env.LOG_LEVEL = 'debug';
+      const logger = Logger.getInstance();
+      expect((logger as any).logger.level).to.equal('debug');
+    });
+
+    it('defaults to info when created without a config or LOG_LEVEL', () => {
+      delete process.env.LOG_LEVEL;
+      const logger = Logger.getInstance();
+      expect((logger as any).logger.level).to.equal('info');
+    });
+
     it('should update config on existing instance', () => {
       const logger = Logger.getInstance({ service: 'test', level: 'info' });
       Logger.getInstance({ service: 'updated', level: 'debug' });

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from app.agent_loop_lib.context.errors import ContextError
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.hooks.middleware.decisions import PostDecision, PreDecision
 from app.agent_loop_lib.hooks.middleware.pipeline import Pipeline
@@ -48,7 +49,11 @@ _PIPELINE_FACTORIES: dict[HookEvent, Callable[[], Pipeline]] = {
     HookEvent.POST_TURN: lambda: Pipeline(is_terminal=lambda ctx: False, fail_closed=False),
     # Pure reducer: every shaper runs, in registration order, mutating
     # ctx.messages in place — see hooks/middleware/context.py::ModelCallContext.
-    HookEvent.PRE_MODEL: lambda: Pipeline(is_terminal=lambda ctx: False, fail_closed=False),
+    # A broken shaper is recorded and skipped, but a context that cannot be
+    # made valid stops the call (see context/errors.py).
+    HookEvent.PRE_MODEL: lambda: Pipeline(
+        is_terminal=lambda ctx: False, fail_closed=False, propagate=(ContextError,)
+    ),
     # Pure reducer, same shape as PRE_MODEL but observing the response
     # instead of shaping the request — see hooks/middleware/context.py::ModelResponseContext.
     HookEvent.POST_MODEL: lambda: Pipeline(is_terminal=lambda ctx: False, fail_closed=False),

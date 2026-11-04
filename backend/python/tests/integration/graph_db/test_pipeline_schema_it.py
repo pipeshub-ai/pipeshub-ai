@@ -26,10 +26,10 @@ from app.services.resource_governor.models import ParseTier
 
 pytestmark = pytest.mark.integration
 
-NEO4J_URI = os.environ.get("GRAPH_IT_NEO4J_URI", "bolt://localhost:17687")
-NEO4J_PASSWORD = os.environ.get("GRAPH_IT_NEO4J_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("GRAPH_IT_ARANGO_URL", "http://localhost:18529")
-ARANGO_PASSWORD = os.environ.get("GRAPH_IT_ARANGO_PASSWORD", "ensure-it-pass")
+NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
+NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
+ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
+ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 
 STAGES = CollectionNames.STAGE_STATES.value
 RECORDS = CollectionNames.RECORDS.value

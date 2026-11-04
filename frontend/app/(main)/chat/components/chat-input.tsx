@@ -35,10 +35,14 @@ import { getQueryModeConfig } from '@/chat/constants';
 import {
   useChatStore,
   ctxKeyFromAgent,
+  getEffectiveModel,
   isModelReasoningCapable,
   getModelDefaultReasoningEffort,
+  projectCapabilitiesKey,
 } from '@/chat/store';
+import { chatModelOptions } from '@/config';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget, TOUCH_TARGET_PX } from '@/app/components/ui/responsive';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
 import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
@@ -96,6 +100,23 @@ import {
 } from '../utils/attachment-file-types';
 
 type ChatInputVariant = 'full' | 'widget';
+
+/** A chip for a file already stored with the question being edited. */
+function chipForStoredFile(ref: AttachmentRef): UploadedFile {
+  return {
+    id: `stored-${ref.recordId}`,
+    file: new File([], ref.recordName, { type: ref.mimeType }),
+    name: ref.recordName,
+    size: 0,
+    type: ref.mimeType,
+    status: 'uploaded',
+    ref,
+    existing: true,
+  };
+}
+
+const sameFiles = (a: AttachmentRef[], b: AttachmentRef[]): boolean =>
+  a.length === b.length && a.every((file) => b.some((other) => other.recordId === file.recordId));
 
 interface ChatInputProps {
   /**
@@ -204,6 +225,7 @@ function SpeechInputButton({
   return (
     <Tooltip content={tooltip} side="top">
       <IconButton
+        className="touch-size"
         variant={isListening ? 'soft' : 'ghost'}
         color={isListening ? 'red' : 'gray'}
         size="2"
@@ -289,7 +311,7 @@ export function ChatInput({
   const draftConvId = useChatStore((s) =>
     s.activeSlotId ? (s.slots[s.activeSlotId]?.convId ?? null) : null,
   );
-  useComposerDraft({
+  const draft = useComposerDraft({
     draftKey: persistDraft
       ? buildDraftKey({ userId: draftUserId, convId: draftConvId, agentId })
       : null,
@@ -403,7 +425,6 @@ export function ChatInput({
   const agentHasInternalSearch = hasAnyFilter(agentKnowledgeDefaults);
   const scopedInternalSearch = scopedAgentCapabilities?.internalSearch ?? true;
   const scopedWebSearch = scopedAgentCapabilities?.webSearch ?? true;
-  const scopedDeepResearch = scopedAgentCapabilities?.deepSearch ?? false;
   const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
   // Project-scoped chat (`/chat?projectId=` or the /projects workspace). Hydrated by
   // `useProjectScopeHydration`; null everywhere else.
@@ -412,8 +433,13 @@ export function ChatInput({
   const setProjectKnowledgeScope = useChatStore((s) => s.setProjectKnowledgeScope);
   const projectStreamToolsSel = useChatStore((s) => s.projectStreamTools);
   const isProjectChat = !isAgentChat && projectScope !== null;
+  const projectCapsKey = isProjectChat && projectScope ? projectCapabilitiesKey(projectScope.projectId) : null;
+  const projectCaps = useChatStore((s) =>
+    projectCapsKey ? s.scopedAgentCapabilities[projectCapsKey] : undefined
+  );
   // An agent's or project's sources can't be searched in one request, so @ offers nothing there.
-  const mentionsOff = isAgentChat || isProjectChat;
+  // Editing or regenerating re-asks with the filters the question was first sent with.
+  const mentionsOff = isAgentChat || isProjectChat || isActionMode;
   /**
    * The composer shows the scoped Connectors·Collections·Actions·MCP panel (agent or project
    * allow-list) instead of the org-wide pickers. Web search has no knowledge scope.
@@ -428,23 +454,21 @@ export function ChatInput({
   // resolved `agentId` disables the toggles instead of silently no-op'ing.
   const plusMenuCapabilities = useMemo(() => {
     const canPersistScoped = isAgentChat && Boolean(agentId);
+    // A project chat keeps its own choice (on by default) instead of the global one.
+    const ownCaps = projectCapsKey
+      ? { internalSearch: projectCaps?.internalSearch ?? true, webSearch: projectCaps?.webSearch ?? true }
+      : settings.agentCapabilities;
     return {
-      internalSearch: isAgentChat ? scopedInternalSearch : settings.agentCapabilities.internalSearch,
-      webSearch: isAgentChat ? scopedWebSearch : settings.agentCapabilities.webSearch,
-      deepResearch: isAgentChat ? scopedDeepResearch : (settings.agentCapabilities.deepSearch ?? false),
-      // Capabilities reach the backend only in agent mode, so the toggle is offered only there.
-      onToggleDeepResearch: isAgentChat || settings.queryMode === 'agent'
-        ? (enabled: boolean) => {
-            if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { deepSearch: enabled });
-            else if (!isAgentChat) setAgentCapabilities({ deepSearch: enabled });
-          }
-        : undefined,
+      internalSearch: isAgentChat ? scopedInternalSearch : ownCaps.internalSearch,
+      webSearch: isAgentChat ? scopedWebSearch : ownCaps.webSearch,
       onToggleInternalSearch: (enabled: boolean) => {
         if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { internalSearch: enabled });
+        else if (projectCapsKey) setScopedAgentCapabilities(projectCapsKey, { internalSearch: enabled });
         else if (!isAgentChat) setAgentCapabilities({ internalSearch: enabled });
       },
       onToggleWebSearch: (enabled: boolean) => {
         if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { webSearch: enabled });
+        else if (projectCapsKey) setScopedAgentCapabilities(projectCapsKey, { webSearch: enabled });
         else if (!isAgentChat) setAgentCapabilities({ webSearch: enabled });
       },
       agentHasInternalSearch: isAgentChat
@@ -459,9 +483,9 @@ export function ChatInput({
     agentId,
     scopedInternalSearch,
     scopedWebSearch,
-    scopedDeepResearch,
+    projectCapsKey,
+    projectCaps,
     settings.agentCapabilities,
-    settings.queryMode,
     setScopedAgentCapabilities,
     setAgentCapabilities,
     agentHasInternalSearch,
@@ -470,19 +494,23 @@ export function ChatInput({
   const showPlusMenuFilterBadge = hasNonDefaultSearchCapabilities(
     plusMenuCapabilities.internalSearch,
     plusMenuCapabilities.webSearch,
-    plusMenuCapabilities.onToggleDeepResearch ? plusMenuCapabilities.deepResearch : false,
   );
 
   // Context key for the active (agent-scoped or assistant) chat. All
   // model-related reads/writes below are keyed by this so assistant selections
   // don't leak into agents and vice-versa.
   const modelCtxKey = ctxKeyFromAgent(agentId);
-  const contextSelectedModel = settings.selectedModels[modelCtxKey] ?? null;
-  const contextDefaultModel = settings.defaultModels[modelCtxKey] ?? null;
-  const displayModel = contextSelectedModel ?? contextDefaultModel;
-  const displayModelLabel = displayModel
-    ? (displayModel.modelFriendlyName || displayModel.modelName)
-    : t('chat.aiModelsTooltip');
+  const openedProjectId = useChatStore((s) => s.projectScope?.projectId ?? null);
+  const displayModel = useMemo(
+    () => getEffectiveModel(modelCtxKey),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getEffectiveModel reads these from the store
+    [modelCtxKey, openedProjectId, settings.newChatDefaultModel, settings.selectedModels, settings.defaultModels],
+  );
+  const displayModelLabel =
+    chatModelOptions.selectionLabel(t, displayModel) ??
+    (displayModel
+      ? (displayModel.modelFriendlyName || displayModel.modelName)
+      : t('chat.aiModelsTooltip'));
   const handleModelSelect = useCallback(
     (model: ModelOverride | null) => {
       setSelectedModelForCtx(modelCtxKey, model);
@@ -805,6 +833,51 @@ export function ChatInput({
     ? 'var(--mode-search-toggle)'
     : modeColors.toggle;
 
+  // ── Files of the question being edited ───────────────────────────
+  // Editing swaps the composer's files for the question's own; what the reader had attached
+  // is set aside and put back when the edit ends.
+  const stashedFilesRef = useRef<UploadedFile[] | null>(null);
+  const uploadedFilesRef = useRef(uploadedFiles);
+  useEffect(() => {
+    uploadedFilesRef.current = uploadedFiles;
+  });
+
+  /** Files picked while editing that the edit did not send are of no use: drop them. */
+  const discardNewEditFiles = useCallback(() => {
+    for (const file of uploadedFilesRef.current) {
+      if (file.existing) continue;
+      uploadControllersRef.current.get(file.id)?.abort();
+      uploadControllersRef.current.delete(file.id);
+      if (file.status === 'uploaded' && file.ref?.recordId) onDeleteFile?.(file.ref.recordId);
+    }
+  }, [onDeleteFile]);
+
+  const enterEditFiles = useCallback((stored: AttachmentRef[]) => {
+    if (stashedFilesRef.current === null) {
+      const current = uploadedFilesRef.current;
+      for (const file of current) {
+        if (file.status === 'uploading') uploadControllersRef.current.get(file.id)?.abort();
+      }
+      stashedFilesRef.current = current.filter((file) => file.status !== 'uploading');
+    } else {
+      discardNewEditFiles();
+    }
+    setUploadedFiles(stored.map(chipForStoredFile));
+    setShowUploadArea(false);
+  }, [discardNewEditFiles]);
+
+  const leaveEditFiles = useCallback((keepNew: boolean) => {
+    const stashed = stashedFilesRef.current;
+    if (stashed === null) return;
+    stashedFilesRef.current = null;
+    if (!keepNew) discardNewEditFiles();
+    setUploadedFiles(stashed);
+  }, [discardNewEditFiles]);
+  const leaveEditFilesRef = useRef(leaveEditFiles);
+  useEffect(() => {
+    leaveEditFilesRef.current = leaveEditFiles;
+  });
+
   // ── Message action command handlers ──────────────────────────────
   // Both handlers are registered on the global command bus (useCommandStore) so
   // ChatResponse / MessageActions can trigger them without prop drilling.
@@ -818,10 +891,12 @@ export function ChatInput({
     if (!messageId) return;
     dismissExpansionPanels();
     setRegenModelOverride(null);
+    leaveEditFiles(false);
+    useChatStore.getState().setRegenAnswers(null);
     setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
     // Pre-fill textarea so user can see what will be regenerated (shown dimmed/disabled)
     setMessage(text ?? '');
-  }, [dismissExpansionPanels]);
+  }, [dismissExpansionPanels, leaveEditFiles]);
 
   // Edit query: same as regenerate but the textarea is editable so the user can
   // amend the question before resending. Also focuses the textarea immediately.
@@ -831,21 +906,37 @@ export function ChatInput({
       payload === null ||
       typeof (payload as Record<string, unknown>).messageId !== 'string'
     ) return;
-    const { messageId, text } = payload as { messageId: string; text: string };
+    const { messageId, text, appliedFilters, attachments } = payload as {
+      messageId: string;
+      text: string;
+      appliedFilters?: AppliedFilters;
+      attachments?: AttachmentRef[];
+    };
     dismissExpansionPanels();
     setRegenModelOverride(null);
-    setActiveMessageAction({ type: 'editQuery', messageId, text });
+    useChatStore.getState().setRegenAnswers(null);
+    enterEditFiles(attachments ?? []);
+    setActiveMessageAction({ type: 'editQuery', messageId, text, appliedFilters, attachments });
     // Populate the textarea with the original question so the user can edit it
     setMessage(text ?? '');
     setTimeout(() => textareaRef.current?.focus(), 0);
-  }, [dismissExpansionPanels]);
+  }, [dismissExpansionPanels, enterEditFiles]);
 
   // Dismissing either action clears the pill bar and resets the textarea to empty.
   const handleDismissAction = useCallback(() => {
+    leaveEditFiles(false);
     setActiveMessageAction(null);
     setRegenModelOverride(null);
+    useChatStore.getState().setRegenAnswers(null);
     setMessage('');
-  }, []);
+  }, [leaveEditFiles]);
+
+  // While the bar is open, the reply's question card can be answered again (ChatResponse reads this).
+  const regenTargetMessageId = activeMessageAction?.type === 'regenerate' ? activeMessageAction.messageId : null;
+  useEffect(() => {
+    useChatStore.getState().setRegenTargetMessageId(regenTargetMessageId);
+    return () => useChatStore.getState().setRegenTargetMessageId(null);
+  }, [regenTargetMessageId]);
 
   // Register showRegenBar / showEditQuery commands
   useEffect(() => {
@@ -860,6 +951,7 @@ export function ChatInput({
 
   // Dismiss message action on slot switch
   useEffect(() => {
+    leaveEditFilesRef.current(false);
     setActiveMessageAction(null);
     setRegenModelOverride(null);
   }, [activeSlotId]);
@@ -868,37 +960,54 @@ export function ChatInput({
   const executeMessageAction = useCallback((_editedText?: string) => {
     if (!activeMessageAction) return;
 
-    if (activeMessageAction.type === 'regenerate') {
-      const modelOverride = regenModelOverride ?? undefined;
-      const af = activeMessageAction.appliedFilters;
-      const originalFilters = af
-        ? buildAssistantApiFilters({
-            apps: af.apps.map((a) => a.id),
-            kb: af.kb.map((k) => k.id),
-            recordGroups: (af.recordGroups ?? []).map((g) => g.id),
-            records: (af.records ?? []).map((r) => r.id),
-            recordsExact: (af.recordsExact ?? []).map((r) => r.id),
-          })
-        : undefined;
-      setActiveMessageAction(null);
-      setRegenModelOverride(null);
-      setMessage('');
-      if (activeSlotId) {
-        streamRegenerateForSlot(activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters);
-      }
-      return;
+    const isEdit = activeMessageAction.type === 'editQuery';
+    const af = activeMessageAction.appliedFilters;
+    const editedText = isEdit ? stripMentionPads(message, retainedMentions(message, mentions)).trim() : '';
+    // An empty edit has no question to answer; stay in edit mode so the text can be fixed.
+    if (isEdit && !editedText) return;
+    const modelOverride = regenModelOverride ?? undefined;
+    const originalFilters = af
+      ? buildAssistantApiFilters({
+          apps: af.apps.map((a) => a.id),
+          kb: af.kb.map((k) => k.id),
+          recordGroups: (af.recordGroups ?? []).map((g) => g.id),
+          records: (af.records ?? []).map((r) => r.id),
+          recordsExact: (af.recordsExact ?? []).map((r) => r.id),
+        })
+      : undefined;
+    // Only what changed is sent; an unchanged edit is a plain regenerate.
+    const storedFiles = isEdit ? (activeMessageAction.attachments ?? []) : [];
+    const editedFiles = uploadedFiles
+      .filter((file) => file.status === 'uploaded' && file.ref)
+      .map((file) => file.ref as AttachmentRef);
+    const filesChanged = isEdit && !sameFiles(editedFiles, storedFiles);
+    const textChanged = isEdit && editedText !== activeMessageAction.text.trim();
+    const edit = textChanged || filesChanged
+      ? { query: editedText, ...(filesChanged ? { attachments: editedFiles } : {}) }
+      : undefined;
+    // The files picked for the edit now belong to the question; what the reader had attached returns.
+    leaveEditFiles(true);
+    setActiveMessageAction(null);
+    setRegenModelOverride(null);
+    setMessage('');
+    if (activeSlotId) {
+      const target = [activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters] as const;
+      // Kept until the re-run ends, so the card shows the answers it is running with.
+      const regenAnswers = useChatStore.getState().regenAnswers;
+      const answers =
+        !isEdit && regenAnswers?.messageId === activeMessageAction.messageId ? regenAnswers.message : undefined;
+      if (edit) streamRegenerateForSlot(...target, edit);
+      else if (answers) streamRegenerateForSlot(...target, undefined, answers);
+      else streamRegenerateForSlot(...target);
     }
+  }, [activeMessageAction, regenModelOverride, activeSlotId, message, mentions, uploadedFiles, leaveEditFiles]);
 
-    if (activeMessageAction.type === 'editQuery') {
-      toast.info(t('chat.toasts.editComingSoonTitle'), {
-        description: t('chat.toasts.editComingSoonDescription'),
-      });
-      setActiveMessageAction(null);
-      setRegenModelOverride(null);
-      setMessage('');
-      return;
-    }
-  }, [activeMessageAction, regenModelOverride, activeSlotId, t]);
+  // Submitting the reopened question card regenerates as the bar's button does, with the bar's model.
+  useEffect(() => {
+    const { register, unregister } = useCommandStore.getState();
+    register('runRegenerate', () => executeMessageAction());
+    return () => unregister('runRegenerate');
+  }, [executeMessageAction]);
 
   const handleSubmit = (e: React.SyntheticEvent) => {
     e.preventDefault();
@@ -1085,6 +1194,8 @@ export function ChatInput({
           textareaRef.current.style.height = 'auto';
         }
       };
+      const sentText = message;
+      draft.markSent();
       const sending = onSend(
         stripMentionPads(message, kept),
         refs.length > 0 ? refs : undefined,
@@ -1092,9 +1203,17 @@ export function ChatInput({
       );
       if (sending instanceof Promise) {
         // The host said why it refused (or failed); the draft stays for another try.
-        void sending.then((ok) => { if (ok !== false) clearDraft(); }, () => {});
+        void sending.then(
+          (ok) => {
+            if (ok !== false) clearDraft();
+            else draft.unmarkSent(sentText);
+          },
+          () => draft.unmarkSent(sentText),
+        );
       } else if (sending !== false) {
         clearDraft();
+      } else {
+        draft.unmarkSent(sentText);
       }
     }
   };
@@ -1250,6 +1369,12 @@ export function ChatInput({
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
+      // Whatever menu led to the picker sits over the chips row; a pick that
+      // processFiles turns away early must still close it.
+      setIsPlusMenuOpen(false);
+      setIsMobilePlusMenuOpen(false);
+      setIsCompactMenuOpen(false);
+      setShowUploadArea(false);
       processFiles(e.target.files);
     }
     if (fileInputRef.current) {
@@ -1328,8 +1453,14 @@ export function ChatInput({
     // Pure state update — remove the chip.
     setUploadedFiles((prev) => prev.filter((f) => f.id !== fileId));
 
-    // Fire-and-forget server delete outside the updater.
-    if (fileToDelete?.status === 'uploaded' && fileToDelete.ref?.recordId && onDeleteFile) {
+    // Fire-and-forget server delete outside the updater. A file stored with the question being
+    // edited stays: the edit may not be sent, and a fork of the chat may use it.
+    if (
+      fileToDelete?.status === 'uploaded' &&
+      !fileToDelete.existing &&
+      fileToDelete.ref?.recordId &&
+      onDeleteFile
+    ) {
       onDeleteFile(fileToDelete.ref.recordId);
     }
   }, [uploadedFiles, onDeleteFile]);
@@ -1651,8 +1782,8 @@ export function ChatInput({
           pointerEvents: 'auto',
           background: 'color-mix(in srgb, var(--olive-1) 42%, transparent)',
           border: '1px solid var(--olive-3)',
-          backdropFilter: 'blur(25px)',
-          WebkitBackdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
           borderRadius: 'var(--radius-1)',
           padding: '7px 8px',
           boxSizing: 'border-box',
@@ -1660,7 +1791,14 @@ export function ChatInput({
         }}
       >
         {/* Single row: plus button + input + send */}
-        <Flex align="center" justify="between" gap="1" style={{ height: 26 }}>
+        {/* On phones the row is 44px but the field is 20px; a tap above or below it should still open the composer. */}
+        <Flex
+          align="center"
+          justify="between"
+          gap="1"
+          onClick={isMobile ? (event) => { if (event.target === event.currentTarget) handleExpand(); } : undefined}
+          style={{ height: isMobile ? TOUCH_TARGET_PX : 26 }}
+        >
           {!isAgentChat && (
             <IconButton
               variant="ghost"
@@ -1668,7 +1806,7 @@ export function ChatInput({
               size="2"
               onClick={handleExpand}
               aria-label={t('chat.expandComposer', { defaultValue: 'Expand composer' })}
-              style={{ margin: 0, cursor: 'pointer', flexShrink: 0, width: 26, height: 26, minWidth: 26, minHeight: 26, padding: 0 }}
+              style={{ margin: 0, cursor: 'pointer', flexShrink: 0, width: 26, height: 26, minWidth: 26, minHeight: 26, padding: 0, ...touchTarget(isMobile) }}
             >
               <MaterialIcon name="add" size={16} color="var(--neutral-11)" />
             </IconButton>
@@ -1714,6 +1852,7 @@ export function ChatInput({
                 height: 26,
                 minWidth: 26,
                 padding: 0,
+                ...touchTarget(isMobile),
                 borderRadius: 'var(--radius-2)',
                 backgroundColor: 'var(--emerald-9)',
                 color: 'white',
@@ -1742,6 +1881,7 @@ export function ChatInput({
                 height: 26,
                 minWidth: 26,
                 padding: 0,
+                ...touchTarget(isMobile),
                 borderRadius: 'var(--radius-2)',
                 backgroundColor: canSubmit ? 'var(--emerald-9)' : 'transparent',
                 color: canSubmit ? 'white' : 'var(--neutral-11)',
@@ -1807,9 +1947,9 @@ export function ChatInput({
         pointerEvents: 'auto',
         fontFamily: 'Manrope, sans-serif',
         backdropFilter:
-          dockGlass || !(composerActive || message.trim() || isListening) ? 'blur(25px)' : 'none',
+          dockGlass || !(composerActive || message.trim() || isListening) ? 'var(--frost-filter)' : 'none',
         WebkitBackdropFilter:
-          dockGlass || !(composerActive || message.trim() || isListening) ? 'blur(25px)' : 'none',
+          dockGlass || !(composerActive || message.trim() || isListening) ? 'var(--frost-filter)' : 'none',
         background: dockGlass
           ? 'color-mix(in srgb, var(--olive-1) 42%, transparent)'
           : composerActive || message.trim() || isListening
@@ -2024,7 +2164,9 @@ export function ChatInput({
                       {file.status === 'error'
                         ? file.errorMessage ||
                           t('chat.attachments.uploadFailed', { defaultValue: 'Upload failed' })
-                        : formatFileSize(file.size)}
+                        : file.existing
+                          ? (file.ref?.extension ?? '').toUpperCase()
+                          : formatFileSize(file.size)}
                     </Text>
                   </Flex>
                 </Flex>
@@ -2192,9 +2334,11 @@ export function ChatInput({
         <ChatInputExpansionPanel
           open={isModelPanelOpen}
           onClose={() => setIsModelPanelOpen(false)}
+          height="auto"
+          maxHeight="380px"
         >
           <ModelSelectorPanel
-            selectedModel={contextSelectedModel ?? contextDefaultModel}
+            selectedModel={displayModel}
             onModelSelect={handleModelSelect}
             agentId={agentId}
           />
@@ -2298,6 +2442,7 @@ export function ChatInput({
               side="top"
             >
               <IconButton
+                className="touch-size"
                 variant={isSearchMode ? 'soft' : 'ghost'}
                 color="gray"
                 size="2"
@@ -2318,7 +2463,7 @@ export function ChatInput({
                         setMode('search');
                       }
                 }
-                style={{ ...composerIconButtonStyle, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                style={{ ...composerIconButtonStyle, ...touchTarget(isMobile), cursor: isRegenerateMode ? 'default' : 'pointer' }}
               >
                 <MaterialIcon
                   name={isSearchMode ? 'chat' : 'search'}
@@ -2340,6 +2485,7 @@ export function ChatInput({
                 size="2"
                 disabled={isRegenerateMode}
                 onClick={() => setIsMobilePlusMenuOpen(true)}
+                className="touch-size"
                 aria-label={
                   showPlusMenuFilterBadge
                     ? t('chat.plusMenu.ariaLabelFiltersApplied', {
@@ -2347,7 +2493,7 @@ export function ChatInput({
                       })
                     : t('chat.plusMenu.ariaLabel', { defaultValue: 'Attach files and capabilities' })
                 }
-                style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                style={{ margin: 0, ...touchTarget(isMobile), cursor: isRegenerateMode ? 'default' : 'pointer' }}
               >
                 <PlusMenuTriggerIcon
                   color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor}
@@ -2385,8 +2531,9 @@ export function ChatInput({
                 variant="ghost"
                 color="gray"
                 size="2"
+                aria-label={t('common.moreOptions')}
                 onClick={() => setIsMobileOptionsOpen(true)}
-                style={{ margin: 0, cursor: 'pointer' }}
+                style={{ margin: 0, ...touchTarget(isMobile), cursor: 'pointer' }}
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
@@ -2399,6 +2546,7 @@ export function ChatInput({
                 isRegenerateMode={isRegenerateMode}
                 activeIconColor={activeIconColor}
                 onToggle={toggleSpeech}
+                style={touchTarget(isMobile)}
               />
             </Flex>
           ) : isCompactToolbar ? (
@@ -2579,10 +2727,16 @@ export function ChatInput({
                   side="top"
                 >
                     <IconButton
+                      className="touch-size"
                       variant="ghost"
                       color="gray"
                       size="2"
                       disabled={isRegenerateMode}
+                      aria-label={
+                        settings.queryMode === 'agent'
+                          ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors, collections & actions' })
+                          : t('chat.connectorsTooltip')
+                      }
                       onClick={() => {
                         setIsCollectionsPanelOpen((prev) => {
                           if (prev) setExpansionViewMode('inline');
@@ -2595,6 +2749,7 @@ export function ChatInput({
                       }}
                       style={{
                         ...composerIconButtonStyle,
+                        ...touchTarget(isMobile),
                         cursor: isRegenerateMode ? 'default' : 'pointer',
                         backgroundColor: isCollectionsPanelOpen ? 'var(--olive-3)' : undefined,
                       }}
@@ -2630,10 +2785,16 @@ export function ChatInput({
                     side="top"
                   >
                     <IconButton
+                      className="touch-size"
                       variant="ghost"
                       color="gray"
                       size="2"
                       disabled={isRegenerateMode}
+                      aria-label={
+                        isAgentChat || settings.queryMode === 'agent'
+                          ? t('chat.agentResourcesTooltip')
+                          : t('chat.connectorsTooltip')
+                      }
                       onClick={() => {
                         setIsAgentResourcesPanelOpen((prev) => {
                           if (prev) setExpansionViewMode('inline');
@@ -2647,6 +2808,7 @@ export function ChatInput({
                       }}
                       style={{
                         ...composerIconButtonStyle,
+                        ...touchTarget(isMobile),
                         cursor: isRegenerateMode ? 'default' : 'pointer',
                         backgroundColor: isAgentResourcesPanelOpen ? 'var(--olive-3)' : undefined,
                       }}
@@ -2676,8 +2838,14 @@ export function ChatInput({
                 {/* Model selector button — icon + current model name so the active model is always visible */}
                 <Tooltip content={t('chat.aiModelsTooltip')} side="top">
                   <Flex
+                    asChild
                     align="center"
                     gap="1"
+                  >
+                  <button
+                    type="button"
+                    className="touch-size"
+                    aria-label={t('chat.aiModelsTooltip')}
                     data-testid="chat-model-selector"
                     onClick={() => {
                       const next = !isModelPanelOpen;
@@ -2695,6 +2863,8 @@ export function ChatInput({
                           ? 'var(--olive-3)'
                           : 'transparent',
                       transition: 'background-color 0.12s ease',
+                      border: 'none',
+                      font: 'inherit',
                       maxWidth: isMobile ? '32px' : (reasoningEffortLabel ? '220px' : '180px'),
                       flexShrink: 0,
                     }}
@@ -2733,6 +2903,7 @@ export function ChatInput({
                         )}
                       </Flex>
                     )}
+                  </button>
                   </Flex>
                 </Tooltip>
                 <SpeechInputButton
@@ -2753,6 +2924,7 @@ export function ChatInput({
           {/* Send / Stop button */}
           {isStreaming ? (
             <IconButton
+              className="touch-size"
               variant="solid"
               size="2"
               onClick={handleStopStream}
@@ -2761,6 +2933,7 @@ export function ChatInput({
               data-testid="chat-stop-button"
               style={{
                 ...composerIconButtonStyle,
+                ...touchTarget(isMobile),
                 backgroundColor: 'var(--emerald-9)',
                 color: 'white',
                 opacity: isStopping ? 0.6 : 1,
@@ -2771,6 +2944,7 @@ export function ChatInput({
             </IconButton>
           ) : (
             <IconButton
+              className="touch-size"
               variant="solid"
               size="2"
               onClick={(event) => {
@@ -2784,6 +2958,7 @@ export function ChatInput({
               aria-label={t('chat.sendMessage')}
               style={{
                 ...composerIconButtonStyle,
+                ...touchTarget(isMobile),
                 backgroundColor: canSubmit ? 'var(--emerald-9)' : 'var(--neutral-a3)',
                 color: canSubmit ? 'white' : 'var(--neutral-11)',
                 opacity: 1,

@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, FILE_MIME_TYPES, MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import SOURCE_REFUSAL_HEADER
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
@@ -30,6 +31,7 @@ from app.connectors.sources.web.connector import (
     WebApp,
     WebConnector,
     _bytes_async_gen,
+    failed_page_reason,
 )
 from app.connectors.sources.web.fetch_strategy import MAX_RATE_LIMIT_BACKOFF, FetchResponse
 from app.models.entities import RecordType
@@ -2286,7 +2288,35 @@ class TestStreamRecordComprehensive:
         ):
             with pytest.raises(HTTPException) as exc:
                 await c.stream_record(record)
-        assert exc.value.status_code == 409
+        # Nor as "reconnect the connector": a page behind a login is refused for good.
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("site_status", "our_status"),
+        [(400, 422), (401, 403), (403, 403), (404, 404), (429, 429), (500, 502), (503, 502), (None, 502)],
+    )
+    async def test_a_refused_page_says_what_the_site_answered(self, site_status: int | None, our_status: int) -> None:
+        c = _make_connector()
+        c.session = MagicMock()
+        record = MagicMock(
+            weburl="https://example.com/page", record_name="Page", id="r1",
+            mime_type="text/html", storage_document_id=None,
+        )
+        answer = None if site_status is None else FetchResponse(
+            status_code=site_status, content_bytes=b"", headers={},
+            final_url="https://example.com/page", strategy="aiohttp", success=False,
+        )
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock, return_value=answer,
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await c.stream_record(record)
+        assert exc.value.status_code == our_status
+        assert exc.value.detail == failed_page_reason(site_status)
+        # A refusal is marked; the site being down or unreachable is an outage, not a refusal.
+        assert (SOURCE_REFUSAL_HEADER in (exc.value.headers or {})) == (our_status < 500)
 
     @pytest.mark.asyncio
     async def test_failed_fetch_with_2xx_status_is_not_streamed_as_empty(self):

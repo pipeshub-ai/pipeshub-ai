@@ -6,12 +6,41 @@ from datetime import datetime
 from io import IOBase
 from typing import Any, Dict, Optional, Union
 
+from aiobotocore.config import AioConfig
 from aiobotocore.session import AioSession
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, SSLError
 
+from app.connectors.sources.web.address_guard import GuardedResolver
 from app.sources.client.minio.minio import MinIOClient
 from app.sources.client.s3.s3 import S3Response
+from app.utils.url_fetcher import private_addresses_blocked
+
+# S3's wording for these names the signing algorithm, not what the admin has to change.
+_ACTIONABLE_ERRORS = {
+    "InvalidAccessKeyId": "MinIO does not know this access key; check the Access Key",
+    "SignatureDoesNotMatch": "the secret key does not match the access key; check the Secret Key",
+    "RequestTimeTooSkewed": "the clocks of PipesHub and the MinIO server differ by more than 15 minutes",
+}
+
+
+def _client_error_text(e: ClientError) -> str:
+    """``Code: reason`` for a store error, without a trailing period: callers end the sentence."""
+    error = e.response.get("Error", {})
+    code = error.get("Code", "Unknown")
+    message = (error.get("Message") or str(e)).rstrip(".")
+    if code in _ACTIONABLE_ERRORS:
+        return f"{code}: {_ACTIONABLE_ERRORS[code]} ({message})"
+    return f"{code}: {message}"
+
+
+def _unexpected_error_text(e: Exception) -> str:
+    if isinstance(e, SSLError) and "WRONG_VERSION_NUMBER" in str(e):
+        return (
+            "Unexpected error: the server does not answer HTTPS at this address. "
+            "Use an http:// endpoint URL, or turn TLS on in MinIO"
+        )
+    return f"Unexpected error: {str(e).rstrip('.')}"
 
 
 class MinIODataSource:
@@ -52,7 +81,13 @@ class MinIODataSource:
         """
         return {
             'endpoint_url': self._endpoint_url,
-            'verify': self._verify_ssl
+            'verify': self._verify_ssl,
+            # Every connection goes to an address the guard checked when it looked the name up,
+            # so a name that later resolves elsewhere is refused. Merged with the session's
+            # default config (the retry budget).
+            'config': AioConfig(
+                connector_args={"resolver": GuardedResolver(allow_private=not private_addresses_blocked())}
+            ),
         }
 
     @asynccontextmanager
@@ -123,15 +158,13 @@ class MinIODataSource:
                 response = await s3_client.list_buckets(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
             return S3Response(
                 success=False,
-                error=f"{error_code}: {error_message}",
+                error=_client_error_text(e),
                 status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
             )
         except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
+            return S3Response(success=False, error=_unexpected_error_text(e))
 
     async def list_objects_v2(
         self,
@@ -172,15 +205,13 @@ class MinIODataSource:
                 response = await s3_client.list_objects_v2(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
             return S3Response(
                 success=False,
-                error=f"{error_code}: {error_message}",
+                error=_client_error_text(e),
                 status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
             )
         except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
+            return S3Response(success=False, error=_unexpected_error_text(e))
 
     async def get_bucket_location(
         self,
@@ -200,15 +231,13 @@ class MinIODataSource:
                 response = await s3_client.get_bucket_location(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
             return S3Response(
                 success=False,
-                error=f"{error_code}: {error_message}",
+                error=_client_error_text(e),
                 status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
             )
         except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
+            return S3Response(success=False, error=_unexpected_error_text(e))
 
     async def head_object(
         self,
@@ -262,15 +291,13 @@ class MinIODataSource:
                 response = await s3_client.head_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
             return S3Response(
                 success=False,
-                error=f"{error_code}: {error_message}",
+                error=_client_error_text(e),
                 status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
             )
         except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
+            return S3Response(success=False, error=_unexpected_error_text(e))
 
     async def get_object(
         self,
@@ -342,15 +369,13 @@ class MinIODataSource:
                 response = await s3_client.get_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
             return S3Response(
                 success=False,
-                error=f"{error_code}: {error_message}",
+                error=_client_error_text(e),
                 status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
             )
         except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
+            return S3Response(success=False, error=_unexpected_error_text(e))
 
     async def generate_presigned_url(
         self,
@@ -389,15 +414,13 @@ class MinIODataSource:
                     response = url_result
                 return self._handle_s3_response(response)
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
             return S3Response(
                 success=False,
-                error=f"{error_code}: {error_message}",
+                error=_client_error_text(e),
                 status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
             )
         except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
+            return S3Response(success=False, error=_unexpected_error_text(e))
 
     async def put_object(
         self,
@@ -517,15 +540,13 @@ class MinIODataSource:
                 response = await s3_client.put_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
             return S3Response(
                 success=False,
-                error=f"{error_code}: {error_message}",
+                error=_client_error_text(e),
                 status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
             )
         except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
+            return S3Response(success=False, error=_unexpected_error_text(e))
 
     async def delete_object(
         self,
@@ -555,15 +576,13 @@ class MinIODataSource:
                 response = await s3_client.delete_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
             return S3Response(
                 success=False,
-                error=f"{error_code}: {error_message}",
+                error=_client_error_text(e),
                 status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
             )
         except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
+            return S3Response(success=False, error=_unexpected_error_text(e))
 
     async def copy_object(
         self,
@@ -588,12 +607,10 @@ class MinIODataSource:
                 response = await s3_client.copy_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
             return S3Response(
                 success=False,
-                error=f"{error_code}: {error_message}",
+                error=_client_error_text(e),
                 status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
             )
         except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
+            return S3Response(success=False, error=_unexpected_error_text(e))

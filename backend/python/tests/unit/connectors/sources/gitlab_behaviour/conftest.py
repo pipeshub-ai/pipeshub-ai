@@ -30,7 +30,10 @@ from gitlab_world import CONFIG_PATH, CONNECTOR_ID
 import app.connectors.sources.gitlab.repos as repos_module
 import app.sources.client.gitlab.gitlab as gitlab_client_module
 from app.connectors.core.base.token_service.startup_service import startup_service
-from app.connectors.sources.gitlab.connector import GitLabConnector
+from app.connectors.sources.gitlab.connector import (
+    GitLabConnector,
+    GitLabSyncIncompleteError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -93,6 +96,16 @@ class GitLabHarness:
     async def sync(self, connector: GitLabConnector | None = None) -> GitLabConnector:
         connector = connector or await self.connector()
         await connector.run_sync()
+        task = connector._code_file_timestamp_backfill_task
+        if task is not None:
+            await task
+        return connector
+
+    async def sync_incomplete(self, connector: GitLabConnector | None = None) -> GitLabConnector:
+        """A sync that could not read part of GitLab: it does the rest, then reports failure."""
+        connector = connector or await self.connector()
+        with pytest.raises(GitLabSyncIncompleteError):
+            await connector.run_sync()
         task = connector._code_file_timestamp_backfill_task
         if task is not None:
             await task

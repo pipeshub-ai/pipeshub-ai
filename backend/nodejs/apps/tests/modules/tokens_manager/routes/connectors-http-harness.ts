@@ -246,6 +246,8 @@ export const startHarness = async ({
     scheduleJob: async () => undefined,
     removeJob: async () => undefined,
     getJobStatus: async () => null,
+    upsertRepeatingSchedule: async () => 'scheduled',
+    removeConnectorSchedules: async () => false,
   } as unknown as CrawlingSchedulerService)
 
   sinon

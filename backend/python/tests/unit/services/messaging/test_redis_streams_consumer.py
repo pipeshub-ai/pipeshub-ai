@@ -12,10 +12,12 @@ Tests for RedisStreamsConsumer:
 import asyncio
 import json
 import logging
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core import envelope, org_context
 from app.services.messaging.config import RedisStreamsConfig, StreamMessage
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 
@@ -1303,3 +1305,72 @@ class TestEmptyTopicListDoesNotSpin:
         sleep.assert_awaited_once_with(2.0)
         # And it must not have tried to read.
         consumer.redis.xreadgroup.assert_not_called()
+
+
+class TestOrgContextWrapper:
+    """The consumer binds the org for the handler only."""
+
+    KEY = envelope.derive_key("consumer-test-secret")
+
+    @pytest.fixture(autouse=True)
+    def _keys(self) -> Iterator[None]:
+        async def keys() -> tuple[bytes, ...]:
+            return (self.KEY,)
+
+        envelope.configure(keys)
+        yield
+        envelope.configure(None)
+
+    async def _run(self, consumer, fields) -> tuple[tuple[bool, bool], list]:
+        seen = []
+
+        async def handler(msg) -> bool:
+            try:
+                seen.append((org_context.current().org_id, msg.payload))
+            except org_context.MissingOrgContext:
+                seen.append(("MissingOrgContext", msg.payload))
+            return True
+
+        consumer.message_handler = handler
+        result = await consumer._process_message_with_classification("topic-a", "1-0", {"value": json.dumps(fields)})
+        return result, seen
+
+    async def test_signed_message_binds_the_signed_org_and_resets_after(self, consumer) -> None:
+        ctx = org_context.OrgContext("org_a", "u1", "user", "jwt", "r1")
+        msg = envelope.sign(self.KEY, "topic-a", {"orgId": "org_a", "k": 1}, ctx, event_type="T")
+        result, seen = await self._run(consumer, msg)
+        assert result == (True, False) and seen == [("org_a", {"orgId": "org_a", "k": 1})]
+        with pytest.raises(org_context.MissingOrgContext):
+            org_context.current()
+
+    async def test_ctx_org_differs_from_payload_org_is_dead_lettered_without_running_the_handler(self, consumer) -> None:
+        ctx = org_context.OrgContext("org_a", "u1", "user", "jwt", "r1")
+        msg = envelope.sign(self.KEY, "topic-a", {"orgId": "org_b"}, ctx, event_type="T")
+        result, seen = await self._run(consumer, msg)
+        assert result == (False, True) and seen == []
+
+    async def test_signed_message_resent_with_another_event_type_is_dead_lettered(self, consumer) -> None:
+        ctx = org_context.OrgContext("org_a", "u1", "user", "jwt", "r1")
+        msg = envelope.sign(self.KEY, "topic-a", {"k": 1}, ctx, event_type="T")
+        msg["eventType"] = "deleteRecord"
+        result, seen = await self._run(consumer, msg)
+        assert result == (False, True) and seen == []
+
+    async def test_forged_ctx_is_dead_lettered(self, consumer) -> None:
+        ctx = org_context.OrgContext("org_a", "u1", "user", "jwt", "r1")
+        msg = envelope.sign(self.KEY, "topic-a", {"k": 1}, ctx, event_type="T")
+        msg["ctx"]["orgId"] = "org_b"
+        assert (await self._run(consumer, msg))[0] == (False, True)
+
+    async def test_unsigned_message_falls_back_to_payload_org_before_the_flag(self, consumer) -> None:
+        result, seen = await self._run(consumer, {"eventType": "T", "payload": {"orgId": "org_a"}})
+        assert result == (True, False) and seen[0][0] == "org_a"
+
+    async def test_unsigned_message_without_org_runs_unbound(self, consumer) -> None:
+        _, seen = await self._run(consumer, {"eventType": "T", "payload": {"k": 1}})
+        assert seen[0][0] == "MissingOrgContext"
+
+    async def test_unsigned_message_is_dead_lettered_after_the_flag(self, consumer, monkeypatch) -> None:
+        monkeypatch.setenv("ENVELOPE_CTX_REQUIRED", "true")
+        result, seen = await self._run(consumer, {"eventType": "T", "payload": {"orgId": "org_a"}})
+        assert result == (False, True) and seen == []

@@ -31,6 +31,13 @@ from app.api.middlewares.auth import (
     service_token_org,
 )
 from app.config.constants.service import TokenScopes
+from app.exceptions.indexing_exceptions import (
+    MultimodalModelNotConfiguredError,
+    PasswordProtectedError,
+)
+from app.modules.parsers.encryption import raise_if_password_protected_office
+from app.services.model_identity.propagation import scope_from_claims
+from app.services.model_identity.workload import Workload
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -47,8 +54,10 @@ from app.services.resource_governor.memory_domain import (
     parse_admission_cap,
     stamp_admitted_here,
 )
+from app.services.resource_governor.org_share import OrgShare, max_org_share
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
+from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +88,13 @@ PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS = 5
 # heavy documents) can legitimately take several minutes, so this is set
 # well above typical large-document parse times, not just above the median.
 SLOW_PARSE_WARN_SECONDS = 300.0
+# Per pool, one org holds at most this share while another org wants the pool (S-4).
+_ORG_SHARE = OrgShare(max_org_share())
+
+
+def _config_service(request: Request) -> Any:  # noqa: ANN401
+    container = getattr(request.app, "container", None)
+    return container.config_service() if container is not None else None
 
 
 def _get_registry(request: Request) -> ParserRegistry:
@@ -103,6 +119,7 @@ async def parse_file(
     org_id: Annotated[str | None, Form(description="Organisation ID")] = None,
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
     skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,
+    file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
@@ -151,6 +168,8 @@ async def parse_file(
     config: dict = {"extension": extension}
     if skip_table_enrichment:
         config["skip_table_enrichment"] = True
+    if file_path:
+        config["file_path"] = file_path
 
     if provider_enum is None:
         return JSONResponse(
@@ -173,18 +192,29 @@ async def parse_file(
     )
 
     governor = request.app.state.governor
+    pool = gate_pool(tier).value
     gate = governor.gate(gate_pool(tier))
     cap = parse_admission_cap(governor, gate_pool(tier))
+    org_key = org_id or ""
 
-    admitted = await acquire_gate_with_backpressure(
-        gate, cost, tier, message_id,
-        logger=logger,
-        log_prefix="parsing",
-        queue_wait_warn_seconds=PARSE_QUEUE_WAIT_WARN_SECONDS,
-        gate_timeout_seconds=PARSE_GATE_TIMEOUT_SECONDS,
-        cap=cap,
-    )
+    _ORG_SHARE.arrive(pool, org_key)
+    try:
+        if _ORG_SHARE.over_share(pool, org_key, cost, gate.limit if cap is None else cap):
+            admitted = False
+        else:
+            admitted = await acquire_gate_with_backpressure(
+                gate, cost, tier, message_id,
+                logger=logger,
+                log_prefix="parsing",
+                queue_wait_warn_seconds=PARSE_QUEUE_WAIT_WARN_SECONDS,
+                gate_timeout_seconds=PARSE_GATE_TIMEOUT_SECONDS,
+                cap=cap,
+            )
+    except BaseException:
+        _ORG_SHARE.leave(pool, org_key)
+        raise
     if not admitted:
+        _ORG_SHARE.leave(pool, org_key)
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
@@ -197,6 +227,7 @@ async def parse_file(
                 },
             },
         )
+    _ORG_SHARE.hold(pool, org_key, cost)
 
     if cap is None:
         # Braked here: a Docling service sharing this memory need not brake it again.
@@ -206,7 +237,48 @@ async def parse_file(
     try:
         try:
             parser = registry.resolve(mime_type, extension, provider_enum)
-            result = await parser.parse(content, record_name, config)
+            async with scope_from_claims(
+                claims,
+                Workload.PARSING,
+                fallback_service="parsing",
+                config_service=_config_service(request),
+            ):
+                raise_if_password_protected_office(
+                    content, extension=extension, mime_type=mime_type
+                )
+                result = await parser.parse(content, record_name, config)
+        except PasswordProtectedError as exc:
+            logger.warning(
+                "Parse refused: record='%s' provider=%s code=%s",
+                record_name, provider_enum.value, ParseErrorCode.PASSWORD_REQUIRED.value,
+            )
+            # A fact about the file, like every ParseError: 422, never retried.
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "success": False,
+                    "error": ParseError(
+                        ParseErrorCode.PASSWORD_REQUIRED, exc.message, exc.details
+                    ).to_dict(),
+                },
+            )
+        except MultimodalModelNotConfiguredError as exc:
+            logger.warning(
+                "Parse refused: record='%s' provider=%s: %s",
+                record_name, provider_enum.value, exc.message,
+            )
+            # A fact about the org's AI settings, not an outage: as a 500 the
+            # indexer retried it as transient and then told the person of a
+            # "temporary problem". The message is the reason the record stores.
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "success": False,
+                    "error": ParseError(
+                        ParseErrorCode.PARSE_FAILED, SCANNED_DOCUMENT_NEEDS_OCR, exc.details
+                    ).to_dict(),
+                },
+            )
         except ParseError as exc:
             parse_ms = (time.monotonic() - parse_start) * 1000
             logger.warning(
@@ -246,6 +318,7 @@ async def parse_file(
             )
     finally:
         gate.release(cost)
+        _ORG_SHARE.leave(pool, org_key, cost)
         SemaphoreLogger.log_semaphore_release(
             f"parsing:{tier.value}", message_id, gate.limit - gate.in_use, gate.limit
         )

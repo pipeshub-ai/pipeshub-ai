@@ -11,6 +11,10 @@ import * as storageUtils from '../../../../src/modules/storage/utils/utils'
 import { AuthenticatedServiceRequest } from '../../../../src/libs/middlewares/types'
 import * as mimetypeModule from '../../../../src/modules/storage/mimetypes/mimetypes'
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
+import { NotFoundError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors'
+import { StorageConfigurationError } from '../../../../src/libs/errors/storage.errors'
+import { inertWriteState, useInertWriteState } from '../../../support/inert-write-state'
+import { setDocumentRepository } from '../../../../src/libs/repositories/document'
 
 function makeOrgId() {
   return new mongoose.Types.ObjectId().toString()
@@ -83,7 +87,11 @@ function makeDocument(overrides: any = {}): any {
   }
 }
 
+// Rows cross the repository seam as plain objects with string ids.
+const withStringId = <T extends { _id: unknown }>(row: T) => ({ ...row, _id: String(row._id) })
+
 describe('StorageController', () => {
+  useInertWriteState()
   let controller: StorageController
   let mockKvs: any
   let mockConfig: any
@@ -261,7 +269,11 @@ describe('StorageController', () => {
 
       await controller.getDocumentById(req, res, next)
       expect(res.statusCode).to.equal(HTTP_STATUS.OK)
-      expect(res.body).to.deep.equal(doc)
+      // The repository hands back plain rows: ids are strings, which serialise the same. The fingerprint is the one added field.
+      const { storageFingerprint, ...row } = JSON.parse(JSON.stringify(res.body))
+      expect(row).to.deep.equal(JSON.parse(JSON.stringify(doc)))
+      expect(storageFingerprint).to.include({ version: 1, verified: false, trusted: false, objectMissing: false })
+      expect(storageFingerprint.object).to.equal(null)
     })
 
     it('should call next with BadRequestError when documentId is missing', async () => {
@@ -369,7 +381,7 @@ describe('StorageController', () => {
 
       expect(next.called).to.be.false
       expect(rows).to.have.length(0)
-      expect(adapter.deleteObject.firstCall.args[0]._id).to.equal(row._id)
+      expect(adapter.deleteObject.firstCall.args[0]._id).to.equal(String(row._id))
     })
 
     it('keeps a document that stopped being an unfinished upload mid-abort', async () => {
@@ -386,6 +398,48 @@ describe('StorageController', () => {
       expect(next.firstCall.args[0].statusCode).to.equal(409)
       expect(rows).to.deep.equal([row])
       expect(adapter.deleteObject.called).to.be.false
+    })
+
+    describe('an upload that completed while it was being aborted', () => {
+      const spied = () => {
+        const spies = {
+          adoptDirectUpload: sinon.stub().resolves(true),
+          clearAwaitingDirectUpload: sinon.stub().resolves(),
+          bumpSeq: sinon.stub().resolves({ writeSeq: 2 }),
+        }
+        const base = inertWriteState()
+        setDocumentRepository(new Proxy(base, { get: (t, prop, r) => (prop in spies ? (spies as any)[prop] : Reflect.get(t, prop, r)) }))
+        return spies
+      }
+
+      it('adopts the object the way a verified read does (its real size), then refuses with 409', async () => {
+        const row = placeholder()
+        adapter.objectExists.resolves(true)
+        adapter.statObject = sinon.stub().resolves({ size: 5, etag: 'e', lastModified: null })
+        const spies = spied()
+        const next = sinon.stub()
+
+        await controller.abortDirectUpload(serviceReq(String(row.orgId), String(row._id)), makeRes(), next)
+
+        expect(spies.adoptDirectUpload.calledOnceWith(String(row.orgId), String(row._id), 5)).to.be.true
+        expect(spies.clearAwaitingDirectUpload.called).to.be.false
+        expect(next.firstCall.args[0].statusCode).to.equal(409)
+      })
+
+      it('falls back to clearing the flag and moving the sequence when the object cannot be stat-ed', async () => {
+        const row = placeholder()
+        adapter.objectExists.resolves(true)
+        adapter.statObject = sinon.stub().rejects(new Error('Method not implemented'))
+        const spies = spied()
+        const next = sinon.stub()
+
+        await controller.abortDirectUpload(serviceReq(String(row.orgId), String(row._id)), makeRes(), next)
+
+        expect(spies.adoptDirectUpload.called).to.be.false
+        expect(spies.clearAwaitingDirectUpload.calledOnce).to.be.true
+        expect(spies.bumpSeq.calledOnce).to.be.true
+        expect(next.firstCall.args[0].statusCode).to.equal(409)
+      })
     })
 
     it('still reports success when the path could not be cleared', async () => {
@@ -622,6 +676,33 @@ describe('StorageController', () => {
       expect(next.firstCall.args[0].message).to.include('does not exist')
     })
 
+    it('answers not found when the row is removed between the read and the soft delete', async () => {
+      const doc = makeDocument()
+      sinon.stub(DocumentModel, 'findOne').onFirstCall().resolves(doc).onSecondCall().resolves(null)
+
+      const req = makeReq({ params: { documentId: doc._id.toString() } })
+      const res = makeRes()
+      const next = sinon.stub()
+
+      await controller.deleteDocumentById(req, res, next)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect(doc.save.called).to.be.false
+    })
+
+    it('saveDocument answers not found, not a server error, when the row is gone', async () => {
+      const doc = makeDocument()
+      sinon.stub(DocumentModel, 'findOne').resolves(null)
+
+      let thrown: unknown
+      try {
+        await (controller as any).saveDocument(doc, { documentName: 'renamed' })
+      } catch (error) {
+        thrown = error
+      }
+      expect(thrown).to.be.instanceOf(NotFoundError)
+    })
+
     it('should set deletedByUserId when userId present', async () => {
       const userId = makeOrgId()
       const doc = makeDocument()
@@ -727,6 +808,27 @@ describe('StorageController', () => {
 
       await controller.uploadDocument(req, res, next)
       expect(next.calledOnce).to.be.true
+    })
+
+    it('reports storage that cannot be opened as a file that was not saved', async () => {
+      initAdapterStub.rejects(new StorageConfigurationError('Failed to initialize mount point', { mountPath: '/root/.local/PipesHub' }))
+
+      const next = sinon.stub()
+      await controller.uploadDocument(makeReq({ body: { fileBuffer: {} } }), makeRes(), next)
+
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(ServiceUnavailableError)
+      expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
+    })
+
+    it('passes on a failure that is not about storage unchanged', async () => {
+      const failure = new NotFoundError('Storage configuration not found')
+      initAdapterStub.rejects(failure)
+
+      const next = sinon.stub()
+      await controller.uploadDocument(makeReq({ body: { fileBuffer: {} } }), makeRes(), next)
+
+      expect(next.firstCall.args[0]).to.equal(failure)
     })
   })
 
@@ -875,6 +977,7 @@ describe('StorageController', () => {
     it('should upload buffer and update document on success', async () => {
       const doc = makeDocument({ mutationCount: 1, sizeInBytes: 100 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       adapter.updateBuffer.resolves({ statusCode: 200, data: 'ok' })
 
       const req = makeReq({ body: { fileBuffer: { buffer: Buffer.from('new'), size: 200 } } })
@@ -902,6 +1005,7 @@ describe('StorageController', () => {
     it('should throw InternalServerError on upload failure', async () => {
       const doc = makeDocument()
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       adapter.updateBuffer.resolves({ statusCode: 500, msg: 'disk full' })
 
       const req = makeReq({ body: { fileBuffer: { buffer: Buffer.from('x'), size: 10 } } })
@@ -922,6 +1026,7 @@ describe('StorageController', () => {
     it('should upload next version for document with no version history', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('org/path/doc/versions/v0.pdf')
@@ -947,6 +1052,7 @@ describe('StorageController', () => {
     const nextVersionSetup = () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('org/path/doc/versions/v1.pdf')
@@ -1022,6 +1128,7 @@ describe('StorageController', () => {
     it('should throw BadRequestError for non-versioned documents', async () => {
       const doc = makeDocument({ isVersionedFile: false })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
 
       const req = makeReq({
         body: { fileBuffer: { buffer: Buffer.from('x'), originalname: 'f.pdf', size: 1, mimetype: 'application/pdf' } },
@@ -1037,6 +1144,7 @@ describe('StorageController', () => {
     it('should throw BadRequestError on extension mismatch', async () => {
       const doc = makeDocument({ extension: '.pdf' })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'normalizeExtension')
         .onFirstCall().returns('.pdf')
         .onSecondCall().returns('.docx')
@@ -1058,6 +1166,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('org/path/doc/versions/v1.pdf')
@@ -1085,6 +1194,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('org/path/doc/versions/v1.pdf')
@@ -1106,6 +1216,7 @@ describe('StorageController', () => {
     it('should throw when version upload fails', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('path')
@@ -1129,6 +1240,7 @@ describe('StorageController', () => {
     it('should throw when current upload fails', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('path')
@@ -1152,6 +1264,7 @@ describe('StorageController', () => {
     it('should set document.azureBlob for AzureBlob vendor', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.AzureBlob })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('path')
@@ -1173,6 +1286,7 @@ describe('StorageController', () => {
     it('should throw when initial v0 clone fails', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('path')
@@ -1192,6 +1306,7 @@ describe('StorageController', () => {
     it('should throw when buffer fetch for v0 fails', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('path')
@@ -1222,6 +1337,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current/path')
@@ -1251,6 +1367,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current/path')
@@ -1268,6 +1385,30 @@ describe('StorageController', () => {
       expect(next.firstCall.args[0].message).to.contain("The user id in the storage token isn't valid")
     })
 
+    it('refuses an invalid storage vendor BEFORE any byte is written (changed bytes must not sit behind an unchanged row)', async () => {
+      const doc = makeDocument({
+        isVersionedFile: true,
+        versionHistory: [
+          { version: 0, s3: { url: 'v0' }, size: 100 },
+          { version: 1, s3: { url: 'v1' }, size: 200 },
+        ],
+        storageVendor: 'not-a-vendor',
+      })
+      sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
+      sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
+      sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
+      sinon.stub(storageUtils, 'getCurrentFilePath').returns('current/path')
+      sinon.stub(storageUtils, 'getVersionFilePath').returns('version/path')
+      const clone = sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'rolled-url' })
+      const next = sinon.stub()
+
+      await controller.rollBackToPreviousVersion(makeReq({ body: { version: 0, note: 'n' }, query: {} }), makeRes(), next)
+
+      expect(clone.called, 'no clone ran').to.be.false
+      expect(next.firstCall.args[0].statusCode).to.equal(HTTP_STATUS.BAD_REQUEST)
+    })
+
     it('should throw NotFoundError when document not found', async () => {
       sinon.stub(storageUtils, 'getDocumentInfo').resolves(undefined)
 
@@ -1282,6 +1423,7 @@ describe('StorageController', () => {
     it('should throw BadRequestError for non-versioned document', async () => {
       const doc = makeDocument({ isVersionedFile: false })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
 
       const req = makeReq({ body: { version: 0, note: 'test' }, query: {} })
       const res = makeRes()
@@ -1295,6 +1437,7 @@ describe('StorageController', () => {
     it('should throw BadRequestError when version is null/undefined', async () => {
       const doc = makeDocument({ isVersionedFile: true, versionHistory: [{ version: 0 }] })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
 
       const req = makeReq({ body: { note: 'test' }, query: {} })
       const res = makeRes()
@@ -1311,6 +1454,7 @@ describe('StorageController', () => {
         versionHistory: [{ version: 0 }, { version: 1 }],
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
 
       const req = makeReq({ body: { version: 1, note: 'test' }, query: {} })
       const res = makeRes()
@@ -1327,6 +1471,7 @@ describe('StorageController', () => {
         versionHistory: [{ version: 0 }, { version: 1 }],
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('path')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       adapter.getBufferFromStorageService.resolves({ statusCode: 500, msg: 'fail' })
@@ -1346,6 +1491,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('path')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current')
@@ -1366,6 +1512,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('path')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current')
@@ -1389,6 +1536,7 @@ describe('StorageController', () => {
         storageVendor: 'invalid' as any,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('path')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current')
@@ -1415,6 +1563,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current/path')
@@ -1671,8 +1820,38 @@ describe('StorageController.moveTree collision handling', () => {
 
     expect(next.called).to.be.false
     expect(deleteOne.called).to.be.false
-    expect(moveRemote.firstCall.args[4]).to.deep.equal([mine])
+    expect(moveRemote.firstCall.args[4]).to.deep.equal([mine].map(withStringId))
     expect(res.body).to.deep.equal({ moved: 1, collision: true })
+  })
+
+  it('treats a soft-deleted twin at the exact path as a collision', async () => {
+    const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
+    const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
+    const orgId = makeOrgId()
+    const oldFullPath = `${orgId}/PipesHub/records/c1/Invoice`
+    const mine = { _id: new mongoose.Types.ObjectId(), documentPath: oldFullPath, documentName: 'record_v1' }
+    const attachment = { _id: new mongoose.Types.ObjectId(), documentPath: `${oldFullPath}/a.pdf`, documentName: 'record_a1' }
+    const deletedTwin = {
+      _id: new mongoose.Types.ObjectId(), documentPath: oldFullPath, documentName: 'record_v2', isDeleted: true,
+    }
+    sinon.stub(DocumentModel, 'find').returns({
+      select: () => ({ lean: () => Promise.resolve([mine, attachment, deletedTwin]) }),
+    } as any)
+    sinon.stub(controller, 'initializeStorageAdapter').resolves({} as any)
+    sinon.stub(controller as any, 'getConfiguredStorageType').resolves('local')
+    const moveLocal = sinon.stub(controller as any, 'moveTreeLocal').resolves({ failedIds: [] })
+    const moveRemote = sinon.stub(controller as any, 'moveTreeRemote').resolves({ failedIds: [] })
+    const res = makeRes()
+
+    await controller.moveTree(
+      makeReq({ orgId, body: { oldPath: 'records/c1/Invoice', newPath: 'records/c1/Paid', virtualRecordId: 'v1' } }),
+      res,
+      sinon.stub(),
+    )
+
+    expect(moveLocal.called).to.be.false
+    expect(moveRemote.firstCall.args[4]).to.deep.equal([mine, attachment].map(withStringId))
+    expect(res.body).to.deep.equal({ moved: 2, collision: true })
   })
 
   it('rewrites soft-deleted rows too when a local tree rename moves their files', async () => {
@@ -1689,7 +1868,7 @@ describe('StorageController.moveTree collision handling', () => {
     } as any)
     sinon.stub(controller, 'initializeStorageAdapter').resolves({} as any)
     sinon.stub(controller as any, 'getConfiguredStorageType').resolves('local')
-    const moveLocal = sinon.stub(controller as any, 'moveTreeLocal').resolves()
+    const moveLocal = sinon.stub(controller as any, 'moveTreeLocal').resolves({ failedIds: [] })
     const req = makeReq({ orgId, body: { oldPath: 'records/c1/Folder', newPath: 'records/c1/Renamed' } })
     const res = makeRes()
     const next = sinon.stub()
@@ -1697,7 +1876,7 @@ describe('StorageController.moveTree collision handling', () => {
     await controller.moveTree(req, res, next)
 
     expect(next.called).to.be.false
-    expect(moveLocal.firstCall.args[3]).to.deep.equal([live, softDeleted])
+    expect(moveLocal.firstCall.args[3]).to.deep.equal([live, softDeleted].map(withStringId))
     expect(res.body).to.deep.equal({ moved: 1 })
   })
 
@@ -1715,7 +1894,7 @@ describe('StorageController.moveTree collision handling', () => {
       return {
         controller,
         moveRemote: sinon.stub(controller as any, 'moveTreeRemote').resolves({ failedIds: [] }),
-        moveLocal: sinon.stub(controller as any, 'moveTreeLocal').resolves(),
+        moveLocal: sinon.stub(controller as any, 'moveTreeLocal').resolves({ failedIds: [] }),
       }
     }
 
@@ -1737,7 +1916,7 @@ describe('StorageController.moveTree collision handling', () => {
 
       expect(next.called).to.be.false
       expect(moveLocal.called).to.be.false
-      expect(moveRemote.firstCall.args[4]).to.deep.equal([ownRecord, ownMeta])
+      expect(moveRemote.firstCall.args[4]).to.deep.equal([ownRecord, ownMeta].map(withStringId))
       expect(res.body).to.deep.equal({ moved: 2, collision: true })
     })
 
@@ -1756,6 +1935,70 @@ describe('StorageController.moveTree collision handling', () => {
 
       expect(moveRemote.called).to.be.false
       expect(moveLocal.calledOnce).to.be.true
+      expect(res.body).to.deep.equal({ moved: 1, collision: false })
+    })
+
+    it('leaves a same-named folder\'s children in place when a childless record is moved', async () => {
+      // Doc "Reports" (v1, no children) next to folder "Reports": the
+      // folder's child is stored beneath the Doc's path.
+      const orgId = makeOrgId()
+      const base = `${orgId}/PipesHub/records/c1/Reports`
+      const docRecord = { _id: new mongoose.Types.ObjectId(), documentPath: base, documentName: 'record_v1' }
+      const docMeta = { _id: new mongoose.Types.ObjectId(), documentPath: base, documentName: 'metadata_v1' }
+      const folderChild = { _id: new mongoose.Types.ObjectId(), documentPath: `${base}/plan.txt`, documentName: 'record_c1' }
+      const { controller, moveRemote, moveLocal } = setup([docRecord, docMeta, folderChild])
+      const res = makeRes()
+
+      await controller.moveTree(
+        makeReq({ orgId, body: { oldPath: 'records/c1/Reports', newPath: 'records/c1/Q3', virtualRecordIds: ['v1'] } }),
+        res,
+        sinon.stub(),
+      )
+
+      expect(moveLocal.called).to.be.false
+      expect(moveRemote.firstCall.args[4]).to.deep.equal([docRecord, docMeta].map(withStringId))
+      expect(res.body).to.deep.equal({ moved: 2, collision: true })
+    })
+
+    it('does not rename the directory over a soft-deleted twin\'s files', async () => {
+      const orgId = makeOrgId()
+      const base = `${orgId}/PipesHub/records/kb/Folder`
+      const own = { _id: new mongoose.Types.ObjectId(), documentPath: `${base}/f`, documentName: 'record_v1' }
+      const deletedTwin = {
+        _id: new mongoose.Types.ObjectId(), documentPath: `${base}/g`, documentName: 'record_v9', isDeleted: true,
+      }
+      const { controller, moveRemote, moveLocal } = setup([own, deletedTwin])
+      const res = makeRes()
+
+      await controller.moveTree(
+        makeReq({ orgId, body: { oldPath: 'records/kb/Folder', newPath: 'records/kb/Moved', virtualRecordIds: ['v1'] } }),
+        res,
+        sinon.stub(),
+      )
+
+      expect(moveLocal.called).to.be.false
+      expect(moveRemote.firstCall.args[4]).to.deep.equal([withStringId(own)])
+      expect(res.body).to.deep.equal({ moved: 1, collision: true })
+    })
+
+    it('still renames the whole directory when its soft-deleted rows are its own', async () => {
+      const orgId = makeOrgId()
+      const base = `${orgId}/PipesHub/records/kb/Folder`
+      const own = { _id: new mongoose.Types.ObjectId(), documentPath: `${base}/f`, documentName: 'record_v1' }
+      const ownDeleted = {
+        _id: new mongoose.Types.ObjectId(), documentPath: `${base}/old`, documentName: 'record_v2', isDeleted: true,
+      }
+      const { controller, moveRemote, moveLocal } = setup([own, ownDeleted])
+      const res = makeRes()
+
+      await controller.moveTree(
+        makeReq({ orgId, body: { oldPath: 'records/kb/Folder', newPath: 'records/kb/Moved', virtualRecordIds: ['v1', 'v2'] } }),
+        res,
+        sinon.stub(),
+      )
+
+      expect(moveRemote.called).to.be.false
+      expect(moveLocal.firstCall.args[3]).to.deep.equal([own, ownDeleted].map(withStringId))
       expect(res.body).to.deep.equal({ moved: 1, collision: false })
     })
 
@@ -1779,9 +2022,28 @@ describe('StorageController.moveTree collision handling', () => {
     })
   })
 
+  it('scopes the tree lookup by orgId, not just the path prefix', async () => {
+    const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
+    const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
+    sinon.stub(controller as any, 'getConfiguredStorageType').resolves('local')
+    const orgId = makeOrgId()
+    const find = sinon.stub(DocumentModel, 'find').returns({
+      select: () => ({ lean: () => Promise.resolve([]) }),
+    } as any)
+
+    await controller.moveTree(
+      makeReq({ orgId, body: { oldPath: 'records/c1/Folder', newPath: 'records/c1/Renamed' } }),
+      makeRes(),
+      sinon.stub(),
+    )
+
+    expect(String(find.firstCall.args[0].orgId)).to.equal(String(orgId))
+  })
+
   it('allows folder names containing ".." but rejects a ".." segment', async () => {
     const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
     const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
+    sinon.stub(controller as any, 'getConfiguredStorageType').resolves('local')
     const orgId = makeOrgId()
     sinon.stub(DocumentModel, 'find').returns({
       select: () => ({ lean: () => Promise.resolve([]) }),
@@ -1804,5 +2066,67 @@ describe('StorageController.moveTree collision handling', () => {
       badNext,
     )
     expect(badNext.calledOnce).to.be.true
+  })
+})
+
+describe('StorageController.listVirtualRecordDocuments', () => {
+  afterEach(() => sinon.restore())
+
+  it('lists only this org\'s live record_/metadata_ documents, newest first', async () => {
+    const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
+    const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
+    const orgId = makeOrgId()
+    const rec = { _id: new mongoose.Types.ObjectId(), documentName: 'record_v1', documentPath: `${orgId}/PipesHub/records/c/a`, createdAt: 2 }
+    const sort = sinon.stub().returns({ lean: () => Promise.resolve([rec]) })
+    const select = sinon.stub().returns({ sort })
+    const find = sinon.stub(DocumentModel, 'find').returns({ select } as any)
+    const res = makeRes()
+    const next = sinon.stub()
+
+    await controller.listVirtualRecordDocuments(
+      makeReq({ orgId, params: { virtualRecordId: 'v1' } }) as any,
+      res,
+      next,
+    )
+
+    expect(next.called).to.be.false
+    const filter = find.firstCall.args[0] as any
+    expect(String(filter.orgId)).to.equal(String(orgId))
+    expect(filter.documentName).to.deep.equal({ $in: ['record_v1', 'metadata_v1'] })
+    expect(filter.isDeleted).to.deep.equal({ $ne: true })
+    expect(sort.firstCall.args[0]).to.deep.equal({ createdAt: -1, _id: -1 })
+    expect(filter.$expr).to.equal(undefined)
+    expect(res.body).to.deep.equal({
+      documents: [{ _id: String(rec._id), documentName: 'record_v1', documentPath: rec.documentPath, createdAt: 2, retiredAt: null }],
+    })
+  })
+})
+
+describe('StorageController.listFlatRecordDocuments', () => {
+  afterEach(() => sinon.restore())
+
+  it('pages this org\'s live documents still filed under records/<vrid>', async () => {
+    const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
+    const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
+    const orgId = makeOrgId()
+    const doc = { _id: new mongoose.Types.ObjectId(), documentName: 'record_v1', documentPath: `${orgId}/PipesHub/records/v1` }
+    const limit = sinon.stub().returns({ lean: () => Promise.resolve([doc]) })
+    const sort = sinon.stub().returns({ limit })
+    const find = sinon.stub(DocumentModel, 'find').returns({ select: () => ({ sort }) } as any)
+    const after = new mongoose.Types.ObjectId().toString()
+    const res = makeRes()
+
+    await controller.listFlatRecordDocuments(makeReq({ orgId, query: { after, limit: '50' } }) as any, res, sinon.stub())
+
+    const filter = find.firstCall.args[0] as any
+    expect(String(filter.orgId)).to.equal(String(orgId))
+    expect(String(filter._id.$gt)).to.equal(after)
+    expect(filter.isDeleted).to.deep.equal({ $ne: true })
+    // documentPath must equal "<org>/PipesHub/records/" + the vrid after the name prefix
+    expect(JSON.stringify(filter.$or)).to.contain(`${orgId}/PipesHub/records/`)
+    expect(filter.$or).to.have.length(2)
+    expect(sort.firstCall.args[0]).to.deep.equal({ _id: 1 })
+    expect(limit.firstCall.args[0]).to.equal(50)
+    expect(res.body.documents[0]).to.deep.include({ documentName: 'record_v1' })
   })
 })

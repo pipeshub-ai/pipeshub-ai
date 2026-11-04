@@ -214,6 +214,9 @@ class KnowledgeHubCursor:
     user_id: str | None = None
     org_id: str | None = None
     issued_at_ms: int = 0
+    # The connection limit's own Apps when the listing was narrowed to one, so
+    # its cursor resumes only under that limit; None for an unlimited listing.
+    limit_apps: list[str] | None = None
 
     def to_wire(self) -> dict:
         wire: dict[str, Any] = {
@@ -231,7 +234,7 @@ class KnowledgeHubCursor:
             ("sb", self.sort_by), ("so", self.sort_order),
             ("pi", self.parent_id), ("pt", self.parent_type),
             ("vp", self.via_parent_id), ("m", self.mode),
-            ("u", self.user_id), ("o", self.org_id),
+            ("u", self.user_id), ("o", self.org_id), ("la", self.limit_apps),
         )
         wire.update({key: value for key, value in optional if value is not None})
         return wire
@@ -267,6 +270,7 @@ class KnowledgeHubCursor:
             user_id=wire.get("u"),
             org_id=wire.get("o"),
             issued_at_ms=wire.get("ts", 0),
+            limit_apps=wire.get("la"),
         )
 
 

@@ -2086,6 +2086,31 @@ async def test_fetch_project_permission_scheme_scheme_missing_id_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_fetch_project_permission_scheme_reads_the_default_scheme_with_id_zero() -> None:
+    """Jira's built-in "Default Permission Scheme" has id 0; it was taken for a missing id."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    sch = MagicMock()
+    sch.status = HttpStatusCode.OK.value
+    sch.json = MagicMock(return_value={"id": 0, "name": "Default Permission Scheme"})
+    grants = MagicMock()
+    grants.status = HttpStatusCode.OK.value
+    grants.json = MagicMock(return_value={
+        "permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "jira-software-users"}},
+        ],
+    })
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("P", {})
+
+    assert ds.get_permission_scheme_grants_v2.await_args.kwargs["schemeId"] == 0
+    assert [p.external_id for p in perms] == ["jira-software-users"]
+
+
+@pytest.mark.asyncio
 async def test_fetch_project_permission_scheme_dedupes_duplicate_holders():
     conn = _make_connector()
     conn.data_source = MagicMock()
@@ -2562,6 +2587,24 @@ async def test_parse_issue_to_blocks_plain_string_comment_body():
     }
     box = await conn._parse_issue_to_blocks(issue_data, issue_key="K-1", weburl="https://jira.example/browse/K-1")
     assert len(box.block_groups) >= 2
+
+
+@pytest.mark.asyncio
+async def test_parse_issue_to_blocks_leaves_out_restricted_comments() -> None:
+    conn = _make_connector()
+    issue_data = {
+        "id": "10", "key": "K-1", "fields": {"summary": "T"},
+        "comments": [
+            {"id": "c1", "author": {"displayName": "A"}, "renderedBody": "<p>open</p>", "created": "2024-01-01T00:00:00.000+0000"},
+            {"id": "c2", "author": {"displayName": "B"}, "renderedBody": "<p>role secret</p>", "created": "2024-01-02T00:00:00.000+0000",
+             "visibility": {"type": "role", "value": "Administrators"}},
+            {"id": "c3", "author": {"displayName": "C"}, "renderedBody": "<p>group secret</p>", "created": "2024-01-03T00:00:00.000+0000",
+             "visibility": {"type": "group", "value": "jira-administrators"}},
+        ],
+    }
+    box = await conn._parse_issue_to_blocks(issue_data, issue_key="K-1", weburl="https://jira.example/browse/K-1")
+    assert {bg.source_group_id for bg in box.block_groups} & {"c1", "c2", "c3"} == {"c1"}
+    assert "secret" not in box.model_dump_json()
 
 
 @pytest.mark.asyncio

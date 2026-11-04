@@ -58,6 +58,11 @@ class FullSyncLedger:
         self.incomplete = True
 
     @property
+    def has_gaps(self) -> bool:
+        """Whether this run left part of Drive unread, so it must not count as a complete read."""
+        return self.incomplete or self.item_failures > 0 or self.skipped_drives > 0
+
+    @property
     def can_reconcile(self) -> bool:
         return (
             self.full_listings > 0

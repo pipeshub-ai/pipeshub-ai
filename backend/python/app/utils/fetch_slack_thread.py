@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, TypeGuard
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, TypeGuard
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -27,6 +27,8 @@ from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
     from app.config.configuration_service import ConfigurationService
     from app.modules.transformers.blob_storage import BlobStorage
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -196,6 +198,7 @@ async def _fetch_record_by_id(
     blob_store: Optional["BlobStorage"],
     org_id: Optional[str],
     virtual_record_id_to_result: Dict[str, Any],
+    connection_sources: Mapping[str, Iterable[str]] | None,
 ) -> Optional[Dict[str, Any]]:
     """
     Fetch a record by its graph record id.
@@ -248,8 +251,9 @@ async def _fetch_record_by_id(
             }
         }
 
-        from app.utils.chat_helpers import get_record
+        from app.utils.chat_helpers import attach_connector_instance_names, get_record
 
+        await attach_connector_instance_names(graph_provider, virtual_to_record_map.values(), connection_sources)
         await get_record(
             vrid,
             virtual_record_id_to_result,
@@ -557,12 +561,16 @@ async def _read_channel_record(
     ):
         return not_a_thread
 
+    from app.modules.retrieval.selection_scope import connection_sources_of
+
+    limit = connection_sources_of((scope_state or {}).get("filters"))
     own = await _fetch_record_by_id(
         record_id,
         graph_provider=graph_provider,
         blob_store=blob_store,
         org_id=org_id,
         virtual_record_id_to_result=virtual_record_id_to_result,
+        connection_sources=limit,
     )
     in_record = _message_timestamps(own)
     timestamps = list(dict.fromkeys(channel.get("timestamps", []) + in_record))[:MAX_MESSAGES_CHECKED]
@@ -619,6 +627,7 @@ async def _read_channel_record(
                 blob_store=blob_store,
                 org_id=org_id,
                 virtual_record_id_to_result=virtual_record_id_to_result,
+                connection_sources=limit,
             )
             if record:
                 replies.append(record)
@@ -634,11 +643,15 @@ async def _read_channel_record(
             "record_count": len(replies),
         })
 
-    from app.utils.chat_helpers import enrich_read_records_with_address_links
+    from app.utils.chat_helpers import (
+        enrich_read_records_with_address_links,
+        keep_record_text_inside_connection,
+    )
 
     await enrich_read_records_with_address_links(
-        found_records, graph_provider, org_id, user_id=user_id,
+        found_records, graph_provider, org_id, user_id=user_id, connection_sources=limit,
     )
+    await keep_record_text_inside_connection(found_records, graph_provider, user_id or "", org_id, limit)
 
     if threads:
         messages = max(len(in_record), 1)
@@ -803,6 +816,9 @@ async def _fetch_thread_records_impl(
             "thread_external_record_group_id": resolved.get("external_record_group_id"),
         }
 
+    from app.modules.retrieval.selection_scope import connection_sources_of
+
+    limit = connection_sources_of((scope_state or {}).get("filters"))
     found_records: List[Dict[str, Any]] = []
     skipped: List[str] = []
 
@@ -817,6 +833,7 @@ async def _fetch_thread_records_impl(
             blob_store=effective_blob,
             org_id=effective_org,
             virtual_record_id_to_result=virtual_record_id_to_result,
+            connection_sources=limit,
         )
         if record:
             found_records.append(record)
@@ -828,11 +845,15 @@ async def _fetch_thread_records_impl(
 
     # A reply that pasted a pull request's or a ticket's link shows it, with
     # whether and when it merged or closed.
-    from app.utils.chat_helpers import enrich_read_records_with_address_links
+    from app.utils.chat_helpers import (
+        enrich_read_records_with_address_links,
+        keep_record_text_inside_connection,
+    )
 
     await enrich_read_records_with_address_links(
-        found_records, graph_provider, effective_org, user_id=user_id,
+        found_records, graph_provider, effective_org, user_id=user_id, connection_sources=limit,
     )
+    await keep_record_text_inside_connection(found_records, graph_provider, user_id or "", effective_org, limit)
 
     logger.info(
         "Fetched Slack thread %s: %d records returned, %d skipped (input record_id=%s)",

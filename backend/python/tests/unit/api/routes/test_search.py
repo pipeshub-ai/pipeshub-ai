@@ -56,7 +56,7 @@ class TestSearchQueryModel:
     def test_valid_query_minimal(self):
         sq = SearchQuery(query="hello world")
         assert sq.query == "hello world"
-        assert sq.limit == 5
+        assert sq.limit == 10
         assert sq.filters == {}
 
     def test_valid_query_with_all_fields(self):
@@ -72,6 +72,11 @@ class TestSearchQueryModel:
     def test_limit_none_uses_default(self):
         sq = SearchQuery(query="q", limit=None)
         assert sq.limit is None
+
+    @pytest.mark.parametrize("limit", [0, 101])
+    def test_limit_out_of_range_raises(self, limit) -> None:
+        with pytest.raises(ValidationError):
+            SearchQuery(query="q", limit=limit)
 
     def test_filters_none(self):
         sq = SearchQuery(query="q", filters=None)
@@ -414,11 +419,11 @@ class TestSearchEndpoint:
 
         call_kwargs = mock_retrieval.search_with_filters.call_args
         queries = call_kwargs.kwargs["queries"]
-        assert queries == ["same query", "different query"]
+        assert queries == ["test", "same query", "different query"]
 
     @pytest.mark.asyncio
     async def test_search_empty_rewritten_query(self):
-        """If rewritten query is blank, only expanded queries are used."""
+        """A blank rewrite adds nothing; the typed query and the expansions are searched."""
         request = self._build_request()
 
         mock_retrieval = _retrieval_with_llm()
@@ -445,7 +450,7 @@ class TestSearchEndpoint:
 
         call_kwargs = mock_retrieval.search_with_filters.call_args
         queries = call_kwargs.kwargs["queries"]
-        assert queries == ["q1", "q2"]
+        assert queries == ["test", "q1", "q2"]
 
     @pytest.mark.asyncio
     async def test_search_custom_status_code_from_results(self):
@@ -515,7 +520,7 @@ class TestSearchEndpoint:
             return_value={"searchResults": [], "status_code": 200}
         )
         mock_graph = MagicMock()
-        body = SearchQuery(query="q", limit=7, filters={"type": ["file"]})
+        body = SearchQuery(query="q", limit=7, filters={"records": ["file"]})
 
         with patch(
             "app.api.routes.search.setup_query_transformation"
@@ -537,7 +542,7 @@ class TestSearchEndpoint:
         assert call_kwargs["user_id"] == "u42"
         assert call_kwargs["limit"] == 7
         assert call_kwargs["knowledge_search"] is True
-        assert call_kwargs["filter_groups"] == {"type": ["file"]}
+        assert call_kwargs["filter_groups"] == {"records": ["file"]}
         assert call_kwargs["time_range"] is None
 
     async def _search_with(self, body: SearchQuery) -> MagicMock:
@@ -648,8 +653,146 @@ def _content_filter_error() -> openai.BadRequestError:
     )
 
 
+def _hits(n_records: int, per_record: int) -> dict:
+    """A retrieval response of ``n_records * per_record`` passages, best first."""
+    hits = [
+        {"content": f"r{r}p{p}", "score": 1.0 - (r * per_record + p) / 1000,
+         "metadata": {"recordId": f"rec{r}"}}
+        for r in range(n_records) for p in range(per_record)
+    ]
+    return {
+        "searchResults": hits,
+        "records": [{"_key": f"rec{r}"} for r in range(n_records)],
+        "virtual_to_record_map": {f"v{r}": {"_key": f"rec{r}"} for r in range(n_records)},
+        "status_code": 200,
+    }
+
+
+class TestSearchHonoursLimit:
+    """`limit` caps `searchResults` however many queries and expansions ran."""
+
+    async def _run(self, body: SearchQuery, response: dict) -> dict:
+        request = MagicMock()
+        request.state.user = {"userId": "u", "orgId": "o"}
+        request.app.container.logger.return_value = MagicMock()
+        retrieval = _retrieval_with_llm()
+        retrieval.search_with_filters = AsyncMock(return_value=response)
+        chain = lambda v: MagicMock(ainvoke=AsyncMock(return_value=v))  # noqa: E731
+        with patch("app.api.routes.search.setup_query_transformation") as setup:
+            # The typed query, the rewrite and three expansions: five queries, each adding hits.
+            setup.return_value = (chain("rewritten"), chain("e1\ne2\ne3"))
+            res = await search(request=request, body=body, retrieval_service=retrieval, graph_provider=MagicMock())
+        assert len(retrieval.search_with_filters.call_args.kwargs["queries"]) == 5
+        return json.loads(res.body)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [1, 10, 50])
+    async def test_response_never_exceeds_limit(self, limit) -> None:
+        out = await self._run(SearchQuery(query="q", limit=limit), _hits(40, 3))
+        assert len(out["searchResults"]) == min(limit, 120)
+        kept = {h["metadata"]["recordId"] for h in out["searchResults"]}
+        assert {r["_key"] for r in out["records"]} == kept
+        assert {r["_key"] for r in out["virtual_to_record_map"].values()} == kept
+
+    @pytest.mark.asyncio
+    async def test_default_limit_applies_when_omitted(self) -> None:
+        out = await self._run(SearchQuery(query="q"), _hits(40, 3))
+        assert len(out["searchResults"]) == 10
+
+    @pytest.mark.asyncio
+    async def test_ranking_is_kept_and_cut_passages_are_counted(self) -> None:
+        out = await self._run(SearchQuery(query="q", limit=2), _hits(1, 5))
+        assert [h["content"] for h in out["searchResults"]] == ["r0p0", "r0p1"]
+        assert out["omittedPassages"] == {"rec0": 3}
+
+    @pytest.mark.asyncio
+    async def test_a_cut_inside_a_section_keeps_the_match_before_its_context(self) -> None:
+        # One expanded section: equal scores, neighbours listed before the match.
+        hits = [
+            {"content": f"p{i}", "score": 0.5, "distanceFromMatch": d, "metadata": {"recordId": "rec0"}}
+            for i, d in enumerate([2, 1, 0, 1, 2])
+        ]
+        response = {"searchResults": hits, "records": [{"_key": "rec0"}], "status_code": 200}
+        for limit, expected in [(1, ["p2"]), (3, ["p2", "p1", "p3"])]:
+            out = await self._run(SearchQuery(query="q", limit=limit), {**response, "searchResults": list(hits)})
+            assert [h["content"] for h in out["searchResults"]] == expected
+
+    @pytest.mark.asyncio
+    async def test_fewer_hits_than_limit_are_untouched(self) -> None:
+        response = _hits(2, 2)
+        out = await self._run(SearchQuery(query="q", limit=10), response)
+        assert len(out["searchResults"]) == 4 and "omittedPassages" not in out
+
+    @pytest.mark.asyncio
+    async def test_a_passage_with_the_typed_code_survives_the_cut(self) -> None:
+        # Hybrid scores are ranks within each query, so generic passages that
+        # rank well for every rewrite outscore the one keyword match for a code.
+        hits = [
+            {"content": f"A test note with a search identifier, part {i}.", "score": 0.83,
+             "metadata": {"recordId": "note"}}
+            for i in range(12)
+        ] + [
+            {"content": "Final Customer is at 1 Last Rd, code “gravelpont9014.”", "score": 0.59,
+             "metadata": {"recordId": "csv"}},
+        ]
+        response = {
+            "searchResults": hits,
+            "records": [{"_key": "note"}, {"_key": "csv"}],
+            "virtual_to_record_map": {"vn": {"_key": "note"}, "vc": {"_key": "csv"}},
+            "status_code": 200,
+        }
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=10), response)
+        kept = [h["metadata"]["recordId"] for h in out["searchResults"]]
+        assert len(kept) == 10 and "csv" in kept
+        assert kept[-1] == "csv", "the kept passages are still listed best score first"
+        assert {r["_key"] for r in out["records"]} == {"note", "csv"}
+        assert out["omittedPassages"] == {"note": 3}
+
+    @pytest.mark.asyncio
+    async def test_the_typed_text_must_match_whole_words(self) -> None:
+        hits = [
+            {"content": f"generic {i}", "score": 0.9, "metadata": {"recordId": "a"}} for i in range(3)
+        ] + [{"content": "gravelpont90145 is another code", "score": 0.1, "metadata": {"recordId": "b"}}]
+        response = {"searchResults": hits, "records": [{"_key": "a"}, {"_key": "b"}], "status_code": 200}
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=3), response)
+        assert {h["metadata"]["recordId"] for h in out["searchResults"]} == {"a"}
+
+    @pytest.mark.asyncio
+    async def test_a_typed_neighbour_does_not_push_out_its_match(self) -> None:
+        # One expanded section (shared score); only a neighbour holds the code.
+        section = [
+            {"content": "neighbour with gravelpont9014", "score": 0.5, "distanceFromMatch": 1,
+             "metadata": {"recordId": "s"}},
+            {"content": "the matched passage", "score": 0.5, "distanceFromMatch": 0,
+             "metadata": {"recordId": "s"}},
+        ]
+        generic = [{"content": "generic", "score": 0.9, "metadata": {"recordId": "g"}}]
+        response = {"searchResults": section + generic, "records": [{"_key": "s"}, {"_key": "g"}], "status_code": 200}
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=2), response)
+        assert [h["content"] for h in out["searchResults"]] == ["the matched passage", "neighbour with gravelpont9014"]
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=1), {**response, "searchResults": section + generic})
+        assert [h["content"] for h in out["searchResults"]] == ["the matched passage"]
+
+    @pytest.mark.asyncio
+    async def test_only_the_typed_neighbours_own_section_is_promoted(self) -> None:
+        # Two tables of one workbook with the same RRF score; only table 2 holds the code.
+        def passage(content: str, group: int, distance: int) -> dict:
+            return {"content": content, "score": 0.5, "distanceFromMatch": distance,
+                    "block_group_index": group, "metadata": {"recordId": "book"}}
+
+        hits = [
+            passage("table 1 match", 1, 0),
+            passage("table 2 match", 2, 0),
+            passage("table 2 row with gravelpont9014", 2, 1),
+            {"content": "generic", "score": 0.9, "metadata": {"recordId": "g"}},
+        ]
+        response = {"searchResults": hits, "records": [{"_key": "book"}, {"_key": "g"}], "status_code": 200}
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=2), response)
+        assert [h["content"] for h in out["searchResults"]] == ["table 2 match", "table 2 row with gravelpont9014"]
+
+
 class TestSearchSurvivesQueryTransformationFailure:
-    """A failed rewrite or expansion falls back to the query the user typed."""
+    """The query the user typed is searched whether the rewrite and expansion work or fail."""
 
     RESULTS = {"searchResults": [{"content": "hit"}], "status_code": 200}
 
@@ -803,6 +946,7 @@ class TestSearchSurvivesQueryTransformationFailure:
         )
 
         assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            QUERY_TEXT,
             "rewritten",
             "angle one",
             "angle two",
@@ -819,7 +963,36 @@ class TestSearchSurvivesQueryTransformationFailure:
             self._chain(raises=TimeoutError()),
         )
 
-        assert retrieval.search_with_filters.call_args.kwargs["queries"] == ["rewritten"]
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [QUERY_TEXT, "rewritten"]
+
+    @pytest.mark.asyncio
+    async def test_a_rewrite_that_drops_an_identifier_still_searches_it(self) -> None:
+        """A code found in one file only must reach the keyword leg as typed."""
+        request, retrieval = self._build_request(), self._retrieval()
+
+        with patch(
+            "app.api.routes.search.setup_query_transformation",
+            return_value=(
+                self._chain(returns="Marrow Gale financial workbook details"),
+                self._chain(returns="marrow gale spreadsheet\nfinance workbook 2026"),
+            ),
+        ):
+            await search(
+                request=request, body=SearchQuery(query="marrowgale4406"),
+                retrieval_service=retrieval, graph_provider=MagicMock(),
+            )
+
+        assert retrieval.search_with_filters.call_args.kwargs["queries"][0] == "marrowgale4406"
+
+    @pytest.mark.asyncio
+    async def test_a_rewrite_identical_to_the_query_is_searched_once(self) -> None:
+        request, retrieval = self._build_request(), self._retrieval()
+
+        await self._search(
+            request, retrieval, self._chain(returns=f"  {QUERY_TEXT} "), self._chain(returns="angle one")
+        )
+
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [QUERY_TEXT, "angle one"]
 
     @pytest.mark.asyncio
     async def test_blank_output_from_both_steps_searches_with_the_original_query(self) -> None:
@@ -943,7 +1116,7 @@ class TestSearchWithoutQueryRewrite:
         setup.assert_called_once()
         rewrite.ainvoke.assert_awaited_once()
         assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
-            "rewritten q", "variant a", "variant b",
+            "q", "rewritten q", "variant a", "variant b",
         ]
 
     @pytest.mark.asyncio
@@ -1006,3 +1179,26 @@ class TestSearchWithoutQueryRewrite:
         assert lines[0].startswith("⏱ search total=")
         assert "query_transform=" in lines[0] and "retrieval=" in lines[0]
         assert lines[0].endswith("| rewrite=off queries=1")
+
+
+class TestSearchLogsNoQueryText:
+    @pytest.mark.asyncio
+    async def test_rewritten_and_expanded_queries_are_not_logged(self) -> None:
+        request = TestSearchEndpoint()._build_request()
+        logger = request.app.container.logger.return_value
+        retrieval = _retrieval_with_llm()
+        retrieval.search_with_filters = AsyncMock(return_value={"searchResults": [], "status_code": 200})
+        chain = TestSearchEndpoint()._make_chain
+
+        with patch("app.api.routes.search.setup_query_transformation") as setup:
+            setup.return_value = (chain("rewritten nightjar merger"), chain("nightjar terms\nnightjar price"))
+            await search(
+                request=request, body=SearchQuery(query="nightjar merger", filters={}, timeline="off"),
+                retrieval_service=retrieval, graph_provider=MagicMock(),
+            )
+
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            "nightjar merger", "rewritten nightjar merger", "nightjar terms", "nightjar price",
+        ]
+        logged = " ".join(str(c) for c in logger.mock_calls)
+        assert "nightjar" not in logged

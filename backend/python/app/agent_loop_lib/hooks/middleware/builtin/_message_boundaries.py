@@ -7,26 +7,22 @@ Two layers of protection:
    points so compaction shapers never orphan ToolMessages in the first place
    (information is preserved by moving the boundary).
 
-2. **Repair** — ``repair_tool_pairing`` / ``shape_tool_pairing_repair``
-   run as the LAST PRE_MODEL middleware and drop any orphaned ToolMessages
-   or strip orphaned tool_calls that slipped through despite layer 1 (e.g.
-   because two shapers interacted, or a future shaper doesn't use
-   ``safe_tail_boundary``).  Information IS lost here, but the LLM call
-   succeeds instead of 400-ing.
+2. **Repair** — ``repair_tool_pairing``, run by the LAST PRE_MODEL
+   middleware (``context_invariants.shape_context_invariants``), drops any
+   orphaned ToolMessages or strips orphaned tool_calls that slipped through
+   despite layer 1 (e.g. because two shapers interacted, or a future shaper
+   doesn't use ``safe_tail_boundary``).  Information IS lost here, but the
+   LLM call succeeds instead of 400-ing.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.types import MessageRole
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import Message
-    from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +44,7 @@ def safe_tail_boundary(
 
     Walks backwards from ``raw_start`` past any contiguous ``ToolMessage``s
     and includes the preceding ``AssistantMessage`` with ``tool_calls`` if
-    found.  Never walks past ``lower_bound`` (typically ``pin_first_n``).
+    found.  Never walks past ``lower_bound``.
     """
     if raw_start <= lower_bound or raw_start >= len(messages):
         return raw_start
@@ -124,29 +120,3 @@ def repair_tool_pairing(messages: list[Message]) -> tuple[list[Message], int]:
         result.append(msg)
 
     return result, repairs
-
-
-def shape_tool_pairing_repair():
-    """**Final** PRE_MODEL middleware: enforces the tool-pairing invariant.
-
-    Both OpenAI and Anthropic reject messages where a ``tool``/``tool_result``
-    has no preceding ``tool_calls``/``tool_use``, or vice-versa.  Earlier
-    shapers (loop_compaction, sliding_window, auto_compact, …) use
-    ``safe_tail_boundary`` and group-eviction to *prevent* orphans, but
-    shaper interactions or future shapers can still produce them.  This
-    middleware is the catch-all: if an orphan slipped through, drop it and
-    log a warning so the underlying shaper can be fixed.
-    """
-
-    async def _middleware(ctx: "ModelCallContext", next_fn) -> None:
-        repaired, count = repair_tool_pairing(ctx.messages)
-        if count:
-            logger.warning(
-                "tool_pairing_repair: dropped/stripped %d orphaned tool "
-                "message(s)/call(s) — a context shaper broke pairing",
-                count,
-            )
-            ctx.messages = repaired
-        await next_fn()
-
-    return _middleware

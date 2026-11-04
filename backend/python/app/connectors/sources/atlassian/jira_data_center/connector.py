@@ -76,6 +76,7 @@ from app.connectors.sources.atlassian.core.read_outcome import (
     StoredAccessReadError,
     is_inconclusive_status,
 )
+from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -400,6 +401,12 @@ def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], s
 )
 class JiraDataCenterConnector(BaseConnector):
     """Jira Data Center connector: sync orchestration aligned with Jira Cloud"""
+
+    user_link_steps = ("_link_users_and_groups",)
+    _SYNC_STATE = (
+        "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
+        "_dc_name_to_source_id",
+    )
 
     def __init__(
         self,
@@ -1433,6 +1440,18 @@ class JiraDataCenterConnector(BaseConnector):
     # User & Group Management
     # ============================================================================
 
+    async def _link_users_and_groups(self) -> None:
+        """The sync's user and group steps. Project roles, grants and issue edges wait for the next full sync."""
+        if not self.data_source:
+            return
+        with self._keep_sync_state(*self._SYNC_STATE):
+            self._kept_unread_access = False
+            self._kept_after_refusal = []
+            jira_users = await self._fetch_users()
+            if jira_users:
+                await self.data_entities_processor.on_new_app_users(jira_users)
+            await self._sync_user_groups(jira_users)
+
     async def _fetch_users(self) -> list[AppUser]:
         """
         Fetch and resolve active Jira DC users:
@@ -2083,7 +2102,8 @@ class JiraDataCenterConnector(BaseConnector):
                 return None
 
             scheme_id = scheme_response.json().get("id")
-            if not scheme_id:
+            # Jira's built-in "Default Permission Scheme" has id 0, so only a missing id counts.
+            if scheme_id is None:
                 self.logger.warning(
                     "⚠️ Permission scheme for %s has no id — cannot fetch grants",
                     project_key,
@@ -4611,6 +4631,8 @@ class JiraDataCenterConnector(BaseConnector):
         comments_data = issue_data.get("comments", [])
         if isinstance(comments_data, dict):
             comments_data = comments_data.get("comments", [])
+        # A comment restricted to a role or group would reach everyone who can open the issue.
+        comments_data = [c for c in comments_data or [] if not c.get("visibility")]
 
         # 1. Description BlockGroup (index=0) — rendered HTML
         if isinstance(rendered_description_html, str) and rendered_description_html.strip():
@@ -5360,7 +5382,7 @@ class JiraDataCenterConnector(BaseConnector):
         external_record_id = f"{external_id_prefix}{attachment_id}"
 
         file_record = FileRecord(
-            id=record_id or str(uuid4()),
+            id=record_id or new_record_id(self.connector_id, external_record_id),
             org_id=self.data_entities_processor.org_id,
             record_name=filename,
             record_type=RecordType.FILE,

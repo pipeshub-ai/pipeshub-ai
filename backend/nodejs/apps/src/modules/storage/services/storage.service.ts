@@ -1,4 +1,12 @@
-import { Document, FilePayload, StorageServiceResponse } from "../types/storage.service.types";
+import type { FileHandle } from 'fs/promises';
+import type { ObjectStat } from '../utils/storage-fingerprint';
+import {
+  Document,
+  FilePayload,
+  SignObjectUrlOptions,
+  SignedObjectUrl,
+  StorageServiceResponse,
+} from '../types/storage.service.types';
 
 /**
  * Interface for a storage service to handle file operations in different storage systems.
@@ -103,6 +111,13 @@ export interface StorageServiceInterface {
   objectExists?(document: Document): Promise<boolean>;
 
   /**
+   * Size and ETag of the document's current file as the store reports them now (HEAD on S3 and Azure, stat on local disk): the
+   * ETag has no quotes. Null when storage confirms the file is absent or the document has no location for this store; any other
+   * failure rejects. An S3 URL the provider cannot parse rejects with `StorageUrlParseError`.
+   */
+  statObject?(document: Document): Promise<ObjectStat | null>;
+
+  /**
    * Whether a file is stored at this path. Resolves false only when storage
    * confirms the path is empty; any other failure rejects.
    */
@@ -180,4 +195,36 @@ export interface StorageServiceInterface {
    * @param storageKey - The storage key / relative path of the object.
    */
   getObjectUrl?(storageKey: string): string;
+
+  /**
+   * Local storage only: where each document's folder now sits under a prefix,
+   * as documentId -> documentPath. Lets a tree move record what the disk
+   * actually holds instead of what it expected to move.
+   */
+  locateDocuments?(
+    prefix: string,
+    documentIds: string[],
+  ): Promise<Map<string, string>>;
+
+  /**
+   * Signs a URL for reading or writing one object by its storage key. Only the
+   * remote vendors implement it; local storage is served through the API.
+   */
+  signObjectUrl?(
+    storageKey: string,
+    options: SignObjectUrlOptions,
+  ): Promise<SignedObjectUrl>;
+
+  /**
+   * Writes bytes at a storage key, replacing any file already there. Local only.
+   */
+  writeObject?(storageKey: string, data: Buffer): Promise<void>;
+
+  /**
+   * Opens a storage key for reading, checked to be a regular file inside the
+   * mount; null when it does not exist. The caller closes the handle. Local only.
+   */
+  openObject?(
+    storageKey: string,
+  ): Promise<{ handle: FileHandle; size: number } | null>;
 }

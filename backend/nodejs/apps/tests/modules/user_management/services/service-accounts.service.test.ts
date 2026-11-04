@@ -74,7 +74,7 @@ describe('ServiceAccountsService', () => {
       const deleted = {
         _id: id,
         email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-        orgId: { toString: () => orgId },
+        orgId,
         isDeleted: true,
         kind: 'service',
       };
@@ -174,7 +174,7 @@ describe('ServiceAccountsService', () => {
       const deleted = {
         _id: id,
         email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-        orgId: { toString: () => orgId },
+        orgId,
         kind: 'service',
         isDeleted: true,
       };
@@ -206,7 +206,7 @@ describe('ServiceAccountsService', () => {
       const deleted = {
         _id: id,
         email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-        orgId: { toString: () => orgId },
+        orgId,
         kind: 'service',
         isDeleted: true,
       };
@@ -240,7 +240,7 @@ describe('ServiceAccountsService', () => {
       const deleted = {
         _id: id,
         email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-        orgId: { toString: () => orgId },
+        orgId,
         kind: 'service',
         isDeleted: true,
       };
@@ -299,7 +299,7 @@ describe('ServiceAccountsService', () => {
         exec: sinon.stub().resolves({
           _id: id,
           email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-          orgId: { toString: () => orgId },
+          orgId,
           kind: 'service',
           isDeleted: true,
         }),
@@ -327,7 +327,7 @@ describe('ServiceAccountsService', () => {
       const deleted = {
         _id: id,
         email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-        orgId: { toString: () => orgId },
+        orgId,
         kind: 'service',
         isDeleted: true,
       };
@@ -368,7 +368,7 @@ describe('ServiceAccountsService', () => {
         exec: sinon.stub().resolves({
           _id: id,
           email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-          orgId: { toString: () => orgId },
+          orgId,
           kind: 'service',
           isDeleted: true,
         }),
@@ -491,9 +491,11 @@ describe('ServiceAccountsService', () => {
         isDeleted: false,
         save: sinon.stub().resolvesThis(),
       };
-      sinon
-        .stub(Users, 'findOne')
-        .returns({ exec: sinon.stub().resolves(account) } as any);
+      // Read both with `.exec()` (the lookup) and by awaiting (the repository's save path).
+      sinon.stub(Users, 'findOne').callsFake((() =>
+        Object.assign(Promise.resolve(account), {
+          exec: () => Promise.resolve(account),
+        })) as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
 
       await service.remove(orgId, id);
@@ -586,7 +588,90 @@ describe('ServiceAccountsService', () => {
       });
     });
 
-    it('tells the permission graph about a rename, but not about a disable', async () => {
+    // Disabling used to stop at this collection, and that was the behaviour
+    // pinned here. It no longer is: an agent bound to a service account
+    // searches as that identity on the permission graph alone, so an account
+    // switched off here has to be switched off there too.
+    const stubAccount = (isDisabled: boolean) => {
+      const account: any = {
+        _id: id,
+        email: `svc-x-${orgId}@service.pipeshub.internal`,
+        fullName: 'Old name',
+        isDisabled,
+        save: sinon.stub().resolvesThis(),
+      };
+      sinon
+        .stub(Users, 'findOne')
+        .returns({ exec: sinon.stub().resolves(account) } as any);
+      sinon.stub(Users, 'updateOne').returns({ exec: sinon.stub().resolves({}) } as any);
+      sinon.stub(Users, 'findOneAndUpdate').returns({
+        exec: sinon.stub().resolves({ ...account, isDisabled: false }),
+      } as any);
+      return account;
+    };
+
+    it('tells the permission graph when an account is switched off', async () => {
+      stubAccount(false);
+
+      const { service, events } = makeService();
+      await service.update(orgId, id, { isDisabled: true });
+
+      expect(events.publishEvent.calledOnce).to.equal(true);
+      const { eventType, payload } = events.publishEvent.firstCall.args[0];
+      expect(eventType).to.equal('userUpdated');
+      expect(payload.isDisabled).to.equal(true);
+    });
+
+    it('tells it again when the account is switched back on', async () => {
+      // A flag written only on the way down would stay set afterwards.
+      stubAccount(true);
+
+      const { service, events } = makeService();
+      await service.update(orgId, id, { isDisabled: false });
+
+      expect(events.publishEvent.calledOnce).to.equal(true);
+      expect(events.publishEvent.firstCall.args[0].payload.isDisabled).to.equal(
+        false,
+      );
+    });
+
+    it('carries the current state on a rename rather than leaving it stale', async () => {
+      stubAccount(true);
+
+      const { service, events } = makeService();
+      await service.update(orgId, id, { fullName: 'New name' });
+
+      expect(events.publishEvent.calledOnce).to.equal(true);
+      const { eventType, payload } = events.publishEvent.firstCall.args[0];
+      expect(eventType).to.equal('userUpdated');
+      expect(payload.fullName).to.equal('New name');
+      expect(payload.isDisabled).to.equal(true);
+    });
+
+    it('tells it again when a disable is retried over an already-off account', async () => {
+      // An earlier attempt can write Mongo and then fail before publishing —
+      // token revocation throws, or the broker is down. By the time the retry
+      // arrives the account is already off, so nothing has changed; publishing
+      // only on a change would leave the graph holding an account that is
+      // switched off everywhere else, and a bound agent still searching with
+      // it.
+      stubAccount(true);
+
+      const { service, events } = makeService();
+      await service.update(orgId, id, { isDisabled: true });
+
+      expect(events.publishEvent.calledOnce).to.equal(true);
+      expect(events.publishEvent.firstCall.args[0].payload.isDisabled).to.equal(
+        true,
+      );
+    });
+
+    it('says nothing when the account was deleted while the write was in flight', async () => {
+      // `stubAccount` reads the account, then the write matches nothing
+      // because it was deleted in between. Nothing was stored, so telling the
+      // graph what we meant to store would leave it holding a state no
+      // database agrees with — and on a deleted account that is the state a
+      // bound agent is checked against.
       const account: any = {
         _id: id,
         email: `svc-x-${orgId}@service.pipeshub.internal`,
@@ -597,18 +682,29 @@ describe('ServiceAccountsService', () => {
       sinon
         .stub(Users, 'findOne')
         .returns({ exec: sinon.stub().resolves(account) } as any);
-      sinon.stub(Users, 'updateOne').returns({ exec: sinon.stub().resolves({}) } as any);
+      sinon.stub(Users, 'updateOne').returns({
+        exec: sinon.stub().resolves({ matchedCount: 0 }),
+      } as any);
 
-      const disabling = makeService();
-      await disabling.service.update(orgId, id, { isDisabled: true });
-      expect(disabling.events.publishEvent.called).to.equal(false);
+      const { service, events } = makeService();
+      let threw = false;
+      try {
+        await service.update(orgId, id, { isDisabled: true });
+      } catch {
+        threw = true;
+      }
 
-      const renaming = makeService();
-      await renaming.service.update(orgId, id, { fullName: 'New name' });
-      expect(renaming.events.publishEvent.calledOnce).to.equal(true);
-      expect(renaming.events.publishEvent.firstCall.args[0].eventType).to.equal(
-        'userUpdated',
-      );
+      expect(threw).to.equal(true);
+      expect(events.publishEvent.called).to.equal(false);
+    });
+
+    it('says nothing when neither the name nor the switch moved', async () => {
+      stubAccount(false);
+
+      const { service, events } = makeService();
+      await service.update(orgId, id, { description: 'Just a note' });
+
+      expect(events.publishEvent.called).to.equal(false);
     });
   });
 });

@@ -29,7 +29,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.constants import IconPaths
+from app.connectors.core.constants import CONNECTOR_GCS_INFO, IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -308,6 +308,7 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
 @ConnectorBuilder("GCS")\
     .in_group(AppGroups.GOOGLE_CLOUD.value)\
     .with_description("Sync files and folders from Google Cloud Storage")\
+    .with_info(CONNECTOR_GCS_INFO)\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .with_permission_model(PermissionModel.APP_LEVEL)\
@@ -420,9 +421,10 @@ class GCSConnector(BaseConnector):
         self.data_source: GCSDataSource | None = None
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
-        # Records moved during this listing: two new copies of a deleted object
-        # must not both take its record before the batch naming it is saved.
-        self._moved_record_ids: set[str] = set()
+        # Records moved during this listing, with the external id each had before:
+        # two new copies of a deleted object must not both take its record before
+        # the batch naming it is saved, and the save needs the old id to move it.
+        self._moved_record_ids: dict[str, str] = {}
         self.bucket_name: str | None = None
         self.project_id: str | None = None
 
@@ -750,9 +752,24 @@ class GCSConnector(BaseConnector):
             max_retries: Maximum number of retry attempts
             base_delay: Base delay in seconds for exponential backoff
         """
+        records, moves = [], []
+        for record, permissions in records_with_permissions:
+            moved_from = self._moved_record_ids.get(record.id)
+            if moved_from and moved_from != record.external_record_id:
+                moves.append((moved_from, record, permissions))
+            else:
+                records.append((record, permissions))
         for attempt in range(max_retries):
             try:
-                await self.data_entities_processor.on_new_records(records_with_permissions)
+                # A move is saved in place, so its stored content moves with it;
+                # on_new_records finds no record at the new key and leaves the
+                # content at the old path. Moves go first so a new object at a
+                # moved record's old key is not written onto that record. A retry
+                # after a saved move finds no record at the old id and adds it.
+                if moves:
+                    await self.data_entities_processor.on_records_moved(moves)
+                if records:
+                    await self.data_entities_processor.on_new_records(records)
                 return
             except Exception as e:
                 error_str = str(e)
@@ -922,7 +939,7 @@ class GCSConnector(BaseConnector):
                 modified_after_ms = last_sync_time
 
         batch_records = []
-        self._moved_record_ids = set()
+        self._moved_record_ids = {}
         has_more = True
         listing_failed = False
         failed = FailedItems()
@@ -1221,7 +1238,6 @@ class GCSConnector(BaseConnector):
                 self.connector_id, external_record_id
             )
 
-            is_move = False
 
             if existing_record:
                 stored_revision = existing_record.external_revision_id or ""
@@ -1253,8 +1269,7 @@ class GCSConnector(BaseConnector):
                     existing_record = None
 
                 if existing_record:
-                    is_move = True
-                    self._moved_record_ids.add(existing_record.id)
+                    self._moved_record_ids[existing_record.id] = existing_record.external_record_id
                     self.logger.info(
                         f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
                     )
@@ -1279,9 +1294,6 @@ class GCSConnector(BaseConnector):
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
 
-            # For moves/renames, remove old parent relationship
-            if is_move and existing_record:
-                await self.data_entities_processor.delete_parent_child_edge_to_record(record_id)
 
             version = 0 if not existing_record else existing_record.version + 1
 

@@ -9,6 +9,13 @@ import type { FlowNodeData } from '../types';
 import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
 
 const reactFlow = vi.hoisted(() => ({ setNodes: vi.fn() }));
+// These tests cover the default notices, whatever the build's config provides.
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
+  EnterpriseFeatureNotice: (await import('@/app/components/ui/enterprise-badge')).EnterpriseFeatureNotice,
+  McpAgentApprovalsNotice: (await import('@/app/(main)/agents/agent-builder/components/mcp-agent-approvals-notice'))
+    .McpAgentApprovalsNotice,
+}));
 vi.mock('@xyflow/react', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@xyflow/react')>()),
   useReactFlow: () => reactFlow,
@@ -200,6 +207,16 @@ describe('McpFlowNode', () => {
     const cfg = applyLastUpdate(node);
     expect(cfg.allTools).toBe(true);
     expect((cfg.tools as McpFlowTool[]).map((t) => t.name)).toEqual(['list_issues', 'create_pr']);
+  });
+
+  it("shows the server's own logo in its header", () => {
+    renderNode({ allTools: true, tools: [LIST] });
+    expect(screen.getByRole('img', { name: 'github icon', hidden: true })).toBeTruthy();
+  });
+
+  it('goes by the catalog type when the server was renamed', () => {
+    renderNode({ allTools: true, tools: [LIST], name: 'Code host', displayName: 'Code host' });
+    expect(screen.getByRole('img', { name: 'github icon', hidden: true })).toBeTruthy();
   });
 });
 

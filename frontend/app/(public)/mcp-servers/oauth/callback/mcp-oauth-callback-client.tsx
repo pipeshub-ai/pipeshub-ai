@@ -7,7 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
 import { isProcessedError } from '@/lib/api';
-import { integrationHandoffLink } from '@/lib/auth/desktop-oauth';
+import { integrationHandoffLink, type DesktopIntegrationFamily } from '@/lib/auth/desktop-oauth';
 import DesktopHandoffNotice from '@/app/(public)/auth/desktop-handoff-notice';
 import {
   postMcpOAuthErrorToOpener,
@@ -30,12 +30,21 @@ function closePopup() {
   }
 }
 
+type CompleteCallback = (params: { code: string; state: string }) => Promise<{
+  success: boolean;
+  instanceId?: string | null;
+  errorMessage?: string | null;
+}>;
+
 /**
- * Completes MCP server OAuth in a popup: exchanges `code`+`state` via the Node proxy
- * (`GET /api/v1/mcp-servers/oauth/callback`), notifies the opener with
- * `MCP_OAUTH_SUCCESS` / `MCP_OAUTH_ERROR`, then closes the window.
+ * Completes an OAuth sign-in in a popup: exchanges `code`+`state` via the Node proxy
+ * (MCP's `GET /api/v1/mcp-servers/oauth/callback` unless `completeCallback` names another
+ * feature's), notifies the opener with `MCP_OAUTH_SUCCESS` / `MCP_OAUTH_ERROR`, then closes the window.
  */
-export function McpOAuthCallbackClient() {
+export function McpOAuthCallbackClient({
+  completeCallback = McpServersApi.completeOAuthCallback,
+  desktopFamily = 'mcp',
+}: { completeCallback?: CompleteCallback; desktopFamily?: DesktopIntegrationFamily } = {}) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<CallbackStatus>('processing');
   const [message, setMessage] = useState('');
@@ -53,7 +62,7 @@ export function McpOAuthCallbackClient() {
 
     // Started from the desktop app: hand code+state to it rather than completing here with
     // this browser's session, which may be signed out or belong to someone else.
-    const handoff = integrationHandoffLink('mcp', new URLSearchParams(window.location.search));
+    const handoff = integrationHandoffLink(desktopFamily, new URLSearchParams(window.location.search));
     if (handoff) {
       setHandoffLink(handoff);
       window.location.href = handoff;
@@ -80,7 +89,7 @@ export function McpOAuthCallbackClient() {
           throw new Error(t('workspace.mcpServers.oauth.noState'));
         }
 
-        const data = await McpServersApi.completeOAuthCallback({ code, state });
+        const data = await completeCallback({ code, state });
 
         if (!data?.success) {
           const friendlyMessage = data?.errorMessage;
@@ -106,7 +115,7 @@ export function McpOAuthCallbackClient() {
     };
 
     void run();
-  }, [closeWindow, t]);
+  }, [closeWindow, completeCallback, desktopFamily, t]);
 
   if (handoffLink) {
     return <DesktopHandoffNotice deepLink={handoffLink} titleKey="auth.desktopHandoff.integrationTitle" />;

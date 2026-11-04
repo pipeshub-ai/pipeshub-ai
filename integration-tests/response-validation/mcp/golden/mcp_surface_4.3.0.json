@@ -120,6 +120,469 @@
     },
     {
       "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "[Experimental] Where control enters a repo: functions nothing in it calls (routes, CLIs, jobs, hooks), conventional names and files first. Cross-file CALLS/IMPORTS edges are resolved through imports for Python, JavaScript, TypeScript and Java; other languages get calls matched by name. a `coverage` field says when an answer may be incomplete, so confirm with pipeshub_search before relying on an empty result.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository as `owner/name`, from pipeshub_code_repos."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "description": "Maximum entry points."
+          },
+          "include_tests": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include test files and test symbols. False by default."
+          }
+        },
+        "required": [
+          "repo"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "name": "pipeshub_code_entry_points"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "[Experimental] What changing a symbol can break: everything that calls, imports or builds on it, followed backwards up to `depth` hops, grouped by file. Cross-file CALLS/IMPORTS edges are resolved through imports for Python, JavaScript, TypeScript and Java; other languages get calls matched by name. a `coverage` field says when an answer may be incomplete, so confirm with pipeshub_search before relying on an empty result.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository as `owner/name` (or just `name` when unique), from pipeshub_code_repos. Optional when `record_id` is given."
+          },
+          "file_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repo-relative file path, copied from an earlier result."
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A code file's `recordId` from a pipeshub_search hit; use it instead of `file_path`."
+          },
+          "qualified_name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Symbol name exactly as results show it, e.g. `function:parse_config` or `method:Client.fetch`. Copy it; the `function:`/`method:` prefix is not guessable."
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3,
+            "description": "Hops back, default 2."
+          },
+          "include_tests": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include test files and test symbols. False by default."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "name": "pipeshub_code_impact"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "[Experimental] Callers, callees, imports and inheritance of a file or symbol: what reaches it (`direction: \"inbound\"`) and what it reaches (`\"outbound\"`). Each row has repo, file_path, line range and qualified name. Cross-file CALLS/IMPORTS edges are resolved through imports for Python, JavaScript, TypeScript and Java; other languages get calls matched by name. a `coverage` field says when an answer may be incomplete, so confirm with pipeshub_search before relying on an empty result.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository as `owner/name` (or just `name` when unique), from pipeshub_code_repos. Optional when `record_id` is given."
+          },
+          "file_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repo-relative file path, copied from an earlier result."
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A code file's `recordId` from a pipeshub_search hit; use it instead of `file_path`."
+          },
+          "qualified_name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Symbol name exactly as results show it, e.g. `function:parse_config` or `method:Client.fetch`. Copy it; the `function:`/`method:` prefix is not guessable."
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "inbound",
+              "outbound",
+              "any"
+            ],
+            "default": "any"
+          },
+          "edge_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Relations to follow (CALLS, IMPORTS, INHERITS, CONTAINS). Omit for all."
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3,
+            "default": 1,
+            "description": "Hops to walk."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "include_tests": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include test files and test symbols. False by default."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "name": "pipeshub_code_neighbours"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "[Experimental] A file's classes, functions and methods with signatures, decorators, first doc line and line ranges — no bodies. Read before pipeshub_code_read to pick what to read.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository as `owner/name` (or just `name` when unique), from pipeshub_code_repos. Optional when `record_id` is given."
+          },
+          "file_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repo-relative file path, copied from an earlier result."
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A code file's `recordId` from a pipeshub_search hit; use it instead of `file_path`."
+          },
+          "include_tests": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include test files and test symbols. False by default."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "name": "pipeshub_code_outline"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "[Experimental] How symbol A reaches symbol B in one repo, hop by hop with a sentence per hop. If only B reaches A, that path comes back with `reversed: true`. Edges across languages or over HTTP are not in the graph. Cross-file CALLS/IMPORTS edges are resolved through imports for Python, JavaScript, TypeScript and Java; other languages get calls matched by name. a `coverage` field says when an answer may be incomplete, so confirm with pipeshub_search before relying on an empty result.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository as `owner/name`, from pipeshub_code_repos."
+          },
+          "file_path_a": {
+            "type": "string",
+            "minLength": 1
+          },
+          "qualified_name_a": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file_path_b": {
+            "type": "string",
+            "minLength": 1
+          },
+          "qualified_name_b": {
+            "type": "string",
+            "minLength": 1
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8,
+            "description": "Most hops to search."
+          },
+          "edge_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Relations to follow (CALLS, IMPORTS, INHERITS, CONTAINS). Omit for all."
+          },
+          "undirected": {
+            "type": "boolean",
+            "default": false,
+            "description": "Ignore direction: only for \"are these related at all\"."
+          },
+          "include_tests": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include test files and test symbols. False by default."
+          }
+        },
+        "required": [
+          "repo",
+          "file_path_a",
+          "qualified_name_a",
+          "file_path_b",
+          "qualified_name_b"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "name": "pipeshub_code_path"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "[Experimental] Read indexed source: one symbol (`qualified_name`), a line range (`lines: \"380-420\"`), or a whole file (bounded by `max_lines`; the result says where it stopped). Reads the indexed copy, which can lag the repo.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository as `owner/name` (or just `name` when unique), from pipeshub_code_repos. Optional when `record_id` is given."
+          },
+          "file_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repo-relative file path, copied from an earlier result."
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A code file's `recordId` from a pipeshub_search hit; use it instead of `file_path`."
+          },
+          "qualified_name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Symbol name exactly as results show it, e.g. `function:parse_config` or `method:Client.fetch`. Copy it; the `function:`/`method:` prefix is not guessable."
+          },
+          "lines": {
+            "type": "string",
+            "pattern": "^\\d+-\\d+$",
+            "description": "A line range such as `40-80`."
+          },
+          "max_lines": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          },
+          "include_tests": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include test files and test symbols. False by default."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "name": "pipeshub_code_read"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "[Experimental] List the indexed code repositories you can read. Every other pipeshub_code_* tool takes one of these names as `repo`.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "name": "pipeshub_code_repos"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "[Experimental] Find code without knowing its file. `mode: \"identifier\"` (default) lists every definition with that name. `mode: \"text\"` or `\"regex\"` finds lines in file bodies (a string, a call site, a config key); these need `path` and read at most 100 files.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository as `owner/name`, from pipeshub_code_repos."
+          },
+          "pattern": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "A symbol name, text, or a regex."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "identifier",
+              "text",
+              "regex"
+            ],
+            "default": "identifier"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Directory, file or glob to search. Required for text and regex."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "description": "Maximum matches."
+          },
+          "include_tests": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include test files and test symbols. False by default."
+          }
+        },
+        "required": [
+          "repo",
+          "pattern"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "name": "pipeshub_code_search"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "[Experimental] What a directory or file in an indexed repo holds. `select` a directory (lists its children), a file (the symbols it defines, with line ranges) or a glob (`src/**`). Results are ranked by how connected each symbol is.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository as `owner/name`, from pipeshub_code_repos."
+          },
+          "select": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A directory, a file path, or a glob. Not a symbol or free text."
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Keep only these kinds, e.g. [\"class\",\"function\",\"method\"]."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Maximum rows."
+          },
+          "include_tests": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include test files and test symbols. False by default."
+          }
+        },
+        "required": [
+          "repo",
+          "select"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "name": "pipeshub_code_symbols"
+    },
+    {
+      "annotations": {
         "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false,

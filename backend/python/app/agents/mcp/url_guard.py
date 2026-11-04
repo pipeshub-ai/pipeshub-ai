@@ -23,6 +23,7 @@ import asyncio
 import functools
 import logging
 import os
+import time
 import urllib.request
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Optional
@@ -122,12 +123,15 @@ _ADDRESS_NOT_ALLOWED = {
     False: "The MCP server URL is not allowed: it must be a public http(s) URL.",
 }
 _LEFT_ORIGIN = "The MCP server redirected to a different host, which is not allowed."
+# How long a checked address is used before the name is looked up and checked again: a
+# long-lived client must follow a host that moves, and every new answer is checked.
+_RESOLVE_TTL_SECONDS = 300.0
 # The stand-in status for a request that failed in the transport (see `McpGuardedTransport`).
 _STAND_IN_STATUS = 502
 
 
 def _blocked(url: str, reason: str, message: str) -> MCPUrlBlockedError:
-    logger.warning("Blocked MCP request to %s: %s", redact_url(url), reason)
+    logger.warning("Blocked outbound request to %s: %s", redact_url(url), reason)
     return MCPUrlBlockedError(message)
 
 
@@ -203,7 +207,7 @@ def _guarded_transport_class(lib: Any) -> type:  # noqa: ANN401
 
     class _GuardedTransport(lib.AsyncBaseTransport):
         """Refuses any request off `base_url`'s origin and pins the rest to the address the
-        policy validated, resolved once per client."""
+        policy validated, looked up again every few minutes."""
 
         def __init__(
             self,
@@ -219,13 +223,15 @@ def _guarded_transport_class(lib: Any) -> type:  # noqa: ANN401
             self._pin = proxy is None
             self._inner = inner or _inner_transport(lib, proxy)
             self._target: Optional[PublicTarget] = None
+            self._resolved_at = 0.0
             self._proxy_checked = False
             self._resolve_lock = asyncio.Lock()
 
         async def _resolved_target(self) -> PublicTarget:
             async with self._resolve_lock:
-                if self._target is None:
+                if self._target is None or time.monotonic() - self._resolved_at > _RESOLVE_TTL_SECONDS:
                     self._target = await assert_mcp_url_allowed(self._base_url, allow_private=self._allow_private)
+                    self._resolved_at = time.monotonic()
                 return self._target
 
         async def _checked_for_proxy(self) -> None:

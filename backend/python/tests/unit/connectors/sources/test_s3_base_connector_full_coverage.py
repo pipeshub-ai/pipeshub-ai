@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
@@ -285,7 +286,8 @@ class TestTestConnectionAndAccess:
     async def test_exception(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(side_effect=Exception("timeout"))
-        assert await connector.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="timeout"):
+            await connector.test_connection_and_access()
 
 
 class TestGetSignedUrl:
@@ -483,8 +485,9 @@ class TestGetBucketOptions:
             return_value=_resp(True, {"Buckets": [{"Name": "prod-data"}, {"Name": "staging-data"}, {"Name": "dev-logs"}]})
         )
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
-        result = await connector._get_bucket_options(1, 20, "data")
-        assert len(result.options) == 2
+        # Search is the store's own Prefix; a store that ignores it is filtered the same way here.
+        result = await connector._get_bucket_options(1, 20, "prod")
+        assert [o.id for o in result.options] == ["prod-data"]
 
     @pytest.mark.asyncio
     async def test_pagination(self, connector):
@@ -645,7 +648,8 @@ class TestCheckAndFetchUpdatedRecord:
         result = await connector._check_and_fetch_updated_record("org-1", rec)
         assert result is not None
         updated_rec, perms = result
-        assert updated_rec.version == 1
+        # The processor bumps the stored version, and only when the revision changed.
+        assert updated_rec.version == 0
 
     @pytest.mark.asyncio
     async def test_key_without_bucket_prefix(self, connector):
@@ -789,7 +793,9 @@ class TestRunIncrementalSync:
         connector.bucket_name = "mybucket"
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         connector._sync_bucket = AsyncMock(side_effect=Exception("sync failed"))
-        await connector.run_incremental_sync()
+        # Records may not have been saved, so the run fails once every bucket was tried.
+        with pytest.raises(RuntimeError, match="sync failed"):
+            await connector.run_incremental_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
@@ -1058,7 +1064,8 @@ class TestProcessS3ObjectAdvanced:
         record, perms = await connector._process_s3_object(obj, "mybucket")
         assert record is not None
         assert record.id == "existing-id"
-        assert record.version == 3
+        # The processor bumps the stored version, and only when the revision changed.
+        assert record.version == 0
 
     @pytest.mark.asyncio
     async def test_move_rename_detection(self, connector, mock_dsp):
@@ -1539,22 +1546,31 @@ class TestFailedObjectCheckpoint:
         connector.batch_size = 100
         pages = iter([
             _resp(True, {
-                "Contents": [{"Key": k, "LastModified": at} for k, at in zip(("a.pdf", "b.pdf", "c.pdf"), _JAN)],
+                "Contents": [{"Key": "a.pdf", "LastModified": _JAN[0]}],
                 "IsTruncated": True,
                 "NextContinuationToken": "t1",
             }),
-            _resp(True, {"Contents": [], "IsTruncated": False}),
+            _resp(True, {
+                "Contents": [{"Key": k, "LastModified": at} for k, at in zip(("b.pdf", "c.pdf"), _JAN[1:])],
+                "IsTruncated": False,
+            }),
         ])
 
         async def listing(**kwargs):
             return next(pages)
 
         connector.data_source.list_objects_v2 = listing
-        connector.data_entities_processor.on_new_records = AsyncMock(side_effect=RuntimeError("db"))
+        connector.data_entities_processor.on_new_records = AsyncMock(side_effect=[None, RuntimeError("db")])
 
         with pytest.raises(RuntimeError, match="db"):
             await self._sync(connector)
 
+        tokens = [
+            c.args[1]["continuation_token"]
+            for c in connector.record_sync_point.update_sync_point.await_args_list
+            if "continuation_token" in c.args[1]
+        ]
+        assert tokens == ["t1", None]
         saved = connector.record_sync_point.saved["FILE/bucket/b1"]
         assert saved["continuation_token"] is None
         assert "last_sync_time" not in saved

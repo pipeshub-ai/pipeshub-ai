@@ -1,7 +1,17 @@
 import { BadRequestError } from '../../../libs/errors/http.errors';
-import mongoose, { type ClientSession } from 'mongoose';
-import { type User, type UserRole } from '../schema/users.schema';
-import { UserAdminRepository } from '../repositories/user-admin.repository';
+import { isValidId } from '../../../libs/repositories/ids';
+import {
+  createUnitOfWork,
+  unitsAreAtomic,
+} from '../../../libs/repositories/doc-store';
+import type { Tx } from '../../../libs/repositories/uow';
+import { NotFoundError } from '../../../libs/errors/http.errors';
+import {
+  getUserRepository,
+  type UserDto,
+  type UserFields,
+  type UserRole,
+} from '../../../libs/repositories/user';
 
 const LAST_ADMIN_DEMOTION_MESSAGE =
   'Cannot demote the last admin. Promote another user to admin first.';
@@ -50,7 +60,7 @@ export function toDisplayUserRole(role: string | undefined | null): 'Admin' | 'M
 function addValidObjectId(ids: Set<string>, value: unknown): void {
   if (value == null) return;
   const asString = String(value);
-  if (mongoose.isValidObjectId(asString)) {
+  if (isValidId(asString)) {
     ids.add(asString);
   }
 }
@@ -64,10 +74,10 @@ export const getActiveUserOrgRole = async (
   userId: string,
   orgId: string,
 ): Promise<UserRole | null> => {
-  if (!mongoose.isValidObjectId(userId) || !mongoose.isValidObjectId(orgId)) {
+  if (!isValidId(userId) || !isValidId(orgId)) {
     return null;
   }
-  const user = await UserAdminRepository.findActiveUserRole(userId, orgId);
+  const user = await getUserRepository().getRoleSnapshot(orgId, userId);
   if (!user) {
     return null;
   }
@@ -106,10 +116,8 @@ export const findOrgAdminUserIds = async (
 ): Promise<string[]> => {
   const ids = new Set<string>();
 
-  const adminUsers = await UserAdminRepository.findActiveAdminUserIds(orgId);
-  for (const user of adminUsers) {
-    if (user == null || typeof user !== 'object') continue;
-    addValidObjectId(ids, user._id);
+  for (const id of await getUserRepository().listAdminIds(String(orgId))) {
+    addValidObjectId(ids, id);
   }
 
   return [...ids];
@@ -120,9 +128,9 @@ export const findOrgAdminUserIds = async (
  */
 export const assertCanDemoteAdmin = async (
   orgId: string,
-  session?: ClientSession | null,
+  tx?: Tx,
 ): Promise<void> => {
-  const adminCount = await UserAdminRepository.countActiveAdmins(orgId, session);
+  const adminCount = await getUserRepository().countActiveAdmins(orgId, tx);
   if (adminCount <= 1) {
     throw new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE);
   }
@@ -135,12 +143,12 @@ export const assertCanDemoteAdmin = async (
 export const assertCanPromoteAdmin = async (
   orgId: string,
   additionalAdmins: number = 1,
-  session?: ClientSession | null,
+  tx?: Tx,
 ): Promise<void> => {
   if (additionalAdmins <= 0) {
     return;
   }
-  const adminCount = await UserAdminRepository.countActiveAdmins(orgId, session);
+  const adminCount = await getUserRepository().countActiveAdmins(orgId, tx);
   if (adminCount + additionalAdmins > MAX_ORG_ADMINS) {
     throw new BadRequestError(MAX_ORG_ADMINS_MESSAGE);
   }
@@ -148,38 +156,35 @@ export const assertCanPromoteAdmin = async (
 
 /**
  * Persist a user update that may demote an admin.
- * - Replica set: touch Org (serialize concurrent demotions) + check + save in one txn.
+ * - Replica set: lock the org's admin changes + check + save in one txn.
  * - Non-RS: check, save, then verify; restore admin if the org was left with zero.
  */
 export const saveUserEnsuringOrgRetainsAdmin = async (
-  user: User,
+  orgId: string,
+  userId: string,
+  fields: UserFields,
   rsAvailable: boolean,
-): Promise<void> => {
-  const orgId = String(user.orgId);
-  const userId = String(user._id);
+): Promise<UserDto> => {
+  const users = getUserRepository();
+  let saved: UserDto | null = null;
 
-  if (!rsAvailable) {
+  if (!unitsAreAtomic(rsAvailable)) {
     await assertCanDemoteAdmin(orgId);
-    await user.save();
-    const adminCount = await UserAdminRepository.countActiveAdmins(orgId);
+    saved = await users.updateProfile(orgId, userId, fields);
+    const adminCount = await users.countActiveAdmins(orgId);
     if (adminCount === 0) {
-      await UserAdminRepository.restoreAdminRole(userId, orgId);
-      user.role = 'admin';
+      await users.setRole(orgId, userId, 'admin');
       throw new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE);
     }
-    return;
-  }
-
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      await UserAdminRepository.touchOrgAdminGuard(orgId, session);
-      await assertCanDemoteAdmin(orgId, session);
-      await user.save({ session });
+  } else {
+    await createUnitOfWork(true).run(async (tx) => {
+      await users.lockOrgAdminChanges(orgId, tx);
+      await assertCanDemoteAdmin(orgId, tx);
+      saved = await users.updateProfile(orgId, userId, fields, tx);
     });
-  } finally {
-    await session.endSession();
   }
+  if (!saved) throw new NotFoundError('User not found');
+  return saved;
 };
 
 /**
@@ -187,32 +192,29 @@ export const saveUserEnsuringOrgRetainsAdmin = async (
  * Same replica-set vs non-RS pattern as last-admin demotion.
  */
 export const saveUserEnsuringAdminCap = async (
-  user: User,
+  orgId: string,
+  userId: string,
+  fields: UserFields,
   rsAvailable: boolean,
-): Promise<void> => {
-  const orgId = String(user.orgId);
-  const userId = String(user._id);
+): Promise<UserDto> => {
+  const users = getUserRepository();
+  let saved: UserDto | null = null;
 
-  if (!rsAvailable) {
+  if (!unitsAreAtomic(rsAvailable)) {
     await assertCanPromoteAdmin(orgId);
-    await user.save();
-    const adminCount = await UserAdminRepository.countActiveAdmins(orgId);
+    saved = await users.updateProfile(orgId, userId, fields);
+    const adminCount = await users.countActiveAdmins(orgId);
     if (adminCount > MAX_ORG_ADMINS) {
-      await UserAdminRepository.restoreMemberRole(userId, orgId);
-      user.role = 'member';
+      await users.setRole(orgId, userId, 'member');
       throw new BadRequestError(MAX_ORG_ADMINS_MESSAGE);
     }
-    return;
-  }
-
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      await UserAdminRepository.touchOrgAdminGuard(orgId, session);
-      await assertCanPromoteAdmin(orgId, 1, session);
-      await user.save({ session });
+  } else {
+    await createUnitOfWork(true).run(async (tx) => {
+      await users.lockOrgAdminChanges(orgId, tx);
+      await assertCanPromoteAdmin(orgId, 1, tx);
+      saved = await users.updateProfile(orgId, userId, fields, tx);
     });
-  } finally {
-    await session.endSession();
   }
+  if (!saved) throw new NotFoundError('User not found');
+  return saved;
 };

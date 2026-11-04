@@ -10,6 +10,17 @@ pre-provisioned IT projects and change only when those tickets change.
 import os
 import uuid
 
+
+def connector_base_url() -> str:
+    """Site URL the connector is configured with, and so the base of every synced webUrl.
+
+    Against the simulator the connector reaches the site by compose alias
+    (JIRA_CONNECTOR_BASE_URL) while the test process uses the published port
+    (JIRA_TEST_BASE_URL). Against a real site both are the same URL.
+    """
+    return (os.getenv("JIRA_CONNECTOR_BASE_URL") or os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
+
+
 JIRA_TEST_SETTLE_WAIT_SEC = int(os.getenv("JIRA_TEST_SETTLE_WAIT_SEC", "1800"))
 # Poll timeout for graph ``Record.indexing_status == COMPLETED`` (indexing pipeline). Max 180s unless overridden.
 JIRA_INDEXING_WAIT_SEC = int(os.getenv("JIRA_INDEXING_WAIT_SEC", "180"))
@@ -44,40 +55,40 @@ def artifact_summary(kind: str) -> str:
 
 # Frozen blocks expected-snapshot ticket on the primary project (rich ADF description + comments;
 # add an inline image in the UI to also cover media embedding). Bootstrap the snapshot once.
-JIRA_BLOCKS_ISSUE_KEY = "KAN-13"
+JIRA_BLOCKS_ISSUE_KEY = os.getenv("JIRA_BLOCKS_ISSUE_KEY", "KAN-13")
 
 # Ticket carrying outward ``issuelinks`` (both ends on the primary project) for
 # TC-JIRA-LINKS-001 (seeded with ``blocks`` + ``relates to`` links).
-JIRA_LINK_SOURCE_ISSUE_KEY = "KAN-12"
+JIRA_LINK_SOURCE_ISSUE_KEY = os.getenv("JIRA_LINK_SOURCE_ISSUE_KEY", "KAN-12")
 
 # Reference issue on the primary project for TC-JIRA-004 / IDX-001 / ENTITY-001.
 # Read-only: the mutation tests create and delete their own tickets, so nothing edits this one.
 # KAN-416 replaced KAN-4 on 2026-08-28 (KAN-4 had been renamed ``PHIT-Edited-...`` by an
 # older in-place-editing version of TC-UPDATE-001 and was reaped by an artifact sweep).
-JIRA_REFERENCE_ISSUE_KEY = "KAN-416"
+JIRA_REFERENCE_ISSUE_KEY = os.getenv("JIRA_REFERENCE_ISSUE_KEY", "KAN-416")
 
 # Default site users group (``jira-users-<site>``). TC-JIRA-002 validates that its members
 # have User→Group edges. Empty string skips that check.
-JIRA_USERS_GROUP_NAME = "jira-users-pipeshub-it"
+JIRA_USERS_GROUP_NAME = os.getenv("JIRA_USERS_GROUP_NAME", "jira-users-pipeshub-it")
 
 # Fixed cut between the original fixture batch and later "IT Date Filter New" tickets.
 # Used for created after/before partitions in TC-FILTER-DATE-001 (``created`` is immutable).
-JIRA_FILTER_DATE_CUT_MS = 1784146637293
+JIRA_FILTER_DATE_CUT_MS = int(os.getenv("JIRA_FILTER_DATE_CUT_MS", "1784146637293"))
 
 # Sub-task on the primary project whose ancestor chain sits outside the created-window
 # in TC-JIRA-PH-001. Needs >= 2 ancestors, all created before the child.
 # Chain: KAN-229 (Sub-task) → KAN-6 (Story) → KAN-5 (Epic). Cut must sit in a different
 # JQL minute than the ancestors (``_jql_datetime`` truncates to ``YYYY-MM-DD HH:MM``).
-JIRA_PH_CHILD_KEY = "KAN-229"
+JIRA_PH_CHILD_KEY = os.getenv("JIRA_PH_CHILD_KEY", "KAN-229")
 
 # Fixed cut between the chain's ancestors and the child. ``created`` is immutable, so this
 # does not decay; recompute only if the chain is reprovisioned.
-JIRA_PH_CREATED_CUT_MS = 1785847131576
+JIRA_PH_CREATED_CUT_MS = int(os.getenv("JIRA_PH_CREATED_CUT_MS", "1785847131576"))
 
 # Ancestors of JIRA_PH_CHILD_KEY and the attachment ticket (discovered, not pinned) — listed
 # here only so the artifact sweep can refuse to touch them.
-JIRA_PH_ANCESTOR_KEYS = ("KAN-6", "KAN-5")
-JIRA_ATTACHMENT_ISSUE_KEY = "KAN-9"
+JIRA_PH_ANCESTOR_KEYS = tuple(os.getenv("JIRA_PH_ANCESTOR_KEYS", "KAN-6,KAN-5").split(","))
+JIRA_ATTACHMENT_ISSUE_KEY = os.getenv("JIRA_ATTACHMENT_ISSUE_KEY", "KAN-9")
 
 # Every pre-provisioned ticket the suite depends on. The artifact sweep never deletes these,
 # whatever their summary says: an earlier version of TC-UPDATE-001 edited the reference

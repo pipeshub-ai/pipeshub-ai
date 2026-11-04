@@ -15,7 +15,7 @@ from app.modules.retrieval.record_cut import MAX_FUSION_DEPTH, RecordCut
 from app.modules.retrieval.retrieval_service import _OVERFETCH_ABSOLUTE_CAP
 from app.services.vector_db.models import HybridSearchRequest, SparseVector
 from app.services.vector_db.opensearch.utils import OpenSearchUtils
-from app.services.vector_db.qdrant.utils import QdrantUtils
+from app.services.vector_db.qdrant.utils import TIE_MARGIN, QdrantUtils
 from app.services.vector_db.redis import redis_vector
 from app.services.vector_db.redis.config import RedisVectorConfig
 
@@ -45,7 +45,7 @@ def test_qdrant_legs() -> None:
         _request(sparse_query=SparseVector(indices=[1], values=[1.0]))
     )
 
-    assert query.limit == 300
+    assert query.limit == 300 + TIE_MARGIN
     assert [leg.limit for leg in query.prefetch] == [600, 600]
 
 

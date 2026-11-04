@@ -64,7 +64,7 @@ describe('es_controller listing and paging', () => {
   describe('older messages of one conversation, newest page first', () => {
     const cases = [
       { name: 'getConversationById', handler: controller.getConversationById(appConfig) as JsonHandler, agent: false },
-      { name: 'getAgentConversationById', handler: controller.getAgentConversationById as JsonHandler, agent: true },
+      { name: 'getAgentConversationById', handler: controller.getAgentConversationById(appConfig) as JsonHandler, agent: true },
     ]
 
     for (const c of cases) {

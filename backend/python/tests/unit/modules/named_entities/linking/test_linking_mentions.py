@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.modules.named_entities.domain.kinds import EntityKind
+from app.modules.named_entities.domain.kinds import (
+    INTERCHANGEABLE_KINDS,
+    EntityKind,
+    interchangeable_kinds,
+    kind_family,
+)
 from app.modules.named_entities.linking.mentions import (
-    LOCATION_FAMILY,
     MAX_MENTIONS,
     NAME_KINDS,
     parse_mentions,
@@ -17,8 +21,8 @@ def _keys(name: str, kind: str | None = None) -> dict[EntityKind, str]:
 
 
 def test_an_organization_is_keyed_as_indexing_keyed_it() -> None:
-    assert _keys("Acme Inc.", "organization") == {EntityKind.ORGANIZATION: "name:organization:acme"}
-    assert _keys("  ACME, Inc ", "Organization") == {EntityKind.ORGANIZATION: "name:organization:acme"}
+    assert _keys("Acme Inc.", "organization")[EntityKind.ORGANIZATION] == "name:organization:acme"
+    assert _keys("  ACME, Inc ", "Organization")[EntityKind.ORGANIZATION] == "name:organization:acme"
 
 
 def test_a_name_without_a_kind_is_tried_under_every_name_kind() -> None:
@@ -28,8 +32,8 @@ def test_a_name_without_a_kind_is_tried_under_every_name_kind() -> None:
 
 
 def test_a_location_hint_covers_the_whole_location_family() -> None:
-    assert set(_keys("Paris", "location")) == set(LOCATION_FAMILY)
-    assert set(_keys("Paris", "city")) == set(LOCATION_FAMILY)
+    assert set(_keys("Paris", "location")) == set(INTERCHANGEABLE_KINDS)
+    assert set(_keys("Paris", "city")) == set(INTERCHANGEABLE_KINDS)
 
 
 def test_contacts_get_their_own_keys() -> None:
@@ -76,3 +80,38 @@ def test_hinted_accepts_the_requested_kind_family_only() -> None:
     (hinted, free) = parse_mentions([{"name": "Paris", "kind": "city"}, {"name": "Acme"}]).mentions
     assert hinted.hinted("state") and not hinted.hinted("organization")
     assert free.hinted("organization")
+
+
+
+@pytest.mark.parametrize(
+    ("kind", "family"),
+    [
+        (EntityKind.CITY, set(INTERCHANGEABLE_KINDS)),
+        (EntityKind.PRODUCT, {EntityKind.PRODUCT, EntityKind.ORGANIZATION}),
+        (EntityKind.ORGANIZATION, {EntityKind.PRODUCT, EntityKind.ORGANIZATION}),
+        (EntityKind.PERSON, {EntityKind.PERSON}),
+        (EntityKind.SKILL, {EntityKind.SKILL}),
+        (EntityKind.CURRENCY, {EntityKind.CURRENCY}),
+    ],
+)
+def test_kind_families(kind: EntityKind, family: set[EntityKind]) -> None:
+    assert set(kind_family(kind)) == family
+
+
+def test_only_location_kinds_are_interchangeable() -> None:
+    assert set(interchangeable_kinds(EntityKind.STATE)) == set(INTERCHANGEABLE_KINDS)
+    assert interchangeable_kinds(EntityKind.PRODUCT) == (EntityKind.PRODUCT,)
+
+
+def test_a_product_hint_also_looks_the_name_up_as_an_organization_but_settles_only_as_a_product() -> None:
+    (mention,) = parse_mentions([{"name": "Halcyon Ledger", "kind": "product"}]).mentions
+    assert set(_keys("Halcyon Ledger", "product")) == {EntityKind.PRODUCT, EntityKind.ORGANIZATION}
+    assert mention.hinted("organization") and not mention.settles("organization") and mention.settles("product")
+    (city,) = parse_mentions([{"name": "Hamburg", "kind": "state"}]).mentions
+    assert city.settles("city")
+
+
+def test_one_name_asked_as_a_product_and_as_an_organization_keeps_both_hints() -> None:
+    parsed = parse_mentions([{"name": "Mosaic", "kind": "product"}, {"name": "Mosaic", "kind": "organization"}])
+    assert [m.kind_hint for m in parsed.mentions] == [EntityKind.PRODUCT, EntityKind.ORGANIZATION]
+    assert len(parse_mentions([{"name": "Mosaic", "kind": "product"}] * 2).mentions) == 1

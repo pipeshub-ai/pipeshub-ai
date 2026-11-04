@@ -91,6 +91,9 @@ export interface ModelInfo {
   modelFriendlyName?: string;
   /** Restored from the conversation's saved modelInfo when loading a thread. */
   reasoningEffort?: ReasoningEffort;
+  modelProvider?: string;
+  /** On an answer, a short note the AI service added about the model that answered. */
+  modelNote?: string;
 }
 
 /** Entry in the sharedWith array from conversation API responses */
@@ -145,6 +148,8 @@ export interface ConversationApiResponse {
   projectId?: string;
   projectVisibility?: 'private' | 'project';
   sharedBy?: SharedByInfo;
+  /** Only on agent conversations shared with the user; needed to open them (`?agentId=`). */
+  agentKey?: string;
 }
 
 export type ConversationSource = 'owned' | 'shared';
@@ -179,6 +184,8 @@ export interface Conversation {
   projectId?: string;
   projectVisibility?: 'private' | 'project';
   sharedBy?: SharedByInfo;
+  /** Set on a shared agent conversation: the agent it belongs to. */
+  agentKey?: string;
 }
 
 export interface ChatSuggestion {
@@ -360,8 +367,6 @@ export interface ChatCollectionAttachment {
  * - `internalSearch` gates knowledge tools (retrieval, knowledgegraph, knowledgehub),
  *   and disables the Connectors + Collections tabs in the UI when false.
  * - `webSearch` gates web_search + fetch_url tools.
- * - `deepSearch` turns on deep research: the agent researches thoroughly on the
- *   web before answering (more steps and a larger web budget). Needs `webSearch`.
  *
  * When absent from a stream request, the backend defaults both to `true`
  * (preserving today's behavior for existing clients).
@@ -369,14 +374,12 @@ export interface ChatCollectionAttachment {
 export interface AgentCapabilities {
   internalSearch: boolean;
   webSearch: boolean;
-  deepSearch?: boolean;
 }
 
-/** Default capabilities — both search modes enabled, deep search off. */
+/** Default capabilities — both search modes enabled. */
 export const DEFAULT_AGENT_CAPABILITIES: AgentCapabilities = {
   internalSearch: true,
   webSearch: true,
-  deepSearch: false,
 };
 
 export interface ChatSettings {
@@ -421,6 +424,11 @@ export interface ChatSettings {
    * the user hasn't set an explicit override.
    */
   agentDefaultReasoningEffort: Record<string, ReasoningEffort | null>;
+  /**
+   * What a new assistant chat opens on when the edition sets one. A stored
+   * pick still wins, and a project chat keeps the concrete default model.
+   */
+  newChatDefaultModel: ModelOverride | null;
 }
 
 /**
@@ -452,6 +460,11 @@ export interface UploadedFile {
   errorMessage?: string;
   /** Origin of this chip — see {@link UploadedFileSource}. */
   source?: UploadedFileSource;
+  /**
+   * A file already stored with the question being edited, not one picked now. Removing the chip
+   * only detaches it from the edit: the stored file stays, since a fork of the chat may use it.
+   */
+  existing?: boolean;
   /** First-line excerpt shown on the chip, present only when `source === 'paste-text'`. */
   pastePreview?: string;
   /** Character count of the original pasted text (present only when `source === 'paste-text'`). */
@@ -552,6 +565,8 @@ export interface AskUserQuestionOption {
   id: string;
   label: string;
   isUserInput: boolean;
+  /** What happens if this option is picked. */
+  description?: string;
 }
 
 export interface AskUserQuestionItem {
@@ -559,12 +574,18 @@ export interface AskUserQuestionItem {
   question: string;
   options: AskUserQuestionOption[];
   multiSelect: boolean;
+  /** Short label shown above the question. */
+  header?: string;
 }
 
 export interface AskUserQuestionPayload {
   name: 'ask_user_question';
   userIntent?: string;
   questions: AskUserQuestionItem[];
+  /** ISO time after which the card can no longer be answered with its options. */
+  expiresAt?: string;
+  /** Set on this client when the user typed a reply in the chat instead of answering. */
+  repliedInChat?: boolean;
 }
 
 export interface SSEAskUserQuestionEvent {
@@ -588,6 +609,15 @@ export interface PendingAskUserQuestion {
   /** Answers the model already received. A resume only carries what is not here or differs. */
   sentAnswers?: Record<string, AskUserQuestionAnswer>;
   status: 'pending' | 'submitted' | 'persisted';
+}
+
+/** New answers to a reply's question card, sent with its regeneration. */
+export interface RegenAnswers {
+  messageId: string;
+  payload: AskUserQuestionPayload;
+  /** `User selections: ...`, as a tapped answer is sent. */
+  message: string;
+  answers: Record<string, AskUserQuestionAnswer>;
 }
 
 /** Artifact produced by a sandbox tool (coding/database). */
@@ -879,6 +909,7 @@ export interface SSECompleteEvent {
     requestId: string;
     timestamp: string;
     duration: number;
+    searchDegraded?: boolean;
   };
 }
 
@@ -1065,7 +1096,7 @@ export interface AvailableLlmModel {
 export type ActiveMessageAction =
   | null
   | { type: 'regenerate'; messageId: string; appliedFilters?: AppliedFilters }
-  | { type: 'editQuery'; messageId: string; text: string };
+  | { type: 'editQuery'; messageId: string; text: string; appliedFilters?: AppliedFilters; attachments?: AttachmentRef[] };
 
 // ── Multi-Chat Slot Types ──
 
@@ -1170,6 +1201,7 @@ export interface ChatSlot {
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 
+
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
 
@@ -1217,6 +1249,11 @@ export interface ChatSlot {
    */
   isOwner: boolean | null;
   /**
+   * Who the conversation is shared with: from the loaded detail, or from the
+   * last share/unshare answer. `null` when not known.
+   */
+  sharedWith: SharedWithEntry[] | null;
+  /**
    * Last known API `modelInfo` for this thread (from list/detail/SSE), used
    * to restore model + mode in the input when the user returns to this tab.
    */
@@ -1254,6 +1291,8 @@ export interface SearchResultMetadata {
   previewRenderable?: boolean;
   hideWeburl?: boolean;
   kbId?: string | null;
+  /** ISO time the record last synced. */
+  updatedAt?: string;
   blockIndex?: number;
   isBlock?: boolean;
   isBlockGroup?: boolean;
@@ -1275,5 +1314,7 @@ export interface SearchResponse {
   searchId: string;
   searchResponse: {
     searchResults: SearchResultItem[];
+    /** The search store answered with less than its full search (e.g. it was busy). */
+    searchDegraded?: boolean;
   };
 }

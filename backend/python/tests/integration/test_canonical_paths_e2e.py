@@ -527,6 +527,33 @@ async def test_walk_stops_at_a_non_canonical_relation(env: _Env) -> None:
     assert await env.graph.get_record_path_segments(leaf) == ["Folder", "f.txt"]
 
 
+async def test_an_ancestor_also_reached_by_a_shortcut_link_keeps_its_place(env: _Env) -> None:
+    """Epic -> Story -> Subtask, plus a link edge Epic -> Subtask: the link reaches
+    Epic one step early. A walk that visits each record once must not let that
+    early, non-canonical visit hide Epic from the canonical chain."""
+    epic = await env.record("Epic")
+    story = await env.record("Story", parent="Epic")
+    subtask = await env.record("Subtask", parent="Story")
+    await env.child_of(epic, story)
+    await env.child_of(story, subtask)
+    await env.child_of(epic, subtask, relation="LINKED_TO")
+
+    assert await env.graph.get_record_path_segments(subtask) == ["Epic", "Story", "Subtask"]
+
+
+async def test_an_ancestor_also_reached_by_a_stale_parent_edge_keeps_its_place(env: _Env) -> None:
+    """The same with a leftover PARENT_CHILD edge from Epic, whose externalParentId
+    the subtask no longer names."""
+    epic = await env.record("Epic")
+    story = await env.record("Story", parent="Epic")
+    subtask = await env.record("Subtask", parent="Story")
+    await env.child_of(epic, story)
+    await env.child_of(story, subtask)
+    await env.child_of(epic, subtask)
+
+    assert await env.graph.get_record_path_segments(subtask) == ["Epic", "Story", "Subtask"]
+
+
 async def test_attachment_edges_and_parent_matched_by_id(env: _Env) -> None:
     mail = await env.record("Mail")
     attachment = await env.record("invoice.pdf", parent="Mail")
@@ -778,3 +805,67 @@ async def test_scoping_is_off_for_root_scoped_connectors(env: _Env) -> None:
     assert containers.app_ids == {slack}
     assert await _groups_for(env, containers, slack) == []
     assert channel in (await env.graph.check_access(user, env.org_id, node_ids=[channel])).node_ids
+
+
+# get_record_group_virtual_record_ids: the content stored under a group's prefix,
+# which a group rename moves (and nothing else under the same prefix).
+
+
+async def _in_group(env: _Env, record: str, group: str) -> None:
+    await env.edge(CollectionNames.BELONGS_TO.value, RECORDS, record, GROUPS, group)
+
+
+async def test_group_content_includes_every_nested_group(env: _Env) -> None:
+    top = await env.group("Top")
+    child = await env.group("Child")
+    grand = await env.group("Grand")
+    await env.belongs_to(child, top)
+    await env.belongs_to(grand, child)
+    in_top = await env.record("in-top")
+    in_child = await env.record("in-child")
+    in_grand = await env.record("in-grand")
+    await _in_group(env, in_top, top)
+    await _in_group(env, in_child, child)
+    await _in_group(env, in_grand, grand)
+
+    assert sorted(await env.graph.get_record_group_virtual_record_ids(top)) == _vr(in_top, in_child, in_grand)
+    assert sorted(await env.graph.get_record_group_virtual_record_ids(child)) == _vr(in_child, in_grand)
+
+
+async def test_group_content_leaves_out_a_same_named_twin_and_folders(env: _Env) -> None:
+    team = await env.group("Team")
+    twin = await env.group("Team-twin")  # sanitizes alike in production; separate here
+    mine = await env.record("mine")
+    await _in_group(env, mine, team)
+    await _in_group(env, await env.record("folder", content=False), team)
+    await _in_group(env, await env.record("theirs"), twin)
+
+    assert await env.graph.get_record_group_virtual_record_ids(team) == _vr(mine)
+
+
+async def test_group_content_lists_a_shared_vrid_once_and_survives_duplicate_edges(env: _Env) -> None:
+    top = await env.group("Top")
+    child = await env.group("Child")
+    await env.belongs_to(child, top)
+    await env.belongs_to(child, top)  # duplicate parent edge
+    a = await env.record("a")
+    b = await env.record("b", vrid_of="a")
+    await _in_group(env, a, top)
+    await _in_group(env, b, child)
+
+    assert await env.graph.get_record_group_virtual_record_ids(top) == _vr(a)
+
+
+async def test_group_content_of_a_cycle_terminates(env: _Env) -> None:
+    a = await env.group("A")
+    b = await env.group("B")
+    await env.belongs_to(a, b)
+    await env.belongs_to(b, a)
+    r = await env.record("r")
+    await _in_group(env, r, b)
+
+    assert await env.graph.get_record_group_virtual_record_ids(a) == _vr(r)
+
+
+async def test_content_of_a_missing_group_is_empty(env: _Env) -> None:
+    assert await env.graph.get_record_group_virtual_record_ids(env.key("missing")) == []

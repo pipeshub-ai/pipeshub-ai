@@ -60,6 +60,7 @@ from app.connectors.sources.postgres.connector import PostgreSQLConnector
 from app.models.entities import FileRecord, RecordGroupType, RecordType, SQLTableRecord
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support.edition_defaults import postgres_sync_state
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -206,13 +207,18 @@ def _table(w: _World, schema: str, name: str) -> SQLTableRecord:
     )
 
 
-def _postgres(w: _World) -> SimpleNamespace:
-    connector = SimpleNamespace(
-        data_entities_processor=w.processor, data_store_provider=w.processor.data_store_provider,
-        connector_id=w.connector_id, logger=logger, sync_stats=SimpleNamespace(errors=0), database_name="shop",
-        _fetch_schemas=AsyncMock(return_value=[]), _passes_filter=PostgreSQLConnector._passes_filter,
-    )
-    connector._schema_group_id = lambda name: PostgreSQLConnector._schema_group_id(connector, name)
+def _postgres(w: _World) -> PostgreSQLConnector:
+    """The connector without its __init__: the removals run the connector's own helpers,
+    whichever they call, and only the schema listing is stubbed."""
+    connector = PostgreSQLConnector.__new__(PostgreSQLConnector)
+    connector.data_entities_processor = w.processor
+    connector.data_store_provider = w.processor.data_store_provider
+    connector.connector_id = w.connector_id
+    connector.logger = logger
+    for name, value in postgres_sync_state().items():
+        setattr(connector, name, value)
+    connector.database_name = "shop"
+    connector._fetch_schemas = AsyncMock(return_value=[])
     return connector
 
 

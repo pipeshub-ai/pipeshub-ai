@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import { desktopAuthorizeParams } from '@/lib/electron';
 import type { ConnectorOAuthCallbackRaw } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
@@ -13,6 +14,7 @@ import type {
   ConnectorStatsResponse,
   ConnectionCheckResponse,
   ReindexStage,
+  CodeGraphRepo,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
@@ -131,10 +133,13 @@ export const ConnectorsApi = {
     return data;
   },
 
-  /** Try auth settings before saving them; `connectorId` when editing an instance. */
+  /**
+   * Try auth settings before saving them; `connectorId` when editing an instance.
+   * `authType` names the chosen form when a connector offers several: `auth` holds only its fields.
+   */
   async testConnection(
     connectorType: string,
-    payload: { auth: Record<string, unknown>; connectorId?: string }
+    payload: { auth: Record<string, unknown>; authType?: string; connectorId?: string }
   ): Promise<ConnectionCheckResponse> {
     const { data } = await apiClient.post<ConnectionCheckResponse>(
       `${BASE_URL}/registry/${encodeURIComponent(connectorType)}/test-connection`,
@@ -163,6 +168,7 @@ export const ConnectorsApi = {
     baseUrl?: string;
   }) {
     const { data } = await apiClient.post(BASE_URL, payload);
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 
@@ -172,6 +178,7 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}`,
       { suppressErrorToast: true }
     );
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return parseDeleteConnectorInstanceBody(data ?? null, connectorId);
   },
 
@@ -180,6 +187,7 @@ export const ConnectorsApi = {
     const { data } = await apiClient.put(`${BASE_URL}/${connectorId}/name`, {
       instanceName,
     });
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 
@@ -368,6 +376,7 @@ export const ConnectorsApi = {
       { type, ...device },
       { suppressErrorToast: isDesktopOfflineError }
     );
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 
@@ -424,7 +433,8 @@ export const ConnectorsApi = {
    * indexing status. Omitting statusFilters reindexes everything for a KB
    * connector; other connector types default server-side to FAILED-only.
    * With `stages`, only those pipeline stages re-run and statusFilters match
-   * the stage's own status (classify -> extractionStatus).
+   * the stage's own status (classify -> extractionStatus,
+   * entities -> entitiesStatus).
    */
   async reindexConnector(
     connectorId: string,
@@ -504,5 +514,14 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}/stats`
     );
     return data;
+  },
+
+  /** Code repositories the caller can read, with each one's code-graph status. */
+  async getCodeGraphRepos(): Promise<CodeGraphRepo[]> {
+    const { data } = await apiClient.get<{ repos?: CodeGraphRepo[] }>(
+      '/api/v1/code-graph/repos',
+      { suppressErrorToast: true }
+    );
+    return data.repos ?? [];
   },
 };

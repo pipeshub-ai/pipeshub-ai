@@ -46,6 +46,9 @@ function firstChar(s: string): string {
   return '';
 }
 
+// Built at runtime: the tsconfig target rejects the `u` flag in a regex literal.
+const NON_LETTERS = new RegExp('[^\\p{L}]+', 'gu');
+
 /**
  * Derive initials from a free-form name string by splitting on separators.
  * Returns '' when no usable characters remain (caller decides the fallback).
@@ -65,6 +68,12 @@ function initialsFromName(name: string): string {
  * whitespace-only values, and multi-byte (emoji) first characters.
  */
 export function getInitials({ fullName, firstName, lastName, email }: UserAvatarProfile): string {
+  // Callers often pass the email as the name when a user has none; "a.b@x.com" must not become "AC".
+  if (fullName?.includes('@')) {
+    email = email || fullName;
+    fullName = undefined;
+  }
+
   // 1. fullName (e.g. "Acme Corporation" → "AC", "Pipeshub Inc." → "PI")
   const fromFullName = initialsFromName(fullName?.trim() ?? '');
   if (fromFullName) return fromFullName;
@@ -76,7 +85,7 @@ export function getInitials({ fullName, firstName, lastName, email }: UserAvatar
 
   // 3. Email local-part (e.g. "abhishek@pipeshub.com" → "AB")
   if (email) {
-    const fromEmail = initialsFromName(email.split('@')[0].trim());
+    const fromEmail = initialsFromName(email.split('@')[0].replace(NON_LETTERS, ' ').trim());
     if (fromEmail) return fromEmail;
   }
 

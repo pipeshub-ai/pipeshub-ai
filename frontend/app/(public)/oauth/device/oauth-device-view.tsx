@@ -1,5 +1,6 @@
 'use client';
 
+import { asArray } from '@/lib/utils/safe';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import axios from 'axios';
@@ -12,6 +13,8 @@ import { useAuthStore } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LoadingButton } from '@/app/components/ui/loading-button';
+import { KnowledgeLimitNotice } from '@/app/components/knowledge-limit/knowledge-limit-summary';
+import type { KnowledgeLimit } from '@/app/components/knowledge-limit/knowledge-limit';
 
 const OAUTH_DEVICE_PATH = '/oauth/device';
 const VERIFY_API = '/api/v1/oauth2/device/verify';
@@ -24,7 +27,7 @@ interface ScopeInfo {
 }
 
 interface ConsentData {
-  app: { name: string; description?: string; isDynamic?: boolean };
+  app: { name: string; description?: string; isDynamic?: boolean; knowledgeLimit?: KnowledgeLimit };
   scopes: ScopeInfo[];
   user: { email: string; name?: string };
 }
@@ -235,12 +238,15 @@ export function OAuthDeviceView() {
           {t('oauthConsent.requestHeading')}
         </Text>
         <Box mt="3">
-          {consentData.scopes.map((scope) => (
+          {asArray(consentData.scopes).map((scope) => (
             <Text as="p" size="2" key={scope.name}>
               {scope.name}
               {scope.description ? ` — ${scope.description}` : ''}
             </Text>
           ))}
+        </Box>
+        <Box mt="3">
+          <KnowledgeLimitNotice appName={consentData.app.name} limit={consentData.app.knowledgeLimit} />
         </Box>
         {error ? (
           <Text as="p" size="2" color="red" mt="2">

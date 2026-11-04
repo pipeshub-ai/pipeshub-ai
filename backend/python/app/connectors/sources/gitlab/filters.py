@@ -2,9 +2,10 @@
 Filter-options helpers for the GitLab connector.
 
 Responsibilities:
-- ``get_filter_options``: public entry point for group/project picker options.
+- ``get_filter_options``: public entry point for group/project/branch picker options.
 - ``_gitlab_group_filter_options``: group picker with auditor fallback.
 - ``_gitlab_project_filter_options``: project picker scoped or unscoped.
+- ``_branch_filter_options``: branch picker for the project in the form, default branch first.
 - ``_scan_filter_option_pages``: multi-page local-match scanner.
 - ``_gitlab_group_picker_auditor_fallback``: auditor-role group expansion.
 - Static helpers: ``_clamp_per_page``, ``_is_short_search``, ``_local_match_group``,
@@ -48,7 +49,7 @@ class FiltersHelper:
         search: str | None = None,
         cursor: str | None = None,
     ) -> FilterOptionsResponse:
-        """Return dynamic options for the GitLab group and project filters."""
+        """Return dynamic options for the GitLab group, project and branch filters."""
         c = self.c
         await c.runtime.refresh_token_if_needed()
         if not c.data_source:
@@ -62,6 +63,8 @@ class FiltersHelper:
                 return await self._gitlab_group_filter_options(page, limit, search)
             if filter_key == SyncFilterKey.PROJECT_IDS.value:
                 return await self._gitlab_project_filter_options(page, limit, search)
+            if filter_key == SyncFilterKey.BRANCH.value:
+                return await self._branch_filter_options(page, limit, search)
             raise ValueError(f"Unsupported filter key: {filter_key}")
         except ValueError:
             raise
@@ -315,6 +318,64 @@ class FiltersHelper:
             for p in projects
         ]
         return FilterOptionsResponse(success=True, options=opts, page=page, limit=limit, has_more=has_more)
+
+    # ------------------------------------------------------------------
+    # Branch picker
+    # ------------------------------------------------------------------
+
+    async def _branch_filter_options(
+        self, page: int, limit: int, search: str | None
+    ) -> FilterOptionsResponse:
+        """Branches of the project being picked, the default branch first unless
+        searching (a search lists GitLab's matches in GitLab's order).
+
+        The project comes from the picker's ``contextGroupPath`` (the project
+        row as it stands in the form, saved or not).
+        """
+        c = self.c
+        per_page = _clamp_per_page(limit)
+        page_n = max(1, int(page))
+        projects = [
+            str(p).strip() for p in (getattr(c, "_request_filter_context_group_paths", None) or [])
+            if p and str(p).strip()
+        ]
+        if len(projects) != 1:
+            return FilterOptionsResponse(
+                success=True, options=[], page=page, limit=per_page, has_more=False,
+                message="Select a repository to list its branches.",
+            )
+        project_path = projects[0]
+        needle = (search or "").strip()
+        res = await c.runtime.ds_call(
+            c.data_source.list_branches, project_path,
+            search=needle or None, page=page_n, per_page=per_page,
+        )
+        if not res.success:
+            self.logger.warning("list_branches failed for filter options (%s): %s", project_path, res.error)
+            return FilterOptionsResponse(
+                success=False, options=[], page=page, limit=per_page, has_more=False, message=res.error,
+            )
+        rows = list(res.data or [])
+        default_branch = next((str(b.name) for b in rows if getattr(b, "default", False)), None)
+        names = [str(b.name) for b in rows if getattr(b, "name", None)]
+        # A search keeps GitLab's own matches and order: GitLab reads ^, $ and * as a
+        # pattern, so only its answer says whether the default branch matched.
+        if not needle:
+            if default_branch is None:
+                project_res = await c.runtime.ds_call(c.data_source.get_project, project_path)
+                if project_res.success and project_res.data is not None:
+                    default_branch = getattr(project_res.data, "default_branch", None)
+            # Only the first page leads with the default branch; every page skips it otherwise.
+            names = [n for n in names if n != default_branch]
+            if default_branch and page_n == 1:
+                names.insert(0, default_branch)
+        opts = [
+            FilterOption(id=n, label=f"{n} (default)" if n == default_branch else n)
+            for n in names
+        ]
+        return FilterOptionsResponse(
+            success=True, options=opts, page=page_n, limit=per_page, has_more=len(rows) >= per_page,
+        )
 
     # ------------------------------------------------------------------
     # Multi-page scanner

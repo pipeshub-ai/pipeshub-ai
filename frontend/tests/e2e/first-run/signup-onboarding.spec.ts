@@ -68,7 +68,7 @@ async function addStandInModel(
     (r) => r.request().method() === 'POST' && r.url().includes(`${MODELS_API}/providers`),
     { timeout: 90_000 },
   );
-  await page.getByRole('button', { name: 'Add Model' }).click();
+  await page.getByRole('button', { name: 'Add model' }).click();
   const response = await saved;
   const body = (await response.json()) as { message?: string; details?: { modelKey?: string } };
   expect(response.status(), `saving ${friendlyName} failed: ${body.message ?? ''}`).toBe(200);
@@ -92,7 +92,7 @@ test.describe('First run', () => {
     // A fresh install sends a visitor to sign-up, not to the login page.
     await page.goto('/');
     await page.waitForURL(/\/sign-up\/?(\?|$)/, { timeout: 30_000 });
-    await expect(page.getByText('Get Started', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText('Get started', { exact: true })).toBeVisible({ timeout: 30_000 });
 
     await page.locator('#first-name').fill('First');
     await page.locator('#last-name').fill('Admin');
@@ -108,13 +108,13 @@ test.describe('First run', () => {
     const created = page.waitForResponse(
       (r) => r.request().method() === 'POST' && /\/api\/v1\/org\/?$/.test(new URL(r.url()).pathname),
     );
-    await dialog.getByRole('button', { name: 'Sign Up', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Sign up', exact: true }).click();
     const createdResponse = await created;
     expect(createdResponse.status(), `creating the organization failed: ${await createdResponse.text()}`).toBe(200);
 
     // ── Onboarding, step 1: the AI model ───────────────────────────────────
     await page.waitForURL(/\/onboarding\/?\?step=ai-model/, { timeout: 30_000 });
-    await expect(page.getByText('Step 1/3: Configure AI Model*', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText('Configure AI model*', { exact: true })).toBeVisible({ timeout: 30_000 });
 
     const next = page.getByRole('button', { name: /^Next/ });
     await expect(next).toBeDisabled();
@@ -141,7 +141,7 @@ test.describe('First run', () => {
 
     // ── Step 2: the embedding model ────────────────────────────────────────
     await page.waitForURL(/\/onboarding\/?\?step=embedding-model/, { timeout: 30_000 });
-    await expect(page.getByText('Step 2/3: Configure Embedding Model*', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText('Configure Embedding model', { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(next).toBeDisabled();
 
     const embeddingName = `First Run Embedding ${suffix}`;
@@ -156,7 +156,7 @@ test.describe('First run', () => {
 
     // ── Step 3: storage, the last step ─────────────────────────────────────
     await page.waitForURL(/\/onboarding\/?\?step=storage/, { timeout: 30_000 });
-    await expect(page.getByText('Step 3/3: Configure Storage', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText('Configure Storage', { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('select')).toHaveValue('local');
 
     const storageSaved = page.waitForResponse(

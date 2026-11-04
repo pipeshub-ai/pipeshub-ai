@@ -1,10 +1,10 @@
 """What the record stages share: the records still on a job's revision, the stored record,
 and section writes into the stored record under the record's lease.
 
-Two stages write the stored record's ``semantic_metadata`` and may finish in either order:
-classify owns every field but ``named_entities``, the entities stage owns ``named_entities``.
-Each write re-reads the stored record under the record's lease and replaces only its own
-section, so neither overwrites the other.
+Classification is the stored record's only stage writer: it re-reads the record under the
+lease and replaces ``semantic_metadata``, keeping the ``named_entities`` section a record
+indexed before the entities stage existed may carry (``app.modules.named_entities.kept``
+reads it for such a record). The entities stage keeps its extraction in its stage state.
 """
 
 from collections.abc import Awaitable, Callable
@@ -14,15 +14,18 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import BlocksContainer
 from app.models.entities import Record
-from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
+from app.modules.pipeline.leases import RecordBusy, RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.stage import Deadline
+from app.modules.transformers.stored_write import RunSuperseded, mint_stored_write
 from app.modules.transformers.transformer import TransformContext
+from app.services.featureflag.platform_settings import artifact_settings
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
+    from app.modules.transformers.stored_write import SidecarWrite
 
 RecordFromDocument = Callable[[dict[str, Any]], Record]
 StoredMetadata = dict[str, Any]
@@ -37,19 +40,10 @@ class StoredRecordMissing(LookupError):
 
 
 def with_classification(current: StoredMetadata | None, classification: StoredMetadata) -> StoredMetadata:
-    """``classification`` with the stored named-entity section kept."""
+    """``classification`` with the stored named-entity section kept: a record indexed before
+    the entities stage has its extraction there, and a rollback reads it there too."""
     merged = {key: value for key, value in classification.items() if key != NAMED_ENTITIES_SECTION}
     merged[NAMED_ENTITIES_SECTION] = (current or {}).get(NAMED_ENTITIES_SECTION)
-    return merged
-
-
-def with_named_entities(current: StoredMetadata | None, extraction: StoredMetadata | None) -> StoredMetadata:
-    """The stored metadata with its named-entity section replaced; every other field kept.
-
-    With no metadata stored yet (classification has not finished, or produced none) the
-    section alone is stored, as ``extraction_blob_holder`` stores it."""
-    merged = dict(current or {})
-    merged[NAMED_ENTITIES_SECTION] = extraction
     return merged
 
 
@@ -125,9 +119,9 @@ class RecordStageIO:
         if document is None:
             return None
         record = self._record_from_document(document)
-        # The graph document's converter leaves the virtual record id unset. The summary
-        # point is keyed by it, and the blocks and stored record are this job's content,
-        # so the outputs go under the job's virtual record id.
+        # The summary point is keyed by the virtual record id, and the blocks and stored
+        # record are this job's content, so the outputs go under the job's id, not the
+        # document's (a newer revision may have moved it on).
         record.virtual_record_id = self._job.virtual_record_id
         record.block_containers = blocks
         return TransformContext(record=record)
@@ -158,23 +152,46 @@ class RecordStageIO:
         update: SectionUpdate,
         *,
         still_current: Callable[[], Awaitable[bool]] | None = None,
+        before: Callable[[], Awaitable[object]] | None = None,
+        written: Callable[[], Awaitable[object]] | None = None,
         then: Callable[[], Awaitable[object]] | None = None,
+        sidecar: "SidecarWrite | None" = None,
     ) -> None:
-        """Re-read the stored record under the lease and write ``update`` of its metadata, then
-        run ``then`` (the stage's other writes for ``owner``) while the lease is still held.
+        """Rewrite the stored record's metadata under the lease with ``update`` of what it holds, then
+        run ``written`` (only when that write happened) and ``then`` (the stage's other writes
+        for ``owner``) while the lease is still held. ``before`` runs under the lease ahead of the
+        write, for an output that must exist before the stored record says it does.
 
-        Raises ``RevisionSuperseded`` / ``RecordBusy`` from the lease, and
-        ``StoredRecordMissing`` when no stored record exists."""
+        The write is ``BlobStorage.rewrite_semantic_metadata``: one read of the mapped document, and
+        either a copy of it with only ``semantic_metadata`` changed (a shadow or read flag is on; the
+        classification is then filed through ``sidecar``) or an in-place write (both off). The layout
+        comes from one read of the settings.
+
+        Raises ``RevisionSuperseded`` / ``RecordBusy`` from the lease or from the write (the mapping
+        moved under it: the stage's retry runs the job again), and ``StoredRecordMissing`` when no
+        stored record exists."""
+        from app.modules.transformers.blob_storage import StoredRecordNotFound
+
         async with self._holding(job, owner, also=still_current):
-            stored = await self._blob_storage.get_record_from_storage(job.virtual_record_id, job.org_id)
-            if stored is None:
-                raise StoredRecordMissing(f"no stored record for virtual record {job.virtual_record_id}")
-            current = stored.get("semantic_metadata")
-            new = update(current if isinstance(current, dict) else None)
-            if new is not None:
-                await self._blob_storage.save_semantic_metadata(job.org_id, owner, job.virtual_record_id, new)
-                stored["semantic_metadata"] = new
+            async def transform(stored: dict[str, Any]) -> StoredMetadata | None:
+                if before is not None:
+                    _ = await before()
+                current = stored.get("semantic_metadata")
+                return update(current if isinstance(current, dict) else None)
+
+            stored_write = mint_stored_write(await artifact_settings(self._blob_storage.config_service))
+            try:
+                stored = await self._blob_storage.rewrite_semantic_metadata(
+                    job.org_id, owner, job.virtual_record_id, transform, stored_write=stored_write, sidecar=sidecar,
+                )
+            except StoredRecordNotFound as exc:
+                raise StoredRecordMissing(str(exc)) from exc
+            except RunSuperseded as exc:
+                raise RecordBusy(str(exc)) from exc
+            if stored is not None:
                 self._stored, self._stored_loaded = stored, True
+                if written is not None:
+                    _ = await written()
             if then is not None:
                 _ = await then()
 

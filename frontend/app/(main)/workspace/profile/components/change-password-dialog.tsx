@@ -1,5 +1,6 @@
 'use client';
 
+import { overlayWidth } from '@/app/components/ui/responsive';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -93,10 +94,8 @@ export function ChangePasswordDialog({
 
       <Dialog.Content
         style={{
-          width: '37.5rem',
-          minWidth: 480,
+          width: overlayWidth(600),
           padding: 'var(--space-5)',
-          background: 'var(--slate-2)',
           borderRadius: 'var(--radius-5)',
           border: '1px solid var(--olive-a3)',
           boxShadow: '0 16px 36px -20px var(--slate-a7, rgba(217, 237, 255, 0.25)), 0 16px 64px 0 var(--slate-a2, rgba(216, 244, 246, 0.04)), 0 12px 60px 0 var(--black-a3, rgba(0, 0, 0, 0.15))',
@@ -149,6 +148,7 @@ export function ChangePasswordDialog({
               </Text>
               <TextField.Root
                 type={showNewPassword ? 'text' : 'password'}
+                autoComplete="new-password"
                 placeholder={t('workspace.profile.changePassword.newPasswordPlaceholder')}
                 value={form.newPassword}
                 onChange={(e) => {
@@ -201,6 +201,7 @@ export function ChangePasswordDialog({
               </Text>
               <TextField.Root
                 type={showConfirmPassword ? 'text' : 'password'}
+                autoComplete="new-password"
                 placeholder={t('workspace.profile.changePassword.confirmPasswordPlaceholder')}
                 value={form.confirmPassword}
                 onChange={(e) => {

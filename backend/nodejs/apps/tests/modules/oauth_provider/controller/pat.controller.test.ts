@@ -33,6 +33,7 @@ describe('PatController', () => {
       query: {},
       params: {},
       body: {},
+      headers: {},
     }
     mockRes = { json: sinon.stub(), status: sinon.stub().returnsThis() }
     mockNext = sinon.stub()
@@ -87,6 +88,18 @@ describe('PatController', () => {
       })
       expect(JSON.stringify(events[0])).to.not.include('raw-secret')
       expect(JSON.stringify(events[0])).to.not.include('dev@example.com')
+    })
+
+    it('tags pat_created with the client and channel that asked for it', async () => {
+      eventBuffer.drain()
+      mockPatService.createToken.resolves({ id: 'tok-1', name: 'cli', scopes: ['kb:read'], createdAt: new Date(), expiresAt: new Date() })
+      mockReq.headers = { 'user-agent': 'pipeshub-cli/4.7.0 node/22', 'x-pipeshub-channel': 'pipeshub-cli' }
+      mockReq.body = { name: 'cli', scopes: ['kb:read'] }
+
+      await controller.createToken(mockReq, mockRes, mockNext)
+
+      const [event] = eventBuffer.drain()
+      expect(event.props).to.include({ user_agent: 'pipeshub-cli/4.7.0', channel: 'pipeshub-cli' })
     })
 
     it('records the default lifetime when the request omits expiryDays', async () => {

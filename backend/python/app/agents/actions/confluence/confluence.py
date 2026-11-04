@@ -11,6 +11,12 @@ from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.confluence.attachments import (
+    CONFLUENCE_INLINE_NOTE,
+    ConfluencePageAttachments,
+)
+from app.agents.actions.util.attachment_delivery import attachment_display_parameter, has_text
+from app.agents.actions.util.attachments import attachment_record_ids_parameter
 from app.agents.actions.util.tool_summaries import (
     args_template,
     entity_summary,
@@ -29,7 +35,10 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import AuthField, DocumentationLink
-from app.connectors.sources.atlassian.core.auth_fields import confluence_include_jira_scope_field
+from app.connectors.sources.atlassian.core.auth_fields import (
+    confluence_allow_file_uploads_field,
+    confluence_include_jira_scope_field,
+)
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.models.entities import ArtifactType
 from app.services.artifact_registry import (
@@ -432,6 +441,7 @@ def _confluence_user_label(user: dict[str, Any]) -> str:
                 CommonFields.client_secret("Atlassian Developer Console"),
                 # No: toolsets never asked for read:jira-user, and an Atlassian app without it refuses sign-in.
                 confluence_include_jira_scope_field(default_value="no"),
+                confluence_allow_file_uploads_field(),
             ],
             icon_path=IconPaths.connector_icon("confluence"),
             app_group="Documentation",
@@ -494,11 +504,13 @@ class Confluence:
 
         Args:
             client: Confluence client object
-            state: Agent runtime state (ChatState). Required for attachment download.
+            state: Agent runtime state (ChatState). Required for attachment download
+                and for attachment_record_ids.
         """
         self.client = ConfluenceDataSource(client)
         self._site_url = None  # Cache for site URL
         self.chat_state = state
+        self._attachments = ConfluencePageAttachments(self.client, state, flavor="cloud")
 
     def _registry(self) -> Optional[ArtifactRegistryService]:
         """Return the artifact registry, or None when dependencies are unavailable."""
@@ -768,18 +780,41 @@ class Confluence:
             "space is not yet resolved.\n"
             "\n"
             "Use when the user wants to create a Confluence page, add documentation, or create "
-            "a wiki page. Do not use for searching or reading pages."
+            "a wiki page. Do not use for searching or reading pages.\n"
+            "\n"
+            "To add files the user shared (screenshots, documents), pass their record IDs in "
+            "attachment_record_ids; they are attached after the page is created."
         ),
         parameters=[
             ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID or key (e.g. '~abc123', 'SD', '12345'). IMPORTANT: Resolve via confluence.get_spaces if not already known from Reference Data or conversation history.", required=True),
             ToolParameter(name="page_title", type=ParameterType.STRING, description="Page title", required=True),
             ToolParameter(name="page_content", type=ParameterType.STRING, description="Page content in storage format", required=True),
+            attachment_record_ids_parameter(required=False),
+            attachment_display_parameter(inline_note=CONFLUENCE_INLINE_NOTE),
         ],
         tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
         args_summary=args_template('Creating Confluence page "{page_title}"', "page_title"),
         result_summary=entity_summary(lambda e: f"Created page: {_confluence_page_label(e)}"),
     )
     async def create_page(
+        self,
+        space_id: str,
+        page_title: str,
+        page_content: str,
+        attachment_record_ids: list[str] | None = None,
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        """Create a page in Confluence, then attach any requested files."""
+        if not attachment_record_ids:
+            return await self._create_page(space_id, page_title, page_content)
+        return await self._attachments.create_with_files(
+            attachment_record_ids,
+            attachment_display,
+            page_content,
+            lambda content: self._create_page(space_id, page_title, content),
+        )
+
+    async def _create_page(
         self,
         space_id: str,
         page_title: str,
@@ -2464,18 +2499,78 @@ class Confluence:
             "\n"
             "Use when the user wants to edit or modify a page. Do not use for creating pages "
             "(use create_page), reading pages (use get_page_content), or title-only changes "
-            "(use update_page_title)."
+            "(use update_page_title). To only add files, use add_attachments."
         ),
         parameters=[
             ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
             ToolParameter(name="page_title", type=ParameterType.STRING, description="New page title (optional)", required=False),
             ToolParameter(name="page_content", type=ParameterType.STRING, description="New page content in storage format (optional)", required=False),
+            attachment_record_ids_parameter(required=False),
+            attachment_display_parameter(inline_note=CONFLUENCE_INLINE_NOTE),
         ],
         tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
         args_summary=args_template("Updating Confluence page {page_id}", "page_id"),
         result_summary=entity_summary(lambda e: f"Updated page: {_confluence_page_label(e)}"),
     )
     async def update_page(
+        self,
+        page_id: str,
+        page_title: str | None = None,
+        page_content: str | None = None,
+        attachment_record_ids: list[str] | None = None,
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        """Update a page in Confluence, then attach any requested files."""
+        if not attachment_record_ids:
+            return await self._update_page(page_id, page_title, page_content)
+
+        # A blank title keeps the current one: sent as is, Confluence rejects the
+        # update and none of the files are added.
+        new_title = page_title if has_text(page_title) else None
+
+        async def _update(content: str | None) -> tuple[bool, str]:
+            return await self._update_page(page_id, new_title, content)
+
+        # Blank once placeholders are removed means "keep the body": sent as is, it would
+        # replace the page body with nothing before the files are added.
+        new_content = page_content if has_text(page_content) else None
+        return await self._attachments.update_with_files(
+            page_id,
+            attachment_record_ids,
+            attachment_display,
+            new_content,
+            _update if new_title is not None or new_content is not None else None,
+        )
+
+    @tool(
+        path="/tools/confluence/add_attachments",
+        short_description="Attach files to an existing Confluence page",
+        description=(
+            "Attach files the user shared (chat uploads, Slack files, knowledge base files) to an existing "
+            "Confluence page. Pass their record IDs in attachment_record_ids. With attachment_display="
+            "'inline' they are also added at the end of the page."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
+            attachment_record_ids_parameter(required=True),
+            attachment_display_parameter(inline_note=CONFLUENCE_INLINE_NOTE),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        args_summary=args_template("Attaching files to Confluence page {page_id}", "page_id"),
+    )
+    async def add_attachments(
+        self,
+        page_id: str,
+        attachment_record_ids: list[str],
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        return await self.update_page(
+            page_id,
+            attachment_record_ids=attachment_record_ids,
+            attachment_display=attachment_display,
+        )
+
+    async def _update_page(
         self,
         page_id: str,
         page_title: Optional[str] = None,
@@ -2669,16 +2764,40 @@ class Confluence:
             "Optionally reply to an existing comment by providing parent_comment_id.\n"
             "\n"
             "Use when the user wants to comment on a page. Do not use for creating pages "
-            "(use create_page) or reading pages (use get_page_content)."
+            "(use create_page) or reading pages (use get_page_content).\n"
+            "\n"
+            "Files in attachment_record_ids are attached to the page; with attachment_display='inline' "
+            "the comment names them."
         ),
         parameters=[
             ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
             ToolParameter(name="comment_text", type=ParameterType.STRING, description="Comment text/content", required=True),
             ToolParameter(name="parent_comment_id", type=ParameterType.STRING, description="Parent comment ID if replying to a comment (optional)", required=False),
+            attachment_record_ids_parameter(required=False),
+            attachment_display_parameter(inline_note="In a comment, 'inline' lists the attached file names."),
         ],
         tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
     )
     async def comment_on_page(
+        self,
+        page_id: str,
+        comment_text: str,
+        parent_comment_id: str | None = None,
+        attachment_record_ids: list[str] | None = None,
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        """Add a comment to a Confluence page, attaching any requested files to the page."""
+        if not attachment_record_ids:
+            return await self._comment_on_page(page_id, comment_text, parent_comment_id)
+        return await self._attachments.comment_with_files(
+            page_id,
+            attachment_record_ids,
+            attachment_display,
+            comment_text,
+            lambda text: self._comment_on_page(page_id, text, parent_comment_id),
+        )
+
+    async def _comment_on_page(
         self,
         page_id: str,
         comment_text: str,

@@ -3,7 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { Types } from 'mongoose';
 import { OAuthAppService } from '../../../../src/modules/oauth_provider/services/oauth.app.service';
-import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
+import { OAuthApp, OAuthGrantType } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 
 function makeService() {
@@ -83,6 +83,62 @@ describe('pointing an OAuth app at a service account', () => {
     expect(app.tokenIdentityUserId).to.equal(undefined);
   });
 
+  /**
+   * Clearing the binding is the same hole by another door.
+   *
+   * Creating a client_credentials app requires a service account, and adding
+   * the grant to an existing app requires one too. Without this, both are one
+   * request away from being undone: the app falls back to `createdBy`, and an
+   * app created by an administrator carries administrator rights again.
+   */
+  it('refuses to clear the binding while the app allows client_credentials', async () => {
+    app.allowedGrantTypes = [OAuthGrantType.CLIENT_CREDENTIALS];
+    app.tokenIdentityUserId = new Types.ObjectId(serviceAccountId);
+
+    let message = '';
+    try {
+      await makeService().service.setTokenIdentity(appId, orgId, userId, null);
+      expect.fail('Should have thrown');
+    } catch (error: any) {
+      message = error.message ?? '';
+    }
+
+    expect(message).to.contain('service account');
+    // Unchanged, so a failed call cannot half-apply.
+    expect(String(app.tokenIdentityUserId)).to.equal(serviceAccountId);
+    expect(app.save.called).to.equal(false);
+  });
+
+  it('still allows switching to a different service account', async () => {
+    const other = new Types.ObjectId().toString();
+    app.allowedGrantTypes = [OAuthGrantType.CLIENT_CREDENTIALS];
+    app.tokenIdentityUserId = new Types.ObjectId(serviceAccountId);
+    stubUser({ isDisabled: false });
+
+    await makeService().service.setTokenIdentity(appId, orgId, userId, other);
+
+    expect(String(app.tokenIdentityUserId)).to.equal(other);
+  });
+
+  /**
+   * The migration screen cannot exist without this: it has to show which
+   * applications act as a service account and which still act as their
+   * creator, and the only way to tell them apart is this field.
+   */
+  it('returns the binding, so a listing can tell bound from unbound', async () => {
+    app.allowedGrantTypes = [OAuthGrantType.CLIENT_CREDENTIALS];
+    stubUser({ isDisabled: false });
+
+    const result = await makeService().service.setTokenIdentity(
+      appId,
+      orgId,
+      userId,
+      serviceAccountId,
+    );
+
+    expect(result.tokenIdentityUserId).to.equal(serviceAccountId);
+  });
+
   it('refuses a colleague, not just any user id', async () => {
     // kind is part of the query, so a person's id finds nothing here and an
     // app cannot be made to act as them.
@@ -92,7 +148,10 @@ describe('pointing an OAuth app at a service account', () => {
       await makeService().service.setTokenIdentity(appId, orgId, userId, serviceAccountId);
       expect.fail('expected a non-service account to be refused');
     } catch (error) {
-      expect((error as Error).message).to.equal('Service account not found');
+      // The part that tells someone what to do next, not just that it failed.
+      expect((error as Error).message).to.contain(
+        'Workspace \u2192 Service accounts',
+      );
     }
     expect(findOne.firstCall.args[0]).to.include({ kind: 'service' });
   });

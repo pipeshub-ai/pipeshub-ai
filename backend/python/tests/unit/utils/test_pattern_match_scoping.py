@@ -10,6 +10,7 @@ import pytest
 from app.agents.actions.storage_search.storage_search import (
     StoragePatternMatch,
     _grep_search_regexes,
+    _listing_command_error,
     _rank_candidates,
     _run_subprocess,
 )
@@ -170,15 +171,21 @@ def test_hint_shows_matched_text():
 
 
 class TestCapGrepOutput:
-    def test_zero_counts_dropped_before_default_head(self):
-        assert _cap_grep_output('grep -rci "x" .') == (
-            "grep -rci \"x\" . | grep -v ':0$' | head -200"
+    def test_zero_counts_dropped(self) -> None:
+        assert _cap_grep_output('grep -rci "x" .') == "grep -rci \"x\" . | grep -v ':0$'"
+
+    def test_a_head_or_tail_cut_is_dropped(self) -> None:
+        assert _cap_grep_output('grep -rliZ "x" . | head -5 | xargs -0 grep -Hci "y" | tail -3') == (
+            "grep -rliZ \"x\" . | xargs -0 grep -Hci \"y\" | grep -v ':0$'"
         )
 
-    def test_existing_head_kept_after_filter(self):
-        assert _cap_grep_output('grep -rci "x" . | head -5') == (
-            "grep -rci \"x\" . | grep -v ':0$' | head -5"
-        )
+    @pytest.mark.parametrize("command", [
+        'grep -rci "x" .',
+        'grep -rliZ "x" . | xargs -0 grep -Hci "y" | head -50',
+    ])
+    def test_find_records_accepts_the_command(self, command: str) -> None:
+        # find_records refuses anything but a listing; a refused command finds nothing.
+        assert _listing_command_error(_cap_grep_output(command)) is None
 
 
 @pytest.mark.skipif(shutil.which("grep") is None or shutil.which("xargs") is None,

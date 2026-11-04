@@ -2,7 +2,9 @@
 
 <a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
-<h3>The Open-Source Workplace AI Platform</h3>
+<h3>An open-source context layer for AI agents and an enterprise search platform</h3>
+
+<p>Permission-aware search and cited answers across Slack, Google Drive, Jira, Confluence, GitHub and 50+ apps, for your people and for agents through MCP. Self-hosted or PipesHub Cloud.</p>
 
 <p>
   <a href="https://www.pipeshub.com/">Website</a> ·
@@ -106,9 +108,9 @@ Want the same retrieval inside your own code, or behind a search box for your te
 
 ## PipesHub Cloud
 
-Prefer a fully managed PipesHub without running your own infrastructure? PipesHub Cloud is coming soon.
+Prefer a fully managed PipesHub without running your own infrastructure? Sign up for **[PipesHub Cloud](https://app.pipeshub.com)**: the same connectors, permission-aware search, and APIs, with nothing to install.
 
-👉 **[Join the Cloud Waitlist](https://pipeshub.com/cloud-waitlist)** to get early access.
+Coding agents connect to `https://app.pipeshub.com/mcp` with a personal access token. See [For coding agents](https://docs.pipeshub.com/for-agents).
 
 ## Connectors
 

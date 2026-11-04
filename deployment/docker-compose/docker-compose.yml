@@ -124,6 +124,7 @@ services:
       - WEB_CONNECTOR_ALLOWED_HOSTS=${WEB_CONNECTOR_ALLOWED_HOSTS:-}
       - CONNECTOR_EGRESS_IPS=${CONNECTOR_EGRESS_IPS:-}
       - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
+      - PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP=${PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP:-}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
@@ -160,6 +161,8 @@ services:
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
       # false: agent, team and knowledge-base creates follow NEO4J_EXPLICIT_TRANSACTIONS
       # (one auto-commit per query while that is off)
+      # NEO4J_EXPLICIT_TRANSACTIONS defaults to true: a failed multi-statement write rolls back.
+      # Set it to false for one auto-commit per query.
       - NEO4J_CREATE_TRANSACTIONS=${NEO4J_CREATE_TRANSACTIONS:-true}
 
       # Key-value store: "redis" (default, no extra container) | "etcd"
@@ -173,6 +176,7 @@ services:
       # Message broker: "redis" (default, uses Redis Streams) | "kafka"
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      - REDIS_STREAMS_RETENTION_MODE=${REDIS_STREAMS_RETENTION_MODE:-after_ack}
       # Indexing lanes on Redis Streams: how many (every service must agree), and
       # how a connector is given one: "assigned" (the least busy lane, recorded
       # once) or "hash", which switches assigned lanes off.
@@ -243,13 +247,14 @@ services:
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-2000}
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
       - MAX_AUTH_REQUESTS_PER_MINUTE=${MAX_AUTH_REQUESTS_PER_MINUTE:-10}
+      - ADDRESS_RATE_LIMIT_PER_MINUTE=${ADDRESS_RATE_LIMIT_PER_MINUTE:-60}
       - TRUST_PROXY=${TRUST_PROXY:-}
 
       # Security
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # Auth / tokens
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,connector:write,connector:sync,code:read,project:read,project:write,project:delete}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
       - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
@@ -278,6 +283,7 @@ services:
       - GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=${GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU:-}
       - INDEXING_SPLIT_LEASE_POOLS=${INDEXING_SPLIT_LEASE_POOLS:-}
       - GOVERNOR_LIGHT_PARSE_MAX=${GOVERNOR_LIGHT_PARSE_MAX:-}
+      - PARSE_MAX_ORG_SHARE=${PARSE_MAX_ORG_SHARE:-}
       - GOVERNOR_INDEX_HEADROOM=${GOVERNOR_INDEX_HEADROOM:-}
       - GOVERNOR_INDEX_MAX=${GOVERNOR_INDEX_MAX:-}
       - GOVERNOR_INDEX_HEAVY_WORKING_SET_GB=${GOVERNOR_INDEX_HEAVY_WORKING_SET_GB:-}
@@ -317,6 +323,9 @@ services:
       - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
+      # Opt-in only: knowledge-base uploads take the dates their content
+      # states (true: instead of upload times; all: also of file times).
+      - CONTENT_DOCUMENT_DATES=${CONTENT_DOCUMENT_DATES:-}
       - RELEVANCE_ORDERED_CONTEXT=${RELEVANCE_ORDERED_CONTEXT:-}
       - FUSION_RECORD_CUT=${FUSION_RECORD_CUT:-}
       - ANSWER_COMPOSITION_RULES=${ANSWER_COMPOSITION_RULES:-}
@@ -347,6 +356,8 @@ services:
       - CONNECTOR_UVICORN_WORKERS=${CONNECTOR_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
+      - PDF_DOCLING_MAX_PAGES=${PDF_DOCLING_MAX_PAGES:-30}
       # CONNECTOR_SYNC_MAX_CONCURRENT caps how many syncs run at once.
       - CONNECTOR_SYNC_MAX_CONCURRENT=${CONNECTOR_SYNC_MAX_CONCURRENT:-8}
       # How long a delete waits for a running sync to stop.
@@ -358,6 +369,21 @@ services:
       # text, in MB (default 5). Larger ones are marked "not supported" with
       # the reason; CSV, JSON and YAML files keep their own parsers' limits.
       - CODE_FILE_MAX_SIZE_MB=${CODE_FILE_MAX_SIZE_MB:-}
+      # Code graph (O-12). Empty keeps the default in brackets: sweep for owed
+      # edge builds every N s [600]; full rebuild of each repo every N s
+      # [604800]; builds at once per process [2] and per org [1]; largest repo
+      # one build loads, in blocks [300000]; failed attempts before a build is
+      # marked failed [6]. CODE_GRAPH_ENABLED=false turns the code graph off
+      # [true]; CODE_GRAPH_BACKFILL=true re-indexes repos indexed before the
+      # current code-graph version on the next start [false].
+      - CODE_GRAPH_ENABLED=${CODE_GRAPH_ENABLED:-true}
+      - CODE_GRAPH_BACKFILL=${CODE_GRAPH_BACKFILL:-false}
+      - CODE_EDGE_BUILD_RECONCILE_INTERVAL_SECONDS=${CODE_EDGE_BUILD_RECONCILE_INTERVAL_SECONDS:-}
+      - CODE_EDGE_FULL_REBUILD_INTERVAL_SECONDS=${CODE_EDGE_FULL_REBUILD_INTERVAL_SECONDS:-}
+      - CODE_EDGE_BUILD_MAX_CONCURRENT=${CODE_EDGE_BUILD_MAX_CONCURRENT:-}
+      - CODE_EDGE_BUILD_MAX_PER_ORG=${CODE_EDGE_BUILD_MAX_PER_ORG:-}
+      - CODE_EDGE_BUILD_MAX_BLOCKS=${CODE_EDGE_BUILD_MAX_BLOCKS:-}
+      - CODE_EDGE_BUILD_MAX_FAILURES=${CODE_EDGE_BUILD_MAX_FAILURES:-}
       # Worker processes that parse large text, code and CSV files off the
       # indexing event loop. Empty derives it from the CPU limit (1 on a
       # 4-CPU host, at most 4); 0 parses in threads instead.
@@ -365,10 +391,23 @@ services:
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
       - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}
       - EMBEDDING_SERVER_QUERY_RESERVED_SLOTS=${EMBEDDING_SERVER_QUERY_RESERVED_SLOTS:-}
+      - EMBEDDING_SERVER_MODEL_IDLE_SECONDS=${EMBEDDING_SERVER_MODEL_IDLE_SECONDS:-}
+      # Request size caps (HTTP 413 over a cap); empty keeps the defaults.
+      - EMBEDDING_SERVER_MAX_REQUEST_BYTES=${EMBEDDING_SERVER_MAX_REQUEST_BYTES:-}
+      - EMBEDDING_SERVER_MAX_INPUTS=${EMBEDDING_SERVER_MAX_INPUTS:-}
+      - EXTRACTION_MAX_REQUEST_BYTES=${EXTRACTION_MAX_REQUEST_BYTES:-}
       - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-}
       # Skip per-sentence embeddings unless the block has more than this many
       # words (default 100). Set 0 to split every multi-sentence block.
       - EMBED_SENTENCE_MIN_WORDS=${EMBED_SENTENCE_MIN_WORDS:-100}
+      # Vector points per record: A (default), B (one per text block) or C (B plus
+      # 5 table rows per point). See docs/indexing-service.md.
+      - EMBED_POINT_POLICY=${EMBED_POINT_POLICY:-A}
+      - EMBED_TABLE_ROWS_PER_POINT=${EMBED_TABLE_ROWS_PER_POINT:-5}
+      - EMBED_MAX_TABLE_POINTS=${EMBED_MAX_TABLE_POINTS:-200}
+      # Longest input of a hosted embedding model, in tokens (default 8191); the
+      # bundled embedding server reports its own.
+      - PIPESHUB_EMBED_TOKEN_LIMIT=${PIPESHUB_EMBED_TOKEN_LIMIT:-}
 
       # Slack bot (optional)
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
@@ -409,6 +448,7 @@ services:
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       # Set to "true" to route indexing through the standalone parsing/extraction services
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
+      - CODE_FILE_CLASSIFICATION=${CODE_FILE_CLASSIFICATION:-true}
 
       - VECTOR_COLLECTION_STRATEGY=${VECTOR_COLLECTION_STRATEGY:-single}
 

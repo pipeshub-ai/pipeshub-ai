@@ -1359,13 +1359,15 @@ class TestCheckAndFetchUpdatedIssue:
                 "creator": {"accountId": "acc-1", "displayName": "Creator", "emailAddress": "c@test.com"},
                 "reporter": {"accountId": "acc-2", "displayName": "Reporter"},
                 "assignee": {"accountId": "acc-3", "displayName": "Assignee"},
-                "project": {"id": "proj-1"},
+                "project": {"id": "proj-id-1"},
                 "parent": None,
             },
         }
 
         mock_ds = MagicMock()
         mock_ds.get_issue = AsyncMock(return_value=_make_mock_response_fullcov(200, issue_response))
+        mock_ds.get_project_issue_security_scheme = AsyncMock(return_value=_make_mock_response_fullcov(
+            404, {"errorMessages": ["Security level for project proj-1 does not exist."]}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         record = _make_ticket_record(source_updated_at=1700000000000)

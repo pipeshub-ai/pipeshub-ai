@@ -155,7 +155,7 @@ class TestRestoreTrashedRecords:
         ((restores, batch),) = store.restored
         assert batch == "b-1"
         assert restores == [{"id": "r1", "set": {"indexingStatus": "NOT_STARTED"}}, {"id": "r2", "set": {}}]
-        notify.assert_awaited_once_with("c1")
+        notify.assert_awaited_once_with("c1", "org-1")
         counted.assert_called_once_with(DeleteSource.USER.value, 2)
 
     async def test_a_released_external_id_is_given_back_when_free(self) -> None:

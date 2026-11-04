@@ -43,7 +43,17 @@ class TestBatchShape:
         p = _provider([])
         await p.get_node_relations_batch(["a", "b"], ["PARENT_CHILD"])
         params = p.client.execute_query.call_args.kwargs["parameters"]
-        assert params == {"record_ids": ["a", "b"], "relation_types": ["PARENT_CHILD"]}
+        assert params["record_ids"] == ["a", "b"]
+        assert params["relation_types"] == ["PARENT_CHILD"]
+
+    @pytest.mark.asyncio
+    async def test_each_record_and_direction_is_limited_in_the_query(self) -> None:
+        """A hit with thousands of attachments must be cut by the database."""
+        p = _provider([])
+        await p.get_node_relations_batch(["a"], ["ATTACHMENT"], limit_per_direction=5)
+        query = p.client.execute_query.call_args.args[0]
+        assert p.client.execute_query.call_args.kwargs["parameters"]["limit"] == 5
+        assert query.count("LIMIT $limit") == 2  # outgoing and incoming
 
     @pytest.mark.asyncio
     async def test_every_requested_record_is_present_even_with_no_edges(self) -> None:
@@ -114,6 +124,58 @@ class TestFailure:
         assert p.get_parent_record_ids_by_relation_type.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_a_bounded_batch_falls_back_to_bounded_per_record_reads(self) -> None:
+        p = _provider(RuntimeError("boom"))
+        p.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
+        p.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
+
+        await p.get_node_relations_batch(["a"], ["ATTACHMENT"], limit_per_direction=5)
+
+        assert p.get_parent_record_ids_by_relation_type.await_args.kwargs["limit"] == 5
+        assert p.get_child_record_ids_by_relation_type.await_args.kwargs["limit"] == 5
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", [
+        "get_parent_record_ids_by_relation_type", "get_child_record_ids_by_relation_type",
+    ])
+    async def test_a_per_record_read_stops_at_its_limit(self, method) -> None:
+        p = _provider([])
+        await getattr(p, method)("a", "ATTACHMENT", limit=5)
+        call = p.client.execute_query.await_args
+        assert "LIMIT $limit" in call.args[0]
+        assert call.kwargs["parameters"]["limit"] == 5
+
+    @pytest.mark.asyncio
+    async def test_default_batch_caps_queries_in_flight(self) -> None:
+        import asyncio
+
+        from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+        from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY
+
+        in_flight = peak = 0
+
+        async def query(*_args, **_kwargs) -> list:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0)
+            in_flight -= 1
+            return [{"record_id": "x"}]
+
+        p = _provider([])
+        p.get_parent_record_ids_by_relation_type = query
+        p.get_child_record_ids_by_relation_type = query
+        record_ids = [f"r{i}" for i in range(GRAPH_FANOUT_CONCURRENCY * 2)]
+
+        # Call the interface default, not Neo4j's specialised batch query.
+        out = await IGraphDBProvider.get_node_relations_batch(
+            p, record_ids, ["PARENT_CHILD", "ATTACHMENT"]
+        )
+
+        assert all(len(out[rid]["parents"]) == 2 for rid in record_ids)
+        assert peak == GRAPH_FANOUT_CONCURRENCY
+
+    @pytest.mark.asyncio
     async def test_default_batch_skips_non_mapping_rows(self) -> None:
         from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -132,3 +194,17 @@ class TestFailure:
             {"record_id": "p1", "relationType": "PARENT_CHILD"}
         ]
         assert out["a"]["children"] == []
+
+
+class TestNodeAccessQueriesAreLabelled:
+    """An unlabelled `MATCH (n {id: ...})` scans every node on each navigate."""
+
+    @pytest.mark.asyncio
+    async def test_node_access_matches_by_label(self) -> None:
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        p = _provider([])
+        p.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"n1"})))
+        await p.get_knowledge_hub_node_access("n1", "u", "org", [])
+        query = p.client.execute_query.call_args.args[0]
+        assert "MATCH (n:Record|RecordGroup|App {id: $node_id})" in query

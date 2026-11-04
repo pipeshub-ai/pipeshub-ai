@@ -388,3 +388,21 @@ class TestSearchFailureConstraints:
 
         assert note.startswith("Note: 1 of 2 parts did not respond.")
         assert "search again" in note
+
+
+class TestAConnectedAppsLimit:
+    @pytest.mark.parametrize(("filters", "sources"), [
+        ({"apps": ["a"]}, None),
+        ({"apps": ["a"], "records": ["f"], "connectionApps": [], "connectionRecordGroups": [],
+          "connectionRecords": ["f"]}, {"apps": [], "recordGroups": [], "records": ["f"]}),
+    ])
+    async def test_the_turns_limit_reaches_the_graph_context(self, filters, sources) -> None:
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status_code": 200, "searchResults": [{"metadata": {"recordId": "r1"}}], "virtual_to_record_map": {},
+        }
+        graph_enrich = AsyncMock()
+        with _pipeline([{"virtual_record_id": "vr1", "recordId": "r1"}], graph=graph_enrich):
+            await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service, filters=filters))
+
+        assert graph_enrich.await_args.kwargs["connection_sources"] == sources

@@ -146,7 +146,9 @@ def _fetch_record_policy_for_exploration() -> str:
     return "\n\n" + policy_text("knowledgegraph__fetch_record")
 
 
-def _internal_exploration_instructions(context: "AgentContext | None") -> str | None:
+def _internal_exploration_instructions(
+    context: "AgentContext | None", tool_names: list[str] | None = None
+) -> str | None:
     """Per-request connector inventory + the fan-out/iteration playbook
     above, appended to `internal_exploration_agent`'s child prompt via
     `DomainAgentDefinition.instructions_factory`. Built from
@@ -175,7 +177,10 @@ def _internal_exploration_instructions(context: "AgentContext | None") -> str | 
         base += f"\n\n{multi_step}"
     if context is None or not context.agent_knowledge:
         return base
-    source_table = context.get_source_catalog().render()
+    # Without `tool_names` every `granted(...)` lookup in the catalog returns
+    # None, which drops the fetch_record bullet and the code-graph guidance from
+    # the child's own prompt while leaving "navigate the record group" intact.
+    source_table = context.get_source_catalog().render(tool_names=tool_names)
     if not source_table:
         return base
     return f"{base}\n{source_table}"
@@ -214,9 +219,12 @@ class DomainAgentDefinition:
     differs by org/agent), use `instructions_factory` instead — the two
     compose (both are appended) rather than one overriding the other."""
 
-    instructions_factory: Callable[["AgentContext | None"], str | None] | None = None
+    instructions_factory: (
+        Callable[["AgentContext | None", list[str]], str | None] | None
+    ) = None
     """Optional per-request instructions builder, called with this
-    request's `AgentContext` at registration time (see
+    request's `AgentContext` and the child's granted tool names at
+    registration time (see
     `register_domain_agents()`). Returns `None` to add nothing — lets a
     domain (e.g. `internal_exploration_agent`) see request-scoped data
     (connector inventory, knowledge sources) that a static
@@ -224,6 +232,16 @@ class DomainAgentDefinition:
     `register_domain_agents()` themselves needing to know anything
     domain-specific (open/closed: adding this to a new domain later means
     adding one function, not touching this module's control flow)."""
+
+    reads_code: bool = False
+    """Granted the code-graph tools (`register_domain_agents(code_tool_names=...)`).
+    Only domains whose work reads repository code get them; the rest paid
+    their schemas on every turn for nothing (A-11)."""
+
+    reads_entities: bool = False
+    """Granted the named-entity and typed-value tools
+    (`register_domain_agents(entity_tool_names=...)`), shared and never claimed:
+    the parent keeps them for the questions it answers itself."""
 
     max_turns: int = _DEFAULT_CHILD_MAX_TURNS
 
@@ -331,6 +349,7 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
     DomainAgentDefinition(
         name="coding_agent",
         domain="coding",
+        reads_code=True,
         description=(
             "Delegate a coding task to a focused sub-agent that writes and runs "
             "code in a sandbox, installs packages, and reads files it produced. "
@@ -378,6 +397,8 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
     DomainAgentDefinition(
         name="internal_exploration_agent",
         domain="internal knowledge exploration",
+        reads_code=True,
+        reads_entities=True,
         description=(
             "Delegate exploration of the organization's internal knowledge to a "
             "sub-agent that iteratively searches, browses, and fetches records "
@@ -398,6 +419,7 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
             "knowledgegraph__search",
             "knowledgegraph__list_files",
             "knowledgegraph__fetch_record",
+            "knowledgegraph__find_records_by_person",
         }),
         instructions_factory=_internal_exploration_instructions,
         max_turns=_EXPLORATION_MAX_TURNS,
@@ -498,6 +520,8 @@ def register_domain_agents(
     context_window: int | None = None,
     lazy_tools: "Callable[[ToolRegistry, list[str]], tuple[list[str], str]] | None" = None,
     shared_tool_names: frozenset[str] = frozenset(),
+    code_tool_names: frozenset[str] = frozenset(),
+    entity_tool_names: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Materializes `plan`: builds one ReAct child `AgentSpec` per claimed
     domain and registers each as an `AgentTool` on `tool_registry`. Returns
@@ -546,10 +570,17 @@ def register_domain_agents(
         delegate_names = [d for d in definition.delegate_agents if d in claims]
         # Sorted: a frozenset iterates in per-process hash order, and the tool
         # list is the start of every cached prompt prefix.
-        shared_names = [n for n in sorted(shared_tool_names) if n in registered]
+        shared = (
+            shared_tool_names
+            | (code_tool_names if definition.reads_code else frozenset())
+            | (entity_tool_names if definition.reads_entities else frozenset())
+        )
+        shared_names = [n for n in sorted(shared) if n in registered]
         extra_instructions = _combine_instructions(
             definition.extra_instructions,
-            definition.instructions_factory(context) if definition.instructions_factory else None,
+            definition.instructions_factory(
+                context, [*claimed_names, *delegate_names, *shared_names]
+            ) if definition.instructions_factory else None,
         )
         child_tool_names, tool_disclosure = (
             lazy_tools(tool_registry, [*claimed_names, *delegate_names, *shared_names])
@@ -611,6 +642,8 @@ def compose_domain_agents(
     definitions: tuple[DomainAgentDefinition, ...] = DOMAIN_AGENT_DEFINITIONS,
     lazy_tools: "Callable[[ToolRegistry, list[str]], tuple[list[str], str]] | None" = None,
     shared_tool_names: frozenset[str] = frozenset(),
+    code_tool_names: frozenset[str] = frozenset(),
+    entity_tool_names: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Convenience: plan + register in one call, for callers that don't
     need the plan/register split (e.g. tests, or a caller with no need to
@@ -619,7 +652,8 @@ def compose_domain_agents(
     return register_domain_agents(
         plan, tool_registry, runtime, context,
         provider=provider, model_name=model_name, context_window=context_window, lazy_tools=lazy_tools,
-        shared_tool_names=shared_tool_names,
+        shared_tool_names=shared_tool_names, code_tool_names=code_tool_names,
+        entity_tool_names=entity_tool_names,
     )
 
 

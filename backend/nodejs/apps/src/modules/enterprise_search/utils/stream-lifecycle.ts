@@ -1,5 +1,6 @@
 import type { IMessagePart } from '../types/conversation.interfaces';
 import { Readable } from 'stream';
+import { bindOrgContext } from '../../../libs/context/orgContext';
 import { Logger } from '../../../libs/services/logger.service';
 
 const logger = Logger.getInstance({ service: 'StreamLifecycle' });
@@ -87,7 +88,7 @@ export function attachUpstreamAbort(
     }
   };
 
-  res.on('close', () => {
+  const onClose = bindOrgContext(() => {
     if (clientDisconnected) return;
     if (res.writableEnded || res.writableFinished) return;
     clientDisconnected = true;
@@ -108,6 +109,7 @@ export function attachUpstreamAbort(
     }, maxDetachedMs);
     abandonTimer.unref();
   });
+  res.on('close', onClose);
 
   return {
     signal: controller.signal,

@@ -9,12 +9,15 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import {
   stripMarkdownAndCitations,
   formatChatMode,
+  answerSearchSource,
 } from '@/lib/utils/formatters';
-import type { ModelInfo, AppliedFilters } from '@/chat/types';
+import type { ModelInfo, AppliedFilters, MessagePart } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
-import { ChatMessageExtras } from '@/config';
+import { ChatMessageExtras, chatModelOptions } from '@/config';
 import { toast } from '@/lib/store/toast-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget } from '@/app/components/ui/responsive';
 import { useChatSpeechSynthesis } from '@/lib/hooks/use-chat-speech-synthesis';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatApi, type FeedbackPayload } from '../../api';
@@ -71,6 +74,8 @@ interface MessageActionsProps {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** False for a reply that ran an action a person approved: regenerating could run it again. */
   canRegenerate?: boolean;
+  /** The answer's tool activity: the footer names the search it actually used. */
+  parts?: MessagePart[];
 }
 
 /**
@@ -124,7 +129,9 @@ export function MessageActions({
   appliedFilters,
   feedbackInfo,
   canRegenerate = true,
+  parts,
 }: MessageActionsProps) {
+  const isMobile = useIsMobile();
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
   const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
   const [copiedTooltipOpen, setCopiedTooltipOpen] = useState(false);
@@ -137,6 +144,10 @@ export function MessageActions({
   const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
   const forkLabel = isLastMessage ? t('chat.fork') : t('chat.forkFromHere');
   const canFork = useChatStore((s) => (s.activeSlotId ? s.slots?.[s.activeSlotId]?.isOwner : undefined) !== false);
+  // Only the owner may rate or regenerate an agent chat (the server refuses a recipient with 404),
+  // so a recipient of a shared agent chat is not offered those buttons.
+  const isAgentThread = useChatStore((s) => Boolean(s.activeSlotId && s.slots?.[s.activeSlotId]?.threadAgentId));
+  const canGiveFeedback = canFork || !isAgentThread;
 
   // ── Like popover state ──
   const [likeOpen, setLikeOpen] = useState(false);
@@ -351,8 +362,19 @@ export function MessageActions({
 
   if (isStreaming) return null;
 
-  const chatModeLabel = formatChatMode(modelInfo?.chatMode);
-  const modelName = modelInfo?.modelFriendlyName || modelInfo?.modelName || '';
+  // Plain assistant turns all run as `agent`; the Internal/Web search toggles
+  // only gate tools, so the tools it called say what this answer used.
+  const searchSource = modelInfo?.chatMode === 'agent' ? answerSearchSource(parts) : null;
+  const chatModeLabel =
+    searchSource === 'internal'
+      ? t('chat.answerMode.internalSearch', 'Internal search')
+      : searchSource === 'web'
+        ? t('chat.answerMode.webSearch', 'Web search')
+        : searchSource === 'internal_and_web'
+          ? t('chat.answerMode.internalAndWebSearch', 'Internal + web search')
+          : formatChatMode(modelInfo?.chatMode);
+  const answerLabel = chatModelOptions.answerLabel(t, modelInfo);
+  const modelName = answerLabel?.label || modelInfo?.modelFriendlyName || modelInfo?.modelName || '';
 
   return (
     <>
@@ -372,7 +394,7 @@ export function MessageActions({
       {/* ── Left: Action buttons ── */}
       <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
         {/* ── Thumbs up with optional comment popover ── */}
-        {messageId && (
+        {messageId && canGiveFeedback && (
           <Popover.Root open={likeOpen} onOpenChange={(open) => { if (!open) handleLikePopoverClose(); }}>
             <Tooltip content={t('chat.like', 'Helpful')} side="top">
               <Popover.Trigger>
@@ -382,6 +404,7 @@ export function MessageActions({
                   size="2"
                   onClick={handleLikeClick}
                   style={{
+                    ...touchTarget(isMobile),
                     borderRadius: 'var(--radius-1)',
                     margin: 0,
                     cursor: 'pointer',
@@ -511,7 +534,7 @@ export function MessageActions({
         )}
 
         {/* ── Thumbs down with category chips + optional text ── */}
-        {messageId && (
+        {messageId && canGiveFeedback && (
           <Popover.Root open={dislikeOpen} onOpenChange={(open) => { if (!open) handleDislikePopoverClose(); }}>
             <Tooltip content={t('chat.dislike', 'Not helpful')} side="top">
               <Popover.Trigger>
@@ -521,6 +544,7 @@ export function MessageActions({
                   size="2"
                   onClick={handleDislikeClick}
                   style={{
+                    ...touchTarget(isMobile),
                     borderRadius: 'var(--radius-1)',
                     margin: 0,
                     cursor: 'pointer',
@@ -668,6 +692,7 @@ export function MessageActions({
                   color="gray"
                   size="2"
                   style={{
+                    ...touchTarget(isMobile),
                     margin: 0,
                     cursor: 'pointer',
                     color: 'var(--slate-9)',
@@ -715,7 +740,7 @@ export function MessageActions({
                   borderRadius: 'var(--radius-1)',
                   border: '1px solid var(--olive-3)',
                   background: 'var(--olive-2)',
-                  backdropFilter: 'blur(25px)',
+                  backdropFilter: 'var(--frost-filter)',
                   gap: 'var(--space-1)',
                 }}
               >
@@ -744,6 +769,7 @@ export function MessageActions({
               onClick={handleFork}
               aria-label={forkLabel}
               style={{
+                ...touchTarget(isMobile),
                 margin: 0,
                 cursor: isForking ? 'default' : 'pointer',
                 color: 'var(--slate-9)',
@@ -760,7 +786,7 @@ export function MessageActions({
         )}
 
         {/* Regenerate - only show for the last message */}
-        {isLastMessage && messageId && canRegenerate && (
+        {isLastMessage && messageId && canRegenerate && canFork && (
           <Tooltip content={t('chat.regenerate')} side="top">
             <IconButton
               variant="ghost"
@@ -770,6 +796,7 @@ export function MessageActions({
               aria-label={t('chat.regenerate')}
               onClick={handleRegenerate}
               style={{
+                ...touchTarget(isMobile),
                 margin: 0,
                 cursor: messageId ? 'pointer' : 'default',
                 color: 'var(--slate-9)',
@@ -792,6 +819,7 @@ export function MessageActions({
               onMouseEnter={() => setReadAloudHovered(true)}
               onMouseLeave={() => setReadAloudHovered(false)}
               style={{
+                ...touchTarget(isMobile),
                 margin: 0,
                 cursor: 'pointer',
                 borderRadius: 'var(--radius-1)',
@@ -843,32 +871,36 @@ export function MessageActions({
 
         {/* Model name with icon */}
         {modelName && (
-          <Flex
-            align="center"
-            justify="center"
-            gap="1"
-            style={{
-              height: '24px',
-              padding: '0 var(--space-2)',
-              borderRadius: 'var(--radius-1)',
-            }}
-          >
-            <MaterialIcon
-              name="memory"
-              size={ICON_SIZES.PRIMARY}
-              color="var(--slate-11)"
-            />
-            <Text
-              size="1"
+          <OptionalTooltip content={answerLabel?.tooltip}>
+            <Flex
+              align="center"
+              justify="center"
+              gap="1"
+              // Focusable only when it opens a tooltip, so keyboard users can read it.
+              tabIndex={answerLabel?.tooltip ? 0 : undefined}
               style={{
-                color: 'var(--slate-11)',
-                lineHeight: 'var(--line-height-1)',
-                whiteSpace: 'nowrap',
+                height: '24px',
+                padding: '0 var(--space-2)',
+                borderRadius: 'var(--radius-1)',
               }}
             >
-              {modelName}
-            </Text>
-          </Flex>
+              <MaterialIcon
+                name={answerLabel?.icon ?? 'memory'}
+                size={ICON_SIZES.PRIMARY}
+                color="var(--slate-11)"
+              />
+              <Text
+                size="1"
+                style={{
+                  color: 'var(--slate-11)',
+                  lineHeight: 'var(--line-height-1)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {modelName}
+              </Text>
+            </Flex>
+          </OptionalTooltip>
         )}
       </Flex>
       </Flex>
@@ -975,4 +1007,8 @@ function FeedbackChip({ label, selected, onClick }: FeedbackChipProps) {
       </button>
     </Box>
   );
+}
+
+function OptionalTooltip({ content, children }: { content?: string; children: React.ReactElement }) {
+  return content ? <Tooltip content={content} side="top">{children}</Tooltip> : children;
 }

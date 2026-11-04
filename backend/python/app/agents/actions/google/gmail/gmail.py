@@ -296,15 +296,16 @@ class Gmail:
                 error=failure.error,
             )
 
-        if bundle.failures and not bundle.resolved:
-            raise ValueError(
-                "Attachment resolution failed: "
-                + "; ".join(f"{f.ref}: {f.error}" for f in bundle.failures)
-            )
         if bundle.failures:
+            # Sending is final: a mail that silently lost some of its attachments cannot be taken back.
             logger.warning(
-                "Gmail: some attachment_record_ids could not be resolved: %s",
+                "Gmail: attachment_record_ids could not be resolved, nothing sent: %s",
                 [f.to_dict() for f in bundle.failures],
+            )
+            raise ValueError(
+                "Nothing was sent: these attachments could not be added: "
+                + ", ".join(str(f.ref) for f in bundle.failures)
+                + ". Check that they still exist and that you can open them, then try again."
             )
 
         for r in bundle.resolved:

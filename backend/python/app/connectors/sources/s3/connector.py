@@ -6,6 +6,7 @@ shared S3CompatibleBaseConnector to handle common functionality.
 """
 
 from logging import Logger
+from urllib.parse import quote
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, PermissionModel
@@ -120,6 +121,7 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
         ])
     ])\
     .with_info(CONNECTOR_S3_INFO)\
+    .with_resilience_config(rate_limit=50, max_retries=3)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.S3.value))
         .add_documentation_link(DocumentationLink(
@@ -223,11 +225,11 @@ class S3Connector(S3CompatibleBaseConnector):
             return False
 
         try:
-            client = await S3Client.build_from_services(
+            client = self._with_retry_budget(await S3Client.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
                 connector_instance_id=self.connector_id,
-            )
+            ))
             self.data_source = S3DataSource(client)
 
             # Load connector filters
@@ -249,22 +251,23 @@ class S3Connector(S3CompatibleBaseConnector):
 
     async def _build_data_source(self) -> S3DataSource:
         """Build the S3DataSource."""
-        client = await S3Client.build_from_services(
+        client = self._with_retry_budget(await S3Client.build_from_services(
             logger=self.logger,
             config_service=self.config_service,
             connector_instance_id=self.connector_id,
-        )
+        ))
         return S3DataSource(client)
 
     def _generate_web_url(self, bucket_name: str, normalized_key: str) -> str:
         """Generate the web URL for an S3 object."""
-        return f"{self.base_console_url}/s3/object/{bucket_name}?prefix={normalized_key}"
+        # A key may hold "&", "#", "+" or spaces, which would end or change the query value.
+        return f"{self.base_console_url}/s3/object/{bucket_name}?prefix={quote(normalized_key, safe='/')}"
 
     def _generate_parent_web_url(self, parent_external_id: str) -> str:
         """Generate the web URL for an S3 parent folder/directory."""
         bucket_name, path = parse_parent_external_id(parent_external_id)
         if path:
-            return f"{self.base_console_url}/s3/object/{bucket_name}?prefix={path}"
+            return f"{self.base_console_url}/s3/object/{bucket_name}?prefix={quote(path, safe='/')}"
         else:
             return f"{self.base_console_url}/s3/buckets/{bucket_name}"
 

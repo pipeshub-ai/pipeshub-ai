@@ -98,22 +98,26 @@ class TestConnectorLists:
 
 @pytest.mark.integration
 class TestGetFilters:
-    def test_connector_without_credentials_auth_is_400(
+    def test_connector_without_credentials_auth_matches_spec(
         self, connectors_api: ConnectorsClient, rss_connector: Any
     ) -> None:
-        """RSS has auth type NONE, which has no filter options to load."""
+        """RSS has auth type NONE: saved settings are enough, no auth section needed."""
         resp = connectors_api.get_filters(rss_connector.connector_id)
-        assert resp.status_code == 400, resp.text
-        assert resp.json()["error"]["message"] == "Unsupported authentication type: NONE"
-        assert_error_response_matches_openapi_operation(resp.json(), _GET_FILTERS, 400)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["success"] is True
+        assert body["filterOptions"] == {}
+        assert_response_strictly_matches_openapi_operation(body, _GET_FILTERS)
 
-    def test_basic_auth_connector_is_400(
+    def test_basic_auth_connector_matches_spec(
         self, connectors_api: ConnectorsClient, postgres_connector: Any
     ) -> None:
         resp = connectors_api.get_filters(postgres_connector.connector_id)
-        assert resp.status_code == 400, resp.text
-        assert resp.json()["error"]["message"] == "Unsupported authentication type: BASIC_AUTH"
-        assert_error_response_matches_openapi_operation(resp.json(), _GET_FILTERS, 400)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["success"] is True
+        assert body["filterOptions"] == {}
+        assert_response_strictly_matches_openapi_operation(body, _GET_FILTERS)
 
     def test_oauth_connector_not_signed_in_is_400(
         self, connectors_api: ConnectorsClient, jira_oauth_connector: Any

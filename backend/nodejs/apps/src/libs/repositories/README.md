@@ -1,0 +1,47 @@
+# Repository seam
+
+Controllers and services call repositories, not Mongoose models. This directory holds the shared pieces; each aggregate adds `<aggregate>/{types.ts, mongo.ts, index.ts}`.
+
+- `uow.ts`: `UnitOfWork.run(fn)` and the opaque `Tx` handed to repository methods. Replaces `mongoose.startSession()` and the `rsAvailable` branches.
+- `doc-store.ts`: `createUnitOfWork(rsAvailable)`, the one place the application's unit of work is built.
+- `mongo.ts`: `MongoUnitOfWork(rsAvailable)` (transaction on a replica set, plain calls otherwise), `sessionOf(tx)` for Mongo repositories, `mapMongoError`.
+- `errors.ts`: `UniqueConstraintError{key}`, `VersionConflictError`, and re-exports of the existing `ForeignKeyError`, `ConflictError`, `NotFoundError`. Repositories throw these; callers never test driver error codes.
+- Rules: no Mongoose type crosses the seam.
+- Ratchet: `tests/libs/repositories/mongo-seam-ratchet.test.ts` lists files that import `mongoose` or a `*.schema` module, and counts `.save()` / `new Model()`, outside `libs/repositories/**/mongo.ts`, `**/schema/**`, `libs/utils/mongo-filter.ts` and the boot migrations. The baseline may only shrink; re-record with `SEAM_RATCHET_UPDATE=1`.
+- Contract tests: `tests/stores/contract/*.contract.ts` (store-neutral) run by `tests/stores/*.itest.ts` against a real server (`MONGO_IT_URI`, `REPLICA_SET_AVAILABLE`).
+
+## Aggregates moved so far
+
+- `conversation/`: chat and agent sessions, their messages and citations (`getConversationRepository()`). Methods are use cases, rows leave as plain objects with string ids. `listMessages` reads one session for one viewer; there is no multi-session message read. Every Mongo query the chat controllers ran lives in `conversation/mongo.ts`.
+- `semantic-search/`: saved searches.
+- `document/`: the metadata row behind every stored file (uploads, connector envelopes, assistant artifacts). Path-prefix lookups (`subtree`), connector scope (`pageByConnector`, `streamTaggedOutsidePrefixes`, `deleteByConnector`), virtual-record lookups and the keyed create (`createIdempotent`, which settles racing attempts and returns the first attempt's row) live in `document/mongo.ts`. `update` loads the row, applies a typed patch (and appended versions, optionally only while an upload lease is held) and saves it, so Mongoose writes only what changed.
+- `notification/`: per-user notifications. The retention window and the deleted flag are part of every method; `list` returns `limit + 1` rows so the caller can see whether another page exists.
+- `outbox/`: events decided with a change and delivered later. `claimNext` holds the claim rules (due, abandoned, not held back by an older event about the same entity); the model is in `outbox/schema/`.
+- `mail-log/`: the audit record of each email sent.
+- `plain.ts` (`toPlain`): turns a Mongoose document or lean row into the plain object a repository returns (ObjectId to string, nothing else changed). `ids.ts` (`isValidId`): id syntax check.
+- Callers pass the org (and user) explicitly for now. The ambient org context is bound per request, but stream callbacks can run under another request's context on a reused connection, so a repository does not read it yet.
+- Tests: `tests/stores/contract/*.contract.ts` run by `tests/stores/mongo-*.itest.ts`; controller unit tests run the real Mongo repository on the in-memory collections of `tests/modules/enterprise_search/controller/chat-test-harness.ts`.
+- `oauth-app/`, `oauth-token/`, `identity-lookup/`: OAuth apps; access and refresh tokens (also personal and service tokens), authorization codes and device authorizations; and the lookups made before an org is known (`resolveToken`, `resolveRefresh`, `resolveClient`). Token, code and device methods are keyed by a hash, a code or a client id and take no org; a store that needs the org derives it from that key. Reading a live token by hash goes through `IdentityLookup`, which returns only the columns a vetted store function can supply.
+
+## Remaining aggregates
+
+- `org/`: the organisation record, its logo, and `createWithAdmin` (organisation, first administrator, "everyone" and "standard" groups and default sign-in config; pass the `tx` of a unit of work to make it atomic). The ids come first from `allocateIds()`, because the creation unit runs as the new organisation (`asAccount(ids.orgId, ids.adminUserId, …)`). The administrator's first password is stored in the same unit (`identity.person_first_password`, as that account). `liveSummary()` answers "how many live organisations, and which is the oldest" (the single-organisation checks).
+- `project/`: project workspaces (`getLive`, `list` by scope, `update` with a typed patch, members, linked collection claim). Who may see or change a project stays in `ProjectService`.
+- `connectors-config/`, `slack-thread/` (also owns the Slack bot's connection), `delegation/` (service-account allow-list and its event log).
+- `org-metrics-job/`: cross-organisation reads for the periodic gauges; bound only in the metrics job.
+- `slug/mongo.ts`: the per-name counter behind `generateUniqueSlug` (used by the schema hooks of organisations, users, groups and OAuth apps). The counter is not exposed; slugs come from the create methods.
+- The connection service (`libs/services/mongo.service.ts`) is exempt from the ratchet, which is now empty: new Mongoose use outside the allowed places fails it.
+- `ids.ts` (`isValidId`, `isNativeId`) and `mongo.ts` (`toDriverId`, for typed schema fields that still need a driver id) are the only id helpers non-repository code should use.
+
+## PostgreSQL
+
+`DOC_STORE` picks the store: `mongo` (default) or `postgres`; `shadow` keeps MongoDB as the store and compares a sample of reads with PostgreSQL (`shadow.ts`, `DOC_STORE_SHADOW_SAMPLE`). `<aggregate>/index.ts` calls `pickStore('<aggregate>', { mongo, postgres })` (`store-select.ts`); a repository with no PostgreSQL implementation yet refuses to start under `DOC_STORE=postgres` unless `DOC_STORE_MONGO_REPOS` lists it (`*`: every repository that has none; a testing aid, logged as an error at boot). `doc-store.ts` builds the unit of work (`PgUnitOfWork`, or `MixedUnitOfWork` when some repositories stay on Mongo) and `initDocStore` connects the runtime and waits for the schema each repository needs.
+
+- Ported so far: `conversation/`, `semantic-search/`, `document/`, `notification/`, `outbox/`, `mail-log/` (`<aggregate>/pg.ts`).
+- Identity (`user/`, `group/`, `org/`, `org-auth-config/`, `activity/`, `picture/`, `reset-link/`, `org-metrics-job/`, `identity/` with the credential port): an install has one organisation. A sign-in credential is a row of `identity.user_credentials`, read and written as the account's organisation like any other row; only two questions are answered before an organisation is bound (`identity.oldest_org()`, `identity.org_count()`, vetted functions). `identity/install-org.ts` (`inInstallOrg`) binds the install's organisation for an address lookup that arrives with none, and does nothing on MongoDB. An extension that serves several organisations replaces `IdentityPort` / `IdentityLookup`.
+- OAuth (`oauth-app/`, `oauth-token/`, `identity-lookup/`), `delegation/`, `project/`, `connectors-config/`, `slack-thread/`: every table is the organisation's own, device authorizations included. A call that holds only a secret (a client id, a token hash, a code, a device code, a Slack thread) runs as the install's organisation (`oauth-app/pg-org.ts`); the token endpoint binds the organisation of the code, refresh token or client around a grant. Expired tokens, codes, device authorizations and delegation events are removed by the TTL sweeper. With these, no repository needs `DOC_STORE_MONGO_REPOS`.
+- `pg.ts`: `PgUnitOfWork` over the runtime in `libs/db` (row policies per organisation, the store fence). `pg-util.ts`: `inUnit` (join the caller's transaction or open one), `assertOrg` (the organisation of a call must be the one the unit runs as), id and `LIKE` helpers. `nul.ts` removes U+0000, which PostgreSQL text cannot hold.
+- Rows leave as the plain objects the Mongo repositories return; `json-compare.ts` is the comparison (key set, JSON types, array order) the shadow reads and the differential test use.
+- Schema: `backend/db/versions/{conversation,content,identity,platform_data}`.
+- Tests: the same `tests/stores/contract/*.contract.ts` run against PostgreSQL by `tests/stores/pg-*.itest.ts` (`npm run test:pg-stores`; needs `PG_TEST_BINS`, `PG_TEST_PGBOUNCER`, `PG_TEST_MIGRATE_PYTHON`, and `MONGO_IT_URI` for the comparison suites). `pg-differential.itest.ts` replays one script on both stores and compares every answer.
+- `libs/services/ttl-sweeper.service.ts` removes what Mongo's TTL indexes removed (notifications past retention, delivered outbox rows), as the jobs role.

@@ -1,7 +1,9 @@
 """An in-memory graph holding only what the stranded-record sweep reads and writes.
 
 Records by key, read one at a time or a page at a time by equality filters in
-key order, and updated field by field. Returns copies, as a real store does, so a caller that
+key order, and updated field by field; and whether a connector indexed
+anything since a time, which the record handler asks before failing a
+rate-limited record. Returns copies, as a real store does, so a caller that
 mutates what it read does not change what is stored. A null removes the
 property, as Neo4j's ``SET +=`` does. Every connector is live.
 """
@@ -30,8 +32,18 @@ class FakeRecordGraph:
             **fields,
         }
 
-    def mark_indexed(self, key: str) -> None:
+    def mark_indexed(self, key: str, *, at_ms: int | None = None) -> None:
         self.records[key]["indexingStatus"] = ProgressStatus.COMPLETED.value
+        if at_ms is not None:
+            self.records[key]["lastIndexTimestamp"] = at_ms
+
+    async def has_records_indexed_since(self, connector_id: str, since_ms: int, **_kwargs: object) -> bool:
+        return any(
+            r["connectorId"] == connector_id
+            and r["indexingStatus"] == ProgressStatus.COMPLETED.value
+            and (r.get("lastIndexTimestamp") or 0) > since_ms
+            for r in self.records.values()
+        )
 
     def still_queued(self) -> list[str]:
         return sorted(

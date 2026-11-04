@@ -96,8 +96,9 @@ class TestStages:
     async def test_the_rows_carry_only_what_the_check_reads(self) -> None:
         provider, _ = _provider({"targets": [_row("a", ok=True)]})
         rows = await provider._kh_v3_accessible_rows("u", "org", ["a"], [], access=ACCESS, transaction=None)
+        # isPlaceholder: a stub asked for by id must not pass for a real record.
         assert rows == [{"id": "a", "vrid": "vr-a", "connectorId": "app", "indexingStatus": "COMPLETED",
-                         "isInternal": False, "hasIndexedCopy": False, "groupIds": []}]
+                         "isInternal": False, "hasIndexedCopy": False, "isPlaceholder": False, "groupIds": []}]
 
     @pytest.mark.asyncio
     async def test_no_stage_asks_for_the_plan_cache(self) -> None:

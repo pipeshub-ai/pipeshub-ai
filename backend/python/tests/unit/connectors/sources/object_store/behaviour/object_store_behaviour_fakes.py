@@ -133,9 +133,14 @@ class FakeS3DataSource(_FakeDataSource):
     """``list_objects_v2`` over fake buckets, continuation tokens included.
 
     ``head_fails`` makes ``head_object`` fail: ``"error"`` answers 503, ``"raise"`` raises.
+    ``denied`` buckets are in the bucket list, but listing them answers 403, as for a key without s3:ListBucket.
     """
 
     head_fails: str | None = None
+
+    def __init__(self, store: FakeObjectStore) -> None:
+        super().__init__(store)
+        self.denied: set[str] = set()
 
     async def head_object(self, Bucket: str, Key: str, **_: object) -> Response:
         if self.head_fails == "raise":
@@ -152,6 +157,8 @@ class FakeS3DataSource(_FakeDataSource):
     ) -> Response:
         if Bucket not in self.stores:
             return Response(False, error="NoSuchBucket: The specified bucket does not exist")
+        if Bucket in self.denied:
+            return Response(False, error="AccessDenied: User is not authorized to perform: s3:ListBucket", status_code=403)
         start = int(ContinuationToken) if ContinuationToken else 0
         try:
             objects, following = self.stores[Bucket].page(Prefix, start, MaxKeys)
@@ -367,6 +374,7 @@ class FakeRecordsDb:
             self._note_seen("records", record.id)
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+        self._check("on_new_record_groups")
         for group, permissions in groups:
             self._note_seen("recordGroups", group.id)
             self.record_groups[group.external_group_id] = group
@@ -537,3 +545,16 @@ def idle_write(graph: AsyncMock) -> dict[str, Any]:
     writes = [c.args[2] for c in graph.update_node.await_args_list if c.args[2].get("status") == AppStatus.IDLE.value]
     assert len(writes) == 1, writes
     return writes[0]
+
+
+async def sync_with_failed_listing(connector: BaseConnector) -> None:
+    """Azure Blob fails the run when a listing fails, so it shows as failed (PP-334); the others return."""
+    import pytest
+
+    from app.connectors.sources.azure_blob.connector import AzureBlobConnector
+
+    if isinstance(connector, AzureBlobConnector):
+        with pytest.raises(RuntimeError, match="sync failed"):
+            await connector.run_incremental_sync()
+    else:
+        await connector.run_incremental_sync()

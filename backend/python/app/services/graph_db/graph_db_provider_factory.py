@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.telemetry.modules.db_metrics import instrument_store
 
 if TYPE_CHECKING:
     from app.services.cache.interface import IAccessibleRecordsCache
@@ -51,6 +52,7 @@ class GraphDBProviderFactory:
         The provider type is determined by the DATA_STORE environment variable:
         - "arangodb": Creates ArangoHTTPProvider (HTTP-based, fully async) (default)
         - "neo4j": Creates Neo4jProvider
+        - "postgres": Creates PostgresGraphProvider (opt-in)
 
         Args:
             logger: Logger instance for logging operations
@@ -63,7 +65,7 @@ class GraphDBProviderFactory:
             ConnectionError: If unable to connect to the database
 
         Environment Variables:
-            DATA_STORE: Database provider type ("arangodb" or "neo4j")
+            DATA_STORE: Database provider type ("arangodb", "neo4j" or "postgres")
 
         Example:
             ```python
@@ -89,7 +91,7 @@ class GraphDBProviderFactory:
                     logger=logger,
                     config_service=config_service,
                 )
-                return provider
+                return instrument_store(provider, "graph")
 
             # Neo4j support
             elif provider_type == "neo4j":
@@ -98,10 +100,23 @@ class GraphDBProviderFactory:
                     config_service=config_service,
                     accessible_records_cache=accessible_records_cache,
                 )
-                return provider
+                return instrument_store(provider, "graph")
+
+            # PostgreSQL alone: the graph in schema `graph`, through the kernel's database runtime (opt-in: the default stays arangodb)
+            elif provider_type == "postgres":
+                from app.core.db import DbConfig
+                from app.core.db.shared import acquire_db
+                from app.services.graph_db.postgres.provider import (
+                    PostgresGraphProvider,
+                )
+                from app.services.pg_runtime import runtime_service
+
+                # Each process connects as its own service role (PG_RUNTIME_SERVICE, next to its PG_CORE_URL)
+                db = await acquire_db(DbConfig.from_env(runtime_service()))
+                return instrument_store(PostgresGraphProvider(logger, db, config_service=config_service), "graph")
 
             else:
-                raise ValueError(f"Unsupported graph database provider: {provider_type}. Set DATA_STORE env to 'arangodb' or 'neo4j'")
+                raise ValueError(f"Unsupported graph database provider: {provider_type}. Set DATA_STORE env to 'arangodb', 'neo4j' or 'postgres'")
 
         except Exception as e:
             logger.error(f"❌ GraphDBProviderFactory: Failed to create provider: {str(e)}")

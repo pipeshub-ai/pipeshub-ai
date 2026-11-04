@@ -58,6 +58,18 @@ class ToolSurfaces:
     graph: bool
     """True iff a knowledgegraph tool is in `tool_names`."""
 
+    code_graph: bool
+    """True iff a codegraph tool is in `tool_names`.
+
+    Distinct from `code`, which is code *execution* (sandbox). This is the
+    indexed call/import graph of the org's own repositories, and the only
+    surface that returns relationships between symbols rather than matching
+    text — which is why it needs naming separately from `retrieval`.
+
+    Resolved from granted names, so it goes False on its own whenever the
+    dynamic tools are not built for this request.
+    """
+
     live_api_apps: tuple[str, ...]
     """App type keys with live-API service tools (e.g. `("jira", "confluence")`).
     Derived from `agent_toolsets` AND the `_has_*_tools(state)` connector flags —
@@ -151,6 +163,19 @@ class ToolSurfaces:
             names_set,
         ))
 
+        # ── Code-graph surface ───────────────────────────────────────────────
+        # All four, not just the two entry points: an agent configured with a
+        # hand-picked subset would otherwise report no code-graph surface at all.
+        code_graph = bool(granted_any(
+            [
+                "codegraph.query_code_graph",
+                "codegraph.get_neighbour",
+                "codegraph.read_code",
+                "codegraph.find_symbol_path",
+            ],
+            names_set,
+        ))
+
         # ── Live-API connector apps ──────────────────────────────────────────
         live_api_apps = _resolve_live_api_apps(state, names_set)
 
@@ -180,6 +205,7 @@ class ToolSurfaces:
             code=code,
             code_networked=code_networked,
             graph=graph,
+            code_graph=code_graph,
             live_api_apps=live_api_apps,
             can_ask_user=can_ask_user,
             can_fetch_full_record=can_fetch_full_record,
@@ -264,13 +290,84 @@ def _resolve_live_api_apps(
 
     # Source 3: service-specific tool names in the granted set
     # (covers any case not handled by the two sources above)
+    internal = _internal_toolset_keys()
     for name in names_set:
         if "__" in name:
             prefix = name.split("__", 1)[0]
-            if prefix not in ("retrieval", "database_sandbox", "knowledgehub",
-                               "knowledgegraph", "artifacts", "internaltools",
-                               "skills", "calculator", "date_calculator",
-                               "image_generator", "dynamic"):
+            if _prefix_key(prefix) not in internal:
                 apps.add(prefix)
 
     return tuple(sorted(apps))
+
+
+# Prefixes that are never a live-API connector but cannot be read off the
+# registry (dynamic tools are assembled per request, not registered).
+# `codegraph` is here for exactly that reason: its tools are built by
+# `_build_dynamic_tools`, so the registry has nothing to report and Source 3
+# would otherwise read the prefix as a connector and tell the model the code
+# graph is a live service to query instead of an index over its own records.
+_NON_CONNECTOR_PREFIXES = frozenset({"dynamic", "skills", "codegraph"})
+
+# Used only while the registry is empty. Kept in sync by the test that asserts
+# it equals the registry's own `isInternal` set once discovery has run.
+_FALLBACK_INTERNAL_KEYS = frozenset({
+    "artifactmanager", "calculator", "codegraph", "codingsandbox",
+    "databasesandbox", "datecalculator", "imagegenerator", "internaltools",
+    "knowledgegraph", "knowledgehub", "retrieval",
+})
+# Tool-name prefixes of internal toolsets that no key normalises to (the
+# Artifact Manager's tools live under /tools/artifacts/). Same sync test.
+_FALLBACK_INTERNAL_PREFIXES = frozenset({"artifacts"})
+
+
+def _prefix_key(name: str) -> str:
+    """Compare a tool-name prefix the way the registry keys its toolsets.
+
+    Prefixes come from the tool path and keep underscores (`date_calculator`);
+    registry keys drop them (`datecalculator`).
+    """
+    return name.lower().replace(" ", "").replace("_", "")
+
+
+def _tool_prefixes(toolset_class: type | None) -> set[str]:
+    """The `<app>` of each `/tools/<app>/<tool>` path a toolset declares."""
+    prefixes: set[str] = set()
+    for attr in vars(toolset_class or object).values():
+        meta = getattr(getattr(attr, "__func__", attr), "_agent_tool_meta", None)
+        parts = (getattr(meta, "path", "") or "").rsplit("/", 2)
+        if len(parts) == 3 and parts[-2]:
+            prefixes.add(_prefix_key(parts[-2]))
+    return prefixes
+
+
+def _internal_toolset_keys() -> frozenset[str]:
+    """Toolset keys that are internal, read from the registry.
+
+    Keys are compared in `_prefix_key` form and include each internal
+    toolset's own tool-path prefixes, since a tool's prefix need not be its
+    toolset's name (`artifacts` vs `artifactmanager`).
+
+    A hardcoded list went stale the moment the registry started normalising
+    names: it said `database_sandbox` / `date_calculator` / `artifacts` while
+    the registry had produced `databasesandbox` / `datecalculator` /
+    `artifactmanager`, so six internal toolsets were being described to the
+    model as live-API connectors. The registry is the fact; ask it.
+
+    An *empty* registry is not the fact, though — it means `auto_discover_
+    toolsets` has not run yet, and answering "nothing is internal" from that
+    would relabel every internal toolset as a live connector.
+    """
+    try:
+        from app.agents.registry.toolset_registry import get_toolset_registry
+
+        registry = get_toolset_registry().get_all_toolsets()
+    except Exception:  # pragma: no cover - registry unavailable in some tests
+        registry = {}
+    if not registry:
+        return _NON_CONNECTOR_PREFIXES | _FALLBACK_INTERNAL_KEYS | _FALLBACK_INTERNAL_PREFIXES
+    keys: set[str] = set()
+    for name, meta in registry.items():
+        if meta.get("isInternal"):
+            keys.add(_prefix_key(name))
+            keys |= _tool_prefixes(meta.get("class"))
+    return _NON_CONNECTOR_PREFIXES | frozenset(keys)

@@ -6,6 +6,7 @@ require:
   - './tests/helpers/mock-mcp-global.ts'
   - './tests/helpers/keep-worker-coverage.ts'
   - './tests/helpers/telemetry-env-global.ts'
+  - './tests/helpers/logger-isolation-global.ts'
 spec: 'tests/**/*.test.ts'
 timeout: 10000
 recursive: true

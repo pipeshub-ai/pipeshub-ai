@@ -10,7 +10,7 @@ interface SidebarItemProps {
   /** Label text or ReactNode displayed in the item */
   label: React.ReactNode;
   /** Optional second line under the label (e.g. who shared a chat) */
-  subtitle?: string;
+  subtitle?: React.ReactNode;
   /** Optional content rendered on the right side (e.g., keyboard shortcut badge) */
   rightSlot?: React.ReactNode;
   /** Click handler */

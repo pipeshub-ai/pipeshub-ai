@@ -231,6 +231,7 @@ class CollectionNames(Enum):
     ARTIFACTS = "artifacts"
     CODE_FILES = "codeFiles"
     SQL_TABLES = "sqlTables"
+    SQL_COLUMNS = "sqlColumns"
     SQL_VIEWS = "sqlViews"
 
     # Users and groups
@@ -347,7 +348,7 @@ class ExtensionTypes(Enum):
     HEIC = "heic"
     HEIF = "heif"
     EPUB = "epub"
-    SQL_TABLE = "sql_table"  
+    SQL_TABLE = "sql_table"
     SQL_VIEW = "sql_view"
     # Registry key for the tree-sitter code parser; not a file extension.
     CODE = "code"
@@ -377,11 +378,37 @@ class ExtensionTypes(Enum):
     DART = "dart"
     SH = "sh"
     BASH = "bash"
+    PYI = "pyi"
+    MTS = "mts"
+    CTS = "cts"
+    SCALA = "scala"
+    GROOVY = "groovy"
+    GRADLE = "gradle"
+    LUA = "lua"
     HTM = "htm"
     BLOCKS = "blocks"
     JSON = "json"
     YAML = "yaml"
     YML = "yml"
+
+# Common file types PipesHub cannot index. Sync filters offer them so a user can
+# exclude them (Not in); they are kept out of ExtensionTypes because that enum
+# lists the types that can be indexed.
+EXCLUDABLE_FILE_EXTENSIONS: tuple[str, ...] = (
+    # archives
+    "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz",
+    # databases
+    "db", "sqlite", "sqlite3", "mdb", "accdb",
+    # executables and installers
+    "exe", "dll", "msi", "bin", "iso", "dmg", "apk", "jar",
+    # temporary and backup files
+    "tmp", "bak", "swp", "lock",
+    # logs
+    "log",
+    # video and audio
+    "mp4", "mov", "avi", "mkv", "webm", "wmv",
+    "mp3", "wav", "flac", "m4a", "aac", "ogg",
+)
 
 class MimeTypes(Enum):
     PDF = "application/pdf"
@@ -444,6 +471,8 @@ class MimeTypes(Enum):
     SHELLSCRIPT = "text/x-shellscript"
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
+    SQL_COLUMN = "application/vnd.sql.column"
+
 
 # Every mimeType a folder record has been written with. Folders are written as
 # MimeTypes.FOLDER only; readers accept the older values too, so a folder the
@@ -504,6 +533,15 @@ CODE_FILE_EXTENSION_VALUES = frozenset({
     ExtensionTypes.DART.value,
     ExtensionTypes.SH.value,
     ExtensionTypes.BASH.value,
+    # Parsed by the code parser too; test_code_file_extensions keeps this list
+    # a superset of lang_config's, which it had drifted from (P-3).
+    ExtensionTypes.PYI.value,
+    ExtensionTypes.MTS.value,
+    ExtensionTypes.CTS.value,
+    ExtensionTypes.SCALA.value,
+    ExtensionTypes.GROOVY.value,
+    ExtensionTypes.GRADLE.value,
+    ExtensionTypes.LUA.value,
 })
 
 # MIME type mapping for common file extensions
@@ -628,6 +666,9 @@ class ProgressStatus(Enum):
     QUEUED = "QUEUED"
     # A stage that does not apply to this record (policy off, nothing to process).
     SKIPPED = "SKIPPED"
+    # The file needs a password to open. Terminal: only a new version of the
+    # file (or, later, a password) changes the outcome, so nothing retries it.
+    PASSWORD_PROTECTED = "PASSWORD_PROTECTED"
 
 
 class DeleteSource(str, Enum):
@@ -675,6 +716,10 @@ class RecordRelations(Enum):
     DEPENDS_ON = "DEPENDS_ON"
     CLONES = "CLONES"
     IMPLEMENTS = "IMPLEMENTS"
+    # A concrete method and the interface/abstract method it satisfies. Written
+    # by the code-graph edge pass, never by the parser: at parse time a base is
+    # only a name, and whether it is an interface is known once it resolves.
+    OVERRIDES = "OVERRIDES"
     REVIEWS = "REVIEWS"
     CAUSES = "CAUSES"
     # Inverse of CAUSES. A link edge always runs from the record being synced, so a
@@ -690,6 +735,19 @@ class RecordRelations(Enum):
     # properties). A link like any other type outside the hierarchy: stored on
     # RECORD_LINK in Neo4j and in recordLinks in Arango.
     DERIVED_FROM = "DERIVED_FROM"
+
+    # --- code knowledge graph ---
+    # Structural, written at parse time because both endpoints are in one file.
+    CONTAINS = "CONTAINS"      # record -> block, or block group -> block
+    DEFINES = "DEFINES"        # class -> field
+    METHOD = "METHOD"          # class -> method
+    # Cross-file, written by the edge-resolution pass once a repo is indexed.
+    CALLS = "CALLS"
+    IMPORTS = "IMPORTS"            # file -> imported symbol
+    IMPORTS_FROM = "IMPORTS_FROM"  # file -> imported module file
+    RE_EXPORTS = "RE_EXPORTS"
+    EXPORTS = "EXPORTS"
+    INHERITS = "INHERITS"
 
 
 #: The relation types that are hierarchy. Every other type is a link, stored
@@ -723,6 +781,7 @@ class EventTypes(Enum):
     # Vectors-only cleanup for records moved to the trash; never touches blob or Mongo.
     SOFT_DELETE_RECORDS = "softDeleteRecords"
     DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
+    BUILD_CODE_EDGES = "buildCodeEdges"
 
 
 class AccountType(Enum):
@@ -769,6 +828,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "CODE_FILE": CollectionNames.CODE_FILES.value,
     "PULL_REQUEST":CollectionNames.PULLREQUESTS.value,
     "SQL_TABLE": CollectionNames.SQL_TABLES.value,
+    "SQL_COLUMN": CollectionNames.SQL_COLUMNS.value,
     "SQL_VIEW": CollectionNames.SQL_VIEWS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

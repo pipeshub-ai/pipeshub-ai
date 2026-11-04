@@ -1126,6 +1126,34 @@ class TestGetRecordById:
         # No revision on the record, so no stage states.
         assert result == {"record": "data", "stageStates": []}
 
+    async def test_the_record_leaves_out_internal_bookkeeping(self) -> None:
+        """The response schema rejects fields it does not list, and these are
+        the services' own bookkeeping, so the stored record is returned without
+        them; documented fields beside them stay."""
+        from app.connectors.api.router import get_record_by_id
+        from app.services.graph_db.common.utils import INTERNAL_RECORD_FIELDS
+
+        stored = {
+            "id": "rec-1",
+            "recordName": "notes.md",
+            "indexingStatus": "QUEUED",
+            "retryNotBefore": 1_700_000_060_000,
+            "restoredAtTimestamp": 1_700_000_000_000,
+            "deletedByUserId": None,
+            **dict.fromkeys(INTERNAL_RECORD_FIELDS, 1),
+        }
+        gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": stored})
+        container = MagicMock()
+        container.logger = MagicMock(return_value=MagicMock())
+
+        result = await get_record_by_id("rec-1", _mock_request(container=container), gp)
+
+        assert set(result["record"]) == {
+            "id", "recordName", "indexingStatus", "retryNotBefore", "restoredAtTimestamp", "deletedByUserId",
+        }
+        assert INTERNAL_RECORD_FIELDS <= set(stored), "the stored record itself is not changed"
+
     async def test_no_access_raises_404(self):
         from app.connectors.api.router import get_record_by_id
 
@@ -3979,8 +4007,9 @@ class TestParseStages:
         from app.connectors.api.router import _parse_stages
 
         assert _parse_stages({"stages": ["classify", "classify"]}) == ["classify"]
+        assert _parse_stages({"stages": ["entities"]}) == ["entities"]
 
-    @pytest.mark.parametrize("raw", [None, [], "classify", [1], ["entities"]])
+    @pytest.mark.parametrize("raw", [None, [], "classify", [1], ["embed"], ["classify", "entities"]])
     def test_anything_else_is_a_400(self, raw) -> None:
         from fastapi import HTTPException
 
@@ -3991,10 +4020,10 @@ class TestParseStages:
         assert raised.value.status_code == 400
 
     def test_the_reindex_event_carries_the_stages(self) -> None:
-        from app.connectors.api.router import _build_reindex_event
+        from app.connectors.services.reindex_events import build_reindex_event
 
-        event = _build_reindex_event(
+        event = build_reindex_event(
             event_type="gmail.reindex", org_id="o", connector_id="c", status_filters=["FAILED"], stages=["classify"]
         )
         assert event["payload"]["stages"] == ["classify"]
-        assert "stages" not in _build_reindex_event(event_type="gmail.reindex", org_id="o", connector_id="c")["payload"]
+        assert "stages" not in build_reindex_event(event_type="gmail.reindex", org_id="o", connector_id="c")["payload"]

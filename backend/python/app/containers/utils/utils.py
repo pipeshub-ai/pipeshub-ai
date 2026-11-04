@@ -440,7 +440,7 @@ class ContainerUtils:
         2) Env provider fallback
         """
         if config_service is not None:
-            print("Creating EtcdProvider")
+            self.logger.debug("Creating EtcdProvider")
             provider = EtcdProvider(config_service)
             try:
                 await provider.refresh()
@@ -448,5 +448,5 @@ class ContainerUtils:
                 self.logger.debug(f"Feature flag provider refresh failed: {e}")
             return await FeatureFlagService.init_with_etcd_provider(provider, self.logger)
         else:
-            print("Creating EnvFileProvider")
+            self.logger.debug("Creating EnvFileProvider")
             return FeatureFlagService.get_service()

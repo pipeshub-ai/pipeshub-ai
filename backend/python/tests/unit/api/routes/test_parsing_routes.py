@@ -277,6 +277,51 @@ def test_parse_endpoint_unexpected_exception(caplog: pytest.LogCaptureFixture) -
     assert any(r.exc_info and "Boom" in str(r.exc_info[1]) for r in caplog.records)
 
 
+def _post_pdf_to_parser_raising(exc: Exception) -> Response:
+    registry = MagicMock(spec=ParserRegistry)
+    mock_parser = MagicMock()
+    mock_parser.parse = AsyncMock(side_effect=exc)
+    registry.resolve = MagicMock(return_value=mock_parser)
+    client = TestClient(_build_app(registry))
+    return client.post(
+        "/api/v1/parse",
+        files={"file": ("scan.pdf", b"data", "application/pdf")},
+        data={"mime_type": "application/pdf", "extension": "pdf", "provider": "default"},
+    )
+
+
+def test_no_model_that_reads_images_is_a_422_carrying_the_reason_to_store() -> None:
+    """A scanned PDF with no multimodal model set up fails the same way on
+    every attempt. As a 500 the indexer retried it as an outage and then told
+    the person of a temporary problem instead of what to fix."""
+    from app.exceptions.indexing_exceptions import MultimodalModelNotConfiguredError
+    from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
+
+    response = _post_pdf_to_parser_raising(
+        MultimodalModelNotConfiguredError(
+            "No multimodal LLM found in configuration.", details={"required": "multimodal LLM"}
+        )
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "PARSE_FAILED"
+    assert error["message"] == SCANNED_DOCUMENT_NEEDS_OCR
+    assert error["details"] == {"required": "multimodal LLM"}
+
+
+def test_any_other_document_processing_error_is_still_a_500() -> None:
+    """Reading the AI settings can fail during an outage; that stays retryable."""
+    from app.exceptions.indexing_exceptions import DocumentProcessingError
+
+    response = _post_pdf_to_parser_raising(
+        DocumentProcessingError("Failed to get multimodal LLM: store unavailable")
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["message"] == "Unexpected error while parsing the document"
+
+
 # ---------------------------------------------------------------------------
 # GET /api/v1/parse/providers
 # ---------------------------------------------------------------------------

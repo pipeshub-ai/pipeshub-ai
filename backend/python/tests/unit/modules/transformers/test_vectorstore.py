@@ -182,6 +182,7 @@ class TestVectorStoreApply:
             block_ids_to_delete=None,
             is_reconciliation=False,
             record=record,
+            titles={},
         )
         assert result is True
 
@@ -233,6 +234,7 @@ class TestVectorStoreApply:
             block_ids_to_delete=None,
             is_reconciliation=False,
             record=record,
+            titles={},
         )
 
 
@@ -1342,6 +1344,7 @@ class TestApply:
             block_ids_to_delete=None,
             is_reconciliation=False,
             record=mock_ctx.record,
+            titles={},
         )
 
 
@@ -2661,9 +2664,11 @@ class TestRecordPresenceAcrossBatches:
 
         vs = self._store(AsyncMock(return_value={"_key": "rec-1"}))
 
-        await vs._process_document_chunks(
-            self._docs(10 * _DEFAULT_DOCUMENT_BATCH_SIZE), "rec-1", "test_collection"
-        )
+        # The real 2 s age can pass on a busy CI runner; expiry has its own test below.
+        with patch("app.modules.transformers.vectorstore._RECORD_PRESENCE_MAX_AGE_S", 3600.0):
+            await vs._process_document_chunks(
+                self._docs(10 * _DEFAULT_DOCUMENT_BATCH_SIZE), "rec-1", "test_collection"
+            )
 
         assert vs.vector_db_service.upsert_points.await_count == 10
         vs.graph_provider.get_document.assert_awaited_once()
@@ -2785,6 +2790,13 @@ class TestTokenBudgetBatches:
         vs.embedding_endpoint = None
         vs.dense_embeddings = MagicMock(openai_api_base="https://llm-gateway.example.com/v1")
         assert not vs._batches_by_tokens()
+
+    @pytest.mark.asyncio
+    async def test_openai_regional_host_packs_by_tokens(self) -> None:
+        batches = await self._batches(
+            "openAI", self._sentence_docs(550), "https://us.api.openai.com/v1"
+        )
+        assert len(batches) == 1
 
     @pytest.mark.asyncio
     async def test_openai_named_explicitly_still_packs_by_tokens(self) -> None:

@@ -190,7 +190,8 @@ export function installBrowserShims() {
   if (!window.matchMedia) {
     window.matchMedia = (query: string) =>
       ({
-        matches: false,
+        // A desktop mouse: hover-only affordances (click-to-rename) are available.
+        matches: query.includes('hover: hover'),
         media: query,
         onchange: null,
         addEventListener: () => {},

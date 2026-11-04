@@ -10,6 +10,7 @@ import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { DotSeparator } from '../instance-card/primitives';
 import { getSyncStrategyLabel, getSyncIntervalLabel } from '../instance-card/utils';
 import type { ConnectorInstance, ConnectorConfig } from '../../types';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // ========================================
 // Props
@@ -263,7 +264,6 @@ function SectionCard({ title, children }: { title: string; children: React.React
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-2)',
         padding: 16,
-        minWidth: 325,
       }}
     >
       <Flex direction="column" gap="4">
@@ -284,14 +284,15 @@ function SectionCard({ title, children }: { title: string; children: React.React
 }
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
+  const isMobile = useIsMobile();
   return (
-    <Flex align="center" gap="4">
+    <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'}>
       <Text
         size="1"
         weight="medium"
         style={{
           color: 'var(--gray-10)',
-          width: 164,
+          width: isMobile ? 'auto' : 164,
           flexShrink: 0,
         }}
       >

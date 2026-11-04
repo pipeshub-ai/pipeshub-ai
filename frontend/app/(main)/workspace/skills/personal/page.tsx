@@ -27,6 +27,7 @@ export default function PersonalSkillsPage() {
     skills,
     candidates,
     isLoading,
+    error,
     setSkills,
     updateSkillMetadata,
     setCandidates,
@@ -102,6 +103,7 @@ export default function PersonalSkillsPage() {
       <SkillPageLayout
         skills={skills}
         isLoading={isLoading}
+        error={error}
         pendingCandidateCount={candidates.length}
         onCreateSkill={openCreateEditor}
         onImportSkill={openImportDialog}

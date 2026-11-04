@@ -500,9 +500,9 @@ async def test_browse_opens_and_lists_only_what_the_check_admits(shapes, browsed
     """Browse answers as the access check does: another org's node never
     opens, an inaccessible start does not open, and below a start the walk from
     the App does not reach, STRICT and RESTRICTED are skipped. Two accepted
-    exceptions: BROWSE_ONLY, and placeholders, which browse lists and opens so
-    the records under one stay reachable while the check, which hands out
-    content, refuses them."""
+    exceptions: BROWSE_ONLY, and placeholders the check still refuses. A
+    placeholder asked by id is admitted when the walk admits it; this union
+    covers a stub browse lists so the records under it stay reachable."""
     provider = request.getfixturevalue(f"{backend}_provider")
     placeholders = {n["id"] for n in shapes["nodes"] if n["props"].get("isPlaceholder")}
     admitted = await _check(provider, _ids_of(shapes, *BROWSED_APPS)) | placeholders
@@ -702,14 +702,15 @@ async def test_names_sort_by_utf16_unit_and_sizes_keep_zero(shapes, backend, req
     """Lowercased names sort by UTF-16 unit, as Cypher
     orders them (an astral name before U+FF5A), ties by id, nulls last; a size of
     0 is a size, a missing one is not. Arango sorts in Python with the merge's
-    comparator, so the two agree."""
+    comparator, so the two agree. A name query's "_" reads as a space, never as
+    a wildcard: "a_b" finds "a b" and "a_b", not "a%b"."""
     provider = request.getfixturevalue(f"{backend}_provider")
     by_name = await _page(provider, app_id=SO)
     assert _ids(by_name) == SO_NAME_ASC
     assert {r["id"]: r["sortKey"] for r in by_name["rows"]}["so-02"] == "alpha"
     assert _ids(await _page(provider, app_id=SO, sort_field="sizeInBytes")) == SO_SIZE_ASC
     assert set(_ids(await _page(provider, app_id=SO, filters={"size": {"gte": 0}}))) == SO_SIZED
-    assert _ids(await _page(provider, app_id=SO, filters={"search_query": "a_b"})) == ["so-15"]
+    assert _ids(await _page(provider, app_id=SO, filters={"search_query": "a_b"})) == ["so-17", "so-15"]
     assert _ids(await _page(provider, app_id=SO, filters={"search_query": "%"})) == ["so-16"]
 
 

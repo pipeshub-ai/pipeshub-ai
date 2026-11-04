@@ -1041,7 +1041,8 @@ class TestBuildPriorRoutingMessages:
         mock_mod = MagicMock(resolve_attachment_blocks_simple=MagicMock(return_value=[{"type": "text", "text": "pdf content"}]))
         with patch.dict("sys.modules", {"app.utils.attachment_utils": mock_mod}):
             result = await _build_prior_routing_messages(query_info, blob_store, "o1", True)
-        assert len(result) == 1
+        # The open question, then the placeholder that closes it before the current request.
+        assert len(result) == 2
 
     @pytest.mark.asyncio
     async def test_user_query_attachment_no_vrid_skipped(self):
@@ -1057,7 +1058,8 @@ class TestBuildPriorRoutingMessages:
             ]
         }
         result = await _build_prior_routing_messages(query_info, AsyncMock(), "o1", True)
-        assert len(result) == 1
+        # The open question, then the placeholder that closes it before the current request.
+        assert len(result) == 2
 
     @pytest.mark.asyncio
     async def test_user_query_image_attachment_multimodal(self):
@@ -1085,7 +1087,8 @@ class TestBuildPriorRoutingMessages:
             "app.utils.attachment_utils": mock_attachment_utils,
         }):
             result = await _build_prior_routing_messages(query_info, blob_store, "o1", True)
-        assert len(result) == 1
+        # The open question, then the placeholder that closes it before the current request.
+        assert len(result) == 2
 
     @pytest.mark.asyncio
     async def test_attachment_exception_swallowed(self):
@@ -1103,7 +1106,8 @@ class TestBuildPriorRoutingMessages:
             ]
         }
         result = await _build_prior_routing_messages(query_info, blob_store, "o1", True)
-        assert len(result) == 1
+        # The open question, then the placeholder that closes it before the current request.
+        assert len(result) == 2
 
 
 

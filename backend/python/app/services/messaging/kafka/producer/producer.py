@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from aiokafka import AIOKafkaProducer  # type: ignore
 
+from app.core.envelope import sign_message
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaProducerConfig,
@@ -113,7 +114,7 @@ class KafkaMessagingProducer(IMessagingProducer):
         """Send a message to a Kafka topic"""
         # Stamped before the hop: the owner loop's context has no request id.
         return await run_on_loop(
-            self._owner_loop, self._send_message(topic, inject_envelope(message), key)
+            self._owner_loop, self._send_message(topic, sign_message(topic, inject_envelope(message)), key)
         )
 
     async def _send_message(
@@ -163,7 +164,7 @@ class KafkaMessagingProducer(IMessagingProducer):
         """
         if not messages:
             return []
-        stamped = [(key, inject_envelope(message)) for key, message in messages]
+        stamped = [(key, sign_message(topic, inject_envelope(message))) for key, message in messages]
         return await run_on_loop(self._owner_loop, self._send_messages(topic, stamped))
 
     async def _send_messages(

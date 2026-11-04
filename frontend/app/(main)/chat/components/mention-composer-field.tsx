@@ -459,6 +459,7 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
         {value && (
           <div
             ref={backdropRef}
+            className="chat-input-backdrop"
             aria-hidden
             style={{
               ...textStyle,

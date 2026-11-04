@@ -9,6 +9,7 @@ from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
+from app.sources.client.resilience import ResiliencePolicy
 from app.sources.external.common.atlassian import (
     AtlassianCloudResource,
     match_atlassian_cloud_resource,
@@ -25,9 +26,12 @@ class ConfluenceRESTClientViaUsernamePassword(HTTPClient):
         token_type: The type of token to use for authentication
     """
 
-    def __init__(self, base_url: str, username: str, password: str, token_type: str = "Basic") -> None:
+    def __init__(
+        self, base_url: str, username: str, password: str, token_type: str = "Basic",
+        resilience: Optional[ResiliencePolicy] = None,
+    ) -> None:
         credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
-        super().__init__(credentials, token_type)
+        super().__init__(credentials, token_type, resilience=resilience)
         self.base_url = base_url
         self.username = username
 
@@ -47,9 +51,11 @@ class ConfluenceRESTClientViaApiKey(HTTPClient):
         api_key: The API key/token to use for authentication
     """
 
-    def __init__(self, base_url: str, email: str, api_key: str) -> None:
+    def __init__(
+        self, base_url: str, email: str, api_key: str, resilience: Optional[ResiliencePolicy] = None,
+    ) -> None:
         credentials = base64.b64encode(f"{email}:{api_key}".encode()).decode()
-        super().__init__(credentials, "Basic")
+        super().__init__(credentials, "Basic", resilience=resilience)
         self.base_url = base_url
         self.email = email
 
@@ -59,8 +65,11 @@ class ConfluenceRESTClientViaApiKey(HTTPClient):
 
 
 class ConfluenceRESTClientViaToken(HTTPClient):
-    def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
-        super().__init__(token, token_type)
+    def __init__(
+        self, base_url: str, token: str, token_type: str = "Bearer",
+        resilience: Optional[ResiliencePolicy] = None,
+    ) -> None:
+        super().__init__(token, token_type, resilience=resilience)
         self.base_url = base_url
         self.token = token
 
@@ -242,11 +251,13 @@ class ConfluenceClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         connector_instance_id: Optional[str] = None,
+        resilience: Optional[ResiliencePolicy] = None,
     ) -> "ConfluenceClient":
         """Build ConfluenceClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
+            resilience: The connector's rate limit and retry policy, applied to every request
         Returns:
             ConfluenceClient instance
         """
@@ -276,17 +287,19 @@ class ConfluenceClient(IClient):
                 if not api_token:
                     raise ValueError("API token is required for API_TOKEN auth")
 
-                # Normalize base URL
+                # Normalize base URL; a site URL typed with its /wiki path must not become /wiki/wiki
                 base_url = base_url.rstrip('/')
+                if email and base_url.endswith('/wiki'):
+                    base_url = base_url[: -len('/wiki')]
 
                 if email:
                     # Cloud: Basic auth with email:token + /wiki/api/v2
                     if not base_url.endswith('/wiki/api/v2'):
                         base_url = f"{base_url}/wiki/api/v2"
-                    client = ConfluenceRESTClientViaApiKey(base_url, email, api_token)
+                    client = ConfluenceRESTClientViaApiKey(base_url, email, api_token, resilience=resilience)
                 else:
                     # DC PAT: Bearer token, plain base URL (no /wiki/api/v2)
-                    client = ConfluenceRESTClientViaToken(base_url, api_token)
+                    client = ConfluenceRESTClientViaToken(base_url, api_token, resilience=resilience)
 
             elif auth_type == "BASIC_AUTH":
                 # Basic authentication with username:password (DC/Server)
@@ -301,7 +314,7 @@ class ConfluenceClient(IClient):
 
                 # DC plain base URL (no /wiki/api/v2)
                 base_url = base_url.rstrip('/')
-                client = ConfluenceRESTClientViaUsernamePassword(base_url, username, password)
+                client = ConfluenceRESTClientViaUsernamePassword(base_url, username, password, resilience=resilience)
 
             elif auth_type == "BEARER_TOKEN":  # Default to token auth
                 token = auth_config.get("bearerToken", "")
@@ -316,7 +329,7 @@ class ConfluenceClient(IClient):
                 if not base_url:
                     raise ValueError("Confluence base_url not found in configuration")
 
-                client = ConfluenceRESTClientViaToken(base_url, token)
+                client = ConfluenceRESTClientViaToken(base_url, token, resilience=resilience)
             elif auth_type == "OAUTH":
                 credentials_config = config.get("credentials", {}) or {}
                 if not credentials_config:
@@ -347,7 +360,7 @@ class ConfluenceClient(IClient):
                 if not base_url:
                     raise ValueError("Confluence base_url not found in configuration")
 
-                client = ConfluenceRESTClientViaToken(base_url, access_token)
+                client = ConfluenceRESTClientViaToken(base_url, access_token, resilience=resilience)
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}")
 
@@ -467,6 +480,9 @@ class ConfluenceClient(IClient):
                 # Normalize base URL — Cloud (email + token) vs DC PAT (token only, no /wiki/api/v2)
                 base_url = base_url.rstrip('/')
                 if email:
+                    # A site URL ending in /wiki would otherwise call /wiki/wiki/api/v2.
+                    if base_url.endswith('/wiki'):
+                        base_url = base_url[: -len('/wiki')]
                     if not base_url.endswith('/wiki/api/v2'):
                         base_url = f"{base_url}/wiki/api/v2"
                     client = ConfluenceRESTClientViaApiKey(base_url, email, api_token)

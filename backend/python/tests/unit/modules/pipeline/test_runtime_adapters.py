@@ -9,6 +9,7 @@ import pytest
 from app.events.processor import convert_record_dict_to_record
 from app.models.blocks import SemanticMetadata
 from app.models.entities import Record
+from app.modules.artifacts.sidecars import ArtifactSidecars
 from app.modules.pipeline.leases import RecordLeases
 from app.modules.pipeline.models import RETRYABLE_STAGES, Priority, StageJob
 from app.modules.pipeline.policy import DEFAULT_POLICY
@@ -116,10 +117,12 @@ class TestGraphClassifyIO:
         sink.write_enrichment = AsyncMock()
         graph.get_document = AsyncMock(side_effect=lambda rid, _c: {"_key": rid, "contentRev": "rev-a"})
         blob.get_record_from_storage = AsyncMock(return_value={"block_containers": {"blocks": [], "block_groups": []}})
+        blob.config_service.get_config = AsyncMock(return_value={})
+        blob.rewrite_semantic_metadata = AsyncMock(return_value={"semantic_metadata": {}})
         metadata = SemanticMetadata(summary="A VPN plan.", categories=["Security"])
         await _io(graph=graph, blob=blob, sink=sink).save(_job(), ["rec-1", "rec-2"], metadata)
-        blob.save_semantic_metadata.assert_awaited_once()
-        assert blob.save_semantic_metadata.await_args.args[:3] == ("org-1", "rec-1", "vr-1")
+        blob.rewrite_semantic_metadata.assert_awaited_once()
+        assert blob.rewrite_semantic_metadata.await_args.args[:3] == ("org-1", "rec-1", "vr-1")
         sink.prepare_enrichment.assert_awaited_once()
         calls = sink.write_enrichment.await_args_list
         assert [call.args[0].record.id for call in calls] == ["rec-1", "rec-2"]
@@ -168,3 +171,11 @@ def test_every_retryable_stage_is_registered_with_the_status_field_the_api_selec
     registry = _runtime().registry
     for name, field in RETRYABLE_STAGES.items():
         assert registry.get(name).headline is field
+
+
+def test_both_stages_file_their_sidecars_through_one_store() -> None:
+    runtime = _runtime()
+    classify = runtime.handler._io_for(_job(), Deadline(30))
+    entities = runtime.handler._io_for(_job(stage="entities"), Deadline(30))
+    assert isinstance(classify._sidecars, ArtifactSidecars)  # type: ignore[attr-defined]
+    assert classify._sidecars is entities._sidecars  # type: ignore[attr-defined]

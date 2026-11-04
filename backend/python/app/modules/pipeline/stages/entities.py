@@ -3,9 +3,10 @@
 Dispatched with classify when the record is searchable (both require ``embed``), on its own
 topic and permits, so classification never waits on it and neither blocks the other. It
 reads the stored record's blocks, extracts the named entities (in process or through the
-Extraction service), keeps the extraction in the stored record's ``named_entities``
-section and writes each record's entities and mentions to the graph and the entity
-points. It writes no record status: ``extractionStatus`` is classification's.
+Extraction service), writes each record's entities and mentions to the graph and the entity
+points, and keeps the extraction as its output (``app.modules.named_entities.kept`` reads
+it back). It writes neither the stored record nor a record status: ``extractionStatus`` is
+classification's.
 
 Its fingerprint is the text plus the extraction model, prompt version, the named-entity
 configuration and whether extraction is on, so re-indexing unchanged content costs no
@@ -14,13 +15,13 @@ model call, and turning extraction off runs it once more to clear the record's e
 
 import hashlib
 import json
-from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Protocol
 
 from app.models.blocks import BlocksContainer
 from app.modules.named_entities.domain.models import (
     EXTRACTOR_VERSION,
     NamedEntityExtraction,
+    model_failed,
 )
 from app.modules.pipeline.leases import RecordBusy, RevisionSuperseded
 from app.modules.pipeline.models import (
@@ -34,10 +35,19 @@ from app.modules.pipeline.models import (
 )
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.stage import StageIO
-from app.modules.pipeline.stages.record_io import StoredRecordMissing
 
 # Bump when the extraction prompt, its strategies or the stored section's shape change.
 ENTITIES_PROMPT_VERSION = 1
+
+
+_PROVIDER_DOWN = "Named-entity model provider unavailable"
+
+
+def _provider_down(extraction: NamedEntityExtraction) -> bool:
+    """Every failed call was the provider not serving: wait without burning attempts. A
+    failure of any other kind keeps the run on the retry path, which counts toward its limit."""
+    stats = extraction.stats
+    return 0 < stats.windows_unavailable == stats.windows_failed
 
 
 class EntitiesIO(StageIO, Protocol):
@@ -61,25 +71,14 @@ class EntitiesIO(StageIO, Protocol):
         """Never raises for a model failure: it returns a FAILED extraction."""
         ...
 
-    async def stored_entities_present(self, job: StageJob) -> bool:
-        """Whether the stored record still carries an extraction (a re-index rewrites it)."""
-        ...
+    async def save(
+        self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction, blocks: BlocksContainer,
+    ) -> str:
+        """Each record's entities and the entity points; the persist outcome. ``blocks`` is
+        the content ``extraction`` came from, which the persist also dates an upload by.
 
-    async def restore_stored_entities(
-        self,
-        job: StageJob,
-        extraction: dict[str, Any],
-        *,
-        still_current: Callable[[], Awaitable[bool]] | None = None,
-    ) -> None:
-        """Put a kept extraction back into the stored record; raises like ``save``."""
-        ...
-
-    async def save(self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction) -> str:
-        """The stored section, each record's entities and the entity points; the persist outcome.
-
-        Raises ``RevisionSuperseded`` when the record moved to a newer revision before the
-        stored record could be written, and ``RecordBusy`` when its lease stayed held."""
+        Raises ``RevisionSuperseded`` when the record moved to a newer revision before its
+        entities could be written, and ``RecordBusy`` when its lease stayed held."""
         ...
 
 
@@ -108,26 +107,6 @@ class EntitiesStage:
             config_digest=hashlib.sha256(config.encode("utf-8")).hexdigest()[:32],
         )
 
-    async def output_present(self, job: StageJob, io: EntitiesIO) -> bool:
-        return await io.stored_entities_present(job)
-
-    async def restore_output(
-        self,
-        job: StageJob,
-        io: EntitiesIO,
-        output: str,
-        *,
-        still_current: Callable[[], Awaitable[bool]] | None = None,
-    ) -> bool:
-        try:
-            extraction = json.loads(output)
-            if not isinstance(extraction, dict):
-                return False
-            await io.restore_stored_entities(job, extraction, still_current=still_current)
-        except (RevisionSuperseded, RecordBusy, StoredRecordMissing, ValueError):
-            return False
-        return True
-
     async def run(self, job: StageJob, io: EntitiesIO) -> StageResult:
         record_ids = await io.current_record_ids(job)
         if not record_ids:
@@ -141,24 +120,33 @@ class EntitiesStage:
             return StageResult(outcome=StageOutcome.STALE)
         if extraction.status == "FAILED":
             # The model failed; the record keeps its last good entities meanwhile.
+            if _provider_down(extraction):
+                return StageResult(outcome=StageOutcome.PAUSED, reason=_PROVIDER_DOWN)
             return StageResult(
                 outcome=StageOutcome.RETRY,
                 reason=f"Named-entity extraction failed ({extraction.termination_reason})",
             )
         try:
-            outcome = await io.save(job, record_ids, extraction)
+            outcome = await io.save(job, record_ids, extraction, blocks)
         except RevisionSuperseded:
             return StageResult(outcome=StageOutcome.STALE)
         except RecordBusy as exc:
             return StageResult(outcome=StageOutcome.RETRY, reason=str(exc))
-        except StoredRecordMissing:
-            return StageResult(outcome=StageOutcome.RETRY, reason="the stored record is not readable yet")
         if outcome == "disabled":
             return StageResult(
                 outcome=StageOutcome.SKIPPED, reason="Named-entity extraction is turned off", record_view=job.view
             )
         if extraction.status == "SKIPPED":
             return StageResult(outcome=StageOutcome.SKIPPED, reason="nothing to extract", record_view=job.view)
+        if model_failed(extraction):
+            # What was found is saved, or the last good entities kept; settling now would store
+            # the fingerprint, and the record would never get the names the model missed.
+            if _provider_down(extraction):
+                return StageResult(outcome=StageOutcome.PAUSED, reason=f"{_PROVIDER_DOWN}; saved what was found")
+            return StageResult(
+                outcome=StageOutcome.RETRY,
+                reason=f"Named-entity model call failed ({extraction.termination_reason}); saved what was found",
+            )
         return StageResult(
             outcome=StageOutcome.COMPLETED,
             items=len(record_ids),

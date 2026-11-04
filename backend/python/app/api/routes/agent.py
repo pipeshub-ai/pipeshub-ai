@@ -7,14 +7,14 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
@@ -25,8 +25,12 @@ from app.agents.agent_loop.protocol.stream_collector import collect_stream_outco
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
+from app.agents.openapi import attachments as api_toolset_attachments
+from app.agents.openapi.service import ApiToolsetError, connected_tool_refs
+from app.agents.openapi.store import ApiToolsetStore
 from app.agents.registry.toolset_registry import ToolsetRegistry
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import connection_limit, require_scopes
+from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.api.middlewares.token_policy import is_service_token
 from app.api.routes.chatbot import (
     get_llm_for_chat,
@@ -46,11 +50,15 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
 )
-from app.modules.agents.capability_summary import fetch_connector_configs
+from app.modules.agents.capability_summary import (
+    PARTLY_SHARED_KEY,
+    fetch_connector_configs,
+)
 from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
     UnreadableSourceLimitError,
     admit_caller_project_collections,
+    project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
 )
@@ -63,13 +71,17 @@ from app.modules.agents.qna.router import (
 from app.modules.agents.qna.router import (
     build_prior_routing_messages as _build_prior_routing_messages,  # noqa: F401
 )
+from app.modules.retrieval.filter_schema import validate_request_filters
 from app.modules.retrieval.selection_scope import (
+    CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
     SelectionNotReadyError,
     SelectionTooLargeError,
+    connection_coverage,
     has_selection,
     max_selection_nodes,
     prepare_turn_scope,
     selection_error,
+    within_connection,
 )
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
@@ -78,6 +90,9 @@ from app.services.graph_db.interface.graph_db_provider import (
     SELECTION_APPS_FILTER_KEY,
     IGraphDBProvider,
 )
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import assert_identity_allowed, call_scope
+from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import model_default_reasoning_effort
@@ -213,6 +228,7 @@ class ChatQuery(BaseModel):
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
+    _validate_filters = field_validator("filters")(validate_request_filters)
 
 
 # ============================================================================
@@ -285,14 +301,12 @@ async def get_services(request: Request) -> dict[str, Any]:
 
     retrieval_service = await container.retrieval_service()
     graph_provider = await container.graph_provider()
-    reranker_service = container.reranker_service()
     config_service = container.config_service()
     logger = container.logger()
 
     return {
         "retrieval_service": retrieval_service,
         "graph_provider": graph_provider,
-        "reranker_service": reranker_service,
         "config_service": config_service,
         "logger": logger,
     }
@@ -477,6 +491,170 @@ async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any])
     return enriched
 
 
+def _is_live_identity(node: dict[str, Any]) -> bool:
+    """False once an account has been removed or switched off.
+
+    Two separate signals, because they are written by different things.
+    Soft-delete leaves the user node and clears `isActive`
+    (`entity.py` `_handle_user_deleted`). Disabling is its own field, carried
+    from user management on the update event, and deliberately not stored in
+    `isActive` — a rename sets that one back to true, so a disable kept there
+    would not survive one.
+
+    Absence is read as live for both. Nodes written before these fields
+    existed carry neither, and treating those as dead would cut off agents
+    that work today.
+    """
+    return (
+        node.get("isActive", True) is not False
+        and node.get("isDisabled", False) is not True
+    )
+
+
+async def _resolve_service_account_binding(
+    service_account_user_id: str,
+    graph_provider: IGraphDBProvider,
+    caller_org_id: str,
+) -> str:
+    """The `userId` of a service account an agent is being bound to.
+
+    Takes the account's `userId` — what the service-accounts API hands the
+    screen — and gives the same `userId` back, so what is stored is what a
+    picker sends and what it reads afterwards. The graph node's own key is
+    deliberately not used: it is minted locally and means nothing to the
+    service-accounts API, so a screen could neither send it nor match an
+    existing binding against the list it shows.
+
+    Refuses anything that is not a live service account of the caller's own
+    organisation. `kind` is the only thing trusted for "is this a service
+    account". It is told to the graph by user management rather than worked
+    out here, and without it this would have to fall back to the reserved
+    address, which would let an administrator aim an agent at a colleague
+    instead — the whole point of binding is to stop one person's reach being
+    lent out.
+
+    A deleted account is refused too. Soft-delete leaves the node in place and
+    only clears `isActive` (`entity.py` `_handle_user_deleted`), so `kind`
+    alone would still accept it and an agent would keep searching with the
+    reach of an account an administrator has removed.
+
+    The same 400 covers missing, wrong-org, not-a-service-account and deleted,
+    so this cannot be used to find out which user ids exist in another
+    organisation.
+    """
+    wanted = str(service_account_user_id or "").strip()
+    if not wanted:
+        raise InvalidRequestError("Choose a service account for this agent to search as.")
+
+    # raise_on_error, so a database that is down surfaces as a failure rather
+    # than as "no such account" — an administrator told the wrong one of those
+    # goes looking for a problem that is not there.
+    account = await graph_provider.get_user_by_user_id(wanted, raise_on_error=True)
+    caller_org = str(caller_org_id or "").strip()
+    account_org = str((account or {}).get("orgId") or "").strip()
+
+    if (
+        not account
+        or not caller_org
+        or account_org != caller_org
+        or (account or {}).get("kind") != "service"
+        or not _is_live_identity(account)
+    ):
+        raise InvalidRequestError(
+            "That service account was not found in this organisation. Choose one "
+            "from Workspace \u2192 Service accounts, or create one there first."
+        )
+
+    return wanted
+
+
+async def _only_an_administrator_may_bind(
+    request: Request, config_service: ConfigurationService,
+) -> None:
+    """Refuse a change of binding from anyone who does not administer the org.
+
+    Binding is how an administrator decides what a shared agent may read: the
+    account's reach is whatever they granted it, usually by putting it in
+    groups. Without this check any signed-in member could point an agent they
+    own at any service account in the organisation and ask questions with that
+    account's reach, and because a service agent is shared with everyone
+    (`sa_forces_org_sharing`), so could every colleague after them. The screen
+    that lists these accounts and the one that puts them in groups are both
+    administrator-only already; this is the same rule on the route that spends
+    what those screens grant.
+
+    The role is the live one Node reports for the caller's own credentials,
+    never a flag read off the request. An unconfirmed role is a 503 rather than
+    a refusal: "you are not an administrator" is the wrong thing to tell an
+    administrator whose edit failed because a lookup timed out.
+    """
+    role = await fetch_caller_role(request, config_service)
+    if role.status is not CallerRoleStatus.VALID:
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail=(
+                "We couldn't confirm your role just now, so nothing was saved. "
+                "Please try again."
+            ),
+        )
+    if not role.is_admin:
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail=(
+                "Only an administrator can choose the service account an agent "
+                "searches as."
+            ),
+        )
+
+
+async def _checked_service_account_binding(
+    requested: object,
+    graph_provider: IGraphDBProvider,
+    caller_org_id: str,
+    *,
+    is_service_account: bool,
+    admin_check: Callable[[], Awaitable[None]],
+    current: object = None,
+) -> str | None:
+    """The binding to store, refusing one the agent could not use, and one
+    whoever is asking is not entitled to set.
+
+    `None` is allowed on any agent. It means "search as the creator", which is
+    where every unbound agent already sits, and every agent document carries
+    this field as null — so a client that reads an agent and sends it back
+    unchanged must not be turned away.
+
+    Anything else is only meaningful on a service agent, and is refused rather
+    than quietly dropped: dropping it would leave an agent searching as its
+    creator, the wider identity, while whoever asked believed they had narrowed
+    it. On update, "is a service agent" means what the agent will be once the
+    request is applied, so one request may convert an agent and bind it.
+    """
+    stored = str(current or "").strip() or None
+    asked = None if requested is None else str(requested or "").strip()
+
+    # Only an administrator picks the account, and that is what `admin_check`
+    # refuses. A value that is not changing passes for anyone, because every
+    # agent document carries this field and a client that reads an agent and
+    # saves it back sends it every time — an owner editing a bound agent's
+    # name would otherwise be turned away. Clearing counts as a change: it
+    # returns the agent to searching as its creator, which is the wider
+    # identity an administrator bound it to get away from.
+    if asked != stored:
+        await admin_check()
+
+    if asked is None:
+        return None
+    if not is_service_account:
+        raise InvalidRequestError(
+            "Only a service agent searches as a service account. Make this "
+            "a service agent first, or leave the binding alone."
+        )
+    return await _resolve_service_account_binding(
+        asked, graph_provider, caller_org_id,
+    )
+
+
 async def _enrich_user_info_for_service_account_agent_chat(
     agent: dict[str, Any],
     graph_provider: IGraphDBProvider,
@@ -484,46 +662,129 @@ async def _enrich_user_info_for_service_account_agent_chat(
     caller_org_id: str,
 ) -> dict[str, Any]:
     """
-    Service-account agents are invoked with a synthetic JWT (e.g. Slack bot). Retrieval and
-    permission checks must use the agent creator's real userId — the same identity whose
-    knowledge access configured the agent — not the service principal.
+    The identity a service agent searches knowledge as.
+
+    A service agent is invoked with a synthetic JWT (e.g. the Slack bot), which
+    is not a principal the permission graph knows, so retrieval has to run as
+    someone. Which someone is what this decides.
+
+    A bound service account, when the agent names one. Its reach is whatever an
+    administrator has shared with it, usually through group membership, so what
+    the agent can see is something granted rather than inherited.
+
+    Otherwise the agent's creator, which is where every agent made before
+    binding existed still stands. That is the older behaviour and it is worth
+    being plain about what it means: a service agent is shared with the whole
+    organisation, so everyone chatting with an unbound one searches with its
+    creator's access. Binding is how an administrator ends that; nothing here
+    ends it for them, because doing so silently would cut off agents that work
+    today.
+
+    Either way the identity must belong to the caller's own organisation. This
+    path skips check_agent_permission, so that is checked here instead.
     """
-    creator_key = agent.get("createdBy")
-    if not creator_key:
+    binding_user_id = agent.get("serviceAccountUserId")
+    bound = bool(binding_user_id)
+    what = "service account" if bound else "creator"
+    identity_key = binding_user_id or agent.get("createdBy")
+
+    if not identity_key:
         raise HTTPException(
             status_code=500,
             detail="Service account agent is missing createdBy; cannot resolve knowledge permissions.",
         )
-    creator_doc = await graph_provider.get_document(
-        str(creator_key), CollectionNames.USERS.value
+    # A binding stores the account's `userId`, which is what the
+    # service-accounts API speaks; `createdBy` stores the graph node's own key.
+    # Two different identifiers, so two different lookups.
+    identity_doc = (
+        await graph_provider.get_user_by_user_id(str(identity_key), raise_on_error=True)
+        if bound
+        else await graph_provider.get_document(
+            str(identity_key), CollectionNames.USERS.value
+        )
     )
-    if not creator_doc:
+    if not identity_doc:
         raise HTTPException(
             status_code=500,
-            detail="Agent creator user not found; cannot resolve knowledge permissions.",
+            detail=f"Agent {what} user not found; cannot resolve knowledge permissions.",
         )
-    creator_user_id = creator_doc.get("userId")
-    if not creator_user_id:
+    identity_user_id = identity_doc.get("userId")
+    if not identity_user_id:
         logger.error(
-            "Service account agent creator %s has no userId field",
-            creator_key,
+            "Service account agent %s %s %s has no userId field",
+            agent.get("_key"),
+            what,
+            identity_key,
         )
         raise HTTPException(
             status_code=500,
-            detail="Agent creator is missing userId; cannot resolve knowledge permissions.",
+            detail=f"Agent {what} is missing userId; cannot resolve knowledge permissions.",
         )
-    creator_org = str(creator_doc.get("orgId") or "").strip()
+    identity_org = str(identity_doc.get("orgId") or "").strip()
     caller_org = str(caller_org_id or "").strip()
-    # This branch skips check_agent_permission; empty/mismatched org must not
-    # let a caller run retrieval as another tenant's creator.
-    if not creator_org or not caller_org or creator_org != caller_org:
-        raise AgentNotFoundError(str(agent.get("_key") or creator_key))
+    # Empty or mismatched org must not let a caller run retrieval as another
+    # tenant's identity. A binding is validated when it is set, but an account
+    # can be moved or removed afterwards, so it is checked again on every run.
+    if not identity_org or not caller_org or identity_org != caller_org:
+        raise AgentNotFoundError(str(agent.get("_key") or identity_key))
+    # A binding that is no longer a service account is refused rather than
+    # quietly used: whatever it has become, it was not what an administrator
+    # chose. Falling back to the creator here would be worse — it would widen
+    # the agent's reach at the moment the narrower identity stopped working.
+    if bound and identity_doc.get("kind") != "service":
+        logger.error(
+            "Agent %s is bound to %s, which is no longer a service account",
+            agent.get("_key"),
+            identity_key,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "This agent is bound to something that is no longer a service "
+                "account. An administrator needs to point it at one again."
+            ),
+        )
+    # Checked on every run, not only when the binding was set: an account can
+    # be removed or switched off long after an administrator bound it, and
+    # neither reaches here any other way. Falling back to the creator would be
+    # worse for the same reason as above — it widens the agent's reach at the
+    # moment the narrower identity stopped being allowed.
+    if bound and not _is_live_identity(identity_doc):
+        # Deleted wins when both are set. Soft-delete only merges `isActive`
+        # and leaves `isDisabled` as it found it, so an account switched off
+        # and then removed still carries the flag — and telling an
+        # administrator to switch it back on would send them after something
+        # that cannot work, since the account is gone from the list too.
+        switched_off = (
+            identity_doc.get("isDisabled") is True
+            and identity_doc.get("isActive") is not False
+        )
+        logger.error(
+            "Agent %s is bound to %s, which has been %s",
+            agent.get("_key"),
+            identity_key,
+            "switched off" if switched_off else "deleted",
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                # Said separately, because what an administrator should do
+                # differs: a switched-off account can be switched back on and
+                # this agent works again, a deleted one cannot.
+                "This agent is bound to a service account that has been "
+                "switched off. Switch it back on, or point the agent at "
+                "another one."
+                if switched_off
+                else "This agent is bound to a service account that has been "
+                "deleted. An administrator needs to point it at another one."
+            ),
+        )
     synthetic = {
-        "userId": str(creator_user_id),
-        "orgId": creator_org,
-        "email": (creator_doc.get("email") or "").strip(),
+        "userId": str(identity_user_id),
+        "orgId": identity_org,
+        "email": (identity_doc.get("email") or "").strip(),
     }
-    return await _enrich_user_info(synthetic, creator_doc)
+    return await _enrich_user_info(synthetic, identity_doc)
 
 
 async def _assert_agent_belongs_to_caller_org(
@@ -810,6 +1071,7 @@ async def _resolve_turn_filters(
     org_id: str,
     logger: Logger,
     project_sources: dict[str, list[str]] | None = None,
+    connection_sources: dict[str, list[str]] | None = None,
     retrieval_user_id: str | None = None,
     searches_knowledge: bool = True,
 ) -> dict[str, Any]:
@@ -858,8 +1120,10 @@ async def _resolve_turn_filters(
         )
     # A turn with internal search switched off never uses the selection, so
     # one that cannot be searched must not fail it. A saved agent is bound to
-    # its sources even without a selection.
-    if searches_knowledge and (has_selection(filters) or not is_universal_agent):
+    # its sources even without a selection, and a connected app to its limit.
+    if searches_knowledge and (
+        has_selection(filters) or connection_sources is not None or not is_universal_agent
+    ):
         agent_sources = None
         if not is_universal_agent:
             # The caller's project collection was admitted above.
@@ -867,8 +1131,40 @@ async def _resolve_turn_filters(
         filters = await prepare_turn_scope(
             graph_provider, retrieval_user_id or caller_user_id, org_id, filters,
             agent_sources=agent_sources, project_sources=project_sources,
+            connection_sources=connection_sources,
         )
+    elif connection_sources is not None:
+        filters = within_connection(filters, connection_sources)
     return filters
+
+
+async def _knowledge_within_connection(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    agent_knowledge: list[dict[str, Any]],
+    connection_sources: dict[str, list[str]] | None,
+) -> list[dict[str, Any]]:
+    """``agent_knowledge`` as a connected app limited to ``connection_sources``
+    may see it: a source the limit names whole as it is, one it reaches only
+    through some of its folders or files marked as partly shared, and every
+    other source left out. Unchanged without a limit.
+
+    Raises:
+        SelectionTooLargeError, PermissionVerificationUnavailableError: see
+            ``resolve_selection_scope``.
+    """
+    if connection_sources is None:
+        return agent_knowledge
+    whole, partial = await connection_coverage(graph_provider, user_id, org_id, connection_sources)
+    kept: list[dict[str, Any]] = []
+    for k in agent_knowledge:
+        connector_id = k.get("connectorId") if isinstance(k, dict) else None
+        if connector_id in whole:
+            kept.append(k)
+        elif connector_id in partial:
+            kept.append({**k, PARTLY_SHARED_KEY: True})
+    return kept
 
 
 def _filter_knowledge_by_enabled_sources(
@@ -1115,6 +1411,21 @@ _MAX_MCP_DISPLAY_NAME_CHARS = 200
 
 def _has_control_chars(text: str) -> bool:
     return any(ord(char) < 32 or ord(char) == 127 for char in text)
+
+
+async def _checked_api_toolset_tools(
+    raw: object, services: dict[str, Any], org_id: str, *, service_account: bool,
+) -> list[str]:
+    """The API toolset operations to store on an agent, each one checked to exist in the org."""
+    if raw == []:
+        return []
+    config_service: ConfigurationService = services["config_service"]
+    try:
+        return await api_toolset_attachments.checked_attachments(
+            ApiToolsetStore(config_service), org_id, raw, service_account=service_account,
+        )
+    except ApiToolsetError as e:
+        raise InvalidRequestError(str(e)) from e
 
 
 def _parse_mcp_servers(raw_mcp_servers: list[Any]) -> dict[str, dict[str, Any]]:
@@ -2462,6 +2773,17 @@ async def create_agent(request: Request) -> JSONResponse:
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         is_service_account = bool(body.get("isServiceAccount", False))
+        service_account_binding = await _checked_service_account_binding(
+            body.get("serviceAccountUserId"),
+            services["graph_provider"],
+            org_key,
+            is_service_account=is_service_account,
+            # Built lazily: the gate runs only when a binding is actually
+            # being set, and most creates never name one.
+            admin_check=lambda: _only_an_administrator_may_bind(
+                request, services["config_service"],
+            ),
+        )
         if sa_forces_org_sharing() and is_service_account:
             share_with_org = True
         else:
@@ -2470,6 +2792,9 @@ async def create_agent(request: Request) -> JSONResponse:
             attached_mcp_instances, shared_with_org=share_with_org, service_account=is_service_account,
         )
         _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
+        api_toolset_tools = await _checked_api_toolset_tools(
+            body.get("apiToolsetTools", []), services, org_key, service_account=is_service_account,
+        )
 
         # Create agent document
         agent_key = str(uuid.uuid4())
@@ -2484,8 +2809,10 @@ async def create_agent(request: Request) -> JSONResponse:
             "tags": body.get("tags", []) or [],
             "webSearch": web_search_attachment,
             "defaultReasoningEffort": default_reasoning_effort,
+            "apiToolsetTools": api_toolset_tools,
             "isActive": True,
             "isServiceAccount": is_service_account,
+            "serviceAccountUserId": service_account_binding,
             "sendUserContext": bool(body.get("sendUserContext", True)),
             "createdBy": user_key,
             "updatedBy": None,
@@ -3148,6 +3475,20 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
         final_shared = bool(body.get("shareWithOrg", agent.get("shareWithOrg", False)))
         final_service_account = bool(body.get("isServiceAccount", agent.get("isServiceAccount", False)))
+
+        if "serviceAccountUserId" in body:
+            body["serviceAccountUserId"] = await _checked_service_account_binding(
+                body["serviceAccountUserId"],
+                services["graph_provider"],
+                org_key,
+                is_service_account=final_service_account,
+                admin_check=lambda: _only_an_administrator_may_bind(
+                    request, services["config_service"],
+                ),
+                # What the agent is bound to now, so re-saving it unchanged is
+                # not a change anyone needs to be an administrator to make.
+                current=agent.get("serviceAccountUserId"),
+            )
         sharing_turned_on = (final_shared and not agent.get("shareWithOrg")) or (
             final_service_account and not agent.get("isServiceAccount")
         )
@@ -3176,6 +3517,12 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.error(f"Could not check the actions of agent {agent_id} before sharing it: {e}")
                 raise _toolset_attachments_unreadable() from e
         _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
+        if "apiToolsetTools" in body or (final_service_account and not agent.get("isServiceAccount")):
+            # Becoming a service account re-checks what is already attached.
+            body["apiToolsetTools"] = await _checked_api_toolset_tools(
+                body.get("apiToolsetTools", agent.get("apiToolsetTools") or []), services,
+                org_key, service_account=final_service_account,
+            )
 
         # Handle shareWithOrg flag changes
         if "shareWithOrg" in body:
@@ -3835,7 +4182,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         graph_provider = services["graph_provider"]
         retrieval_service = services["retrieval_service"]
-        reranker_service = services["reranker_service"]
+        reranker_service = None  # reranking is not wired; the slot is kept for call signatures
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
@@ -3847,7 +4194,14 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         timer.mark("services")
         body = _parse_request_body(await request.body())
-        chat_query = ChatQuery(**body)
+        try:
+            chat_query = ChatQuery(**body)
+        except ValidationError as exc:
+            # Say what is wrong (e.g. the unknown filter key and the allowed ones).
+            raise HTTPException(
+                status_code=400,
+                detail="; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors()),
+            ) from exc
         protocol = _resolve_protocol(chat_query, request)
         logger.debug("chat_stream: resolved protocol=%s (body.protocol=%r, query=%r)",
                      protocol, chat_query.protocol, request.query_params.get("protocol"))
@@ -3959,7 +4313,15 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 enabled=bool(agent.get("sendUserContext", True)),
             )
 
-        async def _run() -> AsyncGenerator[str, None]:
+        caller_principal = principal_from_request_user(
+            user_context, agent_id=None if agent_id == "agentIdPlaceholder" else agent_id,
+        )
+        await assert_identity_allowed(
+            caller_principal, Workload.AGENT,
+            config_service=config_service, container=request.app.container,
+        )
+
+        async def _run_unbound() -> AsyncGenerator[str, None]:
             """Everything below the authorization checks. Runs after the
             response headers are already on the wire, so the client sees the
             stream open immediately instead of waiting out the config fan-out.
@@ -4338,6 +4700,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         org_id=org_key,
                         logger=logger,
                         project_sources=_project_sources(chat_query.allowedFilters),
+                        connection_sources=connection_limit(getattr(request.state, "user", None)),
                         retrieval_user_id=enriched_user_info.get("userId"),
                         searches_knowledge=caps.internal_search,
                     )
@@ -4365,6 +4728,35 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     filters["strictScope"] = True
 
                 agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
+                try:
+                    # The universal agent's knowledge is every source the user
+                    # reads, and the prompt names each one with its id. A turn
+                    # without internal search drops its knowledge below, so a
+                    # limit too large to check must not fail it.
+                    agent_knowledge = await _knowledge_within_connection(
+                        graph_provider,
+                        enriched_user_info.get("userId") or user_context.get("userId", ""),
+                        org_key,
+                        agent_knowledge,
+                        connection_limit(getattr(request.state, "user", None)) if caps.internal_search else None,
+                    )
+                except SelectionTooLargeError:
+                    yield _stream_error_frame(
+                        protocol, CONNECTION_LIMIT_TOO_LARGE_MESSAGE, code="selection_too_large",
+                    )
+                    return
+                if chat_query.strictScope and caps.internal_search:
+                    agent_knowledge = [
+                        *agent_knowledge,
+                        *await project_files_knowledge(
+                            graph_provider,
+                            kb_ids=filters.get("kb") or [],
+                            known_ids=[
+                                k.get("connectorId") for k in agent_knowledge if isinstance(k, dict)
+                            ],
+                            logger=logger,
+                        ),
+                    ]
 
                 logger.info(f"Filters: {filters}")
 
@@ -4435,6 +4827,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     attachments=chat_query.attachments,
                     previous_conversations=chat_query.previousConversations,
                     logger=logger,
+                    connection_sources=connection_limit(getattr(request.state, "user", None)),
                 )
                 # Build query info
                 query_info = {
@@ -4450,11 +4843,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "instructions": agent.get("instructions"),
                     "custom_instructions": custom_instructions,
                     "projectInstructions": chat_query.projectInstructions,
+                    "projectToolsSelected": chat_query.strictScope and chat_query.tools is not None,
                     "timezone": chat_query.timezone,
                     "currentTime": chat_query.currentTime,
                     "toolsets": agent_toolsets,
                     "mcpServers": agent_mcp_servers,
                     "mcpServerConfigs": mcp_server_configs,
+                    "apiToolsetTools": _api_toolset_tools_for_chat(agent.get("apiToolsetTools") or [], chat_query.tools),
                     "knowledge": agent_knowledge,
                     "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
                     "connector_configs": connector_configs,
@@ -4528,6 +4923,20 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 error_code, user_message = classify_exception(exc)
                 yield _stream_error_frame(protocol, user_message, error_code)
 
+        async def _run() -> AsyncGenerator[str, None]:
+            # Bound in the task that iterates the stream; see the same wrapper in chatbot.py.
+            async with call_scope(
+                caller_principal, Workload.AGENT,
+                config_service=config_service, container=request.app.container,
+                agent_id=None if agent_id == "agentIdPlaceholder" else agent_id,
+                conversation_id=chat_query.conversationId,
+            ):
+                # Closed with this wrapper: a disconnect closes only the outer generator,
+                # and the inner one must stop its producer task now, not at GC.
+                async with aclosing(_run_unbound()) as inner:
+                    async for event in inner:
+                        yield event
+
         return StreamingResponse(
             _run(),
             media_type="text/event-stream",
@@ -4560,6 +4969,29 @@ def _stream_error_frame(
         evt = frame(AGUIEventType.RUN_ERROR, message=message, code=code, **extra)
         return f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
     return f"event: error\ndata: {json.dumps({'message': message, 'type': code, **extra})}\n\n"
+
+
+def _api_toolset_tools_for_chat(attached: list[str], chat_tools: list[str] | None) -> list[str]:
+    """`chat_tools` narrows the attached operations the same way it narrows toolsets; None keeps all."""
+    if chat_tools is None:
+        return attached
+    wanted = set(chat_tools)
+    return [ref for ref in attached if ref in wanted]
+
+
+async def _assistant_api_toolset_tools(
+    config_service: ConfigurationService, org_id: str, user_id: str, logger: Logger,
+) -> list[str]:
+    from app.services.featureflag.platform_settings import is_api_toolsets_enabled
+
+    if not await is_api_toolsets_enabled(config_service):
+        return []
+    try:
+        return await connected_tool_refs(ApiToolsetStore(config_service), org_id, user_id)
+    except Exception as e:
+        # The assistant still answers without them, like it does without toolsets above.
+        logger.error(f"Error fetching API toolsets for the assistant: {e}", exc_info=True)
+        return []
 
 
 async def get_assistant_agent(
@@ -4728,5 +5160,6 @@ async def get_assistant_agent(
         "tags": ["assistant", "general-purpose"],
         "toolsets": authenticated_toolsets_list,
         "mcpServers": authenticated_mcp_servers_list,
+        "apiToolsetTools": await _assistant_api_toolset_tools(config_service, org_id, user_id, logger),
         "knowledge": knowledge_sources,
     }, toolset_auth_by_instance

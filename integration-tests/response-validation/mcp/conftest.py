@@ -10,8 +10,8 @@ The expected surface lives in ``golden/mcp_surface_<version>.json`` where
 ``backend/nodejs/apps/package.json``. Bumping the pin therefore needs a new
 golden, generated with ``pytest response-validation/mcp --update-mcp-golden``.
 
-The tool tests call every tool with a client_credentials token from the same
-app, against a document and an agent created for the session.
+The tool tests call every tool with the authorization_code token from the
+same app, against a document and an agent created for the session.
 """
 
 from __future__ import annotations

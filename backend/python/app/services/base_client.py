@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from app.services.model_identity.propagation import PCP_CLAIM, encode_pcp
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.utils.jwt import generate_jwt
 from app.utils.request_context import inject_request_headers
@@ -668,6 +669,10 @@ class BaseServiceClient:
         claims: dict[str, Any] = {"scopes": [self._service_scope.value]}
         if org_id:
             claims["orgId"] = org_id
+        # Lets the callee make its own model calls as the same person or service.
+        propagated = encode_pcp()
+        if propagated is not None and (not org_id or propagated["org"] in ("", org_id)):
+            claims[PCP_CLAIM] = propagated
         token = await generate_jwt(self._config_service, claims)
         return {"Authorization": f"Bearer {token}"}
 

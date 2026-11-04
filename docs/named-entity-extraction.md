@@ -35,6 +35,12 @@ Value kinds carry a typed payload so a filter can use a range:
 - quantities are stored in SI units
 - percentages are fractions (`300 bps` is `0.03`)
 
+A minus sign or accounting parentheses make money negative (`-$500`, a
+`($1,200)` loss). A percentage is negative with a minus sign, or in
+parentheses that stand alone as in a table cell (`(3.2%)`); after a word the
+parentheses are an aside (`Sales tax (8.25%)` is 8.25%). Among quantities only a
+temperature takes a minus sign (`-25 °C`); `10-40 °C` is a range, not -40.
+
 A date with no year is marked ambiguous and has no range. A period covers
 the whole period: `Q3 2026`, `FY2025`, `next week` (Monday to Monday),
 `last month`, and `this year` are ranges anchored on the record's reference
@@ -257,6 +263,10 @@ Agent tools, when extraction is on:
 - `search_by_entities` searches the records that mention named people,
   organizations, products or places, by name, when the deployment sets
   `ENTITY_SEARCH_TOOL=true` (see below)
+
+With extraction off, the agent is not shown `find_records_by_value` or
+`named_entity_kinds`, so it never calls a tool that can only fail. The flag is
+read once per request, before tools load.
 
 An entity is visible only when the caller can read a record that mentions it.
 Records in the trash never come back from an entity filter; the entities on

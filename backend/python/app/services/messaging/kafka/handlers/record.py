@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import time
 from collections.abc import AsyncGenerator
@@ -7,6 +8,8 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any
 
 import aiohttp  # type: ignore
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -26,12 +29,20 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import EntityType
+from app.modules.code_graph import deleted_files, edge_build_trigger
+from app.modules.code_graph import enabled as code_graph_switch
+from app.modules.code_graph.build_state import (
+    BuildStateStore,
+    claimed_build_already_ran,
+    request_is_stale,
+)
 from app.modules.indexing.connector_off_events import (
     ConnectorState,
     already_indexed,
@@ -68,6 +79,9 @@ from app.services.messaging.config import (
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
+    is_expected_outcome,
+    is_record_deleted,
+    is_source_refusal,
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
@@ -75,13 +89,16 @@ from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
     PHASE_READY,
     mark_cleanup_phase,
+    redis_from_config_service,
 )
 from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
+from app.telemetry.modules.record_storage_metrics import record_rejected_too_large
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.indexing_timing import stage
 from app.utils.jwt import generate_jwt
+from app.utils.loop_bridge import run_on_loop
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
     CONNECTOR_OFF,
@@ -94,13 +111,19 @@ from app.utils.user_errors import (
     STORED_CONTENT_DAMAGED,
     STORED_CONTENT_MISSING,
     duplicate_failed,
+    duplicate_password_protected,
+    is_password_protected,
     rate_limited_gave_up,
     rate_limited_will_retry,
     to_user_reason,
+    too_large_refusal,
     unsupported_file_type,
 )
 
 if TYPE_CHECKING:
+    from redis.asyncio import Redis
+
+    from app.modules.pipeline.leases import RecordLeases
     from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 RECONCILE_ATTEMPTS = 2
@@ -140,6 +163,63 @@ class RecordEventHandler(BaseEventService):
 
         self.event_processor : EventProcessor = event_processor
         self.producer = producer
+        # One client per event loop: process_event runs on the consumer's
+        # worker loop, and a consumer restart brings a new one. A client used
+        # from a loop other than the one that opened its connections fails with
+        # "attached to a different loop".
+        self._redis_by_loop: dict[asyncio.AbstractEventLoop, Redis] = {}
+        # Edge-build requests failed since the last one that went through. An
+        # outage fails one per code file; one traceback says it (O-12).
+        self._edge_request_failures = 0
+        # The producer's client is bound to the loop that created it — the main
+        # loop this handler is constructed on (indexing_main.start_kafka_consumers).
+        # process_event runs on the indexing consumer's worker-thread loop, so
+        # every publish below is bridged back, the same way the consumer bridges
+        # its own xack/re-queue (see indexing_consumer._run_on_main_loop).
+        try:
+            self._producer_loop: asyncio.AbstractEventLoop | None = (
+                asyncio.get_running_loop()
+            )
+        except RuntimeError:
+            self._producer_loop = None
+
+    async def _redis_client(self) -> "Redis":
+        loop = asyncio.get_running_loop()
+        # A closed loop's client cannot be closed any more; dropping it is all
+        # that is left to do.
+        for stale in [lp for lp in self._redis_by_loop if lp.is_closed()]:
+            del self._redis_by_loop[stale]
+        redis = self._redis_by_loop.get(loop)
+        if redis is None:
+            redis = await redis_from_config_service(self.config_service)
+            self._redis_by_loop[loop] = redis
+        return redis
+
+    async def _discard_redis(self) -> None:
+        redis = self._redis_by_loop.pop(asyncio.get_running_loop(), None)
+        if redis is not None:
+            await self._close_redis(redis)
+
+    async def _close_redis(self, redis: "Redis") -> None:
+        try:
+            await redis.aclose()
+        except Exception:
+            self.logger.exception("Failed to close the record handler's Redis client")
+
+    async def aclose(self) -> None:
+        """Close every client on the loop that owns it."""
+        clients, self._redis_by_loop = self._redis_by_loop, {}
+        for loop, redis in clients.items():
+            if loop.is_closed():
+                continue
+            try:
+                await run_on_loop(loop, self._close_redis(redis), timeout=5.0)
+            except Exception:
+                self.logger.warning("Could not close a record handler Redis client", exc_info=True)
+
+    @staticmethod
+    def _is_redis_connection_error(exc: BaseException) -> bool:
+        return isinstance(exc, (RedisConnectionError, RedisTimeoutError))
 
     def _entity_vector_store(self) -> Any | None:
         """Best-effort accessor for the entities-collection store.
@@ -167,6 +247,7 @@ class RecordEventHandler(BaseEventService):
         ProgressStatus.AUTO_INDEX_OFF.value,
         ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
         ProgressStatus.FAILED.value,
+        ProgressStatus.PASSWORD_PROTECTED.value,
     })
     # A live handler owns this record. The stale-IN_PROGRESS scan republishes
     # if that handler actually died; rewriting FAILED here races the worker
@@ -174,6 +255,22 @@ class RecordEventHandler(BaseEventService):
     _IN_FLIGHT_STATUSES = frozenset({
         ProgressStatus.IN_PROGRESS.value,
     })
+
+    record_leases: "RecordLeases | None" = None  # bound by the indexing service, next to the lease manager
+
+    async def _claim_if_orphaned(self, record_id: str) -> str | None:
+        """The record's lease, taken when no live holder (a duplicate delivery, a stage) has it, else ``None``.
+
+        An IN_PROGRESS record nobody holds is orphaned. Holding the lease until the status write keeps a new delivery from
+        starting on it in between.
+        """
+        leases = self.record_leases
+        if leases is None or not leases.bound:
+            return None  # cannot tell: leave it to the stale scan
+        try:
+            return await leases.claim(record_id)
+        except Exception:
+            return None
 
     async def on_message_abandoned(
         self,
@@ -213,6 +310,7 @@ class RecordEventHandler(BaseEventService):
             return
 
         record_id = str(record_id)
+        claim: str | None = None
         try:
             record = await self.event_processor.graph_provider.get_document(
                 record_id,
@@ -237,7 +335,12 @@ class RecordEventHandler(BaseEventService):
                 return
 
             current_status = record.get("indexingStatus")
-            if current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES:
+            # An in-flight record nobody holds: the delivery that was processing it ran out of attempts, nothing will
+            # finish it, and the stale scan would hand it back with a fresh retry budget, for ever.
+            if current_status in self._IN_FLIGHT_STATUSES:
+                claim = await self._claim_if_orphaned(record_id)
+            orphaned = claim is not None
+            if not orphaned and (current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES):
                 self.logger.info(
                     "Discarded message for record %s after %d attempt(s); "
                     "leaving status %s untouched: %s",
@@ -299,6 +402,12 @@ class RecordEventHandler(BaseEventService):
                 attempts,
                 reason,
             )
+            # FAILED is terminal, so this may have been the repo's last file:
+            # without asking here, the repo waits for an unrelated change.
+            await self._request_code_edge_build_if_repo_drained(record_id, record)
+            if orphaned:
+                # Its queued copies were parked behind it; the next one gets its turn.
+                await self._trigger_next_queued_duplicate(record_id, record.get("virtualRecordId"))
         except Exception as e:
             self.logger.error(
                 "Error while marking record %s FAILED after its message was "
@@ -308,6 +417,9 @@ class RecordEventHandler(BaseEventService):
                 e,
                 exc_info=True,
             )
+        finally:
+            if claim is not None and self.record_leases is not None:
+                await self.record_leases.release(record_id, claim)
 
     async def on_recovery_exhausted(self, record_id: str, *, resume_enrichment: bool) -> None:
         """End a record stale recovery has given up on, and move its queued copies on.
@@ -347,17 +459,23 @@ class RecordEventHandler(BaseEventService):
         record_id: str,
         virtual_record_id: str | None,
         reason: str | None,
+        *,
+        status: ProgressStatus = ProgressStatus.FAILED,
     ) -> None:
-        """Mark same-MD5 QUEUED copies failed when the primary copy fails.
+        """Mark same-MD5 QUEUED copies with the primary's terminal *status* (FAILED or PASSWORD_PROTECTED).
 
         Does not re-run indexing for queued copies. Re-OCR on identical content
         would usually repeat the same failure (e.g. rate limits) and waste resources.
         """
         try:
-            propagated_reason = duplicate_failed(reason)
+            propagated_reason = (
+                duplicate_password_protected(reason)
+                if status is ProgressStatus.PASSWORD_PROTECTED
+                else duplicate_failed(reason)
+            )
             updated = await self.event_processor.graph_provider.update_queued_duplicates_status(
                 record_id,
-                ProgressStatus.FAILED.value,
+                status.value,
                 virtual_record_id,
                 reason=propagated_reason,
             )
@@ -367,6 +485,7 @@ class RecordEventHandler(BaseEventService):
                     updated,
                     record_id,
                 )
+                await self.request_code_edge_builds_for_copies(record_id, virtual_record_id)
             else:
                 self.logger.info(
                     "No queued duplicates to update after primary failure for record %s",
@@ -504,11 +623,16 @@ class RecordEventHandler(BaseEventService):
     async def _publish_reindex_event(self, record_id: str, payload: dict) -> None:
         if not self.producer:
             raise IndexingError("No messaging producer configured; cannot publish newRecord event")
-        await self.producer.send_event(
-            topic=Topic.RECORD_EVENTS.value,
-            event_type="newRecord",
-            payload=payload,
-            key=str(record_id),
+        # No timeout: a slow broker send is not a failure, and the send is
+        # shielded on the producer loop either way.
+        await run_on_loop(
+            self._producer_loop,
+            self.producer.send_event(
+                topic=Topic.RECORD_EVENTS.value,
+                event_type="newRecord",
+                payload=payload,
+                key=str(record_id),
+            ),
         )
 
     async def _end_enrichment_without_running(
@@ -625,6 +749,8 @@ class RecordEventHandler(BaseEventService):
             # failed or was cut short: a redelivery finds nothing QUEUED.
             if promoted > 0 or had_pending:
                 await self._reconcile_pending_duplicates(record_id, virtual_record_id)
+            if promoted > 0:
+                await self.request_code_edge_builds_for_copies(record_id, virtual_record_id)
             if indexing_status == ProgressStatus.COMPLETED.value:
                 # Duplicates just became searchable too. They can live in
                 # a different KB than this record, which only the TTL
@@ -639,6 +765,216 @@ class RecordEventHandler(BaseEventService):
             # Find and trigger indexing for the next queued duplicate
             self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
             await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
+
+    async def _publish_code_edges_event(
+        self, *, org_id: str, connector_id: str, record_group_id: str
+    ) -> None:
+        await run_on_loop(
+            self._producer_loop,
+            self.producer.send_event(
+                topic=Topic.CODE_GRAPH_EVENTS.value,
+                event_type=EventTypes.BUILD_CODE_EDGES.value,
+                payload={
+                    "orgId": org_id,
+                    "connectorId": connector_id,
+                    "recordGroupId": record_group_id,
+                },
+                key=record_group_id,
+            ),
+        )
+
+    async def _request_code_edge_build_if_repo_drained(
+        self, record_id: str | None, record: dict | None = None
+    ) -> None:
+        """Ask for this repo's edge build once its records stop arriving.
+
+        Never raises. This runs on the way out of a record that has already
+        reached a terminal state, and a repo whose edges are late is a smaller
+        problem than a record reported as failed because asking went wrong.
+        """
+        if not record_id or self.producer is None:
+            return
+        # Gate on the copy already in hand before reading anything:
+        # connectorName does not change between reads, so this costs every
+        # non-code record on the platform nothing. The re-read below is still
+        # needed for the ones that pass, because on the failure path that copy
+        # predates the status write that made the record terminal.
+        if record is not None and not edge_build_trigger.is_code_record(record):
+            return
+        try:
+            record = await self.event_processor.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            scope = edge_build_trigger.publishable_scope(record)
+            if scope is None:
+                return
+            await self._ask_for_code_edge_build(*scope)
+        except Exception as exc:
+            await self._edge_request_failed(
+                exc, "Failed to request a code edge build after record %s", record_id
+            )
+
+    async def request_code_edge_builds_for_copies(
+        self, record_id: str, virtual_record_id: str | None
+    ) -> None:
+        """A promoted copy can be the last file of its own repo (a fork, a
+        mirror), and its promotion is the only status change it gets (R-5).
+
+        Never raises, like ``_request_code_edge_build_if_repo_drained``.
+        """
+        if not virtual_record_id or self.producer is None:
+            return
+        graph_provider = self.event_processor.graph_provider
+        try:
+            keys = await graph_provider.get_records_by_virtual_record_id(virtual_record_id) or []
+            scopes = set()
+            for key in keys:
+                if key and key != record_id:
+                    copy = await graph_provider.get_document(key, CollectionNames.RECORDS.value)
+                    scope = edge_build_trigger.publishable_scope(copy)
+                    if scope is not None:
+                        scopes.add(scope)
+        except Exception as exc:
+            await self._edge_request_failed(
+                exc, "Failed to request code edge builds for the copies of record %s", record_id
+            )
+            return
+        # One repo's failed request must not keep the others from being marked.
+        for scope in scopes:
+            try:
+                await self._ask_for_code_edge_build(*scope)
+            except Exception as exc:
+                await self._edge_request_failed(
+                    exc, "Failed to request a code edge build for record group %s, a copy of record %s",
+                    scope[2], record_id,
+                )
+
+    async def _edge_request_failed(self, exc: Exception, message: str, *args: object) -> None:
+        """The first failure since the last success is logged with its traceback,
+        the rest at debug. The request is already marked on the sync point, so
+        the reconciler builds it once the outage ends."""
+        self._edge_request_failures += 1
+        if self._edge_request_failures == 1:
+            self.logger.exception(message + "; later failures are counted until one succeeds",
+                                  *args)
+        else:
+            self.logger.debug(message, *args, exc_info=True)
+        if self._is_redis_connection_error(exc):
+            await self._discard_redis()
+
+    def _edge_request_succeeded(self) -> None:
+        if self._edge_request_failures:
+            self.logger.warning(
+                "Code edge build requests are going through again after %d failed; "
+                "the reconciler builds the repos they were for",
+                self._edge_request_failures,
+            )
+            self._edge_request_failures = 0
+
+    async def _hand_over_shared_copy(self, payload: dict, org_id: str | None) -> None:
+        """The deleted record may be the one its shared content is filed under;
+        that copy moves under a record that still holds it.
+
+        Raises IndexingError so the consumer retries, then dead-letters: the
+        record is already gone from the graph, so nothing else would move the
+        copy, and every step of the delete is idempotent.
+        """
+        connector_id = payload.get("connectorId")
+        virtual_record_id = payload.get("virtualRecordId")
+        if not (org_id and connector_id and virtual_record_id):
+            return
+        helper = StorageCleanupHelper(
+            self.logger, self.event_processor.graph_provider, self.config_service
+        )
+        record_id = payload.get("recordId")
+        try:
+            await helper.hand_over_after_record_delete(
+                org_id, connector_id, virtual_record_id, deleted_record_id=record_id
+            )
+        except Exception as e:
+            raise IndexingError(
+                f"Deleted record {record_id}: the content it shared with other records could "
+                "not be moved under a record that still holds it",
+                record_id=record_id,
+                details={"org_id": org_id, "virtual_record_id": virtual_record_id},
+            ) from e
+        finally:
+            await helper.close()
+
+    async def _request_code_edge_build_for_deleted(self, payload: dict) -> None:
+        """A deleted code file changes the repo's graph too.
+
+        The record is gone by the time its delete event is handled, so the
+        repo comes from the event itself. Never raises, for the same reason as
+        ``_request_code_edge_build_if_repo_drained``.
+        """
+        if self.producer is None or not edge_build_trigger.is_code_record(payload):
+            return
+        scope = (payload.get("orgId"), payload.get("connectorId"), payload.get("recordGroupId"))
+        if not all(isinstance(value, str) and value for value in scope):
+            return
+        try:
+            # The connector kept the names the file defined before deleting it,
+            # and an incremental build re-resolves the files referencing them.
+            # Without those names it cannot find the files that called into the
+            # deleted one, so they would keep their old bindings: build in full.
+            try:
+                full = not await deleted_files.was_remembered(
+                    self.event_processor.graph_provider, scope[0], payload.get("recordId") or "",
+                )
+            except Exception:
+                full = True
+            await self._ask_for_code_edge_build(*scope, full=full)
+        except Exception as exc:
+            await self._edge_request_failed(
+                exc, "Failed to request a code edge build after deleting record %s",
+                payload.get("recordId"),
+            )
+
+    async def _ask_for_code_edge_build(
+        self, org_id: str, connector_id: str, record_group_id: str, *, full: bool = False
+    ) -> None:
+        if not code_graph_switch.CODE_GRAPH_ENABLED:
+            return
+        graph_provider = self.event_processor.graph_provider
+        store = BuildStateStore(graph_provider, self.logger)
+        if full:
+            # Before the drain check: the build this owes is the one that runs
+            # when the repo's other records finish, which asks only for an
+            # incremental one.
+            await store.request_full(org_id, connector_id, record_group_id)
+        if await edge_build_trigger.group_has_unfinished_records(
+            graph_provider, org_id, record_group_id
+        ):
+            return
+
+        state = await store.read_or_empty(org_id, record_group_id)
+        now_ms = int(time.time() * 1000)
+        # The mark comes first and is written every time: only the publish is
+        # deduplicated. A request inside the dedupe window, or one made while
+        # Redis is down, used to leave nothing behind, and the reconciler only
+        # sweeps repos carrying this mark. The fresh request id is what tells a
+        # build that is already running that it was asked again.
+        await store.mark_requested(org_id, connector_id, record_group_id, now_ms)
+        redis = await self._redis_client()
+        # Only a pending request older than the window, presumed lost, gets
+        # past a lost claim.
+        claimed = await edge_build_trigger.claim_publish(redis, org_id, record_group_id)
+        if not claimed and not request_is_stale(state, now_ms) \
+                and not claimed_build_already_ran(state, now_ms):
+            self._edge_request_succeeded()
+            return
+        await self._publish_code_edges_event(
+            org_id=org_id,
+            connector_id=connector_id,
+            record_group_id=record_group_id,
+        )
+        self._edge_request_succeeded()
+        self.logger.info(
+            "Requested code edge build for org=%s record_group=%s",
+            org_id,
+            record_group_id,
+        )
 
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
@@ -695,7 +1031,8 @@ class RecordEventHandler(BaseEventService):
 
         True when the record was handled: left QUEUED until the source's
         Retry-After for the stranded sweep to re-send, or, once it has waited
-        longer than allowed, FAILED. False leaves ``exc`` to the ordinary retry
+        longer than allowed while its connector got nothing indexed, FAILED.
+        False leaves ``exc`` to the ordinary retry
         path. See ``app/modules/indexing/rate_limit_deferral.py``.
         """
         retry_after = rate_limit_retry_after(exc)
@@ -715,6 +1052,17 @@ class RecordEventHandler(BaseEventService):
         now = get_epoch_timestamp_in_ms()
         plan = plan_deferral(record, retry_after, now_ms=now, max_total_seconds=max_total)
         graph = self.event_processor.graph_provider
+        if plan.give_up and await self._connector_indexed_since(record["connectorId"], plan.since_ms):
+            # The source has been serving this connector all along; the record
+            # is behind the connector's own backlog, not refused.
+            self.logger.info(
+                "Record %s has been rate-limited since %s while its connector kept "
+                "indexing, so it is waiting its turn: its wait starts again",
+                record_id, plan.since_ms,
+            )
+            plan = plan_deferral(
+                record, retry_after, now_ms=now, max_total_seconds=max_total, new_run=True
+            )
         try:
             if plan.give_up:
                 reason = rate_limited_gave_up(source, plan.not_before_ms, now, max_total / 3600)
@@ -752,6 +1100,24 @@ class RecordEventHandler(BaseEventService):
             record_id, retry_after, plan.not_before_ms,
         )
         return True
+
+    async def _connector_indexed_since(self, connector_id: str, since_ms: int) -> bool:
+        """Whether a record of the connector finished indexing after ``since_ms``.
+
+        False when that cannot be read, so the record fails as it would have
+        before the check, rather than waiting on an answer that never comes.
+        """
+        try:
+            return await self.event_processor.graph_provider.has_records_indexed_since(
+                connector_id, since_ms
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Could not tell whether connector %s indexed anything since %s, so a "
+                "record waiting that long on its rate limit is failed: %s",
+                connector_id, since_ms, exc,
+            )
+            return False
 
     async def _end_rate_limit_wait(self, record_id: str) -> None:
         """The source served the record, so its run of rate-limit waits is over."""
@@ -1026,7 +1392,7 @@ class RecordEventHandler(BaseEventService):
             await sink.index(ctx)
             # The stored extraction rebuilds the record's named entities and their
             # vector points too, so a re-embed never drops them or calls a model.
-            await sink.reproject_named_entities(ctx)
+            await sink.reproject_named_entities(ctx, content_rev=record.get("contentRev"))
         except Exception:
             self.logger.exception(
                 "Vector-only reindex failed for record %s", record_id
@@ -1070,6 +1436,7 @@ class RecordEventHandler(BaseEventService):
         # A retry of named stages never writes the record's own statuses, even when it
         # fails: the record is already searchable and its stage state records the outcome.
         stage_redrive = False
+        in_trash = False
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -1188,7 +1555,9 @@ class RecordEventHandler(BaseEventService):
                 # stay for the purge, which is also what restore needs.
                 virtual_record_ids = payload.get("virtualRecordIds") or []
                 result = await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    virtual_record_ids, keep_mapping=True
+                    virtual_record_ids,
+                    org_id=payload.get("orgId") or None,
+                    keep_mapping=True,
                 )
                 if result.get("success") is False:
                     raise IndexingError(
@@ -1268,8 +1637,9 @@ class RecordEventHandler(BaseEventService):
 
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
+                org_id = payload.get("orgId") or None
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    [virtual_record_id], org_id=payload.get("orgId") or None
+                    [virtual_record_id], org_id=org_id
                 )
                 entity_store = self._entity_vector_store()
                 if entity_store is not None:
@@ -1277,7 +1647,6 @@ class RecordEventHandler(BaseEventService):
                     # match no point and strand the entity. The fallback read
                     # is non-raising: the embeddings are already gone, and an
                     # unreadable graph must not fail the delete.
-                    org_id = payload.get("orgId")
                     if not org_id:
                         record_doc = await self.event_processor.graph_provider.get_document(
                             record_id, CollectionNames.RECORDS.value
@@ -1296,6 +1665,8 @@ class RecordEventHandler(BaseEventService):
                             "its entity point is left for reconciliation",
                             record_id,
                         )
+                await self._request_code_edge_build_for_deleted(payload)
+                await self._hand_over_shared_copy(payload, org_id)
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1338,6 +1709,7 @@ class RecordEventHandler(BaseEventService):
                 self.logger.info(
                     "Record %s is in the trash; dropping its %s event", record_id, event_type
                 )
+                in_trash = True
                 record = None
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
@@ -1356,13 +1728,39 @@ class RecordEventHandler(BaseEventService):
             stage_ingress = self.event_processor.stage_ingress
             if event_type == EventTypes.REINDEX_RECORD.value and isinstance(stages, list) and stages and stage_ingress is not None:
                 stage_redrive = True
+                stage_rev = payload.get("stageRev")
+                # A null stageRev is a record selected before it had a revision.
+                if "stageRev" in payload and (record.get("contentRev") or None) != (stage_rev or None):
+                    # Selected on a revision the record has left: the new one runs its own
+                    # stages, and a full reindex here would start a second pipeline beside it.
+                    self.logger.info(
+                        f"Not re-running stages {stages} for record {record_id}: it moved from "
+                        f"revision {stage_rev} to {record.get('contentRev')}"
+                    )
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
                 dispatched = await stage_ingress.redrive(
-                    virtual_record_id, record.get("contentRev"), [str(s) for s in stages]
+                    virtual_record_id,
+                    record.get("contentRev"),
+                    [str(s) for s in stages],
+                    # A search asking for a record it found is not a request to redo work.
+                    force=not payload.get("firstUse"),
                 )
                 if dispatched is not None:
                     self.logger.info(f"🔁 Re-running stages {stages} for record {record_id}: {dispatched}")
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
+                if payload.get("firstUse"):
+                    # A search is no reason to re-parse and re-embed a record; one the
+                    # runtime never saw is left to an explicit reindex.
+                    self.logger.info(
+                        f"Not classifying record {record_id} on first use: no stage state for revision "
+                        f"{record.get('contentRev')}"
+                    )
+                    for done in (IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE):
+                        yield PipelineEvent(event=done, data=PipelineEventData(record_id=record_id))
                     return
                 # The runtime never saw this revision: a full reindex dispatches every stage.
                 stage_redrive = False
@@ -1370,7 +1768,9 @@ class RecordEventHandler(BaseEventService):
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
             if clears_embeddings_first(event_type, payload):
-                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([virtual_record_id])
+                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
+                    [virtual_record_id], org_id=payload.get("orgId") or None
+                )
             elif not vector_db_only and event_type in (
                 EventTypes.UPDATE_RECORD.value,
                 EventTypes.REINDEX_RECORD.value,
@@ -1684,6 +2084,17 @@ class RecordEventHandler(BaseEventService):
 
 
 
+            # Always: the consumer holds a record that would sit on its file
+            # waiting for a parse slot back until it is not downloaded yet.
+            known_size = doc.get("sizeInBytes")
+            yield PipelineEvent(
+                event=IndexingEvent.START_DOWNLOAD,
+                data=PipelineEventData(
+                    record_id=record_id,
+                    size_bytes=known_size if isinstance(known_size, int) and known_size > 0 else None,
+                ),
+            )
+
             # Try signed URL first if available, fallback to connector streaming if it fails
             signed_url_success = False
 
@@ -1710,6 +2121,11 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
+                            if event.event == IndexingEvent.PARSING_COMPLETE:
+                                # Parsed: the file's bytes must not outlive the
+                                # parse through embedding, storage and upsert.
+                                payload.pop("buffer", None)
+                                response = None
                             yield event
                     finally:
                         await on_event_gen.aclose()
@@ -1771,6 +2187,11 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
+                            if event.event == IndexingEvent.PARSING_COMPLETE:
+                                # Parsed: the file's bytes must not outlive the
+                                # parse through embedding, storage and upsert.
+                                payload.pop("buffer", None)
+                                response = None
                             yield event
                     finally:
                         await on_event_gen.aclose()
@@ -1824,7 +2245,8 @@ class RecordEventHandler(BaseEventService):
             # No traceback here: the Kafka consumer already logs the full
             # exception chain on every attempt. A traceback is logged below
             # only once, when this turns out to be the final attempt.
-            self.logger.warning(f"Record {message_id} processing failed: {error_msg}")
+            if not is_expected_outcome(e):  # logged once, below or by the consumer
+                self.logger.warning(f"Record {message_id} processing failed: {error_msg}")
             raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
         finally:
             processing_time = (datetime.now() - start_time).total_seconds()
@@ -1872,6 +2294,11 @@ class RecordEventHandler(BaseEventService):
                         f"🔄 Record {record_id} cancelled mid-flight; leaving it "
                         f"IN_PROGRESS for redelivery or stale recovery"
                     )
+                elif is_record_deleted(last_exception):
+                    # Nothing to mark FAILED and no failure to hand its queued duplicates.
+                    self.logger.info(
+                        f"Record {record_id} was deleted while it was being indexed; nothing to do"
+                    )
                 elif is_final and await self._enrichment_still_cut_short(
                     record_id, unreadable=resuming_enrichment,
                 ):
@@ -1889,16 +2316,36 @@ class RecordEventHandler(BaseEventService):
                 elif is_final:
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
-                    user_reason = to_user_reason(last_exception)
-                    self.logger.error(
-                        f"Final failure for record {record_id}: {error_msg}",
-                        exc_info=last_exception,
+                    user_reason = to_user_reason(last_exception, record=record, source=source_name)
+                    # Chosen from the exception's type, not its text (see is_password_protected).
+                    terminal_status = (
+                        ProgressStatus.PASSWORD_PROTECTED
+                        if is_password_protected(last_exception)
+                        else ProgressStatus.FAILED
                     )
+                    if (refusal := too_large_refusal(last_exception)) is not None:
+                        # A metrics fault must not stop the record being marked FAILED.
+                        with contextlib.suppress(Exception):
+                            record_rejected_too_large(refusal.status)
+                    if is_source_refusal(last_exception):
+                        # The source said no: an expected outcome, with its reason stored.
+                        self.logger.warning(f"Source refused record {record_id}: {error_msg}")
+                    else:
+                        self.logger.error(
+                            f"Final failure for record {record_id}: {error_msg}",
+                            exc_info=last_exception,
+                        )
                     try:
                         record = await self.__update_document_status(
                             record_id=record_id,
-                            indexing_status=ProgressStatus.FAILED.value,
-                            extraction_status=ProgressStatus.FAILED.value,
+                            indexing_status=terminal_status.value,
+                            # Classification does not apply to a file nobody can read; it
+                            # is not a classification failure either (stats, retry button).
+                            extraction_status=(
+                                ProgressStatus.SKIPPED.value
+                                if terminal_status is ProgressStatus.PASSWORD_PROTECTED
+                                else ProgressStatus.FAILED.value
+                            ),
                             reason=user_reason,
                         )
                     except Exception as status_exc:
@@ -1907,7 +2354,7 @@ class RecordEventHandler(BaseEventService):
                         # DocumentProcessingError or a CancelledError) with a
                         # new one that the consumer would reclassify/mishandle.
                         self.logger.error(
-                            f"Failed to persist FAILED status for record {record_id} "
+                            f"Failed to persist {terminal_status.value} status for record {record_id} "
                             f"(original error preserved): {status_exc}"
                         )
                         if last_exception is not None:
@@ -1926,7 +2373,8 @@ class RecordEventHandler(BaseEventService):
                                 f"propagating failure to all queued duplicates"
                             )
                             await self._propagate_primary_failure_to_queued_duplicates(
-                                record_id, virtual_record_id, user_reason
+                                record_id, virtual_record_id, user_reason,
+                                status=terminal_status,
                             )
                         else:
                             # Transient error exhausted retries → try next duplicate
@@ -1990,6 +2438,15 @@ class RecordEventHandler(BaseEventService):
             elif record is not None and event_type != EventTypes.DELETE_RECORD.value:
                 # Update queued duplicates for ALL record types (not just FILE)
                 await self._release_queued_copies(record_id)
+
+            # Outside both branches above, because a repo's last file is as
+            # likely to end FAILED or EMPTY as COMPLETED and only the success
+            # branch is reached from there. Skipped on cancellation: the record
+            # stays IN_PROGRESS for redelivery, so the repo is not drained and
+            # this would be graph I/O during an unwind. Skipped for a record in
+            # the trash too, which is drained like a missing one.
+            if not cancelled and not in_trash:
+                await self._request_code_edge_build_if_repo_drained(record_id, record)
 
     async def __update_document_status(
         self,

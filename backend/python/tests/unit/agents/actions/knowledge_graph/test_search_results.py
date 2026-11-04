@@ -107,8 +107,3 @@ class TestToolOutput:
         assert output[0] == TextPart(text="text")
         assert len(output) == 2
         assert "pending_tool_images" not in state
-
-    def test_images_are_stashed_when_the_transport_cannot_carry_them(self) -> None:
-        state = {"is_multimodal_llm": True, "supports_multipart_tool_result": False}
-        tool_output("text", [_IMAGE], state)
-        assert state["pending_tool_images"] == [_IMAGE]

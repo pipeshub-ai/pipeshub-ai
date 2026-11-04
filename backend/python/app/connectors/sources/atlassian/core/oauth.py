@@ -39,6 +39,8 @@ class AtlassianScope(Enum):
     JIRA_AUDIT_LOG_READ = "read:audit-log:jira"
     JIRA_APPLICATION_ROLE_READ = "read:application-role:jira"
     JIRA_PROJECT_ROLE_READ = "read:project-role:jira"
+    JIRA_ISSUE_SECURITY_LEVEL_READ = "read:issue-security-level:jira"
+    JIRA_ISSUE_SECURITY_SCHEME_READ = "read:issue-security-scheme:jira"
 
     # Confluence Scopes
     CONFLUENCE_CONTENT_READ = "read:confluence-content.all"
@@ -107,6 +109,10 @@ class AtlassianScope(Enum):
             cls.JIRA_AUDIT_LOG_READ.value,      # Read audit logs (for detecting deleted issues)
             cls.JIRA_APPLICATION_ROLE_READ.value,  # Read application roles
             cls.JIRA_PROJECT_ROLE_READ.value,   # Read project roles
+            # Read who holds each issue security level. Without them the members read is a
+            # 401 even for a site admin, and every issue with a level is closed to everyone.
+            cls.JIRA_ISSUE_SECURITY_LEVEL_READ.value,
+            cls.JIRA_ISSUE_SECURITY_SCHEME_READ.value,
 
             # Common scopes
             cls.ACCOUNT_READ.value,             # Read Atlassian account info

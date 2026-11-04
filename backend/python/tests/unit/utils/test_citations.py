@@ -9,11 +9,13 @@ from app.models.blocks import BlockType, GroupType
 import app.utils.citations as citations_mod
 
 from app.utils.citations import (
+    _MD_LINK_PATTERN,
     ChatDocCitation,
     _clean_duplicate_citation_links,
     _extract_block_index_from_url,
     _extract_record_id_from_url,
     _find_web_record_by_url,
+    _badge_url,
     _renumber_citation_links,
     build_tiny_web_ref_url,
     detect_hallucinated_citation_urls,
@@ -2647,3 +2649,30 @@ class TestDescriptiveLinkTextIsKept:
             assert current.startswith(previous)
             previous = current
         assert "Velora renewal [1]" in previous and "pricing review [2]" in previous
+
+
+# ---------------------------------------------------------------------------
+# _badge_url: citation badges written into the answer
+# ---------------------------------------------------------------------------
+_WIKI = "https://en.wikipedia.org/wiki/Python_(programming_language)#:~:text=a"
+
+
+class TestBadgeUrl:
+    def test_encodes_parentheses(self) -> None:
+        assert _badge_url(_WIKI) == "https://en.wikipedia.org/wiki/Python_%28programming_language%29#:~:text=a"
+
+    def test_encodes_nested_parentheses(self) -> None:
+        assert _badge_url("https://x.test/wiki/A_(b_(c))") == "https://x.test/wiki/A_%28b_%28c%29%29"
+
+    def test_leaves_other_urls_unchanged(self) -> None:
+        for url in ("https://x.test/page#:~:text=Q3%20results", "/record/abc-123/preview#blockIndex=4"):
+            assert _badge_url(url) == url
+
+    def test_renumbered_badge_for_a_parenthesised_url_has_no_raw_parens(self) -> None:
+        text = "Python 3.0 shipped in 2008 [source](ref1)."
+        matches = list(re.finditer(_MD_LINK_PATTERN, text))
+        result = _renumber_citation_links(text, matches, {_WIKI: 1}, ref_to_url={"ref1": _WIKI})
+        assert result == (
+            "Python 3.0 shipped in 2008 "
+            "[1](https://en.wikipedia.org/wiki/Python_%28programming_language%29#:~:text=a)."
+        )

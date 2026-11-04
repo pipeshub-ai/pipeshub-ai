@@ -65,6 +65,12 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_accessible_virtual_record_ids": (Rule.LIVE, "the search permission map"),
     "filter_accessible_virtual_record_ids": (Rule.LIVE, "search permission check"),
     "filter_accessible_record_ids": (Rule.LIVE, "search permission check"),
+    "get_stage_states_with_records": (
+        Rule.LIVE, "picks records to re-run a stage on; a trashed record is not re-run",
+    ),
+    "get_record_content_revs": (
+        Rule.LIVE, "re-checks a stage retry's selection; a record trashed since is not re-run",
+    ),
     "find_duplicate_records": (Rule.LIVE, "a copy must not take COMPLETED from a record without vectors"),
     "find_next_queued_duplicate": (Rule.LIVE, "dedup never hands work to a trashed record"),
     "update_queued_duplicates_status": (Rule.LIVE, "dedup never copies status onto a trashed record"),
@@ -114,14 +120,21 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.ALL,
         "a deleted connector's shared content is handed to a holder; a trashed one needs it for a restore",
     ),
+    "get_file_paths_for_records": (Rule.ALL, _BY_KEY + "; the code graph maps block owners to their paths"),
     "get_child_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_parent_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_record_parent_adjacency": (
         Rule.ALL, _STRUCTURE + "; Location drops a trashed ancestor through the access check",
     ),
     "get_record_parent_info": (Rule.ALL, _STRUCTURE),
+    "_get_kb_context_for_record": (Rule.ALL, _STRUCTURE),
     "is_record_folder": (Rule.ALL, _STRUCTURE),
     "is_record_descendant_of": (Rule.ALL, _STRUCTURE),
+    "filter_linked_record_ids": (
+        Rule.ALL,
+        _STRUCTURE + ": whether each of the caller's records still hangs under a record group or parent; "
+        "a trashed record's permissions are left as they were",
+    ),
     "get_record_owner_source_user_email": (Rule.ALL, _STRUCTURE),
     "get_taxonomy_entities_for_record": (Rule.ALL, _STRUCTURE),
     "get_record_taxonomy_links": (
@@ -132,6 +145,12 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_named_entities_for_record": (Rule.ALL, _STRUCTURE),
     "get_named_entity_mentions_in_records": (
         Rule.ALL, _STRUCTURE + "; search_by_entities passes only records list_accessible_entity_records returned",
+    ),
+    "get_named_entity_mentions_from_records": (
+        Rule.ALL, _STRUCTURE + "; find_co_mentioned_entities passes only records list_accessible_entity_records returned",
+    ),
+    "get_named_entity_values_in_records": (
+        Rule.ALL, _STRUCTURE + "; find_records_by_value passes only records it already permission-checked",
     ),
     "move_taxonomy_edges": (
         Rule.ALL, "a merge or migration moves a trashed record's edges too, so a restore finds them on the new node",
@@ -155,15 +174,30 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.ALL,
         "a storage move takes every stored file under the folder, or a restored record would lose its content",
     ),
+    "get_record_group_virtual_record_ids": (
+        Rule.ALL,
+        "a storage move takes every stored file under the group, or a restored record would lose its content",
+    ),
+    "has_records_indexed_since": (
+        Rule.ALL,
+        "asks whether the source served the connector; a record trashed after it was indexed still shows it did",
+    ),
     # Writes.
     "records_accept_indexed_copy": (Rule.ALL, "reads the records collection's schema, never a record"),
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),
     "reindex_record_group_records": (Rule.WRITE, "walks with get_records_by_record_group"),
     "update_indexing_status_for_record_ids": (Rule.WRITE, ""),
+    "claim_push_record": (Rule.WRITE, "claims a push of a live record only: a trashed record never matches"),
+    "retag_push_record": (Rule.WRITE, "retags a live pushed record only"),
+    "set_record_properties": (Rule.WRITE, "writes projected values onto a record the caller read live; on a trashed one they are inert"),
     "compare_and_set_record_fields": (Rule.WRITE, "writes only records still on the given contentRev"),
     "stage_states_delete_for_virtual_records": (
         Rule.WRITE,
         "deletes the pipeline stage states of virtual records no record references any more",
+    ),
+    "stage_state_org_for_virtual_record": (
+        Rule.ALL,
+        "reads pipeline stage states, not records: the org of content whose mapping lost it",
     ),
     "delete_parent_child_edge_to_record": (Rule.WRITE, ""),
     "batch_upsert_records": (Rule.WRITE, ""),
@@ -182,4 +216,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "restore_records": (Rule.WRITE, "all or nothing: only records still in the trash under the batch named"),
     "purge_trashed_records": (Rule.WRITE, "removes only records still in the trash and due, checked in the delete"),
     "record_purge_failure": (Rule.WRITE, "counts only on records still in the trash"),
+    "delete_blocks_for_records": (Rule.WRITE, ""),
+    "batch_upsert_node_relations": (Rule.WRITE, ""),
 }

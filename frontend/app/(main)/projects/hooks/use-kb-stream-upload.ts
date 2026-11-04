@@ -12,6 +12,12 @@ interface StreamedFileEventData {
   message?: string;
 }
 
+/** The key a streamed event's path matches a tracker row on: the server may echo `/a.txt` or `dir/a.txt` for `a.txt`. */
+function fileKey(path: string): string {
+  const trimmed = path.trim().replace(/\\/g, '/');
+  return trimmed.slice(trimmed.lastIndexOf('/') + 1);
+}
+
 interface UseKbStreamUploadOptions {
   /** Resolves the target KB id, lazily creating it on first call (`ProjectApi.ensureKnowledgeBase`). */
   getKbId: () => Promise<string>;
@@ -98,7 +104,7 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
       // `streamUpload` falls back to each file's own `.name` as its
       // `filePath` when no `filesMetadata` is passed — matches the key used
       // here to correlate streamed per-file events back to a tracker row.
-      const storeIdByName = new Map(entries.map((e) => [e.file.name, e.storeId]));
+      const storeIdByName = new Map(entries.map((e) => [fileKey(e.file.name), e.storeId]));
 
       let gotDone = false;
       let gotError: string | null = null;
@@ -114,7 +120,7 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
           {
             onEvent: (evt) => {
               const data = evt.data as StreamedFileEventData | undefined;
-              const storeId = storeIdByName.get(String(data?.filePath || data?.fileName || ''));
+              const storeId = storeIdByName.get(fileKey(String(data?.filePath || data?.fileName || '')));
               if (evt.event === 'file:succeeded') {
                 if (storeId) useUploadStore.getState().completeUpload(storeId);
                 anySuccess = true;
@@ -145,12 +151,14 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
 
       // Never mark a row completed unless the server confirmed the batch
       // finished (`done`) with no error — a row whose terminal event was
-      // missed is failed instead of assumed successful.
+      // missed is failed instead of assumed successful. Once `done` has
+      // arrived the server's answer is complete: a connection that drops
+      // while the response closes is not a failed upload.
       const fallbackMessage =
-        (streamError as Error | null)?.message ||
         gotError ||
+        (streamError as Error | null)?.message ||
         t('uploadProgress.uploadIncomplete', { defaultValue: 'Upload incomplete' });
-      const succeededCleanly = gotDone && !gotError && !streamError;
+      const succeededCleanly = gotDone && !gotError;
       const items = useUploadStore.getState().items;
       entries.forEach((e) => {
         const item = items.find((i) => i.id === e.storeId);

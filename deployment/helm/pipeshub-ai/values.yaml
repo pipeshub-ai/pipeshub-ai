@@ -59,7 +59,7 @@ secretManagement:
 image:
   repository: pipeshubai/pipeshub-ai
   pullPolicy: IfNotPresent
-  tag: "latest"  # v0.3.0 is not available on Docker Hub
+  tag: "latest"  # or pin a release, e.g. "0.10.0"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -97,35 +97,12 @@ securityContext:
 service:
   type: ClusterIP
 
-# Metrics configuration for Prometheus
-metrics:
-  enabled: true
-  port: 9090  # Port for exposing application metrics
-
-# Monitoring configuration
-monitoring:
-  serviceMonitor:
-    enabled: false  # Requires Prometheus Operator CRDs
-    labels: {}  # Labels to match Prometheus selector
-    annotations: {}
-    path: /metrics
-    interval: 30s
-    scrapeTimeout: 10s
-
 # Telemetry configuration
 telemetry:
   # Product metrics/event collection (TELEMETRY_COLLECTION_FLAG). Empty keeps the
   # services' default, on; false turns all telemetry code off.
   collection:
     enabled: ""
-  # OpenTelemetry (OTLP) exporter wiring
-  enabled: false
-  otlp:
-    endpoint: ""  # OTLP endpoint URL (e.g., "http://otel-collector:4317")
-    headers: {}  # Custom headers for OTLP exporter
-    tls:
-      enabled: false
-      insecure: false
 
 # Express `trust proxy` (TRUST_PROXY): how many proxies in front of the app
 # may set X-Forwarded-For, or a comma-separated list of their CIDRs. Empty
@@ -134,8 +111,14 @@ telemetry:
 # its own X-Forwarded-For entry). Never "true".
 trustProxy: ""
 
-# Per-IP limit for login, OTP and password endpoints.
+# Per-account limit for login, OTP and password endpoints (per client IP and
+# email, or per signed-in user). One client IP may send six times this in total.
+# Each replica counts on its own, so N replicas allow up to N times this.
 maxAuthRequestsPerMinute: 10
+
+# Limit on password-reset, sign-in-code and email-change requests about one email
+# address, per minute, across all clients and replicas (shared through Redis).
+addressRateLimitPerMinute: 60
 
 ingress:
   enabled: false
@@ -201,8 +184,9 @@ extraSecretData: {}
 extraEnv: []
 extraEnvFrom: []
 
-# aws-sdk v2 presigns us-east-1 with Signature V2. SSE-KMS buckets reject those
-# URLs. Images that set signatureVersion on the S3 client do not need this.
+# Obsolete. AWS SDK v3 always signs with Signature V4, so SSE-KMS buckets
+# no longer need a preload. Left in place so a values file that still sets
+# it does not fail the render; the mounted script is a no-op.
 s3SignatureV4Preload: false
 
 volumes: {}
@@ -358,7 +342,9 @@ config:
   # (GREP_RANK_FUSION, RELEVANCE_ORDERED_CONTEXT, FUSION_RECORD_CUT,
   # ANSWER_COMPOSITION_RULES, MULTI_STEP_ANSWER_RULES, THOROUGH_RETRIEVAL) to
   # "true" or "false" through extraEnv. KEYWORD_SEARCH_QUERIES is opt-in only:
-  # the mode does not turn it on.
+  # the mode does not turn it on. So is CONTENT_DOCUMENT_DATES ("true" or
+  # "all" through extraEnv): knowledge-base uploads take the dates their
+  # content states instead of upload times (see backend/env.template).
   # It also turns on named-entity extraction while indexing, and the entity
   # tools that read it (search_entities, find_records_by_entity,
   # find_records_by_value), whatever the Labs flag
@@ -454,6 +440,15 @@ config:
   governorHeavyParseSlotsPerCpu: ""   # (1.0) heavy parse slots per CPU
   governorLightParseSlotsPerCpu: ""   # (10.0) light parse slots per CPU
   governorLightParseMax: ""           # (256) absolute cap on the light ceiling
+  parseMaxOrgShare: ""                # (0.5) share of a parse pool one org may hold while another org waits
+  codeEdgeBuildReconcileIntervalSeconds: ""  # (600)
+  codeEdgeFullRebuildIntervalSeconds: ""  # (604800)
+  codeEdgeBuildMaxConcurrent: ""  # (2)
+  codeEdgeBuildMaxPerOrg: ""  # (1)
+  codeEdgeBuildMaxBlocks: ""  # (300000)
+  codeEdgeBuildMaxFailures: ""  # (6)
+  codeGraphEnabled: "true"  # false: code indexed for search, no blocks or edges
+  codeGraphBackfill: "false"  # true: re-index repos of an older code-graph version on start
   governorIndexHeadroom: ""           # (2.0) in-flight records per parse slot
   governorIndexMax: ""                # (512) absolute cap per index tier
   governorIndexHeavyWorkingSetGb: ""  # (0.15) RAM assumed per in-flight heavy record
@@ -483,6 +478,9 @@ config:
   # and cloud metadata addresses are refused either way; OLLAMA_API_URL stays allowed.
   # Model traffic sent through HTTP(S)_PROXY is not address-checked: filter it on the proxy.
   blockPrivateAddresses: ""
+  # "true" lets the Nextcloud connector use an http:// server URL; its app password is sent with
+  # every request, so leave empty (https only) unless the network is trusted.
+  nextcloudAllowInsecureHttp: ""
   connectorPublicBackend: "" # Fill
   # connectorPublicBackend: "https://pipeshub-connector.example.com"
   frontendPublicUrl: "" # Fill
@@ -494,6 +492,9 @@ config:
   samlSpEntityId: "pipeshub"
 
 # --- Coding sandbox execution ------------------------------------------------
+# Slim images download Chromium on first browser use into the /data/pipeshub
+# volume (PLAYWRIGHT_BROWSERS_PATH). Set PIPESHUB_PREFETCH_BROWSERS=true on the
+# app container to do that at startup. The full image already contains Chromium.
 sandbox:
   # Pod-level RuntimeClass (empty = cluster default). It applies to the whole
   # pod, including the privileged DinD sidecar, so an escape lands in the
@@ -733,7 +734,7 @@ arango:
     storageClass: "" # Fill
   auth:
     enabled: true
-    rootPassword: "root"
+    rootPassword: ""  # Required when arango.enabled
   podSecurityContext:
     runAsUser: 1000
     fsGroup: 1000
@@ -781,7 +782,11 @@ etcd:
 # Message broker: "kafka" or "redis" (uses Redis Streams, default)
 messageBroker:
   type: redis
+  # Caps streams that have no consumer group yet. With redisStreamsRetentionMode "maxlen" (legacy) it caps
+  # every stream and drops unconsumed events; the default retention trims other streams only behind their consumers.
   redisStreamsMaxLen: "500000"
+  # "after_ack" (default) or "maxlen" (legacy cap using redisStreamsMaxLen)
+  redisStreamsRetentionMode: "after_ack"
   # Indexing lanes on Redis Streams: how many, and how a connector is given
   # one -- "assigned" (the least busy lane, recorded once) or "hash" (as
   # before), which switches assigned lanes off.
@@ -925,7 +930,10 @@ qdrant:
   antiAffinity: soft
   affinity: {}
   topologySpreadConstraints: []
-  apiKey: "api_key"
+  # Required unless secretManagement.existingSecrets/externalSecrets supplies qdrant-api-key.
+  # Generate once and keep it: openssl rand -hex 32. On upgrade, an empty value
+  # reuses the key already stored in this release's Secret.
+  apiKey: ""
 
 # Neo4j (enabled by default). When enabled, the app uses Neo4j as the graph database (DATA_STORE=neo4j).
 # Override neo4j.auth.password in production (e.g. --set neo4j.auth.password=... or values from secret manager).

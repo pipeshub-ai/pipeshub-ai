@@ -23,8 +23,11 @@ from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
     InMemoryArtifactStore,
 )
 from app.models.entities import ArtifactType
+from app.utils.citations import rewrite_request_refs
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
     from app.agents.agent_loop.context import AgentContext
     from app.services.artifact_registry.models import Actor
 
@@ -52,12 +55,25 @@ class RegistryBackedStore:
         get()
           -> InMemoryArtifactStore.get()   [L1 — hit on same request]
           -> ArtifactRegistryService.get_content()  [L2 — blob fallback]
+
+    The registry copy outlives this request and is read by later ones, which
+    number citation refs afresh, so it is stored with each of this request's
+    refs (read through `ref_to_url`) as the URL it stands for. The L1 copy is
+    kept as the tool wrote it: this request's refs stay valid for this request.
     """
 
-    def __init__(self, registry: Any, actor: Actor, conversation_id: str) -> None:
+    def __init__(
+        self,
+        registry: Any,
+        actor: Actor,
+        conversation_id: str,
+        *,
+        ref_to_url: Callable[[], Mapping[str, str] | None] | None = None,
+    ) -> None:
         self._registry = registry
         self._actor = actor
         self._conversation_id = conversation_id
+        self._ref_to_url = ref_to_url
         self._l1 = InMemoryArtifactStore()
 
     async def store(
@@ -68,13 +84,21 @@ class RegistryBackedStore:
         result_schema: dict[str, Any] | None = None,
         session_id: str | None = None,
     ) -> str:
+        durable, expanded, unresolved = rewrite_request_refs(
+            content, self._ref_to_url() if self._ref_to_url is not None else None,
+        )
+        if expanded or unresolved:
+            logger.info(
+                "RegistryBackedStore.store: tool %r artifact stores %d citation ref(s) "
+                "as URLs, %d made uncitable", tool_name, expanded, unresolved,
+            )
         try:
             metadata = await self._registry.register(
                 actor=self._actor,
                 name=f"tool_result_{tool_name}.json" if tool_name else "tool_result.json",
                 artifact_type=ArtifactType.TOOL_RESULT,
                 mime_type="application/json",
-                content=content.encode("utf-8"),
+                content=durable.encode("utf-8"),
                 conversation_id=self._conversation_id,
                 source_tool=tool_name or None,
                 is_temporary=True,
@@ -112,6 +136,14 @@ class RegistryBackedStore:
         if raw is None:
             return None
         content = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        # Saved before refs were stored as URLs: its refs belong to an
+        # earlier request, and this request may number the same ids.
+        content, _, unresolved = rewrite_request_refs(content, None)
+        if unresolved:
+            logger.warning(
+                "RegistryBackedStore.get: artifact %s held %d citation ref(s) from an "
+                "earlier request; made uncitable", artifact_id, unresolved,
+            )
         self._l1._data[artifact_id] = (self._l1._now(), content)
         return content
 
@@ -130,5 +162,6 @@ def build_artifact_store(context: "AgentContext") -> Any:
             registry=context.artifact_registry,
             actor=context.artifact_actor,
             conversation_id=context.conversation_id,
+            ref_to_url=context.citation_ref_to_url,
         )
     return InMemoryArtifactStore()

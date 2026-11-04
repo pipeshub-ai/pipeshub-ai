@@ -14,7 +14,7 @@ type AvailableFlag = {
 };
 
 const FLAGS: AvailableFlag[] = [
-  { key: 'ENABLE_MCP', label: 'Enable MCP Servers', description: 'mcp', defaultEnabled: false },
+  { key: 'ENABLE_MCP', label: 'Enable MCP Servers', description: 'mcp', defaultEnabled: true },
   { key: 'ENABLE_ACTIONS', label: 'Enable Actions', description: 'actions', defaultEnabled: true },
   { key: 'ENABLE_PROJECTS', label: 'Enable Projects', description: 'projects', defaultEnabled: false },
   { key: 'ENABLE_SKILLS', label: 'Enable Skills (Beta)', description: 'skills', defaultEnabled: true },

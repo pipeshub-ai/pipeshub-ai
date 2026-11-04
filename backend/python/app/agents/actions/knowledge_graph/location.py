@@ -14,6 +14,9 @@ no role on, so denied ids (and anything beneath them) never render.
 
 Soft-fail is App-only (ACL-proven connector) or empty — never unfiltered
 RG/parent ids from the record document.
+
+A connected app's limit trims the trail further: only the part inside the
+limit renders, so a file the limit names does not name the folder above it.
 """
 from __future__ import annotations
 
@@ -23,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from app.modules.retrieval.selection_scope import SelectionScope
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = logging.getLogger(__name__)
@@ -106,6 +110,20 @@ def filter_accessible_prefix(
     return prefix
 
 
+def keep_inside_limit(
+    trail: Sequence[Mapping[str, Any]],
+    limit: SelectionScope,
+    app_id: str | None,
+) -> list[Mapping[str, Any]]:
+    """The part of a trail inside a connected app's limit: from the first
+    segment the limit covers down. A limit covers whole subtrees, so
+    everything below that segment is inside it too."""
+    for index, seg in enumerate(trail):
+        if limit.admits({"id": seg.get("id"), "connectorId": app_id}):
+            return list(trail[index:])
+    return []
+
+
 def render_trail(segments: Sequence[Mapping[str, Any]]) -> str:
     """Render ``Name (App ID: id) -> Name (Record Group ID: id) -> Name (Record ID: id)``."""
     parts: list[str] = []
@@ -136,14 +154,25 @@ async def resolve_ancestor_locations(
     user_key: str,
     record_docs: Mapping[str, Mapping[str, Any]] | None = None,
     max_depth: int = _MAX_DEPTH,
+    connection_limit: SelectionScope | None = None,
 ) -> dict[str, str]:
     """Resolve Location strings for retrieved records.
 
-    On provider failure / empty adjacency: App-only fallback from ``record_docs``.
+    ``connection_limit`` is a connected app's limit; the trail keeps only the
+    part inside it.
+
+    On provider failure / empty adjacency: App-only fallback from ``record_docs``,
+    and only for an app the limit covers whole.
     """
     ids = list(dict.fromkeys(rid for rid in record_ids if rid))
     if not ids:
         return {}
+    fallback_docs = record_docs
+    if connection_limit is not None:
+        fallback_docs = {
+            rid: doc for rid, doc in (record_docs or {}).items()
+            if _app_of(doc) in connection_limit.app_ids
+        }
 
     try:
         adjacency = await graph_provider.get_record_parent_adjacency(
@@ -154,7 +183,7 @@ async def resolve_ancestor_locations(
                 "resolve_ancestor_locations: empty adjacency for %d seeds — App-only fallback",
                 len(ids),
             )
-            return _app_only_fallback_map(ids, record_docs)
+            return _app_only_fallback_map(ids, fallback_docs)
 
         trails = {
             rid: walk_ancestors(rid, adjacency, max_depth=max_depth) for rid in ids
@@ -199,7 +228,10 @@ async def resolve_ancestor_locations(
 
         result: dict[str, str] = {}
         for rid, trail in trails.items():
-            rendered = render_trail(filter_accessible_prefix(trail, accessible))
+            shown = filter_accessible_prefix(trail, accessible)
+            if connection_limit is not None:
+                shown = keep_inside_limit(shown, connection_limit, _app_of((record_docs or {}).get(rid)))
+            rendered = render_trail(shown)
             if rendered:
                 result[rid] = rendered
         return result
@@ -209,7 +241,14 @@ async def resolve_ancestor_locations(
             exc,
             exc_info=True,
         )
-        return _app_only_fallback_map(ids, record_docs)
+        return _app_only_fallback_map(ids, fallback_docs)
+
+
+def _app_of(doc: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(doc, dict):
+        return None
+    app_id = doc.get("connectorId") or doc.get("connector_id")
+    return str(app_id) if app_id else None
 
 
 def _app_only_fallback_map(

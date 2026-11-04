@@ -9,7 +9,11 @@ Prepare a small, dedicated Zendesk test tenant with:
 
 - One non-deleted ticket in a group, with a requester, assignee, at least one
   public comment, and stable subject/tags/status. A private comment makes the
-  public-only stream assertion stronger, but is optional.
+  public-only stream assertion stronger, but is optional. Tag it
+  `pipeshub-seed`. If the ticket in `constants.py` stops qualifying (Zendesk's
+  AI agent escalating it clears the assignee and adds `escalated_by_ultimate`),
+  the suite uses the oldest other `pipeshub-seed` ticket that still does, so
+  keep a spare one and turn off automations that reassign seed tickets.
 - One published, unrestricted Help Center article with a non-empty body in a
   section. Avoid editing the ticket or article while the suite is running.
 - A **confidential** OAuth client (Admin Center > Apps and integrations > APIs >
@@ -34,6 +38,10 @@ The authorize and token URLs are derived from `ZENDESK_TEST_SUBDOMAIN`; they
 are not separate test variables. `ZENDESK_TEST_CLIENT_ID` and
 `ZENDESK_TEST_CLIENT_SECRET` belong to the Zendesk OAuth client. The plain
 `CLIENT_ID` and `CLIENT_SECRET` above belong to PipesHub's API client.
+
+If minting the token fails with `HTTP 302 (redirected to /agent/expired-trial)`,
+the Zendesk account's trial has lapsed and no OAuth call works until the account
+is extended or replaced; then update the subdomain and OAuth client settings.
 
 The running PipesHub stack also needs `PIPESHUB_BASE_URL`; either
 `CLIENT_ID`/`CLIENT_SECRET` for the PipesHub API or, in local mode,
@@ -72,7 +80,8 @@ The GitHub Actions **Integration Tests** workflow offers `zendesk` as a manual
 dispatch choice. Set `ZENDESK_TEST_SUBDOMAIN`, `ZENDESK_TEST_CLIENT_ID` (the
 client's unique identifier, not its numeric ID), and
 `ZENDESK_TEST_CLIENT_SECRET` in the protected `integration-test-dev`
-environment. Each run mints its own token and fails before testing if Zendesk
-refuses it. Zendesk runs in the `connectors-2` shard on the nightly and on pull
+environment. Each run mints its own token. If Zendesk refuses it, the rest of
+the shard still runs and the Zendesk tests find no token: they fail on the
+nightly and on a run dispatched with `zendesk`, and skip on pull requests. Zendesk runs in the `connectors-2` shard on the nightly and on pull
 requests from this repository, and alone when dispatched with `zendesk`. Ordinary
 local runs skip when credentials are absent.

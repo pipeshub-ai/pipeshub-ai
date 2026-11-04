@@ -39,12 +39,13 @@ def scenario_run(
     test_org_id: str,
 ):
     """One connector's walk through ``scenario_matrix``; ``scenario_adapter`` comes from its module."""
-    from connectors.scenario_matrix import MatrixRun
+    from connectors.scenario_matrix import MatrixRun, declared_unsupported
 
     return MatrixRun(
         scenario_adapter,
-        unsupported=dict(getattr(request.cls, "UNSUPPORTED", {})),
+        unsupported=declared_unsupported(request.cls),
         known_bugs=dict(getattr(request.cls, "KNOWN_BUGS", {})),
+        storage_layout_exempt=getattr(request.cls, "STORAGE_LAYOUT_EXEMPT", None),
         vector=vector_store,
         blob=blob_store,
         mongo=mongo_store,

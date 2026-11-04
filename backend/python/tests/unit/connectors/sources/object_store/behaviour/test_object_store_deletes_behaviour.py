@@ -15,9 +15,11 @@ from object_store_behaviour_fakes import (
     make_connector,
     run_full_sync_task,
     runner_graph,
+    sync_with_failed_listing,
 )
 
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.sources.s3.base_connector import S3CompatibleBaseConnector
 
 ALL = ["s3", "minio", "gcs", "azure_blob"]
 PAGED = ["s3", "minio", "gcs"]
@@ -151,7 +153,7 @@ class TestRenameAcrossChosenFolders:
 
         store.rename("legal/a.txt", "reports/b.txt")
         store.fail_prefix = "reports/"
-        await connector.run_incremental_sync()
+        await sync_with_failed_listing(connector)
 
         assert db.deleted == []
         assert path("legal/a.txt") in db.paths()
@@ -187,7 +189,7 @@ class TestFailedListing:
         await self._synced_then_first_key_deleted(connector, store)
         store.fail_page, store.fail_mode = 1, mode
 
-        await connector.run_incremental_sync()
+        await sync_with_failed_listing(connector)
 
         assert db.deleted == []
         assert path("a.txt") in db.paths()
@@ -214,7 +216,7 @@ class TestFailedListing:
     async def test_the_next_complete_listing_deletes(self, connector, store, db) -> None:
         await self._synced_then_first_key_deleted(connector, store)
         store.fail_page = 1
-        await connector.run_incremental_sync()
+        await sync_with_failed_listing(connector)
         store.fail_page = None
 
         await connector.run_incremental_sync()
@@ -229,7 +231,12 @@ class TestFailedListing:
         store.delete("a.txt")
         db.failing.add("get_records_in_record_group")
 
-        await connector.run_incremental_sync()
+        if isinstance(connector, S3CompatibleBaseConnector):
+            # Our own failure, not the source's: the run fails once every bucket was tried.
+            with pytest.raises(RuntimeError, match="sync failed"):
+                await connector.run_incremental_sync()
+        else:
+            await sync_with_failed_listing(connector)
 
         assert db.deleted == []
 

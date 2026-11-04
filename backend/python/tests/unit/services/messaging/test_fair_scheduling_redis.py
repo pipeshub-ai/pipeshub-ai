@@ -637,6 +637,48 @@ class TestLaneStreamAdoption:
             "record-events.2",
         ]
 
+    async def test_a_lane_subset_adopts_only_leftover_lanes(
+        self, logger, config, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("MESSAGE_BROKER", "redis")
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_COUNT", "8")
+        monkeypatch.setenv("INDEXING_CONSUME_LANES", "6-7")
+        consumer = self._consumer(
+            logger, config, ["record-events", "record-events.6", "record-events.7"]
+        )
+        consumer.redis.scan_iter = self._scan(
+            [f"record-events.{lane}" for lane in range(10)]
+        )
+        consumer.redis.type = AsyncMock(return_value="stream")
+
+        await consumer._IndexingRedisStreamsConsumer__adopt_existing_lane_streams()
+
+        assert consumer.config.topics == [
+            "record-events",
+            "record-events.6",
+            "record-events.7",
+            "record-events.8",
+            "record-events.9",
+        ]
+
+    async def test_a_lane_subset_leaves_other_topics_lanes_adopted(
+        self, logger, config, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("MESSAGE_BROKER", "redis")
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_COUNT", "8")
+        monkeypatch.setenv("INDEXING_CONSUME_LANES", "6-7")
+        consumer = self._consumer(logger, config, ["pipeline.classify"])
+        consumer.redis.scan_iter = self._scan(["pipeline.classify.0", "pipeline.classify.3"])
+        consumer.redis.type = AsyncMock(return_value="stream")
+
+        await consumer._IndexingRedisStreamsConsumer__adopt_existing_lane_streams()
+
+        assert consumer.config.topics == [
+            "pipeline.classify",
+            "pipeline.classify.0",
+            "pipeline.classify.3",
+        ]
+
     async def test_ignores_keys_that_are_not_lane_streams(self, logger, config):
         consumer = self._consumer(logger, config, ["record-events"])
         consumer.redis.scan_iter = self._scan(

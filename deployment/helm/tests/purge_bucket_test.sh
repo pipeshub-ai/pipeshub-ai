@@ -302,10 +302,10 @@ if grep -q 'progress_stop="$(mktemp -u)"' "$INSTALL"; then
 else
   fail "install.sh progress sentinel"
 fi
-if grep -q 'signatureVersion' "$PRELOAD" && ! grep -q 'catch' "$PRELOAD"; then
-  pass "sigv4 preload failure stops the process"
+if ! grep -q 'require(' "$PRELOAD" && ! grep -q 'catch' "$PRELOAD"; then
+  pass "sigv4 preload is a no-op under AWS SDK v3"
 else
-  fail "sigv4 preload still swallows require errors"
+  fail "sigv4 preload still loads aws-sdk v2"
 fi
 
 passed="$(wc -l <"$PASS_FILE" | tr -d ' ')"

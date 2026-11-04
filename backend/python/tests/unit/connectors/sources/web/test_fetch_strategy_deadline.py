@@ -32,10 +32,16 @@ DEADLINE = 1.0
 LIBRARY_TIMEOUT = 20
 # requests' timeout is per socket read: a byte every 50ms never trips it.
 SCRAPER_TIMEOUT = 0.5
+# For the fetch pool tests, which are not about slow reads: a loaded CI runner can stall the local
+# server for more than SCRAPER_TIMEOUT, and requests then ends a healthy /steady body mid-way.
+POOL_TEST_TIMEOUT = 5
 # The slowest body cloudscraper keeps reading, scaled down with the timeout.
 MIN_RATE = 200_000
 STEADY_CHUNK = 50_000
 STEADY_CHUNKS = 50  # every 50ms: 1 MB a second, for 2.5 seconds
+# Under DEADLINE, and several of the watcher's checks long, so a deadline counted from the wrong
+# moment is seen before the headers arrive.
+HEADERS_DELAY = 0.4
 
 
 @dataclass
@@ -51,7 +57,8 @@ class Trickle:
 def trickle() -> Iterator[Trickle]:
     """Sends a byte every 50ms, never fast enough to end: the body of a 200 at ``/page``, the
     body of a Cloudflare 503 at ``/cloudflare``, the headers at ``/headers``. ``/steady`` sends
-    a body above MIN_RATE that takes longer than DEADLINE; ``/plain`` is an ordinary page."""
+    a body above MIN_RATE that takes longer than DEADLINE, and ``/late`` the same body after
+    HEADERS_DELAY; ``/plain`` is an ordinary page."""
     state = Trickle(port=0)
 
     class Handler(BaseHTTPRequestHandler):
@@ -70,12 +77,15 @@ def trickle() -> Iterator[Trickle]:
                     self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Slow: ")
                     self._trickle()
                     return
+                steady = self.path in ("/steady", "/late")
+                if self.path == "/late":
+                    time.sleep(HEADERS_DELAY)
                 self.send_response(503 if self.path == "/cloudflare" else 200)
                 self.send_header("Content-Type", "text/html")
-                length = STEADY_CHUNK * STEADY_CHUNKS if self.path == "/steady" else 1_000_000
+                length = STEADY_CHUNK * STEADY_CHUNKS if steady else 1_000_000
                 self.send_header("Content-Length", str(length))
                 self.end_headers()
-                if self.path == "/steady":
+                if steady:
                     for _ in range(STEADY_CHUNKS):
                         self.wfile.write(b"s" * STEADY_CHUNK)
                         time.sleep(0.05)
@@ -528,12 +538,12 @@ async def test_a_request_waiting_for_a_fetch_thread_is_not_given_up_on_for_the_w
     # from when the second request starts, not from when it was queued.
     monkeypatch.setattr(fetch_strategy, "_max_queue_wait", lambda timeout: 30.0, raising=False)
     _resolve_to(monkeypatch, _loopback(trickle.port))
-    url = f"http://127.0.0.1:{trickle.port}/steady"
+    url = f"http://127.0.0.1:{trickle.port}/late"
     logger = logging.getLogger("test_deadline")
 
-    first = asyncio.create_task(_hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logger))
+    first = asyncio.create_task(_hops_cloudscraper(_walk(url), POOL_TEST_TIMEOUT, logger))
     await asyncio.sleep(0.2)
-    second = asyncio.create_task(_hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logger))
+    second = asyncio.create_task(_hops_cloudscraper(_walk(url), POOL_TEST_TIMEOUT, logger))
     results = await asyncio.wait_for(asyncio.gather(first, second), 15)
 
     for result in results:
@@ -550,10 +560,10 @@ async def test_a_request_given_up_on_while_queued_is_never_sent(
     url = f"http://127.0.0.1:{trickle.port}/steady"
     logger = logging.getLogger("test_deadline")
 
-    first = asyncio.create_task(_hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logger))
+    first = asyncio.create_task(_hops_cloudscraper(_walk(url), POOL_TEST_TIMEOUT, logger))
     await asyncio.sleep(0.2)
     with pytest.raises(fetch_strategy.FetchPoolBusy, match="no web fetch thread came free"):
-        await asyncio.wait_for(_hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logger), 10)
+        await asyncio.wait_for(_hops_cloudscraper(_walk(url), POOL_TEST_TIMEOUT, logger), 10)
 
     assert (await asyncio.wait_for(first, 10)) is not None
     assert await _thread_is_free(one_fetch_thread)

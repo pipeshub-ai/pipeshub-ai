@@ -67,6 +67,9 @@ class SparseVector:
     values: list[float]
 
 
+_ORG_KEYS = frozenset({"orgId", "metadata.orgId"})
+
+
 @dataclass
 class FieldCondition:
     """One filter predicate on a payload field.
@@ -101,6 +104,11 @@ class FilterExpression:
         too, so a count-only expression matches most of a collection. Delete
         paths refuse one on that basis.
 
+        A condition on the organisation field does not count once ``must``
+        carries a length bound: org plus a bound selects most of that org, not
+        the narrow purge the caller meant. Without a bound, org alone is the
+        deliberate whole-organisation removal and still counts.
+
         ``must_not`` never counts: it only ever *subtracts*, so a term there is
         not the positive match a bound needs. Counting it would let
         ``filter_collection(MUST_NOT, max_values=..., virtualRecordId=x)``, a
@@ -116,15 +124,18 @@ class FilterExpression:
         outright), which leaves the bound standing alone as the whole filter —
         and a point whose field is absent satisfies a bound.
         """
+        bounded = any(cond.values_count_lte is not None for cond in self.must)
+
         def _matches_a_value(conds: list[FieldCondition]) -> bool:
             return any(
-                cond.value is not None or cond.values is not None
+                (cond.value is not None or cond.values is not None)
+                and not (bounded and cond.key in _ORG_KEYS)
                 for cond in conds
             )
 
         if _matches_a_value(self.must):
             return True
-        if any(cond.values_count_lte is not None for cond in self.must):
+        if bounded:
             return False
         return _matches_a_value(self.should)
 
@@ -144,6 +155,9 @@ class VectorChunkMetadata:
         bytes) rather than a text embedding of a description. Absent/None on
         VLM-description-fallback image points, which are text embeddings and
         should be treated like any other text point for search purposes.
+    isBlock / isBlockGroup: whether the point embeds one block or a block group.
+    isRecordSummary: True on the point holding the record's summary.
+    blockGroupIndex: the group's index, on table and SQL group points.
     """
     orgId: str | None = None
     virtualRecordId: str | None = None
@@ -151,6 +165,10 @@ class VectorChunkMetadata:
     blockIndex: int | None = None
     blockType: str | None = None
     isImage: bool | None = None
+    isBlock: bool | None = None
+    isBlockGroup: bool | None = None
+    isRecordSummary: bool | None = None
+    blockGroupIndex: int | None = None
 
 
 @dataclass
@@ -187,6 +205,10 @@ class VectorChunkPayload:
             blockIndex=meta_raw.get("blockIndex"),
             blockType=meta_raw.get("blockType"),
             isImage=meta_raw.get("isImage"),
+            isBlock=meta_raw.get("isBlock"),
+            isBlockGroup=meta_raw.get("isBlockGroup"),
+            isRecordSummary=meta_raw.get("isRecordSummary"),
+            blockGroupIndex=meta_raw.get("blockGroupIndex"),
         )
         return cls(
             page_content=data.get("page_content", ""),
@@ -231,6 +253,10 @@ class SearchResult:
     id: str
     score: float
     payload: dict[str, Any] = field(default_factory=dict)
+    # Set by a provider that answered with less than its full search (the reason, e.g. "timeout"); None for a complete answer.
+    # A provider with no hits to mark calls ``app.modules.retrieval.degraded_notice.note(reason)`` instead.
+    # Not part of equality: a flag does not change which document ranks where.
+    degraded: str | None = field(default=None, compare=False)
 
 
 class QuantizationType(Enum):
@@ -344,6 +370,10 @@ class VectorDBCapabilities:
     supports_multi_collection: bool = True
     max_recommended_collections: int | None = None
     score_semantics: ScoreSemantics = ScoreSemantics.RANK_FUSED
+    # The collection stamp is kept by the provider itself (get/set_collection_stamp), not as a point.
+    stamps_in_catalog: bool = False
+    # The embedding model and dimension belong to each org's space, not to the collection.
+    spaces_per_org: bool = False
 
 
 @dataclass

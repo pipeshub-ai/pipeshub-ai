@@ -14,11 +14,16 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
     _navigate_args_summary,
     _time_range_error_message,
 )
+from app.agents.actions.knowledge_graph.ops.scope import (
+    NODE_NOT_FOUND_MESSAGE,
+    SELECTION_BROWSE_HINT,
+)
 from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.sources.localKB.api.knowledge_hub_models import BreadcrumbItem
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType, Status, TicketRecord
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
 def _short_id_for(state: dict, full_id: str) -> str:
@@ -31,11 +36,23 @@ def _short_id_for(state: dict, full_id: str) -> str:
     return shortener.get_or_create_short_id(full_id)
 
 
+def _grant_asked(_user_key, _org_id, node_ids=(), **_kwargs) -> AccessCheck:
+    """The hub already returned these nodes, so the default graph grants them.
+
+    A test that distinguishes permission from the conversation limit replaces
+    this.
+    """
+    ids = frozenset(node_id for node_id in (node_ids or ()) if node_id)
+    return AccessCheck(node_ids=ids, node_ids_in_scope=ids)
+
+
 def _make_state(**overrides):
     """Create a ChatState-like dict with sensible defaults."""
     gp = AsyncMock()
     # Provide sensible defaults so catalog doesn't try the lazy DB fallback
     gp.get_knowledge_hub_filter_options = AsyncMock(return_value={"apps": []})
+    gp.check_access = AsyncMock(side_effect=_grant_asked)
+    gp.get_selection_nodes = AsyncMock(return_value={"groups": [], "records": []})
     state = {
         "org_id": "org-1",
         "user_id": "user-1",
@@ -197,6 +214,339 @@ class TestNavigateRoot:
         assert "app1" in text or "Jira" in text
 
 
+class TestNavigateIssueKeyUnderASelection:
+    """The same key can exist on more than one connector. The copy inside the
+    conversation is the one navigate opens."""
+
+    @staticmethod
+    def _match(record_id: str, name: str, connector: str) -> MagicMock:
+        match = MagicMock()
+        match.id = record_id
+        match.name = name
+        match.connector_name = connector
+        return match
+
+    @pytest.mark.asyncio
+    async def test_an_in_scope_copy_is_opened_ahead_of_another_connectors(self) -> None:
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "stub-pp1", "name": "PP-1 Launch", "nodeType": "record",
+            "subType": "TICKET", "connector": "JIRA",
+        })
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_linked_records = AsyncMock(return_value=[])
+        mock_resp = _make_knowledge_hub_response(items=[], total=0)
+        mock_resp.breadcrumbs = []
+        resolver = MagicMock()
+        resolver.resolve_many = AsyncMock(return_value=MagicMock(matches=[
+            self._match("other-pp1", "PP-1 elsewhere", "Jira-all-spaces"),
+            self._match("stub-pp1", "PP-1 Launch", "Jira"),
+        ]))
+        get_nodes = AsyncMock(return_value=mock_resp)
+        with patch(
+            "app.agents.actions.knowledge_graph.knowledge_graph.RecordResolver",
+            return_value=resolver,
+        ), patch(
+            "app.agents.actions.knowledge_graph.knowledge_graph.ids_within_scope",
+            new=AsyncMock(return_value={"stub-pp1"}),
+        ), patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=get_nodes,
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="PP-1")
+
+        assert success
+        assert get_nodes.await_args.kwargs["parent_id"] == "stub-pp1"
+        assert "PP-1 Launch" in text
+
+    @pytest.mark.asyncio
+    async def test_an_out_of_scope_key_names_the_other_copy_and_succeeds(self) -> None:
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        resolver = MagicMock()
+        resolver.resolve_many = AsyncMock(return_value=MagicMock(matches=[
+            self._match("other-pp1", "PP-1 elsewhere", "Jira-all-spaces"),
+        ]))
+        get_nodes = AsyncMock()
+        with patch(
+            "app.agents.actions.knowledge_graph.knowledge_graph.RecordResolver",
+            return_value=resolver,
+        ), patch(
+            "app.agents.actions.knowledge_graph.knowledge_graph.ids_within_scope",
+            new=AsyncMock(return_value=set()),
+        ), patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=get_nodes,
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="PP-1")
+
+        assert success
+        assert "Jira-all-spaces" in text
+        assert "outside" in text
+        get_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_issue_key_that_matches_nothing_points_to_a_search(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        resolver = MagicMock()
+        resolver.resolve_many = AsyncMock(return_value=MagicMock(matches=[]))
+        get_nodes = AsyncMock()
+        with patch(
+            "app.agents.actions.knowledge_graph.knowledge_graph.RecordResolver", return_value=resolver,
+        ), patch("app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=get_nodes):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="PP-404")
+
+        assert not success
+        assert "PP-404" in text and "knowledgegraph__search" in text and "lookup_record" not in text
+        get_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_folder_selection_does_not_narrow_children_to_other_connectors(self) -> None:
+        state = _make_state(
+            has_knowledge=True,
+            filters={
+                "apps": [], "kb": [], "recordGroups": [],
+                "records": ["folder-1"], "recordsExact": [],
+            },
+            available_connectors=[{"id": "conn-demo", "name": "Demo", "type": "DEMO"}],
+        )
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "folder-1", "name": "Report One", "nodeType": "record",
+            "subType": "FILE", "connector": "KB",
+        })
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_linked_records = AsyncMock(return_value=[])
+        child = _make_node_item("file-1", "alpha-north-revenue", "record", "FILE")
+        mock_resp = _make_knowledge_hub_response(items=[child], total=1)
+        mock_resp.breadcrumbs = []
+        get_nodes = AsyncMock(return_value=mock_resp)
+        with patch(
+            "app.agents.actions.knowledge_graph.knowledge_graph.selection_browse_refusal",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=get_nodes,
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="folder-1")
+
+        assert success
+        assert get_nodes.await_args.kwargs["connector_ids"] in (None, [])
+        assert "alpha-north-revenue" in text
+
+    @pytest.mark.asyncio
+    async def test_without_a_node_a_selection_points_at_its_listing_and_a_search_in_it(self) -> None:
+        state = _make_state(
+            has_knowledge=True,
+            filters={"apps": [], "kb": [], "records": ["folder-1"], "selectionApps": ["conn-jira"]},
+        )
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        get_nodes = AsyncMock()
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=get_nodes,
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate()
+
+        assert not success and text == SELECTION_BROWSE_HINT
+        assert "source_ids=[<id>]" in text
+        get_nodes.assert_not_called()
+
+
+class TestNavigateStaysInsideTheLimit:
+    """A conversation limited to one group must not be shown what is above it,
+    or a child the user cannot read."""
+
+    APP = "app-snow"
+    PARENT = "it-parent"
+    SELECTED = "it-child"
+    ANDROID = "android"
+    SIBLING = "hr-category"
+    SECRET = "secret-article"
+    WIKI = "wiki-outside"
+    TICKET = "ticket-inside"
+    READABLE = {APP, PARENT, SELECTED, ANDROID, SIBLING, WIKI, TICKET}
+    NAMES = {
+        APP: "Servicenow", PARENT: "IT parent", SELECTED: "IT",
+        ANDROID: "Android", SIBLING: "HR", SECRET: "Secret article",
+        WIKI: "Wiki page", TICKET: "In-scope ticket",
+    }
+
+    def _rows(self) -> dict:
+        return {
+            self.APP: {"id": self.APP, "connectorId": self.APP, "groupIds": []},
+            self.PARENT: {"id": self.PARENT, "connectorId": self.APP, "groupIds": [self.PARENT]},
+            self.SELECTED: {"id": self.SELECTED, "connectorId": self.APP, "groupIds": [self.SELECTED]},
+            self.ANDROID: {"id": self.ANDROID, "connectorId": self.APP, "groupIds": [self.SELECTED]},
+            self.SIBLING: {"id": self.SIBLING, "connectorId": self.APP, "groupIds": [self.PARENT]},
+            self.SECRET: {"id": self.SECRET, "connectorId": self.APP, "groupIds": [self.SELECTED]},
+            self.WIKI: {"id": self.WIKI, "connectorId": "other-app", "groupIds": ["other"]},
+            self.TICKET: {"id": self.TICKET, "connectorId": self.APP, "groupIds": [self.SELECTED]},
+        }
+
+    def _state(self, filters) -> dict:
+        from app.modules.retrieval import selection_scope
+        from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+        selection_scope._memo.clear()
+        rows = self._rows()
+
+        async def accessible(_user_key, _org_id, node_ids, _virtual_record_ids, **_kwargs) -> list:
+            return [rows[node_id] for node_id in node_ids if node_id in self.READABLE]
+
+        async def selection_nodes(_org_id, group_ids=(), record_ids=(), exact_record_ids=(), limit=200) -> dict:
+            groups, records = [], []
+            if self.SELECTED in group_ids:
+                groups.append({"id": self.SELECTED, "connectorId": self.APP})
+                records.extend(
+                    {"id": node_id, "vrid": node_id, "connectorId": self.APP}
+                    for node_id in (self.ANDROID, self.SECRET, self.TICKET)
+                )
+            return {"groups": groups, "records": records}
+
+        fake = MagicMock()
+        fake.logger = MagicMock()
+        fake._kh_v3_accessible_rows = accessible
+        state = _make_state(
+            has_knowledge=True,
+            filters=filters,
+            agent_knowledge=[{"connectorId": self.APP, "name": "Servicenow", "type": "SERVICENOW"}],
+        )
+        gp = state["graph_provider"]
+        gp.check_access = lambda *args, **kwargs: IGraphDBProvider.check_access(fake, *args, **kwargs)
+        gp.get_selection_nodes = selection_nodes
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key"})
+        gp.get_linked_records = AsyncMock(return_value=[])
+        gp.get_record_by_id = AsyncMock(return_value=None)
+
+        async def node_access(node_id, **_kwargs) -> dict | None:
+            if node_id not in self.READABLE:
+                return None
+            if node_id == self.APP:
+                kind = "app"
+            elif node_id in (self.ANDROID, self.SECRET, self.WIKI, self.TICKET):
+                kind = "record"
+            else:
+                kind = "recordGroup"
+            return {
+                "id": node_id, "name": self.NAMES[node_id], "nodeType": kind,
+                "subType": None, "connector": "SERVICENOW",
+            }
+
+        gp.get_knowledge_hub_node_access = AsyncMock(side_effect=node_access)
+        return state
+
+    def _response(self, items, crumbs) -> MagicMock:
+        resp = _make_knowledge_hub_response(items=items, total=len(items))
+        resp.typed_records = None
+        resp.breadcrumbs = [
+            BreadcrumbItem(
+                id=node_id,
+                name=self.NAMES[node_id],
+                nodeType="app" if node_id == self.APP else "recordGroup",
+                subType=None,
+            )
+            for node_id in crumbs
+        ]
+        return resp
+
+    async def _open(self, filters, node_id, items, crumbs, linked=None) -> tuple:
+        state = self._state(filters)
+        if linked is not None:
+            state["graph_provider"].get_linked_records = AsyncMock(return_value=linked)
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=self._response(items, crumbs)),
+        ):
+            return await KnowledgeGraph(state=state).navigate(node_id=node_id)
+
+    @pytest.mark.asyncio
+    async def test_the_path_stops_at_the_selected_group_and_unreadable_children_are_omitted(self) -> None:
+        filters = {
+            "apps": [], "kb": [], "recordGroups": [self.SELECTED],
+            "records": [], "recordsExact": [],
+        }
+        success, text = await self._open(
+            filters, self.SELECTED,
+            [
+                _make_node_item(self.ANDROID, self.NAMES[self.ANDROID], "recordGroup", "KB"),
+                _make_node_item(self.SIBLING, self.NAMES[self.SIBLING], "recordGroup", "KB"),
+                _make_node_item(self.SECRET, self.NAMES[self.SECRET], "record", "FILE"),
+            ],
+            [self.APP, self.PARENT, self.SELECTED],
+        )
+        assert success
+        assert self.NAMES[self.ANDROID] in text
+        assert self.NAMES[self.PARENT] not in text
+        assert self.NAMES[self.APP] not in text
+        assert self.NAMES[self.SIBLING] not in text
+        assert self.NAMES[self.SECRET] not in text
+        assert "to see siblings" not in text
+        assert "fetch_record" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_child_of_the_selection_names_the_selected_group_and_not_its_parent(self) -> None:
+        filters = {
+            "apps": [], "kb": [], "recordGroups": [self.SELECTED],
+            "records": [], "recordsExact": [],
+        }
+        success, text = await self._open(
+            filters, self.ANDROID, [],
+            [self.APP, self.PARENT, self.SELECTED, self.ANDROID],
+            linked=[
+                {"id": self.WIKI, "name": self.NAMES[self.WIKI], "recordType": "PAGE", "relationshipType": "LINKED_TO"},
+                {"id": self.TICKET, "name": self.NAMES[self.TICKET], "recordType": "FILE", "relationshipType": "LINKED_TO"},
+                {"id": self.SECRET, "name": self.NAMES[self.SECRET], "recordType": "FILE", "relationshipType": "LINKED_TO"},
+            ],
+        )
+        assert success
+        assert self.NAMES[self.SELECTED] in text
+        assert self.NAMES[self.PARENT] not in text
+        assert self.NAMES[self.APP] not in text
+        assert "to see siblings" in text
+        assert self.NAMES[self.TICKET] in text
+        assert self.NAMES[self.WIKI] not in text
+        assert self.NAMES[self.SECRET] not in text
+
+    @pytest.mark.asyncio
+    async def test_without_a_limit_an_unreadable_child_is_omitted_and_the_path_stays(self) -> None:
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        state = _make_state(has_knowledge=True, filters={})
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "folder", "name": "Folder", "nodeType": "recordGroup", "connector": "KB",
+        })
+
+        def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> AccessCheck:
+            ids = frozenset(node_id for node_id in node_ids if node_id != self.SECRET)
+            return AccessCheck(node_ids=ids, node_ids_in_scope=ids)
+
+        gp.check_access = AsyncMock(side_effect=check_access)
+        resp = _make_knowledge_hub_response(items=[
+            _make_node_item(self.ANDROID, self.NAMES[self.ANDROID], "record", "FILE"),
+            _make_node_item(self.SECRET, self.NAMES[self.SECRET], "record", "FILE"),
+        ], total=2)
+        resp.typed_records = None
+        resp.breadcrumbs = [
+            BreadcrumbItem(id=self.APP, name=self.NAMES[self.APP], nodeType="app", subType=None),
+        ]
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=resp),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="folder")
+        assert success
+        assert self.NAMES[self.APP] in text
+        assert self.NAMES[self.ANDROID] in text
+        assert self.NAMES[self.SECRET] not in text
+
+
 class TestNavigateDeniedNode:
     @pytest.mark.asyncio
     async def test_denied_node_returns_empty(self):
@@ -214,9 +564,8 @@ class TestNavigateDeniedNode:
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="denied-node")
 
-        # Denied and missing must produce identical-looking output
-        assert success  # the tool itself succeeds, the result is empty
-        assert "Record ID:" not in text
+        # Denied and missing must produce identical output
+        assert (success, text) == (False, NODE_NOT_FOUND_MESSAGE)
 
 
 class TestNavigateMissingNode:
@@ -236,8 +585,48 @@ class TestNavigateMissingNode:
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="does-not-exist")
 
-        assert success
-        assert "Record ID:" not in text
+        assert (success, text) == (False, NODE_NOT_FOUND_MESSAGE)
+
+    @pytest.mark.asyncio
+    async def test_a_name_passed_as_node_id_is_told_what_node_id_takes(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        state["graph_provider"].get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        get_nodes = AsyncMock()
+        with patch("app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=get_nodes):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="Launch SaaS")
+
+        assert not success
+        assert "not a name" in text and "knowledgegraph__list_files(query=...)" in text
+        assert "outside" not in text and "no items at root" not in text
+        get_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_node_in_a_switched_off_demo_app_reads_as_missing(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        state["graph_provider"].get_knowledge_hub_node_access = AsyncMock(
+            return_value={"nodeType": "record", "name": "Demo"},
+        )
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService._belongs_to",
+            new=AsyncMock(return_value=True),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="demo-node")
+
+        assert (success, text) == (False, NODE_NOT_FOUND_MESSAGE)
+
+    @pytest.mark.asyncio
+    async def test_the_root_listing_is_unchanged_without_a_node_id(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=_make_knowledge_hub_response(items=[], total=0)),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate()
+
+        assert success and "no items at root" in text
 
 
 class TestNavigateRecordWithChildren:
@@ -538,6 +927,13 @@ class TestNavigateRemembersRecordIds:
         gp.get_linked_records = AsyncMock(return_value=[])
         gp.get_record_by_id = AsyncMock(return_value=None)
         gp.check_record_access_with_details = AsyncMock(return_value=None)
+        unknown = "deadbeef-0000-4000-8000-000000000000"
+
+        def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> AccessCheck:
+            ids = frozenset(node_id for node_id in (node_ids or ()) if node_id != unknown)
+            return AccessCheck(node_ids=ids, node_ids_in_scope=ids)
+
+        gp.check_access = AsyncMock(side_effect=check_access)
         children = []
         for i in range(200):
             item = _make_node_item(f"{i:08x}-1111-4222-8333-944445555666", f"Story {i}")
@@ -561,7 +957,7 @@ class TestNavigateRemembersRecordIds:
         )
         output, _ = await execute_fetch_record(
             context=context, virtual_records={}, citation_ref_mapper=None,
-            record_ids=["deadbeef-0000-4000-8000-000000000000"],
+            record_ids=[unknown],
         )
         assert "Records returned earlier in this conversation:" in output.error
         assert not [rid for rid in cut if rid in output.error]
@@ -589,6 +985,13 @@ class TestNavigateRemembersRecordIds:
         ])
         gp.get_record_by_id = AsyncMock(return_value=None)
         gp.check_record_access_with_details = AsyncMock(return_value=None)
+        unknown = "8a2cfb7d-04fc-4647-8d43-5d0527800009"
+
+        def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> AccessCheck:
+            ids = frozenset(node_id for node_id in (node_ids or ()) if node_id != unknown)
+            return AccessCheck(node_ids=ids, node_ids_in_scope=ids)
+
+        gp.check_access = AsyncMock(side_effect=check_access)
         children = [
             _make_node_item(f"{i:08x}-1111-4222-8333-944445555666", f"Story {i}") for i in range(50)
         ]
@@ -605,7 +1008,7 @@ class TestNavigateRemembersRecordIds:
         )
         output, _ = await execute_fetch_record(
             context=context, virtual_records={}, citation_ref_mapper=None,
-            record_ids=["8a2cfb7d-04fc-4647-8d43-5d0527800009"],
+            record_ids=[unknown],
         )
 
         bullets = [line[2:].split(" ")[0] for line in output.error.splitlines() if line.startswith("- ")]
@@ -661,8 +1064,170 @@ class TestNavigateAgentScoping:
             tool = KnowledgeGraph(state=state)
             await tool.navigate()
 
-        # Scoping connector IDs should be passed (for root browse)
-        assert "connector_ids" in captured or "record_group_ids" in captured
+        assert captured["connector_ids"] == ["conn-jira", "conn-confluence"]
+        assert captured["record_group_ids"] is None
+
+    @staticmethod
+    async def _navigate_filters(state: dict, node_id: str | None = None, node_info: dict | None = None) -> dict:
+        """The filters navigate hands the listing service for ``node_id``."""
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=node_info)
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        captured = {}
+
+        async def capture_get_nodes(self_inner: object, **kwargs: object) -> MagicMock:
+            captured.update(kwargs)
+            return _make_knowledge_hub_response(items=[], total=0)
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            await KnowledgeGraph(state=state).navigate(node_id=node_id)
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_knowledge_base_is_a_connector_filter(self) -> None:
+        """A KB is an app: its records carry its id as connectorId. Sent as a
+        record group, the connector filter of the other apps hid every child."""
+        state = _make_state(
+            agent_knowledge=[
+                {"connectorId": "conn-jira", "type": "JIRA"},
+                {"connectorId": "kb-a", "type": "KB"},
+            ],
+        )
+        captured = await self._navigate_filters(state, node_id="kb-a")
+        assert captured["parent_id"] == "kb-a"
+        assert captured["connector_ids"] == ["conn-jira", "kb-a"]
+        assert captured["record_group_ids"] is None
+
+    @pytest.mark.asyncio
+    async def test_kb_only_agent_stays_inside_its_kb(self) -> None:
+        """Opening another app filters by the agent's KB, so the service
+        returns none of that app's children; no catalog-wide fallback."""
+        state = _make_state(
+            agent_knowledge=[{"connectorId": "kb-a", "type": "KB"}],
+            available_connectors=[{"id": "conn-other", "name": "Other", "type": "JIRA"}],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(
+            state, node_id="conn-other", node_info={"nodeType": "app", "name": "Other"},
+        )
+        assert captured["connector_ids"] == ["kb-a"]
+
+    @pytest.mark.asyncio
+    async def test_attachment_in_kb_is_not_a_connector_filter(self) -> None:
+        """A chat-mode turn puts its attachments' virtual record ids in kb;
+        they are not apps, so they never become a connector filter."""
+        state = _make_state(
+            agent_knowledge=[],
+            kb=["kb-a", "vrid-1"],
+            attachment_record_ids=["vrid-1"],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(state, node_id="kb-a")
+        assert captured["connector_ids"] == ["kb-a"]
+
+    @pytest.mark.asyncio
+    async def test_nothing_picked_opens_a_kb_by_the_users_access(self) -> None:
+        """The connector catalog leaves knowledge bases out: used as the filter
+        of a default chat, it hid every child of the KB opened."""
+        state = _make_state(
+            agent_knowledge=[],
+            available_connectors=[{"id": "conn-jira", "name": "Jira", "type": "JIRA"}],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(
+            state, node_id="kb-a", node_info={"nodeType": "app", "name": "Contracts"},
+        )
+        assert captured["parent_id"] == "kb-a"
+        assert captured["connector_ids"] is None
+
+    @pytest.mark.asyncio
+    async def test_default_chat_with_only_an_attachment_browses_the_users_access(self) -> None:
+        state = _make_state(
+            agent_knowledge=[],
+            kb=["vrid-1"],
+            filters={"kb": ["vrid-1"]},
+            attachment_record_ids=["vrid-1"],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(state)
+        assert captured["connector_ids"] is None
+
+    @pytest.mark.asyncio
+    async def test_strict_attachment_only_turn_names_nothing_outside_it(self) -> None:
+        """A project turn with only attachments has no source to browse: what
+        the listing returns is re-checked against the turn and dropped."""
+        state = _make_state(
+            agent_knowledge=[],
+            kb=["vrid-1"],
+            filters={"kb": ["vrid-1"], "strictScope": True},
+            attachment_record_ids=["vrid-1"],
+            available_connectors=[{"id": "conn-jira", "name": "Jira", "type": "JIRA"}],
+            has_knowledge=True,
+        )
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.check_access = AsyncMock(
+            side_effect=lambda *_a, node_ids=(), **_k: AccessCheck(
+                node_ids=frozenset(node_ids), node_ids_in_scope=frozenset(),
+            ),
+        )
+        captured = {}
+
+        async def capture_get_nodes(self_inner: object, **kwargs: object) -> MagicMock:
+            captured.update(kwargs)
+            return _make_knowledge_hub_response(
+                items=[_make_node_item("jira-1", "Outside ticket")], total=1,
+            )
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            output = await KnowledgeGraph(state=state).navigate()
+
+        assert captured["connector_ids"] == ["conn-jira"]
+        assert "jira-1" not in str(output) and "Outside ticket" not in str(output)
+
+    @pytest.mark.asyncio
+    async def test_an_attachment_alone_does_not_limit_what_navigate_may_name(self) -> None:
+        """Chat mode puts an attachment's id in kb; read as a picked app, it
+        refused every knowledge base the user opened."""
+        from app.agents.actions.knowledge_graph.ops.scope import (
+            ids_within_scope,
+            turn_picked_sources,
+        )
+
+        state = _make_state(
+            agent_knowledge=[], filters={"kb": ["vrid-1"]}, attachment_record_ids=["vrid-1"], has_knowledge=True,
+        )
+        gp = state["graph_provider"]
+        gp.check_access = AsyncMock()
+        assert await ids_within_scope(state, gp, "user-key-1", "org-1", ["kb-a", "rec-1"]) == {"kb-a", "rec-1"}
+        gp.check_access.assert_not_awaited()
+        assert turn_picked_sources(state) is False
+
+    @pytest.mark.asyncio
+    async def test_an_attachment_next_to_a_picked_kb_limits_to_the_kb(self) -> None:
+        from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
+
+        state = _make_state(
+            agent_knowledge=[], filters={"kb": ["kb-a", "vrid-1"]}, attachment_record_ids=["vrid-1"],
+            has_knowledge=True,
+        )
+        gp = state["graph_provider"]
+        gp.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset(), node_ids_in_scope=frozenset()))
+        with patch(
+            "app.modules.retrieval.selection_scope.resolve_request_scopes", AsyncMock(return_value=(None, [])),
+        ):
+            await ids_within_scope(state, gp, "user-key-1", "org-1", ["rec-1"])
+        scopes = gp.check_access.await_args.kwargs["scopes"]
+        assert [scope.app_ids for scope in scopes] == [frozenset({"kb-a"})]
 
 
 class TestNavigateDepthSingleQuery:
@@ -712,6 +1277,24 @@ class TestNavigateDepthSingleQuery:
         assert "Level 2" in text
         assert f"record_id={_short_id_for(state, 'story1')}" in text
         assert f"record_id={_short_id_for(state, 'sub1')}" in text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("depth", "flattened"), [(1, False), (2, True)])
+    async def test_depth1_browses_children_and_deeper_flattens_to_that_depth(self, depth, flattened) -> None:
+        """depth 1 is a cursor-paged browse of the direct children, never a flatten of
+        every descendant; depth d asks the flatten to stop at d."""
+        state = self._state_on_epic()
+        state["graph_provider"].get_node_depths_batch = AsyncMock(return_value={})
+        get_nodes = AsyncMock(return_value=_make_knowledge_hub_response(items=[], total=0))
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=get_nodes,
+        ):
+            await KnowledgeGraph(state=state).navigate(node_id="epic1", depth=depth)
+
+        assert get_nodes.await_args.kwargs["flattened"] is flattened
+        assert get_nodes.await_args.kwargs["depth"] == depth
 
     @pytest.mark.asyncio
     async def test_navigate_depth2_app_parent_clamps_to_depth1(self):
@@ -838,6 +1421,36 @@ class TestNavigateDepthSingleQuery:
         assert captured.get("parent_id") == "epic1"
         assert captured.get("created_at") is not None
         assert captured["created_at"]["gte"] is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("created_before", "lte"), [
+        ("2026-03-29", None),
+        ("2026-03-28", 1774742399999),
+    ], ids=["the-agents-today", "before-today"])
+    async def test_an_upper_bound_at_the_agents_today_is_not_applied(
+        self, created_before: str, lte: int | None,
+    ) -> None:
+        state = self._state_on_epic()
+        state.update(current_time="2026-03-29T09:30:00Z", timezone="UTC")
+        state["graph_provider"].get_node_depths_batch = AsyncMock(return_value={})
+        captured = {}
+
+        async def capture_get_nodes(self_inner, **kwargs) -> MagicMock:
+            captured.update(kwargs)
+            mock_resp = _make_knowledge_hub_response(items=[], total=0)
+            mock_resp.typed_records = None
+            return mock_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            success, _text = await KnowledgeGraph(state=state).navigate(
+                node_id="epic1", created_after="2026-01-01", created_before=created_before,
+            )
+
+        assert success
+        assert captured["created_at"] == {"gte": 1767225600000, "lte": lte}
 
 
 class TestDepth2ContextEnrichment:
@@ -1259,3 +1872,58 @@ class TestNavigateTimestampRendering:
             success, text = await tool.navigate()
         assert success
         assert "created:" not in text
+
+
+class TestNavigateFailedListing:
+    """A listing that failed (a busy or out-of-memory graph on a huge app) read as "(no children)"."""
+
+    @staticmethod
+    async def _navigate_failing_with(error: str, code: int) -> tuple[bool, str]:
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        failed = _make_knowledge_hub_response(items=[])
+        failed.success = False
+        failed.error = error
+        failed.errorCode = code
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=failed),
+        ):
+            return await KnowledgeGraph(state=state).navigate()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_listing_is_reported_not_shown_as_empty(self) -> None:
+        success, text = await self._navigate_failing_with(
+            "The listing is busy right now. Please try again in a few seconds.", 503,
+        )
+
+        assert not success
+        assert text == "Listing failed: The listing is busy right now. Please try again in a few seconds."
+        assert "no children" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_page_past_the_walk_names_what_navigate_takes(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        listing = AsyncMock(return_value=_make_knowledge_hub_response(items=[]))
+        with patch("app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=listing):
+            success, text = await KnowledgeGraph(state=state).navigate(page=51)
+
+        assert not success
+        assert text.startswith("Listing failed: Page 51 is past the last page a listing reaches (50).")
+        assert "larger limit" in text
+        assert "cursor" not in text
+        listing.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_only_a_listing_too_large_to_read_points_to_a_name_query(self) -> None:
+        success, text = await self._navigate_failing_with(
+            "This view has too many records to list at once. Open a folder, or narrow by search.", 422,
+        )
+
+        assert not success
+        assert text.startswith("Listing failed: This view has too many records to list at once.")
+        assert "knowledgegraph__list_files with a name query" in text

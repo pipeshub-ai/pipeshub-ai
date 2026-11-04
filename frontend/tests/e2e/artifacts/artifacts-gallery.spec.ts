@@ -4,7 +4,7 @@ test.describe('All Artifacts gallery', () => {
   test('page loads without leaving the route @smoke', async ({ page }) => {
     await page.goto('/artifacts/');
     await expect(page).toHaveURL(/\/artifacts/);
-    await expect(page.getByRole('heading', { name: 'All Artifacts' })).toBeVisible({
+    await expect(page.getByRole('heading', { name: 'All artifacts' })).toBeVisible({
       timeout: 30_000,
     });
   });
@@ -15,7 +15,7 @@ test.describe('All Artifacts gallery', () => {
       timeout: 30_000,
     });
     await expect(page.getByRole('link', { name: /All Records/i }).first()).toBeVisible();
-    await expect(page.getByRole('link', { name: /All Artifacts/i }).first()).toBeVisible();
+    await expect(page.getByRole('link', { name: /All artifacts/i }).first()).toBeVisible();
   });
 
   test('New Chat from the gallery opens chat @smoke', async ({ page }) => {

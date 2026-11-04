@@ -145,4 +145,31 @@ describe('@ menu — search', () => {
     expect(onPick).not.toHaveBeenCalled();
     expect(enter.preventDefault).toHaveBeenCalled();
   });
+  it('loads the next page of search results at the end of the list', async () => {
+    const first = Array.from({ length: 20 }, (_, i) => child(`hit-${i}`, `Budget ${i}`));
+    api.searchNodes.mockImplementation(({ flattened, cursor }: { flattened: boolean; cursor?: string }) => {
+      if (!flattened) return Promise.resolve(page([]));
+      return Promise.resolve(cursor === 'page-2' ? page([child('hit-20', 'Budget 20')]) : page(first, 'page-2'));
+    });
+    render(<Menu query="budget" />);
+    expect(await screen.findByText('Budget 20', undefined, WAIT)).toBeTruthy();
+    const next = (api.searchNodes.mock.calls as Array<[{ q: string; cursor?: string; flattened: boolean }]>).find(([p]) => p.cursor);
+    expect(next?.[0]).toMatchObject({ q: 'budget', cursor: 'page-2', flattened: true });
+  });
+
+  it('drops a next page that answers after the query changed', async () => {
+    const late = deferred<ReturnType<typeof page>>();
+    api.searchNodes.mockImplementation(({ q, flattened, cursor }: { q: string; flattened: boolean; cursor?: string }) => {
+      if (cursor) return late.promise;
+      if (!flattened) return Promise.resolve(page([]));
+      return Promise.resolve(q === 'budget' ? page([child('old', 'Budget old')], 'page-2') : page([child('new', 'Budget new')]));
+    });
+    const { rerender } = render(<Menu query="budget" />);
+    await screen.findByText('Budget old', undefined, WAIT);
+    await waitFor(() => expect(api.searchNodes.mock.calls.some(([p]) => (p as { cursor?: string }).cursor)).toBe(true), WAIT);
+    rerender(<Menu query="budget new" />);
+    await screen.findByText('Budget new', undefined, WAIT);
+    await act(async () => late.resolve(page([child('stale', 'Budget stale')])));
+    expect(screen.queryByText('Budget stale')).toBeNull();
+  });
 });

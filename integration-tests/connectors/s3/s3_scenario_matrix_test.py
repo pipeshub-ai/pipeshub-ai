@@ -48,4 +48,5 @@ async def scenario_adapter(
 @pytest.mark.s3
 class TestS3ScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "S3"
+    TREE_MOVES = True
     UNSUPPORTED = {Action.CHANGE_PERMISSION.value: APP_LEVEL_PERMISSIONS}

@@ -27,7 +27,7 @@ test.describe('Groups Enterprise Placeholder', () => {
   });
 
   test('contact link opens the docs contact page', async ({ page }) => {
-    const contact = page.getByRole('link', { name: '@pipeshub.com' });
+    const contact = page.getByRole('link', { name: 'Contact us' });
     await expect(contact).toBeVisible();
     await expect(contact).toHaveAttribute('href', 'https://docs.pipeshub.com/contact-us');
   });

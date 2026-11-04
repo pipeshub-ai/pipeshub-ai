@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import TypeAdapter
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # How the request that answers an ask-user question starts; it continues the turn, it isn't a question.
 ASK_USER_QUESTION_RESUME_PREFIX = "User selections:"
-# A question has no expiry, but a turn isn't kept longer than this.
+# A question card expires, and its kept turn is dropped, after this.
 QUESTION_TTL_SECONDS = 86400
 # `context.tool_state`: tools to make visible again after an answered question (read at PRE_TURN).
 VISIBLE_TOOLS = "_parked_turn_visible_tools"
@@ -49,17 +50,32 @@ def _path(conversation_id: str) -> str:
     return f"/services/agents/parked-turns/{conversation_id}"
 
 
+def with_expiry(tool_data: Any) -> Any:  # noqa: ANN401
+    """A question card as it is sent: with the time its kept turn runs out, after which the card
+    shows as expired and the person replies in the chat instead."""
+    if not isinstance(tool_data, dict) or "expiresAt" in tool_data:
+        return tool_data
+    expires = datetime.now(timezone.utc) + timedelta(seconds=QUESTION_TTL_SECONDS)
+    return {**tool_data, "expiresAt": expires.isoformat(timespec="seconds").replace("+00:00", "Z")}
+
+
 def question_index(messages: list[Any]) -> int:
     """Where the person's question is: the last user message that a loop didn't add and that
-    doesn't answer an ask-user question (the history keeps those answers as user messages)."""
-    return max(
-        (
-            i for i, m in enumerate(messages)
-            if isinstance(m, UserMessage) and not m.injected
-            and not _text(m.content).lstrip().startswith(ASK_USER_QUESTION_RESUME_PREFIX)
-        ),
-        default=-1,
-    )
+    doesn't answer an ask-user question. The history keeps those answers as user messages: tapped
+    ones start with the resume prefix, and a typed one comes right after a card was shown."""
+    ask_calls: set[str] = set()
+    card_shown = False
+    found = -1
+    for i, m in enumerate(messages):
+        if isinstance(m, AssistantMessage):
+            ask_calls |= {c.id for c in m.tool_calls or [] if "ask_user_question" in (c.name or "")}
+        elif isinstance(m, ToolMessage):
+            card_shown = card_shown or (m.tool_call_id in ask_calls and not m.is_error)
+        elif isinstance(m, UserMessage) and not m.injected:
+            if not card_shown and not _text(m.content).lstrip().startswith(ASK_USER_QUESTION_RESUME_PREFIX):
+                found = i
+            card_shown = False
+    return found
 
 
 def ask_call_id(messages: list[Any]) -> str:

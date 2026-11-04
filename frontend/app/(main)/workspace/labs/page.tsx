@@ -26,6 +26,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { VectorStoreActions } from '../connectors/components/vector-store-actions';
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Local Sub-components
@@ -406,7 +407,7 @@ export default function LabsPage() {
   return (
     <Box style={{ height: '100%', overflowY: 'auto' }}>
       {/* Page content */}
-      <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
+      <SettingsPageContainer>
         {/* Page header */}
         <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
@@ -519,7 +520,7 @@ export default function LabsPage() {
 
         {/* ── Platform Configuration note ── */}
         <PlatformConfigNote />
-      </Box>
+      </SettingsPageContainer>
 
       {/* ── Discard Confirmation Dialog ── */}
       <ConfirmationDialog

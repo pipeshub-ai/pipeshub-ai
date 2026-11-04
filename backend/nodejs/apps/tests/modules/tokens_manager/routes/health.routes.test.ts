@@ -54,6 +54,7 @@ describe('tokens_manager/routes/health.routes', () => {
     mockAuthMiddleware = { authenticate: sinon.stub().callsFake((_req: any, _res: any, next: any) => next()) }
 
     container = {
+      isBound: sinon.stub().returns(true),
       get: sinon.stub().callsFake((key: string) => {
         if (key === 'AuthMiddleware') return mockAuthMiddleware
         if (key === 'RedisService') return mockRedis
@@ -109,6 +110,32 @@ describe('tokens_manager/routes/health.routes', () => {
   })
 
   describe('GET / - health check', () => {
+    it('reports PostgreSQL in place of MongoDB when the document store is PostgreSQL', async () => {
+      container.isBound.callsFake((key: string) => key !== 'MongoService')
+      router = createHealthRouter(container, cmContainer)
+      const boot = require('../../../../src/libs/db/boot')
+      const uow = require('../../../../src/libs/db/uow')
+      const epoch = sinon.stub(boot, 'readStoreEpoch').resolves(1)
+      sinon.stub(uow, 'pgRuntime').returns({})
+      sinon.stub(require('axios'), 'get').resolves({ status: 200, data: { status: 'healthy' } })
+
+      const res = mockRes()
+      await findHandler('/', 'get')({}, res, sinon.stub())
+      let body = res.json.firstCall.args[0]
+      expect(body.services).to.not.have.property('mongodb')
+      expect(body.serviceNames).to.not.have.property('mongodb')
+      expect(body.services.postgres).to.equal('healthy')
+      expect(body.serviceNames.postgres).to.equal('PostgreSQL')
+      expect(body.status).to.equal('healthy')
+
+      epoch.rejects(new Error('down'))
+      const res2 = mockRes()
+      await findHandler('/', 'get')({}, res2, sinon.stub())
+      body = res2.json.firstCall.args[0]
+      expect(body.services.postgres).to.equal('unhealthy')
+      expect(body.status).to.equal('unhealthy')
+    })
+
     it('should return healthy status when all services are healthy', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()
@@ -128,6 +155,64 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.mongodb).to.equal('healthy')
       expect(jsonArg.services.KVStoreservice).to.equal('healthy')
       expect(jsonArg.timestamp).to.be.a('string')
+    })
+
+    describe('local blob storage with several app replicas', () => {
+      let savedReplicas: string | undefined
+      beforeEach(() => { savedReplicas = process.env.PIPESHUB_APP_MAX_REPLICAS })
+      afterEach(() => {
+        if (savedReplicas === undefined) delete process.env.PIPESHUB_APP_MAX_REPLICAS
+        else process.env.PIPESHUB_APP_MAX_REPLICAS = savedReplicas
+      })
+
+      const run = async (storageConfig: string | null) => {
+        mockKV.get = sinon.stub().resolves(storageConfig)
+        sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+        const res = mockRes()
+        await findHandler('/', 'get')({}, res, sinon.stub())
+        return res.json.firstCall.args[0]
+      }
+
+      it('warns (but stays healthy) when local storage runs on several replicas', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        const body = await run(JSON.stringify({ storageType: 'local' }))
+        expect(body.status).to.equal('healthy')
+        expect(body.warnings).to.have.length(1)
+        expect(body.warnings[0]).to.contain('up to 6 app replicas')
+      })
+
+      it('warns for the default (no storage configured yet means local)', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '2'
+        const body = await run(null)
+        expect(body.warnings).to.have.length(1)
+      })
+
+      it('answers without the warning when the storage configuration read stalls', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        try {
+          mockKV.get = sinon.stub().returns(new Promise(() => undefined))
+          sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+          const res = mockRes()
+          const answered = findHandler('/', 'get')({}, res, sinon.stub())
+          await clock.tickAsync(2000)
+          await answered
+          const body = res.json.firstCall.args[0]
+          expect(body.status).to.equal('healthy')
+          expect(body.warnings).to.equal(undefined)
+        } finally {
+          clock.restore()
+        }
+      })
+
+      it('does not warn for S3 or for a single replica', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        expect((await run(JSON.stringify({ storageType: 's3' }))).warnings).to.equal(undefined)
+        sinon.restore()
+        sinon.stub(ConfigService, 'getInstance').returns(mockConfigService as any)
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '1'
+        expect((await run(JSON.stringify({ storageType: 'local' }))).warnings).to.equal(undefined)
+      })
     })
 
     it('should include deployment info in response', async () => {
@@ -184,6 +269,21 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.deployment.redisMode).to.equal('cluster')
     })
 
+    it('names the PostgreSQL queue and the in-process cache when no Redis or Kafka is used', async () => {
+      process.env.REDIS_MODE = 'postgres'
+      mockAppConfig.deployment.messageBrokerType = 'postgres'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      const names = res.json.firstCall.args[0].serviceNames
+      expect(names.messageBroker).to.equal('PostgreSQL queue')
+      expect(names.redis).to.equal('In-process cache')
+    })
+
     it('should show Redis (MemoryDB) in serviceNames when REDIS_MODE is memorydb', async () => {
       process.env.REDIS_MODE = 'memorydb'
       router = createHealthRouter(container, cmContainer)
@@ -218,6 +318,35 @@ describe('tokens_manager/routes/health.routes', () => {
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.serviceNames.graphDb).to.equal('Neo4j')
       expect(jsonArg.deployment.graphDbType).to.equal('neo4j')
+    })
+
+    it('labels PostgreSQL and probes it through the connector service', async () => {
+      mockAppConfig.deployment.dataStoreType = 'postgres'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      const get = sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.serviceNames.graphDb).to.equal('PostgreSQL')
+      expect(body.services.graphDb).to.equal('healthy')
+      expect(get.args.map((a: any[]) => a[0])).to.include('http://localhost:8088/health/graph-db')
+    })
+
+    it('reports an unhealthy PostgreSQL graph when the connector probe answers 503', async () => {
+      mockAppConfig.deployment.dataStoreType = 'postgres'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      sinon.stub(require('axios'), 'get').callsFake(async (url: string) => ({ status: url.includes('/health/graph-db') ? 503 : 200 }))
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.services.graphDb).to.equal('unhealthy')
+      expect(body.status).to.equal('unhealthy')
     })
 
     it('should show Redis Streams in serviceNames when messageBrokerType is redis', async () => {
@@ -575,6 +704,43 @@ describe('tokens_manager/routes/health.routes', () => {
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.status).to.equal('unhealthy')
       expect(jsonArg.services.graphDb).to.equal('unhealthy')
+    })
+
+    describe('while the connector service is not accepting connections', () => {
+      const refused = () => Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8088'), { code: 'ECONNREFUSED' })
+
+      it('reports the graph and vector stores as unknown, not unhealthy, and the whole as unhealthy', async () => {
+        mockAppConfig.deployment.dataStoreType = 'neo4j'
+        router = createHealthRouter(container, cmContainer)
+        const handler = findHandler('/', 'get')
+        const res = mockRes()
+
+        const axiosModule = require('axios')
+        sinon.stub(axiosModule, 'get').rejects(refused())
+
+        await handler({}, res, sinon.stub())
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.services.graphDb).to.equal('unknown')
+        expect(jsonArg.services.vectorDb).to.equal('unknown')
+        expect(jsonArg.status).to.equal('unhealthy')
+      })
+
+      it('still reports a store that answered badly as unhealthy', async () => {
+        const handler = findHandler('/', 'get')
+        const res = mockRes()
+
+        const axiosModule = require('axios')
+        sinon.stub(axiosModule, 'get').callsFake((url: string) =>
+          url.includes('graph-db') ? Promise.resolve({ status: 503 }) : Promise.reject(refused()),
+        )
+
+        await handler({}, res, sinon.stub())
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.services.graphDb).to.equal('unhealthy')
+        expect(jsonArg.services.vectorDb).to.equal('unknown')
+      })
     })
 
     it('should call connector /health/graph-db for neo4j and mark healthy on 200', async () => {

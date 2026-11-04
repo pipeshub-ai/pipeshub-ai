@@ -995,7 +995,7 @@ describe('AuthMiddleware', () => {
         accountType: 'premium',
       })
 
-      const appQuery = createMockQuery({ createdBy: { toString: () => 'db-owner-id' } })
+      const appQuery = createMockQuery({ createdBy: 'db-owner-id' })
       sinon.stub(OAuthApp, 'findOne').returns(appQuery)
 
       const userQuery = createMockQuery({ email: 'o@example.com', fullName: 'O' })

@@ -1123,9 +1123,9 @@ class TestSpecialCharacterPaths:
         result = sanitize_path_segment(':*?"<>|/\\')
         assert result == "_" * 9
 
-    def test_empty_string_returns_empty(self):
-        result = sanitize_path_segment("")
-        assert result == ""
+    def test_empty_string_keeps_a_segment(self):
+        # A vanished segment filed the record at its parent's path (L01).
+        assert sanitize_path_segment("") == "_"
 
     @pytest.mark.asyncio
     async def test_record_name_same_as_group_name(self):

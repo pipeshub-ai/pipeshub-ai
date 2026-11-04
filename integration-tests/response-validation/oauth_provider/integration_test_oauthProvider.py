@@ -35,6 +35,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Iterator
 
@@ -57,6 +58,7 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.rate_limit_window import wait_out_rate_limit  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
+    assert_response_strictly_matches_openapi_operation,
 )
 
 _logger = logging.getLogger(__name__)
@@ -80,13 +82,28 @@ class OAuthProviderTestBase:
 def oauth_credentials(
     pipeshub_client: PipeshubClient,
 ) -> Iterator[dict]:
-    """Provide client_id, client_secret, and a fresh access_token for tests."""
-    pipeshub_client._ensure_access_token()
-    yield {
+    """Provide client_id, client_secret, and a fresh access_token for tests.
+
+    The token is minted here rather than taken from ``pipeshub_client``: on the
+    local stack that client uses a login session, and these tests introspect
+    and revoke an OAuth access token.
+    """
+    credentials = {
         "client_id": os.environ.get("CLIENT_ID", ""),
         "client_secret": os.environ.get("CLIENT_SECRET", ""),
-        "access_token": pipeshub_client._access_token,
     }
+    credentials["access_token"] = _client_credentials_token(pipeshub_client, credentials)
+    yield credentials
+
+
+def _client_credentials_token(pipeshub_client: PipeshubClient, credentials: dict) -> str:
+    resp = OAuthProviderClient(pipeshub_client).token(
+        grant_type="client_credentials",
+        client_id=credentials["client_id"],
+        client_secret=credentials["client_secret"],
+    )
+    assert resp.status_code == 200, f"token fetch failed: {resp.status_code} {resp.text}"
+    return str(resp.json()["access_token"])
 
 
 # ====================================================================
@@ -146,6 +163,53 @@ class TestOAuthAuthorize(OAuthProviderTestBase):
         )
 
 
+    def test_consent_json_for_a_session_matches_spec(
+        self, user_session_client: SessionClient
+    ) -> None:
+        """A signed-in caller gets the consent JSON, with the app's knowledgeLimit and the workspace."""
+        source = str(uuid.uuid4())
+        created = user_session_client.request(
+            "POST",
+            "/api/v1/oauth-clients",
+            json={
+                "name": f"integration-consent-{uuid.uuid4().hex[:12]}",
+                "allowedScopes": ["openid", "kb:read"],
+                "allowedGrantTypes": ["authorization_code"],
+                "redirectUris": ["http://localhost/callback"],
+                "isConfidential": False,
+                "knowledgeLimit": {"recordGroups": [source]},
+            },
+        )
+        assert created.status_code == 201, created.text
+        app = created.json()["app"]
+        try:
+            resp = user_session_client.request(
+                "GET",
+                "/api/v1/oauth2/authorize",
+                headers={"Accept": "application/json"},
+                allow_redirects=False,
+                params={
+                    "response_type": "code",
+                    "client_id": app["clientId"],
+                    "redirect_uri": "http://localhost/callback",
+                    "scope": "openid kb:read",
+                    "state": "teststate123",
+                    "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                    "code_challenge_method": "S256",
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["consentData"]["app"]["knowledgeLimit"] == {
+                "apps": [],
+                "recordGroups": [source],
+                "records": [],
+            }, body
+            assert_response_strictly_matches_openapi_operation(body, "oauthAuthorize")
+        finally:
+            user_session_client.request("DELETE", f"/api/v1/oauth-clients/{app['id']}")
+
+
 # ====================================================================
 # POST /api/v1/oauth2/authorize — oauthAuthorizeConsent
 # ====================================================================
@@ -157,6 +221,7 @@ class TestOAuthAuthorizeConsent(OAuthProviderTestBase):
     @pytest.fixture(autouse=True)
     def _setup_credentials(self, oauth_credentials: dict) -> None:
         self.client_id = oauth_credentials["client_id"]
+        self.access_token = oauth_credentials["access_token"]
 
     def test_response_and_errors(self, user_session_client: SessionClient) -> None:
         """401 missing auth, 403 OAuth access token, 400 invalid consent body."""
@@ -173,7 +238,12 @@ class TestOAuthAuthorizeConsent(OAuthProviderTestBase):
         )
 
         # A client must not be able to consent with a token it already holds.
-        resp = self.oauth.authorize_consent(**consent, auth=True)
+        resp = self.oauth.post(
+            "/api/v1/oauth2/authorize",
+            json=consent,
+            auth=False,
+            headers={"Authorization": f"Bearer {self.access_token}"},
+        )
         assert resp.status_code == 403, (
             f"Expected 403 for an OAuth access token, got {resp.status_code}: {resp.text}"
         )
@@ -345,8 +415,9 @@ class TestOAuthRevoke(OAuthProviderTestBase):
         assert_response_matches_openapi_operation(
             resp.json(), "oauthRevoke", status_code="401"
         )
-        self.pipeshub_client._fetch_access_token()
-        self.oauth_credentials["access_token"] = self.pipeshub_client._access_token
+        self.oauth_credentials["access_token"] = _client_credentials_token(
+            self.pipeshub_client, self.oauth_credentials
+        )
 
 
 # ====================================================================

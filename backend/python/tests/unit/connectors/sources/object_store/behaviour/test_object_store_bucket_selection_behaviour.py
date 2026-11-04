@@ -51,6 +51,8 @@ def connector(
     connector = make_connector(kind, store, db, checkpoints, config)
     if kind == "azure_blob":
         connector.container_name = None
+        # A team Azure Blob connector must name its containers under In (PP-322).
+        connector.scope = "personal"
     else:
         connector.bucket_name = None
     connector.data_source.stores[OTHER] = other

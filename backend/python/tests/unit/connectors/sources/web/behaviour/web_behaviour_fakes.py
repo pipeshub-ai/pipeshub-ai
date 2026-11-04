@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import shutil
 import socket
 import sys
@@ -135,6 +136,7 @@ class FakeWeb:
         self.served: list[tuple[str, str, str]] = []  # (client, method, url) for every answered request
         self.not_modified: list[str] = []
         self.browser_visits: list[str] = []
+        self.browser_context_keys: list[str | None] = []  # the context each of ``browser_visits`` loaded in
         self.browser_loaded: list[str] = []  # every address the browser requested, redirect hops included
         self.browser_starts = 0
         self.browser_broken = False
@@ -375,12 +377,11 @@ async def serve_fake_browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(crawl4ai_fetcher, "_shared_instance", None)
     monkeypatch.setattr(crawl4ai_fetcher, "_ref_count", 0)
     monkeypatch.setattr(crawl4ai_fetcher, "_shared_lock", None)
+    monkeypatch.setattr(crawl4ai_fetcher, "_idle_close", None)
     try:
         yield site
     finally:
-        leftover = crawl4ai_fetcher._shared_instance
-        if leftover is not None:
-            await leftover.close()
+        await crawl4ai_fetcher.close_shared_fetcher()
 
 
 def browser_crawler_class(site: FakeWeb) -> type:
@@ -406,6 +407,8 @@ def browser_crawler_class(site: FakeWeb) -> type:
                 return SimpleNamespace(url=url, redirected_url=url, html="", success=False, status_code=None,
                                        error_message=DRIVER_GONE, crawl_stats=None, js_execution_result=None)
             site.browser_visits.append(url)
+            # crawl4ai keys a context by its run config, which carries the key as the proxy username.
+            site.browser_context_keys.append(getattr(getattr(config, "proxy_config", None), "username", None))
             final_url, page = site.render(url)
             if page.kills_browser:
                 site.kill_browser()
@@ -469,9 +472,15 @@ class VirtualClock:
     """Stands in for ``asyncio`` inside the connector and fetch modules.
 
     ``sleep`` records the delay and advances a virtual clock instead of
-    waiting; ``get_event_loop().time()`` reads that clock. Everything else is
-    the real ``asyncio``.
+    waiting; ``get_event_loop().time()`` reads that clock alone. Everything
+    else is the real ``asyncio``.
+
+    The clock starts at a fixed time and moves only on ``sleep``: mixed with the
+    loop's real time, a wait computed as ``deadline - now`` came out as
+    14.999999999999972 instead of 15.0 on hosts whose monotonic clock is large.
     """
+
+    START = 1_000.0
 
     def __init__(self) -> None:
         self.offset = 0.0
@@ -480,6 +489,11 @@ class VirtualClock:
     def __getattr__(self, name: str) -> object:
         return getattr(asyncio, name)
 
+    def slept(self, seconds: float) -> bool:
+        """Whether some sleep was ``seconds`` long. Waits are computed as differences of
+        clock readings, so they are compared within float rounding, never exactly."""
+        return any(math.isclose(delay, seconds, abs_tol=1e-6) for delay in self.sleeps)
+
     async def sleep(self, delay: float, result: object = None) -> object:
         self.sleeps.append(delay)
         self.offset += max(delay, 0)
@@ -487,8 +501,7 @@ class VirtualClock:
         return result
 
     def get_event_loop(self) -> SimpleNamespace:
-        loop = asyncio.get_running_loop()
-        return SimpleNamespace(time=lambda: loop.time() + self.offset)
+        return SimpleNamespace(time=lambda: self.START + self.offset)
 
 
 class FakeRecordsDb:

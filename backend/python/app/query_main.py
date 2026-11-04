@@ -16,27 +16,37 @@ from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.api.routes.records import router as records_router
+from app.core.envelope import configure_from_config as configure_envelope
+from app.core.org_context import spawn_detached
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
+    ai_models_registry_router,
     authMiddleware,
     chatbot_router,
     ensure_org_context,
     search_router,
 )
+from app.services.model_identity.principal import service_principal
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.utils.log_redaction import log_safe_validation_errors
 from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
-from app.api.routes.ai_models_registry import router as ai_models_registry_router
-from app.api.routes.openai_models import router as openai_models_router
+from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.health import router as health_router
+from app.api.routes.knowledge_search import router as knowledge_search_router  # noqa: E402 - after set_service_suffix(), like the imports around it
+from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.edition_containers import QueryAppContainer
-from app.edition_services import configure_app, register_extra_toolsets  # noqa: E402 - like the imports around it, after set_service_suffix()
+from app.edition_services import (  # noqa: E402 - like the imports around it, after set_service_suffix()
+    configure_app,
+    register_extra_toolsets,
+)
 from app.health.health import Health
 from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
@@ -176,6 +186,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.debug("🚀 Starting retrieval application")
 
+    await configure_envelope(app_container.config_service())
+
+    from app.agents.actions.storage_search.storage_search import (
+        sweep_orphan_views_at_startup,
+    )
+
+    await sweep_orphan_views_at_startup(app_container.config_service())
+
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
@@ -189,6 +207,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    # Chat attachments parse PDFs in parse workers sized from this governor, so
+    # one slow or huge file costs only its own upload: a worker can be killed on
+    # a deadline and is what runs out of memory, where a thread is neither. No
+    # admission gates are taken here, so its sampling loop is not started.
+    from app.modules.parsers import parse_pool
+    from app.modules.parsers.pdf.pdf_rasterizer import (
+        set_resource_governor as set_pdf_rasterizer_governor,
+    )
+    from app.services.messaging.config import messaging_env
+    from app.services.resource_governor import ResourceGovernor
+    from app.utils.llm import is_local_cpu_embedding_configured
+
+    governor = ResourceGovernor(
+        logger=logger,
+        env_parse=messaging_env.env_max_concurrent_parsing,
+        worker_count=configured_worker_count(),
+        reserve_embedding_cpus=await is_local_cpu_embedding_configured(
+            app_container.config_service(), logger
+        ),
+    )
+    set_pdf_rasterizer_governor(governor)
+    parse_pool.set_resource_governor(governor)
+
     # KB uploads made through chat index in this process, so it invalidates too.
     try:
         from app.services.cache.invalidation_hooks import (
@@ -199,6 +240,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
     except Exception as e:
         logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
+
+    from app.services.permissions.wiring import register_viewer_scope_version
+
+    await register_viewer_scope_version(app_container.config_service(), logger)
 
     # Start all message consumers centrally
     try:
@@ -228,14 +273,37 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async def _warmup_embedding_model() -> None:
             try:
                 logger.info("🔥 Warming up embedding model in background")
-                await retrieval_service.get_embedding_model_instance()
+                async with call_scope(
+                    service_principal("warmup"),
+                    Workload.SYSTEM,
+                    config_service=container.config_service(),
+                    container=container,
+                ):
+                    await retrieval_service.get_embedding_model_instance()
                 logger.info("✅ Embedding model warmup complete")
             except Exception as warmup_error:
                 logger.error(
                     f"❌ Embedding model warmup failed (will retry on first use): {warmup_error}"
                 )
 
-        app.state.embedding_warmup_task = asyncio.create_task(_warmup_embedding_model())
+        app.state.embedding_warmup_task = spawn_detached(_warmup_embedding_model())
+
+        # Builtin skill packs are seeded here, once per org per pack version,
+        # instead of being checked on every agent request.
+        try:
+            from app.agents.agent_loop.skills_wiring import skills_enabled
+            from app.services.featureflag.platform_settings import is_skills_enabled
+
+            if skills_enabled() and await is_skills_enabled(container.config_service()):
+                from app.agents.agent_loop.skills.manager_factory import (
+                    reconcile_builtin_skills_for_orgs,
+                )
+
+                app.state.skills_seed_task = asyncio.create_task(
+                    reconcile_builtin_skills_for_orgs(graph_provider, orgs)
+                )
+        except Exception as e:
+            logger.warning(f"Builtin skill seeding not scheduled at startup (requests will retry): {e}")
 
         # For OpenSearch: pre-load the k-NN HNSW graphs into the OS page cache
         # so that the first search after a restart or force-merge is not blocked
@@ -263,9 +331,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     f"k-NN index warmup failed (non-fatal, search will still work): {warmup_error}"
                 )
 
-        app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
+        app.state.knn_warmup_task = spawn_detached(_warmup_knn_index())
 
-        app.state.entity_store_warmup_task = asyncio.create_task(
+        app.state.entity_store_warmup_task = spawn_detached(
             warm_up_entity_vector_store(app_container, logger)
         )
 
@@ -281,7 +349,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             except Exception as reconcile_error:
                 logger.warning(f"Keyword-scoring reconcile failed (non-fatal): {reconcile_error}")
 
-        app.state.lexical_reconcile_task = asyncio.create_task(_reconcile_lexical_scoring())
+        app.state.lexical_reconcile_task = spawn_detached(_reconcile_lexical_scoring())
 
     # Prepare the coding sandbox backend before a user needs it. On Docker
     # that means pulling the sandbox image and creating the egress network —
@@ -292,12 +360,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # so it can be read back without re-probing the daemon on every health
     # check.
     async def _warmup_coding_sandbox() -> None:
+        from app.agent_loop_lib.sandbox.coding.base import SandboxContext
         from app.agent_loop_lib.sandbox.coding.registry import build_default_registry
         from app.agent_loop_lib.sandbox.coding.settings import (
             EnvSandboxSettingsLoader,
             SharedSandboxConfig,
         )
-        from app.agent_loop_lib.sandbox.coding.base import SandboxContext
 
         try:
             settings = await EnvSandboxSettingsLoader().load(SandboxContext())
@@ -332,7 +400,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 warmup_error,
             )
 
-    app.state.sandbox_warmup_task = asyncio.create_task(_warmup_coding_sandbox())
+    app.state.sandbox_warmup_task = spawn_detached(_warmup_coding_sandbox())
 
     # Initialize toolset registry for agent tool execution.
     # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
@@ -369,7 +437,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
-        "lexical_reconcile_task", "entity_store_warmup_task",
+        "lexical_reconcile_task", "entity_store_warmup_task", "skills_seed_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
@@ -394,11 +462,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error closing configuration service: {e}")
 
     try:
+        from app.modules.parsers import parse_pool
+        parse_pool.set_resource_governor(None)
+        if parse_pool.shutdown_parse_pool():
+            logger.info("✅ Parse worker pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down the parse worker pool: {e}")
+
+    try:
         from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool
         if shutdown_pdf_raster_pool():
             logger.info("✅ PDF rasterization process pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
+
+    try:
+        from app.connectors.sources.web.crawl4ai_fetcher import close_shared_fetcher
+        await close_shared_fetcher()
+    except Exception as e:
+        logger.error(f"❌ Error closing the shared headless browser: {e}")
 
     try:
         from app.modules.transformers.blob_storage import (
@@ -510,12 +592,14 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
+app.include_router(knowledge_search_router, prefix="/api/v1")
 app.include_router(records_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
+app.include_router(code_graph_router, prefix="/api/v1")
 # These routes call whatever provider URL the body names, so only admins may reach them.
 app.include_router(health_router, prefix="/api/v1", dependencies=[Depends(require_admin_caller)])
 app.include_router(ai_models_registry_router, prefix="/api/v1")

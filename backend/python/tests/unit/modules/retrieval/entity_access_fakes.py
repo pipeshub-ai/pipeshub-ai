@@ -14,6 +14,11 @@ readable, a record-level row only when listed in ``permitted``, and
 returned. An id that never came back as a row (a record group) is admitted
 unless denied.
 
+A turn limit is honoured as the query and the check honour it: ``within``
+narrows candidates before the window, and ``check_access(scopes=...)``
+reports the admitted ids inside every scope as ``node_ids_in_scope``. A
+record's direct groups come from ``groups``.
+
 ``get_record_taxonomy_links`` (``record_spellings``) spells each entity a
 returned row was found under by ``names[entity_id]``, by default the entity
 id (the name these fixtures give a hit).
@@ -46,13 +51,16 @@ class EntityGraphFake:
         app_level: Iterable[str] = (),
         permitted: Iterable[str] = (),
         denied: Iterable[str] = (),
+        groups: Mapping[str, Iterable[str]] | None = None,
     ) -> None:
         self._build = build
+        self._groups = {key: list(ids) for key, ids in (groups or {}).items()}
         self._app_level = set(app_level)
         self._permitted = set(permitted)
         self._denied = set(denied)
         self._connector_of: dict[str, str] = {}
         self.returned: dict[str, set[str]] = {}
+        self.within_calls: list[list[dict[str, list[str]]] | None] = []
 
     async def permitted_records(
         self,
@@ -66,7 +74,9 @@ class EntityGraphFake:
         offset: int = 0,
         window: int = 200,
         timeout_seconds: float | None = None,
+        within: list[dict[str, list[str]]] | None = None,
     ) -> dict[tuple[str, str], PermittedEntityRows]:
+        self.within_calls.append(within)
         types = {str(ref["id"]): ref.get("type", "") for ref in refs}
         scopes = {(ref.get("type", ""), str(ref["id"])): set(ref.get("connectorIds") or []) for ref in refs}
         passing = set(app_level_connector_ids)
@@ -77,7 +87,10 @@ class EntityGraphFake:
         for key, rows in built.items():
             entity = key if isinstance(key, tuple) else (types.get(key, ""), key)
             scope = scopes.get(entity, set())
-            win = [row for row in rows if row.get("connectorId") in scope][:window]
+            win = [
+                row for row in rows
+                if row.get("connectorId") in scope and self._inside(row, within)
+            ][:window]
             hits = []
             for pos, row in enumerate(win):
                 if row["connectorId"] in passing:
@@ -93,9 +106,26 @@ class EntityGraphFake:
         return out
 
     async def check_access(
-        self, user_key: str, org_id: str, *, node_ids: Iterable[str] = (), **_: object,
+        self, user_key: str, org_id: str, *, node_ids: Iterable[str] = (), scopes: Iterable[Any] = (), **_: object,
     ) -> AccessCheck:
-        return AccessCheck(node_ids=frozenset(i for i in node_ids if self._readable(i)))
+        readable = frozenset(i for i in node_ids if self._readable(i))
+        scopes = list(scopes)
+        in_scope = frozenset(
+            i for i in readable
+            if all(scope.admits({"id": i, "connectorId": self._connector_of.get(i),
+                                 "groupIds": self._groups.get(i, [])}) for scope in scopes)
+        ) if scopes else frozenset()
+        return AccessCheck(node_ids=readable, node_ids_in_scope=in_scope)
+
+    def _inside(self, row: Mapping[str, Any], within: list[dict[str, list[str]]] | None) -> bool:
+        if within is None:
+            return True
+        key = str(row.get("_key"))
+        return all(
+            row.get("connectorId") in s["apps"] or key in s["records"]
+            or bool(set(self._groups.get(key, [])) & set(s["groups"]))
+            for s in within
+        )
 
     def _readable(self, node_id: str) -> bool:
         if node_id in self._denied:
@@ -132,12 +162,14 @@ def entity_graph(
     permitted: Iterable[str] = (),
     denied: Iterable[str] = (),
     names: Mapping[str, str] | None = None,
+    groups: Mapping[str, Iterable[str]] | None = None,
 ) -> MagicMock:
     """A graph provider mock whose calls are answered by one ``EntityGraphFake``."""
-    fake = EntityGraphFake(build, app_level=app_level, permitted=permitted, denied=denied)
+    fake = EntityGraphFake(build, app_level=app_level, permitted=permitted, denied=denied, groups=groups)
     graph = MagicMock()
     graph.get_permitted_entity_records = AsyncMock(side_effect=fake.permitted_records)
     graph.check_access = AsyncMock(side_effect=fake.check_access)
     graph.get_knowledge_hub_access_v3 = AsyncMock(return_value=RESOLVED_ACCESS)
     graph.get_record_taxonomy_links = AsyncMock(side_effect=record_spellings(fake, names))
+    graph.fake = fake
     return graph

@@ -24,6 +24,7 @@ from app.connectors.sources.network_share.errors import (
     ShareListingError,
 )
 from app.sources.client.iclient import IClient
+from app.sources.client.smb.smb import dial_address
 
 smb_structs.SUPPORT_SMB2 = False
 
@@ -99,7 +100,9 @@ class CifsClient(IClient):
         share: str | None = None,
         use_ntlm_v2: bool = True,
         logger: Logger | None = None,
+        public_only: bool = False,
     ) -> None:
+        self.public_only = public_only
         self.server = server
         self.port = port
         self.username = username
@@ -141,7 +144,8 @@ class CifsClient(IClient):
             return
         conn = self._new_connection()
         try:
-            ok = conn.connect(self.server, self.port)
+            # The address SMB checks for its sessions: loopback, link-local and metadata never.
+            ok = conn.connect(dial_address(self.server, public_only=self.public_only), self.port)
         except Exception as exc:
             with suppress(Exception):
                 conn.close()
@@ -207,7 +211,13 @@ class CifsClient(IClient):
             message = str(exc).lower()
             if "not found" in message or "no such" in message:
                 raise FileNotFoundError(path) from exc
-            if "logon" in message or "access denied" in message:
+            # The walk stops on an auth error, so a folder the account may not list stays a
+            # listing error. pysmb's text names the share and path, which may contain "logon".
+            reason = message
+            for name in (_smb1_path(path), path, share):
+                if name:
+                    reason = reason.replace(name.lower(), "")
+            if "logon" in reason:
                 raise NetworkShareAuthError(str(exc)) from exc
             raise DirectoryListingError(share, path, str(exc)) from exc
 
@@ -280,6 +290,8 @@ class CifsClient(IClient):
         logger: Logger,
         config_service: ConfigurationService,
         connector_instance_id: str,
+        *,
+        public_only: bool = False,
     ) -> "CifsClient":
         config = await config_service.get_config(
             ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=connector_instance_id)
@@ -307,6 +319,7 @@ class CifsClient(IClient):
             share=share,
             use_ntlm_v2=ntlm != "v1",
             logger=logger,
+            public_only=public_only,
         )
         await asyncio.to_thread(client.connect)
         return client

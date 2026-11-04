@@ -44,6 +44,8 @@ from app.agent_loop_lib.core.types import Source
 from app.agent_loop_lib.tools.errors import ToolValidationError
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from app.agent_loop_lib.core.tool_schema import ToolSchema
     from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
     from app.agent_loop_lib.modules.stores.approval.base import RiskLevel
@@ -75,7 +77,7 @@ class ParameterType(str, Enum):
 # bool is intentionally excluded from INTEGER's accepted set because
 # `isinstance(True, int)` is True in Python and would silently accept booleans
 # as integers otherwise.
-def _fuzzy_match_enum(value: object, enum: list[str]) -> str | None:
+def _fuzzy_match_enum(value: object, enum: Sequence[object]) -> str | None:
     """Case-insensitive enum matching with whitespace/underscore normalisation.
 
     Returns the canonical enum member if a match is found, None otherwise.
@@ -86,7 +88,8 @@ def _fuzzy_match_enum(value: object, enum: list[str]) -> str | None:
         return None
     normalised = value.strip().lower().replace("_", " ")
     for member in enum:
-        if member.lower().replace("_", " ") == normalised:
+        # A schema's enum can hold numbers and null too (`[1, 2]`, `["alice", null]`).
+        if isinstance(member, str) and member.lower().replace("_", " ") == normalised:
             return member
     return None
 
@@ -438,3 +441,10 @@ class Tool(ABC):
         a record's fields), computed from the FULL result. It is stored with the conversation,
         so keep it small. `None` (the default): the card shows the raw preview."""
         return None
+
+    def result_failed(self, args: dict[str, Any], result: "CoreToolResult") -> bool:
+        """Whether the tool card should show this call as failed even though the tool returned
+        normally — e.g. `run_code` returns a non-zero exit as data so the model can read the
+        error and retry, but the person should still see the step failed. Display only: the
+        model gets `result` unchanged. `False` (the default): failed iff `result.is_error`."""
+        return False

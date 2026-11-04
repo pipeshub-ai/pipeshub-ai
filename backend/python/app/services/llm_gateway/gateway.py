@@ -24,6 +24,13 @@ from app.services.base_client import (
     CircuitBreaker,
 )
 from app.services.llm_gateway.limiter import CrossLoopSemaphore
+from app.services.model_identity.call_context import peek_call_context
+from app.services.model_identity.errors import (
+    GatewayPolicyError,
+    policy_error_from_exception,
+    report_background_refusal,
+)
+from app.services.model_identity.workload import WorkloadClass
 from app.telemetry.modules.llm_gateway_metrics import (
     LLM_BREAKER_OPEN,
     LLM_CALLS,
@@ -36,6 +43,8 @@ from app.utils.llm import LLMUnavailableError, is_provider_unavailable
 # inputs, and a tight bound would turn slowness into an outage. Below the classify stage budget.
 CALL_TIMEOUT_S = 600.0
 RATE_LIMIT_ATTEMPTS = 3
+# A gateway that says when its limit resets is believed, up to this long.
+MAX_GATEWAY_RETRY_AFTER_SECONDS = 60.0
 _TOO_MANY_REQUESTS = 429
 _RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "429", "too many requests", "quota exceeded")
 
@@ -111,7 +120,17 @@ def current_call_site() -> str:
     return _call_site.get()
 
 
-def _is_rate_limited(exc: BaseException) -> bool:
+def _is_background_call() -> bool:
+    """An unbound call goes out as the service (``Workload.SYSTEM``), so it counts as background."""
+    ctx = peek_call_context()
+    return ctx is None or ctx.workload_class is WorkloadClass.BACKGROUND
+
+
+def _is_rate_limited(exc: BaseException, policy: GatewayPolicyError | None = None) -> bool:
+    # A budget or model-access refusal from the gateway looks like a 429 or 4xx but
+    # comes back unchanged however often it is retried.
+    if policy is not None:
+        return policy.retryable
     if getattr(exc, "status_code", None) == _TOO_MANY_REQUESTS:
         return True
     message = str(exc).lower()
@@ -241,6 +260,7 @@ class LLMGateway:
                 retry_after=breaker.retry_after(),
             )
         for attempt in range(RATE_LIMIT_ATTEMPTS):
+            policy: GatewayPolicyError | None = None
             async with self._limiter.slot():
                 try:
                     result = await asyncio.wait_for(make_call(), call_timeout)
@@ -255,9 +275,12 @@ class LLMGateway:
                     LLM_CALLS.inc(site, "timeout")
                     raise
                 except Exception as exc:
-                    retry = _is_rate_limited(exc) and attempt < RATE_LIMIT_ATTEMPTS - 1
+                    policy = policy_error_from_exception(exc)
+                    if policy is not None and _is_background_call():
+                        report_background_refusal(policy)
+                    retry = _is_rate_limited(exc, policy) and attempt < RATE_LIMIT_ATTEMPTS - 1
                     if not retry:
-                        self._settle_failure(breaker, provider, site, exc)
+                        self._settle_failure(breaker, provider, site, exc, policy)
                         raise
                 else:
                     breaker.record_success()
@@ -269,11 +292,24 @@ class LLMGateway:
             self.note_rate_limit_retry()
             LLM_CALLS.inc(site, "rate_limited")
             # Jittered, and outside the permit: lock-step retries are what keep a provider at its limit.
-            await asyncio.sleep(2**attempt + random.uniform(0, 1))
+            delay = 2**attempt + random.uniform(0, 1)
+            if policy is not None and policy.retry_after is not None:
+                # The gateway said when; waiting less only earns another refusal.
+                delay = max(delay, min(policy.retry_after, MAX_GATEWAY_RETRY_AFTER_SECONDS))
+            await asyncio.sleep(delay)
         raise AssertionError("unreachable: the last attempt returns or raises")
 
-    def _settle_failure(self, breaker: CircuitBreaker, provider: str, site: str, exc: Exception) -> None:
-        if isinstance(exc, TimeoutError) or is_provider_unavailable(exc):
+    def _settle_failure(
+        self,
+        breaker: CircuitBreaker,
+        provider: str,
+        site: str,
+        exc: Exception,
+        policy: GatewayPolicyError | None = None,
+    ) -> None:
+        # A spent budget or a model the key may not use is the gateway answering, not the provider failing.
+        refused = policy is not None and not policy.retryable
+        if not refused and (isinstance(exc, TimeoutError) or is_provider_unavailable(exc)):
             breaker.record_failure()
             if breaker.is_open:
                 LLM_BREAKER_OPEN.set(provider, value=1.0)

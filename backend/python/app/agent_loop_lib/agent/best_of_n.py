@@ -10,6 +10,7 @@ from app.agent_loop_lib.core.types import (
     ToolCall,
     ToolResult,
 )
+from app.agent_loop_lib.tools.builtin.coordination.parent_results import parent_request
 
 """Run-level best-of-N: the `best_of_n` special route in
 `tools/builtin/coordination/best_of_n.py` dispatches here. Kept as its own
@@ -35,7 +36,7 @@ async def _run_one_candidate(agent, candidate_spec, candidate_goal: Goal, team_i
     try:
         return await agent.runtime.run_child(
             candidate_spec, candidate_goal, agent.run_ctx, team_id=team_id, session_id=agent.session_id,
-            parent_scope=agent.scope,
+            parent_scope=agent.scope, user_request=await parent_request(agent),
         )
     except Exception as e:
         return AgentResult(goal=candidate_goal, success=False, error=str(e))

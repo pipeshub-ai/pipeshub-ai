@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.connectors.sources.google.drive.team.user_status import UserStatusChange
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import FilterCollection
@@ -152,6 +153,11 @@ def connector():
         conn.admin_data_source = AsyncMock()
         conn.drive_data_source = AsyncMock()
         conn.config = {"credentials": {}}
+        # Collaborators the run safety fixes call: account status, groups, access withdrawal.
+        conn._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock())
+        dep.get_all_user_groups = AsyncMock(return_value=[])
+        dep.remove_user_access_to_connector = AsyncMock(return_value=0)
+        dep.on_new_user_groups = AsyncMock()
         yield conn
 
 
@@ -832,16 +838,16 @@ class TestFetchPermissionsDeep:
         with pytest.raises(HttpError):
             await connector._fetch_permissions("drive-1", is_drive=True)
 
-    async def test_file_non_403_returns_empty(self, connector):
+    async def test_file_non_403_raises(self, connector):
         """Non-403 HttpError on file returns empty list."""
         from googleapiclient.errors import HttpError
         mock_resp = MagicMock()
         mock_resp.status = 500
         http_error = HttpError(mock_resp, b"server error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
-        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert perms == []
-        assert is_fallback is True, "a failed read keeps the stored grants"
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(HttpError):
+            await connector._fetch_permissions("file-1", is_drive=False)
 
     async def test_generic_exception_on_drive_raises(self, connector):
         """Generic exception on drive raises."""
@@ -851,13 +857,14 @@ class TestFetchPermissionsDeep:
         with pytest.raises(RuntimeError):
             await connector._fetch_permissions("drive-1", is_drive=True)
 
-    async def test_generic_exception_on_file_returns_empty(self, connector):
+    async def test_generic_exception_on_file_raises(self, connector):
         """Generic exception on file returns empty."""
         connector.drive_data_source.permissions_list = AsyncMock(
             side_effect=RuntimeError("network error")
         )
-        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert perms == []
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(RuntimeError):
+            await connector._fetch_permissions("file-1", is_drive=False)
 
     async def test_group_permission_maps_external_id_to_email(self, connector):
         """Group permission uses email as external_id."""

@@ -45,18 +45,7 @@ TX_STORE = "GraphTransactionStore"
 # see it. Recorded rather than asserted, like KNOWN_INCOMPLETE in
 # test_connector_contract.py: deleting a name once the interface declares it is
 # how the gap is closed, and the stale-entry test below enforces that.
-KNOWN_INTERFACE_GAPS = frozenset({
-    "_create_reindex_event_payload",
-    "_get_kb_context_for_record",
-    "batch_upsert_node_relations",
-    "clone_agent_template",
-    "delete_all_edges_for_node",
-    "delete_inherit_permissions_relation_record_group",
-    "get_template",
-    "get_user_app_ids",
-    "get_user_apps",
-    "get_user_permission_app_ids",
-})
+KNOWN_INTERFACE_GAPS: frozenset[str] = frozenset()
 
 # Calls to a method no backend defines. Each raises AttributeError if reached;
 # listed so this file gates new ones, not to excuse these.

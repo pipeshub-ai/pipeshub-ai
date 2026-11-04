@@ -341,13 +341,33 @@ function listFilterLabelsById(raw: unknown): Record<string, string> {
 }
 
 /**
- * Repository pickers that narrow to a parent container the user already picked,
- * keyed by the child filter name -> the parent filter supplying the scope.
+ * Pickers that narrow to a parent the user already picked, keyed by the child
+ * filter name -> the candidate parent filters; the first one the connector has wins.
  */
-const OPTION_SCOPE_PARENT_FIELD: Record<string, string> = {
-  project_ids: 'group_ids', // GitLab: projects under the selected groups
-  repo_ids: 'org_ids', // GitHub: repos under the selected orgs
+const OPTION_SCOPE_PARENT_FIELDS: Record<string, string[]> = {
+  project_ids: ['group_ids'], // GitLab: projects under the selected groups
+  repo_ids: ['org_ids'], // GitHub: repos under the selected orgs
+  branch: ['repo_ids', 'project_ids'], // GitHub / GitLab: branches of the selected repository
 };
+
+/** Sync filters that only make sense for one parent selection, cleared when it changes. */
+const CLEARED_ON_PARENT_CHANGE: Record<string, string[]> = {
+  repo_ids: ['branch'],
+  project_ids: ['branch'],
+};
+
+function optionsScopeParent(
+  childFieldName: string,
+  syncValues: Record<string, unknown> | undefined
+): string | undefined {
+  const parents = OPTION_SCOPE_PARENT_FIELDS[childFieldName];
+  if (!parents || !syncValues) return undefined;
+  return parents.find((p) => syncValues[p] !== undefined && syncValues[p] !== null);
+}
+
+function rowIds(raw: unknown): string[] {
+  return isFilterRowValue(raw) ? listFilterIds(raw.value) : [];
+}
 
 /** Scope a repository picker based on the parent container currently selected. */
 function groupPathsForOptionsScope(
@@ -363,7 +383,8 @@ function groupPathsForOptionsScope(
     .toLowerCase();
   const ids = listFilterIds(raw.value);
   if (ids.length === 0) return undefined;
-  if (op === 'in') return { include: ids };
+  // A single-select parent (repository) is saved with `in`, or `is` in older configs.
+  if (op === 'in' || op === 'is') return { include: ids };
   if (op === 'not_in') return { exclude: ids };
   return undefined;
 }
@@ -502,14 +523,14 @@ function useDynamicFilterOptions(
               : { page: pageRef.current + 1 }),
         };
         if (
-          OPTION_SCOPE_PARENT_FIELD[field.name] &&
+          OPTION_SCOPE_PARENT_FIELDS[field.name] &&
           optionContextGroupPaths &&
           optionContextGroupPaths.length > 0
         ) {
           params.contextGroupPath = optionContextGroupPaths;
         }
         if (
-          OPTION_SCOPE_PARENT_FIELD[field.name] &&
+          OPTION_SCOPE_PARENT_FIELDS[field.name] &&
           optionExcludeContextGroupPaths &&
           optionExcludeContextGroupPaths.length > 0
         ) {
@@ -1248,7 +1269,7 @@ function FilterCategoryBlock({
   activeFieldNames,
   setActiveFieldNames,
   connectorId,
-  onChange,
+  onChange: onChangeRaw,
   showConfiguredPreview = true,
   readOnly = false,
 }: {
@@ -1268,6 +1289,21 @@ function FilterCategoryBlock({
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   /** Indexing filters are always-on (legacy); sync filters stay add/remove. */
   const allowRemoveFilter = section === 'sync' && !readOnly;
+
+  // A branch picked for the old repository must not be saved against a new one.
+  const onChange = (changedSection: FilterSection, name: string, value: unknown) => {
+    onChangeRaw(changedSection, name, value);
+    const dependents = changedSection === 'sync' ? CLEARED_ON_PARENT_CHANGE[name] : undefined;
+    if (!dependents) return;
+    const before = rowIds(values[name]);
+    const after = rowIds(value);
+    if (before.length === after.length && before.every((id, i) => id === after[i])) return;
+    for (const dep of dependents) {
+      if (values[dep] === undefined || values[dep] === null) continue;
+      onChangeRaw('sync', dep, null);
+      setActiveFieldNames((prev) => prev.filter((n) => n !== dep));
+    }
+  };
   const availableToAdd = allowRemoveFilter
     ? fields.filter((f) => !f.required && !activeFieldNames.includes(f.name))
     : [];
@@ -1557,7 +1593,7 @@ function FilterFieldRow({
   const listLike = isListLikeField(field);
   const freeTextList = isFreeTextListField(field);
   const isBooleanField = field.filterType === 'boolean';
-  const optionsScopeParentField = OPTION_SCOPE_PARENT_FIELD[field.name];
+  const optionsScopeParentField = optionsScopeParent(field.name, allSyncValues);
   const projectOptionsScope =
     section === 'sync' && optionsScopeParentField
       ? groupPathsForOptionsScope(allSyncValues, optionsScopeParentField)

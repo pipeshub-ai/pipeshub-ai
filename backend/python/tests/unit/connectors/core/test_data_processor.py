@@ -417,6 +417,54 @@ class TestProcessRecord:
         assert result.id == "existing-id"
 
 
+    @pytest.mark.asyncio
+    async def test_unchanged_code_file_keeps_its_updated_stamp(self) -> None:
+        """The code edge build re-resolves every file stamped since its last run;
+        a full code sync re-saves every file, unchanged ones included."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = _make_record(record_type=RecordType.CODE_FILE, updated_at=111)
+        existing.id = "existing-id"
+        existing.external_revision_id = "blob-1"
+        tx_store.get_record_by_external_id.return_value = existing
+
+        record = _make_record(record_type=RecordType.CODE_FILE)
+        record.external_revision_id = "blob-1"
+        result, _ = await proc._process_record(record, [], tx_store)
+
+        assert result.updated_at == 111
+
+    @pytest.mark.asyncio
+    async def test_changed_code_file_gets_a_new_updated_stamp(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = _make_record(record_type=RecordType.CODE_FILE, updated_at=111)
+        existing.id = "existing-id"
+        existing.external_revision_id = "blob-1"
+        tx_store.get_record_by_external_id.return_value = existing
+
+        record = _make_record(record_type=RecordType.CODE_FILE)
+        record.external_revision_id = "blob-2"
+        result, _ = await proc._process_record(record, [], tx_store)
+
+        assert result.updated_at > 111
+
+    @pytest.mark.asyncio
+    async def test_other_records_keep_taking_a_new_updated_stamp(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = _make_record(updated_at=111)
+        existing.id = "existing-id"
+        existing.external_revision_id = "rev-1"
+        tx_store.get_record_by_external_id.return_value = existing
+
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+        result, _ = await proc._process_record(record, [], tx_store)
+
+        assert result.updated_at > 111
+
+
 # ===========================================================================
 # on_new_records
 # ===========================================================================
@@ -474,6 +522,28 @@ class TestOnNewRecords:
         proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_record_the_connector_stored_failed_is_not_published(self) -> None:
+        """A page that answered an error is stored FAILED with its reason; indexing must not
+        fetch it again and replace that reason with its own."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+
+        record = _make_record()
+        record.id = "rec-1"
+        record.indexing_status = ProgressStatus.FAILED.value
+        record.reason = "The page returned an error (400 Bad Request)."
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == ProgressStatus.FAILED.value
+
+    @pytest.mark.asyncio
     async def test_exception_propagated(self):
         """Transaction errors propagate."""
         proc = _make_processor()
@@ -528,6 +598,45 @@ class TestUnchangedRecordsAreNotRepublished:
 
         proc.messaging_producer.send_messages.assert_not_awaited()
         assert record.indexing_status == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_unchanged_password_protected_record_publishes_nothing(self) -> None:
+        """A full re-sync does not queue a locked file again: the same bytes need the same password."""
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.PASSWORD_PROTECTED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == ProgressStatus.PASSWORD_PROTECTED.value
+
+    @pytest.mark.asyncio
+    async def test_changed_password_protected_record_is_indexed_again(self) -> None:
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.PASSWORD_PROTECTED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status != ProgressStatus.PASSWORD_PROTECTED.value
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_failed_record_is_still_queued_again(self) -> None:
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.FAILED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_changed_completed_record_is_requeued_and_published(self):
@@ -798,6 +907,49 @@ class TestOnRecordDeleted:
         proc.messaging_producer.send_message.assert_awaited()
         body = proc.messaging_producer.send_message.await_args.args[1]
         assert body["payload"]["virtualRecordId"] == "vr-9"
+
+
+    @pytest.mark.asyncio
+    async def test_a_code_file_keeps_its_names_before_it_is_deleted(self) -> None:
+        """Its blocks go with it, and with them what its callers bound to."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = {"_key": "rec-1", "orgId": "org-1", "connectorId": "conn-9",
+                    "recordGroupId": "g", "recordType": "CODE_FILE", "connectorName": "GITHUB"}
+        tx_store.get_record_by_key = AsyncMock(return_value=existing)
+        order = []
+        tx_store.delete_single_record = AsyncMock(
+            side_effect=lambda _id: order.append("delete") or {"success": True},
+        )
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.deleted_files.remember",
+            AsyncMock(side_effect=lambda _g, records, _log: order.append(("remember", records))),
+        ):
+            await proc.on_record_deleted("rec-1")
+
+        assert order == [("remember", [existing]), "delete"]
+
+    @pytest.mark.asyncio
+    async def test_a_cascade_reads_its_roots_and_keeps_their_names_first(self) -> None:
+        proc = _make_processor()
+        graph = proc.data_store_provider.graph_provider
+        roots = [{"_key": "rec-1", "recordType": "CODE_FILE"}]
+        graph.get_nodes_by_field_in = AsyncMock(return_value=roots)
+        remember = AsyncMock()
+
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.deleted_files.remember",
+            remember,
+        ):
+            await proc._remember_deleted_code_files(["rec-1"])
+
+        assert graph.get_nodes_by_field_in.await_args.args[1:3] == ("_key", ["rec-1"])
+        remember.assert_awaited_once_with(graph, roots, proc.logger)
 
 
 # ===========================================================================
@@ -3156,3 +3308,34 @@ class TestStageRerunEvents:
         _topic, messages = proc.messaging_producer.send_messages.await_args.args
         assert messages[0][1]["payload"]["stages"] == ["classify"]
         proc._mark_queued_after_publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stage_rerun_carries_the_revision_each_record_was_selected_on(self) -> None:
+        proc = _make_processor()
+        first, second = _make_record(), _make_record()
+        first.id, second.id = "rec-1", "rec-2"
+        proc.data_store_provider.get_existing_record_keys = AsyncMock(return_value={"rec-1", "rec-2"})
+        proc.messaging_producer.send_messages = AsyncMock(return_value=[True, True])
+        proc._mark_queued_after_publish = AsyncMock()
+
+        third = _make_record()
+        third.id = "rec-3"
+        proc.data_store_provider.get_existing_record_keys = AsyncMock(return_value={"rec-1", "rec-2", "rec-3"})
+        proc.messaging_producer.send_messages = AsyncMock(return_value=[True, True, True])
+
+        await proc.reindex_existing_records(
+            [first, second, third], stages=["classify"], stage_revisions={"rec-1": "rev-a", "rec-2": None},
+        )
+
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        assert messages[0][1]["payload"]["stageRev"] == "rev-a"
+        # Selected before it had a revision: an explicit null, so a revision it gains later is not re-run.
+        assert "stageRev" in messages[1][1]["payload"] and messages[1][1]["payload"]["stageRev"] is None
+        assert "stageRev" not in messages[2][1]["payload"]
+
+    def test_a_revision_is_sent_only_with_stages(self) -> None:
+        proc = _make_processor()
+        record = _make_record()
+        assert "stageRev" not in proc._reindex_event_payload(
+            record, vector_db_only=False, stage_rev="rev-a", selected=True
+        )

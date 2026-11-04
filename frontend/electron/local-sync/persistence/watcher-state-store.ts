@@ -38,6 +38,21 @@ export interface ScanSyncRootOptions {
   // reconcile so size+mtime cannot hide a same-length content rewrite.
   previousByRelPath?: Map<string, FileSnapshotEntry>;
   ignoredPatterns?: ReadonlyArray<RegExp | string>;
+  /**
+   * Filled with what the scan could not read: subfolders it could not list
+   * and files it could not stat or hash. Their absence from the result says
+   * nothing about whether they still exist.
+   */
+  unreadable?: UnreadablePaths;
+}
+
+export interface UnreadablePaths {
+  dirs: Set<string>;
+  files: Set<string>;
+}
+
+export function emptyUnreadable(): UnreadablePaths {
+  return { dirs: new Set(), files: new Set() };
 }
 
 export interface WatcherStateStoreArgs {
@@ -162,6 +177,7 @@ export async function scanSyncRoot(
       // folder itself is gone. Returning an empty scan there reads as "every
       // file was deleted" to both applyScan and reconcile.
       if (isRoot) throw err;
+      options.unreadable?.dirs.add(normalizeRelKey(dirAbs, root));
       return;
     }
     for (const ent of entries) {
@@ -173,6 +189,7 @@ export async function scanSyncRoot(
       try {
         st = await fsp.lstat(abs);
       } catch {
+        options.unreadable?.files.add(relKey);
         continue;
       }
       const isDirectory = st.isDirectory();
@@ -189,6 +206,7 @@ export async function scanSyncRoot(
         } else {
           sha256 = await computeFileHash(abs);
         }
+        if (sha256 === undefined) options.unreadable?.files.add(relKey);
       }
       out.set(relKey, { inode, size, mtimeMs, isDirectory, sha256, birthtimeMs });
       if (isDirectory && includeSubfolders) {
@@ -199,6 +217,48 @@ export async function scanSyncRoot(
 
   await visit(root, true);
   return out;
+}
+
+function isUnderAny(relPath: string, dirs: Set<string>): boolean {
+  for (const dir of dirs) {
+    if (relPath === dir || relPath.startsWith(`${dir}/`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Fill what a scan could not read from what was last known about it.
+ *
+ * A folder that could not be listed, or a file that could not be read (no
+ * permission; on Windows, locked by another program), is not gone. Without
+ * this, every consumer of the scan reads the gap as a deletion: reconcile
+ * reports DELETED, and a full sync removes the records.
+ */
+export function carryForwardUnreadable(
+  scan: Map<string, FileSnapshotEntry>,
+  unreadable: UnreadablePaths,
+  previous: FileSnapshotMap,
+): Map<string, FileSnapshotEntry> {
+  if (unreadable.dirs.size === 0 && unreadable.files.size === 0) return scan;
+  for (const [relPath, entry] of Object.entries(previous)) {
+    if (scan.has(relPath)) continue;
+    if (isUnderAny(relPath, unreadable.dirs) || unreadable.files.has(relPath)) {
+      scan.set(relPath, { ...entry });
+    }
+  }
+  for (const relPath of unreadable.files) {
+    const current = scan.get(relPath);
+    const known = previous[relPath];
+    // Only while size and mtime still match: a file edited while unreadable
+    // must keep no hash, or reconcile sees no change and the edit is never sent.
+    if (
+      current && !current.isDirectory && current.sha256 === undefined && known?.sha256
+      && known.size === current.size && known.mtimeMs === current.mtimeMs
+    ) {
+      scan.set(relPath, { ...current, sha256: known.sha256 });
+    }
+  }
+  return scan;
 }
 
 function emptyState(syncRoot: string, connectorInstanceId: string): WatcherStateSnapshot {
@@ -311,6 +371,35 @@ export class WatcherStateStore {
     this.scheduleSave();
   }
 
+  /**
+   * Refresh what the snapshot already knows to be current, and nothing else.
+   *
+   * The snapshot is the record of what has been reported: the next start
+   * compares the disk against it, and a change event is dropped when its hash
+   * matches it. A rescan that wrote the disk into it wholesale absorbed every
+   * change whose event had not come through yet (chokidar holds a write back
+   * until the file is stable), so the event was then dropped as "no change",
+   * and the next start found nothing either. Only entries the scan agrees
+   * with are refreshed (an inode that changed under a rewrite, an mtime).
+   */
+  refreshUnchanged(entries: Map<string, FileSnapshotEntry>): void {
+    const files = this.state.files;
+    let touched = false;
+    for (const [relPath, entry] of entries) {
+      const known = files[relPath];
+      if (!known || known.isDirectory !== entry.isDirectory) continue;
+      const sameContent = entry.isDirectory
+        || (known.size === entry.size && Boolean(known.sha256) && known.sha256 === entry.sha256);
+      if (!sameContent) continue;
+      if (known.inode !== entry.inode || known.mtimeMs !== entry.mtimeMs || known.birthtimeMs !== entry.birthtimeMs) {
+        files[relPath] = { ...known, inode: entry.inode, mtimeMs: entry.mtimeMs, birthtimeMs: entry.birthtimeMs };
+        touched = true;
+      }
+    }
+    this.state.lastScanTimestamp = Date.now();
+    if (touched) this.scheduleSave();
+  }
+
   reconcile(currentScan: Map<string, FileSnapshotEntry>): WatchEvent[] {
     const now = Date.now();
     const oldFiles = this.state.files;
@@ -386,6 +475,11 @@ export class WatcherStateStore {
         metaSame = oldEnt.mtimeMs === newEnt.mtimeMs;
       } else if (oldEnt.sha256 && newEnt.sha256) {
         metaSame = oldEnt.size === newEnt.size && oldEnt.sha256 === newEnt.sha256;
+      } else if (!oldEnt.sha256 && newEnt.sha256) {
+        // The last report of this file went out without a hash (it could not
+        // be read then), and the server skips those, so it has never seen
+        // this content.
+        metaSame = false;
       } else {
         metaSame = oldEnt.size === newEnt.size && oldEnt.mtimeMs === newEnt.mtimeMs;
       }

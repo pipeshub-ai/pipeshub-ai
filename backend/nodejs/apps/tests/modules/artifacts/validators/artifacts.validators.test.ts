@@ -21,6 +21,13 @@ describe('artifacts validators', () => {
     ).to.throw();
   });
 
+  it('accepts OTHER, the gallery "Other" filter', () => {
+    const parsed = listArtifactsSchema.parse({
+      query: { artifactTypes: 'OTHER' },
+    });
+    expect(parsed.query.artifactTypes).to.equal('OTHER');
+  });
+
   it('accepts a known artifact type list', () => {
     const parsed = listArtifactsSchema.parse({
       query: { artifactTypes: 'IMAGE,CHART', sortBy: 'name', sortOrder: 'asc' },

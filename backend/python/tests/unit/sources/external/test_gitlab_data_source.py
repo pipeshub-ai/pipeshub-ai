@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
-from app.sources.client.gitlab.gitlab import GitLabResponse
 from app.sources.external.gitlab.gitlab_data_source import GitLabDataSource
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = pytest.mark.anyio
 
@@ -405,36 +408,48 @@ class TestGraphQLMethods:
 class TestDirectHttp:
     async def test_get_img_bytes_success(self, data_source: GitLabDataSource) -> None:
         data_source.token = "img-token"
-        mock_response = MagicMock()
-        mock_response.raise_for_status.return_value = None
-        mock_response.content = b"\x89PNG"
+        seen: list[httpx.Request] = []
 
-        with patch.object(data_source.http_client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = mock_response
-            resp = await data_source.get_img_bytes("https://gitlab.example.com/uploads/image.png")
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, content=b"\x89PNG")
 
-        mock_get.assert_awaited_once()
-        headers = mock_get.await_args.kwargs["headers"]
-        assert headers["Authorization"] == "Bearer img-token"
+        data_source._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        resp = await data_source.get_img_bytes("https://gitlab.example.com/uploads/image.png")
+
+        assert len(seen) == 1
+        assert seen[0].headers["Authorization"] == "Bearer img-token"
         assert resp.success is True
         assert resp.data == b"\x89PNG"
 
     async def test_get_img_bytes_http_status_error(self, data_source: GitLabDataSource) -> None:
         data_source.token = "img-token"
-        request = httpx.Request("GET", "https://gitlab.example.com/uploads/missing.png")
-        response = httpx.Response(404, request=request)
-        error = httpx.HTTPStatusError("not found", request=request, response=response)
-
-        with patch.object(data_source.http_client, "get", new_callable=AsyncMock, side_effect=error):
-            resp = await data_source.get_img_bytes("https://gitlab.example.com/uploads/missing.png")
+        data_source._http_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(404)))
+        resp = await data_source.get_img_bytes("https://gitlab.example.com/uploads/missing.png")
 
         assert resp.success is False
         assert "HTTP 404" in resp.error
 
+    async def test_get_img_bytes_stops_reading_past_the_limit(self, data_source: GitLabDataSource) -> None:
+        sent = {"bytes": 0}
+
+        async def body() -> AsyncIterator[bytes]:
+            for _ in range(64):
+                sent["bytes"] += 65536
+                yield b"0" * 65536
+
+        data_source._http_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body())))
+        resp = await data_source.get_img_bytes("https://gitlab.example.com/uploads/huge.png", max_bytes=100_000)
+
+        assert resp.success is False and resp.status_code == 413
+        assert sent["bytes"] < 4 * 1024 * 1024
+
     async def test_get_attachment_files_content_streams_chunks(self, data_source: GitLabDataSource) -> None:
         data_source.token = "stream-token"
 
-        async def _aiter_bytes(chunk_size: int = 65536):
+        async def _aiter_bytes(chunk_size: int = 65536) -> AsyncIterator[bytes]:
             yield b"part-1"
             yield b"part-2"
 

@@ -18,6 +18,7 @@ from app.utils.render_budget import (
     MIN_RENDER_CHARS,
     TRUNCATION_MARKER,
     RenderBudget,
+    fair_shares,
     resolve_render_budget,
 )
 
@@ -232,3 +233,35 @@ class TestSizing:
     ) -> None:
         monkeypatch.setenv(MAX_CHARS_ENV_VAR, "999999999")
         assert resolve_render_budget(128_000).max_chars == MAX_RENDER_CHARS
+
+
+class TestFairShares:
+    def test_no_records_get_no_shares(self) -> None:
+        assert fair_shares([], 10) == []
+
+    def test_a_small_record_is_not_padded_up_to_the_total(self) -> None:
+        assert fair_shares([10], 50) == [10]
+
+    def test_a_single_record_is_capped_at_the_total(self) -> None:
+        assert fair_shares([100], 50) == [50]
+
+    def test_what_a_small_record_leaves_goes_to_the_larger_ones(self) -> None:
+        assert fair_shares([10, 100, 100], 50) == [10, 20, 20]
+
+    def test_shares_stay_in_input_order(self) -> None:
+        assert fair_shares([100, 10], 50) == [40, 10]
+
+    def test_leftover_room_is_not_handed_out_once_every_record_is_full(self) -> None:
+        assert fair_shares([5, 5], 100) == [5, 5]
+
+    @pytest.mark.parametrize("total", [0, -5])
+    def test_no_allowance_gives_every_record_nothing(self, total: int) -> None:
+        assert fair_shares([10, 10], total) == [0, 0]
+
+    def test_a_negative_size_counts_as_needing_nothing(self) -> None:
+        assert fair_shares([-4, 10], 10) == [0, 10]
+
+    def test_the_integer_division_remainder_is_left_unused(self) -> None:
+        shares = fair_shares([7, 1, 8], 10)
+        assert shares == [4, 1, 4]
+        assert sum(shares) == 9

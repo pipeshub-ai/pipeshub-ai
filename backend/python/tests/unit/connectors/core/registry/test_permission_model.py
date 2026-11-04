@@ -54,7 +54,8 @@ APP_LEVEL_CONNECTORS = [
 RECORD_GROUP_LEVEL_SITES = [
     ("app/connectors/sources/github_teams/projects.py", 3),
     ("app/connectors/sources/gitlab/projects.py", 3),
-    ("app/connectors/sources/google/gmail/team/connector.py", 1),
+    # The mailbox group is written twice: once per user, and again when a departed user loses the grant.
+    ("app/connectors/sources/google/gmail/team/connector.py", 2),
     ("app/connectors/sources/microsoft/outlook/connector.py", 3),
     ("app/connectors/sources/notion/connector.py", 2),
     ("app/connectors/sources/slack/team/connector.py", 2),

@@ -49,6 +49,9 @@ from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
 )
 from app.modules.parsers.pdf.pdf_rasterizer import (
+    pdf_raster_pool_size,
+)
+from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
@@ -69,6 +72,12 @@ from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
 from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.controller import run_for_health
+from app.services.resource_governor.lanes import lanes_health
+from app.services.resource_governor.probe import (
+    effective_cpu_count,
+    effective_cpu_source,
+)
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
@@ -158,9 +167,12 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     smart_pdf_docling = SmartPDFParser(docling_svc_parser, docling_ocr_parser)
     # Same flag as the in-process indexing path (app/events/events.py).
     use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
-    smart_pdf_default = SmartPDFParser(
-        pdfplumber_parser if use_pdfplumber else docling_svc_parser, default_ocr_parser
-    )
+    if use_pdfplumber:
+        smart_pdf_default = SmartPDFParser(pdfplumber_parser, default_ocr_parser)
+    else:
+        smart_pdf_default = SmartPDFParser(
+            docling_svc_parser, default_ocr_parser, large_pdf_parser=pdfplumber_parser
+        )
     registry.register("pdf", ParserProvider.DOCLING, smart_pdf_docling)
     registry.register("pdf", ParserProvider.DEFAULT, smart_pdf_default)
 
@@ -304,6 +316,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     app_logger.info("🔄 Parsing Service shutting down")
+    # The pool goes first: its workers hold leases and tokens of the governor's
+    # lane budget, and closing the budget under them strands the waiters.
+    # Cleared first, or the next submit in this process starts a new pool.
+    set_parse_pool_governor(None)
+    shutdown_parse_pool()
     governor.stop()
     governor_task.cancel()
     try:
@@ -314,7 +331,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_logger.exception("Error during resource governor shutdown")
     governor.close()
     executor.shutdown(wait=False, cancel_futures=True)
-    shutdown_parse_pool()
     try:
         config_service.close()
     except Exception:
@@ -347,11 +363,21 @@ async def health_check() -> JSONResponse:
         "status": "healthy",
         "service": "parsing",
         "formats": list(registry.list_all_formats().keys()),
+        "cpu": {
+            "effective_cpus": effective_cpu_count(),
+            "source": effective_cpu_source(),
+            "pdf_raster_workers": pdf_raster_pool_size(),
+        },
     }
     governor: ResourceGovernor | None = getattr(app.state, "governor", None)
+    try:
+        content["lanes"] = await run_for_health(lanes_health, governor, effective_cpu_count())
+    except Exception as lanes_error:
+        container.logger().warning("Lane plan failed: %s", lanes_error)
+        content["lanes"] = {"error": "unavailable"}
     if governor is not None:
         try:
-            content["resource_governor"] = governor.stats()
+            content["resource_governor"] = await run_for_health(governor.stats)
         except Exception as stats_error:
             # Observability failure must not fail the liveness probe — the
             # service itself is still healthy.

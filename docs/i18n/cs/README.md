@@ -110,9 +110,9 @@ Chcete stejné vyhledávání ve vlastním kódu nebo za vyhledávacím polem pr
 
 ## PipesHub Cloud
 
-Dáváte přednost plně spravovanému PipesHub bez provozování vlastní infrastruktury? PipesHub Cloud již brzy.
+Dáváte přednost plně spravovanému PipesHub bez provozování vlastní infrastruktury? Zaregistrujte se v **[PipesHub Cloud](https://app.pipeshub.com)**: stejné konektory, vyhledávání respektující oprávnění a API, aniž byste cokoli instalovali.
 
-👉 **[Přidejte se na čekací listinu pro Cloud](https://pipeshub.com/cloud-waitlist)** a získejte přístup mezi prvními.
+Kódovací agenti se připojují k `https://app.pipeshub.com/mcp` pomocí osobního přístupového tokenu. Viz [Pro kódovací agenty](https://docs.pipeshub.com/for-agents).
 
 ## Konektory
 

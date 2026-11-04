@@ -8,6 +8,7 @@ Encryption is the real AES-GCM service keyed from a throwaway test secret.
 
 import asyncio
 import fnmatch
+import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from unittest.mock import patch
@@ -346,6 +347,22 @@ class TestRoundTrip:
         assert await h.store.create_key(ENDPOINTS_KEY, endpoints) is True
 
         assert await h.store.get_key(ENDPOINTS_KEY) == endpoints
+
+    async def test_membership_entries_are_plain_json_node_can_read_and_a_neighbouring_key_is_not(self, h) -> None:
+        """The artifact-rollout membership directory is plaintext on both backends (Node reads it without
+        the Python encryption); the key above it in the tree is encrypted like any other."""
+        entry = {"checkedAt": 1_700_000_000_000, "untagged": ["indexing-0"], "groupsChecked": ["g"]}
+        key = "/services/platform/artifactRollout/membership/holder-1"
+
+        assert await h.store.create_key(key, entry) is True
+        assert await h.store.create_key("/services/platform/artifactRollout/other", entry) is True
+
+        plain = json.loads(h.raw_value(key).decode("utf-8"))
+        # Redis keeps a dict as a JSON string of JSON; Node's reader parses a string once more.
+        assert (json.loads(plain) if isinstance(plain, str) else plain) == entry
+        assert "indexing-0" not in h.raw_value("/services/platform/artifactRollout/other").decode("utf-8")
+        assert await h.store.get_key(key) == entry
+        assert await h.store.list_keys_in_directory("/services/platform/artifactRollout/membership/") == [key]
 
     async def test_a_missing_key_is_none_even_when_asked_to_raise(self, h) -> None:
         assert await h.store.get_key("/absent") is None

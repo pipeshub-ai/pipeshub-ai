@@ -41,7 +41,12 @@ def _record(record_id: str, *texts: str, created: int = 0) -> dict:
 
 def _request(*, access: bool = True) -> tuple[SimpleNamespace, MagicMock, MagicMock]:
     graph = MagicMock()
-    graph.check_record_access_with_details = AsyncMock(return_value={"id": "r"} if access else None)
+    graph.get_user_by_user_id = AsyncMock(return_value={"id": "k-1"})
+    graph.check_access = AsyncMock(
+        side_effect=lambda _user, _org, node_ids, **_kw: SimpleNamespace(
+            node_ids=set(node_ids) if access else set()
+        )
+    )
     graph.get_document = AsyncMock(return_value={"connectorId": "c-1"})
     retrieval = MagicMock()
     retrieval.search_with_filters = AsyncMock(return_value={"searchResults": []})
@@ -57,8 +62,21 @@ def _request(*, access: bool = True) -> tuple[SimpleNamespace, MagicMock, MagicM
 
 
 async def _read(request: SimpleNamespace, record_id: str = "r-1", **params: object) -> dict:
-    defaults = {"mode": "record", "query": None, "start_block": None, "start_record": 0, "max_chars": 40_000}
+    defaults = {
+        "mode": "record", "query": None, "start_block": None, "start_record": 0, "max_chars": 40_000, "extract": False,
+    }
     return await route.read_record_content(record_id, request, **{**defaults, **params})
+
+
+class _no_scope:
+    def __init__(self, *_args: object, **_kw: object) -> None:
+        pass
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
 
 
 @pytest.fixture(autouse=True)
@@ -75,6 +93,14 @@ class TestAccess:
             await _read(request)
         assert err.value.status_code == 403
         fetch.assert_not_awaited()
+
+    async def test_one_access_check_is_made_and_the_fetch_reuses_it(self) -> None:
+        request, graph, _ = _request()
+        fetch = AsyncMock(return_value={"ok": False})
+        with patch.object(route, "_fetch_multiple_records_impl", fetch):
+            await _read(request)
+        graph.check_access.assert_awaited_once()
+        assert fetch.await_args.kwargs["accessible"] == {"r-1"}
 
     async def test_no_access_to_the_thread_record_is_a_403_too(self) -> None:
         request, _, _ = _request(access=False)
@@ -120,6 +146,72 @@ class TestRecordMode:
         assert body["order"] == "relevance"
         assert "block 150 " in body["content"]
         assert retrieval.search_with_filters.await_args.kwargs["virtual_record_ids_from_tool"] == ["v-r-1"]
+
+    async def test_extract_hands_the_record_and_query_to_the_reader(self) -> None:
+        request, _, _ = _request()
+        record = _record("r-1", "The ASF had 65 sponsors.")
+        extract = AsyncMock(return_value={"content": "65 sponsors", "order": "extract"})
+
+        with patch.object(route, "_fetch_multiple_records_impl",
+                          AsyncMock(return_value={"ok": True, "records": [record]})), \
+                patch.object(route, "extract_record", extract), \
+                patch.object(route, "call_scope", _no_scope):
+            body = await _read(request, query=" sponsors ", extract=True, max_chars=5_000)
+
+        assert body == {"content": "65 sponsors", "order": "extract"}
+        assert extract.await_args.args[0] is record
+        assert extract.await_args.kwargs["query"] == "sponsors"
+        assert extract.await_args.kwargs["fallback_chars"] == 5_000
+        assert extract.await_args.kwargs["user_id"] == "u-1"
+
+    async def test_the_reader_runs_on_the_users_identity(self) -> None:
+        request, _, _ = _request()
+        record = _record("r-1", "The ASF had 65 sponsors.")
+        scopes: list[tuple] = []
+
+        class _Scope:
+            def __init__(self, principal: object, workload: object, **_kw: object) -> None:
+                scopes.append((principal, workload))
+
+            async def __aenter__(self) -> None:
+                return None
+
+            async def __aexit__(self, *_exc: object) -> None:
+                return None
+
+        with patch.object(route, "_fetch_multiple_records_impl",
+                          AsyncMock(return_value={"ok": True, "records": [record]})), \
+                patch.object(route, "extract_record", AsyncMock(return_value={"order": "extract"})), \
+                patch.object(route, "principal_from_request_user", lambda user: ("principal", user["userId"])), \
+                patch.object(route, "call_scope", _Scope):
+            await _read(request, query="sponsors", extract=True)
+
+        assert scopes == [(("principal", "u-1"), route.Workload.SEARCH)]
+
+    async def test_a_refusal_inside_the_extract_keeps_its_status(self) -> None:
+        request, _, _ = _request()
+        record = _record("r-1", "text")
+        with patch.object(route, "_fetch_multiple_records_impl",
+                          AsyncMock(return_value={"ok": True, "records": [record]})), \
+                patch.object(route, "extract_record",
+                             AsyncMock(side_effect=HTTPException(status_code=403, detail="no identity"))), \
+                patch.object(route, "call_scope", _no_scope), \
+                pytest.raises(HTTPException) as err:
+            await _read(request, query="sponsors", extract=True)
+        assert err.value.status_code == 403
+
+    @pytest.mark.parametrize("params", [
+        {"query": None},
+        {"query": "  "},
+        {"query": "sponsors", "start_block": 3},
+        {"query": "sponsors", "mode": "thread"},
+    ])
+    async def test_extract_without_one_record_and_a_query_is_a_422(self, params: dict) -> None:
+        request, graph, _ = _request()
+        with pytest.raises(HTTPException) as err:
+            await _read(request, extract=True, **params)
+        assert err.value.status_code == 422
+        graph.check_access.assert_not_awaited()
 
     async def test_a_record_without_indexed_content_is_described(self) -> None:
         request, _, _ = _request()

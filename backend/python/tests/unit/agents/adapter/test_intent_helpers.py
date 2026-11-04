@@ -195,6 +195,17 @@ class TestParseClarifyBlock:
         text = f'```clarify\n{{"questions": [{{"question": "", "options": {opts}}}]}}\n```'
         assert _parse_clarify_block(text) is None
 
+    def test_a_card_before_work_keeps_at_most_three_questions(self) -> None:
+        opts = '[{"label": "A"}, {"label": "B"}]'
+        questions = ", ".join(f'{{"question": "Q{i}?", "options": {opts}}}' for i in range(5))
+        result = _parse_clarify_block(f'```clarify\n{{"questions": [{questions}]}}\n```')
+        assert result is not None
+        assert [q.question for q in result] == ["Q0?", "Q1?", "Q2?"]
+
+    def test_a_block_outside_the_option_limits_is_ignored(self) -> None:
+        five = ", ".join(f'{{"label": "{c}"}}' for c in "ABCDE")
+        assert _parse_clarify_block(f'```clarify\n{{"questions": [{{"question": "Q?", "options": [{five}]}}]}}\n```') is None
+
 
 class TestDecisionFromTextClarifyJsonError:
     """Covers the except (ValueError, AttributeError, TypeError) branch at line 273."""
