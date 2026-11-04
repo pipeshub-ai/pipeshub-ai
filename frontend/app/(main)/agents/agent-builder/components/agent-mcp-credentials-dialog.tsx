@@ -14,6 +14,8 @@ import {
   needsMultiEnvAuth,
 } from '../../../workspace/mcp-servers/stdio-env-auth';
 import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
+import { McpLogoImage } from '../../../workspace/mcp-servers/components';
+import { useMcpServerLogo } from '../../../workspace/mcp-servers/logo-store';
 import { mcpOAuthFailureMessage, useMcpOAuthPopup } from '../../../workspace/mcp-servers/hooks/use-mcp-oauth-popup';
 import {
   toolsetDialogBackdropStyle,
@@ -66,6 +68,7 @@ export function McpCredentialsDialog({
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(instance.isAuthenticated);
+  const logo = useMcpServerLogo(instance._id);
 
   const verifyAuthenticated = useCallback(async (): Promise<boolean> => {
     const found = agentKey
@@ -190,7 +193,7 @@ export function McpCredentialsDialog({
                     flexShrink: 0,
                   }}
                 >
-                  <MaterialIcon name="hub" size={28} color="var(--slate-11)" />
+                  {logo ? <McpLogoImage src={logo} size={28} /> : <MaterialIcon name="hub" size={28} color="var(--slate-11)" />}
                 </Box>
                 <Box style={{ minWidth: 0 }}>
                   <Dialog.Title style={{ marginBottom: 4 }}>{t('agentBuilder.mcpCredentialsTitle')}</Dialog.Title>

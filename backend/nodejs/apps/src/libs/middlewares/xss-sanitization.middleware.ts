@@ -58,6 +58,8 @@ function sanitizeString(value: string): string {
 // repeated back; anything else (a key that is itself markup) is not echoed.
 const SAFE_FIELD_PATH = /^[A-Za-z0-9_.[\]-]{1,200}$/;
 
+const MCP_LOGO_PATH = /^\/api\/v1\/mcp-servers\/instances\/[^/]+\/logo$/;
+
 /**
  * Turns a validation path such as `body.params.arguments.query` into the words
  * a caller needs to find the field: `the field "params.arguments.query"`,
@@ -163,12 +165,14 @@ function findQuestionField(req: Request): QuestionField | undefined {
   const body = req.body;
 
   // The search route MCP's pipeshub_search calls, and the web search box,
-  // and /retrieve, which takes the same plain-text query and renders nothing.
+  // and /retrieve and /search/entities, which take the same plain-text query and render nothing.
   if (
     req.path === '/api/v1/search' ||
     req.path === '/api/v1/search/' ||
     req.path === '/api/v1/retrieve' ||
-    req.path === '/api/v1/retrieve/'
+    req.path === '/api/v1/retrieve/' ||
+    req.path === '/api/v1/search/entities' ||
+    req.path === '/api/v1/search/entities/'
   ) {
     return typeof body.query === 'string'
       ? { holder: body, key: 'query' }
@@ -437,6 +441,14 @@ export const xssSanitizationMiddleware = (
         req.path.startsWith('/api/v1/api-toolsets/')) &&
       (req.method === 'POST' || req.method === 'PUT')
     ) {
+      next();
+      return;
+    }
+
+    // An MCP server logo is a base64 data URL. The checks below misread it (its last segment
+    // can look like an `on…=` handler) and their length cap is below the upload limit. Python
+    // decodes it and keeps only a PNG it draws again, never the string sent.
+    if (req.method === 'PUT' && MCP_LOGO_PATH.test(req.path)) {
       next();
       return;
     }

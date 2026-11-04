@@ -69,7 +69,9 @@ def _ekey(coll: str, props: dict) -> str:
     if coll == CollectionNames.AUTHENTICATED_AS.value:
         return str(props.get("connectorId") or "")
     rt = props.get("relationshipType")
-    return rt if coll == CollectionNames.NODE_RELATIONS.value and rt not in (None, *_HIER) else ""
+    if coll == CollectionNames.NODE_RELATIONS.value and rt not in (None, *_HIER):
+        return f"{rt}\x1f{props['constraintName']}" if props.get("constraintName") else rt     # two foreign keys of one type between one pair are two edges
+    return ""
 
 
 class TransactionClosed(RuntimeError):
@@ -192,6 +194,10 @@ class PgBase:
         async with self._db.runtime_uow() as tx:
             return await fn(tx)
 
+    async def ping(self) -> None:
+        """Raises unless the store answers: one constant select through the service's own role (what the health probe calls)."""
+        await self._system_read(lambda tx: tx.fetchval("/* pipeshub:graph.ping */ SELECT 1"))
+
     async def connect(self) -> bool:
         return True  # the caller starts the KernelDB
 
@@ -239,6 +245,21 @@ class PgBase:
 
 def _field(name: str) -> str:
     return "id" if name == "_key" else name
+
+
+def _match(filters: dict | None, in_filters: dict | None, first: int, n: str = "n") -> tuple[str, list]:
+    """Equality and membership predicates on ``{n}.doc`` as SQL using parameters ``$first``... and their values."""
+    sql, args = "", []
+    if filters:
+        sql += f""" AND NOT EXISTS (SELECT 1 FROM unnest(${first}::text[], ${first + 1}::text[]) f(k, v)
+            WHERE {n}.doc->f.k IS DISTINCT FROM f.v::jsonb)"""
+        args += [[_field(k) for k in filters], [_j(v) for v in filters.values()]]
+        first += 2
+    if in_filters:
+        sql += f""" AND NOT EXISTS (SELECT 1 FROM jsonb_each(${first}::jsonb) f WHERE NOT EXISTS
+            (SELECT 1 FROM jsonb_array_elements(f.value) x WHERE x = {n}.doc->f.key))"""
+        args.append(_j({_field(k): list(v) for k, v in in_filters.items()}))
+    return sql, args
 
 
 # Filter keys with an expression index (graph_0001): a literal predicate on the same expression lets the planner use it. Keys are from this list only.

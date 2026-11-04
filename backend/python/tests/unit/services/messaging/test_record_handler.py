@@ -5756,6 +5756,24 @@ class TestOnMessageAbandoned:
         gp.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_failing_status_write_is_logged_as_an_error_and_not_taken_for_a_record_that_moved_on(self) -> None:
+        """The database failing is not "the record moved on": the swap raises, nothing else is written, and the log says
+        the marking failed (at error level, with the cause), not that the record was left alone."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "indexingStatus": ProgressStatus.QUEUED.value})
+        gp.update_node = AsyncMock(return_value=True)
+        gp.compare_and_set_indexing_status = AsyncMock(side_effect=ConnectionError("graph restarting"))
+
+        await handler.on_message_abandoned(self._message(), reason="4 transient failures", attempts=4)  # never raises
+
+        gp.update_node.assert_not_awaited()
+        errors = [str(c.args[0]) % c.args[1:] for c in handler.logger.error.call_args_list]
+        assert any("Error while marking record r1 FAILED" in e and "graph restarting" in e for e in errors)
+        infos = [str(c.args[0]) for c in handler.logger.info.call_args_list]
+        assert not any("moved on" in i for i in infos)
+
+    @pytest.mark.asyncio
     async def test_never_fails_a_record_whose_handler_is_still_running(self):
         """Idle-drain can abandon a sibling PEL entry while the original
         delivery is still IN_PROGRESS. Rewriting FAILED races the worker."""

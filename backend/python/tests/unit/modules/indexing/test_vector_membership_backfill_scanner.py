@@ -516,3 +516,27 @@ async def test_rewound_pass_does_not_inherit_the_previous_vrid_count():
 
     _key, _collection, fields = graph.update_node.await_args.args
     assert fields[ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_VRIDS] == 0
+
+
+@pytest.mark.asyncio
+async def test_each_sync_runs_in_the_organisation_of_the_app_being_backfilled() -> None:
+    from app.core.org_context import MissingOrgContext, current_org_id
+
+    graph = AsyncMock()
+    graph.get_app_needing_vector_membership_backfill = AsyncMock(return_value={"_key": "app-1", "orgId": "org-7"})
+    graph.page_records_for_vector_membership_backfill = AsyncMock(return_value=[{"_key": "r1", "virtualRecordId": "v1"}])
+    graph.update_node = AsyncMock()
+    seen: list[object] = []
+
+    async def sync(vrid: str) -> None:
+        try:
+            seen.append(current_org_id())
+        except MissingOrgContext:
+            seen.append(None)
+
+    pipeline = AsyncMock()
+    pipeline.sync_vector_membership = sync
+    await run_vector_membership_backfill_tick(
+        logger=_logger(), graph_provider=graph, pipeline=pipeline, lock=_Lock(), page_size=50, vrid_pause_ms=0
+    )
+    assert seen == ["org-7"]

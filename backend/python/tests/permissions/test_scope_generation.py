@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -62,11 +61,10 @@ async def test_processes_starting_together_bump_once() -> None:
     assert got == [2] * 6 and await current_generation(a) == 2
 
 
-async def test_a_deployment_that_never_enabled_the_fields_writes_nothing_and_reads_no_graph() -> None:
+async def test_a_deployment_that_never_enabled_the_fields_writes_nothing() -> None:
     a = config_service()
-    graph = MagicMock()  # any use of it would be recorded
     assert await init_scope_generation(a, log, OFF) is None
-    assert a.store.store == {} and graph.mock_calls == []
+    assert a.store.store == {}
     assert current_scope_generation() == 0
 
 
@@ -95,3 +93,25 @@ async def test_a_stamp_of_the_generation_before_the_last_enable_is_not_trusted()
     await init_scope_generation(a, log, OFF)
     await init_scope_generation(another_process(a), log, ON)
     assert not ScopeFields.from_payload(old).trusted and ScopeFields.container().trusted
+
+
+async def test_a_process_that_starts_after_another_created_the_generation_but_before_it_recorded_enabled_creates_nothing_new() -> None:
+    """The interleaving that used to make two generations: A has created generation 1 and not yet recorded enabled=True when B reads."""
+    a = config_service()
+    b = another_process(a)
+    at_gate, release = asyncio.Event(), asyncio.Event()
+    real_set = a.set_config
+
+    async def gated(key: str, value: object, *args: object, **kwargs: object) -> bool:
+        if key == ENABLED_KEY and value is True:
+            at_gate.set()
+            await release.wait()
+        return await real_set(key, value, *args, **kwargs)
+
+    a.set_config = gated  # type: ignore[method-assign]
+    first = asyncio.create_task(init_scope_generation(a, log, ON))
+    await at_gate.wait()
+    assert await current_generation(b) == 1 and await b.get_config(ENABLED_KEY, use_cache=False) is not True
+    second = await init_scope_generation(b, log, ON)
+    release.set()
+    assert (await first, second) == (1, 1) and await current_generation(a) == 1
