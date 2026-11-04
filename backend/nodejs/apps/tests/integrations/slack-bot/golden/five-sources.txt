@@ -3,7 +3,7 @@
       Knowledgegraph
       ✓ "plan details" → 5 results
 
-Pricing page covers it [[1]](https://docs.example.com/1). Q3 report covers it [[2]](https://docs.example.com/2). Security overview covers it [[3]](https://docs.example.com/3). Release notes covers it [[4]](https://docs.example.com/4). Support policy covers it [[5]](https://docs.example.com/5).
+Pricing page covers it [1](https://docs.example.com/1). Q3 report covers it [2](https://docs.example.com/2). Security overview covers it [3](https://docs.example.com/3). Release notes covers it [4](https://docs.example.com/4). Support policy covers it [5](https://docs.example.com/5).
 
 [folds behind "Show more" when long]
 Sources

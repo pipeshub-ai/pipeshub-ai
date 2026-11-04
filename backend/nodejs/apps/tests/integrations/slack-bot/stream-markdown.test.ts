@@ -33,10 +33,10 @@ describe('slack-bot streamed markdown', () => {
       const rows = new Map([[1, row('a')], [2, row('b')], [3, row('c')]]);
       const show = (text: string) => markers.resolve(markers.mark(text), rows, false)[0];
       expect(show('Up [source](ref4) and the [Trust Center](https://ref9.xyz/).')).to.equal(
-        'Up [[1]](https://x.test/a) and the Trust Center [[2]](https://x.test/b).',
+        'Up [1](https://x.test/a) and the Trust Center [2](https://x.test/b).',
       );
       expect(show(' Again https://ref4.xyz, [ref9] and [2](ref7).')).to.equal(
-        ' Again [[1]](https://x.test/a), [[2]](https://x.test/b) and [[3]](https://x.test/c).',
+        ' Again [1](https://x.test/a), [2](https://x.test/b) and [3](https://x.test/c).',
       );
       expect(show('A [real link](https://asana.com) and [1](/record/r1) stay.')).to.equal(
         'A [real link](https://asana.com) and [1](/record/r1) stay.',
@@ -49,7 +49,7 @@ describe('slack-bot streamed markdown', () => {
       const marked = markers.mark('Revenue grew [source](ref4). Next part.');
       expect(markers.resolve(marked, new Map(), false)).to.deep.equal(['Revenue grew ', marked.slice('Revenue grew '.length)]);
       expect(markers.resolve(marked, new Map([[1, row('q3')]]), false)).to.deep.equal([
-        'Revenue grew [[1]](https://x.test/q3). Next part.', '',
+        'Revenue grew [1](https://x.test/q3). Next part.', '',
       ]);
       // A marker whose link never came is left out, so every number shown is in the Sources list.
       expect(markers.resolve(markers.mark('Late [source](ref8).'), new Map(), true)[0]).to.equal('Late.');
@@ -63,7 +63,7 @@ describe('slack-bot streamed markdown', () => {
       markers.checkpoint();
       // The second call numbers its citations afresh: ref9 is its first, ref4 its second.
       expect(markers.resolve(markers.mark('[source](ref9) and [source](ref4)'), new Map([[1, row('second')], [2, row('first')]]), false)[0])
-        .to.equal('[[2]](https://x.test/second) and [[1]](https://x.test/first)');
+        .to.equal('[2](https://x.test/second) and [1](https://x.test/first)');
     });
 
     it('frees the numbers a discarded model call took', () => {
@@ -75,7 +75,7 @@ describe('slack-bot streamed markdown', () => {
       markers.resolve(markers.mark('[source](ref9)'), rows, false);
       markers.rollback();
       expect(markers.resolve(markers.mark('[source](ref7) and [source](ref4)'), rows, false)[0]).to.equal(
-        '[[2]](https://x.test/a) and [[1]](https://x.test/a)',
+        '[2](https://x.test/a) and [1](https://x.test/a)',
       );
       expect([...markers.sources().keys()]).to.deep.equal([1, 2]);
     });
@@ -84,7 +84,7 @@ describe('slack-bot streamed markdown', () => {
       const markers = new CitationMarkers();
       markers.checkpoint();
       expect(markers.resolve(markers.mark('Up [source](ref1)[source](ref2).'), new Map([[1, row('a')], [2, row('b')]]), false)[0])
-        .to.equal('Up [[1]](https://x.test/a) [[2]](https://x.test/b).');
+        .to.equal('Up [1](https://x.test/a) [2](https://x.test/b).');
     });
   });
 
@@ -96,7 +96,7 @@ describe('slack-bot streamed markdown', () => {
           [cite(1, 'Q3', 'https://x.test/q3')],
           'https://app.test',
         ),
-      ).to.equal('Up [[1]](https://x.test/q3) [[1]](https://x.test/q3), see [7](https://example.com/list).');
+      ).to.equal('Up [1](https://x.test/q3) [1](https://x.test/q3), see [7](https://example.com/list).');
       expect(stripNumberedCitationLinkTargets('No [1](https://a.test)', [], 'https://app.test')).to.equal('No [1](https://a.test)');
     });
   });
@@ -105,7 +105,7 @@ describe('slack-bot streamed markdown', () => {
     it('makes every link absolute and encodes parentheses so the link stays whole', () => {
       const rows = citationRows([cite(1, 'Q3', 'https://x.test/q3'), cite(2, 'Rel', '/record/r2')], 'https://app.test/');
       expect([...rows.values()].map((r) => r.url)).to.deep.equal(['https://x.test/q3', 'https://app.test/record/r2']);
-      expect(linkedCitationMarker(3, 'https://x.test/a_(b)')).to.equal('[[3]](https://x.test/a_%28b%29)');
+      expect(linkedCitationMarker(3, 'https://x.test/a_(b)')).to.equal('[3](https://x.test/a_%28b%29)');
     });
   });
 
@@ -150,8 +150,9 @@ describe('slack-bot streamed markdown', () => {
       );
 
       expect(blocks).to.deep.equal([{
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: '*Sources*\n• <https://x.test/q3|Q3 report>  [1]\n• <https://x.test/n|Notes>  [3]' }],
+        type: 'section',
+        expand: false,
+        text: { type: 'mrkdwn', text: '*Sources*\n• <https://x.test/q3|Q3 report>  [1]\n• <https://x.test/n|Notes>  [3]' },
       }]);
     });
   });
@@ -169,15 +170,16 @@ describe('slack-bot streamed markdown', () => {
         .concat([4, 5, 6, 7].map((n) => doc(n, 'rec-q3', 'Asana Announces Record Third Quarter Fiscal 2023 Revenues.pdf', `${q3}#page=${String(n)}`)));
       const blocks = buildNumberedSlackSources(citations, 'https://app.test');
       expect(blocks).to.deep.equal([{
-        type: 'context',
-        elements: [{
+        type: 'section',
+        expand: false,
+        text: {
           type: 'mrkdwn',
           text: [
             '*Sources*',
             `• <${soc3}|Asana - SOC 3 Report 01-31-24.pdf>  [1] [2] [3] [8] [9] [10] [11]`,
             `• <${q3}|Asana Announces Record Third Quarter Fiscal 2023 Revenues.pdf>  [4] [5] [6] [7]`,
           ].join('\n'),
-        }],
+        },
       }]);
     });
 
@@ -193,7 +195,7 @@ describe('slack-bot streamed markdown', () => {
       ]);
     });
 
-    it('puts a list of more than three documents in one section Slack can fold, one text size throughout', () => {
+    it('puts a long list in one section Slack can fold', () => {
       const rows = new Map([1, 2, 3, 4, 5].map((n) => [n, { name: `Doc ${String(n)}`, url: `https://x.test/${String(n)}` }]));
       expect(numberedSourcesBlocks(rows)).to.deep.equal([{
         type: 'section',
@@ -205,14 +207,14 @@ describe('slack-bot streamed markdown', () => {
       }]);
     });
 
-    it('keeps three documents in the small context block', () => {
+    it('shows a short list at normal text size too, never as small grey text', () => {
       const rows = new Map([1, 2, 3].map((n) => [n, { name: `Doc ${String(n)}`, url: `https://x.test/${String(n)}` }]));
-      expect((numberedSourcesBlocks(rows) as AnyArgs[]).map((b) => b.type)).to.deep.equal(['context']);
+      expect((numberedSourcesBlocks(rows) as AnyArgs[]).map((b) => b.type)).to.deep.equal(['section']);
     });
 
     it('keeps a name from breaking its link, and posts nothing when nothing was cited', () => {
       const [block] = numberedSourcesBlocks(new Map([[1, { name: 'Q3 <draft> | v2 & final', url: 'https://x.test/a' }]])) as AnyArgs[];
-      expect(block.elements[0].text).to.include('<https://x.test/a|Q3 &lt;draft&gt; ¦ v2 &amp; final>  [1]');
+      expect(block.text.text).to.include('<https://x.test/a|Q3 &lt;draft&gt; ¦ v2 &amp; final>  [1]');
       expect(numberedSourcesBlocks(new Map())).to.deep.equal([]);
       expect(buildNumberedSlackSources([], 'https://app.test')).to.deep.equal([]);
     });

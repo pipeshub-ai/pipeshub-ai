@@ -59,7 +59,7 @@ export const ANSWER = 'Revenue grew 12% [source](ref1).';
 /** The same answer as the backend finishes it. */
 export const NORMALIZED_ANSWER = 'Revenue grew 12% [1](/record/rec-1).';
 /** What Slack shows: the placeholder as a plain marker that matches the Sources list. */
-export const SHOWN_ANSWER = 'Revenue grew 12% [[1]](https://x.test/q3).';
+export const SHOWN_ANSWER = 'Revenue grew 12% [1](https://x.test/q3).';
 
 export const finished = (content: string, citations: unknown[] = []) => ({
   type: 'RUN_FINISHED',
@@ -745,8 +745,8 @@ export function describeAnswerWiring(
       expect(tools[2]!.output).to.equal('✗ record 8dc0d3d5 → No download link for records from an external connector');
       // Citations are clickable [n] to absolute links, numbered like the Sources list.
       const text = visibleText(client);
-      expect(text).to.include('platform [[1]](https://trust.asana.com/soc3).');
-      expect(text).to.include('Q3 FY2026 [[2]](https://investors.asana.com/q3)');
+      expect(text).to.include('platform [1](https://trust.asana.com/soc3).');
+      expect(text).to.include('Q3 FY2026 [2](https://investors.asana.com/q3)');
       expect(text).to.not.match(/\]\(\/record\//);
       expect(rendered).to.include('• <https://trust.asana.com/soc3|Asana SOC 3 report>  [1] [3]');
       expect(rendered).to.include('• <https://investors.asana.com/q3|Asana Q3 FY2026 results>  [2]');
@@ -825,7 +825,7 @@ export function describeAnswerWiring(
       ]);
 
       expect(visibleText(client)).to.equal(
-        'Revenue grew [[1]](https://x.test/q3). The Asana Trust Center [[2]](https://asana.com/trust) lists the report [[1]](https://x.test/q3).',
+        'Revenue grew [1](https://x.test/q3). The Asana Trust Center [2](https://asana.com/trust) lists the report [1](https://x.test/q3).',
       );
       const [stop] = apiCalls(client, 'chat.stopStream');
       const listed = JSON.stringify(stop.blocks);
@@ -919,8 +919,8 @@ export function describeAnswerWiring(
       ]);
 
       const text = visibleText(client);
-      expect(text).to.include('The older filing [[1]](https://x.test/older) covers this.');
-      expect(text.endsWith('Revenue grew 12% [[2]](https://x.test/q3).')).to.equal(true);
+      expect(text).to.include('The older filing [1](https://x.test/older) covers this.');
+      expect(text.endsWith('Revenue grew 12% [2](https://x.test/q3).')).to.equal(true);
       const sources = JSON.stringify(apiCalls(client, 'chat.stopStream').slice(-1)[0]?.blocks);
       expect(sources).to.include('https://x.test/older').and.include('https://x.test/q3');
     });
@@ -945,7 +945,7 @@ export function describeAnswerWiring(
       ]);
 
       const text = visibleText(client);
-      expect(text).to.include('Right [[1]](https://x.test/right).');
+      expect(text).to.include('Right [1](https://x.test/right).');
       expect(JSON.stringify(apiCalls(client, 'chat.appendStream'))).to.not.include('x.test/wrong');
     });
 
@@ -1277,7 +1277,7 @@ export function describeAnswerWiring(
         finished(NORMALIZED_ANSWER, CITATIONS),
       ]);
       expectNoStreamedTableRow(client);
-      expect(streamedText(client), 'the final answer streams').to.include('Revenue grew 12% [[1]](https://x.test/q3).');
+      expect(streamedText(client), 'the final answer streams').to.include('Revenue grew 12% [1](https://x.test/q3).');
       expect(replyBlocks(client).some((b) => b.type === 'table'), 'the earlier table is kept').to.equal(true);
     });
 
@@ -1328,7 +1328,7 @@ export function describeAnswerWiring(
         finished(answer, CITATIONS),
       ]);
       expectNoStreamedTableRow(client);
-      expect(streamedText(client)).to.include('Revenue grew [[1]](https://x.test/q3).');
+      expect(streamedText(client)).to.include('Revenue grew [1](https://x.test/q3).');
       expect(replyBlocks(client).some((b) => b.type === 'table')).to.equal(true);
       expect(JSON.stringify(replyBlocks(client))).to.include('https://x.test/q3');
     });
@@ -1372,7 +1372,7 @@ export function describeAnswerWiring(
         finished(answer, CITATIONS),
       ]);
 
-      expect(visibleText(client)).to.equal('Revenue grew 12% [[1]](https://x.test/q3). See item [7](https://example.com/list).');
+      expect(visibleText(client)).to.equal('Revenue grew 12% [1](https://x.test/q3). See item [7](https://example.com/list).');
       const [stop] = apiCalls(client, 'chat.stopStream');
       expect(JSON.stringify(stop.blocks)).to.include('<https://x.test/q3|Q3 report>  [1]');
     });
@@ -1396,10 +1396,10 @@ export function describeAnswerWiring(
       ]);
 
       const text = visibleText(client);
-      expect(text).to.include('B explains it [[1]](https://x.test/b).');
-      expect(text).to.include('A says so [[2]](https://x.test/a). B agrees [[1]](https://x.test/b). See item [7](https://example.com/list).');
+      expect(text).to.include('B explains it [1](https://x.test/b).');
+      expect(text).to.include('A says so [2](https://x.test/a). B agrees [1](https://x.test/b). See item [7](https://example.com/list).');
       const sources = String(renderReplay(client).split('Sources')[1]).trim();
-      expect(sources).to.equal('• <https://x.test/b|B>  [1]\n  • <https://x.test/a|A>  [2]');
+      expect(sources).to.equal('• <https://x.test/b|B>  [1]\n• <https://x.test/a|A>  [2]');
     });
 
     describe('golden transcripts: what users see, for whole runs', () => {
@@ -1411,6 +1411,8 @@ export function describeAnswerWiring(
             const file = join(GOLDEN_DIR, `${run.name}.txt`);
             if (process.env.UPDATE_SLACK_GOLDEN) writeFileSync(file, rendered);
             expect(rendered).to.equal(readFileSync(file, 'utf8'));
+            // Slack shows a bracketed link text, `[[1]](url)`, as raw markdown.
+            expect(rendered).to.not.match(/\[\[\d+\]\]\(/);
           } finally {
             restoreRunClock();
           }
@@ -1519,7 +1521,7 @@ export function describeAnswerWiring(
       });
     });
 
-    it('lists unnumbered citations the same way: small, one line per document, no numbers', async () => {
+    it('lists unnumbered citations the same way: one line per document, no numbers', async () => {
       const unnumbered = [1, 2].map(() => ({ citationData: { metadata: { recordId: 'r1', recordName: 'Handbook', webUrl: 'https://x.test/h' } } }));
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
@@ -1529,7 +1531,7 @@ export function describeAnswerWiring(
       ]);
       const [stop] = apiCalls(client, 'chat.stopStream');
       expect(stop.blocks).to.deep.equal([
-        { type: 'context', elements: [{ type: 'mrkdwn', text: '*Sources*\n• <https://x.test/h|Handbook>' }] },
+        { type: 'section', expand: false, text: { type: 'mrkdwn', text: '*Sources*\n• <https://x.test/h|Handbook>' } },
       ]);
     });
 
