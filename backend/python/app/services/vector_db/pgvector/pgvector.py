@@ -1,9 +1,9 @@
-"""PostgreSQL + pgvector provider: lifecycle, catalog, collections and writes.
+"""PostgreSQL + pgvector provider: lifecycle, catalog, collections, writes, reads and dense search.
 
 Every statement runs in a unit of work of the shared database runtime (``app.core.db``): the org is set per transaction and row-level
 security does the rest. Carried so far: the lifecycle (connect, health, capabilities), the collection catalog, the per-org space
-questions and the writes (upsert, delete, payload and membership). Reading and searching points follow, and until then those methods
-raise ``NotImplementedError``. Nothing selects the provider yet (no ``VECTOR_DB_TYPE`` entry).
+questions, the writes (upsert, delete, payload and membership), the reads (scroll, retrieve) and the dense leg of a search. A request with a
+lexical query follows, and until then raises ``NotImplementedError``. Nothing selects the provider yet (no ``VECTOR_DB_TYPE`` entry).
 """
 
 from __future__ import annotations
@@ -18,8 +18,10 @@ from typing import TYPE_CHECKING
 import asyncpg
 
 from app.config.constants.service import config_node_constants
-from app.core.db import CapabilityError
+from app.core import org_context
+from app.core.db import CapabilityError, DbError
 from app.core.db.shared import acquire_db, release_db
+from app.modules.retrieval import degraded_notice
 from app.services.vector_db.filters import (
     build_filter_expression,
     build_generic_conditions,
@@ -42,12 +44,13 @@ from app.services.vector_db.models import (
     VectorDBHealth,
     VectorPoint,
 )
-from app.services.vector_db.pgvector import reads, writes
+from app.services.vector_db.pgvector import dense, fusion, reads, validate, writes
 from app.services.vector_db.pgvector.catalog import Catalog, CollectionRow, OrgSpace
 from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.errors import (
     CollectionAlreadyExistsError,
     OrgMismatch,
+    OrgRequired,
     PgVectorError,
     PgVectorUnsupportedError,
     SpaceMismatch,
@@ -55,6 +58,7 @@ from app.services.vector_db.pgvector.errors import (
 )
 from app.services.vector_db.pgvector.placement import OwnLeafPolicy, PlacementPolicy
 from app.services.vector_db.pgvector.probe import PgCapabilities, evaluate
+from app.services.vector_db.pgvector.sampler import Sample, Sampler
 from app.services.vector_db.pgvector.scope import (
     ambient_or_required,
     ambient_org,
@@ -62,6 +66,7 @@ from app.services.vector_db.pgvector.scope import (
     require_org,
 )
 from app.services.vector_db.pgvector.sql_filters import compile_filter, single_org
+from app.services.vector_db.pgvector.visibility import scope_of
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -79,6 +84,9 @@ _CAPABILITIES = VectorDBCapabilities(
     stamps_in_catalog=True,
     spaces_per_org=True,
 )
+MAX_SEARCH_LIMIT = 1000   # results one request asks for at most; a leg is twice that many rows, as the prefetch of the other providers
+_MAX_LEG = 2 * MAX_SEARCH_LIMIT
+MAX_SCROLL_LIMIT = 10_000   # rows one scroll page returns at most: the ceiling the other backends have (OpenSearch caps a page at 10,000)
 UNKNOWN_MODEL = "unknown"      # the model name of a space adopted from points that do not name theirs
 
 
@@ -118,6 +126,11 @@ class PgVectorService(IVectorDBService):
         self._catalog: Catalog | None = None
         self.pg_capabilities: PgCapabilities | None = None
         self.placement: PlacementPolicy | None = None     # None: no policy (rows stay in the shared tree); see PgVectorConfig.placement
+        self._sizer: dense.Sizer | None = None
+        self._sampler: Sampler | None = None
+        self._bq: dict[tuple[str, int], bool] = {}        # (org, space): does bit HNSW + rerank pass its recall check? Absent: not checked yet
+        self._bq_at: dict[tuple[str, int], float] = {}    # when this process last read (or started reading) the stored verdict
+        self._checks: set[asyncio.Task] = set()
         self._own_placement = False                        # connect() made the policy (it holds this connection's database), so disconnect() drops it
         self._lifecycle = asyncio.Lock()                   # one connect or disconnect at a time: two connects must not both acquire the runtime
 
@@ -158,6 +171,7 @@ class PgVectorService(IVectorDBService):
                 await release_db(cfg.to_db_config())
                 raise
             self._cfg, self._db, self._catalog = cfg, db, Catalog(db, cfg.catalog_ttl)
+            self._sizer, self._sampler = dense.Sizer(db, cfg.search), Sampler(db, cfg.search)
             if self.placement is None and cfg.placement == "own_leaf":
                 self.placement, self._own_placement = OwnLeafPolicy(db, wait=cfg.placement_wait), True
             logger.info(
@@ -172,6 +186,11 @@ class PgVectorService(IVectorDBService):
             if self._db is None:
                 return
             cfg, self._db, self._catalog = self._cfg, None, None
+            for task in self._checks:
+                task.cancel()
+            if self._sampler is not None:
+                await self._sampler.close()
+            self._sizer = self._sampler = None
             if self._own_placement:
                 self.placement, self._own_placement = None, False
             await release_db(cfg.to_db_config())
@@ -281,7 +300,7 @@ class PgVectorService(IVectorDBService):
         if row is None:
             return VectorCollectionInfo(name=collection_name, exists=False)
         org = ambient_org()
-        space = await catalog.active_space(org) if org else None
+        space = await catalog.active_space(org, real_time=True) if org else None
         if space is None:
             return VectorCollectionInfo(name=collection_name, exists=True)
         points = await db.run(lambda tx: reads.count(tx, org, row.collection_id, space.space_id), custom_plan=True)
@@ -293,7 +312,7 @@ class PgVectorService(IVectorDBService):
         """Whether changing to ``identity`` (``provider:model:dimension``) of ``dimension`` fits the org's active space. A named space
         takes its own model only. A nameless space (written before records were stamped) that holds points is read as named by the
         model configured now (``current_identity``): what the config says is what wrote them. Without it, it takes any model."""
-        space = await self._assert_connected()[1].active_space(require_org(ambient_org()))
+        space = await self._assert_connected()[1].active_space(require_org(ambient_org()), real_time=True)
         if space is None or space.dim != dimension:
             return False
         if space.effective_model != UNKNOWN_MODEL:
@@ -378,15 +397,174 @@ class PgVectorService(IVectorDBService):
 
     # Reads and search: the changes that follow ---------------------------------------------------------------------
 
-    async def scroll(self, collection_name: str, scroll_filter: FilterExpression, limit: int, offset: str | None = None,
-                     with_payload: list[str] | None = None) -> ScrollResult:
-        raise _pending("scroll")
+    # Reads ---------------------------------------------------------------------------------------------------------
+
+    async def scroll(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: str | None = None,
+        with_payload: list[str] | None = None,
+    ) -> ScrollResult:
+        """A page of the org's points that match the filter, ordered by insertion; the filter must pin ``metadata.orgId``. The offset is
+        opaque and belongs to the org that got it. A missing collection is an error; an org with no embedding space yet has no points."""
+        db, catalog = self._assert_connected()
+        org = _filter_org(scroll_filter)
+        if not 1 <= limit <= MAX_SCROLL_LIMIT:
+            raise ValueError(f"scroll limit must be between 1 and {MAX_SCROLL_LIMIT}")
+        coll = await catalog.require_collection(collection_name)
+        with org_scope(org):
+            space = await catalog.active_space(org, real_time=True)
+            if space is None:
+                return ScrollResult(points=[], next_offset=None)
+            compiled = compile_filter(scroll_filter, first_param=5)
+            points, nxt = await db.run(
+                lambda tx: reads.scroll(tx, org, coll.collection_id, space.space_id, compiled, limit, offset, with_payload or None),
+                custom_plan=True,
+            )
+        return ScrollResult(points=points, next_offset=nxt)
 
     async def retrieve_points(self, collection_name: str, ids: list[str]) -> list[VectorPoint]:
-        raise _pending("retrieve_points")
+        """The points with these ids in the request's org, in the order asked; ids that name no point (or are no UUID) are left out.
+        The interface carries no org: it is the request's."""
+        db, catalog = self._assert_connected()
+        org = ambient_or_required()
+        coll = await catalog.require_collection(collection_name)
+        space = await catalog.active_space(org, real_time=True)
+        wanted = _ids(ids)
+        if space is None or not wanted:
+            return []
+        found = await db.run(lambda tx: reads.retrieve(tx, org, coll.collection_id, space.space_id, wanted), custom_plan=True)
+        position = {str(i): n for n, i in enumerate(wanted)}
+        return sorted(found, key=lambda p: position.get(str(p.id), len(position)))
 
-    async def query_nearest_points(self, collection_name: str, requests: list[HybridSearchRequest]) -> list[list[SearchResult]]:
-        raise _pending("query_nearest_points")
+    # Search ----------------------------------------------------------------------------------------------------------
+
+    async def query_nearest_points(
+        self, collection_name: str, requests: list[HybridSearchRequest]
+    ) -> list[list[SearchResult]]:
+        """The dense leg of each request, ranked as the other providers rank a one-leg answer (reciprocal-rank score ``1 / (2 + index)``,
+        ties by id, ``limit`` results). Every request names its org in its filter and only that org's points in its embedding space are
+        searched; an empty accessible list in the filter finds nothing. The requests of a call run a few at a time. A leg that cannot run
+        in its tier is answered by the bounded exact path, counted, logged and flagged on every result (``SearchResult.degraded``).
+        A request with a lexical (sparse) query is not served yet and raises ``NotImplementedError``."""
+        coll = await self._assert_connected()[1].require_collection(collection_name)
+        gate = asyncio.Semaphore(self._cfg.search.request_concurrency)
+
+        async def one(req: HybridSearchRequest) -> list[SearchResult]:
+            async with gate:
+                return await self._search_one(coll, req)
+
+        tasks = [org_context.spawn_in_request(one(r), name="pgvector-search") for r in requests]
+        try:
+            return list(await asyncio.gather(*tasks))
+        except BaseException:
+            for t in tasks:               # one request failed (or the call was cancelled): the others stop instead of finishing in the background
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    async def _search_one(self, coll: CollectionRow, req: HybridSearchRequest) -> list[SearchResult]:
+        db, catalog = self._assert_connected()
+        if req.filter is None:
+            raise OrgRequired("a search needs a filter that names the organisation")
+        org = _filter_org(req.filter)
+        if not 1 <= req.limit <= MAX_SEARCH_LIMIT:
+            raise ValueError(f"a search limit must be between 1 and {MAX_SEARCH_LIMIT}")
+        if req.sparse_query is not None and req.sparse_query.indices and coll.sparse_enabled:
+            raise _pending("the lexical leg of a hybrid search")
+        if req.dense_query is None:
+            return []
+        scope = scope_of(req.filter)
+        cfg = self._cfg.search
+        with org_scope(org):
+            if scope.apps is not None and cfg.eliminate_all_apps:
+                scope = scope.narrowed_to(await self._sizer.connectors(org, coll.collection_id))
+            space = await catalog.active_space(org)
+            if space is None:
+                return []
+            if len(req.dense_query) != space.dim:
+                raise SpaceMismatch(f"the query has {len(req.dense_query)} dimensions; the organisation's embedding space has {space.dim}")
+            q = dense.Query(org, coll.collection_id, space.space_id, space.dim, space.metric, writes.halfvec_text(req.dense_query), scope,
+                            min(max(2 * req.limit, 1), _MAX_LEG))
+            bq_ok = self._bq.get((org, space.space_id), True) and self.pg_capabilities.bit_hnsw
+            found, sizing = await dense.search(db, self._sizer, q, cfg, bq_ok=bq_ok)
+            self._after_dense(q, found, sizing, space.space_id)
+            if found.degraded:
+                degraded_notice.note(found.degraded)          # the provider contract: an empty answer is flagged too
+            ranked = fusion.rrf([[pid for _, pid in found.rows]], req.limit)
+            if not req.with_payload:
+                return [SearchResult(id=pid, score=score, degraded=found.degraded) for pid, score in ranked]
+            points = {p.id: p for p in await db.run(
+                lambda tx: reads.retrieve(tx, org, coll.collection_id, space.space_id, _ids([pid for pid, _ in ranked])), custom_plan=True)}
+            return [SearchResult(id=pid, score=score, payload=points[pid].payload, degraded=found.degraded) for pid, score in ranked if pid in points]
+
+    def _after_dense(self, q: dense.Query, found: dense.Leg, sizing: dense.Sizing, space_id: int) -> None:
+        """Work after a dense leg: offer the recall sample and, the first time this process serves an org's space from the vector
+        index, make sure the space has a current quantisation verdict (stored; a scan only when none is due)."""
+        key = (q.org, space_id)
+        if (found.plan.tier in (dense.Tier.H, dense.Tier.H_DEEP) and self._cfg.search.validate_quantization
+                and time.monotonic() - self._bq_at.get(key, float("-inf")) > self._cfg.search.verdict_ttl_s):
+            # The first time, and then every verdict_ttl_s: read the stored verdict (another process may have stored one, or the last one
+            # may be due again) and check when none is current. The index serves until a verdict says otherwise.
+            self._bq.setdefault(key, True)
+            self._bq_at[key] = time.monotonic()
+            task = org_context.spawn_detached(self._check_space(q, space_id, max(sizing.leaf_rows, sizing.n_hat)), name="pgvector-bit-recall-check")
+            self._checks.add(task)
+            task.add_done_callback(self._checks.discard)
+        if found.degraded not in ("overload", "quantization"):
+            self._sampler.offer(Sample(q, frozenset(sk for sk, _ in found.rows), "degraded" if found.degraded else found.plan.tier.value,
+                                       found.plan.share_band, sizing.n_hat), rolled=False)
+
+    async def _check_space(self, q: dense.Query, space_id: int, rows: int) -> None:
+        t = self._cfg.search
+        key = (q.org, space_id)
+        try:
+            with org_scope(q.org):
+                stored = await validate.load(self._db, t, q.org, space_id)
+                if stored.recall is not None:
+                    self._bq[key] = stored.recall >= t.validate_floor
+                if not stored.due:
+                    return
+                try:
+                    samples = validate.samples_for(t, rows)
+                    mean = await validate.bit_recall(self._db, t, q.org, q.collection_id, space_id, q.dim, q.metric, samples=samples)
+                except (dense.Rejected, DbError):
+                    await validate.failed(self._db, t, q.org, space_id)       # no slot or no time: not again before the back-off
+                    return
+                if mean is None:
+                    return
+                await validate.save(self._db, q.org, space_id, mean, samples)
+        except Exception:
+            logger.exception("bit-quantisation check failed; the stored verdict, or the vector index, keeps serving this space")
+            return
+        self._bq[key] = mean >= t.validate_floor
+        if mean < t.validate_floor:
+            logger.warning("bit HNSW + rerank finds %.3f of the exact neighbours in this embedding space (floor %.2f): "
+                           "searches above the exact-scan size are served by a bounded path and flagged", mean, t.validate_floor)
+
+    async def _count_points(self, org: str, collection_id: int, space_id: int) -> int:
+        """The org's live points of the collection and space (how many samples the check can afford)."""
+        return int(await self._assert_connected()[0].run(lambda tx: reads.count(tx, org, collection_id, space_id), custom_plan=True) or 0)
+
+    async def validate_space(self, collection_name: str, org_id: str) -> float | None:
+        """Runs the quantisation check for the org's active space now (None: no points), stores the verdict and applies it: below
+        the floor the space is served by the bounded path, above it by the index."""
+        db, catalog = self._assert_connected()
+        coll = await catalog.require_collection(collection_name)
+        t = self._cfg.search
+        with org_scope(require_org(org_id)) as org:
+            space = await catalog.active_space(org)
+            if space is None:
+                return None
+            samples = validate.samples_for(t, max(await self._count_points(org, coll.collection_id, space.space_id), 1))
+            mean = await validate.bit_recall(db, t, org, coll.collection_id, space.space_id, space.dim, space.metric, samples=samples)
+            if mean is not None:
+                await validate.save(db, org, space.space_id, mean, samples)
+                self._bq[(org, space.space_id)] = mean >= t.validate_floor
+        return mean
+
 
     # Writes --------------------------------------------------------------
 

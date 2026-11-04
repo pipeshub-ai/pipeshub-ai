@@ -436,8 +436,8 @@ def parse(entry: dict, source: str = "") -> Fn:
         if bad or not isinstance(a.get("type"), str) or not _TYPE.match(a["type"]):
             raise ManifestError(f"{where}: bad argument {a}")
         enum = a.get("enum")
-        if enum is not None and not (isinstance(enum, list) and all(isinstance(v, str) and "\x00" not in v for v in enum)):
-            raise ManifestError(f"{where}: enum must be a list of strings")
+        if enum is not None and not (isinstance(enum, list) and enum and all(isinstance(v, str) and "\x00" not in v for v in enum)):
+            raise ManifestError(f"{where}: enum must be a non-empty list of strings")
         pattern = a.get("pattern")
         if pattern is not None and not (isinstance(pattern, str) and "\x00" not in pattern):
             raise ManifestError(f"{where}: pattern must be a string")
@@ -448,8 +448,8 @@ def parse(entry: dict, source: str = "") -> Fn:
         if not isinstance(nullable, bool):
             raise ManifestError(f"{where}: nullable must be true or false")
         item_enum = a.get("item_enum")
-        if item_enum is not None and not (isinstance(item_enum, list) and all(isinstance(v, (str, int)) and not isinstance(v, bool) and "\x00" not in str(v) for v in item_enum)):
-            raise ManifestError(f"{where}: item_enum must be a list of strings or numbers")
+        if item_enum is not None and not (isinstance(item_enum, list) and item_enum and all(isinstance(v, (str, int)) and not isinstance(v, bool) and "\x00" not in str(v) for v in item_enum)):
+            raise ManifestError(f"{where}: item_enum must be a non-empty list of strings or numbers")
         if (a.get("item_not_null") is not None and not isinstance(a["item_not_null"], bool)) or \
                 ((a.get("item_not_null") or a.get("item_length") or a.get("item_range") or item_enum) and not a["type"].endswith("[]")):
             raise ManifestError(f"{where}: the item_* keys belong to an array argument (item_not_null is true or false)")
@@ -549,14 +549,13 @@ def _validation(fn: Fn) -> list[str]:
         if a.max_items is not None:
             refuse(f"{guard}cardinality({a.name}) > {a.max_items}", a.name, f"takes at most {a.max_items} items")
         # every element of an array argument: a NULL, a length, a range or a value outside a list is refused with 22023 (not a constraint error later)
-        numeric = not a.type.startswith(("text", "bytea", "uuid", "date", "timestamptz"))
         per_item = [("e IS NULL", "has a NULL item")] if a.item_not_null else []
         if a.item_length:
             per_item.append((f"e IS NOT NULL AND length(e) NOT BETWEEN {a.item_length[0]} AND {a.item_length[1]}", "has an item of the wrong length"))
         if a.item_range:
             per_item.append((f"e IS NOT NULL AND e NOT BETWEEN {a.item_range[0]} AND {a.item_range[1]}", "has an item out of range"))
         if a.item_enum:
-            vals = ", ".join(v if numeric and re.fullmatch(r"-?\d+", v) else _lit(v) for v in a.item_enum)
+            vals = ", ".join(_lit(v) for v in a.item_enum)    # a quoted literal takes the element type, so boolean[] and jsonb[] work as numbers do
             per_item.append((f"e IS NOT NULL AND e NOT IN ({vals})", "has an item that is not one of the allowed values"))
         for cond, why in per_item:
             refuse(f"{guard}EXISTS (SELECT 1 FROM unnest({a.name}) e WHERE {cond})", a.name, why)

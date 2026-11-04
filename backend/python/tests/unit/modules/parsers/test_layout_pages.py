@@ -1,8 +1,8 @@
 """Page layout parsing runs in a parse worker, so a long PDF cannot hold the loop's GIL."""
 from __future__ import annotations
 
-import asyncio
 import logging
+import os
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,7 +18,6 @@ from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
 from app.services.messaging.config import messaging_env
-from tests.support.loop_probes import IoProbe
 from tests.support.pdf_samples import text_pdf
 
 if TYPE_CHECKING:
@@ -40,6 +39,21 @@ def pool(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     finally:
         parse_pool.shutdown_parse_pool()
         parse_pool.set_resource_governor(None)
+
+
+async def _spied_submit(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Record what is submitted to the parse pool, and prove the pool's worker is another process
+    (its GIL is not the loop's). Used instead of timing the loop: a stall bound also measures the host."""
+    submitted: list[object] = []
+    real_submit = parse_pool.submit
+
+    async def spy(fn: object, *args: object, **kwargs: object) -> object:
+        submitted.append(fn)
+        return await real_submit(fn, *args, **kwargs)
+
+    monkeypatch.setattr(parse_pool, "submit", spy)
+    assert await real_submit(os.getpid) != os.getpid()
+    return submitted
 
 
 class TestParsePdfLayout:
@@ -68,17 +82,17 @@ class TestProcessorParse:
             timeout=messaging_env.pdf_record_processing_timeout,
         )
 
-    async def test_a_real_worker_parses_while_the_loop_keeps_serving_io(self, pool: None) -> None:
+    async def test_a_real_worker_parses_while_the_loop_keeps_serving_io(
+        self, pool: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         content = text_pdf(pages=30)
-        await parse_pool.submit(len, b"warm up the worker")
+        submitted = await _spied_submit(monkeypatch)
 
-        with IoProbe() as io_probe:
-            await asyncio.sleep(0.1)
-            pages = await _processor().parse_document("long.pdf", content)
+        pages = await _processor().parse_document("long.pdf", content)
 
         assert len(pages) == 30
         assert isinstance(pages[0], ParsedPageData)
-        assert 0 < io_probe.worst < 0.25
+        assert submitted == [parse_pdf_layout]  # parsed in the worker process, not on the loop
 
 
 class TestParsePdfLayoutMemory:
