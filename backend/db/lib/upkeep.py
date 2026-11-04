@@ -75,7 +75,7 @@ def nightly_lock(jobs: psycopg.Connection) -> bool:
 def _one(jobs: psycopg.Connection, org: str, lock_class: int, sql: str, leaves: list[str] | None = None) -> int:
     with jobs.transaction():
         if not fold.org_lock(jobs, org, lock_class):
-            return 0
+            return fold.BUSY
         return jobs.execute(sql, {"org": org, "batch": BATCH, "grace": GROUP_GRACE, "leaves": leaves}).fetchone()[0]
 
 

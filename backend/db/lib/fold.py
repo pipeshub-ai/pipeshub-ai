@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 import psycopg
 
+BUSY = -1                       # what a step returns when another run of the same job holds the org (not an empty batch)
 COUNT_TERM = -1                 # lexical_df_delta rows under this term carry the change in a collection's point count
 BATCH = 100_000                 # deltas taken per transaction: a long backlog is folded over several passes
 MAX_BATCHES = 100               # transactions one org gets per pass, so a pass ends even under a steady stream of work
@@ -65,11 +66,11 @@ def org_lock(jobs: psycopg.Connection, org: str, lock_class: int = LOCK_CLASS) -
 
 
 def fold_org(jobs: psycopg.Connection, org: str) -> int:
-    """Fold up to :data:`BATCH` deltas of ``org`` in one transaction; returns how many were folded (0: none, or another fold holds
-    the org)."""
+    """Fold up to :data:`BATCH` deltas of ``org`` in one transaction; returns how many were folded (0: none; :data:`BUSY`: another fold
+    holds the org)."""
     with jobs.transaction():
         if not org_lock(jobs, org):
-            return 0
+            return BUSY
         return jobs.execute(FOLD, {"org": org, "batch": BATCH}).fetchone()[0]
 
 
@@ -94,7 +95,10 @@ def each_org(jobs: psycopg.Connection, orgs: list[str], step: Callable[[psycopg.
     for org in orgs:
         try:
             for _ in range(MAX_BATCHES):                     # a backlog goes in several transactions; the rest waits for the next pass
-                if not (n := step(jobs, org)):
+                if (n := step(jobs, org)) == BUSY:           # another run holds the org: reported, so the exit code says "run again"
+                    failed[org] = "busy (another run of the job holds it)"
+                    break
+                if not n:
                     break
                 done[org] = done.get(org, 0) + n
                 if n < batch:

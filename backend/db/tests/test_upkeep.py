@@ -271,9 +271,9 @@ def test_two_runs_at_once_do_not_work_the_same_org(rdb, monkeypatch):
     with psycopg.connect(jobs_url(cluster, name), autocommit=True) as one, psycopg.connect(jobs_url(cluster, name), autocommit=True) as two:
         with one.transaction():
             assert fold.org_lock(one, ORG_A, upkeep.PURGE_LOCK)
-            assert upkeep.purge_org(two, ORG_A) == 0 and upkeep.drop_org(two, ORG_A) == 0       # busy: nothing done, no error
+            assert upkeep.purge_org(two, ORG_A) == fold.BUSY and upkeep.drop_org(two, ORG_A) == fold.BUSY       # busy: nothing done, no error, not an empty batch
             assert fold.org_lock(one, ORG_A, upkeep.GC_LOCK)
-            assert upkeep.group_gc_org(two, ORG_A) == 0
+            assert upkeep.group_gc_org(two, ORG_A) == fold.BUSY
         assert upkeep.purge_org(two, ORG_A) == 3
 
 
@@ -732,3 +732,36 @@ def test_a_one_shot_fold_exits_6_when_an_org_failed_and_a_failing_org_does_not_h
 def test_recount_refuses_a_flag_or_a_malformed_org_before_touching_anything(monkeypatch):
     for bad in ("--watch", "x", "A" * 24, "a" * 23):
         assert maintain.main(["recount", bad]) == maintain.EXIT_CONFIG
+
+
+def test_a_job_that_finds_an_org_busy_reports_it_and_exits_6_and_the_next_run_does_the_work(rdb, monkeypatch):
+    cluster, name = rdb
+    placement_env(monkeypatch, cluster, name)
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        delta(c, ORG_A, 5)
+    with psycopg.connect(jobs_url(cluster, name), autocommit=True) as one, one.transaction():
+        assert fold.org_lock(one, ORG_A) and fold.org_lock(one, ORG_A, upkeep.GC_LOCK)
+        assert maintain.main(["fold"]) == maintain.EXIT_PARTIAL                        # busy: not an empty batch, not exit 0
+        assert maintain.main(["group-gc"]) == maintain.EXIT_PARTIAL
+    assert maintain.main(["fold"]) == 0 and n_of(cluster, name, ORG_A) == [5]          # the next run folds it
+    assert maintain.main(["group-gc"]) == 0
+
+
+def test_a_leaf_whose_index_was_left_invalid_by_an_interrupted_build_is_found_and_repaired(rdb, monkeypatch):
+    cluster, name = rdb
+    placement_env(monkeypatch, cluster, name)
+    adopt(cluster, name, ORG_A)
+    assert maintain.main(["build-indexes"]) == 0
+    index = "retrieval.points_h0_bq_s1"
+    with cluster.admin(name) as c:
+        if c.execute("SELECT to_regclass(%s)", (index,)).fetchone()[0] is None:
+            pytest.skip("this pgvector/PostgreSQL pair builds no bit index")
+        c.execute("UPDATE pg_index SET indisvalid = false WHERE indexrelid = %s::regclass", (index,))      # what a killed CREATE INDEX CONCURRENTLY leaves
+    engine = create_engine(cluster.url(name, "pipeshub_migrate"), isolation_level="AUTOCOMMIT")
+    with engine.connect() as owner:
+        owner.exec_driver_sql("SET ROLE pipeshub_owner")
+        assert placement.leaves_missing_indexes(owner) == ["retrieval.points_h0"]       # counted as missing, though the name exists
+    assert maintain.main(["build-indexes"]) == 0
+    with cluster.admin(name) as c:
+        assert c.execute("SELECT indisvalid FROM pg_index WHERE indexrelid = %s::regclass", (index,)).fetchone()[0] is True

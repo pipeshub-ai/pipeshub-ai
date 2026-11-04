@@ -49,8 +49,8 @@ jobs:
             suites: '--expect-suite tests.test_placement=16'
           - shard: upkeep
             files: tests/test_upkeep.py
-            min_tests: 34
-            suites: '--expect-suite tests.test_upkeep=34'
+            min_tests: 36
+            suites: '--expect-suite tests.test_upkeep=36'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

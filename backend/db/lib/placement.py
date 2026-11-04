@@ -302,7 +302,9 @@ def leaves_missing_indexes(owner: Connection) -> list[str]:
     out = []
     for leaf in points_leaves(owner):
         names = [n for n, _ in _index_specs(owner, leaf, spaces)]
-        have = owner.exec_driver_sql("SELECT count(*) FROM pg_indexes WHERE schemaname = 'retrieval' AND indexname = ANY(%s)", (names,)).scalar() if names else 0
+        have = owner.exec_driver_sql(         # valid ones only: an interrupted build leaves an invalid index under its final name, which ensure_index repairs
+            "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+            "WHERE c.relnamespace = 'retrieval'::regnamespace AND c.relname = ANY(%s) AND i.indisvalid", (names,)).scalar() if names else 0
         if names and have < len(names):
             out.append(leaf)
     return out
