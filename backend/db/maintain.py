@@ -26,6 +26,7 @@ from typing import TypeVar
 
 import psycopg
 from sqlalchemy import Connection, create_engine
+from sqlalchemy.exc import InterfaceError, OperationalError
 
 from db.lib import fold, placement, upkeep
 from db.migrate import (
@@ -124,7 +125,7 @@ def _watch(url: str, interval: float) -> None:
                 log(_summary(done, failed, refused))
             if len(done) + len(failed) + len(refused) >= placement.MAX_PER_PASS:
                 continue                                            # a full pass: more wait behind the cap, and a new org's writer waits too
-        except (RunnerError, psycopg.Error, OSError) as exc:        # the database is away or the lock is busy: try again
+        except (RunnerError, psycopg.Error, OperationalError, InterfaceError, OSError) as exc:   # the database is away or the lock is busy: try again
             log(f"placement pass failed: {_first_line(exc)}")
         time.sleep(interval)
 
@@ -247,6 +248,7 @@ def main(argv: list[str]) -> int:
             raise RunnerError(EXIT_CONFIG, USAGE)
         url = migrate_url()
         if len(argv) > 1:
+            _jobs_url()                       # a missing PG_JOBS_URL never fixes itself: exit 2 here, not an endless retry
             _watch(url, _interval(argv[2:], 1.0))
             return 0
         done, failed, refused = _placement_pass(url)

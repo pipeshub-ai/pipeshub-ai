@@ -45,8 +45,8 @@ jobs:
             suites: ''
           - shard: placement
             files: tests/test_placement.py
-            min_tests: 15
-            suites: '--expect-suite tests.test_placement=15'
+            min_tests: 16
+            suites: '--expect-suite tests.test_placement=16'
           - shard: upkeep
             files: tests/test_upkeep.py
             min_tests: 34
