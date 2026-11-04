@@ -1631,24 +1631,24 @@ class RecordEventHandler(BaseEventService):
                         virtual_record_ids, org_id=payload.get("orgId") or None
                     )
 
-                self.logger.info(
-                    f"✅ Bulk deletion complete: {result}"
-                )
-                # `bulk_delete_embeddings` reports success=False when it refused
-                # to proceed — no managed collection resolved, so nothing was
-                # deleted and the mapping rows were deliberately kept. Yielding
-                # the completion events below would ack that as done and strip
-                # the only handle a later run has on those points. Raise so the
-                # consumer redelivers; IndexingError classifies as transient,
-                # and the refusal leaves nothing half-applied to retry over.
+                # `bulk_delete_embeddings` reports success=False when it left
+                # points behind: it refused because no managed collection
+                # resolved, or a graph read failed and it skipped an id. Yielding
+                # the completion events below would ack that as done and retire
+                # the only event that can finish the job. Raise so the consumer
+                # redelivers; IndexingError classifies as transient, and every
+                # step already done is safe to repeat.
                 # `is False` deliberately: the drop and noop results carry no
                 # success key at all.
                 if result.get("success") is False:
                     raise IndexingError(
-                        "Bulk deletion did not complete; no managed collection "
-                        "resolved, so nothing was purged",
+                        "Bulk deletion did not complete: an id was skipped or no "
+                        "managed collection resolved, so points were left behind",
                         details={"result": result},
                     )
+                self.logger.info(
+                    f"✅ Bulk deletion complete: {result}"
+                )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 return
@@ -1666,7 +1666,7 @@ class RecordEventHandler(BaseEventService):
                 )
                 if result.get("success") is False:
                     raise IndexingError(
-                        "Trash vector cleanup did not complete; nothing was removed",
+                        "Trash vector cleanup did not complete; points were left behind",
                         details={"result": result, "batchId": payload.get("batchId")},
                     )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="soft_delete", count=len(virtual_record_ids)))
@@ -1752,7 +1752,7 @@ class RecordEventHandler(BaseEventService):
                         record_id, CollectionNames.RECORDS.value
                     )
                     org_id = (record_doc or {}).get("orgId")
-                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
+                result = await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
                     [virtual_record_id], org_id=org_id
                 )
                 entity_store = self._entity_vector_store()
@@ -1773,6 +1773,15 @@ class RecordEventHandler(BaseEventService):
                         )
                 await self._request_code_edge_build_for_deleted(payload)
                 await self._hand_over_shared_copy(payload, org_id)
+                # Last, so a delete that runs out of retries has still done the
+                # steps above. Only a skip: a refusal keeps its existing ack here.
+                if result.get("virtual_record_ids_skipped"):
+                    raise IndexingError(
+                        f"Deleted record {record_id}: its vector points were left "
+                        "in place because a graph read failed",
+                        record_id=record_id,
+                        details={"result": result},
+                    )
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))

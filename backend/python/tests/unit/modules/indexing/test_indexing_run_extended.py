@@ -85,7 +85,8 @@ class TestBulkDeleteValidationError:
 
         result = await pipeline.bulk_delete_embeddings(["vr-1"])
 
-        assert result["success"] is True
+        assert result["success"] is False
+        assert result["virtual_record_ids_skipped"] == 1
         assert result["virtual_record_ids_processed"] == 0
 
 
