@@ -1,7 +1,8 @@
 import { Logger } from './logger.service';
-import { spawnDetached, system } from '../context/orgContext';
+import { forOrg, spawnDetached, system } from '../context/orgContext';
 import { Tx, withJobsUow } from '../db';
 import { docstoreMetrics } from '../repositories/metrics';
+import { getConversationRepository } from '../repositories/conversation';
 import { retentionCutoff } from '../../modules/notification/utils/notification-api.utils';
 
 const DEFAULT_INTERVAL_MS = 60_000;
@@ -117,6 +118,23 @@ export class TtlSweeper {
           return total;
         });
       }
+      await this.guarded('temporary_chats_store', removed, async () => {
+        const repo = getConversationRepository();
+        if (!repo.isConnected()) return 0;
+        const expired = await repo.listExpiredTemporary(now, 200);
+        let n = 0;
+        for (const row of expired) {
+          if (!row.userId) continue;
+          const deleted = await forOrg(row.orgId, 'ttl-sweeper', () =>
+            repo.hardDeleteTemporary(row.id, {
+              orgId: row.orgId,
+              userId: row.userId,
+            }),
+          );
+          if (deleted) n += 1;
+        }
+        return n;
+      });
       const total = Object.values(removed).reduce((a, b) => a + b, 0);
       if (total > 0) this.logger.info('TTL sweep removed rows', removed);
     } finally {

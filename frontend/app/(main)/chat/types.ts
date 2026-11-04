@@ -994,6 +994,11 @@ export interface StreamChatRequest {
    * is ignored").
    */
   projectId?: string;
+  /**
+   * Only on a brand-new plain chat. The server hides the conversation from
+   * history and deletes it when the client purges it or when it expires.
+   */
+  temporary?: boolean;
   /** The person's answer to a tool approval card; the call itself is saved server-side. */
   toolApproval?: ToolApprovalAnswer;
 }
@@ -1132,6 +1137,11 @@ export interface ChatSlot {
   projectId: string | null;
   /** True until the server assigns a real convId. */
   isTemp: boolean;
+  /**
+   * Incognito/temporary chat: hidden from history and purged on exit.
+   * Not the same as `isTemp` (which only means the server has not assigned an id yet).
+   */
+  isTemporaryChat: boolean;
   /** True once messages have been loaded (or immediately for new chats). */
   isInitialized: boolean;
   /**

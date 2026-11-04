@@ -136,6 +136,12 @@ import { notifyChatShared } from '../utils/share-notification';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { deleteConversationArtifacts } from '../../artifacts/services/conversation-artifacts.service';
+import {
+  assertNotTemporary,
+  isTemporarySession,
+  TEMPORARY_CHAT_TITLE,
+  temporaryExpiry,
+} from '../utils/temporary-chat';
 import { CONVERSATION_STATUS } from '../constants/constants';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
@@ -707,6 +713,13 @@ export const streamChat =
       throw new BadRequestError('Query is required');
     }
 
+    const isTemporary = req.body.temporary === true;
+    if (isTemporary && req.body.projectId) {
+      throw new BadRequestError(
+        'Temporary chats cannot be added to a project',
+      );
+    }
+
     let projectLink: ResolvedProjectLink;
     try {
       // Before the stream opens, so a project the caller cannot use is refused
@@ -746,13 +759,18 @@ export const streamChat =
         orgId: String(orgId),
         userId: String(userId),
         initiator: String(userId),
-        title: req.body.query.slice(0, 100),
+        title: isTemporary
+          ? TEMPORARY_CHAT_TITLE
+          : req.body.query.slice(0, 100),
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         // Store model and mode information
         modelInfo: modelInfo,
         sessionType: 'chat',
-        ...(projectLink.projectId
+        ...(isTemporary
+          ? { isTemporary: true, expiresAt: temporaryExpiry() }
+          : {}),
+        ...(!isTemporary && projectLink.projectId
           ? {
               projectId: projectLink.projectId,
               projectVisibility: projectLink.projectVisibility,
@@ -2480,6 +2498,7 @@ export const getConversationById =
         userId: String(userId),
         scope: CHAT_SCOPE,
         id: conversationId,
+        includeTemporary: true,
         owned: true,
         shared: true,
         contentMatchIds,
@@ -2720,6 +2739,53 @@ const deleteConversation = async (
   }
 };
 
+export const purgeTemporaryConversation =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next?: NextFunction,
+  ): Promise<void> => {
+    const requestId = req.context?.requestId;
+    const { conversationId } = req.params;
+    try {
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
+      const actor = actorOf(orgId, userId);
+      const existing = await convRepo().findOwned(
+        CHAT_SCOPE,
+        conversationId as string,
+        actor,
+      );
+      if (!existing) {
+        throw new NotFoundError('Conversation not found');
+      }
+      if (!isTemporarySession(existing)) {
+        throw new BadRequestError('Not a temporary chat');
+      }
+      await deleteConversationArtifacts(
+        appConfig,
+        String(conversationId),
+        req,
+      );
+      const result = await unitOfWork.run((tx) =>
+        convRepo().hardDeleteTemporary(conversationId as string, actor, tx),
+      );
+      if (!result) {
+        throw new NotFoundError('Conversation not found');
+      }
+      res.status(HTTP_STATUS.NO_CONTENT).end();
+    } catch (error: unknown) {
+      logger.error('Error purging temporary conversation', {
+        requestId,
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (next) next(error);
+      else throw error;
+    }
+  };
+
 /**
  * Which sessions a share/unshare handler may touch. Plain chats and agent
  * chats live in one store, so the scope is what keeps
@@ -2800,6 +2866,7 @@ const createShareConversationHandler =
       if (!ownedConversation) {
         throw new NotFoundError('Conversation not found or unauthorized');
       }
+      assertNotTemporary(ownedConversation);
 
       // The recipients are checked before the transaction opens: one query, and no network call
       // while the transaction is held.
@@ -3006,6 +3073,7 @@ const createUnshareConversationHandler =
         if (!conversation) {
           throw new NotFoundError('Conversation not found or unauthorized');
         }
+        assertNotTemporary(conversation);
 
         // Remove specified users from sharedWith
         const existingSharedWith = conversation.sharedWith || [];
@@ -3142,6 +3210,7 @@ export const setConversationProject = async (
     if (!conversation) {
       throw new NotFoundError('Conversation not found or unauthorized');
     }
+    assertNotTemporary(conversation);
 
     let link: {
       projectId: string;
@@ -3223,6 +3292,7 @@ export const setConversationProjectVisibility = async (
     if (!conversation) {
       throw new NotFoundError('Conversation not found or unauthorized');
     }
+    assertNotTemporary(conversation);
     if (!conversation.projectId) {
       throw new BadRequestError('Conversation is not linked to a project');
     }
@@ -4358,6 +4428,7 @@ export const updateTitle = async (
       if (!found) {
         throw new NotFoundError('Conversation not found');
       }
+      assertNotTemporary(found);
 
       const conv = await convRepo().setTitle(found._id, req.body.title, tx);
       if (!conv) {
@@ -4603,6 +4674,7 @@ export const forkConversation =
           conversationId,
           actorOf(orgId, userId),
         );
+        if (source) assertNotTemporary(source);
         return source?.isArchived ? null : (source ?? null);
       },
     });
@@ -4794,6 +4866,7 @@ export const archiveConversation = async (
           'Conversation not found or no archive permission',
         );
       }
+      assertNotTemporary(conversation);
 
       if (conversation.isArchived) {
         throw new BadRequestError('Conversation already archived');
@@ -4879,6 +4952,7 @@ export const unarchiveConversation = async (
           'Conversation not found or no unarchive permission',
         );
       }
+      assertNotTemporary(conversation);
 
       if (!conversation.isArchived) {
         throw new BadRequestError('Conversation is not archived');
@@ -4954,6 +5028,18 @@ const setConversationPinned =
       if (!userId || !orgId) {
         throw new BadRequestError('User ID and Organization ID are required');
       }
+
+      const owned = await convRepo().findOwned(
+        CHAT_SCOPE,
+        conversationId as string,
+        actorOf(orgId, userId),
+      );
+      if (!owned) {
+        throw new NotFoundError(
+          'Conversation not found or not owned by caller',
+        );
+      }
+      assertNotTemporary(owned);
 
       const updated = await convRepo().setPinned(
         conversationId as string,
@@ -8188,6 +8274,7 @@ export const getAgentConversationById =
           userId: String(userId),
           scope: agentScope(agentKey),
           id: conversationId,
+          includeTemporary: true,
           contentMatchIds,
           accessibleProjectIds: accessibleProjectIds.map(String),
           sharedAccess: 'read',

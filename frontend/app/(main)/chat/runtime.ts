@@ -357,6 +357,9 @@ export function buildStreamChatRequestForSlot(
     ...(!currentSlot.convId && currentSlot.projectId
       ? { projectId: currentSlot.projectId }
       : {}),
+    ...(!currentSlot.convId && currentSlot.isTemporaryChat
+      ? { temporary: true }
+      : {}),
     ...(effectiveAgentId
       ? {
           agentId: effectiveAgentId,

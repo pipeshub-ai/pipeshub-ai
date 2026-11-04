@@ -55,6 +55,8 @@ export interface SessionRow {
   version: number;
   nulls: string[];
   is_pinned: boolean;
+  is_temporary: boolean;
+  expires_at: Date | null;
   created_at: Date;
   updated_at: Date;
   shared_with: Array<{ userId: string; accessLevel: 'read' | 'write' }>;
@@ -155,6 +157,8 @@ export function sessionDto(
   if (!s.omitSharedWith) o.sharedWith = r.shared_with;
   // A pin belongs to its owner, so a list of chats shared with the reader never shows it.
   if (r.is_pinned && !s.omitSharedWith) o.isPinned = true;
+  if (r.is_temporary) o.isTemporary = true;
+  put(o, 'expiresAt', r.expires_at);
   put(o, 'deletedBy', r.deleted_by);
   if (r.archived_by !== null) o.archivedBy = r.archived_by;
   else if (r.nulls.includes('archived_by')) o.archivedBy = null;

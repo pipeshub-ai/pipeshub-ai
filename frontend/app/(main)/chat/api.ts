@@ -637,6 +637,22 @@ export const ChatApi = {
     await apiClient.delete(`/api/v1/conversations/${conversationId}`);
   },
 
+  async purgeTemporaryConversation(conversationId: string): Promise<void> {
+    await apiClient.delete(`/api/v1/conversations/${conversationId}/temporary`, {
+      suppressErrorToast: true,
+    });
+  },
+
+  /** Keepalive DELETE for a hard exit. Refresh no longer uses this. */
+  purgeTemporaryConversationOnExit(conversationId: string, accessToken: string | null): void {
+    if (!accessToken || typeof fetch !== 'function') return;
+    void fetch(`/api/v1/conversations/${conversationId}/temporary`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      keepalive: true,
+    }).catch(() => undefined);
+  },
+
   // Archive a conversation
   async archiveConversation(conversationId: string): Promise<void> {
     await apiClient.patch(`/api/v1/conversations/${conversationId}/archive`);

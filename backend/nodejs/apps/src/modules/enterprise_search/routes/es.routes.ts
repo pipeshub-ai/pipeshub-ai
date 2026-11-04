@@ -7,6 +7,7 @@ import {
   archiveConversation,
   archiveSearch,
   deleteConversationById,
+  purgeTemporaryConversation,
   deleteSearchById,
   deleteSearchHistory,
   getAllConversations,
@@ -365,6 +366,18 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),
     deleteConversationById(appConfig),
+  );
+
+  /**
+   * @route DELETE /api/v1/conversations/:conversationId/temporary
+   * @desc Hard-delete a temporary chat, its messages, citations and artifacts
+   */
+  router.delete(
+    '/:conversationId/temporary',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    ValidationMiddleware.validate(conversationIdParamsSchema),
+    purgeTemporaryConversation(appConfig),
   );
 
   /**
