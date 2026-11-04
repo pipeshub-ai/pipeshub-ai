@@ -136,9 +136,7 @@ def compute_config_hash(params: SemanticCacheConfigHashParams) -> str:
     Strictly excludes current time, user name/email, credentials, and endpoints.
     Embedding identifier is provider + model + dimension only.
     """
-    embedding_identifier = (
-        f"{params.embedding_provider}:{params.embedding_model}:{params.embedding_dimension}"
-    )
+    embedding_identifier = f"{params.embedding_provider}:{params.embedding_model}:{params.embedding_dimension}"
     sampling_temp_str = (
         "" if params.sampling_temperature is None else str(params.sampling_temperature)
     )
@@ -380,7 +378,9 @@ class SemanticCacheService:
             self._circuit_breaker.record_success()
             return int(val)
         except Exception as exc:
-            self._logger.warning("Failed to increment epoch for org: %s", type(exc).__name__)
+            self._logger.warning(
+                "Failed to increment epoch for org: %s", type(exc).__name__
+            )
             self._circuit_breaker.record_failure()
             self.metrics.errors += 1
             return 1
@@ -397,9 +397,7 @@ class SemanticCacheService:
     ) -> tuple[str, str, str, str]:
         """Construct cluster-safe Redis keys using {org} hash tag."""
         user_or_shared = "shared" if share_across_org else user_id
-        bucket_key = (
-            f"pipeshub:semcache:v1:{{{org_id}}}:{epoch}:{user_or_shared}:{config_hash}:{context_digest}"
-        )
+        bucket_key = f"pipeshub:semcache:v1:{{{org_id}}}:{epoch}:{user_or_shared}:{config_hash}:{context_digest}"
         lru_key = f"{bucket_key}:lru"
         data_prefix = f"pipeshub:semcache:v1:{{{org_id}}}:data:"
         return bucket_key, lru_key, data_prefix, user_or_shared
@@ -420,9 +418,7 @@ class SemanticCacheService:
 
         # 1. Resolve organization config
         if config is None:
-            config = await get_semantic_cache_config(
-                self._config_service, org_id
-            )
+            config = await get_semantic_cache_config(self._config_service, org_id)
         if config.mode == "off":
             self.metrics.bypasses += 1
             return CacheLookupResult(hit=False, kind="none", reasons=["mode_off"])
@@ -485,7 +481,11 @@ class SemanticCacheService:
                 if not isinstance(entry_data_raw, dict):
                     _ = spawn_detached(
                         self._cleanup_orphan_entry(
-                            redis, bucket_key, lru_key, field_name, f"{data_prefix}{field_name}"
+                            redis,
+                            bucket_key,
+                            lru_key,
+                            field_name,
+                            f"{data_prefix}{field_name}",
                         )
                     )
                     continue
@@ -499,7 +499,27 @@ class SemanticCacheService:
                     )
                     _ = spawn_detached(
                         self._cleanup_orphan_entry(
-                            redis, bucket_key, lru_key, field_name, f"{data_prefix}{field_name}"
+                            redis,
+                            bucket_key,
+                            lru_key,
+                            field_name,
+                            f"{data_prefix}{field_name}",
+                        )
+                    )
+                    continue
+                author_val = entry_data.get("author_user_id")
+                if not isinstance(author_val, str) or not author_val:
+                    self._logger.warning(
+                        "Cache entry %s missing or invalid author_user_id; evicting",
+                        field_name,
+                    )
+                    _ = spawn_detached(
+                        self._cleanup_orphan_entry(
+                            redis,
+                            bucket_key,
+                            lru_key,
+                            field_name,
+                            f"{data_prefix}{field_name}",
                         )
                     )
                     continue
@@ -512,7 +532,11 @@ class SemanticCacheService:
             except Exception:
                 _ = spawn_detached(
                     self._cleanup_orphan_entry(
-                        redis, bucket_key, lru_key, field_name, f"{data_prefix}{field_name}"
+                        redis,
+                        bucket_key,
+                        lru_key,
+                        field_name,
+                        f"{data_prefix}{field_name}",
                     )
                 )
                 continue
@@ -539,10 +563,17 @@ class SemanticCacheService:
             # Exact match condition
             # User-scoping rule (Section 2 Decision 4):
             # Cross-user match allowed on exact match if share_across_org is True
-            if entry_norm == norm_query and (author == user_id or config.share_across_org):
+            if entry_norm == norm_query and (
+                author == user_id or config.share_across_org
+            ):
                 data_key = f"{data_prefix}{entry_id}"
                 completion_data = await self._fetch_data_key(
-                    redis, bucket_key, lru_key, data_key, entry_id
+                    redis,
+                    bucket_key,
+                    lru_key,
+                    data_key,
+                    entry_id,
+                    expected_author=author,
                 )
                 if completion_data is not None:
                     self.metrics.exact_hits += 1
@@ -617,7 +648,9 @@ class SemanticCacheService:
             if not cached_guard_query or not isinstance(cached_guard_query, str):
                 continue
             passed, _guard_reasons = guard_compare(
-                normalize_query(query), cached_guard_query, jaccard_threshold=config.jaccard_threshold
+                normalize_query(query),
+                cached_guard_query,
+                jaccard_threshold=config.jaccard_threshold,
             )
             if not passed:
                 self.metrics.guard_rejected += 1
@@ -626,7 +659,7 @@ class SemanticCacheService:
             # Passed cosine similarity & guard checks!
             data_key = f"{data_prefix}{entry_id}"
             completion_data = await self._fetch_data_key(
-                redis, bucket_key, lru_key, data_key, entry_id
+                redis, bucket_key, lru_key, data_key, entry_id, expected_author=author
             )
             if completion_data is not None:
                 self.metrics.semantic_hits += 1
@@ -661,23 +694,32 @@ class SemanticCacheService:
         lru_key: str,
         data_key: str,
         entry_id: str,
+        expected_author: str | None = None,
     ) -> dict[str, object] | None:
         """Fetch completion data from data key; validate schema, required keys and types;
-        if missing, corrupt, or invalid, evict entry and return None."""
+        if missing, corrupt, or invalid, evict entry and return None.
+        If expected_author is provided and differs from payload author, treat as a cache miss
+        without evicting to avoid destroying a concurrent write."""
         try:
             val = await redis.get(data_key)
             if val is None:
                 # Missing data key => miss plus cleanup
                 _ = spawn_detached(
-                    self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+                    self._cleanup_orphan_entry(
+                        redis, bucket_key, lru_key, entry_id, data_key
+                    )
                 )
                 return None
             val_str = val.decode("utf-8") if isinstance(val, bytes) else str(val)
             parsed = json.loads(val_str)
             if not isinstance(parsed, dict):
-                self._logger.warning("Cache data entry at %s is not a dict; evicting", data_key)
+                self._logger.warning(
+                    "Cache data entry at %s is not a dict; evicting", data_key
+                )
                 _ = spawn_detached(
-                    self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+                    self._cleanup_orphan_entry(
+                        redis, bucket_key, lru_key, entry_id, data_key
+                    )
                 )
                 return None
 
@@ -690,7 +732,9 @@ class SemanticCacheService:
                     STORAGE_SCHEMA_VERSION,
                 )
                 _ = spawn_detached(
-                    self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+                    self._cleanup_orphan_entry(
+                        redis, bucket_key, lru_key, entry_id, data_key
+                    )
                 )
                 return None
 
@@ -701,7 +745,9 @@ class SemanticCacheService:
                     entry_id,
                 )
                 _ = spawn_detached(
-                    self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+                    self._cleanup_orphan_entry(
+                        redis, bucket_key, lru_key, entry_id, data_key
+                    )
                 )
                 return None
 
@@ -713,11 +759,51 @@ class SemanticCacheService:
                     entry_id,
                 )
                 _ = spawn_detached(
-                    self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+                    self._cleanup_orphan_entry(
+                        redis, bucket_key, lru_key, entry_id, data_key
+                    )
                 )
                 return None
-            # Pop storage schema version envelope key so returned completion_data matches caller's payload
+
+            # 4. Author validation: tie completion payload to the same write as metadata
+            payload_author = parsed.get("author_user_id")
+            if expected_author is not None:
+                if payload_author is None or not isinstance(payload_author, str):
+                    self._logger.warning(
+                        "Cache data entry at %s missing or invalid 'author_user_id'; evicting entry %s",
+                        data_key,
+                        entry_id,
+                    )
+                    _ = spawn_detached(
+                        self._cleanup_orphan_entry(
+                            redis, bucket_key, lru_key, entry_id, data_key
+                        )
+                    )
+                    return None
+                if payload_author != expected_author:
+                    self._logger.warning(
+                        "Author mismatch in data key %s: expected author %r != payload author %r; treating as cache miss",
+                        data_key,
+                        expected_author,
+                        payload_author,
+                    )
+                    return None
+            elif payload_author is not None and not isinstance(payload_author, str):
+                self._logger.warning(
+                    "Cache data entry at %s has non-string 'author_user_id'; evicting entry %s",
+                    data_key,
+                    entry_id,
+                )
+                _ = spawn_detached(
+                    self._cleanup_orphan_entry(
+                        redis, bucket_key, lru_key, entry_id, data_key
+                    )
+                )
+                return None
+
+            # Pop storage schema version envelope key and author so returned completion_data matches caller's payload
             _ = parsed.pop("schema_version", None)
+            _ = parsed.pop("author_user_id", None)
             return cast("dict[str, object]", parsed)
         except json.JSONDecodeError as exc:
             self._logger.warning(
@@ -727,7 +813,9 @@ class SemanticCacheService:
                 entry_id,
             )
             _ = spawn_detached(
-                self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+                self._cleanup_orphan_entry(
+                    redis, bucket_key, lru_key, entry_id, data_key
+                )
             )
             return None
         except Exception as exc:
@@ -738,7 +826,9 @@ class SemanticCacheService:
                 entry_id,
             )
             _ = spawn_detached(
-                self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+                self._cleanup_orphan_entry(
+                    redis, bucket_key, lru_key, entry_id, data_key
+                )
             )
             return None
 
@@ -797,9 +887,7 @@ class SemanticCacheService:
             return False
 
         if config is None:
-            config = await get_semantic_cache_config(
-                self._config_service, org_id
-            )
+            config = await get_semantic_cache_config(self._config_service, org_id)
         if config.mode == "off":
             self.metrics.write_skipped += 1
             return False
@@ -825,7 +913,9 @@ class SemanticCacheService:
             context_digest=context_digest,
             share_across_org=config.share_across_org,
         )
-        entry_id = hashlib.sha256(f"{bucket_key}:{norm_query}".encode("utf-8")).hexdigest()[:16]
+        entry_id = hashlib.sha256(
+            f"{bucket_key}:{norm_query}".encode("utf-8")
+        ).hexdigest()[:16]
         data_key = f"{data_prefix}{entry_id}"
 
         now_ts = self._clock()
@@ -833,6 +923,7 @@ class SemanticCacheService:
 
         payload = dict(completion_data)
         _ = payload.setdefault("schema_version", STORAGE_SCHEMA_VERSION)
+        payload["author_user_id"] = user_id
 
         metadata: dict[str, object] = {
             "schema_version": STORAGE_SCHEMA_VERSION,
@@ -869,7 +960,9 @@ class SemanticCacheService:
             self.metrics.writes += 1
             return True
         except Exception as exc:
-            self._logger.warning("Failed to store entry in semantic cache: %s", type(exc).__name__)
+            self._logger.warning(
+                "Failed to store entry in semantic cache: %s", type(exc).__name__
+            )
             self._circuit_breaker.record_failure()
             self.metrics.errors += 1
             return False
@@ -888,9 +981,7 @@ class SemanticCacheService:
         if redis is None:
             return False
 
-        bucket_key = (
-            f"pipeshub:semcache:v1:{{{org_id}}}:{epoch}:{user_or_shared}:{config_hash}:{context_digest}"
-        )
+        bucket_key = f"pipeshub:semcache:v1:{{{org_id}}}:{epoch}:{user_or_shared}:{config_hash}:{context_digest}"
         lru_key = f"{bucket_key}:lru"
         data_key = f"pipeshub:semcache:v1:{{{org_id}}}:data:{entry_id}"
 

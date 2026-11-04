@@ -56,7 +56,9 @@ def _make_mock_config_service(
 ) -> MagicMock:
     mock_service = MagicMock()
 
-    async def _mock_get_config(key: str, default: object = None, use_cache: bool = True) -> object:
+    async def _mock_get_config(
+        key: str, default: object = None, use_cache: bool = True
+    ) -> object:
         if "platform/settings" in key:
             return {"featureFlags": {"ENABLE_SEMANTIC_CACHE": True}}
         if "semanticCache" in key:
@@ -110,7 +112,13 @@ class TestContextDigest:
         assert len(compute_context_digest(None)) == 64
 
         dict_recs = [
-            {"id": "r1", "updatedAtTimestamp": 100, "sourceLastModifiedTimestamp": 90, "version": 1, "md5Checksum": "m1"}
+            {
+                "id": "r1",
+                "updatedAtTimestamp": 100,
+                "sourceLastModifiedTimestamp": 90,
+                "version": 1,
+                "md5Checksum": "m1",
+            }
         ]
         tuple_recs = [("r1", 100, 90, 1, "m1")]
         assert compute_context_digest(dict_recs) == compute_context_digest(tuple_recs)
@@ -132,23 +140,33 @@ class TestConfigHash:
         base_hash = compute_config_hash(base)
 
         # Embedding model change
-        p_emb = SemanticCacheConfigHashParams(**{**base.__dict__, "embedding_model": "text-embedding-3-small"})
+        p_emb = SemanticCacheConfigHashParams(
+            **{**base.__dict__, "embedding_model": "text-embedding-3-small"}
+        )
         assert compute_config_hash(p_emb) != base_hash
 
         # Embedding dimension change
-        p_dim = SemanticCacheConfigHashParams(**{**base.__dict__, "embedding_dimension": 1536})
+        p_dim = SemanticCacheConfigHashParams(
+            **{**base.__dict__, "embedding_dimension": 1536}
+        )
         assert compute_config_hash(p_dim) != base_hash
 
         # Generator model change
-        p_gen = SemanticCacheConfigHashParams(**{**base.__dict__, "generator_model": "claude-3-5-sonnet"})
+        p_gen = SemanticCacheConfigHashParams(
+            **{**base.__dict__, "generator_model": "claude-3-5-sonnet"}
+        )
         assert compute_config_hash(p_gen) != base_hash
 
         # Temperature change
-        p_temp = SemanticCacheConfigHashParams(**{**base.__dict__, "sampling_temperature": 0.7})
+        p_temp = SemanticCacheConfigHashParams(
+            **{**base.__dict__, "sampling_temperature": 0.7}
+        )
         assert compute_config_hash(p_temp) != base_hash
 
         # Prompt template version change
-        p_ver = SemanticCacheConfigHashParams(**{**base.__dict__, "prompt_template_version": 2})
+        p_ver = SemanticCacheConfigHashParams(
+            **{**base.__dict__, "prompt_template_version": 2}
+        )
         assert compute_config_hash(p_ver) != base_hash
 
     def test_config_hash_excludes_identity_time_endpoints_and_credentials(self) -> None:
@@ -185,7 +203,9 @@ class TestCircuitBreaker:
         def clock() -> float:
             return current_time
 
-        cb = CircuitBreaker(failure_threshold=5, recovery_window_seconds=30.0, clock=clock)
+        cb = CircuitBreaker(
+            failure_threshold=5, recovery_window_seconds=30.0, clock=clock
+        )
         assert cb.state == "closed"
         assert not cb.is_open()
 
@@ -225,7 +245,9 @@ class TestCircuitBreaker:
         def clock() -> float:
             return current_time
 
-        cb = CircuitBreaker(failure_threshold=5, recovery_window_seconds=30.0, clock=clock)
+        cb = CircuitBreaker(
+            failure_threshold=5, recovery_window_seconds=30.0, clock=clock
+        )
         for _ in range(5):
             cb.record_failure()
         assert cb.is_open()
@@ -249,7 +271,9 @@ class TestSemanticCacheServiceLookupAndStore:
     async def test_exact_and_semantic_lookup_hit_and_store(self) -> None:
         """Store an entry and verify exact hit and semantic paraphrase hit."""
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        config_service = _make_mock_config_service(mode="serve", similarity_threshold=0.90)
+        config_service = _make_mock_config_service(
+            mode="serve", similarity_threshold=0.90
+        )
 
         now = 1000.0
         service = SemanticCacheService(
@@ -260,7 +284,10 @@ class TestSemanticCacheServiceLookupAndStore:
 
         query = "what is the remote work policy for engineers?"
         embedding = [1.0, 0.0, 0.0]  # Unit vector
-        completion = {"answer": "Engineers may work remotely 3 days a week.", "confidence": "High"}
+        completion = {
+            "answer": "Engineers may work remotely 3 days a week.",
+            "confidence": "High",
+        }
         context_digest = "test_context_digest_123"
         config_hash = "test_config_hash_abc"
 
@@ -311,7 +338,9 @@ class TestSemanticCacheServiceLookupAndStore:
         paraphrase_query = "what is the remote work policy for engineers"
         paraphrase_emb = [0.99, 0.14, 0.0]
         # Normalize
-        paraphrase_emb = (np.array(paraphrase_emb) / np.linalg.norm(paraphrase_emb)).tolist()
+        paraphrase_emb = (
+            np.array(paraphrase_emb) / np.linalg.norm(paraphrase_emb)
+        ).tolist()
 
         sem_hit = await service.lookup(
             org_id="org_1",
@@ -331,7 +360,9 @@ class TestSemanticCacheServiceLookupAndStore:
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         config_service = _make_mock_config_service(mode="serve")
 
-        service = SemanticCacheService(config_service=config_service, redis_client=fake_redis)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
 
         stored = await service.store(
             org_id="org_1",
@@ -361,9 +392,13 @@ class TestSemanticCacheServiceLookupAndStore:
     async def test_short_query_under_5_words_requires_exact_match(self) -> None:
         """Queries under 5 words require an exact normalized match; semantic paraphrases are rejected."""
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        config_service = _make_mock_config_service(mode="serve", similarity_threshold=0.80)
+        config_service = _make_mock_config_service(
+            mode="serve", similarity_threshold=0.80
+        )
 
-        service = SemanticCacheService(config_service=config_service, redis_client=fake_redis)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
 
         # 3-word query
         stored = await service.store(
@@ -480,7 +515,9 @@ class TestCapEvictionAndOrphanCleanup:
         """Cap eviction removes the least-recently-accessed entry AND its separate data key."""
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         # Bucket cap set to 2 entries
-        config_service = _make_mock_config_service(mode="serve", max_entries_per_context=2)
+        config_service = _make_mock_config_service(
+            mode="serve", max_entries_per_context=2
+        )
 
         now = 100.0
         service = SemanticCacheService(
@@ -494,35 +531,90 @@ class TestCapEvictionAndOrphanCleanup:
 
         # Store entry 1 at t=100
         now = 100.0
-        await service.store("org_1", "u1", "what is company query number one?", [1.0, 0.0], {"answer": "ans 1", "a": 1}, context_digest, config_hash)
+        await service.store(
+            "org_1",
+            "u1",
+            "what is company query number one?",
+            [1.0, 0.0],
+            {"answer": "ans 1", "a": 1},
+            context_digest,
+            config_hash,
+        )
         # Store entry 2 at t=200
         now = 200.0
-        await service.store("org_1", "u1", "what is company query number two?", [0.0, 1.0], {"answer": "ans 2", "a": 2}, context_digest, config_hash)
+        await service.store(
+            "org_1",
+            "u1",
+            "what is company query number two?",
+            [0.0, 1.0],
+            {"answer": "ans 2", "a": 2},
+            context_digest,
+            config_hash,
+        )
 
         # Both entries exist
-        res1 = await service.lookup("org_1", "u1", "what is company query number one?", [1.0, 0.0], context_digest, config_hash)
+        res1 = await service.lookup(
+            "org_1",
+            "u1",
+            "what is company query number one?",
+            [1.0, 0.0],
+            context_digest,
+            config_hash,
+        )
         assert res1.hit is True
         eid1 = res1.entry_id
         assert eid1 is not None
 
         # Touch entry 1 by looking it up at t=300 (so entry 2 becomes the oldest last_accessed)
         now = 300.0
-        await fake_redis.zadd(f"pipeshub:semcache:v1:{{org_1}}:1:u1:{config_hash}:{context_digest}:lru", {eid1: 300.0})
+        await fake_redis.zadd(
+            f"pipeshub:semcache:v1:{{org_1}}:1:u1:{config_hash}:{context_digest}:lru",
+            {eid1: 300.0},
+        )
 
         # Store entry 3 at t=400 (exceeds cap of 2 -> entry 2 should be evicted)
         now = 400.0
-        await service.store("org_1", "u1", "what is company query number three?", [0.5, 0.5], {"answer": "ans 3", "a": 3}, context_digest, config_hash)
+        await service.store(
+            "org_1",
+            "u1",
+            "what is company query number three?",
+            [0.5, 0.5],
+            {"answer": "ans 3", "a": 3},
+            context_digest,
+            config_hash,
+        )
 
         # Entry 1 should still hit
-        res1_after = await service.lookup("org_1", "u1", "what is company query number one?", [1.0, 0.0], context_digest, config_hash)
+        res1_after = await service.lookup(
+            "org_1",
+            "u1",
+            "what is company query number one?",
+            [1.0, 0.0],
+            context_digest,
+            config_hash,
+        )
         assert res1_after.hit is True
 
         # Entry 2 should have been evicted (miss)
-        res2_after = await service.lookup("org_1", "u1", "what is company query number two?", [0.0, 1.0], context_digest, config_hash)
+        res2_after = await service.lookup(
+            "org_1",
+            "u1",
+            "what is company query number two?",
+            [0.0, 1.0],
+            context_digest,
+            config_hash,
+        )
         assert res2_after.hit is False
 
         # Entry 3 should hit
-        res3_after = await service.lookup("org_1", "u1", "what is company query number three?", [0.5, 0.5], context_digest, config_hash)
+        res3_after = await service.lookup(
+            "org_1",
+            "u1",
+            "what is company query number three?",
+            [0.5, 0.5],
+            context_digest,
+            config_hash,
+        )
         assert res3_after.hit is True
 
     @pytest.mark.asyncio
@@ -531,7 +623,9 @@ class TestCapEvictionAndOrphanCleanup:
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         config_service = _make_mock_config_service(mode="serve")
 
-        service = SemanticCacheService(config_service=config_service, redis_client=fake_redis)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
 
         context_digest = "orphan_digest"
         config_hash = "orphan_hash"
@@ -547,7 +641,9 @@ class TestCapEvictionAndOrphanCleanup:
         )
 
         # Locate entry_id
-        bucket_key = f"pipeshub:semcache:v1:{{org_1}}:1:u1:{config_hash}:{context_digest}"
+        bucket_key = (
+            f"pipeshub:semcache:v1:{{org_1}}:1:u1:{config_hash}:{context_digest}"
+        )
         entries = await fake_redis.hgetall(bucket_key)
         eid = next(iter(entries.keys()))
 
@@ -580,9 +676,13 @@ class TestConcurrencyCap:
     async def test_15_concurrent_stores_stay_within_cap(self) -> None:
         """15 concurrent store() calls into the same bucket stay within the cap of 10 without corruption."""
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        config_service = _make_mock_config_service(mode="serve", max_entries_per_context=10)
+        config_service = _make_mock_config_service(
+            mode="serve", max_entries_per_context=10
+        )
 
-        service = SemanticCacheService(config_service=config_service, redis_client=fake_redis)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
 
         context_digest = "concurrent_digest"
         config_hash = "concurrent_hash"
@@ -622,7 +722,9 @@ class TestEpochInvalidation:
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         config_service = _make_mock_config_service(mode="serve")
 
-        service = SemanticCacheService(config_service=config_service, redis_client=fake_redis)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
 
         context_digest = "epoch_digest"
         config_hash = "epoch_hash"
@@ -671,7 +773,9 @@ class TestScopingAndUserIsolation:
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         config_service = _make_mock_config_service(mode="serve")
 
-        service = SemanticCacheService(config_service=config_service, redis_client=fake_redis)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
 
         await service.store(
             org_id="org_A",
@@ -699,7 +803,9 @@ class TestScopingAndUserIsolation:
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         config_service = _make_mock_config_service(mode="serve", share_across_org=False)
 
-        service = SemanticCacheService(config_service=config_service, redis_client=fake_redis)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
 
         await service.store(
             org_id="org_1",
@@ -722,7 +828,9 @@ class TestScopingAndUserIsolation:
         assert res_u2.hit is False
 
     @pytest.mark.asyncio
-    async def test_share_across_org_exact_hit_allowed_semantic_hit_blocked(self) -> None:
+    async def test_share_across_org_exact_hit_allowed_semantic_hit_blocked(
+        self,
+    ) -> None:
         """When share_across_org=True: cross-user exact match hits; cross-user semantic match is blocked."""
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         config_service = _make_mock_config_service(
@@ -731,7 +839,9 @@ class TestScopingAndUserIsolation:
             share_across_org=True,
         )
 
-        service = SemanticCacheService(config_service=config_service, redis_client=fake_redis)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
 
         query = "what is the official travel expense policy?"
         completion = {"answer": "Meals up to $75/day"}
@@ -798,7 +908,9 @@ class TestFailOpenAndMetrics:
         mock_redis.hgetall = AsyncMock()
 
         config_service = _make_mock_config_service(mode="off")
-        service = SemanticCacheService(config_service=config_service, redis_client=mock_redis)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=mock_redis
+        )
 
         res = await service.lookup(
             org_id="org_1",
@@ -818,10 +930,14 @@ class TestFailOpenAndMetrics:
         """Redis exceptions fail open and trip the circuit breaker on 5 consecutive failures."""
         mock_redis = MagicMock()
         mock_redis.get = AsyncMock(return_value="1")  # epoch
-        mock_redis.hgetall = AsyncMock(side_effect=ConnectionError("Redis connection dropped"))
+        mock_redis.hgetall = AsyncMock(
+            side_effect=ConnectionError("Redis connection dropped")
+        )
 
         config_service = _make_mock_config_service(mode="serve")
-        service = SemanticCacheService(config_service=config_service, redis_client=mock_redis)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=mock_redis
+        )
 
         # 5 failing lookups
         for i in range(5):
@@ -910,7 +1026,9 @@ class TestFailOpenAndMetrics:
 
         # Verify telemetry attributes contain ONLY integers
         for field_name, val in service.metrics.__dict__.items():
-            assert isinstance(val, int), f"Metric {field_name} must be numeric, got {type(val)}"
+            assert isinstance(val, int), (
+                f"Metric {field_name} must be numeric, got {type(val)}"
+            )
 
         # Verify caplog text NEVER contains sensitive query text, answer text, or embedding components
         log_text = caplog.text
@@ -921,15 +1039,24 @@ class TestFailOpenAndMetrics:
         assert "another_random_unseen_query_secret_xyz" not in log_text
 
     @pytest.mark.asyncio
-    async def test_corrupt_citations_field_returns_none_and_triggers_eviction(self) -> None:
+    async def test_corrupt_citations_field_returns_none_and_triggers_eviction(
+        self,
+    ) -> None:
         """When cached data key has citations that is not a list, lookup returns None and evicts entry."""
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         config_service = _make_mock_config_service(mode="serve")
-        service = SemanticCacheService(config_service=config_service, redis_client=fake_redis)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
 
         stored = await service.store(
-            "org_1", "u1", "query for corrupt citations test", [1.0, 0.0],
-            {"answer": "valid answer", "citations": []}, "d1", "h1"
+            "org_1",
+            "u1",
+            "query for corrupt citations test",
+            [1.0, 0.0],
+            {"answer": "valid answer", "citations": []},
+            "d1",
+            "h1",
         )
         assert stored is True
 
@@ -937,7 +1064,14 @@ class TestFailOpenAndMetrics:
         data_keys = await fake_redis.keys("pipeshub:semcache:v1:{org_1}:data:*")
         assert len(data_keys) == 1
         data_key = data_keys[0]
-        corrupt_payload = json.dumps({"schema_version": "v1", "answer": "valid answer", "citations": "not a list"})
+        corrupt_payload = json.dumps(
+            {
+                "schema_version": "v1",
+                "author_user_id": "u1",
+                "answer": "valid answer",
+                "citations": "not a list",
+            }
+        )
         await fake_redis.set(data_key, corrupt_payload)
 
         # Lookup must return hit=False (fail open)
@@ -949,3 +1083,194 @@ class TestFailOpenAndMetrics:
         # Wait for orphan cleanup task
         await asyncio.sleep(0.05)
         assert await fake_redis.get(data_key) is None
+
+    @pytest.mark.asyncio
+    async def test_author_stored_in_payload_and_popped_on_lookup(self) -> None:
+        """Completion payload in Redis stores author_user_id; lookup strips it from completion_data."""
+        fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        config_service = _make_mock_config_service(mode="serve")
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
+
+        stored = await service.store(
+            org_id="org_test",
+            user_id="user_alice",
+            query="test payload author storage",
+            query_embedding=[1.0, 0.0],
+            completion_data={"answer": "hello world", "reasoning": "alice thoughts"},
+            context_digest="digest_1",
+            config_hash="conf_1",
+        )
+        assert stored is True
+
+        # Check raw Redis data key to verify author_user_id is in stored payload
+        data_keys = await fake_redis.keys("pipeshub:semcache:v1:{org_test}:data:*")
+        assert len(data_keys) == 1
+        raw_val = await fake_redis.get(data_keys[0])
+        assert raw_val is not None
+        parsed = json.loads(str(raw_val))
+        assert parsed["author_user_id"] == "user_alice"
+        assert parsed["schema_version"] == "v1"
+
+        # Lookup result returns author_user_id on result, but completion_data does not have envelope fields
+        res = await service.lookup(
+            org_id="org_test",
+            user_id="user_alice",
+            query="test payload author storage",
+            query_embedding=[1.0, 0.0],
+            context_digest="digest_1",
+            config_hash="conf_1",
+        )
+        assert res.hit is True
+        assert res.author_user_id == "user_alice"
+        assert res.completion_data == {
+            "answer": "hello world",
+            "reasoning": "alice thoughts",
+        }
+        assert "author_user_id" not in (res.completion_data or {})
+        assert "schema_version" not in (res.completion_data or {})
+
+    @pytest.mark.asyncio
+    async def test_author_mismatch_between_metadata_and_payload_treats_as_miss(
+        self,
+    ) -> None:
+        """When concurrent store changes data_key author, lookup treats mismatch as cache miss and avoids eviction."""
+        fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        config_service = _make_mock_config_service(mode="serve", share_across_org=True)
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
+
+        # 1. Alice stores entry
+        await service.store(
+            org_id="org_shared",
+            user_id="alice",
+            query="shared query for testing concurrent author mismatch",
+            query_embedding=[1.0, 0.0],
+            completion_data={
+                "answer": "alice answer",
+                "reasoning": "secret alice reasoning",
+            },
+            context_digest="digest_shared",
+            config_hash="conf_shared",
+        )
+
+        data_keys = await fake_redis.keys("pipeshub:semcache:v1:{org_shared}:data:*")
+        assert len(data_keys) == 1
+        data_key = data_keys[0]
+
+        # 2. Simulate concurrent store by Bob overwriting data_key with Bob's payload & author
+        bob_payload = json.dumps(
+            {
+                "schema_version": "v1",
+                "author_user_id": "bob",
+                "answer": "bob answer",
+                "reasoning": "secret bob reasoning",
+            }
+        )
+        await fake_redis.set(data_key, bob_payload)
+
+        # 3. Lookup occurs where metadata still says author is 'alice'
+        res = await service.lookup(
+            org_id="org_shared",
+            user_id="alice",
+            query="shared query for testing concurrent author mismatch",
+            query_embedding=[1.0, 0.0],
+            context_digest="digest_shared",
+            config_hash="conf_shared",
+        )
+
+        # Must be treated as a cache miss! Never pair alice's author with bob's payload!
+        assert res.hit is False
+        assert res.completion_data is None
+        assert res.author_user_id is None
+
+        # Data key must NOT be deleted (preserving bob's concurrent write)
+        await asyncio.sleep(0.05)
+        assert await fake_redis.get(data_key) is not None
+
+    @pytest.mark.asyncio
+    async def test_missing_author_in_payload_evicts_and_returns_miss(self) -> None:
+        """When data_key has no author_user_id, entry is considered invalid, evicted, and returns a miss."""
+        fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        config_service = _make_mock_config_service(mode="serve")
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
+
+        await service.store(
+            org_id="org_1",
+            user_id="alice",
+            query="query testing missing author in payload",
+            query_embedding=[1.0, 0.0],
+            completion_data={"answer": "valid answer"},
+            context_digest="d1",
+            config_hash="h1",
+        )
+
+        data_keys = await fake_redis.keys("pipeshub:semcache:v1:{org_1}:data:*")
+        assert len(data_keys) == 1
+        data_key = data_keys[0]
+
+        # Payload without author_user_id
+        no_author_payload = json.dumps(
+            {"schema_version": "v1", "answer": "valid answer"}
+        )
+        await fake_redis.set(data_key, no_author_payload)
+
+        res = await service.lookup(
+            org_id="org_1",
+            user_id="alice",
+            query="query testing missing author in payload",
+            query_embedding=[1.0, 0.0],
+            context_digest="d1",
+            config_hash="h1",
+        )
+        assert res.hit is False
+
+        await asyncio.sleep(0.05)
+        assert await fake_redis.get(data_key) is None
+
+    @pytest.mark.asyncio
+    async def test_corrupt_metadata_missing_author_evicts_entry(self) -> None:
+        """When metadata entry has no author_user_id, lookup evicts it and returns a miss."""
+        fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        config_service = _make_mock_config_service(mode="serve")
+        service = SemanticCacheService(
+            config_service=config_service, redis_client=fake_redis
+        )
+
+        await service.store(
+            org_id="org_1",
+            user_id="alice",
+            query="query testing corrupt metadata missing author",
+            query_embedding=[1.0, 0.0],
+            completion_data={"answer": "valid answer"},
+            context_digest="d1",
+            config_hash="h1",
+        )
+
+        bucket_keys = await fake_redis.keys("pipeshub:semcache:v1:{org_1}:*:d1")
+        assert len(bucket_keys) == 1
+        b_key = bucket_keys[0]
+        entries = await fake_redis.hgetall(b_key)
+        assert len(entries) == 1
+        field_name = next(iter(entries.keys()))
+        meta = json.loads(entries[field_name])
+        meta.pop("author_user_id", None)
+        await fake_redis.hset(b_key, field_name, json.dumps(meta))
+
+        res = await service.lookup(
+            org_id="org_1",
+            user_id="alice",
+            query="query testing corrupt metadata missing author",
+            query_embedding=[1.0, 0.0],
+            context_digest="d1",
+            config_hash="h1",
+        )
+        assert res.hit is False
+
+        await asyncio.sleep(0.05)
+        # Entry in bucket hash should have been evicted
+        assert await fake_redis.hget(b_key, field_name) is None
