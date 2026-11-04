@@ -547,7 +547,9 @@ async def test_pg_ordered_claim_costs_the_batch_not_the_backlog(pg) -> None:
     small = await _claim_buffers(pg)
     await publish(10_000, 100_000)
     large = await _claim_buffers(pg)
-    assert large <= 3 * small + 50, (small, large)  # ten times the backlog; a scan would be about ten times the pages
+    # Ten times the backlog. A claim of the batch reads about 4 to 5 times the pages at worst (index depth, and heap pages when
+    # autovacuum has not yet set the visibility map); a claim that walks the backlog reads 9 to 10 times.
+    assert large <= 6 * small + 100, (small, large)
 
     held = []
     for _ in range(15):
