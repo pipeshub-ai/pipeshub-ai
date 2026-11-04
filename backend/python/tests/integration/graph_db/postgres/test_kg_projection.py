@@ -149,6 +149,17 @@ async def test_a_connector_shared_across_connectors_marks_both_and_a_gone_connec
     with ctx(org):
         assert await p._q(flags, None) == {"app1", "app2"}
 
+    # The other connector goes with its record: the change is projected, and no row of it may be left (its record, its link under the folder, its grants), as in a
+    # whole projection of the graph afresh. The cross-connector flags are sticky by design (written once, so that a pending change of one connector outdates the other).
+    touched = await delete_node(p, org, "records", "x1") | await delete_node(p, org, "apps", "app2")
+    await run(p, org, touched)
+    with ctx(org):
+        assert await p._q(flags, None) == {"app1", "app2"}
+    fresh = new_org()
+    await load_world(p, fresh)
+    await run(p, fresh, await everything(p, fresh))
+    assert same(await held(p, org), org, await held(p, fresh), fresh)
+
 
 async def test_a_projection_of_one_connector_waits_for_another_holding_its_lock(pg_db) -> None:
     p, org = prov(pg_db), new_org()
