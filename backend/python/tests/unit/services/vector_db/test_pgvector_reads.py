@@ -23,6 +23,7 @@ from app.services.vector_db.pgvector.errors import (
     PgVectorUnsupportedError,
 )
 from app.services.vector_db.pgvector.pgvector import PgVectorService
+from app.services.vector_db.pgvector.sql_filters import compile_filter
 from app.services.vector_db.pgvector.visibility import Scope, scope_of
 
 A, B = "a" * 24, "b" * 24
@@ -105,15 +106,18 @@ def test_what_a_search_cannot_express_is_refused_not_dropped(expr: FilterExpress
 
 
 @pytest.mark.asyncio
-async def test_what_filter_collection_does_with_an_empty_list_and_what_the_scope_does_with_an_explicit_one() -> None:
-    """The shared filter builder drops an empty list on every provider (Qdrant too), so a filter built from an empty accessible list
-    carries no arm and its scope is the whole organisation: callers short-circuit an empty accessible set before they search, and
-    graph-check every hit. A condition that is built by hand with an empty list is the explicit form, and a scope fails closed on it."""
+async def test_an_empty_list_in_filter_collection_stays_a_condition_that_matches_nothing_and_the_scope_fails_closed_on_it() -> None:
+    """The shared filter builder keeps an empty list (it matches nothing on every provider). A filter built from an empty accessible
+    list therefore carries its empty arms, and its scope is not the whole organisation: it sees nothing."""
     svc = PgVectorService(PgVectorConfig(dsn="postgresql://h/db"))
     built = await svc.filter_collection(must={"orgId": A}, should={"connectorIds": [], "recordGroupIds": []})
-    assert built.should == [] and scope_of(built).whole_org                      # dropped by the builder, as on the other providers
-    explicit = FilterExpression(must=[cond("metadata.orgId", A)], should=[cond("connectorIds", values=[])])
-    assert not scope_of(explicit).whole_org and scope_of(explicit).apps == []     # and not widened when stated
+    assert [c.values for c in built.should] == [[], []]
+    scope = scope_of(built)
+    assert not scope.whole_org and scope.apps == [] and scope.groups == []
+    must = await svc.filter_collection(must={"orgId": A, "virtualRecordId": []})
+    assert compile_filter(must, first_param=5).where.endswith("AND (false)")           # matches nothing
+    out = await svc.filter_collection(must={"orgId": A}, must_not={"virtualRecordId": []})
+    assert "NOT coalesce((false), false)" in compile_filter(out, first_param=5).where   # excludes nothing
 
 
 def test_a_scope_key_is_a_stable_digest_of_the_scope() -> None:
