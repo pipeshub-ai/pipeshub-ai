@@ -1358,8 +1358,9 @@ export class SlackPlanStream {
 
   /**
    * Slack found the rows too big: each row's output shrinks to its first
-   * lines, then, if that still fails, the rows go without their output. No
-   * row is added and none is lost.
+   * lines, then, if that still fails, the rows go without their output, and
+   * if the message is still full, in a new message. No row is added and none
+   * is lost.
    */
   private async retrySmaller(chunks: SlackTaskChunk[]): Promise<void> {
     const shorter = chunks.map((chunk): SlackTaskChunk => {
@@ -1400,7 +1401,9 @@ export class SlackPlanStream {
         }
       }
     }
-    console.error('Slack refused the steps even without their output');
+    // This message is full: the rows go on in a new one, never dropped.
+    await this.rollover();
+    await this.openWith(chunks);
   }
 
   /**
@@ -1423,6 +1426,8 @@ export class SlackPlanStream {
   ): Promise<void> {
     let rest = markdown;
     let first = true;
+    // Lowered when Slack refuses a piece as too long even in a fresh message.
+    let maxPiece = Infinity;
     while (rest.length > 0 && !this.stopped && !this.unavailable) {
       const wantsBreak =
         first && (options.paragraph === true || this.afterTask);
@@ -1435,11 +1440,13 @@ export class SlackPlanStream {
           : this.text.endsWith('\n')
             ? '\n'
             : '\n\n';
-      const room =
+      const room = Math.min(
+        maxPiece,
         SLACK_STREAM_MESSAGE_CHAR_LIMIT -
-        FENCE_ROOM -
-        gap.length -
-        (this.ts ? this.chars : 0);
+          FENCE_ROOM -
+          gap.length -
+          (this.ts ? this.chars : 0),
+      );
       if (this.ts && room <= 0) {
         await this.rollover();
         continue;
@@ -1452,13 +1459,28 @@ export class SlackPlanStream {
       const sent = gap + piece;
       const chunk: SlackStreamChunk = { type: 'markdown_text', text: sent };
       if (!this.ts) {
-        if (!(await this.openWith([chunk]))) return;
+        try {
+          if (!(await this.openWith([chunk]))) return;
+        } catch (error) {
+          const code = slackErrorCode(error);
+          if ((code !== 'msg_too_long' && code !== 'msg_blocks_too_long') || piece.length <= 500) {
+            throw error;
+          }
+          maxPiece = Math.floor(piece.length / 2);
+          continue;
+        }
       } else {
         try {
           await this.append([chunk]);
           this.track([chunk]);
         } catch (error) {
-          if (slackErrorCode(error) !== 'message_not_in_streaming_state') {
+          const code = slackErrorCode(error);
+          // Rows count toward Slack's limit too, so a message can be full before its text is.
+          if (code === 'msg_too_long' || code === 'msg_blocks_too_long') {
+            await this.rollover();
+            continue;
+          }
+          if (code !== 'message_not_in_streaming_state') {
             throw error;
           }
           this.retire();

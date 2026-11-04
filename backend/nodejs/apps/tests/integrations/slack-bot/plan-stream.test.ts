@@ -636,6 +636,58 @@ describe('slack-bot/utils/plan-stream', () => {
       expect(calls(c, 'chat.appendStream').pop().chunks[0]).to.include({ title: 'Late step' });
     });
 
+    it('goes on in a new message when Slack finds the message too long for more answer text', async () => {
+      const { c, s, plan } = stream();
+      await s.tasks(plan.toolStarted('search', 'Searching', 'c1'));
+      await s.answer('Start.');
+      // Big Thinking rows count toward Slack's limit too, so it can refuse text the bot thought fit.
+      c.apiCall.withArgs('chat.appendStream').onCall(calls(c, 'chat.appendStream').length).rejects(
+        Object.assign(new Error('big'), { data: { error: 'msg_too_long' } }),
+      );
+
+      await s.answer('The rest.');
+
+      expect(calls(c, 'chat.stopStream')[0]).to.include({ ts: 's1' });
+      const [, second] = calls(c, 'chat.startStream');
+      expect(second.chunks.some((chunk: AnyArgs) => chunk.type === 'markdown_text' && String(chunk.text).includes('The rest.'))).to.equal(true);
+      expect(s.ts).to.equal('s2');
+      expect((console.error as sinon.SinonStub).getCalls().map((call) => String(call.args[0]))).to.not.include('Slack refused the steps even without their output');
+    });
+
+    it('sends a piece Slack refuses even in a fresh message as smaller pieces', async () => {
+      const { c, s } = stream();
+      await s.answer('Start.');
+      const tooLong = () => Object.assign(new Error('big'), { data: { error: 'msg_too_long' } });
+      c.apiCall.withArgs('chat.appendStream').onCall(calls(c, 'chat.appendStream').length).rejects(tooLong());
+      // The message it rolls over to refuses the whole piece once, then takes halves.
+      c.apiCall.withArgs('chat.startStream').onCall(1).rejects(tooLong());
+      const text = `${'word '.repeat(400)}`;
+
+      await s.answer(text);
+
+      const sent = [...calls(c, 'chat.startStream').slice(1), ...calls(c, 'chat.appendStream')]
+        .flatMap((call) => (call.chunks ?? []) as AnyArgs[])
+        .filter((chunk) => chunk.type === 'markdown_text')
+        .map((chunk) => String(chunk.text))
+        .join('');
+      expect(sent.endsWith(text)).to.equal(true);
+      expect(s.ts).to.not.equal(null);
+    });
+
+    it('moves rows Slack refuses even without their output to a new message, never dropping them', async () => {
+      const { c, s, plan } = stream();
+      await s.answer('Start.');
+      const tooLong = () => Object.assign(new Error('big'), { data: { error: 'msg_too_long' } });
+      const next = calls(c, 'chat.appendStream').length;
+      for (let i = 0; i < 3; i += 1) c.apiCall.withArgs('chat.appendStream').onCall(next + i).rejects(tooLong());
+
+      await s.tasks(plan.toolStarted('late', 'Late step', 'c9'));
+
+      const [, second] = calls(c, 'chat.startStream');
+      expect(second.chunks.some((chunk: AnyArgs) => chunk.type === 'task_update' && chunk.title === 'Late step')).to.equal(true);
+      expect(s.ts).to.equal('s2');
+    });
+
     it('goes on in a new message when the ten-minute stream has ended', async () => {
       const { c, s } = stream();
       await s.answer('Start.');
