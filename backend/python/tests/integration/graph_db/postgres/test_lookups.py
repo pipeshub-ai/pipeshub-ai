@@ -449,6 +449,16 @@ async def test_a_null_match_value_matches_nothing_in_remove_and_update(pg_db) ->
     assert await p.remove_nodes_by_field("records", "flag", field_value="x") == 1
 
 
+async def test_removing_a_category_node_by_field_takes_its_category_edges_with_it(pg_db) -> None:
+    p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    await p.batch_upsert_nodes([{"_key": "c", "orgId": p.org, "name": "c"}], "categories")
+    await p.batch_upsert_nodes([{"_key": "s", "orgId": p.org, "name": "s"}], "subcategories1")
+    await p.batch_create_edges([{"from_id": "s", "from_collection": "subcategories1", "to_id": "c", "to_collection": "categories"}], "interCategoryRelations")
+    assert len(await p.get_edges_from_node("subcategories1/s", "interCategoryRelations")) == 1
+    assert await p.remove_nodes_by_field("subcategories1", "name", field_value="s") == 1
+    assert await p.get_edges_from_node("subcategories1/s", "interCategoryRelations") == []
+
+
 async def test_a_status_page_of_limit_zero_is_empty_not_everything(pg_db) -> None:
     p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
     await p.batch_upsert_nodes([raw(p.org, "a", indexingStatus="QUEUED")], "records")
