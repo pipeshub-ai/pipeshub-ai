@@ -504,32 +504,56 @@ async def test_pg_two_indexing_workers_share_one_cluster_wide_cap(
     )  # four handlers could have run (2 workers x 2 slots): the cap held across both
 
 
+class _Rollback(Exception):
+    pass
+
+
+async def _claim_buffers(pg) -> int:
+    """Buffer pages the ordered claim touches (planner and executor counts, not a clock). EXPLAIN ANALYZE runs the claim, so
+    it runs in a transaction that is rolled back."""
+    from app.services.messaging.postgres import queue as qmod
+
+    statement = qmod._CLAIM_ORDERED.split("*/", 1)[1]
+    try:
+        async with (await pg.runtime.db()).runtime_uow(write=True) as tx:
+            raw = await tx.fetchval(
+                "/* pipeshub:test.explain */ EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)" + statement,
+                "g", [pg.topic], 7, 600.0, "c",
+            )
+            plan = json.loads(raw)[0]["Plan"]
+            raise_after = plan["Shared Hit Blocks"] + plan["Shared Read Blocks"]
+            raise _Rollback(raise_after)
+    except _Rollback as done:
+        return int(done.args[0])
+    return 0
+
+
 @pytest.mark.perf
 @pytest.mark.timeout(300)       # 100k rows published and a slow host: the claim itself is asserted, not the set-up
 async def test_pg_ordered_claim_costs_the_batch_not_the_backlog(pg) -> None:
-    """100k queued messages with distinct keys (an initial sync): a claim of a few records takes milliseconds, not minutes."""
-    import statistics
-    import time
+    """100k queued messages with distinct keys (an initial sync): a claim of a few records reads pages for the batch, not the backlog.
 
+    Counted in buffer pages at 10k and at 100k queued messages, not timed: a claim that walked the backlog reads about ten times
+    as many pages at 100k (it was 3.7 s at 1k messages and minutes at 100k), a claim of the batch reads about the same."""
     await pg.queue.ensure_group(pg.topic, "g", from_start=False)
-    for start in range(0, 100_000, 5000):
-        await pg.queue.publish(
-            pg.topic, [(f"rec{start + i}", "{}") for i in range(5000)]
-        )
-    async with (await pg.runtime.db()).runtime_uow(write=True) as tx:
-        await tx.execute(
-            "/* pipeshub:test.analyze */ ANALYZE platform.queue_deliveries"
-        )
-    times, held = [], []
+
+    async def publish(first: int, last: int) -> None:
+        for start in range(first, last, 5000):
+            await pg.queue.publish(pg.topic, [(f"rec{start + i}", "{}") for i in range(5000)])
+        async with (await pg.runtime.db()).runtime_uow(write=True) as tx:
+            await tx.execute("/* pipeshub:test.analyze */ ANALYZE platform.queue_deliveries")
+
+    await publish(0, 10_000)
+    small = await _claim_buffers(pg)
+    await publish(10_000, 100_000)
+    large = await _claim_buffers(pg)
+    assert large <= 3 * small + 50, (small, large)  # ten times the backlog; a scan would be about ten times the pages
+
+    held = []
     for _ in range(15):
-        t0 = time.perf_counter()
         got = await pg.queue.claim("g", [pg.topic], "c", 7, 600.0, ordered=True)
-        times.append(1000 * (time.perf_counter() - t0))
         assert len(got) == 7
         held += got
-    assert statistics.median(times) < 50, (
-        times
-    )  # was 3.7 s at 1k messages and minutes at 100k
     assert len({d.key for d in held}) == len(held)  # and each record once
     await pg.queue.drop_group(pg.topic, "g")
     await pg.queue.sweep()
@@ -608,6 +632,34 @@ async def test_pg_the_sweep_clears_a_burst_in_one_call_and_counts_a_dead_letter_
     assert age is not None and age < 5  # stamped when it died, not when it was queued
 
 
+def _indexes_scanned_for(plan: list[str], relation: str) -> list[str]:
+    """The indexes the plan reads for `relation` (e.g. " on d e "), or [] when it reads none (a sequential scan).
+
+    A bitmap heap scan names no index on its own line; its indexes are the bitmap index scans beneath it."""
+    found: list[str] = []
+    for i, line in enumerate(plan):
+        if relation not in line + " ":
+            continue
+        if "Index Scan using " in line or "Index Only Scan using " in line:
+            found.append(line.split(" using ", 1)[1].split()[0])
+        elif "Bitmap Heap Scan" in line:
+            depth = len(line) - len(line.lstrip())
+            for child in plan[i + 1:]:
+                if child.strip() and len(child) - len(child.lstrip()) <= depth:
+                    break
+                if "Bitmap Index Scan on " in child:
+                    found.append(child.split("Bitmap Index Scan on ", 1)[1].split()[0])
+        else:
+            return []
+    return found
+
+
+def _pages_read(plan: list[str]) -> int:
+    """Shared buffers the whole statement touched (hit + read), from the root node's Buffers line."""
+    line = next(line for line in plan if line.strip().startswith("Buffers:"))
+    return sum(int(part.split("=")[1]) for part in line.split() if part.startswith(("hit=", "read=")))
+
+
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("analysed", [False, True], ids=["cold", "analysed"])
 async def test_pg_ordered_claim_probes_the_key_index_on_a_cold_table(analysed) -> None:
@@ -635,15 +687,14 @@ async def test_pg_ordered_claim_probes_the_key_index_on_a_cold_table(analysed) -
         tx = con.transaction()
         await tx.start()
         try:
-            plan = [r[0] for r in await con.fetch("EXPLAIN (ANALYZE, COSTS OFF) " + sql, "go", ["t"], 7, 60.0, "x")]
+            plan = [r[0] for r in await con.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) " + sql, "go", ["t"], 7, 60.0, "x")]
         finally:
             await tx.rollback()
         text = "\n".join(plan)
-        probes = [line for line in plan if "Index" in line and " on d e" in line]
+        probes = _indexes_scanned_for(plan, " on d e ")
         assert probes, text
-        assert all("msg_key" in line for line in probes), text         # the key index, not d_pkey or the open index
-        ms = float(next(line for line in plan if "Execution Time" in line).split(":")[1].split()[0])
-        assert ms < 25, text                                            # milliseconds; ~1 ms when it holds, 75+ on a backlog walk
+        assert all("msg_key" in name for name in probes), text         # the key index, not d_pkey or the open index
+        assert _pages_read(plan) < 1000, text                          # about 200 when it holds; a backlog walk reads the table per candidate
     finally:
         await con.execute("DROP SCHEMA IF EXISTS plan_test CASCADE")
         await con.close()

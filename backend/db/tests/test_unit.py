@@ -383,7 +383,7 @@ def test_pooler_is_refused(monkeypatch):
 
 def test_schema_requirements_from_the_tree():
     from db import schema_requirements
-    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 15, "code": 15}}
+    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 16, "code": 16}}
     with pytest.raises(SystemExit):
         schema_requirements.requirements(["nope"])
 
@@ -462,6 +462,13 @@ def test_no_shipped_table_uses_the_lineage_class():
     assert found == [], f"these revisions register the lineage class: {found}"
 
 
+def test_the_catalog_check_runs_with_jit_off():
+    # with JIT built in (the Debian/pgdg packages) the big catalog views compile for 10-30 s and save nothing
+    import inspect
+    src = inspect.getsource(migrate._report)
+    assert src.index('SET jit = off') < src.index('FROM kernel.rls_violations') < src.index('RESET jit')
+
+
 def _files_on_disk(tests_dir: Path) -> list[str]:
     """Every test file under the tests directory, at any depth, as the workflow names it (tests/sub/test_x.py)."""
     return sorted(f"tests/{p.relative_to(tests_dir).as_posix()}" for p in tests_dir.rglob("test_*.py"))
@@ -485,3 +492,22 @@ def test_every_test_file_is_in_exactly_one_shard_of_the_db_migrations_workflow()
     named = [f for shard in matrix["include"] for f in shard["files"].split()]
     assert sorted(named) == _files_on_disk(Path(__file__).parent), named
     assert sorted(s["shard"] for s in matrix["include"]) == sorted(matrix["shard"])
+
+
+@pytest.mark.parametrize("typ", ["smallint[]", "boolean[]", "text[]"])
+def test_item_enum_values_are_quoted_literals_for_every_array_type(typ):
+    # an unquoted 0 on a boolean[] is "boolean = integer", which PostgreSQL has no operator for
+    from db.lib import vetted
+
+    fn = vetted.parse({"name": "kt.w_x", "class": "read", "scope": "org", "returns": "int", "no_org": "0", "body": "BEGIN RETURN 1; END;",
+                       "args": [{"name": "p_a", "type": typ, "max_items": 10, "item_enum": [0, 1]}]})
+    assert "NOT IN ('0', '1')" in vetted.render(fn)
+
+
+@pytest.mark.parametrize("key", ["enum", "item_enum"])
+def test_an_empty_enum_is_refused_rather_than_dropping_its_check(key):
+    from db.lib import vetted
+
+    arg = {"name": "p_a", "type": "text[]", "max_items": 10, key: []}
+    with pytest.raises(vetted.ManifestError, match="non-empty list"):
+        vetted.parse({"name": "kt.w_x", "class": "read", "scope": "org", "returns": "int", "no_org": "0", "body": "BEGIN RETURN 1; END;", "args": [arg]})

@@ -459,6 +459,17 @@ async def test_removing_a_category_node_by_field_takes_its_category_edges_with_i
     assert await p.get_edges_from_node("subcategories1/s", "interCategoryRelations") == []
 
 
+async def test_removing_records_by_field_takes_their_type_documents_and_blocks(pg_db) -> None:
+    p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    await p.batch_upsert_nodes([raw(p.org, "gone", flag="x"), raw(p.org, "kept")], "records")
+    await p.batch_upsert_nodes([{"_key": "gone", "orgId": p.org}], "files")
+    await p.batch_upsert_nodes([{"_key": "blk", "orgId": p.org, "recordId": "gone"}, {"_key": "blk2", "orgId": p.org, "recordId": "kept"}], "blocks")
+    await p.batch_create_edges([{"from_id": "gone", "from_collection": "records", "to_id": "gone", "to_collection": "files"}], "isOfType")
+    assert await p.remove_nodes_by_field("records", "flag", field_value="x") == 1
+    assert await p.get_document("gone", "files") is None and await p.get_document("blk", "blocks") is None
+    assert await p.get_document("blk2", "blocks") is not None and await p.get_existing_record_keys(["gone", "kept"]) == {"kept"}
+
+
 async def test_a_status_page_of_limit_zero_is_empty_not_everything(pg_db) -> None:
     p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
     await p.batch_upsert_nodes([raw(p.org, "a", indexingStatus="QUEUED")], "records")
