@@ -1536,6 +1536,7 @@ async def load_entity_vector_store(
 
 
 _semantic_cache_warned: bool = False
+SEMANTIC_CACHE_LOAD_TIMEOUT_SECONDS: float = 1.0
 
 
 async def load_semantic_cache_service(container: Any, logger_: Any) -> Any | None:  # noqa: ANN401
@@ -1831,7 +1832,14 @@ async def _stream_chat_via_agent_loop(
         user_info["sendUserInfo"] = False
 
     entity_vector_store = await entity_vector_store_task
-    semantic_cache = await semantic_cache_task
+    try:
+        semantic_cache = await asyncio.wait_for(
+            semantic_cache_task,
+            timeout=SEMANTIC_CACHE_LOAD_TIMEOUT_SECONDS,
+        )
+    except (TimeoutError, asyncio.TimeoutError):
+        logger_.warning("Timed out waiting for semantic_cache_task; continuing without cache")
+        semantic_cache = None
 
     client_name = request.headers.get("client-name")
 

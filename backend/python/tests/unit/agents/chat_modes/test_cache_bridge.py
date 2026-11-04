@@ -454,8 +454,20 @@ class TestEvaluateCacheability:
             base_config_params,
             user_context_enabled=True,
         )
-        assert is_cacheable is True
-        assert reason is None
+        assert is_cacheable is False
+        assert reason == "user_context_enabled"
+
+        # Prompts without user context remain cacheable
+        is_cacheable_no_uc, reason_no_uc = evaluate_cacheability(
+            per_user_config,
+            "what is the mobile device policy?",
+            {"chatMode": "internal_search"},
+            base_prefetch,
+            base_config_params,
+            user_context_enabled=False,
+        )
+        assert is_cacheable_no_uc is True
+        assert reason_no_uc is None
 
 
 class TestConfigHashResolution:
@@ -2311,6 +2323,30 @@ class TestFailOpenRobustness:
 
         assert any("event: complete" in e for e in events)
         assert any(b.get("reason") == "service_unavailable" for b in recorded_bypasses)
+
+    @pytest.mark.asyncio
+    async def test_semantic_cache_task_timeout_fallback(self) -> None:
+        """semantic_cache_task timeout fails open to None without delaying chat."""
+        import contextlib
+
+        from app.api.routes.chatbot import SEMANTIC_CACHE_LOAD_TIMEOUT_SECONDS
+
+        assert SEMANTIC_CACHE_LOAD_TIMEOUT_SECONDS > 0
+
+        async def _hanging_loader() -> None:
+            await asyncio.sleep(5.0)
+
+        task = asyncio.create_task(_hanging_loader())
+        try:
+            semantic_cache = await asyncio.wait_for(task, timeout=0.01)
+        except (TimeoutError, asyncio.TimeoutError):
+            semantic_cache = None
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        assert semantic_cache is None
 
     @pytest.mark.asyncio
     async def test_background_store_task_tracking_and_exception_counting(self) -> None:

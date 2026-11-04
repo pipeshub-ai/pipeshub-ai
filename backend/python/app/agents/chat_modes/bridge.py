@@ -89,6 +89,7 @@ from app.agents.chat_modes.prefetch import (
     search_incomplete_constraint,
 )
 from app.core.org_context import spawn_in_request
+from app.modules.agents.context.user_context import _format_user_context
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
@@ -657,13 +658,18 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                             if prefetch_result
                             else None
                         )
+                        has_user_context = bool(
+                            context.send_user_info
+                            and isinstance(getattr(context, "tool_state", None), dict)
+                            and _format_user_context(context.tool_state)
+                        )
                         is_cacheable, bypass_reason = evaluate_cacheability(
                             cache_config,
                             query_info.get("query", ""),
                             cache_query_info,
                             prefetch_result,
                             config_params,
-                            user_context_enabled=context.send_user_info,
+                            user_context_enabled=has_user_context,
                         )
                         if not is_cacheable:
                             record_event(

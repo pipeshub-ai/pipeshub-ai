@@ -204,16 +204,16 @@ def normalize_for_key(q: str) -> str:
     """Normalize query for cache keys and exact matching.
 
     Performs Unicode NFKC, lowercase, quote straightening, sentence-level punctuation
-    removal (preserving numbers, decimals, currency, and %, which remain distinct),
-    and whitespace collapsing.
+    removal (preserving numbers, decimals, currency, %, and comparison operators < and >,
+    which remain distinct), and whitespace collapsing.
     """
     if not q:
         return ""
     q = unicodedata.normalize("NFKC", q)
     q = q.lower()
     q = q.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
-    # Strip sentence-level punctuation except characters inside numbers/identifiers
-    q = re.sub(r'[\?!\'\";:\(\)\[\]\{\}\<\>]', "", q)
+    # Strip sentence-level punctuation except characters inside numbers/identifiers/comparisons
+    q = re.sub(r'[\?!\'\";:\(\)\[\]\{\}]', "", q)
     q = re.sub(r"(?<!\d)\.(?!\d)|(?<!\d),(?!\d)", " ", q)
     q = re.sub(r"\.(?=\s|$)", "", q)
     return re.sub(r"\s+", " ", q).strip()

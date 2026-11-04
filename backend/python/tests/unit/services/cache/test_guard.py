@@ -151,6 +151,16 @@ def test_normalize_for_key_numbers_and_units() -> None:
     assert normalize_for_key("5%") != normalize_for_key("5")
 
 
+def test_normalize_for_key_comparison_operators() -> None:
+    """Comparison operators < and > are preserved; queries differing only by operator produce distinct keys."""
+    assert normalize_for_key("revenue < $50M") == "revenue < $50m"
+    assert normalize_for_key("revenue > $50M") == "revenue > $50m"
+    assert normalize_for_key("revenue < $50M") != normalize_for_key("revenue > $50M")
+    assert normalize_for_key("count <= 10") != normalize_for_key("count >= 10")
+    # Punctuation like question marks stripped but < and > kept
+    assert normalize_for_key("is latency < 50ms?") == "is latency < 50ms"
+
+
 # ============================================================================
 # 4. Table-Driven Test Matrix: Section 6 Pairs + Hardened Hole Cases + Additional
 # ============================================================================

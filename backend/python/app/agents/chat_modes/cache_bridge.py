@@ -221,9 +221,10 @@ def evaluate_cacheability(
     if prefetch_result.record_fingerprints is None:
         return False, "fingerprints_none"
 
+    if user_context_enabled:
+        return False, "user_context_shared" if config.share_across_org else "user_context_enabled"
+
     if config.share_across_org:
-        if user_context_enabled:
-            return False, "user_context_shared"
         for record in prefetch_result.tool_records:
             conn = record.get("connector") or record.get("connector_name") or ""
             if conn in GMAIL_CONNECTORS or conn in (
