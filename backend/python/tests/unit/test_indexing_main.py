@@ -4209,6 +4209,32 @@ class TestAFailedOrganisationListingIsNotAnEmptyInstall:
         assert any("could not be listed" in str(c.args[0]) for c in container.logger.return_value.warning.call_args_list)
 
 
+class TestOneOrganisationsStaleScanFailingDoesNotStopTheOthers:
+    @pytest.mark.asyncio
+    async def test_the_scan_of_the_next_organisation_and_the_later_passes_still_run(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        graph = _graph_with_orgs("org-a", "org-b")
+        scanned: list[str] = []
+
+        async def read(collection: str, *, filters: dict | None = None, **_: object) -> list[dict]:
+            org = (filters or {}).get("orgId")
+            if filters and filters.get("indexingStatus") == "IN_PROGRESS":
+                scanned.append(org)
+                if org == "org-a":
+                    raise RuntimeError("a graph read failed")
+            return []
+
+        graph.get_documents_paginated = AsyncMock(side_effect=read)
+        queued = AsyncMock(return_value=0)
+        with patch("app.indexing_main._sweep_queued_records_for_inactive_connectors", queued), _stranded_env():
+            await recover_in_progress_records(container, graph)
+
+        assert scanned == ["org-a", "org-b"]
+        assert [c.kwargs["org_id"] for c in queued.await_args_list] == ["org-a", "org-b"]
+
+
 class TestMappingsThatNameNoOrganisation:
     @staticmethod
     def _graph(pages: list[list[dict]], *, in_use: set[str] | None = None) -> AsyncMock:

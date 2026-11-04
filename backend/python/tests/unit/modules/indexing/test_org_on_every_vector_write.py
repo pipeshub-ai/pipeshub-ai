@@ -299,7 +299,7 @@ async def test_the_orphan_sweep_binds_each_mappings_org_and_skips_one_without() 
 
     pipeline = MagicMock()
     pipeline.rewrite_or_delete_vector_membership = _cleanup
-    await sweep_orphaned_virtual_record_mappings(graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=10)
+    await sweep_orphaned_virtual_record_mappings(graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=10, org_id=A)
     assert seen == [("v-a", A)]
 
 
@@ -398,7 +398,7 @@ async def test_the_orphan_sweep_cleans_a_row_with_no_org_org_by_org_then_drops_t
     from app.indexing_main import _sweep_orphaned_virtual_record_mappings as sweep
 
     pipeline = _pipeline(db)
-    swept = await sweep(graph_provider=_sweep_graph([{"_key": VRID}]), pipeline=pipeline, logger=MagicMock(), page_size=10)
+    swept = await sweep(graph_provider=_sweep_graph([{"_key": VRID}]), pipeline=pipeline, logger=MagicMock(), page_size=10, org_id=A)
 
     assert _ids(db) == set()                       # A's and B's points both went, each under its own org
     assert pipeline._forget_virtual_record_mappings.await_count == 1  # and the row only after the last org's
@@ -409,7 +409,7 @@ async def test_the_orphan_sweep_drops_a_row_with_no_org_and_no_points(db) -> Non
     from app.indexing_main import _sweep_orphaned_virtual_record_mappings as sweep
 
     pipeline = _pipeline(db)
-    await sweep(graph_provider=_sweep_graph([{"_key": "vr-nothing-left"}]), pipeline=pipeline, logger=MagicMock(), page_size=10)
+    await sweep(graph_provider=_sweep_graph([{"_key": "vr-nothing-left"}]), pipeline=pipeline, logger=MagicMock(), page_size=10, org_id=A)
 
     pipeline._forget_virtual_record_mappings.assert_awaited_once_with(["vr-nothing-left"])
     assert len(_ids(db)) == 4

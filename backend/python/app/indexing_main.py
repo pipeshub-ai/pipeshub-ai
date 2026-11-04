@@ -595,62 +595,68 @@ async def recover_in_progress_records(
             logger.warning("Recovery pass skipped: the organisations could not be listed: %s: %s", type(e).__name__, e)
             org_ids = []
         for org_id in org_ids:
-            with for_org(org_id, job="stale_recovery"):
-                for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
-                    offset = 0
-                    while True:
-                        if (
-                            recovery_renewal_task is not None
-                            and recovery_renewal_task.done()
-                        ):
-                            recovery_renewal_task.result()
+            try:
+                with for_org(org_id, job="stale_recovery"):
+                    for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
+                        offset = 0
+                        while True:
+                            if (
+                                recovery_renewal_task is not None
+                                and recovery_renewal_task.done()
+                            ):
+                                recovery_renewal_task.result()
 
-                        page = await graph_provider.get_documents_paginated(
-                            CollectionNames.RECORDS.value,
-                            skip=offset,
-                            limit=page_size,
-                            filters={
-                                status_field: ProgressStatus.IN_PROGRESS.value,
-                                "orgId": org_id,
-                            },
-                            sort_field="_key",
-                            raise_on_error=True,
-                        )
-                        if not page:
-                            break
-
-                        resume_enrichment = status_field == "extractionStatus"
-                        candidates = [
-                            record
-                            for record in page
-                            if is_stale(record)
-                            and not (
-                                status_field == "parsingStatus"
-                                and record.get("indexingStatus")
-                                == ProgressStatus.IN_PROGRESS.value
+                            page = await graph_provider.get_documents_paginated(
+                                CollectionNames.RECORDS.value,
+                                skip=offset,
+                                limit=page_size,
+                                filters={
+                                    status_field: ProgressStatus.IN_PROGRESS.value,
+                                    "orgId": org_id,
+                                },
+                                sort_field="_key",
+                                raise_on_error=True,
                             )
-                            and (not resume_enrichment or _enrichment_cut_short(record))
-                        ]
+                            if not page:
+                                break
 
-                        outcomes = await asyncio.gather(
-                            *(
-                                process_single_record(record, resume_enrichment=resume_enrichment)
-                                for record in candidates
+                            resume_enrichment = status_field == "extractionStatus"
+                            candidates = [
+                                record
+                                for record in page
+                                if is_stale(record)
+                                and not (
+                                    status_field == "parsingStatus"
+                                    and record.get("indexingStatus")
+                                    == ProgressStatus.IN_PROGRESS.value
+                                )
+                                and (not resume_enrichment or _enrichment_cut_short(record))
+                            ]
+
+                            outcomes = await asyncio.gather(
+                                *(
+                                    process_single_record(record, resume_enrichment=resume_enrichment)
+                                    for record in candidates
+                                )
                             )
-                        )
-                        total_records += sum(outcome is not None for outcome in outcomes)
-                        removed_from_result = sum(outcome is True for outcome in outcomes)
+                            total_records += sum(outcome is not None for outcome in outcomes)
+                            removed_from_result = sum(outcome is True for outcome in outcomes)
 
-                        if len(page) < page_size:
-                            break
-                        # Successful recovery removes rows from this filtered result,
-                        # so only advance over rows that remain in front of the cursor.
-                        # Caveat: this only accounts for rows this page removed — a
-                        # concurrent status change on a row from an *earlier* page
-                        # (outside our control) can still shift the offset by one and
-                        # skip or repeat a row; harmless since the loop reruns on the
-                        # next stale_recovery_interval_seconds tick.
-                        offset += len(page) - removed_from_result
+                            if len(page) < page_size:
+                                break
+                            # Successful recovery removes rows from this filtered result,
+                            # so only advance over rows that remain in front of the cursor.
+                            # Caveat: this only accounts for rows this page removed — a
+                            # concurrent status change on a row from an *earlier* page
+                            # (outside our control) can still shift the offset by one and
+                            # skip or repeat a row; harmless since the loop reruns on the
+                            # next stale_recovery_interval_seconds tick.
+                            offset += len(page) - removed_from_result
+            except Exception as exc:
+                # A lost lease ends the pass; any other failure is this organisation's, and the later ones are still scanned.
+                if recovery_renewal_task is not None and recovery_renewal_task.done():
+                    raise
+                _org_pass_failed(logger, "stale_recovery", org_id, exc)
 
         # QUEUED records on a disabled connector are unreachable by the scan
         # above: it filters on IN_PROGRESS, and a QUEUED row has no
