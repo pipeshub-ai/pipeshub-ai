@@ -118,3 +118,14 @@ async def test_with_an_org_bound_the_check_goes_on() -> None:
 
     with org_context.for_org("org-1", job="test"):
         await check_collection_info(svc, MagicMock(), 512, MagicMock())
+
+
+@pytest.mark.parametrize("failing", ["org_holds_points", "org_space_accepts"])
+async def test_a_database_error_reading_the_org_space_fails_closed(failing: str) -> None:
+    """A transient read error must not let a change the space does not accept through (it would fail later with SpaceMismatch)."""
+    from app.api.routes.health import CollectionSurveyError
+
+    svc = _service(holds_points=True)
+    setattr(svc.vector_db_service, failing, AsyncMock(side_effect=ConnectionError("db down")))
+    with pytest.raises(CollectionSurveyError):
+        await handle_model_change(svc, "m1", "m2", 768, 40, 512, MagicMock())

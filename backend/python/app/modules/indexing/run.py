@@ -28,6 +28,9 @@ from app.services.vector_db.membership import (
     write_membership_batch_locked,
 )
 from app.services.vector_db.membership import (
+    _other_orgs_hold_points,
+)
+from app.services.vector_db.membership import (
     orgs_holding_points as _orgs_holding_points,
 )
 from app.services.vector_db.membership import (
@@ -1081,6 +1084,16 @@ class IndexingPipeline:
         """
         if not virtual_record_ids:
             return []
+        if org_id:
+            # One mapping row serves every org that holds the VRID (legacy shared VRIDs): while another org still has points on it,
+            # the row and the stored content stay. They are that org's only handle on them.
+            collections = await self.collection_locator.all_collections(fresh=True, strict=True)
+            virtual_record_ids = [
+                v for v in virtual_record_ids
+                if not await _other_orgs_hold_points(self.vector_db_service, collections, v, org_id)
+            ]
+            if not virtual_record_ids:
+                return []
         if self.stored_content is not None:
             failed = await self.stored_content.release_virtual_records(
                 virtual_record_ids, org_id=org_id or None

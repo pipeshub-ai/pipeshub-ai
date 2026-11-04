@@ -913,14 +913,18 @@ async def handle_model_change(
         # The org's embedding space is tied to the model that first wrote to it. While the org holds no point at all (a model picked
         # after the default one pinned an empty space) the change is allowed: the indexing service replaces the space on the first
         # write that carries the new model, and the database refuses if a point exists by then. This is a read only.
-        if not await retrieval_service.vector_db_service.org_holds_points():
-            logger.info("The org's vector space holds no point: the embedding change is allowed")
-            return
-        # Going (back) to the model and dimension the space already takes changes nothing: an admin can always return to it.
+        # identity of the model the space already takes: an admin can always go back to it
         identity = f"{new_identity}:{embedding_size}" if new_identity else None
         current = f"{current_identity}:{existing_vector_size}" if current_identity else None
-        if await retrieval_service.vector_db_service.org_space_accepts(identity, embedding_size, current):
-            logger.info("The embedding model fits the org's vector space: allowed")
+        try:
+            holds_points = await retrieval_service.vector_db_service.org_holds_points()
+            accepts = not holds_points or await retrieval_service.vector_db_service.org_space_accepts(
+                identity, embedding_size, current
+            )
+        except Exception as e:  # a read that failed proves nothing: refuse (503) rather than let an unaccepted change through
+            raise CollectionSurveyError(f"could not read the organisation's vector space: {type(e).__name__}") from e
+        if accepts:
+            logger.info("The org's vector space accepts the embedding change: allowed")
             return
         logger.error(
             "Rejected embedding change: the org's vector space is pinned to the previous model and there is no space flip yet."

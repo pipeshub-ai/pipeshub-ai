@@ -378,6 +378,23 @@ async def test_bulk_delete_of_a_shared_vrid_removes_only_the_deleting_orgs_point
     assert _ids(db) == set()
 
 
+async def test_a_shared_vrids_mapping_and_stored_content_stay_while_another_org_holds_points(db) -> None:
+    """Releasing the mapping on the strength of one org's points alone would strand the other org's points."""
+    pipeline = _pipeline(db)
+    del pipeline._forget_virtual_record_mappings  # the real one
+    pipeline.stored_content = MagicMock()
+    pipeline.stored_content.release_virtual_records = AsyncMock(return_value=[])
+    assert await pipeline._forget_virtual_record_mappings([VRID], org_id=A) == []
+    pipeline.stored_content.release_virtual_records.assert_not_awaited()
+    pipeline.graph_provider = _shared_graph({"rb": B})
+    await pipeline.bulk_delete_embeddings([VRID], A)  # A's points go; B's stay
+    assert await pipeline._forget_virtual_record_mappings([VRID], org_id=A) == []
+    pipeline.stored_content.release_virtual_records.assert_not_awaited()
+    pipeline.graph_provider = _shared_graph({})
+    await pipeline.bulk_delete_embeddings([VRID], B)  # the last org's delete releases it
+    pipeline.stored_content.release_virtual_records.assert_awaited_once()
+
+
 async def test_bulk_delete_with_an_org_other_than_the_bound_one_raises(db) -> None:
     from app.exceptions.indexing_exceptions import EmbeddingDeletionError
 
