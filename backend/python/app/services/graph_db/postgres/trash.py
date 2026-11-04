@@ -128,9 +128,10 @@ class TrashMixin(PgBase):
                     h.doc->>'externalRecordId', 'externalRecordId', $4::text || h.id) FROM jsonb_to_recordset($2::jsonb) c(id text, ext text)
                     WHERE h.org_id = $1 AND h.coll = 'records' AND h.doc->>'externalRecordId' = c.ext AND h.doc->>'connectorId' = $3
                       AND coalesce((h.doc->>'isDeleted')::boolean, false) AND NOT h.id = ANY($5::text[])""", org, _j(reclaims), connector_id, TRASHED_EXTERNAL_ID_PREFIX, ids)
-            rows = await tx.fetch("""/* pipeshub:graph.restore_records */ UPDATE graph.nodes n SET doc = jsonb_strip_nulls(((n.doc - $3::text[]) ||
-                  jsonb_build_object('isDeleted', false, 'updatedAtTimestamp', $4::bigint)) || x.set)
-                FROM jsonb_to_recordset($2::jsonb) x(id text, set jsonb) WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = x.id RETURNING n.id""",
+            rows = await tx.fetch("""/* pipeshub:graph.restore_records */ UPDATE graph.nodes n SET doc = ((n.doc - $3::text[] - z.cleared) ||
+                  jsonb_build_object('isDeleted', false, 'updatedAtTimestamp', $4::bigint)) || (x.set - z.cleared)
+                FROM jsonb_to_recordset($2::jsonb) x(id text, set jsonb),
+                  LATERAL (SELECT coalesce(array_agg(k.key), '{}'::text[]) AS cleared FROM jsonb_each(x.set) k WHERE k.value = 'null'::jsonb) z WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = x.id RETURNING n.id""",
                                   org, _j(items), list(TRASH_STATE_FIELDS), get_epoch_timestamp_in_ms())
             return [r["id"] for r in rows]
         return await self._q(go, transaction, write=True)

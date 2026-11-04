@@ -95,6 +95,16 @@ async def test_records_in_a_batch_are_read_with_their_parent_and_a_restore_is_al
     assert got["isDeleted"] is False and got["note"] == "back" and "deleteBatchId" not in got and "deletedAtTimestamp" not in got
 
 
+async def test_a_restore_keeps_the_null_fields_it_was_not_told_about_and_clears_the_ones_it_is(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "n", extra={"w": {"x": None, "y": 1}}, gone="old")], "records")
+    await trash(p, ["n"])
+    assert await p.restore_records([{"id": "n", "set": {"gone": None, "note": "back"}}], "bt1") == ["n"]
+    got = await p.get_document("n", "records")
+    assert got["extra"] == {"w": {"x": None, "y": 1}}     # what the caller did not name is as it was, a nested null too
+    assert "gone" not in got and got["note"] == "back" and got["isDeleted"] is False                              # a null in ``set`` clears the field
+
+
 async def test_a_restore_refuses_while_the_parent_is_in_the_trash_and_when_the_external_id_was_taken(pg_db) -> None:
     p = bound(pg_db)
     await tree(p)
