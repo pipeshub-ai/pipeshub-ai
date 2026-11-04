@@ -1545,9 +1545,13 @@ async function prepareAndProcess(
       return;
     }
     const fetched = await fetchThreadContext(typedClient, typedMessage);
+    // Messages after this turn belong to the next one; as context here they would be answered twice.
+    const newestTs = Math.max(...batch.map((m) => Number(m.ts)));
     const thread = {
       ...fetched,
-      messages: withoutBatchMessages(fetched.messages, new Set(batch.map((m) => m.ts))),
+      messages: withoutBatchMessages(fetched.messages, new Set(batch.map((m) => m.ts))).filter(
+        (m) => !(Number(m.ts) > newestTs),
+      ),
     };
     const contextualQuery = await buildQueryWithThreadContext(
       typedClient,
