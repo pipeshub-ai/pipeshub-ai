@@ -172,7 +172,7 @@ async def _by_text(
     path, paths, records, scan_capped = await _scoped_files(
         graph_provider, org_id, connector_id, path, repo, access)
     if not records:
-        return {"error": await _missing_path_message(graph_provider, org_id, asked, access),
+        return {"error": await _missing_path_message(graph_provider, org_id, connector_id, asked, repo, access),
                 **({"truncated": True} if scan_capped else {})}
     hidden = 0
     if not include_tests and records:
@@ -261,29 +261,36 @@ async def _scoped_files(
     for candidate in candidates:
         paths, capped = await files_by_pattern(graph_provider, org_id, candidate, scan_limit=_TEXT_SCAN_LIMIT)
         any_capped = any_capped or capped
-        readable = await access.readable(paths)
-        rows = await graph_provider.get_nodes_by_field_in(
-            collection=_RECORDS, field_name="_key", field_values=sorted(readable),
-            return_fields=["_key", "orgId", "connectorId", "recordGroupId", "virtualRecordId",
-                           "updatedAtTimestamp", "indexingStatus"],
-            raise_on_error=True,
-        ) if readable else []
-        records = {
-            (r.get("_key") or r.get("id")): r for r in map(_unwrap, rows or [])
-            if r.get("orgId") == org_id and r.get("connectorId") == connector_id
-        }
-        if repo:
-            names = await repo_names(graph_provider, org_id, (r.get("recordGroupId") for r in records.values()))
-            records = {k: r for k, r in records.items()
-                       if _repo_matches(repo, r.get("recordGroupId"), names)}
+        records = await _in_repo(graph_provider, org_id, connector_id, repo, await access.readable(paths))
         if records:
             return candidate, paths, records, capped
     # A capped scan that matched nothing may have stopped short of the files asked for.
     return path, {}, {}, any_capped
 
 
+async def _in_repo(
+    graph_provider: IGraphDBProvider, org_id: str, connector_id: str, repo: str | None, ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Of the record ids ``ids``, those in this connector (and ``repo``), with their records."""
+    rows = await graph_provider.get_nodes_by_field_in(
+        collection=_RECORDS, field_name="_key", field_values=sorted(ids),
+        return_fields=["_key", "orgId", "connectorId", "recordGroupId", "virtualRecordId",
+                       "updatedAtTimestamp", "indexingStatus"],
+        raise_on_error=True,
+    ) if ids else []
+    records = {
+        (r.get("_key") or r.get("id")): r for r in map(_unwrap, rows or [])
+        if r.get("orgId") == org_id and r.get("connectorId") == connector_id
+    }
+    if repo:
+        names = await repo_names(graph_provider, org_id, (r.get("recordGroupId") for r in records.values()))
+        records = {k: r for k, r in records.items() if _repo_matches(repo, r.get("recordGroupId"), names)}
+    return records
+
+
 async def _missing_path_message(
-    graph_provider: IGraphDBProvider, org_id: str, path: str, access: RecordAccess,
+    graph_provider: IGraphDBProvider, org_id: str, connector_id: str, path: str, repo: str | None,
+    access: RecordAccess,
 ) -> str:
     """Say that ``path`` selects no file, and what the nearest existing directory holds.
 
@@ -294,7 +301,8 @@ async def _missing_path_message(
     for i in range(len(parts) - 1, -1, -1):
         base = "/".join(parts[:i])
         found, _ = await files_by_pattern(graph_provider, org_id, base)
-        readable = await access.readable(found)
+        # Scoped like the search: another repo's names may lie outside a connected app's limit.
+        readable = await _in_repo(graph_provider, org_id, connector_id, repo, await access.readable(found))
         if readable:
             prefix = f"{base}/" if base else ""
             subs = sorted({found[k][len(prefix):].split("/", 1)[0] for k in readable})
