@@ -75,8 +75,10 @@ import {
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { generateAuthToken } from '../utils/generateAuthToken';
-import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import {
+  domainFromEmail,
+  recordEvent,
+} from '../../../libs/services/telemetry/telemetry-impl';
 import {
   ConfigurationManagerService,
   GOOGLE_AUTH_CONFIG_PATH,

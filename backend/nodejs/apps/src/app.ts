@@ -23,9 +23,12 @@ import {
   runWithRequestContext,
   newSystemRoot,
 } from './libs/context/request-context';
-import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
+import {
+  metricsMiddleware,
+  startOrgMetricsRefresh,
+  startTelemetry,
+} from './libs/services/telemetry/telemetry-runtime';
 import { configureEnvelopeFromSecret } from './libs/context/envelope';
-import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { TtlSweeper } from './libs/services/ttl-sweeper.service';
 import { docStore } from './libs/repositories/store-select';
@@ -37,11 +40,10 @@ import { accessLogLevel } from './libs/utils/api-path.utils';
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
-import { startTelemetry } from './libs/services/telemetry/telemetry.service';
 import {
-  isTelemetryEnabled,
   TELEMETRY_COLLECTION_FLAG,
-} from './libs/services/telemetry/flag';
+  isTelemetryEnabled,
+} from './libs/services/telemetry/telemetry-impl';
 import { KeyValueStoreService } from './libs/services/keyValueStore.service';
 // Import shared symbols from `./config` rather than `./modules/*` directly.
 import {

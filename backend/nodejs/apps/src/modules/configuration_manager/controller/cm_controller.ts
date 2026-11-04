@@ -32,9 +32,11 @@ import {
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
-import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/modules/collection-metrics';
-import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
-import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
+import {
+  normalizeOrgId,
+  setMetricCollectionEnabled,
+} from '../../../libs/services/telemetry/telemetry-impl';
+import { TelemetryService } from '../../../libs/services/telemetry/telemetry-runtime';
 import { loadConfigurationManagerConfig } from '../config/config';
 import {
   GENERATION_KEY,

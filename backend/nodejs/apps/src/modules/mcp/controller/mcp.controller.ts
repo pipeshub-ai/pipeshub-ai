@@ -11,12 +11,12 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger, getLogLevel } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import {
   clientTags,
   domainFromEmail,
-} from '../../../libs/services/telemetry/identity';
-import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
+  recordEvent,
+  recordServiceActivity,
+} from '../../../libs/services/telemetry/telemetry-impl';
 import {
   PAT_APP_CLIENT_ID_PREFIX,
   SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
