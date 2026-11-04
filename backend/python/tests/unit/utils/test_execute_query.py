@@ -1484,6 +1484,14 @@ class TestZeroRowNote:
         ("SELECT a, b FROM t WHERE c = 'x'", [(0, 0), (0, 0)], False),
         ("SELECT name FROM t WHERE name = 'a\\'b'", [], False),
         ("SELECT COUNT(*) FROM t WHERE c = 'x'", [(False,)], False),
+        ("SELECT name FROM t WHERE country NOT LIKE 'America'", [], False),
+        ("SELECT name FROM t WHERE country NOT ILIKE 'America'", [], False),
+        ("SELECT name FROM t WHERE country NOT LIKE 'A%' AND city = 'Paris'", [], True),
+        ("SELECT name FROM t WHERE id = 42 /* country = 'America' */", [], False),
+        ("SELECT name FROM t WHERE id = 42 -- country = 'America'", [], False),
+        ("SELECT name FROM t WHERE id = '42'", [], False),
+        ("SELECT CASE WHEN kind = 'a' THEN 1 END FROM t WHERE id = 7", [], False),
+        ("SELECT COUNT(*) FROM a JOIN b ON b.kind = 'gold'", [(0,)], True),
     ])
     def test_only_an_empty_result_on_a_text_literal_gets_the_note(self, query: str, rows: list, expected: bool) -> None:
         from app.utils.execute_query import _zero_row_note

@@ -564,6 +564,8 @@ _TEXT_LITERAL_FILTER = re.compile(
     rf"((?<![\w\"`]){_IDENTIFIER_PART}(?:\.{_IDENTIFIER_PART})*)\s*(?:=|\bI?LIKE\b)\s*'((?:[^']|'')+)'",
     re.IGNORECASE,
 )
+_PREDICATE_START = re.compile(r"\b(?:WHERE|HAVING|ON)\b", re.IGNORECASE)
+_NUMBER = re.compile(r"\s*[-+]?\d+(?:\.\d+)?\s*")
 
 
 def _empty_result(rows: list[Any]) -> bool:
@@ -581,15 +583,21 @@ def _empty_result(rows: list[Any]) -> bool:
 
 def _zero_row_note(query: str, source_type: str, rows: list[Any]) -> str | None:
     """A note when an empty result filtered on a text literal; ``None`` otherwise."""
-    # Backslash escapes and dollar quoting change where a literal ends per dialect.
-    if not _empty_result(rows) or "\\" in query or "$" in query:
+    # Escapes, dollar quoting and comments make a regex misread where literals and
+    # filters are; the note is optional, so skip those queries.
+    if not _empty_result(rows) or any(mark in query for mark in ("\\", "$", "--", "/*")):
         return None
     if source_type == "postgres":  # only the last statement runs there
         query = query.rstrip().rstrip(";").rsplit(";", 1)[-1]
-    match = _TEXT_LITERAL_FILTER.search(query)
-    if not match:
+    predicates = _PREDICATE_START.search(query)
+    if not predicates:
         return None
-    column, literal = match.group(1), match.group(2).replace("''", "'").strip("%")
+    for match in _TEXT_LITERAL_FILTER.finditer(query, predicates.start()):
+        column, literal = match.group(1), match.group(2).replace("''", "'").strip("%")
+        if column.upper() != "NOT" and not _NUMBER.fullmatch(literal):
+            break
+    else:
+        return None
     # LOWER on both sides, in the database, is case-insensitive in every dialect and collation.
     pattern = literal[:20].replace("'", "''")
     return (
