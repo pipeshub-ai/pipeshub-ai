@@ -502,3 +502,12 @@ def test_item_enum_values_are_quoted_literals_for_every_array_type(typ):
     fn = vetted.parse({"name": "kt.w_x", "class": "read", "scope": "org", "returns": "int", "no_org": "0", "body": "BEGIN RETURN 1; END;",
                        "args": [{"name": "p_a", "type": typ, "max_items": 10, "item_enum": [0, 1]}]})
     assert "NOT IN ('0', '1')" in vetted.render(fn)
+
+
+@pytest.mark.parametrize("key", ["enum", "item_enum"])
+def test_an_empty_enum_is_refused_rather_than_dropping_its_check(key):
+    from db.lib import vetted
+
+    arg = {"name": "p_a", "type": "text[]", "max_items": 10, key: []}
+    with pytest.raises(vetted.ManifestError, match="non-empty list"):
+        vetted.parse({"name": "kt.w_x", "class": "read", "scope": "org", "returns": "int", "no_org": "0", "body": "BEGIN RETURN 1; END;", "args": [arg]})

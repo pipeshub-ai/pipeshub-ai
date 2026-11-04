@@ -436,8 +436,8 @@ def parse(entry: dict, source: str = "") -> Fn:
         if bad or not isinstance(a.get("type"), str) or not _TYPE.match(a["type"]):
             raise ManifestError(f"{where}: bad argument {a}")
         enum = a.get("enum")
-        if enum is not None and not (isinstance(enum, list) and all(isinstance(v, str) and "\x00" not in v for v in enum)):
-            raise ManifestError(f"{where}: enum must be a list of strings")
+        if enum is not None and not (isinstance(enum, list) and enum and all(isinstance(v, str) and "\x00" not in v for v in enum)):
+            raise ManifestError(f"{where}: enum must be a non-empty list of strings")
         pattern = a.get("pattern")
         if pattern is not None and not (isinstance(pattern, str) and "\x00" not in pattern):
             raise ManifestError(f"{where}: pattern must be a string")
@@ -448,8 +448,8 @@ def parse(entry: dict, source: str = "") -> Fn:
         if not isinstance(nullable, bool):
             raise ManifestError(f"{where}: nullable must be true or false")
         item_enum = a.get("item_enum")
-        if item_enum is not None and not (isinstance(item_enum, list) and all(isinstance(v, (str, int)) and not isinstance(v, bool) and "\x00" not in str(v) for v in item_enum)):
-            raise ManifestError(f"{where}: item_enum must be a list of strings or numbers")
+        if item_enum is not None and not (isinstance(item_enum, list) and item_enum and all(isinstance(v, (str, int)) and not isinstance(v, bool) and "\x00" not in str(v) for v in item_enum)):
+            raise ManifestError(f"{where}: item_enum must be a non-empty list of strings or numbers")
         if (a.get("item_not_null") is not None and not isinstance(a["item_not_null"], bool)) or \
                 ((a.get("item_not_null") or a.get("item_length") or a.get("item_range") or item_enum) and not a["type"].endswith("[]")):
             raise ManifestError(f"{where}: the item_* keys belong to an array argument (item_not_null is true or false)")

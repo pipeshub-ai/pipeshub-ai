@@ -305,7 +305,11 @@ SELECT '108 unnested array ' || a.arg || ' is not an array argument capped by IF
   WHERE NOT (a.arg = ANY (f.proargnames))
      OR NOT EXISTS (SELECT 1 FROM unnest(f.argtypes) WITH ORDINALITY t(typ, ord) JOIN pg_type ty ON ty.oid = t.typ WHERE t.ord = array_position(f.proargnames, a.arg) AND ty.typcategory = 'A')
      OR NOT EXISTS (SELECT 1 FROM regexp_matches(f.src, '(\mif cardinality\(' || a.arg || '\) > ([0-9]{1,4}) then raise exception\M)', 'gi') m
-                    WHERE m[2]::int <= a.max_items AND strpos(lower(f.src), lower(m[1])) < COALESCE(
+                    WHERE m[2]::int <= a.max_items
+                      -- a guard that always runs: every IF opened before it is closed again, and no loop, CASE, exception handler or early RETURN, EXIT or CONTINUE stands before it
+                      AND (SELECT count(*) FROM regexp_matches(left(lower(f.src), strpos(lower(f.src), lower(m[1])) - 1), '(?<!end )\mif\M', 'g')) = (SELECT count(*) FROM regexp_matches(left(lower(f.src), strpos(lower(f.src), lower(m[1])) - 1), '\mend if\M', 'g'))
+                      AND left(lower(f.src), strpos(lower(f.src), lower(m[1])) - 1) !~ '\m(?:loop|case|while|foreach|exception when|return|exit|continue)\M'
+                      AND strpos(lower(f.src), lower(m[1])) < COALESCE(
                       least(NULLIF(strpos(lower(f.src), 'insert into'), 0), NULLIF(strpos(lower(f.src), 'delete from'), 0), NULLIF(strpos(lower(f.src), 'update '), 0)), 2147483647))
 UNION ALL
 SELECT '109 scalar key ' || sa || ' of a delete is not a scalar argument of the function', d.name FROM dels2 d, LATERAL unnest(d.scalar_args) sa, fn f
