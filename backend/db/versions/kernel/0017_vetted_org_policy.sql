@@ -8,13 +8,13 @@ ALTER TABLE kernel.rls_registry ADD CONSTRAINT rls_registry_vetted_org_policy_sh
   CHECK (NOT vetted_org_policy OR (class = 'org' AND vetted_write AND NOT vetted_read)) NOT VALID;
 ALTER TABLE kernel.rls_registry VALIDATE CONSTRAINT rls_registry_vetted_org_policy_shape;
 
--- ONE relation (no recursion): the vetted role's policy is the org predicate. Used by require_vetted_org_policy and by _secure_rel.
-CREATE FUNCTION kernel._vetted_org_policy(p_part regclass) RETURNS void
+-- ONE relation (no recursion): the vetted role's policy is the org predicate; the role is that of the schema of the root p_root. Used by require_vetted_org_policy and by _secure_rel.
+CREATE FUNCTION kernel._vetted_org_policy(p_part regclass, p_root regclass) RETURNS void
 LANGUAGE plpgsql SET search_path = pg_catalog, kernel, pg_temp AS $fn$
 DECLARE s kernel.settings; v name;
 BEGIN
   SELECT * INTO s FROM kernel.settings;
-  SELECT s.vetted_prefix || n.nspname INTO v FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = p_part;
+  SELECT s.vetted_prefix || n.nspname INTO v FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = p_root;   -- the root's schema, as check 119 and apply_rls read it
   EXECUTE format('DROP POLICY IF EXISTS vetted_write ON %s', p_part);
   EXECUTE format($p$CREATE POLICY vetted_write ON %s TO %I
     USING (org_id = NULLIF(current_setting('app.org_id', true), ''))
@@ -55,7 +55,7 @@ BEGIN
   DELETE FROM kernel.vetted_open_ops WHERE rel = p_rel;
   FOREACH o IN ARRAY p_open_ops LOOP INSERT INTO kernel.vetted_open_ops VALUES (p_rel, o); END LOOP;
   FOR part IN SELECT p_rel UNION SELECT relid FROM pg_partition_tree(p_rel) LOOP
-    PERFORM kernel._vetted_org_policy(part);
+    PERFORM kernel._vetted_org_policy(part, p_rel);
     n := n + 1;
   END LOOP;
   PERFORM kernel._sync_vetted_privs(p_rel);
@@ -148,7 +148,7 @@ BEGIN
   EXECUTE format('DROP POLICY IF EXISTS vetted_write ON %s', p_part);
   IF p_vetted_write THEN
     IF EXISTS (SELECT 1 FROM kernel.rls_registry WHERE rel = p_root AND vetted_org_policy) THEN
-      PERFORM kernel._vetted_org_policy(p_part);
+      PERFORM kernel._vetted_org_policy(p_part, p_root);
     ELSE
       EXECUTE format('CREATE POLICY vetted_write ON %s TO %I USING (true) WITH CHECK (true)', p_part, v_vetted);
     END IF;
@@ -184,7 +184,7 @@ BEGIN
     END IF;
   END IF;
 END $$;
-REVOKE ALL ON FUNCTION kernel._vetted_org_policy(regclass), kernel._sync_vetted_privs(regclass), kernel.require_vetted_org_policy(regclass, text[]) FROM PUBLIC;
+REVOKE ALL ON FUNCTION kernel._vetted_org_policy(regclass, regclass), kernel._sync_vetted_privs(regclass), kernel.require_vetted_org_policy(regclass, text[]) FROM PUBLIC;
 REVOKE ALL ON FUNCTION kernel.allow_vetted_write_op(regprocedure, regclass, text, name[], name[], name, int) FROM PUBLIC;
 
 -- The checks. Zero rows = pass.
