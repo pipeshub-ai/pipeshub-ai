@@ -127,7 +127,8 @@ describe('OAuthAuthorizeView not-granted scopes', () => {
 
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
-    expect(await screen.findByText('kb:read')).toBeTruthy();
+    // The granted scope's category header, collapsed.
+    expect(await screen.findByText('Knowledge Base')).toBeTruthy();
     expect(screen.queryByText(NOT_GRANTED_HEADING)).toBeNull();
     expect(screen.queryByText(OFFLINE_ACCESS_WARNING)).toBeNull();
   });
@@ -161,9 +162,14 @@ describe('OAuthAuthorizeView scope choice', () => {
     { name: 'kb:write', description: 'Write knowledge bases', category: 'Knowledge Base' },
     { name: 'team:read', description: 'Read teams', category: 'Teams' },
   ];
-  // The checkbox in the label that holds this text: a scope name, or a category name.
+  // The checkbox in the label that holds this scope name.
   const box = (text: string) =>
     screen.getByText(text).closest('label')!.querySelector('[role="checkbox"]')!;
+  const header = (category: string) => screen.getByRole('button', { name: new RegExp(`^${category}`) });
+  const expand = async (...categories: string[]) => {
+    await screen.findByRole('button', { name: /^Identity/ });
+    for (const c of categories) fireEvent.click(header(c));
+  };
   const state = (text: string) => box(text).getAttribute('aria-checked');
   const allow = () => screen.getByRole('button', { name: en.oauthConsent.allow }) as HTMLButtonElement;
 
@@ -177,32 +183,49 @@ describe('OAuthAuthorizeView scope choice', () => {
     cleanup();
   });
 
-  it('groups scopes by category in the OAuth app form order, with only the defaults ticked', async () => {
+  it('groups scopes by category in the OAuth app form order, collapsed, with only the defaults ticked', async () => {
     get.mockResolvedValue(consentResponse([], false, scopes));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
-    await screen.findByText('kb:write');
+    await expand();
     const groups = ['Identity', 'Knowledge Base', 'Teams'];
     const text = document.body.textContent ?? '';
     expect(groups.map((g) => text.indexOf(g))).toEqual(
       [...groups].map((g) => text.indexOf(g)).sort((a, b) => a - b),
     );
+    // Collapsed: the headers show the counts, the scopes stay hidden, and a header has no checkbox.
+    expect(groups.map((g) => header(g).getAttribute('aria-expanded'))).toEqual(['false', 'false', 'false']);
+    expect(screen.queryByText('kb:write')).toBeNull();
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
+    expect(screen.getByText('1/2')).toBeTruthy();
+
+    groups.forEach((g) => fireEvent.click(header(g)));
     expect(['offline_access', 'kb:read', 'kb:write', 'team:read'].map(state)).toEqual([
       'true',
       'true',
       'false',
       'false',
     ]);
-    expect(state('Knowledge Base')).toBe('mixed');
-    expect(screen.getByText('1/2')).toBeTruthy();
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(4);
   });
 
-  it('ticks a whole category from its checkbox and posts what the person chose', async () => {
+  it('keeps the choices made in a category after it is collapsed again', async () => {
     get.mockResolvedValue(consentResponse([], false, scopes));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
-    await screen.findByText('kb:write');
-    fireEvent.click(box('Knowledge Base'));
+    await expand('Knowledge Base');
+    fireEvent.click(box('kb:write'));
+    fireEvent.click(header('Knowledge Base'));
+    expect(screen.queryByText('kb:write')).toBeNull();
+    expect(screen.getByText('2/2')).toBeTruthy();
+  });
+
+  it('ticks scopes one by one and posts what the person chose', async () => {
+    get.mockResolvedValue(consentResponse([], false, scopes));
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    await expand('Identity', 'Knowledge Base');
+    fireEvent.click(box('kb:write'));
     expect(state('kb:write')).toBe('true');
     fireEvent.click(box('offline_access'));
     fireEvent.click(allow());
@@ -215,7 +238,8 @@ describe('OAuthAuthorizeView scope choice', () => {
     get.mockResolvedValue(consentResponse([], false, [scopes[3]]));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
-    await screen.findByText('team:read');
+    await screen.findByRole('button', { name: /^Teams/ });
+    fireEvent.click(header('Teams'));
     expect(state('team:read')).toBe('true');
     expect(allow().disabled).toBe(false);
   });
@@ -228,11 +252,11 @@ describe('OAuthAuthorizeView scope choice', () => {
     get.mockResolvedValue(consentResponse([], false, withOpenid));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
-    await screen.findByText('kb:write');
+    await expand('Identity');
     expect(state('openid')).toBe('true');
     fireEvent.click(box('openid'));
-    fireEvent.click(box('Identity'));
     expect(state('openid')).toBe('true');
+    fireEvent.click(box('offline_access'));
     fireEvent.click(allow());
 
     await waitFor(() => expect(post).toHaveBeenCalled());
@@ -243,7 +267,7 @@ describe('OAuthAuthorizeView scope choice', () => {
     get.mockResolvedValue(consentResponse([], false, scopes));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
-    await screen.findByText('kb:write');
+    await expand('Identity', 'Knowledge Base');
     fireEvent.click(box('offline_access'));
     fireEvent.click(box('kb:read'));
     expect(allow().disabled).toBe(true);

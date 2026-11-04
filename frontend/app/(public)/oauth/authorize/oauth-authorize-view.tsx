@@ -5,13 +5,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import axios, { AxiosError, isAxiosError } from 'axios';
 import { Box, Button, Checkbox, Flex, Separator, Text } from '@radix-ui/themes';
-import type { CheckedState } from '@radix-ui/react-checkbox';
 import { useTranslation } from 'react-i18next';
 
 import { apiClient } from '@/lib/api';
 import { extractApiErrorMessage, isProcessedError, processError } from '@/lib/api/api-error';
 import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useAuthStore, switchToSignedInWorkspace } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -190,6 +190,8 @@ export function OAuthAuthorizeView() {
   const [codeChallenge, setCodeChallenge] = useState('');
   const [codeChallengeMethod, setCodeChallengeMethod] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  // Categories start collapsed; the count on each header shows what is ticked inside.
+  const [openCategories, setOpenCategories] = useState<ReadonlySet<string>>(new Set());
   // Starts as the default scopes once the consent data loads; the person ticks more if they want.
   const [ticked, setTicked] = useState<Set<string>>(() => new Set());
   const triedWorkspaceSwitchRef = useRef(false);
@@ -678,14 +680,16 @@ export function OAuthAuthorizeView() {
               gap: 'var(--space-2)',
             }}
           >
-            {scopeGroups.map(([category, items]) => {
+            {scopeGroups.map(([category, items], index) => {
               const tickedInGroup = items.filter((i) => ticked.has(i.name)).length;
-              const groupChecked: CheckedState =
-                tickedInGroup === items.length
-                  ? true
-                  : tickedInGroup === 0
-                    ? false
-                    : 'indeterminate';
+              const open = openCategories.has(category);
+              const bodyId = `oauth-consent-scopes-${index}`;
+              const toggleOpen = () =>
+                setOpenCategories((prev) => {
+                  const next = new Set(prev);
+                  if (!next.delete(category)) next.add(category);
+                  return next;
+                });
               return (
                 <Box
                   key={category}
@@ -696,51 +700,75 @@ export function OAuthAuthorizeView() {
                     background: 'var(--gray-2)',
                   }}
                 >
-                  <Flex align="center" justify="between" gap="3">
-                    <Text as="label" size="2" weight="medium" style={{ cursor: 'pointer' }}>
-                      <Flex align="center" gap="2">
-                        <Checkbox
-                          checked={groupChecked}
-                          onCheckedChange={(c) => toggleScopes(items, c === true)}
-                          disabled={submitting}
-                        />
-                        {category}
-                      </Flex>
+                  <button
+                    type="button"
+                    aria-expanded={open}
+                    aria-controls={bodyId}
+                    onClick={toggleOpen}
+                    style={{
+                      appearance: 'none',
+                      margin: 0,
+                      padding: 0,
+                      font: 'inherit',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 'var(--space-2)',
+                      width: '100%',
+                      minHeight: 32,
+                      border: 'none',
+                      background: 'transparent',
+                      color: 'var(--gray-12)',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <span aria-hidden style={{ display: 'inline-flex' }}>
+                      <MaterialIcon
+                        name="chevron_right"
+                        size={18}
+                        color="var(--gray-11)"
+                        style={{ transform: open ? 'rotate(90deg)' : undefined, transition: 'transform 150ms ease' }}
+                      />
+                    </span>
+                    <Text size="2" weight="medium" style={{ flex: 1, minWidth: 0 }}>
+                      {category}
                     </Text>
                     <Text size="2" color="gray">
                       {tickedInGroup}/{items.length}
                     </Text>
-                  </Flex>
-                  <Flex direction="column" gap="2" mt="3">
-                    {items.map((scopeItem) => (
-                      <Text as="label" key={scopeItem.name} style={{ cursor: 'pointer' }}>
-                        <Flex
-                          align="start"
-                          gap="2"
-                          p="2"
-                          style={{
-                            borderRadius: 'var(--radius-2)',
-                            border: '1px solid var(--gray-5)',
-                          }}
-                        >
-                          <Checkbox
-                            mt="1"
-                            checked={ticked.has(scopeItem.name)}
-                            onCheckedChange={(c) => toggleScopes([scopeItem], c === true)}
-                            disabled={submitting || REQUIRED_SCOPES.has(scopeItem.name)}
-                          />
-                          <Flex direction="column" gap="1" style={{ minWidth: 0, flex: 1 }}>
-                            <Text as="div" size="2" weight="medium">
-                              {scopeItem.name}
-                            </Text>
-                            <Text as="div" size="2" color="gray">
-                              {scopeItem.description}
-                            </Text>
+                  </button>
+                  {open ? (
+                    <Flex id={bodyId} direction="column" gap="2" mt="3">
+                      {items.map((scopeItem) => (
+                        <Text as="label" key={scopeItem.name} style={{ cursor: 'pointer' }}>
+                          <Flex
+                            align="start"
+                            gap="2"
+                            p="2"
+                            style={{
+                              borderRadius: 'var(--radius-2)',
+                              border: '1px solid var(--gray-5)',
+                            }}
+                          >
+                            <Checkbox
+                              mt="1"
+                              checked={ticked.has(scopeItem.name)}
+                              onCheckedChange={(c) => toggleScopes([scopeItem], c === true)}
+                              disabled={submitting || REQUIRED_SCOPES.has(scopeItem.name)}
+                            />
+                            <Flex direction="column" gap="1" style={{ minWidth: 0, flex: 1 }}>
+                              <Text as="div" size="2" weight="medium">
+                                {scopeItem.name}
+                              </Text>
+                              <Text as="div" size="2" color="gray">
+                                {scopeItem.description}
+                              </Text>
+                            </Flex>
                           </Flex>
-                        </Flex>
-                      </Text>
-                    ))}
-                  </Flex>
+                        </Text>
+                      ))}
+                    </Flex>
+                  ) : null}
                 </Box>
               );
             })}
