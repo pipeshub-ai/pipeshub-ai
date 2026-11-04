@@ -4185,6 +4185,30 @@ class TestOnePassFailingForAnOrganisationDoesNotStopTheOthers:
         assert seen == ["org-a", "org-b"]
 
 
+class TestAFailedOrganisationListingIsNotAnEmptyInstall:
+    @pytest.mark.asyncio
+    async def test_the_listing_asks_the_store_to_raise(self) -> None:
+        from app.indexing_main import _all_org_ids
+
+        graph = _graph_with_orgs("org-a")
+        assert await _all_org_ids(graph) == ["org-a"]
+        assert all(c.kwargs.get("raise_on_error") is True for c in graph.get_all_orgs.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_pass_whose_listing_fails_says_so_and_does_not_raise(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        graph = _graph_with_orgs("org-a")
+        graph.get_all_orgs = AsyncMock(side_effect=RuntimeError("graph unavailable"))
+        graph.get_documents_paginated = AsyncMock(return_value=[])
+        sweep = AsyncMock(return_value=0)
+        container = _make_container()
+        with patch("app.indexing_main._sweep_queued_records_for_inactive_connectors", sweep), _stranded_env():
+            await recover_in_progress_records(container, graph)
+        sweep.assert_not_awaited()
+        assert any("could not be listed" in str(c.args[0]) for c in container.logger.return_value.warning.call_args_list)
+
+
 class TestMappingsThatNameNoOrganisation:
     @staticmethod
     def _graph(pages: list[list[dict]], *, in_use: set[str] | None = None) -> AsyncMock:
@@ -4192,6 +4216,19 @@ class TestMappingsThatNameNoOrganisation:
         graph.get_documents_paginated = AsyncMock(side_effect=pages)
         graph.get_virtual_record_ids_in_use = AsyncMock(return_value=in_use or set())
         return graph
+
+    @pytest.mark.asyncio
+    async def test_a_mapping_that_cannot_be_marked_does_not_stop_the_others_or_say_it_was_marked(self) -> None:
+        import app.indexing_main as m
+
+        m._unscoped_mapping_cursor = 0
+        graph = self._graph([[{"_key": "bad"}, {"_key": "good"}]])
+        graph.update_node = AsyncMock(side_effect=[RuntimeError("write failed"), True])
+        logger = MagicMock()
+        await m._mark_mappings_without_org(graph_provider=graph, logger=logger, page_size=10)
+        assert [c.args[0] for c in graph.update_node.await_args_list] == ["bad", "good"]
+        said = [c.args[1] for c in logger.warning.call_args_list if "cannot clean" in c.args[0]]
+        assert said == ["good"]
 
     @pytest.mark.asyncio
     async def test_an_unreferenced_one_is_marked_once_and_the_scoped_and_marked_ones_are_left(self) -> None:

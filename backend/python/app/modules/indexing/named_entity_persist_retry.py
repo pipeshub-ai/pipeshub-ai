@@ -72,13 +72,15 @@ async def retry_pending_named_entity_persists(
         if not org_id:
             # Nothing can run for it, and left pending it would take a place in every page: drop the retry (the entities are written
             # again when the record is next indexed, as when the retries are given up) and count it.
-            logger.warning("named_entity_persist_retry: record %s has no organisation; its retry is dropped", record_id)
-            record_recovery_org_pass("named_entity_persist_retry", "no_org_row")
             with system("named_entity_persist_retry"):
                 try:
-                    await graph_provider.clear_named_entity_persist_retry(record_id, due)
+                    cleared = await graph_provider.clear_named_entity_persist_retry(record_id, due)
                 except Exception:
+                    cleared = False
                     logger.warning("named_entity_persist_retry: could not drop the retry of %s", record_id, exc_info=True)
+            if cleared:      # counted once it is gone: a retry that stays due would otherwise be counted on every pass
+                logger.warning("named_entity_persist_retry: record %s has no organisation; its retry was dropped", record_id)
+                record_recovery_org_pass("named_entity_persist_retry", "no_org_row")
             continue
         with for_org(str(org_id), job="named_entity_persist_retry"):
             attempts = int(row.get("attempts") or 0)

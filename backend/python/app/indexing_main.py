@@ -588,7 +588,12 @@ async def recover_in_progress_records(
         # keeps a store that scans globally from returning the same records for every org.
         # Every organisation, active or not, internal or external: the scan this replaces was global, so a stuck record
         # in any of them is still recovered.
-        org_ids = await _all_org_ids(graph_provider)
+        try:
+            org_ids = await _all_org_ids(graph_provider)
+        except Exception as e:
+            # Said once, and the organisation-scoped passes wait for the next one: a failed read is not an install with no organisations.
+            logger.warning("Recovery pass skipped: the organisations could not be listed: %s: %s", type(e).__name__, e)
+            org_ids = []
         for org_id in org_ids:
             with for_org(org_id, job="stale_recovery"):
                 for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
@@ -818,7 +823,7 @@ async def _all_org_ids(graph_provider: IGraphDBProvider) -> list[str]:
     with system("recovery_orgs"):
         for active in (True, False):
             for is_external in (False, True):
-                for o in await graph_provider.get_all_orgs(active=active, is_external=is_external) or []:
+                for o in await graph_provider.get_all_orgs(active=active, is_external=is_external, raise_on_error=True) or []:
                     if o.get("_key") or o.get("id"):
                         found.add(str(o.get("_key") or o.get("id")))
     return sorted(found)
@@ -1247,8 +1252,12 @@ async def _mark_mappings_without_org(*, graph_provider: IGraphDBProvider, logger
                 for vrid in bare:
                     if vrid in in_use:
                         continue
+                    try:
+                        await graph_provider.update_node(vrid, mapping, {"orgNotResolved": True})
+                    except Exception as exc:      # the rest of the page is still marked; this one is tried again next pass
+                        logger.warning("Could not mark the mapping of virtual record %s that names no org: %s: %s", vrid, type(exc).__name__, exc)
+                        continue
                     logger.warning("Orphan sweep cannot clean virtual record %s: its mapping names no org", vrid)
-                    await graph_provider.update_node(vrid, mapping, {"orgNotResolved": True})
                 if len(page) < page_size:
                     offset = 0
                     break
