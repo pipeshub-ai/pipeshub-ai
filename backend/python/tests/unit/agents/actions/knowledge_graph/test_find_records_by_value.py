@@ -285,7 +285,7 @@ async def test_paging_across_small_batches_lists_every_readable_record_once(
     assert seen == sorted(readable)
 
 
-async def test_a_page_stops_at_the_scan_budget_and_hands_back_a_cursor(
+async def test_a_page_stops_at_the_scan_budget_past_its_first_readable_record(
     env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(values, "_CHECK_BATCH", 10)
@@ -294,11 +294,10 @@ async def test_a_page_stops_at_the_scan_budget_and_hands_back_a_cursor(
 
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"])
 
-    assert ok and _listed(body) == [] and "more remain unchecked" in body
-    assert _cursor(body) == "9981:r019" and graph.filter_accessible_record_ids.await_count == 2
-    ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], cursor="9981:r019")
+    assert ok and _listed(body) == ["r050"] and "More records may match: " in body
+    assert _cursor(body) == "9931:r069" and graph.filter_accessible_record_ids.await_count == 7
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], cursor=_cursor(body))
-    assert _listed(body) == ["r050"]
+    assert (ok, body) == (True, values.NO_FURTHER_RECORDS_MSG)
 
 
 async def test_a_failed_values_lookup_still_lists_the_records(env: AsyncMock) -> None:
@@ -516,10 +515,14 @@ async def test_an_ambiguous_name_lists_who_it_may_be_and_lists_no_records(
     graph.get_records_for_named_entities.assert_not_called()
 
 
-async def test_a_lookup_cut_short_is_not_reported_as_no_such_entity(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_lookup_cut_short_with_no_readable_entity_reads_as_no_such_entity(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _linker(monkeypatch, "not_found", timed_out=True)
-    ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(1))), name="Pinecrest", amount_min=1)
-    assert (ok, body) == (False, values.NAME_TOO_SLOW_MSG)
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(_state(graph), name="Pinecrest", amount_min=1)
+    assert not ok and "no readable entity by this name" in body
+    graph.get_records_for_named_entities.assert_not_called()
 
 
 async def test_a_name_and_entity_ids_are_a_union(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:

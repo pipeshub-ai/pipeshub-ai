@@ -2,23 +2,9 @@
 
 import pytest
 
-from app.services.vector_db.filters import build_filter_expression, is_valid_filter_value
+from app.services.vector_db.filters import build_filter_expression
 from app.services.vector_db.models import FieldCondition, FilterMode
 from app.services.vector_db.qdrant.utils import QdrantUtils
-
-
-class TestIsValidFilterValue:
-    def test_none_is_invalid(self):
-        assert is_valid_filter_value(None) is False
-
-    def test_blank_string_is_invalid(self):
-        assert is_valid_filter_value("   ") is False
-
-    def test_empty_list_is_invalid(self):
-        assert is_valid_filter_value([]) is False
-
-    def test_scalar_is_valid(self):
-        assert is_valid_filter_value("org-1") is True
 
 
 class TestBuildFilterExpression:
