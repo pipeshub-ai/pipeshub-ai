@@ -16,24 +16,19 @@ import httpx
 from app.agents.mcp.errors import MCPUrlBlockedError
 from app.agents.mcp.models import OAuthTokens, TokenEndpointAuthMethod, utcnow
 from app.agents.mcp.url_guard import GuardedTransport
+from app.utils.oauth_errors import (
+    PERMANENT_GRANT_ERROR_CODES,
+    is_permanent_grant_rejection,
+    oauth_error_code,
+)
 
 logger = logging.getLogger(__name__)
 
 TOKEN_REQUEST_TIMEOUT_SECONDS = 15.0
 
-# RFC 6749 §5.2 errors a retry can't fix: the grant or the client registration is no longer
-# valid, so the user has to sign in again. GitHub's own codes arrive with HTTP 200.
-_PERMANENT_ERROR_CODES = frozenset({
-    "invalid_grant", "invalid_client", "unauthorized_client", "unsupported_grant_type",
-    "invalid_scope", "invalid_request", "bad_refresh_token", "incorrect_client_credentials",
-})
-_PERMANENT_REFRESH_ERROR_MARKERS = (
-    "invalid_grant",
-    "invalid_refresh_token",
-    "refresh token is invalid",
-    "refresh token has expired",
-    "bad_refresh_token",
-)
+# MCP also counts a refused request shape as permanent. Connectors don't: one regression in
+# our own request would then deauthenticate every org-wide connector at once.
+_PERMANENT_ERROR_CODES = PERMANENT_GRANT_ERROR_CODES | {"invalid_request", "invalid_scope", "unsupported_grant_type"}
 _MAX_ERROR_TEXT_CHARS = 500
 
 
@@ -55,20 +50,8 @@ class MCPRefreshTokenInvalidError(MCPOAuthError):
     """The provider permanently rejected the refresh token — re-authentication is required."""
 
 
-def _is_permanent_refresh_rejection(error_text: str, error_code: Optional[str] = None) -> bool:
-    if error_code and error_code.lower() in _PERMANENT_ERROR_CODES:
-        return True
-    lowered = error_text.lower()
-    return any(marker in lowered for marker in _PERMANENT_REFRESH_ERROR_MARKERS)
-
-
-def _error_code(body: Any) -> Optional[str]:  # noqa: ANN401
-    code = body.get("error") if isinstance(body, dict) else None
-    return code if isinstance(code, str) and code else None
-
-
 def _error_text(status_code: int, body: Any, text: str) -> str:  # noqa: ANN401
-    code = _error_code(body)
+    code = oauth_error_code(body)
     if code:
         description = body.get("error_description")
         return f"{code}: {description}" if isinstance(description, str) and description else code
@@ -141,10 +124,10 @@ async def _post_token_request(
 
         body = _parse_token_response(content_type, text, json_body) if text or json_body is not None else {}
         # Some providers (GitHub) report an error with HTTP 200, so the body decides too.
-        error_code = _error_code(body)
+        error_code = oauth_error_code(body)
         if resp.status_code >= 400 or error_code:
             detail = _error_text(resp.status_code, body, text)
-            if _is_permanent_refresh_rejection(text, error_code):
+            if is_permanent_grant_rejection(text, error_code, _PERMANENT_ERROR_CODES, status=resp.status_code):
                 raise MCPRefreshTokenInvalidError(
                     f"OAuth token request rejected ({resp.status_code}): {detail}", error_code=error_code,
                 )

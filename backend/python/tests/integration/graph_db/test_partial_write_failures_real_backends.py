@@ -110,6 +110,7 @@ from app.connectors.core.base.data_store import (
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.core.org_context import OrgContext, bind
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -1612,13 +1613,17 @@ async def test_a_failed_team_create_leaves_no_team(world: _World) -> None:
         hold = _neo4j_hold(w, "MATCH (u:User {id: $id}) SET u.heldByTest = true RETURN count(u) AS n", {"id": member})
     else:
         hold = _arango_unique(w, CollectionNames.PERMISSION.value, ["_to"])
+    # The auth middleware binds the caller's org; this calls the route directly.
+    caller_org = OrgContext(w.org_id, creator, "user", "jwt", "req-test")
     async with hold:
-        assert await _route_failure(lambda: create_team(_route_request(w, creator, body))) == 500
+        with bind(caller_org):
+            assert await _route_failure(lambda: create_team(_route_request(w, creator, body))) == 500
 
     teams = await w.graph.get_nodes_by_filters(CollectionNames.TEAMS.value, {"orgId": w.org_id}, raise_on_error=True)
     assert teams == []
 
-    response = await create_team(_route_request(w, creator, body))
+    with bind(caller_org):
+        response = await create_team(_route_request(w, creator, body))
     assert response.status_code == 200
     (team,) = await w.graph.get_nodes_by_filters(CollectionNames.TEAMS.value, {"orgId": w.org_id})
     w.ids.add(team.get("id") or team.get("_key"))

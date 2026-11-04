@@ -1,4 +1,9 @@
 import { Queue, Worker } from 'bullmq';
+import {
+  PgJobQueue,
+  PgJobWorker,
+} from '../../../libs/services/pg-job-queue.service';
+import { usesPgScheduler } from './crawling_pg';
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { RedisConfig } from '../../../libs/types/redis.types';
@@ -47,8 +52,8 @@ export class ConnectorScheduleSweepService {
   private readonly logger = Logger.getInstance({
     service: 'ConnectorScheduleSweepService',
   });
-  private queue: Queue | null = null;
-  private worker: Worker | null = null;
+  private queue: Queue | PgJobQueue | null = null;
+  private worker: Worker | PgJobWorker | null = null;
 
   constructor(
     @inject(CrawlingSchedulerService)
@@ -65,6 +70,48 @@ export class ConnectorScheduleSweepService {
     }
 
     try {
+      const run = async (): Promise<void> => {
+        await runWithRequestContext({ rootId: newSystemRoot() }, () =>
+          this.sweep(),
+        );
+      };
+      if (usesPgScheduler()) {
+        // no Redis: the same one-sweeper-per-tick contract on PostgreSQL (claimed with SKIP LOCKED)
+        const queue = new PgJobQueue(SWEEP_QUEUE_NAME, {
+          removeOnComplete: 10,
+          removeOnFail: 10,
+        });
+        this.queue = queue;
+        const worker = new PgJobWorker(SWEEP_QUEUE_NAME, run, {
+          concurrency: 1,
+        });
+        // an emitted 'error' with no listener would crash the process on a transient database error
+        worker.on('error', (e: unknown) => {
+          this.logger.error('connector schedule sweep worker error', {
+            error: e instanceof Error ? e.message : String(e),
+          });
+        });
+        this.worker = worker;
+        await queue.upsertJobScheduler(
+          SWEEP_JOB_NAME,
+          { every: intervalMinutes * 60_000 },
+          { name: SWEEP_JOB_NAME },
+        );
+        await queue.add(
+          SWEEP_JOB_NAME,
+          {},
+          {
+            jobId: SWEEP_STARTUP_JOB_ID,
+            removeOnComplete: true,
+            removeOnFail: true,
+          },
+        );
+        this.logger.info('Connector schedule sweep started', {
+          intervalMinutes,
+          scheduler: 'postgres',
+        });
+        return;
+      }
       const provider = crawlingRedisProvider(this.redisConfig);
       const prefix = crawlingQueuePrefix(provider);
       this.queue = new Queue(SWEEP_QUEUE_NAME, {
@@ -72,19 +119,11 @@ export class ConnectorScheduleSweepService {
         prefix,
         defaultJobOptions: { removeOnComplete: 10, removeOnFail: 10 },
       });
-      this.worker = new Worker(
-        SWEEP_QUEUE_NAME,
-        async () => {
-          await runWithRequestContext({ rootId: newSystemRoot() }, () =>
-            this.sweep(),
-          );
-        },
-        {
-          connection: provider.createClient({ blocking: true }),
-          prefix,
-          concurrency: 1,
-        },
-      );
+      this.worker = new Worker(SWEEP_QUEUE_NAME, run, {
+        connection: provider.createClient({ blocking: true }),
+        prefix,
+        concurrency: 1,
+      });
       // BullMQ emits 'error' asynchronously; without a listener Node treats it as uncaught.
       const logAsyncError = (message: string) => (error: unknown) => {
         this.logger.error(message, {

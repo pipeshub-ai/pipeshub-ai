@@ -66,7 +66,7 @@ describe('resolveCallerTeamIds', () => {
     expect(teamIds).to.deep.equal(['team-a', 'team-b']);
   });
 
-  it('asks the connector service for a single generous page, as the caller', async () => {
+  it('asks the connector service for pages no larger than it accepts, as the caller', async () => {
     const executeStub = sinon
       .stub(AIServiceCommand.prototype, 'execute')
       .resolves({ statusCode: 200, data: { teams: [] } } as any);
@@ -74,9 +74,38 @@ describe('resolveCallerTeamIds', () => {
     await resolveCallerTeamIds(makeRequest({ authorization: 'Bearer caller-token' }), appConfig);
 
     const command = executeStub.firstCall.thisValue as any;
-    expect(command.uri).to.equal('http://localhost:8088/api/v1/entity/user/teams?limit=500');
+    expect(command.uri).to.equal('http://localhost:8088/api/v1/entity/user/teams?page=1&limit=100');
     expect(command.method).to.equal('GET');
     expect(command.headers.authorization).to.equal('Bearer caller-token');
+  });
+
+  it('reads every page the connector service reports', async () => {
+    const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute');
+    executeStub.onFirstCall().resolves({ statusCode: 200, data: { teams: [{ id: 'team-a' }], pagination: { pages: 2 } } } as any);
+    executeStub.onSecondCall().resolves({ statusCode: 200, data: { teams: [{ id: 'team-b' }], pagination: { pages: 2 } } } as any);
+
+    const teamIds = await resolveCallerTeamIds(makeRequest(), appConfig);
+
+    expect(teamIds).to.deep.equal(['team-a', 'team-b']);
+    expect(executeStub.calledTwice).to.equal(true);
+    expect((executeStub.secondCall.thisValue as any).uri).to.contain('page=2&limit=100');
+  });
+
+  it('stops at a short page when the response carries no page count', async () => {
+    const executeStub = sinon
+      .stub(AIServiceCommand.prototype, 'execute')
+      .resolves({ statusCode: 200, data: { teams: [{ id: 'team-a' }] } } as any);
+
+    expect(await resolveCallerTeamIds(makeRequest(), appConfig)).to.deep.equal(['team-a']);
+    expect(executeStub.calledOnce).to.equal(true);
+  });
+
+  it('warns when the connector service refuses the lookup', async () => {
+    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 422, data: { detail: [] } } as any);
+
+    expect(await resolveCallerTeamIds(makeRequest(), appConfig)).to.deep.equal([]);
+    expect(warnStub.calledOnce).to.equal(true);
+    expect(warnStub.firstCall.args[1]).to.deep.equal({ statusCode: 422, page: 1 });
   });
 
   it('falls back to `_id` and drops rows that carry no id at all', async () => {

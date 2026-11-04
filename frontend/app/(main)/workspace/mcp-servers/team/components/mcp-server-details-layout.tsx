@@ -8,7 +8,7 @@ import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { McpInstanceRow } from './mcp-instance-row';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Props
@@ -76,7 +76,7 @@ export function McpServerDetailsLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 32,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
         paddingBottom: 64,
         paddingInline: pagePaddingX(100),
         overflowY: 'auto',

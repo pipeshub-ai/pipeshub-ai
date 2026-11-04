@@ -95,7 +95,8 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def get_record_by_external_id(
-        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL,
+        *, raise_on_error: bool = False,
     ) -> Optional[Record]:
         pass
 

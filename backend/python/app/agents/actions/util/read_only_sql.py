@@ -132,6 +132,23 @@ def _acts_on_the_server(tokens: list[_Token]) -> bool:
     return False
 
 
+def _quotes_an_explain_option(tokens: list[_Token]) -> bool:
+    """Whether the parenthesised option list right after EXPLAIN holds a quoted name."""
+    if len(tokens) < 2 or tokens[1] != ("p", "("):
+        return False
+    depth = 0
+    for kind, text in tokens[1:]:
+        if (kind, text) == ("p", "("):
+            depth += 1
+        elif (kind, text) == ("p", ")"):
+            depth -= 1
+            if depth == 0:
+                return False
+        elif kind == "q":
+            return True
+    return False
+
+
 def _streams(sql: str) -> tuple[list[list[_Token]], list[list[_Token]], bool]:
     """``(statement readings, ambiguous comment texts read as code, whether every reading was clear)``.
 
@@ -195,6 +212,10 @@ def read_only_statement(query: str) -> tuple[str | None, str]:
         return None, f"Blocked: only read-only queries are allowed. Got: {first or 'empty'}"
     if any(kind == "w" and text.upper() == "INTO" for kind, text in tokens):
         return None, "Blocked: SELECT ... INTO is not allowed"
+    # PostgreSQL reads `EXPLAIN ("analyze")` as the ANALYZE option, and the denylist below only
+    # sees quoted names as placeholders, so an option list may not quote anything.
+    if first == "EXPLAIN" and _quotes_an_explain_option(tokens):
+        return None, "Blocked: EXPLAIN options must be written without quotes"
     # The denylist sees the statement without comments or literal contents.
     safe, reason = _is_query_safe(_plain(tokens))
     return (statement, "") if safe else (None, reason)

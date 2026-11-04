@@ -18,6 +18,7 @@ from app.modules.retrieval.retrieval_service import (
 )
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.services.vector_db.search_retry import VectorSearchUnavailableError
+from app.utils.chat_helpers import attach_connector_instance_names
 
 # ---------------------------------------------------------------------------
 # Helpers to build a RetrievalService without real FastEmbedSparse / model load
@@ -215,7 +216,7 @@ class TestAttachConnectorInstanceNames:
             {"_key": "r3", "connectorName": "DRIVE", "connectorId": "c-mkt"},
         ]
 
-        await retrieval_service._attach_connector_instance_names(records)
+        await attach_connector_instance_names(mock_graph_provider, records, None)
 
         assert [r["connectorInstanceName"] for r in records] == ["Marketing Drive", "Eng SharePoint", "Marketing Drive"]
         # One lookup per connector, not per record, and only in the apps collection.
@@ -238,7 +239,7 @@ class TestAttachConnectorInstanceNames:
             None,
         ]
 
-        await retrieval_service._attach_connector_instance_names(records)
+        await attach_connector_instance_names(mock_graph_provider, records, None)
 
         for r in records[:3]:
             assert "connectorInstanceName" not in r
@@ -251,10 +252,26 @@ class TestAttachConnectorInstanceNames:
         mock_graph_provider.get_document = AsyncMock(side_effect=never_returns)
         records = [{"_key": "r1", "connectorId": "c-slow"}]
 
-        with patch("app.modules.retrieval.retrieval_service.CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS", 0.05):
-            await asyncio.wait_for(retrieval_service._attach_connector_instance_names(records), timeout=2)
+        with patch("app.utils.chat_helpers.CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS", 0.05):
+            await asyncio.wait_for(attach_connector_instance_names(mock_graph_provider, records, None), timeout=2)
 
         assert "connectorInstanceName" not in records[0]
+
+    @pytest.mark.asyncio
+    async def test_a_slow_app_does_not_cost_a_fast_one_its_name(self, retrieval_service, mock_graph_provider) -> None:
+        async def lookup(key: str, _collection: str) -> dict | None:
+            if key == "c-slow":
+                await asyncio.Event().wait()
+            return {"name": "Contracts"}
+
+        mock_graph_provider.get_document = AsyncMock(side_effect=lookup)
+        records = [{"_key": "r1", "connectorId": "c-slow"}, {"_key": "r2", "connectorId": "c-fast"}]
+
+        with patch("app.utils.chat_helpers.CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS", 0.05):
+            await attach_connector_instance_names(mock_graph_provider, records, None)
+
+        assert "connectorInstanceName" not in records[0]
+        assert records[1]["connectorInstanceName"] == "Contracts"
 
 
 # ============================================================================

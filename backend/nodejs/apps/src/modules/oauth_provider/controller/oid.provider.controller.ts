@@ -1,7 +1,6 @@
 import { injectable, inject } from 'inversify';
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
-import { Types } from 'mongoose';
 import { OAuthTokenService } from '../services/oauth_token.service';
 import { ScopeValidatorService } from '../services/scope.validator.service';
 import {
@@ -11,13 +10,14 @@ import {
   JWK,
 } from '../types/oauth.types';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { Users } from '../../user_management/schema/users.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
 import {
   OAuthRequest,
   buildWwwAuthenticateHeader,
 } from '../middlewares/oauth.auth.middleware';
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service';
-import { mcpDiscoveryScopes } from '../config/scopes.config';
+import { AgentMcpScopes, mcpDiscoveryScopes } from '../config/scopes.config';
+import { renderAuthMd } from '../utils/auth-md';
 
 /**
  * OpenID Connect Provider Controller
@@ -59,7 +59,7 @@ export class OIDCProviderController {
     const userId = oauth!.payload.userId;
 
     // Get user info
-    const user = await Users.findById(userId);
+    const user = await getUserRepository().getAnyById(userId);
     if (!user) {
       res.setHeader(
         'WWW-Authenticate',
@@ -73,7 +73,7 @@ export class OIDCProviderController {
     }
 
     const userInfo: Record<string, unknown> = {
-      user_id: (user._id as Types.ObjectId).toString(),
+      user_id: user._id,
     };
 
     // Add claims based on scopes
@@ -175,6 +175,40 @@ export class OIDCProviderController {
     };
 
     res.json(config);
+  }
+
+  /**
+   * GET /auth.md and /.well-known/auth.md: how an agent gets a credential for
+   * this instance and uses it (Markdown). Built from the same settings as
+   * discovery, so the two never disagree.
+   */
+  async authMd(
+    _req: Request,
+    res: Response,
+    next: NextFunction,
+    extraSections: (origin: string) => string[],
+  ): Promise<void> {
+    try {
+      const origin = this.appConfig.oauthIssuer;
+      const deviceEnabled =
+        process.env.PIPESHUB_ENABLE_DEVICE_GRANT !== 'false';
+      const offered = new Set(this.appConfig.mcpScopes);
+      res.type('text/markdown; charset=utf-8').send(
+        renderAuthMd({
+          origin,
+          deviceClientId: deviceEnabled
+            ? await this.firstPartyDeviceAppService.getOrCreate()
+            : null,
+          dcrEnabled: process.env.PIPESHUB_ENABLE_DCR === 'true',
+          agentScopes: AgentMcpScopes.filter((s) => offered.has(s)),
+          // The device app's preset adds offline_access where MCP_SCOPES allows it.
+          deviceRefreshes: deviceEnabled && offered.has('offline_access'),
+          extraSections: extraSections(origin),
+        }),
+      );
+    } catch (error) {
+      next(error);
+    }
   }
 
   /**

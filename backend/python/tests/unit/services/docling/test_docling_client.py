@@ -11,6 +11,7 @@ behaviour:
 """
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -346,3 +347,20 @@ class TestHealthCheck:
             result = await client.health_check()
 
         assert result is False
+
+
+class TestDoclingMaxPages:
+    def test_a_negative_limit_falls_back_to_30_and_warns_once(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from app.services.docling import client
+
+        monkeypatch.setattr(client, "_warned_negative_max_pages", set())
+        monkeypatch.setenv(client.MAX_PAGES_ENV, "-1")
+
+        with caplog.at_level(logging.WARNING, logger=client.__name__):
+            assert client.docling_max_pages() == 30
+            assert client.docling_max_pages() == 30
+
+        warnings = [r for r in caplog.records if "PDF_DOCLING_MAX_PAGES" in r.getMessage()]
+        assert len(warnings) == 1

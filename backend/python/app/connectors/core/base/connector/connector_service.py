@@ -27,6 +27,7 @@ from app.connectors.core.thread_pool import (
 )
 from app.models.entities import AppUser, AppUserGroup, Record
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole, NotificationOutcome
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.notification.notification_service import NotificationService
@@ -305,11 +306,15 @@ class BaseConnector(ABC):
 
     @classmethod
     async def check_connection(
-        cls, auth_config: dict[str, Any], logger: Logger
+        cls, auth_config: dict[str, Any], logger: Logger, *, public_only: bool = True
     ) -> ConnectionCheckResult:
         """Try auth settings the user has typed but not saved, without creating an instance.
 
-        Connectors that override this get a connection check in the setup form."""
+        Connectors that override this get a connection check in the setup form.
+
+        ``public_only`` is the address rule of the scope being set up: personal scope may
+        reach public addresses only, team scope follows the deployment setting. A connector
+        that dials a host the user typed must apply it before dialling."""
         raise NotImplementedError(f"{cls.__name__} has no connection check")
 
     @classmethod
@@ -668,6 +673,7 @@ class BaseConnector(ABC):
             external_id=source_group_id,
             type=PermissionType.READ,
         )
+        await notify_principals_changed(org_id)  # the creator's app link and group membership are new edges
         self.logger.info(
             "ConnectorGroup ensured for connector %s (members: %s)",
             self.connector_id,

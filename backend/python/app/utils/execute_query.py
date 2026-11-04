@@ -9,12 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import time
+from decimal import Decimal
 from typing import Any, Callable, Collection, Dict, List, Optional, TYPE_CHECKING
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from app.utils.conversation_tasks import register_task
+from app.utils.sql_limits import (
+    SQL_MAX_ROWS,
+    SQL_QUERY_TIMEOUT_S,
+    cap_rows,
+    friendly_sql_error,
+    truncation_note,
+)
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -22,6 +30,7 @@ if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
 
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -223,8 +232,8 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
         'CLONE', 'SWAP', 'UNDROP',
         # BigQuery specific
         'EXPORT DATA',
-        # Administrative commands
-        'VACUUM', 'ANALYZE', 'REINDEX', 'CLUSTER',
+        # Administrative commands. ANALYZE/ANALYSE (also as an EXPLAIN option) runs the statement.
+        'VACUUM', 'ANALYZE', 'ANALYSE', 'REINDEX', 'CLUSTER',
         # Security bypass attempts
         'PRAGMA', 'SET SQL_LOG_BIN', 'SET GLOBAL',
     ]
@@ -364,6 +373,8 @@ async def _execute_postgres_query(
     query: str,
     config_service: "ConfigurationService",
     connector_instance_id: Optional[str] = None,
+    *,
+    public_only: bool = True,
 ) -> Dict[str, Any]:
     """Execute a query against PostgreSQL.
     
@@ -371,6 +382,7 @@ async def _execute_postgres_query(
         query: SQL query to execute
         config_service: Configuration service for retrieving connection details
         connector_instance_id: Optional connector instance ID
+        public_only: Connect to public addresses only (a personal connector)
         
     Returns:
         Dict with 'ok', 'columns', 'rows' or 'error'
@@ -386,6 +398,7 @@ async def _execute_postgres_query(
             logger=logger,
             config_service=config_service,
             connector_instance_id=connector_instance_id,
+            public_only=public_only,
         )
         
         client = client_builder.get_client()
@@ -406,7 +419,9 @@ async def _execute_postgres_query(
             )
         await client.connect()
         try:
-            columns, rows = await client.execute_query_raw(query_to_execute)
+            columns, rows = await client.execute_query_raw(
+                query_to_execute, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1
+            )
         finally:
             await client.close()
 
@@ -433,7 +448,7 @@ async def _execute_postgres_query(
         logger.error(f"PostgreSQL query execution failed: {e}", exc_info=True)
         return {
             "ok": False,
-            "error": f"PostgreSQL query failed: {str(e)}"
+            "error": f"PostgreSQL query failed: {friendly_sql_error(str(e))}"
         }
 
 
@@ -442,85 +457,39 @@ async def _execute_snowflake_query(
     config_service: "ConfigurationService",
     connector_instance_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Execute a query against Snowflake.
-    
-    Args:
-        query: SQL query to execute
-        config_service: Configuration service for retrieving connection details
-        connector_instance_id: Optional connector instance ID
-        
+    """Execute a query against Snowflake through the SQL API.
+
+    Snowflake has no read-only transaction: what keeps this read-only is the
+    query check, the API's one-statement-per-request default and the
+    connector's role.
+
     Returns:
         Dict with 'ok', 'columns', 'rows' or 'error'
     """
     try:
-        from app.sources.client.snowflake.snowflake import (
-            SnowflakeSDKClient,
-            SnowflakeClient,
-            SnowflakeConnectorConfig,
-        )
-        
-        # Get connection config
-        config_dict = await SnowflakeClient._get_connector_config(
+        from app.sources.external.snowflake.warehouse import connector_runner
+
+        async with connector_runner(
             logger=logger,
             config_service=config_service,
-            connector_instance_id=connector_instance_id,
-        )
-        
-        config = SnowflakeConnectorConfig.model_validate(config_dict)
-        account_identifier = config.accountIdentifier
-        warehouse = config.warehouse
-        
-        # Build SDK client based on auth type
-        auth_config = config.auth
-        auth_type = auth_config.authType.value if hasattr(auth_config.authType, 'value') else str(auth_config.authType)
-        
-        if auth_type == "PAT":
-            # PAT auth - use SDK client with token
-            pat_token = auth_config.patToken
-            if not pat_token:
-                return {
-                    "ok": False,
-                    "error": "PAT token not configured for Snowflake connector"
-                }
-            
-            sdk_client = SnowflakeSDKClient(
-                account_identifier=account_identifier,
-                warehouse=warehouse,
-                oauth_token=pat_token,  # PAT tokens work with oauth authenticator
+            connector_id=connector_instance_id,
+            query_tag="pipeshub:agent",
+        ) as runner:
+            result = await runner.run(
+                query, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1,
             )
-        elif auth_type == "OAUTH":
-            # OAuth auth
-            credentials = config.credentials
-            if not credentials or not credentials.access_token:
-                return {
-                    "ok": False,
-                    "error": "OAuth access token not configured for Snowflake connector"
-                }
-            
-            sdk_client = SnowflakeSDKClient(
-                account_identifier=account_identifier,
-                warehouse=warehouse,
-                oauth_token=credentials.access_token,
-            )
-        else:
-            return {
-                "ok": False,
-                "error": f"Unsupported Snowflake auth type: {auth_type}"
-            }
-        
-        with sdk_client:
-            columns, rows = sdk_client.execute_query_raw(query)
-            return {
-                "ok": True,
-                "columns": columns,
-                "rows": rows,
-            }
-            
+
+        return {
+            "ok": True,
+            "columns": result.column_names,
+            "rows": result.rows,
+        }
+
     except Exception as e:
         logger.error(f"Snowflake query execution failed: {e}")
         return {
             "ok": False,
-            "error": f"Snowflake query failed: {str(e)}"
+            "error": f"Snowflake query failed: {friendly_sql_error(str(e))}"
         }
 
 
@@ -567,7 +536,9 @@ async def _execute_mariadb_query(
         logger.info(f"🔍 [_execute_mariadb_query] Executing query: {query}")
 
         async with client:
-            columns, rows = await client.execute_query_raw(query)
+            columns, rows = await client.execute_query_raw(
+                query, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1
+            )
 
         logger.info(
             f"🔍 [_execute_mariadb_query] Query returned {len(columns)} columns, {len(rows)} rows"
@@ -582,14 +553,69 @@ async def _execute_mariadb_query(
         logger.error(f"MariaDB query execution failed: {e}", exc_info=True)
         return {
             "ok": False,
-            "error": f"MariaDB query failed: {str(e)}"
+            "error": f"MariaDB query failed: {friendly_sql_error(str(e))}"
         }
+
+
+# An empty result on a filter against a literal copied from the question was
+# answered as a confident "none" when the stored spelling or case differed.
+_IDENTIFIER_PART = r'(?:"(?:[^"]|"")+"|`[^`]+`|[A-Za-z_]\w*)'
+_TEXT_LITERAL_FILTER = re.compile(
+    rf"((?<![\w\"`]){_IDENTIFIER_PART}(?:\.{_IDENTIFIER_PART})*)\s*(?:=|\bI?LIKE\b)\s*'((?:[^']|'')+)'",
+    re.IGNORECASE,
+)
+_PREDICATE_START = re.compile(r"\b(?:WHERE|HAVING|ON)\b", re.IGNORECASE)
+_NUMBER = re.compile(r"\s*[-+]?\d+(?:\.\d+)?\s*")
+
+
+def _empty_result(rows: list[Any]) -> bool:
+    """No rows, or one row of only zeros and NULLs (a COUNT or SUM over nothing)."""
+    if not rows:
+        return True
+    if len(rows) > 1:
+        return False
+    values = rows[0].values() if isinstance(rows[0], dict) else rows[0]
+    return all(
+        value is None or (isinstance(value, (int, float, Decimal)) and not isinstance(value, bool) and value == 0)
+        for value in values
+    )
+
+
+def _zero_row_note(query: str, source_type: str, rows: list[Any]) -> str | None:
+    """A note when an empty result filtered on a text literal; ``None`` otherwise."""
+    # Escapes, dollar quoting and comments make a regex misread where literals and
+    # filters are; the note is optional, so skip those queries.
+    if not _empty_result(rows) or any(mark in query for mark in ("\\", "$", "--", "/*")):
+        return None
+    if source_type == "postgres":  # only the last statement runs there
+        query = query.rstrip().rstrip(";").rsplit(";", 1)[-1]
+    predicates = _PREDICATE_START.search(query)
+    if not predicates:
+        return None
+    for match in _TEXT_LITERAL_FILTER.finditer(query, predicates.start()):
+        column, literal = match.group(1), match.group(2).replace("''", "'").strip("%")
+        if column.upper() != "NOT" and not _NUMBER.fullmatch(literal):
+            break
+    else:
+        return None
+    # LOWER on both sides, in the database, is case-insensitive in every dialect and collation.
+    pattern = literal[:20].replace("'", "''")
+    return (
+        f"The result has no rows, or only zeros and NULLs. If rows were expected, the filter "
+        f"{column} = '{literal}' may not match the stored value, which can differ in spelling, "
+        f"case or abbreviation: look it up first (e.g. SELECT {column}, COUNT(*) ... WHERE "
+        f"LOWER({column}) LIKE LOWER('%{pattern}%') GROUP BY {column}) and rerun with the stored "
+        "value before reporting the result."
+    )
+
 
 async def _execute_query_impl(
     query: str,
     source_name: str,
     config_service: "ConfigurationService",
     connector_instance_id: Optional[str] = None,
+    *,
+    public_only: bool = True,
 ) -> Dict[str, Any]:
     """Main implementation for executing SQL queries.
     
@@ -636,6 +662,7 @@ async def _execute_query_impl(
             query=query,
             config_service=config_service,
             connector_instance_id=connector_instance_id,
+            public_only=public_only,
         )
     elif source_type == "snowflake":
         result = await _execute_snowflake_query(
@@ -658,7 +685,7 @@ async def _execute_query_impl(
     # Convert results to markdown
     if result.get("ok"):
         columns = result.get("columns", [])
-        rows = result.get("rows", [])
+        rows, rows_cut = cap_rows(result.get("rows", []))
         
         logger.info(f"🔍 [_execute_query_impl] Converting to markdown: {len(columns)} cols, {len(rows)} rows")
         logger.debug(f"🔍 [_execute_query_impl] Columns: {columns}")
@@ -677,6 +704,12 @@ async def _execute_query_impl(
             "raw_columns": columns,
             "raw_rows": rows,
         }
+        if rows_cut:
+            final_result["rows_cut_at"] = SQL_MAX_ROWS
+            final_result["markdown_result"] += f"\n\n_{truncation_note()}_"
+        zero_rows = _zero_row_note(query, source_type, rows)
+        if zero_rows:
+            final_result["markdown_result"] += f"\n\n_{zero_rows}_"
         logger.info(f"🔍 [_execute_query_impl] Final result: ok=True, row_count={len(rows)}, column_count={len(columns)}")
         return final_result
     else:
@@ -700,6 +733,14 @@ async def _connector_is_accessible(
     if not app or app.get("orgId") != org_id:
         return False
     return connector_id in await accessible_node_ids(graph_provider, {connector_id}, user_id, org_id)
+
+
+async def _connector_is_public_only(graph_provider: IGraphDBProvider | None, connector_id: str) -> bool:
+    """Whether the connector may reach public addresses only: any scope but team. Unknown is."""
+    if graph_provider is None:
+        return True
+    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    return public_only_for_scope((app or {}).get("scope"))
 
 
 def create_execute_query_tool(
@@ -814,6 +855,7 @@ def create_execute_query_tool(
                 source_name=source_name,
                 config_service=config_service,
                 connector_instance_id=connector_id,
+                public_only=await _connector_is_public_only(graph_provider, connector_id),
             )
             
             logger.info(f"🔍 [execute_sql_query_tool] Got result: ok={result.get('ok')}, row_count={result.get('row_count')}, column_count={result.get('column_count')}")
@@ -856,7 +898,7 @@ def create_execute_query_tool(
                     conversation_id=conversation_id,
                     columns=raw_columns,
                     rows=raw_rows,
-                    file_name=f"query_result_{int(time.time())}.csv",
+                    file_name=f"query_result_{int(time.time())}{'_first_%d_rows' % SQL_MAX_ROWS if result.get('rows_cut_at') else ''}.csv",
                     source_tool="sql.execute_sql_query",
                 ))
                 register_task(conversation_id, task)

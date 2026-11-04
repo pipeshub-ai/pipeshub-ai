@@ -25,6 +25,8 @@ from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.chat_helpers import (
     accessible_node_ids,
+    accessible_node_ids_for_enrichment,
+    attach_connector_instance_names,
     collection_map,
     create_record_instance_from_dict,
     enrich_read_records_with_address_links,
@@ -75,6 +77,8 @@ async def _apply_live_ticket_context_metadata(
     graph_provider: IGraphDBProvider | None,
     frontend_url: str | None,
     connection_sources: Mapping[str, Iterable[str]] | None = None,
+    org_id: str = "",
+    user_id: str = "",
 ) -> None:
     """Upgrade ticket context_metadata with live Jira fields (fetch_full_record only).
 
@@ -111,9 +115,27 @@ async def _apply_live_ticket_context_metadata(
     if not isinstance(record_instance, TicketRecord):
         return
 
+    async def readable_issue_ids(connector_id: str, issue_ids: set[str]) -> set[str]:
+        """External ids of the issues this user may read; none if that cannot be checked."""
+        if not graph_provider or not issue_ids:
+            return set()
+        # shortcut: one lookup per referenced issue, 16 at a time (no batch lookup by
+        # external id exists); upgrade when the graph provider gains one.
+        gate = asyncio.Semaphore(16)
+
+        async def key_of(ext_id: str) -> str | None:
+            async with gate:
+                return await graph_provider.get_record_key_by_external_id(ext_id, connector_id)
+
+        keys = await asyncio.gather(*(key_of(i) for i in issue_ids))
+        key_to_ext = {k: i for i, k in zip(issue_ids, keys, strict=True) if k}
+        ok = await accessible_node_ids_for_enrichment(graph_provider, set(key_to_ext), user_id, org_id)
+        return {key_to_ext[k] for k in ok}
+
     live = await record_instance.to_llm_context_with_live_fields(
         frontend_url=frontend_url,
         config_service=config_service,
+        readable_issue_ids=readable_issue_ids,
     )
     app_id = record.get("connector_id") or record.get("connectorId")
     if connection_sources is not None and app_id not in set(connection_sources.get("apps") or ()):
@@ -391,6 +413,8 @@ class _RecordResolver:
             return None
         blob_store = await self._ensure_blob_store()
         await self._ensure_frontend_url(blob_store)
+        # May name a shared map entry in place: the limit is the same all turn.
+        await attach_connector_instance_names(self._graph_provider, [graph_record], self._connection_sources)
         await get_record(
             vrid, self._map, blob_store, self._org_id, {vrid: graph_record},
             self._graph_provider, self._frontend_url,
@@ -429,6 +453,8 @@ class _RecordResolver:
             graph_provider=self._graph_provider,
             frontend_url=self._frontend_url,
             connection_sources=self._connection_sources,
+            org_id=self._org_id or "",
+            user_id=self._user_id or "",
         )
         record_type = record.get("record_type") or record.get("recordType")
         if record_type == "SQL_TABLE" and self._graph_provider:

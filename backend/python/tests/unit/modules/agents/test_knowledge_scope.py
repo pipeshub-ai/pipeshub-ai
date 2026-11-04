@@ -13,12 +13,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.modules.agents.capability_summary import PROJECT_FILES_KEY
 from app.modules.agents.knowledge_scope import (
     MAX_CALLER_COLLECTIONS,
     MAX_COLLECTION_CANDIDATES,
+    PROJECT_FILES_LABEL,
     AgentScope,
     UnreadableSourceLimitError,
     admit_caller_project_collections,
+    project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
 )
@@ -377,3 +380,58 @@ class TestReadSourceLimit:
         scope = _resolve(None, knowledge=LIMITED_KNOWLEDGE, universal=True)
         assert scope.sources == {}
         assert scope.filters == {"apps": ["jira-1", "drive-1"], "kb": ["kb-1", "kb-2"]}
+
+
+# ---------------------------------------------------------------------------
+# project_files_knowledge
+# ---------------------------------------------------------------------------
+
+
+def _hidden_graph(hidden: list[str]) -> MagicMock:
+    graph = MagicMock()
+    graph.get_hidden_app_ids = AsyncMock(side_effect=lambda ids: [i for i in ids if i in hidden])
+    return graph
+
+
+async def _project_files(graph: MagicMock, kb_ids: list, known: list | None = None) -> list:
+    return await project_files_knowledge(
+        graph, kb_ids=kb_ids, known_ids=known or [], logger=logging.getLogger("t"),
+    )
+
+
+class TestProjectFilesKnowledge:
+    async def test_the_hidden_project_collection_becomes_a_knowledge_entry(self) -> None:
+        graph = _hidden_graph(["proj-kb"])
+        (entry,) = await _project_files(graph, ["kb-1", "proj-kb"])
+        assert entry["connectorId"] == "proj-kb"
+        assert entry["type"] == "KB"
+        assert entry["displayName"] == PROJECT_FILES_LABEL
+        assert entry[PROJECT_FILES_KEY] is True
+
+    async def test_a_listed_collection_is_not_added_twice(self) -> None:
+        graph = _hidden_graph(["proj-kb"])
+        assert await _project_files(graph, ["proj-kb"], known=["proj-kb"]) == []
+        graph.get_hidden_app_ids.assert_not_called()
+
+    async def test_visible_collections_and_the_sentinel_are_not_added(self) -> None:
+        graph = _hidden_graph([])
+        assert await _project_files(graph, ["kb-1", "NO_KB_SELECTED"]) == []
+        graph.get_hidden_app_ids.assert_awaited_once_with(["kb-1"])
+
+    async def test_no_lookup_without_candidates(self) -> None:
+        graph = _hidden_graph([])
+        assert await _project_files(graph, []) == []
+        graph.get_hidden_app_ids.assert_not_called()
+
+    async def test_a_lookup_failure_adds_nothing(self) -> None:
+        graph = MagicMock()
+        graph.get_hidden_app_ids = AsyncMock(side_effect=RuntimeError("down"))
+        assert await _project_files(graph, ["proj-kb"]) == []
+
+    async def test_the_entry_puts_the_collection_in_the_search_scope(self) -> None:
+        """The agent searches the KB ids of its knowledge list, so the entry is what lets a
+        project chat search the project's files."""
+        from app.modules.agents.qna.chat_state import _extract_kb_app_ids
+
+        entries = await _project_files(_hidden_graph(["proj-kb"]), ["proj-kb"])
+        assert _extract_kb_app_ids([*AGENT_KNOWLEDGE, *entries]) == ["kb-1", "kb-2", "proj-kb"]

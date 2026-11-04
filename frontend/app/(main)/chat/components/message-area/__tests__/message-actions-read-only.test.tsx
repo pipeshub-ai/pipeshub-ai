@@ -94,3 +94,32 @@ describe('message actions on a shared agent chat (read-only for recipients)', ()
     expect(screen.queryByLabelText('chat.regenerate')).toBeNull();
   });
 });
+
+describe('message actions footer names the search the answer used', () => {
+  const renderWith = (parts?: { type: 'tool_call'; toolName: string }[]) =>
+    render(
+      <Theme>
+        <MessageActions
+          content="Answer"
+          messageId="msg-3"
+          modelInfo={{ chatMode: 'agent' } as never}
+          parts={parts as never}
+        />
+      </Theme>,
+    );
+
+  it('shows internal search when the answer searched the knowledge base', () => {
+    renderWith([{ type: 'tool_call', toolName: 'retrieval.search_internal_knowledge' }]);
+    expect(screen.getByText('chat.answerMode.internalSearch')).toBeTruthy();
+  });
+
+  it('shows web search when the answer only searched the web', () => {
+    renderWith([{ type: 'tool_call', toolName: 'web_search' }]);
+    expect(screen.getByText('chat.answerMode.webSearch')).toBeTruthy();
+  });
+
+  it('keeps Agent when no search tool ran', () => {
+    renderWith([]);
+    expect(screen.getByText('Agent')).toBeTruthy();
+  });
+});

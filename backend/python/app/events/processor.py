@@ -15,8 +15,11 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
     DocumentProcessingError,
     IndexingError,
+    MultimodalModelNotConfiguredError,
+    RecordDeletedError,
     RecordStatusUpdateError,
 )
 from app.models.blocks import (
@@ -46,7 +49,14 @@ from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_fil
 from app.modules.parsers.markdown.image_references import extract_and_replace_images
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
+from app.connectors.sources.localKB.push.contract import PUSH_ORIGIN_FIELD
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+from app.modules.parsers.lightweight_group_parsers import lightweight_group_parsers
+from app.modules.parsers.push_origin import (
+    assert_images_inline,
+    content_is_push_origin,
+    record_is_push_origin,
+)
 from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
@@ -66,7 +76,7 @@ from app.services.messaging.config import (
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
 from app.utils.cpu_offload import offload_if_large
-from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.image_utils import fit_inline_images, get_extension_from_mimetype
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.table_enrichment import enhance_tables_with_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -132,6 +142,10 @@ def convert_record_dict_to_record(record_dict: dict[str, Any]) -> Record:
         md5_hash=record_dict.get("md5Checksum"),
         record_group_id=record_dict.get("recordGroupId"),
         external_record_group_id=record_dict.get("externalGroupId"),
+        # A named-entity persist retry rebuilds the record from its document and finds the
+        # stored extraction by this.
+        virtual_record_id=record_dict.get("virtualRecordId"),
+        push_origin=record_dict.get(PUSH_ORIGIN_FIELD) is True,
     )
 
 class Processor:
@@ -202,14 +216,10 @@ class Processor:
                 raise Exception("No image data provided")
 
             record = await self.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                # Must yield both events to release semaphores properly
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                return
+                raise RecordDeletedError(record_id)
 
             _ , config = await self._get_llm_for_role("indexing", reasoning_effort="low")
             is_multimodal_llm = config.get("isMultimodal")
@@ -313,6 +323,8 @@ class Processor:
 
             self.logger.info("✅ Gmail Message processing completed successfully using HTML processing.")
 
+        except RecordDeletedError:
+            raise  # an expected outcome, logged once by the record handler
         except Exception as e:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
             raise
@@ -332,21 +344,21 @@ class Processor:
 
             # Phase 1: Parse PDF layout (no LLM calls)
             parsed_data = await processor.parse_document(record_name, pdf_binary)
+            pdf_binary = None
 
             # Signal parsing complete
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(parsed_data)
+            parsed_data = processor = None
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
 
             record = self._convert_record(record)
             record.block_containers = block_containers
@@ -381,6 +393,8 @@ class Processor:
 
             # Phase 1: Parse PDF via the external Docling service (no LLM calls)
             doc = await self.docling_client.parse_pdf_batched(record_name, pdf_binary)
+            # Nothing reads the file again; the caller drops its copy on PARSING_COMPLETE.
+            pdf_binary = None
             if doc is None:
                 self.logger.error(f"❌ External Docling service failed to parse {recordName}")
                 yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
@@ -390,15 +404,15 @@ class Processor:
 
             # Phase 2: Create blocks locally (involves LLM calls for tables)
             block_containers = await self.docling_processor.create_blocks(doc)
+            # The parsed document is not needed once its blocks exist, so it does not live through embedding.
+            doc = None
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
 
             record = self._convert_record(record)
             record.block_containers = block_containers
@@ -429,11 +443,22 @@ class Processor:
 
         try:
             self.logger.debug("📄 Processing PDF binary content")
-            # Get OCR configurations
-            ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value
-            )
-            ocr_configs = ai_models["ocr"]
+            # Get OCR configurations. A store that does not answer is an outage,
+            # retried: AISettingsUnavailableError is an IndexingError, which the
+            # handler below re-raises as it is. Settings never saved read as none.
+            try:
+                ai_models = await self.config_service.get_config(
+                    config_node_constants.AI_MODELS.value, raise_on_error=True
+                )
+            except Exception as e:
+                raise AISettingsUnavailableError(
+                    "Could not read the workspace's AI settings",
+                    record_id=recordId,
+                    details={"error": str(e)},
+                ) from e
+            if not isinstance(ai_models, dict):
+                ai_models = {}
+            ocr_configs = ai_models.get("ocr") or []
 
             # Configure OCR handler
             self.logger.debug("🛠️ Configuring OCR handler")
@@ -474,11 +499,13 @@ class Processor:
                     provider = OCRProvider.VLM_OCR.value
                 else:
                     self.logger.warning("⚠️ Scanned PDF detected but no OCR provider (Azure DI or multimodal LLM) is configured")
-                    raise IndexingError(SCANNED_PDF_NO_OCR_MESSAGE, record_id=recordId)
+                    # Final on the first try: retrying cannot add a model.
+                    raise MultimodalModelNotConfiguredError(SCANNED_PDF_NO_OCR_MESSAGE, doc_id=recordId)
 
             # Process document
             self.logger.info("🔄 Processing document with OCR handler")
             ocr_result = await handler.process_document(pdf_binary)
+            pdf_binary = handler = None
 
             self.logger.debug("✅ OCR processing completed")
 
@@ -556,6 +583,9 @@ class Processor:
                 for page_block_containers in page_block_results:
                     if page_block_containers:
                         combined_block_containers.extend(page_block_containers)
+                # The OCR pages and their parsed documents are not needed once the blocks exist.
+                ocr_result = pages = all_conv_results = page_build_tasks = page_block_results = page_block_containers = None
+                processor = None
 
                 self.logger.info(
                     f"📦 Combined {len(combined_block_containers.blocks)} blocks and "
@@ -563,11 +593,9 @@ class Processor:
                 )
 
                 # Get record and run indexing pipeline
-                record = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value)
+                record = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value, raise_on_error=True)
                 if record is None:
-                    self.logger.error(f"❌ Record {recordId} not found in database")
-                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                    return
+                    raise RecordDeletedError(recordId)
 
                 record = self._convert_record(record)
                 record.block_containers = combined_block_containers
@@ -629,6 +657,7 @@ class Processor:
                             index += 1
 
             block_groups = ocr_result.get("tables", [])
+            ocr_result = blocks_from_ocr = None
             for block_group in block_groups:
                 # Convert list of BlockContainerIndex to BlockGroupChildren
                 block_container_indices = table_rows.get(block_group.index, [])
@@ -638,12 +667,10 @@ class Processor:
                 else:
                     block_group.children = None
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = BlocksContainer(blocks=blocks, block_groups=block_groups)
             record.virtual_record_id = virtual_record_id
@@ -677,7 +704,7 @@ class Processor:
         )
         # Convert DOC to DOCX and delegate
         parser = self.parsers[ExtensionTypes.DOC.value]
-        doc_result = parser.convert_doc_to_docx(doc_binary)
+        doc_result = await parser.convert_doc_to_docx_async(doc_binary)
         async for event in self.process_docx_document(
             recordName, recordId, version, source, orgId, doc_result, virtual_record_id, event_type, prev_virtual_record_id
         ):
@@ -712,23 +739,21 @@ class Processor:
             # the bytes, so the name must say DOCX, as it does for PPTX below.
             doc_name = recordName if recordName.lower().endswith(".docx") else f"{recordName}.docx"
             conv_res = await processor.parse_document(doc_name, docx_binary)
+            docx_binary = None
 
             # Signal parsing complete after Docling parsing
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
-
+            conv_res = None
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
@@ -789,27 +814,30 @@ class Processor:
             # Convert dict to BlocksContainer
             block_containers = BlocksContainer(**blocks_dict)
 
+            # Read before the groups are processed: the record's own push marker
+            # decides whether a remote image may be fetched. A failed read raises,
+            # so it is retried and never indexes the images away.
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+
+            if record is None:
+                raise RecordDeletedError(recordId)
+
+            push_origin = content_is_push_origin(blocks_dict) or record_is_push_origin(record)
+
             # Process BlockGroups with requires_processing=True via markdown parser
             block_containers = await self._process_blockgroups(
-                block_containers, recordName
+                block_containers, recordName, allow_remote_fetch=not push_origin
             )
+            if push_origin:
+                assert_images_inline(block_containers)
 
             # Signal parsing complete after blocks are processed
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Enhance TABLE BlockGroups with LLM summaries and row descriptions
             await enhance_tables_with_llm(block_containers, self.config_service, self.logger)
-
-            # Get record from database
-            record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
-            )
-
-            if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
 
             # Convert to Record entity and attach blocks
             record = self._convert_record(record)
@@ -826,6 +854,8 @@ class Processor:
 
             self.logger.info("✅ Blocks Container processing completed successfully")
 
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing Blocks Container: {str(e)}")
             raise
@@ -853,8 +883,18 @@ class Processor:
 
         return block_groups_with_index, block_groups_without_index
 
+    def _group_parsers(self, *, allow_remote_fetch: bool) -> tuple[Any, Any]:
+        """The markdown and HTML parsers for block-group content.
+
+        Pushed content always takes the lightweight classes, so a Docling backend
+        never sees it.
+        """
+        if allow_remote_fetch:
+            return self.parsers.get(ExtensionTypes.MD.value), self.parsers.get(ExtensionTypes.HTML.value)
+        return lightweight_group_parsers(logger=self.logger, config_service=self.config_service)
+
     async def _process_blockgroup_images(
-        self, markdown_data: str, block_group_index: int
+        self, markdown_data: str, block_group_index: int, *, allow_remote_fetch: bool
     ) -> Tuple[str, Dict[str, str]]:
         """
         Extract images from markdown and convert URLs to base64.
@@ -869,18 +909,22 @@ class Processor:
         caption_map: Dict[str, str] = {}
         modified_markdown = markdown_data
 
-        md_parser = self.parsers.get(ExtensionTypes.MD.value)
+        md_parser, _ = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
         image_parser = self.parsers.get(ExtensionTypes.PNG.value)
 
         if md_parser and image_parser:
-            modified_markdown, images = md_parser.extract_and_replace_images(markdown_data)
+            modified_markdown, images = await offload_if_large(
+                md_parser.extract_and_replace_images, markdown_data
+            )
 
             if images:
                 # Collect all image URLs
                 urls_to_convert = [image["url"] for image in images]
 
                 # Convert URLs to base64
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                base64_urls = await image_parser.urls_to_base64(
+                    urls_to_convert, allow_remote_fetch=allow_remote_fetch
+                )
 
                 # Create caption map with base64 URLs
                 for i, image in enumerate(images):
@@ -899,6 +943,8 @@ class Processor:
         block_group: BlockGroup,
         record_name: str,
         md_parser: MarkdownParser,
+        *,
+        allow_remote_fetch: bool,
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
         Process a single block group's markdown into blocks.
@@ -923,7 +969,7 @@ class Processor:
 
         # Extract and replace images from markdown, then convert URLs to base64
         modified_markdown, caption_map = await self._process_blockgroup_images(
-            markdown_data, block_group.index
+            markdown_data, block_group.index, allow_remote_fetch=allow_remote_fetch
         )
 
         self.logger.debug(
@@ -947,6 +993,8 @@ class Processor:
         self,
         block_group: BlockGroup,
         record_name: str,
+        *,
+        allow_remote_fetch: bool,
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
         Process a single block group's HTML data into blocks.
@@ -961,19 +1009,23 @@ class Processor:
                 f"BlockGroup {block_group.index} has no valid HTML data"
             )
 
-        html_parser = self.parsers.get(ExtensionTypes.HTML.value)
+        _, html_parser = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
         if not html_parser:
             raise ValueError("HTML parser is not configured")
         html_content = html_parser.clean_html(html_data)
 
         caption_map: Dict[str, str] = {}
-        modified_html, images = html_parser.extract_and_replace_images(html_content)
+        modified_html, images = await offload_if_large(
+            html_parser.extract_and_replace_images, html_content
+        )
 
         if images:
             image_parser = self.parsers.get(ExtensionTypes.PNG.value)
             if image_parser:
                 urls_to_convert = [image["url"] for image in images]
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                base64_urls = await image_parser.urls_to_base64(
+                    urls_to_convert, allow_remote_fetch=allow_remote_fetch
+                )
                 for i, image in enumerate(images):
                     if base64_urls[i]:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
@@ -1229,7 +1281,7 @@ class Processor:
         )
 
     async def _process_blockgroups(
-        self, block_containers: BlocksContainer, record_name: str
+        self, block_containers: BlocksContainer, record_name: str, *, allow_remote_fetch: bool
     ) -> BlocksContainer:
         """
         Process BlockGroups with requires_processing=True via the markdown parser.
@@ -1242,6 +1294,7 @@ class Processor:
         Args:
             block_containers: BlocksContainer to process
             record_name: Name of the record (for parser context)
+            allow_remote_fetch: False for pushed content: a remote image is left out, never fetched
 
         Returns:
             BlocksContainer with processed blocks merged in
@@ -1273,7 +1326,7 @@ class Processor:
         processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]] = {}
         initial_block_count = len(block_containers.blocks)
 
-        md_parser = self.parsers.get(ExtensionTypes.MD.value)
+        md_parser, _ = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
         if md_parser is None:
             raise ValueError("Markdown parser is not configured")
 
@@ -1281,11 +1334,11 @@ class Processor:
             try:
                 if block_group.format == DataFormat.HTML:
                     new_block_groups, new_blocks = await self._process_single_blockgroup_html(
-                        block_group, record_name
+                        block_group, record_name, allow_remote_fetch=allow_remote_fetch
                     )
                 else:
                     new_block_groups, new_blocks = await self._process_single_blockgroup(
-                        block_group, record_name, md_parser
+                        block_group, record_name, md_parser, allow_remote_fetch=allow_remote_fetch
                     )
 
                 # Store results for later merging
@@ -1349,21 +1402,20 @@ class Processor:
             # self.parsers is shared by concurrent records.
             document_parser: ExcelParser = parser.new_document_parser()
             await asyncio.to_thread(document_parser.load_workbook_from_binary, excel_binary)
+            excel_binary = None
 
             # Signal parsing complete after workbook is loaded
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for summaries)
             blocks_containers = await document_parser.create_blocks(llm)
+            document_parser = None
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = blocks_containers
             record.virtual_record_id = virtual_record_id
@@ -1397,7 +1449,7 @@ class Processor:
         try:
             # Convert XLS to XLSX binary
             xls_parser = self.parsers[ExtensionTypes.XLS.value]
-            xlsx_binary = xls_parser.convert_xls_to_xlsx(xls_binary)
+            xlsx_binary = await xls_parser.convert_xls_to_xlsx_async(xls_binary)
 
             # Process the converted XLSX using the Excel parser
             async for event in self.process_excel_document(
@@ -1478,13 +1530,10 @@ class Processor:
             self.logger.info(f"🔍 Detected {len(tables)} table(s) in delimited file")
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.virtual_record_id = virtual_record_id
 
@@ -1594,18 +1643,22 @@ class Processor:
 
             # Use the unified HTML parser interface
             self.logger.debug("📄 Processing HTML content")
+            html_content = await asyncio.to_thread(fit_inline_images, html_content)
             html_parser = self.parsers[ExtensionTypes.HTML.value]
             html_content = html_parser.clean_html(html_content)
             html_content = html_parser.replace_relative_image_urls(html_content)
 
             # Extract image URLs and convert to base64 (mirrors the Markdown flow)
             caption_map: Dict[str, str] = {}
-            modified_html, images = html_parser.extract_and_replace_images(html_content)
+            modified_html, images = await offload_if_large(
+                html_parser.extract_and_replace_images, html_content
+            )
 
             if images:
                 image_parser = self.parsers[ExtensionTypes.PNG.value]
                 urls_to_convert = [image["url"] for image in images]
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                # An HTML file a connector synced: never a pushed blocks document.
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
 
                 for i, image in enumerate(images):
                     if base64_urls[i]:
@@ -1621,17 +1674,17 @@ class Processor:
                 caption_map=caption_map if caption_map else None,
                 name=recordName,
             )
+            # Otherwise held through the whole sink, with every image in the page.
+            del html_content, modified_html, images, caption_map
 
             # Signal parsing complete
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
 
             record.block_containers = block_containers
@@ -1743,6 +1796,7 @@ class Processor:
 
             # Initialize Markdown parser
             self.logger.debug("📄 Processing Markdown content")
+            markdown = await asyncio.to_thread(fit_inline_images, markdown)
             parser = self.parsers[ExtensionTypes.MD.value]
 
             # Each regex pass over a large document is one C call that holds
@@ -1763,7 +1817,8 @@ class Processor:
             # Convert URLs to base64 if there are any images
             if urls_to_convert:
                 image_parser = self.parsers[ExtensionTypes.PNG.value]
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                # A markdown file a connector synced: never a pushed blocks document.
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
 
                 # Create caption map with base64 URLs
                 for i, image in enumerate(images):
@@ -1775,17 +1830,16 @@ class Processor:
                 caption_map=caption_map or None,
                 name=recordName,
             )
+            # Otherwise held through the whole sink, with every image in the document.
+            del md_content, markdown, modified_markdown, images, caption_map
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
 
             record.block_containers = block_containers
@@ -1957,13 +2011,10 @@ class Processor:
                 code_binary = code_binary.encode("utf-8")
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             repository_file = record.get("recordType") == RecordTypes.CODE_FILE.value
             record = convert_record_dict_to_record(record)
 
@@ -2160,20 +2211,20 @@ class Processor:
             if not recordName.lower().endswith(".pptx"):
                 recordName = f"{recordName}.pptx"
             conv_res = await processor.parse_document(recordName, pptx_binary)
+            pptx_binary = None
 
             # Signal parsing complete after Docling parsing
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
+            conv_res = None
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
@@ -2214,7 +2265,7 @@ class Processor:
             f"🚀 Starting PPT document processing for record: {recordName}"
         )
         parser = self.parsers[ExtensionTypes.PPT.value]
-        ppt_result = parser.convert_ppt_to_pptx(ppt_binary)
+        ppt_result = await parser.convert_ppt_to_pptx_async(ppt_binary)
         async for event in self.process_pptx_document(
             recordName, recordId, version, source, orgId, ppt_result, virtual_record_id, event_type, prev_virtual_record_id
         ):
@@ -2283,13 +2334,10 @@ class Processor:
             
             # Get record from database
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                raise DocumentProcessingError(
-                    "Record not found in database", doc_id=recordId
-                )
+                raise RecordDeletedError(recordId)
             
             record = self._convert_record(record)
             record.block_containers = block_containers
@@ -2357,13 +2405,10 @@ class Processor:
             )
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                raise DocumentProcessingError(
-                    "Record not found in database", doc_id=recordId
-                )
+                raise RecordDeletedError(recordId)
 
             record = self._convert_record(record)
             record.block_containers = block_containers

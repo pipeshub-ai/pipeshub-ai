@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
@@ -13,11 +14,19 @@ from app.connectors.sources.atlassian.jira.enrichment.issue_fetcher import (
     batch_fetch_issues,
     resolve_is_cloud_api,
 )
-from app.connectors.sources.atlassian.jira.enrichment.value_formatter import enrich_from_issue
+from app.connectors.sources.atlassian.jira.enrichment.value_formatter import (
+    enrich_from_issue,
+    key_only_refs,
+    referenced_issue_ids,
+    restrict_cross_issue_refs,
+)
 from app.models.entities import RecordType, TicketRecord
 from app.sources.client.jira.jira import JiraClient, JiraConfigUnavailableError
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.logger import create_logger
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = create_logger("jira_ticket_enrichment")
 
@@ -31,6 +40,7 @@ _auth_types: dict[str, str] = {}
 _unavailable_until: dict[str, float] = {}
 _RETRY_UNAVAILABLE_AFTER_S = 600.0
 
+_PARENT_ID_LINE = re.compile(r"^External Parent ID: .*$", re.MULTILINE)
 _CONNECTOR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 
 
@@ -137,41 +147,78 @@ async def enrich_ticket_llm_context(
     base_context: str,
     ticket: TicketRecord,
     config_service: ConfigurationService,
+    readable_issue_ids: Callable[[str, set[str]], Awaitable[set[str]]] | None = None,
 ) -> str:
     """Fetch curated live Jira fields and merge into ticket LLM context.
 
-    Uses connector service credentials (not the querying user) — may expose
-    fields the user cannot see in the Jira UI.
+    Uses connector service credentials, not the querying user. Jira already
+    leaves out fields hidden by the issue's field configuration, but other
+    issues named in the response (parent, links, sub-tasks) may not be readable
+    by the viewer: ``readable_issue_ids(connector_id, issue_ids)`` says which
+    are. Without it, or if it fails, no other issue is named.
     """
-    if not ticket.connector_id or not ticket.external_record_id:
-        return base_context
     if not is_jira_connector(ticket.connector_name):
         return base_context
-
-    connector_id = str(ticket.connector_id)
-    ds = await _get_data_source(config_service, connector_id, ticket.connector_name)
-    if not ds:
+    # The base context names the parent by id; show it only if the viewer can read it.
+    parent_id = str(ticket.parent_external_record_id or "")
+    full_base = base_context
+    if parent_id:
+        base_context = _PARENT_ID_LINE.sub("External Parent ID: N/A", base_context)
+    if not ticket.connector_id or not ticket.external_record_id:
         return base_context
 
-    is_cloud = _is_cloud.get(connector_id, resolve_is_cloud_api(ticket.connector_name))
-    custom_ids = await _discover_custom_fields(
-        config_service, connector_id, ticket.connector_name, ds=ds,
-    )
-    issues_map = await batch_fetch_issues(
-        ds,
-        is_cloud=is_cloud,
-        issue_ids=[str(ticket.external_record_id)],
-        discovered_custom_ids=custom_ids,
-    )
-    issue = issues_map.get(str(ticket.external_record_id))
-    if not issue:
-        return base_context
-
+    # Any failure from here returns the redacted context, never the caller's unredacted one.
     try:
+        connector_id = str(ticket.connector_id)
+        ds = await _get_data_source(config_service, connector_id, ticket.connector_name)
+        if not ds:
+            return base_context
+
+        is_cloud = _is_cloud.get(connector_id, resolve_is_cloud_api(ticket.connector_name))
+        custom_ids = await _discover_custom_fields(
+            config_service, connector_id, ticket.connector_name, ds=ds,
+        )
+        issues_map = await batch_fetch_issues(
+            ds,
+            is_cloud=is_cloud,
+            issue_ids=[str(ticket.external_record_id)],
+            discovered_custom_ids=custom_ids,
+        )
+        issue = issues_map.get(str(ticket.external_record_id))
+        if not issue:
+            return base_context
+
+        readable: set[str] = set()
+        # Resolve key-only references (epic link, parent link) to ids in one lookup,
+        # so one access check below covers every issue this ticket names.
+        key_ids: dict[str, str] = {}
+        keys = set(key_only_refs(issue, custom_ids).values())
+        if keys:
+            try:
+                found = await batch_fetch_issues(
+                    ds, is_cloud=is_cloud, issue_ids=sorted(keys),
+                    discovered_custom_ids={}, by_key=True,
+                )
+                key_ids = {str(i["key"]): str(i["id"]) for i in found.values() if i.get("key")}
+            except Exception as exc:
+                logger.warning("Jira key lookup failed; naming no key-only references: %s", exc)
+        refs = (
+            referenced_issue_ids(issue)
+            | ({parent_id} if parent_id else set())
+            | set(key_ids.values())
+        )
+        if refs and readable_issue_ids is not None:
+            try:
+                readable = set(await readable_issue_ids(connector_id, refs))
+            except Exception as exc:
+                logger.warning("Jira issue access check failed; naming no other issues: %s", exc)
+        if parent_id in readable:
+            base_context = full_base
+        issue = restrict_cross_issue_refs(issue, readable, custom_ids, key_ids)
         return enrich_from_issue(base_context, issue, custom_ids)
     except Exception as exc:
         logger.warning(
-            "Jira enrichment format failed for ticket %s: %s",
+            "Jira enrichment failed for ticket %s: %s",
             ticket.external_record_id,
             exc,
         )

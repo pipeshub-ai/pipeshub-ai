@@ -200,6 +200,16 @@ class TestStreamedAnswerTracking:
 
         assert streamer.streamed_answer == "The answer is 42."
 
+    async def test_cancellation_keeps_partial_text_for_the_stopped_answer(self) -> None:
+        streamer, _sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Section 1. "}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Section 2."}))
+        await streamer.on_event(_event(EventType.CANCELLATION, {"error": "Cancelled"}))
+
+        assert streamer.streamed_answer == "Section 1. Section 2."
+
     async def test_streamed_answer_defaults_to_empty_when_nothing_streamed(self) -> None:
         streamer, _sink = _make_streamer()
 

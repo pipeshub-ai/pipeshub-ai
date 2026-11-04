@@ -295,6 +295,14 @@ cloud storage and takes hours — that runs in CI. It does run
 in-process; the suites there that genuinely need a service skip themselves when
 it is absent.
 
+The suites that need a service run in the `backend-matrix` workflow, one job per
+backend, and any skip fails the job. Tests that read `ARTIFACTS_IT_STORAGE_URL`
+(the artifact store and the storage service's routes) run in its `storage` job,
+on local disk, S3 (MinIO) and Azure Blob (Azurite), against the real storage
+routes started by `backend/nodejs/apps/tests/support/storage-it-server.ts`. To run them
+locally, follow the header of
+[`backend/python/tests/integration/compose/storage.yml`](backend/python/tests/integration/compose/storage.yml).
+
 ### Running Node.js Unit Tests
 
 Tests use **Mocha** as the test runner with **c8** for code coverage. Test files are located in `backend/nodejs/apps/tests/` and follow the `*.test.ts` naming convention. See [`backend/nodejs/apps/tests/README.md`](backend/nodejs/apps/tests/README.md) for full details.

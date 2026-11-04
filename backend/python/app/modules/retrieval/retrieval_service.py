@@ -29,6 +29,8 @@ from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailable
 from app.models.blocks import GroupType
 from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.modules.pipeline.first_use import classify_on_first_use_later
+from app.modules.retrieval import degraded_notice
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
@@ -111,6 +113,7 @@ from app.utils.aimodels import (
 )
 from app.utils.chat_helpers import (
     GRAPH_BATCH_CHUNK_SIZE,
+    attach_connector_instance_names,
     describe_search_records,
     get_flattened_results,
     get_record,
@@ -122,7 +125,6 @@ from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
 from app.utils.stage_timer import span, spanned
-from app.utils.text_fragments.cache import TtlCache
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
@@ -281,6 +283,8 @@ class _QueryPlan:
     # the page because the access check denied too much of it: the caller
     # searches again with the record-id filter.
     narrow_shortfall: bool = False
+    # A provider answered some search of this request with less than its full search (``SearchResult.degraded``).
+    degraded: bool = False
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -448,14 +452,6 @@ def _narrow_virtual_ids(current: list[str] | None, allowed: list[str]) -> list[s
 _SELECTION_REQUEST_KEYS = frozenset(
     (*SELECTION_FILTER_KEYS, *ALLOWED_FILTER_KEYS, SELECTION_APPS_FILTER_KEY)
 )
-
-# Connector names only label citations; a slow graph must not hold up the search.
-CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS = 2.0
-
-# Connector instance display names for citations. Each search looked up the App
-# of every connector in its results, one query each; a rename shows within a minute.
-_connector_name_cache = TtlCache(maxsize=10_000, ttl_seconds=60.0)
-
 
 class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
@@ -853,6 +849,8 @@ class RetrievalService:
                     # as nothing matching.
                     response["message"] = f"{incomplete} {message}"
                     response["searchIncomplete"] = incomplete
+                if plan.degraded:
+                    response["searchDegraded"] = True
                 return response
 
             # Graph key for KH permission_role checks (Location trails).
@@ -1095,16 +1093,10 @@ class RetrievalService:
                         r["webUrl"], user_email, r.get("connectorName")
                     )
 
-            await self._attach_connector_instance_names(fetched_records)
-            limit_sources = connection_sources_of(filter_groups)
-            if limit_sources is not None:
-                # The app's own name is its source's or collection's name: shown
-                # only when the limit covers that app whole, as the Location
-                # trail and record details show it.
-                whole_apps = set(limit_sources.get("apps") or ())
-                for r in fetched_records:
-                    if r and r.get("connectorId") not in whole_apps:
-                        r.pop("connectorInstanceName", None)
+            with span("records"):
+                await attach_connector_instance_names(
+                    self.graph_provider, fetched_records, connection_sources_of(filter_groups)
+                )
 
             record_id_to_record_map = {}
             for r in fetched_records:
@@ -1495,6 +1487,8 @@ class RetrievalService:
                 incomplete = plan.incomplete_notice()
                 if incomplete:
                     response_data["searchIncomplete"] = incomplete
+                if plan.degraded:
+                    response_data["searchDegraded"] = True
 
                 # Add KB filtering info to response if KB filtering was applied
                 if kb_ids:
@@ -1503,6 +1497,7 @@ class RetrievalService:
                         "kb_count": len(kb_ids)
                     }
 
+                classify_on_first_use_later(response_data, org_id, self.config_service, self.logger)
                 return response_data
             else:
                 return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
@@ -1589,6 +1584,8 @@ class RetrievalService:
         except Exception as exc:
             self.logger.warning("source diversity: deeper read failed, keeping the plain result: %s", exc)
             return [], {}
+        # These hits can join the response, so a partial search behind them is the response's too.
+        plan.degraded = plan.degraded or candidate_plan.degraded
         kept = [
             hit for hit in hits
             if isinstance(hit, dict) and hit_record_id(hit) in accessible
@@ -2293,9 +2290,10 @@ class RetrievalService:
         batches: list[list] = [[] for _ in queries]
         capped = [False] * len(queries)
         failed_collections = searched_collections = 0
+        degraded: list[bool] = []
         if requests:
             per_collection, failed_collections = await self._lexical_fan_out(
-                await self._resolve_search_collections(org_id, user_id), requests, limit,
+                await self._resolve_search_collections(org_id, user_id), requests, limit, degraded=degraded,
             )
             searched_collections = len(per_collection) + failed_collections
             for j, i in enumerate(sent):
@@ -2364,10 +2362,12 @@ class RetrievalService:
             empty_query=[sparse is None and text is None for sparse, text in requests_legs],
             failed_collections=failed_collections,
             searched_collections=searched_collections,
+            degraded=bool(degraded),
         )
 
     async def _lexical_fan_out(
         self, collections: list[str], requests: list[HybridSearchRequest], limit: int,
+        *, degraded: list[bool] | None = None,
     ) -> tuple[list[tuple[str, list[list]]], int]:
         """Each collection's own per-request results, and how many collections
         could not be searched. Raises when none could."""
@@ -2375,8 +2375,9 @@ class RetrievalService:
 
         async def _one(name: str) -> list[list]:
             async with semaphore:
-                return await self._fan_out_searches([name], requests, limit)
+                return await self._fan_out_searches([name], requests, limit, degraded=degraded)
 
+        degraded_notice.track()
         outcomes = await asyncio.gather(*(_one(name) for name in collections), return_exceptions=True)
         answered = [(name, out) for name, out in zip(collections, outcomes) if not isinstance(out, BaseException)]
         failures = [out for out in outcomes if isinstance(out, BaseException)]
@@ -2702,12 +2703,15 @@ class RetrievalService:
             if plan is not None:
                 plan.collections = collections
         failed_collections: list[str] = []
+        degraded: list[bool] = []
         search_results = await self._fan_out_searches(
-            collections, requests, fused_limit, failed=failed_collections,
+            collections, requests, fused_limit, failed=failed_collections, degraded=degraded,
         )
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
+        if degraded and plan is not None:
+            plan.degraded = True
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back
@@ -2751,6 +2755,7 @@ class RetrievalService:
         limit: int,
         *,
         failed: list[str] | None = None,
+        degraded: list[bool] | None = None,
     ) -> list[list]:
         """Query every collection in parallel and reduce each query to one top-K.
 
@@ -2763,11 +2768,15 @@ class RetrievalService:
         A collection that fails degrades the result set instead of failing the
         search — a search over three collections should not error because one
         is briefly unreachable. Each one it could not search is appended to
-        ``failed``, so the caller can say the results are incomplete.
+        ``failed``, so the caller can say the results are incomplete. A store that
+        answered from a partial search (``degraded_notice``, by a note or by a marked hit)
+        appends to ``degraded``.
         """
         if not collections:
             return [[] for _ in requests]
 
+        degraded_notice.track()
+        noted_before = degraded_notice.count()
         semaphore = asyncio.Semaphore(SEARCH_FANOUT_CONCURRENCY)
 
         async def _search(collection_name: str) -> list[list]:
@@ -2797,11 +2806,20 @@ class RetrievalService:
                     outcome,
                 )
                 continue
+            for batch in outcome:
+                for hit in batch:
+                    if isinstance(reason := getattr(hit, "degraded", None), str):
+                        degraded_notice.note(reason)
+                        break
             for i, batch in enumerate(outcome):
                 if i < len(per_query):
                     per_query[i].append(
                         CollectionResults(collection_name=collection_name, results=batch)
                     )
+
+        # Read before the merge trims: a store that found nothing, or whose hits fall below the cut, still counts.
+        if degraded is not None and degraded_notice.count() > noted_before:
+            degraded.append(True)
 
         # Degrading when one collection is unreachable is the point of
         # return_exceptions; degrading when *every* one failed is not — that is
@@ -2847,46 +2865,6 @@ class RetrievalService:
             "status_code": status_code,
             "message": message,
         }
-
-    @spanned("records")
-    async def _attach_connector_instance_names(self, records: list[dict[str, Any]]) -> None:
-        """Set ``connectorInstanceName``: the name the admin gave the record's connector.
-
-        ``connectorName`` is only the type code (WEB), shared by every instance
-        of that type. A missing or unreadable instance leaves the field unset,
-        and the UI falls back to the type.
-        """
-        records = [r for r in records if isinstance(r, dict)]
-        connector_ids = sorted({r["connectorId"] for r in records if r.get("connectorId")})
-        if not connector_ids:
-            return
-        names: dict[str, str | None] = {}
-        for cid in connector_ids:
-            hit, name = _connector_name_cache.get(cid)
-            if hit:
-                names[cid] = name
-        to_fetch = [cid for cid in connector_ids if cid not in names]
-        if to_fetch:
-            try:
-                apps = await asyncio.wait_for(
-                    asyncio.gather(
-                        *(self.graph_provider.get_document(cid, CollectionNames.APPS.value) for cid in to_fetch),
-                        return_exceptions=True,
-                    ),
-                    timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
-                )
-            except Exception as e:
-                # Labels only: search results stay correct, the UI shows the type code.
-                self.logger.warning("Could not resolve connector names for citations: %s", e)
-                apps = []
-            for cid, app in zip(to_fetch, apps):
-                if isinstance(app, dict):
-                    names[cid] = app.get("name")
-                    _connector_name_cache.set(cid, app.get("name"))
-        for r in records:
-            name = names.get(r.get("connectorId"))
-            if name:
-                r["connectorInstanceName"] = name
 
     def _create_virtual_to_record_mapping(
         self,

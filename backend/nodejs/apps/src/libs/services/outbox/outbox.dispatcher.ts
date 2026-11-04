@@ -1,7 +1,8 @@
-import type { QueryFilter } from 'mongoose';
+import { spawnDetached } from '../../context/orgContext';
 import { Logger } from '../logger.service';
 import { IMessageProducer, StreamMessage } from '../../types/messaging.types';
-import { IOutboxEvent, OutboxEvent } from './outbox.schema';
+import { getOutboxRepository } from '../../repositories/outbox';
+import type { OutboxEventRow, OutboxStatus } from '../../repositories/outbox';
 
 const DEFAULT_POLL_INTERVAL_MS = 2000;
 
@@ -81,9 +82,12 @@ export class OutboxDispatcher {
   start(): void {
     if (this.timer) return;
     this.stopped = false;
-    this.timer = setInterval(() => {
-      void this.drain();
-    }, this.pollIntervalMs);
+    // the timer outlives the caller: a tick must not carry whichever org was bound when it was created
+    this.timer = spawnDetached(() =>
+      setInterval(() => {
+        void this.drain();
+      }, this.pollIntervalMs),
+    );
     // Long enough between ticks that holding the event loop open would delay
     // shutdown for no reason.
     this.timer.unref();
@@ -154,55 +158,15 @@ export class OutboxDispatcher {
    * Candidates are considered oldest first and the first unblocked one is
    * taken, so one stuck entity delays only its own events.
    */
-  private async claimNext(): Promise<IOutboxEvent | null> {
-    const now = new Date();
-    const due: QueryFilter<IOutboxEvent> = {
-      $or: [
-        { status: 'pending', nextAttemptAt: { $lte: now } },
-        {
-          status: 'publishing',
-          claimedAt: { $lte: new Date(now.getTime() - CLAIM_LEASE_MS) },
-        },
-      ],
-    };
-
-    for (let skip = 0; skip < MAX_CANDIDATE_SCAN; skip += CANDIDATE_BATCH) {
-      const candidates = await OutboxEvent.find(due)
-        .sort({ createdAt: 1 })
-        .skip(skip)
-        .limit(CANDIDATE_BATCH)
-        .exec();
-
-      if (candidates.length === 0) return null;
-
-      for (const candidate of candidates) {
-        const blocked = await OutboxEvent.exists({
-          orderingKey: candidate.orderingKey,
-          createdAt: { $lt: candidate.createdAt },
-          status: { $in: ['pending', 'publishing', 'failed'] },
-          _id: { $ne: candidate._id },
-        });
-        if (blocked) continue;
-
-        // The whole due condition is re-asserted here, not just the id and
-        // status. Matching on status alone would let two instances take the
-        // same abandoned row: the first refreshes claimedAt but leaves the
-        // status at `publishing`, so the second update would still match and
-        // both would publish the same event.
-        const claimed = await OutboxEvent.findOneAndUpdate(
-          { _id: candidate._id, ...due },
-          { $set: { status: 'publishing', claimedAt: now } },
-          { returnDocument: 'after' },
-        ).exec();
-        if (claimed) return claimed;
-      }
-
-      if (candidates.length < CANDIDATE_BATCH) return null;
-    }
-    return null;
+  private claimNext(): Promise<OutboxEventRow | null> {
+    return getOutboxRepository().claimNext({
+      leaseMs: CLAIM_LEASE_MS,
+      candidateBatch: CANDIDATE_BATCH,
+      maxScan: MAX_CANDIDATE_SCAN,
+    });
   }
 
-  private async deliver(event: IOutboxEvent): Promise<boolean> {
+  private async deliver(event: OutboxEventRow): Promise<boolean> {
     const message: StreamMessage<string> = {
       key: event.key,
       value: event.value,
@@ -219,41 +183,28 @@ export class OutboxDispatcher {
       return false;
     }
 
-    await OutboxEvent.updateOne(
-      { _id: event._id },
-      {
-        $set: { status: 'published', publishedAt: new Date() },
-        $unset: { claimedAt: '', lastError: '' },
-      },
-    ).exec();
+    await getOutboxRepository().markPublished(event._id);
     return true;
   }
 
   private async recordFailure(
-    event: IOutboxEvent,
+    event: OutboxEventRow,
     error: unknown,
   ): Promise<void> {
     const attempts = event.attempts + 1;
     const message = error instanceof Error ? error.message : String(error);
 
-    await OutboxEvent.updateOne(
-      { _id: event._id },
-      {
-        $set: {
-          status: 'pending',
-          attempts,
-          nextAttemptAt: backoffFor(attempts),
-          lastError: message,
-        },
-        $unset: { claimedAt: '' },
-      },
-    ).exec();
+    await getOutboxRepository().markFailed(event._id, {
+      attempts,
+      nextAttemptAt: backoffFor(attempts),
+      lastError: message,
+    });
 
     // Quiet while it still looks like a blip, loud once it does not. This is
     // the visibility the old code lacked: a failure here is on the record and
     // can be alerted on, rather than swallowed behind a success.
     const detail = {
-      outboxId: String(event._id),
+      outboxId: event._id,
       topic: event.topic,
       key: event.key,
       attempts,
@@ -271,22 +222,8 @@ export class OutboxDispatcher {
 }
 
 /** Counts by status, for a health endpoint or a metric. */
-export async function outboxBacklog(): Promise<Record<OutboxCountKey, number>> {
-  const rows = await OutboxEvent.aggregate<{ _id: string; count: number }>([
-    { $group: { _id: '$status', count: { $sum: 1 } } },
-  ]);
-  const counts: Record<OutboxCountKey, number> = {
-    pending: 0,
-    publishing: 0,
-    published: 0,
-    failed: 0,
-  };
-  for (const row of rows) {
-    if (row._id in counts) {
-      counts[row._id as OutboxCountKey] = row.count;
-    }
-  }
-  return counts;
+export function outboxBacklog(): Promise<Record<OutboxCountKey, number>> {
+  return getOutboxRepository().statusCounts();
 }
 
-export type OutboxCountKey = 'pending' | 'publishing' | 'published' | 'failed';
+export type OutboxCountKey = OutboxStatus;

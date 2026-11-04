@@ -39,6 +39,10 @@ are not separate test variables. `ZENDESK_TEST_CLIENT_ID` and
 `ZENDESK_TEST_CLIENT_SECRET` belong to the Zendesk OAuth client. The plain
 `CLIENT_ID` and `CLIENT_SECRET` above belong to PipesHub's API client.
 
+If minting the token fails with `HTTP 302 (redirected to /agent/expired-trial)`,
+the Zendesk account's trial has lapsed and no OAuth call works until the account
+is extended or replaced; then update the subdomain and OAuth client settings.
+
 The running PipesHub stack also needs `PIPESHUB_BASE_URL`; either
 `CLIENT_ID`/`CLIENT_SECRET` for the PipesHub API or, in local mode,
 `PIPESHUB_TEST_USER_EMAIL`/`PIPESHUB_TEST_USER_PASSWORD` so the suite can create
@@ -76,7 +80,8 @@ The GitHub Actions **Integration Tests** workflow offers `zendesk` as a manual
 dispatch choice. Set `ZENDESK_TEST_SUBDOMAIN`, `ZENDESK_TEST_CLIENT_ID` (the
 client's unique identifier, not its numeric ID), and
 `ZENDESK_TEST_CLIENT_SECRET` in the protected `integration-test-dev`
-environment. Each run mints its own token and fails before testing if Zendesk
-refuses it. Zendesk runs in the `connectors-2` shard on the nightly and on pull
+environment. Each run mints its own token. If Zendesk refuses it, the rest of
+the shard still runs and the Zendesk tests find no token: they fail on the
+nightly and on a run dispatched with `zendesk`, and skip on pull requests. Zendesk runs in the `connectors-2` shard on the nightly and on pull
 requests from this repository, and alone when dispatched with `zendesk`. Ordinary
 local runs skip when credentials are absent.

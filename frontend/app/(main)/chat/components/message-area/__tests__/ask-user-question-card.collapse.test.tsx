@@ -48,6 +48,59 @@ function renderCard(
   return render(ui);
 }
 
+describe('AskUserQuestionCard closed by a typed reply', () => {
+  const replied = (): AskUserQuestionPayload => ({ ...payload([region, year]), repliedInChat: true });
+
+  it('opens collapsed, with the note and without the questions', () => {
+    renderCard({ payload: replied(), status: 'persisted' });
+
+    expect(screen.getByText('You replied in the chat.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /show more/i })).toBeTruthy();
+    expect(screen.queryByText(/Which region\?/)).toBeNull();
+    expect(screen.queryByText('Europe')).toBeNull();
+    expect(screen.queryByText('Answered')).toBeNull();
+  });
+
+  it('shows the questions again on "Show more", read-only, and hides them on "Show less"', () => {
+    renderCard({ payload: replied(), status: 'persisted' });
+
+    fireEvent.click(screen.getByRole('button', { name: /show more/i }));
+    expect(screen.getByText(/Which region\?/)).toBeTruthy();
+    expect(screen.getByText(/Which year\?/)).toBeTruthy();
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull();
+    expect(screen.queryByText('Answered')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /show less/i }));
+    expect(screen.queryByText(/Which region\?/)).toBeNull();
+  });
+
+  it('collapses an open card as soon as the typed reply closes it', () => {
+    const view = renderCard({ payload: payload([region, year]), status: 'pending' });
+    expect(screen.getByText(/Which region\?/)).toBeTruthy();
+
+    view.rerender(
+      <Theme>
+        <AskUserQuestionCard payload={replied()} initialAnswers={{}} status="persisted" />
+      </Theme>,
+    );
+
+    expect(screen.getByText('You replied in the chat.')).toBeTruthy();
+    expect(screen.queryByText(/Which region\?/)).toBeNull();
+    expect(screen.getByRole('button', { name: /show more/i })).toBeTruthy();
+  });
+
+  it('keeps an expired card as it was: open, with its note', () => {
+    renderCard({
+      payload: { ...payload([region]), expiresAt: new Date(Date.now() - 60_000).toISOString() },
+      status: 'pending',
+    });
+
+    expect(screen.getByText('This question has expired. Reply in the chat to continue.')).toBeTruthy();
+    expect(screen.getByText(/Which region\?/)).toBeTruthy();
+  });
+});
+
 describe('AskUserQuestionCard once every question is answered', () => {
   it('opens collapsed, the way Show less leaves it', () => {
     renderCard({

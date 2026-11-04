@@ -18,6 +18,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     FilterCollection,
 )
@@ -303,14 +304,14 @@ class TestSharePointConnectorInit:
     async def test_init_missing_credentials_raises(self):
         connector, dep, dsp, cs, tx = _make_connector()
         cs.get_config = AsyncMock(return_value=None)
-        with pytest.raises(ValueError, match="credentials not found"):
+        with pytest.raises(ConnectorInitError, match="credentials not found"):
             await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_missing_auth_block_raises(self):
         connector, dep, dsp, cs, tx = _make_connector()
         cs.get_config = AsyncMock(return_value={"auth": {}})
-        with pytest.raises(ValueError, match="credentials not found"):
+        with pytest.raises(ConnectorInitError, match="credentials not found"):
             await connector.init()
 
     @pytest.mark.asyncio
@@ -323,7 +324,7 @@ class TestSharePointConnectorInit:
                 # missing sharepointDomain
             }
         })
-        with pytest.raises(ValueError, match="Incomplete"):
+        with pytest.raises(ConnectorInitError, match="Incomplete"):
             await connector.init()
 
     @pytest.mark.asyncio
@@ -337,7 +338,7 @@ class TestSharePointConnectorInit:
                 # no clientSecret, no certificate
             }
         })
-        with pytest.raises(ValueError, match="Authentication credentials missing"):
+        with pytest.raises(ConnectorInitError, match="Authentication credentials missing"):
             await connector.init()
 
     @pytest.mark.asyncio

@@ -29,6 +29,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     is_transient_conflict,
     is_write_conflict,
     retry_on_deadlock,
+    will_retry,
 )
 from app.connectors.core.sync.full_sync_coverage import (
     GROUP_MEMBERS_UNSURE,
@@ -38,6 +39,7 @@ from app.connectors.core.sync.full_sync_coverage import (
     FullSyncSeen,
 )
 from app.connectors.core.sync.run_context import get_run_sync_id
+from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
     AppMetadata,
@@ -64,18 +66,22 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
+from app.connectors.core.base.data_processor.system_files import is_office_lock_file, is_system_file_name
 from app.connectors.core.base.data_processor.record_links import (
     addresses_linking_to,
     link_target,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.modules.code_graph import deleted_files
 from app.services.cache.invalidation_hooks import (
     notify_connector_permissions_changed,
     notify_connector_sync_completed,
     notify_kb_records_changed,
+    notify_principals_changed,
 )
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
+from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
 from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
@@ -228,6 +234,42 @@ class ParentPlacement(NamedTuple):
     parent_outside_group: bool
 
 
+class PushClaimRefused(Exception):
+    """A push's conditional claim did not apply; ``claim`` says why. Raised inside the transaction, so it rolls back."""
+
+    def __init__(self, claim: PushClaim) -> None:
+        super().__init__(claim.value)
+        self.claim = claim
+
+
+class PushRecordSkipped(Exception):
+    """The record upsert skipped a pushed record (it is in the trash); the push rolls back and re-decides."""
+
+
+@dataclass(frozen=True)
+class PushOutcome:
+    #: ``newRecord`` or ``updateRecord`` for a content change, else None.
+    event: str | None
+    #: Whether the event reached the broker. A False leaves the record for the stranded-record sweep.
+    published: bool
+
+
+def _edge_source_record_id(edge: dict) -> str | None:
+    """The record an edge starts at, in either provider's shape, or None when it starts elsewhere.
+
+    ArangoDB's ``get_edges_to_node`` answers its own edge documents (``_from``);
+    Neo4j's answers the generic ``from_id``/``from_collection``.
+    """
+    if edge.get("from_id"):
+        if edge.get("from_collection") != CollectionNames.RECORDS.value:
+            return None
+        return str(edge["from_id"])
+    source = str(edge.get("_from", ""))
+    prefix = f"{CollectionNames.RECORDS.value}/"
+    if not source.startswith(prefix):
+        return None
+    return source[len(prefix):] or None
+
 
 def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None = None) -> bool:
     """Whether a stored record (document or ``Record``) belongs to another org, or to
@@ -244,6 +286,21 @@ def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None =
         return True
     doc_connector = doc.get("connectorId")
     return bool(connector_id and doc_connector and doc_connector != connector_id)
+
+
+def _system_file_reason(record: Record) -> str | None:
+    """Why a synced file is not content, or None. A Knowledge Base upload is the user's
+    explicit choice and is kept: a push that stores nothing is retried until its deadline."""
+    if record.connector_name == Connectors.KNOWLEDGE_BASE:
+        return None
+    if not (isinstance(record, FileRecord) and record.is_file):
+        return None
+    if is_office_lock_file(record.record_name):
+        return "office lock file"
+    if is_system_file_name(record.record_name):
+        return "operating system file"
+    return None
+
 
 class DataSourceEntitiesProcessor:
     ATTACHMENT_CONTAINER_TYPES = [
@@ -355,6 +412,13 @@ class DataSourceEntitiesProcessor:
             run = self._full_sync_run(connector_id)
             if run is not None:
                 run.add(collection, node_id)
+
+    def _log_failure(self, message: str, error: Exception, *, exc_info: bool = False) -> None:
+        """Log a failure a retried method is about to raise: as a warning when
+        retry_on_deadlock will run the method again, which it reports itself, and
+        as an error when nothing will."""
+        log = self.logger.warning if will_retry(self, error) else self.logger.error
+        log(message, exc_info=exc_info)
 
     def _must_propagate(self, error: Exception, tx_store: TransactionStore | None) -> bool:
         """Whether a handler that logs a failure and goes on has to let this one
@@ -2030,8 +2094,12 @@ class DataSourceEntitiesProcessor:
 
         It is even when unchanged, since the delete took its vectors. A
         manual-only item that was never indexed stays so. Decided before the
-        restore's write from the status the upsert would otherwise store.
+        restore's write from the status the upsert would otherwise store. A
+        stub is never indexed, so it is not queued even when the trashed copy
+        was an indexed real record.
         """
+        if record.is_placeholder:
+            return False
         status = record.indexing_status
         if (
             record.origin == OriginTypes.UPLOAD
@@ -2506,7 +2574,7 @@ class DataSourceEntitiesProcessor:
             await self._flush_pending_blob_moves(pending_moves)
 
         except Exception as e:
-            self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
+            self._log_failure(f"Failed to update permissions for record {record.id}: {e}", e, exc_info=True)
             raise
 
     async def _process_record(
@@ -2536,6 +2604,10 @@ class DataSourceEntitiesProcessor:
         value because three callers already depend on the ``Record | None``
         return; they publish the collected ids *after* their transaction
         commits (see :meth:`_publish_membership_sync`).
+
+        Returns ``(None, [])`` when nothing is written: a new file no one
+        searches for (an Office lock file, Thumbs.db, ...) is not stored, and a
+        record in the trash or owned elsewhere is left as it is.
         """
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
@@ -2546,6 +2618,11 @@ class DataSourceEntitiesProcessor:
                 record.record_name, existing_record.id,
             )
             return None, []
+        if record.is_placeholder:
+            # Stubs are never published, so a stub left at the model's QUEUED
+            # default (connector placeholder sweeps) would stay QUEUED forever.
+            # Set before the trash restore, which decides from this status.
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         stored_under_its_id = False
         same_id: dict | None = None
         if existing_record is None:
@@ -2564,6 +2641,14 @@ class DataSourceEntitiesProcessor:
             if same_id is not None and not is_live_record(same_id):
                 self.logger.info(
                     "Skipping %s (%s): its id belongs to a record in the trash", record.record_name, record.id
+                )
+                return None, []
+            # Only a record not yet stored: one renamed onto such a name is still
+            # updated, or it would keep its old parent and access edges.
+            skip_reason = None if stored_under_its_id else _system_file_reason(record)
+            if skip_reason:
+                self.logger.debug(
+                    "Not storing %s (%s): %s", record.record_name, record.external_record_id, skip_reason
                 )
                 return None, []
         restored_from_trash = reindex_restored = False
@@ -2708,7 +2793,9 @@ class DataSourceEntitiesProcessor:
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
             if record.origin != OriginTypes.UPLOAD:
-                if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
+                # A stub (also a real record a narrowed filter turns back into one) is
+                # never indexed: it keeps the AUTO_INDEX_OFF set above, not re-queued.
+                if existing_record.indexing_status == ProgressStatus.COMPLETED.value and not record.is_placeholder:
                     if record.external_revision_id != existing_record.external_revision_id:
                         # Real content change on an already-indexed record: re-queue it,
                         # even when the connector stamped AUTO_INDEX_OFF for a manual-only
@@ -2731,6 +2818,15 @@ class DataSourceEntitiesProcessor:
                         # whose status decides the skip. A reindexed restore starts clean.
                         if not reindex_restored:
                             self._preserve_indexing_state(record, existing_record)
+                elif (
+                    existing_record.indexing_status == ProgressStatus.PASSWORD_PROTECTED.value
+                    and record.external_revision_id == existing_record.external_revision_id
+                    and not reindex_restored
+                ):
+                    # The same bytes need the same password: queuing the record again
+                    # on every full sync would only repeat the verdict. A changed
+                    # revision takes the normal path and is indexed again.
+                    self._preserve_indexing_state(record, existing_record)
             elif record.external_revision_id == existing_record.external_revision_id:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).
@@ -2746,6 +2842,20 @@ class DataSourceEntitiesProcessor:
                 record.source_created_at = existing_record.source_created_at
             if record.source_updated_at is None:
                 record.source_updated_at = existing_record.source_updated_at
+            # The code edge build re-resolves every file stamped since its last
+            # run. A full code sync re-saves every file, so a fresh stamp on
+            # unchanged ones turned each resync into a whole-repo build. The
+            # path is part of the external id, so an equal revision means the
+            # same content at the same path.
+            if (
+                record.record_type in (RecordType.CODE_FILE, RecordType.CODE_FILE.value)
+                and record.external_revision_id
+                and record.external_revision_id == existing_record.external_revision_id
+                and existing_record.updated_at is not None
+                and not existing_record.is_placeholder
+                and not restored_from_trash
+            ):
+                record.updated_at = existing_record.updated_at
             # A real record replacing a stub promotes it out of placeholder state.
             # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
             if existing_record.is_placeholder and not record.is_placeholder:
@@ -3011,9 +3121,17 @@ class DataSourceEntitiesProcessor:
             # Already indexed and unchanged — the COMPLETED status was carried
             # forward from the stored record precisely so this publish can be
             # skipped; there is nothing for the indexing consumer to redo.
-            if record.indexing_status == ProgressStatus.COMPLETED.value:
+            # FAILED is a verdict the connector reached itself (a page that
+            # answered an error), stored with its reason: indexing would only
+            # fetch it again, fail the same way, and replace that reason.
+            if record.indexing_status in (
+                ProgressStatus.COMPLETED.value,
+                ProgressStatus.PASSWORD_PROTECTED.value,
+                ProgressStatus.FAILED.value,
+            ):
                 self.logger.debug(
-                    f"Skipping indexing event for already-completed record {record.id}"
+                    f"Skipping indexing event for already-settled record {record.id} "
+                    f"({record.indexing_status})"
                 )
                 continue
 
@@ -3111,7 +3229,7 @@ class DataSourceEntitiesProcessor:
                     records_to_publish, pending_moves, moved_virtual_record_ids
                 )
         except Exception as e:
-            self.logger.error(f"Transaction on_new_records failed: {str(e)}")
+            self._log_failure(f"Transaction on_new_records failed: {str(e)}", e)
             raise e
 
 
@@ -3158,6 +3276,86 @@ class DataSourceEntitiesProcessor:
             )
             await self._mark_queued_after_publish([record.id])
 
+    # No @retry_on_deadlock: the push owns its retry loop (bounded in attempts and time), so a
+    # lost transaction is not retried inside each of the service's attempts.
+    async def on_pushed_record(
+        self,
+        record: Record,
+        *,
+        expected: PushExpect | None,
+        new: PushSet,
+        content_changed: bool,
+    ) -> PushOutcome:
+        """Write a record a caller pushed, claimed against a concurrent push or trash.
+
+        The first statement of the (explicit) transaction is the conditional claim; the record
+        is then upserted in the same transaction. A claim that does not apply, or a record the
+        upsert skips (one in the trash), raises and rolls everything back, so nothing is half
+        written and the caller re-decides from what is stored. After the commit a content change
+        publishes ``newRecord`` (a create) or ``updateRecord``; a failed publish leaves the
+        record NOT_STARTED with a fresh ``queuedAt`` for the stranded-record sweep.
+        """
+        moved_virtual_record_ids: list[tuple[str, str | None]] = []
+        narrowed_connectors: set[str] = set()
+        async with self._drop_access_after(narrowed_connectors), self._sync_transaction(explicit=True) as tx_store:
+            if getattr(tx_store, "explicit", False) is not True:
+                # Without one transaction the claim commits alone, and two creates of a key can both win it.
+                raise RuntimeError(
+                    "A pushed record needs a real graph transaction; enable explicit transactions "
+                    "(NEO4J_EXPLICIT_TRANSACTIONS or NEO4J_CREATE_TRANSACTIONS)."
+                )
+            claim = await tx_store.claim_push_record(
+                kb_id=record.connector_id, org_id=record.org_id, key=record.id, expected=expected, new=new,
+            )
+            if claim is not PushClaim.CLAIMED:
+                raise PushClaimRefused(claim)
+            existing = None if expected is None else await tx_store.get_record_by_key(record.id)
+            processed, pending_moves = await self._process_record(
+                record, [], tx_store, moved_virtual_record_ids,
+                publishes_event=content_changed, narrowed_connectors=narrowed_connectors,
+            )
+            if processed is None:
+                raise PushRecordSkipped(record.id)
+            if content_changed and processed.indexing_status != ProgressStatus.NOT_STARTED.value:
+                # An identical re-push that stores a new document keeps the stored revision, so the
+                # upload branch of _process_record carried the stored status (FAILED) over and stamped nothing.
+                processed.indexing_status = ProgressStatus.NOT_STARTED.value
+                self._stamp_queued_at(processed)
+                await tx_store.batch_upsert_records([processed])
+            elif expected is not None and not content_changed and existing is not None:
+                # A rename or version bump: indexing owns its state, which the upsert must not reset.
+                self._preserve_indexing_state(processed, Record.from_arango_base_record(existing))
+                await tx_store.batch_upsert_records([processed])
+            # A push opened before the delete's marker read the KB as live in its snapshot (Arango).
+            # Read it again outside the transaction, so a marker committed since is seen.
+            await self._refuse_if_kb_not_live(record.connector_id)
+        await self._publish_membership_sync(moved_virtual_record_ids)
+        await self._flush_pending_blob_moves(pending_moves)
+        if not content_changed:
+            return PushOutcome(event=None, published=False)
+        event = "newRecord" if expected is None else "updateRecord"
+        try:
+            if await self.messaging_producer.send_message(
+                "record-events",
+                {"eventType": event, "timestamp": get_epoch_timestamp_in_ms(), "payload": self._record_event_payload(processed)},
+                key=record.id,
+            ) is False:
+                raise RuntimeError("the message broker did not accept the event")
+        except Exception as e:
+            self.logger.error("Push of record %s committed but %s was not published: %s", record.id, event, e)
+            return PushOutcome(event=event, published=False)
+        await self._mark_queued_after_publish([record.id])
+        return PushOutcome(event=event, published=True)
+
+    async def _refuse_if_kb_not_live(self, kb_id: str) -> None:
+        """Raise ``PushClaimRefused`` when the KB is gone or being deleted. A failed read raises as is."""
+        graph = self.data_store_provider.graph_provider
+        kb = await graph.get_document(kb_id, CollectionNames.APPS.value, raise_on_error=True)
+        if kb is None:
+            raise PushClaimRefused(PushClaim.KB_MISSING)
+        if kb.get("status") == KB_DELETING_STATUS:
+            raise PushClaimRefused(PushClaim.KB_DELETING)
+
     @staticmethod
     def _code_path_changed(new_record: Record, old_record: Record) -> bool:
         """A code file's path is in what was embedded -- its block headers and
@@ -3194,7 +3392,10 @@ class DataSourceEntitiesProcessor:
         re-index, but this path publishes no event and nothing consumes
         NOT_STARTED, which strands the record permanently.
         """
-        record.indexing_status = existing_record.indexing_status
+        # A stub is never indexed, so the AUTO_INDEX_OFF _process_record gave it
+        # wins over a stale stored status (such as an old QUEUED).
+        if not record.is_placeholder:
+            record.indexing_status = existing_record.indexing_status
         record.parsing_status = existing_record.parsing_status
         record.extraction_status = existing_record.extraction_status
         record.processing_started_at = existing_record.processing_started_at
@@ -3404,6 +3605,22 @@ class DataSourceEntitiesProcessor:
                             if child_id:
                                 await tx_store.create_record_relation(
                                     old_record.id, child_id, RecordRelations.PARENT_CHILD.value
+                                )
+                        # Those children reach the user through the duplicate too:
+                        # search walks INHERIT_PERMISSIONS up to the group, so a
+                        # child left pointing at a deleted vertex is found by nobody.
+                        # A failed read raises before the duplicate is deleted, so
+                        # the children keep the edge they had rather than losing it.
+                        inheriting = await tx_store.get_edges_to_node(
+                            f"{CollectionNames.RECORDS.value}/{duplicate.id}",
+                            CollectionNames.INHERIT_PERMISSIONS.value,
+                            raise_on_error=True,
+                        )
+                        for edge in inheriting:
+                            child_id = _edge_source_record_id(edge)
+                            if child_id and child_id != old_record.id:
+                                await tx_store.create_inherit_permissions_relation_record(
+                                    child_id, old_record.id
                                 )
 
                         # One write: the delete takes the duplicate's own parent edge
@@ -3667,7 +3884,7 @@ class DataSourceEntitiesProcessor:
                 )
 
         except Exception as e:
-            self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
+            self._log_failure(f"on_records_moved failed: {e}", e, exc_info=True)
             raise
 
     @retry_on_deadlock()
@@ -3722,7 +3939,7 @@ class DataSourceEntitiesProcessor:
                 # Raising rolls the whole batch back, so it is never half restored.
                 raise await self._restore_refusal(tx_store, connector_id, items, reclaim, ids, restored)
         record_restored(DeleteSource(restore_source).value, len(restored))
-        await notify_kb_records_changed(connector_id)
+        await notify_kb_records_changed(connector_id, getattr(self, "org_id", None) or None)
         return restored
 
     @staticmethod
@@ -3836,6 +4053,7 @@ class DataSourceEntitiesProcessor:
             connector_id = (existing or {}).get("connectorId")
             if not connector_id:
                 return False
+            await self._remember_deleted_code_files([{**existing, "_key": record_id}])
             # The record alone, as the hard delete removes only its vertex.
             await self.on_records_soft_deleted(
                 [record_id], connector_id, delete_source=DeleteSource.CONNECTOR, follow=()
@@ -3860,6 +4078,7 @@ class DataSourceEntitiesProcessor:
                 return False
             trashed = bool(existing) and not is_live_record(existing)
             if not trashed:
+                await self._remember_deleted_code_files([{**existing, "_key": record_id}])
                 orphans = await self._collect_orphans(tx_store, existing, record_id)
                 result = await tx_store.delete_single_record(record_id)
                 if not (result or {}).get("success", False):
@@ -3884,6 +4103,29 @@ class DataSourceEntitiesProcessor:
             return False
         await self._publish_delete_events((result or {}).get("eventData"))
         return False
+
+    async def _remember_deleted_code_files(self, records: list[dict] | list[str]) -> None:
+        """Keep what each code file about to be deleted defined, so the edge build
+        that follows can stay incremental (see ``code_graph.deleted_files``).
+
+        Takes record documents, or ids to read them by. Never raises.
+        """
+        graph_provider = getattr(self.data_store_provider, "graph_provider", None)
+        if graph_provider is None or not records:
+            return
+        if isinstance(records[0], str):
+            try:
+                records = await graph_provider.get_nodes_by_field_in(
+                    CollectionNames.RECORDS.value, "_key", list(records),
+                    return_fields=["_key", "orgId", "connectorId", "connectorName",
+                                   "recordGroupId", "recordType"],
+                )
+            except Exception:
+                self.logger.warning("Could not read records about to be deleted; deleted code "
+                                    "files among them will ask for a full code edge build",
+                                    exc_info=True)
+                return
+        await deleted_files.remember(graph_provider, records, self.logger)
 
     @retry_on_deadlock()
     async def on_records_detached_from_parent(self, record_ids: list[str]) -> None:
@@ -4062,6 +4304,9 @@ class DataSourceEntitiesProcessor:
             }
         if soft_delete is None:
             soft_delete = await is_soft_delete_enabled(self.config_service)
+        # Roots only: a code file under a deleted folder is not read here, and its
+        # delete event asks for a full code edge build.
+        await self._remember_deleted_code_files(list(record_ids))
         if soft_delete:
             try:
                 return await self.on_records_soft_deleted(
@@ -4140,7 +4385,7 @@ class DataSourceEntitiesProcessor:
             #
             # No-ops unless connector_id is a KB; connectors invalidate on sync
             # completion instead, so a mid-sync delete does not thrash the cache.
-            await notify_kb_records_changed(connector_id)
+            await notify_kb_records_changed(connector_id, getattr(self, "org_id", None) or None)
         unpublished_record_ids = await self._publish_delete_events((result or {}).get("eventData"))
         if unpublished_record_ids:
             result = dict(result or {})
@@ -4148,6 +4393,80 @@ class DataSourceEntitiesProcessor:
             result["vectorCleanupFailedRecordIds"] = unpublished_record_ids
         return result
 
+
+    async def on_sql_records_deleted(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        table_record_id: str | None = None,
+    ) -> list[str]:
+        """Delete SQL table or column records and everything built from them.
+
+        Returns the id of every record removed; a table takes its columns
+        with it. The records' edges and type nodes go with them, and their
+        vectors through the usual deleteRecord events. Raises when the
+        delete fails.
+
+        ``table_record_id`` is the table the columns in ``record_ids`` belong
+        to, when only columns are removed.
+        """
+        if not record_ids:
+            return []
+        # The source no longer has them, so one already in the trash still goes:
+        # refused, it would read as deleted and never be tried again.
+        result = await self.on_records_deleted_cascade(record_ids, connector_id, include_trashed_roots=True)
+        if not (result or {}).get("success"):
+            raise RuntimeError(
+                f"Could not delete {len(record_ids)} record(s) of connector {connector_id}: "
+                f"{(result or {}).get('reason')}"
+            )
+        return [
+            str(row["record_id"]) for row in result.get("deleted_records") or [] if row.get("record_id")
+        ]
+
+    async def sql_tables_to_relate_again(
+        self, table_ids: list[str], *, column_ids: list[str] | None = None,
+    ) -> set[str]:
+        """Record ids of the tables whose relations depend on these tables, or
+        on these columns of one table, and need working out again once they go.
+
+        Declared foreign keys are read from the source on every sync, so by
+        default there are none.
+        """
+        return set()
+
+    async def on_sql_table_renamed(self, table_record_id: str) -> None:
+        """A table, or one of its columns, was renamed; its records already
+        carry the new names. Nothing else to update by default."""
+
+    async def on_sql_records_renamed(self, table_record_ids: list[str], connector_id: str) -> None:
+        """The tables a sync renamed, or whose columns it renamed, all at once
+        after the sync. Raises when they cannot be handled, so the connector
+        reports them as restructured instead. Nothing to do by default."""
+
+    async def on_sql_record_groups_deleted(self, record_group_ids: list[str], connector_id: str) -> None:
+        """Record groups (schemas) a sync deleted with ``on_record_group_deleted``.
+        Nothing else to clean up by default."""
+
+    async def get_typed_records_by_ids(
+        self, record_ids: list[str], *, raise_on_error: bool = False,
+    ) -> dict[str, Record]:
+        """Records by id as their subclasses (SQLColumnRecord, ...), which carry the
+        fields plain records lack. An id that cannot be read is left out; a failed
+        query reads as none, or raises with ``raise_on_error``."""
+        if not record_ids:
+            return {}
+        return await self.data_store_provider.graph_provider.get_typed_records_batch(
+            record_ids, raise_on_error=raise_on_error,
+        ) or {}
+
+    async def move_incoming_relations(self, from_record_id: str, to_record_id: str) -> int:
+        """Move every link into a stand-in record onto the record that replaces it;
+        returns how many moved."""
+        return await move_incoming_relations(
+            self.data_store_provider.graph_provider, from_record_id=from_record_id, to_record_id=to_record_id,
+        )
 
     @retry_on_deadlock()
     async def on_records_soft_deleted(
@@ -4215,7 +4534,7 @@ class DataSourceEntitiesProcessor:
         source = DeleteSource(delete_source).value
         record_soft_deleted(source, marked)
         if marked:
-            await notify_kb_records_changed(connector_id)
+            await notify_kb_records_changed(connector_id, org_id)
             await self._access_changed([connector_id], org_id)
         return await self._publish_soft_delete_events(
             org_id=org_id or self.org_id,
@@ -4390,7 +4709,7 @@ class DataSourceEntitiesProcessor:
             )
             return published_ids
         except Exception as e:
-            self.logger.error(f"Failed to publish reindex events: {str(e)}")
+            self._log_failure(f"Failed to publish reindex events: {str(e)}", e)
             raise e
 
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
@@ -4880,7 +5199,7 @@ class DataSourceEntitiesProcessor:
             await self._flush_pending_blob_moves(pending_moves)
 
         except Exception as e:
-            self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
+            self._log_failure(f"Transaction on_new_record_groups failed: {str(e)}", e)
             raise e
 
     @retry_on_deadlock()
@@ -4957,7 +5276,7 @@ class DataSourceEntitiesProcessor:
                 )
 
         except Exception as e:
-            self.logger.error(f"Failed to update record group name for {folder_id}: {e}", exc_info=True)
+            self._log_failure(f"Failed to update record group name for {folder_id}: {e}", e, exc_info=True)
             raise
 
         # Best-effort, post-commit -- same posture as every other move-tree
@@ -4995,7 +5314,7 @@ class DataSourceEntitiesProcessor:
                 await tx_store.batch_upsert_app_users(users)
 
         except Exception as e:
-            self.logger.error(f"Transaction on_new_users failed: {str(e)}")
+            self._log_failure(f"Transaction on_new_users failed: {str(e)}", e)
             raise e
 
     @retry_on_deadlock()
@@ -5125,7 +5444,7 @@ class DataSourceEntitiesProcessor:
                 connector_id,
             )
         except Exception as e:
-            self.logger.error(f"Transaction on_external_app_users failed: {str(e)}")
+            self._log_failure(f"Transaction on_external_app_users failed: {str(e)}", e)
             raise e
 
     @retry_on_deadlock()
@@ -5146,6 +5465,7 @@ class DataSourceEntitiesProcessor:
             async with self.data_store_provider.transaction() as tx_store:
                 reaped = await tx_store.reap_stale_external_app_relations(connector_id)
             if reaped:
+                await self._access_changed([connector_id])
                 self.logger.info(
                     "Removed %d orphaned person node(s) while reaping connector %s",
                     reaped,
@@ -5153,7 +5473,7 @@ class DataSourceEntitiesProcessor:
                 )
             return reaped
         except Exception as e:
-            self.logger.error(f"Transaction reap_external_app_users failed: {str(e)}")
+            self._log_failure(f"Transaction reap_external_app_users failed: {str(e)}", e)
             raise e
 
     @retry_on_deadlock()
@@ -5249,7 +5569,7 @@ class DataSourceEntitiesProcessor:
             await self._access_changed(rewritten)
 
         except Exception as e:
-            self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
+            self._log_failure(f"Transaction on_new_user_groups failed: {str(e)}", e)
             raise e
 
     @retry_on_deadlock()
@@ -5336,7 +5656,7 @@ class DataSourceEntitiesProcessor:
             await self._access_changed(rewritten)
 
         except Exception as e:
-            self.logger.error(f"Transaction on_new_app_roles failed: {str(e)}")
+            self._log_failure(f"Transaction on_new_app_roles failed: {str(e)}", e)
             raise e
 
     async def on_new_app(self, app: App) -> None:
@@ -5562,9 +5882,13 @@ class DataSourceEntitiesProcessor:
             )
             return existing_edge
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_record_id: str, *, raise_on_error: bool = False,
+    ) -> Record | None:
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
+            return await tx_store.get_record_by_external_id(
+                connector_id=connector_id, external_id=external_record_id, raise_on_error=raise_on_error,
+            )
 
     async def get_typed_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         """Like ``get_record_by_external_id``, but as its subclass (WebpageRecord, FileRecord, ...).
@@ -5845,12 +6169,15 @@ class DataSourceEntitiesProcessor:
                 return True
 
         except Exception as e:
+            if self._must_propagate(e, None):
+                raise
             self.logger.error(
                 f"Failed to add user {user_email} to group {external_group_id}: {str(e)}",
                 exc_info=True
             )
             return False
 
+    @retry_on_deadlock()
     async def create_user_group_membership(
         self,
         user_source_id: str,
@@ -5884,6 +6211,8 @@ class DataSourceEntitiesProcessor:
                     self._note_full_sync_seen(connector_id, GROUP_MEMBERS_UNSURE, group_external_id)
                 return created
         except Exception as e:
+            if self._must_propagate(e, None):
+                raise
             if tracking:
                 self._note_full_sync_seen(connector_id, GROUP_MEMBERS_UNSURE, group_external_id)
             self.logger.error(
@@ -5922,7 +6251,9 @@ class DataSourceEntitiesProcessor:
             return
         for external_id in sorted(external_ids):
             members = run.group_memberships.get(external_id, {})
-            async with self.data_store_provider.transaction() as tx_store:
+            async def give_members(
+                tx_store: TransactionStore, external_id: str, members: dict[str, tuple[str, str]]
+            ) -> list[str]:
                 copies = await tx_store.get_nodes_by_filters(
                     groups,
                     {"connectorId": connector_id, "externalGroupId": external_id},
@@ -5944,6 +6275,9 @@ class DataSourceEntitiesProcessor:
                         for user_id, (source_id, email) in members.items()
                     ]
                     await tx_store.replace_edges_to(group_id, groups, edges, CollectionNames.PERMISSION.value)
+                return group_ids
+
+            group_ids = await self.data_store_provider.execute_in_transaction(give_members, external_id, members)
             for group_id in group_ids:
                 run.add(groups, group_id)
         await self._access_changed([connector_id])
@@ -6018,8 +6352,8 @@ class DataSourceEntitiesProcessor:
                 return True
 
         except Exception as e:
-            self.logger.error(
-                f"Failed to rename user group {external_group_id}: {e}",
+            self._log_failure(
+                f"Failed to rename user group {external_group_id}: {e}", e,
                 exc_info=True,
             )
             raise
@@ -6087,8 +6421,10 @@ class DataSourceEntitiesProcessor:
                 await tx_store.delete_user_group_by_id(group_id)
                 self.logger.debug(f"Successfully deleted user group with ID: {group_id}")
         except Exception as e:
-            self.logger.error(f"Failed to delete user group {group_id}: {str(e)}",exc_info=True)
+            self._log_failure(f"Failed to delete user group {group_id}: {str(e)}", e,exc_info=True)
             raise
+        finally:
+            await notify_principals_changed(self.org_id or None)      # a group that held access is gone (or may be)
 
     @retry_on_deadlock()
     async def migrate_group_permissions_to_user(
@@ -6443,6 +6779,8 @@ class DataSourceEntitiesProcessor:
             return True
 
         except Exception as e:
+            if self._must_propagate(e, None):
+                raise
             self.logger.error(
                 f"Failed to delete record group with external ID {external_group_id}: {str(e)}",
                 exc_info=True

@@ -145,6 +145,12 @@ export const smtpConfigSchema = z.object({
   }),
 });
 
+export const smtpEnabledSchema = z.object({
+  body: z.object({
+    enabled: z.boolean(),
+  }),
+});
+
 export const azureAdConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Azure client ID is required' }),
@@ -571,6 +577,12 @@ const batchModelSchema = z.object({
   isMultimodal: z.boolean().default(false),
   isReasoning: z.boolean().default(false),
   contextLength: z.number().optional().nullable(),
+  configuration: z
+    .record(z.string().max(64), z.unknown())
+    .optional()
+    .describe(
+      'Non-secret configuration keys that differ for this model, applied over the shared ones',
+    ),
 });
 
 /** Drop a shared friendly name before the single-model refine. Each batch model carries its own. */

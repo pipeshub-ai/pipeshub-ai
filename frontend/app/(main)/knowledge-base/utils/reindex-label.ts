@@ -175,6 +175,8 @@ function leafActionFromStatus(indexingStatus?: string | null): ReindexAction {
     case 'EMPTY':
     case 'ENABLE_MULTIMODAL_MODELS':
     case 'CONNECTOR_DISABLED':
+    // A synced file is read again from its source, so it can lose its password.
+    case 'PASSWORD_PROTECTED':
       return 'retry-indexing';
     case 'FILE_TYPE_NOT_SUPPORTED':
       return 'unsupported';

@@ -159,6 +159,14 @@ class TestOAuth:
         with pytest.raises(ApiToolsetAuthError, match="Sign in again"):
             await source.access_token()
 
+    def test_a_sign_in_without_a_refresh_token_cannot_refresh(self) -> None:
+        # Otherwise a 401 (Jira refusing a token sent to the site URL) reads as "sign-in expired".
+        signed_in = ApiToolsetCredentials(client_id="c", oauth=_tokens("a"))
+        applier = build_auth(AUTH_CODE, signed_in, base_url=BASE, allow_private=False)
+        assert not applier.can_refresh
+        refreshable = signed_in.model_copy(update={"oauth": _tokens("a", refresh="r1")})
+        assert build_auth(AUTH_CODE, refreshable, base_url=BASE, allow_private=False).can_refresh
+
     async def test_client_credentials_without_client_id(self, endpoint: _FakeTokenEndpoint) -> None:
         source = OAuthTokenSource(CLIENT_CREDENTIALS, ApiToolsetCredentials(), token_url="https://a/t", allow_private=False)
         with pytest.raises(ApiToolsetAuthError, match="client ID"):

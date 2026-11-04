@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { apiClient } from '@/lib/api';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { ProjectApi } from '../project-api';
 
 vi.mock('@/lib/api', () => ({
@@ -12,6 +13,12 @@ vi.mock('@/lib/api', () => ({
   },
 }));
 
+vi.mock('@/lib/api/swr-cache', async (importActual) => ({
+  ...(await importActual<typeof import('@/lib/api/swr-cache')>()),
+  revalidateSwrNamespace: vi.fn(),
+}));
+
+const revalidate = vi.mocked(revalidateSwrNamespace);
 const mockedGet = vi.mocked(apiClient.get);
 const mockedPost = vi.mocked(apiClient.post);
 const mockedPut = vi.mocked(apiClient.put);
@@ -19,6 +26,7 @@ const mockedPatch = vi.mocked(apiClient.patch);
 const mockedDelete = vi.mocked(apiClient.delete);
 
 beforeEach(() => {
+  revalidate.mockReset();
   mockedGet.mockReset();
   mockedPost.mockReset();
   mockedPut.mockReset();
@@ -71,6 +79,12 @@ describe('ProjectApi.get / create / update / remove', () => {
     expect(result).toEqual(project);
   });
 
+  it('get() can leave the error to the caller instead of the client toast', async () => {
+    mockedGet.mockResolvedValueOnce({ data: { project: { _id: 'p1' } } });
+    await ProjectApi.get('p1', { suppressErrorToast: true });
+    expect(mockedGet).toHaveBeenCalledWith('/api/v1/projects/p1', { suppressErrorToast: true });
+  });
+
   it('create() posts the input and unwraps { project }', async () => {
     const project = { _id: 'p1', name: 'Q3' };
     mockedPost.mockResolvedValueOnce({ data: { project } });
@@ -91,6 +105,18 @@ describe('ProjectApi.get / create / update / remove', () => {
     mockedDelete.mockResolvedValueOnce({ data: { message: 'ok' } });
     await ProjectApi.remove('p1');
     expect(mockedDelete).toHaveBeenCalledWith('/api/v1/projects/p1');
+  });
+
+  it('remove() refreshes Recents, where the server moves the project chats', async () => {
+    mockedDelete.mockResolvedValueOnce({ data: { message: 'ok' } });
+    await ProjectApi.remove('p1');
+    expect(revalidate).toHaveBeenCalledWith(SWR_NS.conversationLists);
+  });
+
+  it('remove() leaves Recents alone when the delete fails', async () => {
+    mockedDelete.mockRejectedValueOnce(new Error('500'));
+    await expect(ProjectApi.remove('p1')).rejects.toThrow('500');
+    expect(revalidate).not.toHaveBeenCalled();
   });
 
   it('URL-encodes ids containing special characters', async () => {
@@ -161,6 +187,16 @@ describe('ProjectApi.ensureKnowledgeBase / listMembers / upsertMembers / removeM
     expect(mockedDelete).toHaveBeenCalledWith('/api/v1/projects/p1/members/t1', {
       params: { principalType: 'team' },
     });
+  });
+
+  it('removeMember() reports removed:false when the member was already gone', async () => {
+    mockedDelete.mockResolvedValueOnce({ data: { members: [], removed: false } });
+    await expect(ProjectApi.removeMember('p1', 'u1')).resolves.toEqual({ members: [], removed: false });
+  });
+
+  it('removeMember() treats a response without `removed` as a removal', async () => {
+    mockedDelete.mockResolvedValueOnce({ data: { members: [] } });
+    await expect(ProjectApi.removeMember('p1', 'u1')).resolves.toEqual({ members: [], removed: true });
   });
 });
 

@@ -25,10 +25,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.modules.artifacts.reader import RecordArtifactReader, record_artifact_reader
-from app.modules.artifacts.record_backend import (
-    ArtifactRecordBackend,
-    classification_sidecar_path,
-)
+from app.modules.artifacts.record_backend import ArtifactRecordBackend
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter, canonical_json
 from app.modules.pipeline.stages.record_io import NAMED_ENTITIES_SECTION
@@ -52,13 +49,17 @@ def _load(case: str) -> dict[str, Any]:
     return json.loads((GOLDEN / f"{case}.json").read_text())
 
 
+GENERATION = "gen-parity"
+RUN = f"{GENERATION}:00112233445566778899aabbccddeeff"
+
+
 class _Config:
     def __init__(self, flags: dict[str, bool] | None = None) -> None:
         self._flags = flags or {}
 
     async def get_config(self, key: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
         if key == "/services/platform/settings":
-            return {"featureFlags": self._flags}
+            return {"featureFlags": self._flags, "artifactReadGeneration": GENERATION}
         return {"frontend": {"publicEndpoint": FRONTEND}}
 
 
@@ -153,18 +154,21 @@ async def _artifact_sets(records: dict[str, dict[str, Any]], cases: dict[str, di
         written = await writer.write_revision(
             _Dumped({k: v for k, v in record.items() if k != "block_containers"}),  # type: ignore[arg-type]
             ORG, vrid, REV, _Containers(record["block_containers"]),  # type: ignore[arg-type]
-            semantic_metadata=semantic,
+            semantic_metadata=semantic, stored_run=RUN,
         )
         assert written is not None
-        if later:
-            path = classification_sidecar_path()
-            plan = await store.presign_revision(ORG, vrid, REV, [(path, "application/json")])
-            classification = {k: v for k, v in record["semantic_metadata"].items() if k != NAMED_ENTITIES_SECTION}
-            await store.put(plan.files[path], canonical_json(classification), "application/json")
         mappings[vrid] = {
             "record_doc_id": f"doc-{vrid}", "currentRev": REV, "storedRev": REV,
-            "manifestDocId": written.manifest_ref.document_id,
+            "storedRun": RUN, "currentRun": RUN, "manifestDocId": written.manifest_ref.document_id,
         }
+        if later:
+            # As a copy-on-write classification or label repair files it, and names it on the mapping.
+            path = f"enrich/classification.{vrid.replace('-', '')[:32].ljust(32, '0')}@4.json"
+            plan = await store.presign_revision(ORG, vrid, REV, [(path, "application/json")])
+            classification = {k: v for k, v in record["semantic_metadata"].items() if k != NAMED_ENTITIES_SECTION}
+            envelope = {"storedRun": RUN, "storedMeta": path, "classification": classification}
+            await store.put(plan.files[path], canonical_json(envelope), "application/json")
+            mappings[vrid]["storedMeta"] = path
     return storage, mappings
 
 
@@ -176,11 +180,25 @@ def _cases(records: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
 async def _artifact_backend(records: dict[str, dict[str, Any]]) -> RecordArtifactReader:
     storage, mappings = await _artifact_sets(records, _cases(records))
     lookups = _StoredRecords({})
+    lookups.config_service = _Config({"ENABLE_ARTIFACT_READ": True})  # type: ignore[attr-defined]
     lookups.get_document_ids_by_virtual_record_ids = AsyncMock(  # type: ignore[method-assign]
         side_effect=lambda vrids: {v: mappings[v] for v in vrids if v in mappings}
     )
     lookups.get_document_id_by_virtual_record_id = AsyncMock(side_effect=mappings.get)  # type: ignore[attr-defined]
     return ArtifactRecordBackend(lookups, NodeArtifactStore(storage.blob_storage()))  # type: ignore[arg-type]
+
+@pytest.fixture(autouse=True)
+def _fresh_membership(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every indexing member follows the stored-write protocol, so artifact-first reads are not held."""
+    import time
+
+    from app.services.messaging import membership
+
+    async def fresh(_config_service: object) -> list[dict[str, object]]:
+        return [{"checkedAt": int(time.time() * 1000), "untagged": []}]
+
+    monkeypatch.setattr(membership, "read_entries_from_config", fresh)
+    membership._READERS.clear()
 
 
 async def _artifact_first(records: dict[str, dict[str, Any]]) -> RecordArtifactReader:

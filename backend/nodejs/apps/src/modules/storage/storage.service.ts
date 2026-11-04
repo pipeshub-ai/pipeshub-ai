@@ -57,10 +57,13 @@ export class StorageService {
         return new StorageServiceAdapter(
           new AzureBlobStorageAdapter(this.extractAzureBlobCredentials()),
         );
-      case 'local':
-        return new StorageServiceAdapter(
-          new LocalStorageAdapter(this.extractLocalStorageCredentials()),
+      case 'local': {
+        const local = new LocalStorageAdapter(
+          this.extractLocalStorageCredentials(),
         );
+        await local.ensureReady();
+        return new StorageServiceAdapter(local);
+      }
       default:
         throw new Error(`Unsupported storage type: ${storageType}`);
     }

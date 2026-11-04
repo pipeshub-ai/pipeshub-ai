@@ -21,6 +21,8 @@ import httpx
 from aiolimiter import AsyncLimiter
 from azure.core.exceptions import (
     ClientAuthenticationError,
+    ServiceRequestError,
+    ServiceResponseError,
 )
 from azure.identity import CredentialUnavailableError
 from azure.identity.aio import CertificateCredential, ClientSecretCredential
@@ -129,6 +131,10 @@ from app.connectors.sources.microsoft.common.sharepoint_permission_scope import 
     SHAREPOINT_REST_RETRY_STATUSES,
     ListPermissionScope,
     drive_item_unique_id,
+)
+from app.connectors.sources.microsoft.common.sign_in_errors import (
+    describe_sign_in_error,
+    known_sign_in_problem,
 )
 from app.connectors.sources.microsoft.sharepoint_online.utils import (
     clean_html_output,
@@ -718,17 +724,30 @@ class SharePointConnector(BaseConnector):
         self._directory_object_types: dict[str, str | None] = {}
         self._directory_role_members: dict[str, list[dict]] = {}
 
+    @staticmethod
+    def _build_credential(credential_cls: type, **kwargs: str) -> object:
+        try:
+            return credential_cls(**kwargs)
+        except ValueError as error:
+            # azure-identity checks the tenant ID's format here, before any request; other ValueErrors
+            # (such as a certificate it cannot parse) are not about the tenant.
+            if "tenant" not in str(error).lower():
+                raise
+            raise ConnectorInitError(
+                "The Directory (Tenant) ID is not valid. Check it in the app registration."
+            ) from error
+
     async def init(self) -> bool:
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
 
         if not config:
             self.logger.error("❌ SharePoint Online credentials not found")
-            raise ValueError("SharePoint Online credentials not found")
+            raise ConnectorInitError("SharePoint Online credentials not found")
 
         credentials_config = config.get("auth", {})
         if not credentials_config:
             self.logger.error("❌ SharePoint Online credentials not found")
-            raise ValueError("SharePoint Online credentials not found")
+            raise ConnectorInitError("SharePoint Online credentials not found")
 
         # Load credentials from config
         tenant_id = credentials_config.get("tenantId")
@@ -768,7 +787,7 @@ class SharePointConnector(BaseConnector):
         # Validation
         if not all((tenant_id, client_id, sharepoint_domain)):
             self.logger.error("❌ Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
-            raise ValueError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
+            raise ConnectorInitError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
 
         # Check for one valid authentication method
         has_certificate = certificate_data and private_key_data
@@ -776,7 +795,7 @@ class SharePointConnector(BaseConnector):
 
         if not (has_certificate or has_client_secret):
             self.logger.error("❌ Authentication credentials missing. Provide either clientSecret or certificate + private key.")
-            raise ValueError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
+            raise ConnectorInitError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
 
         credentials = SharePointCredentials(
             tenant_id=tenant_id,
@@ -839,7 +858,8 @@ class SharePointConnector(BaseConnector):
                 self.logger.info(f"✅ Created combined PEM file at: {self.temp_cert_file.name}")
 
                 # Create credential with the combined certificate file
-                self.credential = CertificateCredential(
+                self.credential = self._build_credential(
+                    CertificateCredential,
                     tenant_id=credentials.tenant_id,
                     client_id=credentials.client_id,
                     certificate_path=self.temp_cert_file.name,
@@ -859,10 +879,16 @@ class SharePointConnector(BaseConnector):
                         os.unlink(self.temp_cert_file.name)
                     except OSError:  # <--- The fix
                         pass
-                raise ValueError(f"Failed to set up certificate authentication: {cert_error}")
+                if isinstance(cert_error, ConnectorInitError):
+                    raise
+                raise ConnectorInitError(
+                    "The certificate or private key in the connector's settings could not be read. Paste the "
+                    "certificate and its private key in PEM format, then try again."
+                ) from cert_error
 
         elif has_client_secret:
-            self.credential = ClientSecretCredential(
+            self.credential = self._build_credential(
+                ClientSecretCredential,
                 tenant_id=credentials.tenant_id,
                 client_id=credentials.client_id,
                 client_secret=credentials.client_secret,
@@ -882,23 +908,32 @@ class SharePointConnector(BaseConnector):
         except Exception as token_error:
             sanitized_error = sanitize_azure_error(token_error)
             self.logger.error(f"❌ Failed to initialize credential: {sanitized_error}")
+            await self._notify_token_failure(*self._token_failure_notice(token_error, for_sharepoint=False))
             # Clean up temp certificate file if it was created
             if self.temp_cert_file:
                 try:
                     os.unlink(self.temp_cert_file.name)
                 except OSError:
                     pass
+            # An AADSTS code not in the table may be transient (e.g. AADSTS90033), so it stays a 5xx.
+            problem = known_sign_in_problem(token_error)
+            if problem:
+                raise ConnectorInitError(problem) from token_error
             raise ValueError(
                 f"Failed to initialize SharePoint credential: {sanitized_error}"
             )
         
-        sharepoint_token = await self._get_sharepoint_access_token()
-        if not sharepoint_token:
-            self.logger.error("❌ Failed to obtain SharePoint access token during initialization")
-            raise ValueError(
-                "Unable to acquire a SharePoint access token. Please verify "
-                "SharePoint host URL and authentication settings."
-            )
+        try:
+            await self._get_sharepoint_access_token(raise_errors=True)
+        except Exception as token_error:
+            sanitized_error = sanitize_azure_error(token_error)
+            self.logger.error(f"❌ Failed to obtain SharePoint access token during initialization: {sanitized_error}")
+            problem = known_sign_in_problem(token_error, resource_setting="SharePoint domain")
+            if problem:
+                raise ConnectorInitError(
+                    f"Could not get a SharePoint access token for {self.sharepoint_domain}. {problem}"
+                ) from token_error
+            raise ValueError(f"Unable to acquire a SharePoint access token: {sanitized_error}") from token_error
 
         # Initialize Graph Client
         self.client = GraphServiceClient(
@@ -2529,40 +2564,59 @@ class SharePointConnector(BaseConnector):
 
         return modified_after, modified_before, created_after, created_before
 
-    async def _get_sharepoint_access_token(self, resource_host: str = None) -> Optional[str]:
+    async def _get_sharepoint_access_token(
+        self, resource_host: str = None, *, raise_errors: bool = False
+    ) -> Optional[str]:
         """An app-only token for SharePoint REST on a host (default: the tenant's SharePoint domain).
 
         The connector's credential keeps its tokens until they are close to expiring, so this asks the
-        token endpoint once per host per hour instead of once per SharePoint call.
+        token endpoint once per host per hour instead of once per SharePoint call. A failure returns None,
+        or with ``raise_errors`` is raised as it came, so the caller can tell its cause.
         """
         parsed = urllib.parse.urlparse(resource_host or self.sharepoint_domain or "")
         host = parsed.hostname or (self.sharepoint_domain or "").replace('https://', '').replace('http://', '').strip('/')
         resource = f"https://{host}"
         try:
-            token = await self.credential.get_token(f"{resource}/.default")
-            return token.token
-        except CredentialUnavailableError as credential_error:
-            self.logger.error(
-                f"❌ SharePoint credential unavailable for {resource}: {sanitize_azure_error(credential_error)}"
+            return (await self.credential.get_token(f"{resource}/.default")).token
+        except Exception as error:
+            self.logger.error(f"❌ Failed to get a SharePoint token for {resource}: {sanitize_azure_error(error)}")
+            await self._notify_token_failure(*self._token_failure_notice(error, for_sharepoint=True))
+            if raise_errors:
+                raise
+            return None
+
+    @staticmethod
+    def _token_failure_notice(error: Exception, *, for_sharepoint: bool) -> tuple[str, str]:
+        """The title and message of the notice telling the connector's creator a token request failed.
+
+        ``for_sharepoint`` says the token was for the SharePoint host rather than Microsoft Graph, so only
+        then can the SharePoint host URL be to blame.
+        """
+        if isinstance(error, (ServiceRequestError, ServiceResponseError)):
+            return (
+                "SharePoint could not reach Microsoft",
+                "Unable to reach Microsoft to get an access token. This is usually a temporary network problem, "
+                "not a problem with the connector's settings. If it keeps happening, check that the PipesHub "
+                "server can reach login.microsoftonline.com.",
             )
-            await self._notify_token_failure(
+        if isinstance(error, CredentialUnavailableError):
+            return (
                 "SharePoint authentication failed",
                 "Unable to authenticate using current credentials. Please verify the connector authentication credentials.",
             )
-            return None
-        except ClientAuthenticationError as auth_error:
-            title, message = get_sharepoint_auth_notification(auth_error)
-            self.logger.error(f"❌ Error getting SharePoint token for {resource}: {sanitize_azure_error(auth_error)}")
-            await self._notify_token_failure(title, message)
-            return None
-        except Exception as e:
-            self.logger.error(f"❌ Unexpected error getting SharePoint token for {resource}: {sanitize_azure_error(e)}")
-            await self._notify_token_failure(
-                "SharePoint authentication Failed",
-                "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
-                "and connector authentication credentials.",
+        if not for_sharepoint:
+            return (
+                "SharePoint authentication failed",
+                describe_sign_in_error(error) or "Unable to acquire a Microsoft Graph access token. Please verify "
+                "the connector authentication credentials.",
             )
-            return None
+        if isinstance(error, ClientAuthenticationError):
+            return get_sharepoint_auth_notification(error)
+        return (
+            "SharePoint authentication Failed",
+            "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
+            "and connector authentication credentials.",
+        )
 
     async def _notify_token_failure(self, title: str, message: str) -> None:
         if self._token_failure_notified:
@@ -2571,7 +2625,7 @@ class SharePointConnector(BaseConnector):
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR,
             severity=NotificationSeverity.ERROR,
-            title=title,
+            title=f"{self.display_name}: {title}",
             message=message,
             recipient_user_ids=[self.created_by],
         )

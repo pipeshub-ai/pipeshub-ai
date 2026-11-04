@@ -145,6 +145,13 @@ class SelectionScope:
             return True
         return any(group_id in self.groups for group_id in row.get("groupIds") or ())
 
+    def candidate_filter(self) -> dict[str, list[str]]:
+        """The scope as a graph query narrows candidate records by it: a record
+        lies inside when its app is selected whole, it is a selected record (or
+        under a selected folder), or it belongs directly to a selected group.
+        The same tests ``admits`` makes of an access-check row."""
+        return {"apps": sorted(self.app_ids), "groups": sorted(self.groups), "records": sorted(self.records)}
+
     def should_clauses(self, accessible_app_ids: Iterable[str] | None = None) -> dict[str, list[str]]:
         """The vector-filter alternatives that narrow a search to the selection.
 
@@ -172,6 +179,21 @@ def _ids(filters: Mapping[str, Any] | None, key: str) -> list[str]:
 def has_selection(filters: Mapping[str, Any] | None) -> bool:
     """Whether the filters select anything below app level."""
     return any(_ids(filters, key) for key in SELECTION_FILTER_KEYS)
+
+
+def limits_rows(filters: Mapping[str, Any] | None) -> bool:
+    """Whether ``filters`` limit the turn to part of its apps: a selection
+    below app level, or a server-set bound (present, even when empty)."""
+    return has_selection(filters) or any(key in (filters or {}) for key in ALLOWED_FILTER_KEYS)
+
+
+def row_limit_key(filters: Mapping[str, Any] | None) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """A hashable summary of what limits the turn's rows, for caching anything
+    resolved from it: two turns with the same key resolve the same scopes."""
+    keys = (*CONTAINER_SCOPE_FILTER_KEYS, *SELECTION_FILTER_KEYS, *ALLOWED_FILTER_KEYS)
+    return tuple(
+        (key, tuple(sorted(_ids(filters, key)))) for key in keys if key in (filters or {})
+    )
 
 
 def allowed_filters(filters: Mapping[str, Any] | None) -> list[dict[str, list[str]]]:

@@ -6,7 +6,7 @@ import {
 } from '../middlewares/userAuthentication.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { z } from 'zod';
-import { AuthMethodType } from '../schema/orgAuthConfiguration.schema';
+import { AuthMethodType } from '../types/auth-method';
 import { AuthSessionRequest } from '../middlewares/types';
 import { attachContainerMiddleware } from '../middlewares/attachContainer.middleware';
 import { UserAccountController } from '../controller/userAccount.controller';

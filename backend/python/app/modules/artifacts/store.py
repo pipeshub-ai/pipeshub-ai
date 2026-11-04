@@ -18,6 +18,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import Routes
 from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.modules.artifacts.models import RevisionUploadPlan, SignedFileUrl
+from app.modules.transformers import blob_storage as blob_module
 from app.modules.transformers.blob_storage import (
     _storage_error_detail,
     _storage_status_error,
@@ -294,30 +295,88 @@ class NodeArtifactStore:
 
         return await self._blob_storage._with_storage_retry("artifact download", attempt)
 
-    async def list_revisions(self, org_id: str, virtual_record_id: str) -> list[dict[str, Any]]:
+    async def list_revisions(
+        self, org_id: str, virtual_record_id: str, *, timeout_seconds: float | None = None
+    ) -> list[dict[str, Any]]:
+        """The revisions stored for the virtual record.
+
+        With ``timeout_seconds`` the listing is one attempt bounded in total by it,
+        for a caller that would rather try again later than wait out the retries.
+        """
         headers, endpoint, _ = await self._blob_storage._get_auth_and_config(org_id)
         route = Routes.STORAGE_ARTIFACTS.value
+        timeout: aiohttp.ClientTimeout | None = None
+        if timeout_seconds is not None:
+            timeout = aiohttp.ClientTimeout(
+                total=timeout_seconds,
+                sock_connect=min(timeout_seconds, blob_module.BLOB_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS),
+                sock_read=min(timeout_seconds, blob_module.BLOB_HTTP_SOCK_READ_TIMEOUT_SECONDS),
+            )
 
         async def attempt() -> dict[str, Any]:
             async with get_shared_session().get(
-                f"{endpoint}{route}", params={"virtualRecordId": virtual_record_id}, headers=headers
+                f"{endpoint}{route}",
+                params={"virtualRecordId": virtual_record_id},
+                headers=headers,
+                **({} if timeout is None else {"timeout": timeout}),
             ) as response:
                 return await self._json_reply(response, route, missing_route=True)
 
-        body = await self._blob_storage._with_storage_retry("artifact listing", attempt)
+        if timeout is None:
+            body = await self._blob_storage._with_storage_retry("artifact listing", attempt)
+        else:
+            body = await attempt()
         revisions = body.get("revisions")
         if not isinstance(revisions, list):
             raise ArtifactStoreError("artifact listing answered no revisions")
         return [r for r in revisions if isinstance(r, dict)]
 
-    async def delete_revision(self, org_id: str, document_id: str) -> int:
-        """Remove a revision's files and its document. Returns how many were removed."""
+    async def delete_revision(
+        self,
+        org_id: str,
+        document_id: str,
+        *,
+        if_unchanged_since: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> int | None:
+        """Remove a revision's files and its document. Returns how many were removed.
+
+        With ``if_unchanged_since`` (the ``updatedAt`` the revision was listed with),
+        storage removes it only if nothing wrote it since and no other delete is
+        removing it; otherwise it removes nothing and this returns None. The check
+        is storage's, so it holds for a request that outlives this call.
+
+        With ``timeout_seconds`` the delete is one attempt bounded in total by it,
+        for a caller whose own lease must outlast it; storage goes on with a
+        request this call gave up on, and the stamp is what makes that safe.
+        """
         headers, endpoint, _ = await self._blob_storage._get_auth_and_config(org_id)
         route = Routes.STORAGE_ARTIFACT_SET.value.format(documentId=document_id)
+        params = {} if if_unchanged_since is None else {"ifUnchangedSince": str(int(if_unchanged_since))}
+        timeout: aiohttp.ClientTimeout | None = None
+        if timeout_seconds is not None:
+            timeout = aiohttp.ClientTimeout(
+                total=timeout_seconds,
+                sock_connect=min(timeout_seconds, blob_module.BLOB_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS),
+                sock_read=min(timeout_seconds, blob_module.BLOB_HTTP_SOCK_READ_TIMEOUT_SECONDS),
+            )
 
-        async def attempt() -> dict[str, Any]:
-            async with get_shared_session().delete(f"{endpoint}{route}", headers=headers) as response:
+        async def attempt() -> dict[str, Any] | None:
+            async with get_shared_session().delete(
+                f"{endpoint}{route}",
+                params=params,
+                headers=headers,
+                **({} if timeout is None else {"timeout": timeout}),
+            ) as response:
+                if if_unchanged_since is not None and response.status == HttpStatusCode.CONFLICT.value:
+                    reply = await response.json(content_type=None)
+                    if isinstance(reply, dict) and reply.get("reason") == "changed":
+                        return None
+                    raise ArtifactStoreError("artifact delete answered a conflict it does not explain")
                 return await self._json_reply(response, route)
 
-        body = await self._blob_storage._with_storage_retry("artifact delete", attempt)
-        return int(body.get("purged", 0))
+        if timeout is None:
+            body = await self._blob_storage._with_storage_retry("artifact delete", attempt)
+        else:
+            body = await attempt()
+        return None if body is None else int(body.get("purged", 0))

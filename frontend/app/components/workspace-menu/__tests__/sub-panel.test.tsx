@@ -36,6 +36,16 @@ describe('SubPanel on desktop', () => {
     expect(screen.getByTestId('row').parentElement?.style.top).toBe('-22px');
   });
 
+  it('settles when layout snaps to 1/64px, as a browser does', () => {
+    window.innerHeight = 800;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const top = Math.round((466.33 + parseFloat(this.style.top || '0')) * 64) / 64;
+      return { top, bottom: top + 347.33, height: 347.33, left: 0, right: 250, width: 250, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+    });
+    renderPanel();
+    expect(screen.getByTestId('row').parentElement?.style.top).toBe('-22px');
+  });
+
   it('stays put when it fits, and never lifts past the top gap', () => {
     window.innerHeight = 1080;
     layoutPanel(400, 348);

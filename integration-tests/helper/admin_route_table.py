@@ -94,6 +94,9 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("POST", f"{_CM}/connectors/sharepoint/config", admin="invalid"),
     AdminRoute("POST", f"{_CM}/connectors/onedrive/config", admin="invalid"),
     AdminRoute("GET", f"{_CM}/smtpConfig"),
+    _no_admin("DELETE", f"{_CM}/smtpConfig",
+              "deletes the org's SMTP settings; nothing after the check stops it"),
+    AdminRoute("PUT", f"{_CM}/smtpConfig/enabled", member_body={"enabled": True}, admin="invalid"),
     AdminRoute("GET", f"{_CM}/authConfig/microsoft"),
     AdminRoute("POST", f"{_CM}/authConfig/microsoft", admin="invalid"),
     AdminRoute("GET", f"{_CM}/authConfig/google"),
@@ -352,11 +355,32 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/mcp_servers.py::get_oauth_config": "a personal server is its owner's",
     "api/routes/mcp_servers.py::update_oauth_config": "a personal server is its owner's",
     "api/routes/mcp_servers.py::delete_instance": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::set_instance_logo": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::remove_instance_logo": "a personal server is its owner's",
     # A member checks the URL of a server they could add: a personal one, public only.
     "api/routes/mcp_servers.py::discover_oauth_metadata_endpoint": "a member's URL must be public",
     # Everyone gets the listing; only admins see how an org server is reached.
     "api/routes/mcp_servers.py::get_my_mcp_servers": "connection details for admins",
     "api/routes/mcp_servers.py::get_agent_mcp_servers": "connection details for admins",
+    # Members make and edit their own agents, and nothing here refuses them.
+    # One field needs an admin: the service account the agent searches as,
+    # because binding spends the access an administrator granted that account.
+    "api/routes/agent.py::create_agent": "only a service-account binding needs admin",
+    "api/routes/agent.py::update_agent": "only a service-account binding needs admin",
+    # The directory of people. Everyone gets it; an administrator asking for
+    # service accounts gets those too, and nobody else does.
+    "api/routes/entity.py::get_users": "admin widens the directory",
+    # Every account joins the All team when it is created, service accounts
+    # included, so these answer a member a shorter member list than an
+    # administrator. An administrator also sees every team in the org; a member
+    # sees, and can read, only the teams they belong to.
+    "api/routes/entity.py::get_team": "admin widens the member list",
+    "api/routes/entity.py::get_user_teams": "admin widens the member list",
+    "api/routes/entity.py::get_team_users": "admin widens the member list",
+    # A team's OWNER may change or delete it, admin or not; an administrator may
+    # also change or delete any team in their org.
+    "api/routes/entity.py::update_team": "owner or admin",
+    "api/routes/entity.py::delete_team": "owner or admin",
 }
 
 

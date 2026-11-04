@@ -580,6 +580,43 @@ describe('ChatInput — attachments', () => {
       screen.getByText('Supports: PDF, PNG, JPEG, JPG, TXT, MD, DOCX, XLSX, CSV.'),
     ).toBeTruthy();
   });
+
+  it('closes the attach menu once files are picked so the new chips are visible', () => {
+    const onUploadFile = vi.fn(() => new Promise<AttachmentRef>(() => {}));
+    const { container } = renderInput({ onUploadFile });
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Attach files and capabilities' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Attach files and capabilities' }));
+    fireEvent.click(screen.getByText('Attach files'));
+    expect(screen.getByText('Upload your file')).toBeTruthy();
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [pdf('picked.pdf')] } });
+
+    expect(screen.getByText('picked.pdf')).toBeTruthy();
+    expect(screen.queryByText('Upload your file')).toBeNull();
+    expect(screen.queryByText('Attach files')).toBeNull();
+  });
+
+  it('closes the upload area even when every picked file is turned away', () => {
+    const { container } = renderInput({ onUploadFile: vi.fn() });
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Attach files and capabilities' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Attach files and capabilities' }));
+    fireEvent.click(screen.getByText('Attach files'));
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(['x'], 'archive.zip', { type: 'application/zip' })] },
+    });
+
+    expect(screen.queryByText('Upload your file')).toBeNull();
+  });
 });
 
 describe('ChatInput — regenerate and edit a previous message', () => {
@@ -1373,6 +1410,16 @@ describe('ChatInput — compact widget', () => {
     renderInput({ variant: 'widget', expandable: true, widgetPlaceholder: 'Ask about this page' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Expand composer' }));
+
+    expect(document.activeElement).toBe(composer());
+  });
+
+  it('on a phone, expands when the tap lands in the row around the one-line field', () => {
+    device.isMobile = true;
+    renderInput({ variant: 'widget', expandable: true, widgetPlaceholder: 'Ask about this page' });
+    const row = screen.getByRole('button', { name: 'Expand composer' }).parentElement as HTMLElement;
+
+    fireEvent.click(row);
 
     expect(document.activeElement).toBe(composer());
   });

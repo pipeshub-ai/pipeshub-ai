@@ -32,13 +32,17 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["DEFAULT_MAX_DEPTH", "MAX_PATH_DEPTH", "find_symbol_path_impl"]
 
-DEFAULT_MAX_DEPTH = 6
 # One graph query per hop, so the model cannot buy an unbounded scan by
 # asking for a deep path.
 MAX_PATH_DEPTH = 8
+# The search stops at the first path, so only a missing one pays for every hop; a
+# shallower default made a 7-hop call chain read as "no path".
+DEFAULT_MAX_DEPTH = MAX_PATH_DEPTH
 # Ceiling on nodes expanded per side, so one hub symbol cannot walk the repo.
 _MAX_VISITED = 4000
 _FRONTIER_LIMIT = 2000
+# What `Foo()` runs: a Python, then a JS/TS constructor.
+_CONSTRUCTORS = frozenset({"__init__", "constructor"})
 
 # ---------------------------------------------------------------------------
 # Tool 3 — how two symbols are connected
@@ -108,10 +112,31 @@ async def find_symbol_path_impl(
     def readable(keys: list[str]) -> Awaitable[set[str]]:
         return _readable_keys(graph_provider, org_id, access, keys)
 
-    edges, capped = await _bfs_edges(
-        graph_provider, start_key, end_key, max_depth=max_depth, relations=edge_types,
-        undirected=undirected, readable=readable,
-    )
+    # `Foo()` is an edge to the class, and a path does not step from a class it
+    # reached into its members: a path to a constructor is a path to its class,
+    # then the one step down into it.
+    target_key, constructor_hop = end_key, None
+    if not undirected and end.get("name") in _CONSTRUCTORS and end.get("parentBlockId"):
+        rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
+            node_keys=[end["parentBlockId"]], node_collection=_BLOCKS,
+            relationship_types=list(STRUCTURAL_RELATIONS), direction="outbound",
+            limit=_FRONTIER_LIMIT, raise_on_error=True,
+        ) or []
+        relation = next((r.get("relationshipType") for r in rows if r.get("key") == end_key), None)
+        if relation:
+            target_key = end["parentBlockId"]
+            constructor_hop = {"from": target_key, "to": end_key, "relation": relation,
+                               "direction": "outbound"}
+
+    if start_key == target_key:
+        edges, capped = [], False
+    else:
+        edges, capped = await _bfs_edges(
+            graph_provider, start_key, target_key, max_depth=max_depth, relations=edge_types,
+            undirected=undirected, readable=readable,
+        )
+    if edges is not None and constructor_hop:
+        edges = [*edges, constructor_hop]
     reversed_path = False
     if edges is None and not undirected:
         edges, back_capped = await _bfs_edges(
@@ -121,7 +146,8 @@ async def find_symbol_path_impl(
         capped = capped or back_capped
         reversed_path = edges is not None
     if edges is None:
-        missed: dict[str, Any] = touched({"found": False, "hops": []}, [start, end])
+        missed: dict[str, Any] = touched({"found": False, "hops": [], "searched_hops": max_depth},
+                                         [start, end])
         if gap := coverage_for([start, end]):
             missed["coverage"] = gap
         if capped:
@@ -131,6 +157,8 @@ async def find_symbol_path_impl(
                 "no path here does not prove there is none. Narrow with "
                 "`edge_types`, or start from symbols closer together."
             )
+        elif not undirected and (not edge_types or RecordRelations.CALLS.value in edge_types):
+            missed["note"] = await _unproven_note(graph_provider, target_key, readable)
         return missed
 
     keys = {start_key, end_key}
@@ -170,6 +198,38 @@ async def find_symbol_path_impl(
     return found
 
 
+# Enough inbound calls to find one the caller can read without loading a hub's every caller.
+_CALLER_PROBE = 50
+
+
+async def _unproven_note(
+    graph_provider: IGraphDBProvider, target_key: str, readable: Callable[[list[str]], Awaitable[set[str]]],
+) -> str:
+    """Why an uncapped miss is still not proof: CALLS holds only calls whose receiver type is
+    known, so an untyped call, a getattr or a callback can join two symbols the graph does not.
+
+    Only readable callers count: "something calls it" from a hidden file would reveal that file.
+    """
+    rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
+        node_keys=[target_key], node_collection=_BLOCKS,
+        relationship_types=[RecordRelations.CALLS.value], direction="inbound",
+        limit=_CALLER_PROBE, raise_on_error=True,
+    ) or []
+    callers = [r["key"] for r in rows if r.get("collection") == _BLOCKS and r.get("key")]
+    linked = bool(callers) and bool(await readable(callers))
+    reason = (
+        "No chain of linked calls joins them, but calls the graph could not link (on values "
+        "of unknown type, through getattr or callbacks) can. "
+        if linked else
+        "Nothing in the graph calls the second symbol, so every call to it is one the graph "
+        "could not link (through getattr, a callback, or a value of unknown type), and this "
+        "search cannot tell whether the first reaches it. "
+    )
+    return (reason + "Before answering that it is not reached, read the calls the first symbol "
+            "makes and follow them; a call counts even when it sits in a branch only some "
+            "arguments take.")
+
+
 async def _bfs_edges(
     graph_provider: IGraphDBProvider,
     start_key: str,
@@ -186,11 +246,13 @@ async def _bfs_edges(
     of the same class are connected only through their container, so
     narrowing this to the cross-file edges finds no path between them.
 
-    A directed path has one shape: out to the symbol's containers, along
-    cross-file edges the way they point, then down into a container. Walking
-    containment freely connected a method to whatever its sibling methods call,
-    and walking calls both ways connected two helpers through any caller they
-    share. ``undirected`` drops the shape and the direction entirely.
+    A directed path has one shape: out to the symbol's containers (and down into
+    one of their members), then along cross-file edges the way they point.
+    Walking containment freely connected a method to whatever its sibling
+    methods call; stepping down after a call made a call into a class (its
+    constructor) a call of every method it has; and walking calls both ways
+    connected two helpers through any caller they share. ``undirected`` drops
+    the shape and the direction entirely.
 
     Done in Python rather than with a native shortest-path call so it behaves
     identically on Arango and Neo4j, and so each hop keeps the relation type and
@@ -314,7 +376,12 @@ def _next_phase(phase: int, row: dict[str, Any], *, undirected: bool) -> int | N
     if structural and not outbound:
         return _CLIMBING if phase == _CLIMBING else None
     if structural:
-        return _DESCENDING
+        # A call into a class is its constructor, not a call of each of its methods,
+        # so only a path still climbing out of the start may step down; once down,
+        # it may go on through nested definitions.
+        if phase == _DESCENDING:
+            return _DESCENDING if row.get("relationshipType") == RecordRelations.DEFINES.value else None
+        return _DESCENDING if phase == _CLIMBING else None
     if outbound and phase != _DESCENDING:
         return _CROSSING
     return None

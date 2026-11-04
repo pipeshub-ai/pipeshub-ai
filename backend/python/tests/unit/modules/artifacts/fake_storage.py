@@ -6,6 +6,7 @@ session and request building it uses against S3, Azure or local storage.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass, field
@@ -46,6 +47,17 @@ class FakeStorage:
     puts: dict[str, StoredPut] = field(default_factory=dict)
     put_order: list[str] = field(default_factory=list)
     roots: dict[str, str] = field(default_factory=dict)
+    # Write stamps (updatedAt) by document id; a delete with an older
+    # ifUnchangedSince is refused as storage refuses it.
+    stamps: dict[str, int] = field(default_factory=dict)
+    delete_queries: list[dict[str, str]] = field(default_factory=list)
+    delete_conflict_body: dict[str, Any] | None = None
+    delete_delay: float = 0.0
+    delete_calls: int = 0
+    # The listing waits this long first, or answers this status instead.
+    list_delay: float = 0.0
+    list_status: int = 200
+    list_calls: int = 0
     base: str = ""
     _runner: web.AppRunner | None = None
 
@@ -136,14 +148,29 @@ class FakeStorage:
         })
 
     async def _list(self, request: web.Request) -> web.Response:
+        self.list_calls += 1
+        if self.list_delay:
+            await asyncio.sleep(self.list_delay)
+        if self.list_status != 200:
+            return web.json_response({"error": "unavailable"}, status=self.list_status)
         vrid = request.query["virtualRecordId"]
         revs = sorted({k.split("/")[4] for k in self.puts if k.split("/")[3] == vrid})
         return web.json_response({"revisions": [
-            {"documentId": self.document_id(vrid, r), "virtualRecordId": vrid, "rev": r} for r in revs
+            {"documentId": self.document_id(vrid, r), "virtualRecordId": vrid, "rev": r, "deleteFence": True}
+            for r in revs
         ]})
 
     async def _delete(self, request: web.Request) -> web.Response:
         doc = request.match_info["doc"]
+        self.delete_calls += 1
+        self.delete_queries.append(dict(request.query))
+        if self.delete_delay:
+            await asyncio.sleep(self.delete_delay)
+        since = request.query.get("ifUnchangedSince")
+        if since is not None and self.delete_conflict_body is not None:
+            return web.json_response(self.delete_conflict_body, status=409)
+        if since is not None and self.stamps.get(doc, 0) > int(since):
+            return web.json_response({"purged": 0, "reason": "changed"}, status=409)
         gone = [k for k in self.puts if self.document_id(*k.split("/")[3:5]) == doc]
         for key in gone:
             del self.puts[key]

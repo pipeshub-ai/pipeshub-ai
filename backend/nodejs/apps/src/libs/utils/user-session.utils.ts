@@ -1,11 +1,9 @@
-import { Types } from 'mongoose';
-import { UserActivities } from '../../modules/auth/schema/userActivities.schema';
-import { Users } from '../../modules/user_management/schema/users.schema';
 import { Logger } from '../services/logger.service';
-import {
-  activityEndsSession,
-  SESSION_INVALIDATING_ACTIVITIES,
-} from './userActivities.utils';
+import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
+import { getActivityRepository } from '../repositories/activity';
+import { isValidId } from '../repositories/ids';
+import { getUserRepository } from '../repositories/user';
+import { activityEndsSession } from './userActivities.utils';
 
 /** The claims of a user session JWT that decide whether it still holds. */
 export interface SessionClaims {
@@ -34,6 +32,24 @@ export const SESSION_EXPIRED_MESSAGE = 'Session expired, please login again';
 
 function hasValidJwtRole(role: unknown): role is 'admin' | 'member' {
   return role === 'admin' || role === 'member';
+}
+
+// The reads below run under the org the token names, as the HTTP middleware's own do.
+function asVerified<T>(
+  orgId: string | undefined,
+  userId: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!orgId) return fn();
+  return runWithOrgContext(
+    makeOrgContext({
+      orgId,
+      userId: userId || null,
+      kind: 'user',
+      source: 'jwt',
+    }),
+    fn,
+  );
 }
 
 function sessionRefusal(
@@ -82,33 +98,24 @@ export async function findSessionRefusal(
     return SESSION_EXPIRED_MESSAGE;
   }
 
-  const { userId, orgId } = claims;
+  const userId = claims.userId as string;
+  const orgId = claims.orgId as string;
   // The account and its latest session-invalidating activity are independent
   // reads: asked together they cost one round trip to the database on every
   // authenticated request instead of two.
-  const [user, latestActivity] = await Promise.all([
-    Users.findOne({
-      _id: userId as Types.ObjectId | string,
-      isDeleted: false,
-    })
-      .lean()
-      .exec(),
-    userId && orgId
-      ? UserActivities.findOne({
-          userId: userId,
-          orgId: orgId,
-          isDeleted: false,
-          activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
-        })
-          .sort({ createdAt: -1 }) // sort by most recent first
-          .lean()
-          .exec()
-          .catch((activityError: unknown): null => {
-            logger.error('Failed to fetch user activity', activityError);
-            return null;
-          })
-      : Promise.resolve(null),
-  ]);
+  const [user, latestActivity] = await asVerified(orgId, userId, () =>
+    Promise.all([
+      getUserRepository().getLiveById(userId),
+      userId && orgId
+        ? getActivityRepository()
+            .latestSessionEnding(userId, orgId)
+            .catch((activityError: unknown): null => {
+              logger.error('Failed to fetch user activity', activityError);
+              return null;
+            })
+        : Promise.resolve(null),
+    ]),
+  );
 
   return sessionRefusal(user, latestActivity, claims.iat);
 }
@@ -123,9 +130,27 @@ export async function findSessionRefusals(
   sessions: ReadonlyArray<AcceptedSession>,
 ): Promise<Array<string | null>> {
   if (sessions.length === 0) return [];
+  // Each organisation's sessions are read as that organisation: two queries per organisation (one in practice).
+  const byOrg = new Map<string, AcceptedSession[]>();
+  for (const s of sessions)
+    byOrg.set(s.orgId, [...(byOrg.get(s.orgId) ?? []), s]);
+  const refusals = new Map<AcceptedSession, string | null>();
+  await Promise.all(
+    [...byOrg].map(async ([orgId, group]) => {
+      const found = await asVerified(orgId, undefined, () =>
+        findSessionRefusalsInOrg(group),
+      );
+      group.forEach((s, i) => refusals.set(s, found[i] ?? null));
+    }),
+  );
+  return sessions.map((s) => refusals.get(s) ?? null);
+}
 
+async function findSessionRefusalsInOrg(
+  sessions: ReadonlyArray<AcceptedSession>,
+): Promise<Array<string | null>> {
   const userIds = [...new Set(sessions.map((s) => s.userId))].filter((id) =>
-    Types.ObjectId.isValid(id),
+    isValidId(id),
   );
   // An activity older than the oldest token cannot end any of these sessions,
   // so only newer ones are read.
@@ -134,24 +159,15 @@ export async function findSessionRefusals(
   );
 
   const [users, activities] = await Promise.all([
-    Users.find({ _id: { $in: userIds }, isDeleted: false })
-      .select('isDisabled kind')
-      .lean()
-      .exec(),
-    UserActivities.find({
-      userId: { $in: userIds },
-      isDeleted: false,
-      activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
-      createdAt: { $gte: new Date(oldestIssuedAtMs) },
-    })
-      .select('userId orgId activityType createdAt')
-      .sort({ createdAt: -1 })
-      .lean()
-      .exec(),
+    getUserRepository().listLiveFieldsByIds(userIds, ['isDisabled', 'kind']),
+    getActivityRepository().listSessionEndingSince(
+      userIds,
+      new Date(oldestIssuedAtMs),
+    ),
   ]);
 
   const usersById = new Map<string, SessionUser>(
-    users.map((u) => [String(u._id), u]),
+    users.map((u) => [String((u as { _id?: string })._id), u as SessionUser]),
   );
   const latestActivityBySession = new Map<string, SessionActivity>();
   for (const activity of activities) {

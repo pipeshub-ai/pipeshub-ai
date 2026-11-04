@@ -32,3 +32,11 @@ class DialectError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+
+
+class ShareWalkIncompleteError(Exception):
+    """A sync listed only part of what it should have. What it did not read was kept, not removed."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message

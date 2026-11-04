@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, MutableMapping
 
-RetrievalLayer = Literal["vector", "pattern_match", "entity", "fetch", "prefetch"]
+RetrievalLayer = Literal["vector", "pattern_match", "entity", "person", "fetch", "prefetch"]
 
 RETRIEVED_BY_KEY = "retrieved_by"
 

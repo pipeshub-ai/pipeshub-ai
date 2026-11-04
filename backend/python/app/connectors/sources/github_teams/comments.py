@@ -18,7 +18,6 @@ import base64
 import datetime
 import os
 import re
-import uuid
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -31,6 +30,7 @@ from app.connectors.core.base.error.stream_errors import (
     not_downloadable,
     raise_for_stream_fetch,
 )
+from app.connectors.utils.record_ids import new_record_id
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -45,7 +45,9 @@ from app.models.blocks import (
     GroupType,
 )
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
+from app.modules.parsers.code_parser.lang_config import detect_language
 from app.modules.parsers.code_parser.secret_scan import redact_secrets
+from app.utils.markdown_code import fenced_code
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 from .constants import (
@@ -402,8 +404,8 @@ class CommentsHelper:
     ) -> RecordUpdate | None:
         """Build one attachment FileRecord update. No DB access.
 
-        ``existing_record`` is only consulted for ``source_created_at``: the
-        processor re-runs the same external-id lookup, overwrites ``record.id``
+        ``existing_record`` is only consulted for its id and ``source_created_at``:
+        the processor re-runs the same external-id lookup, overwrites ``record.id``
         with the stored one, and derives everything else itself — but it does
         NOT carry ``source_created_at`` forward, so without the caller's lookup
         every re-sync would reset an attachment's created time to "now".
@@ -421,12 +423,13 @@ class CommentsHelper:
             return None
         attachment_name = attach.get("filename") or os.path.basename(urlparse(attachment_url).path) or "attachment"
         attachment_type = attach.get("type") or "unknown"
+        external_record_id = attachment_key(str(attachment_url), str(record.external_record_id))
         filerecord = FileRecord(
-            id=str(uuid.uuid4()),
+            id=existing_record.id if existing_record else new_record_id(self.c.connector_id, external_record_id),
             org_id=self.c.data_entities_processor.org_id,
             record_name=attachment_name,
             record_type=RecordType.FILE.value,
-            external_record_id=attachment_key(str(attachment_url), str(record.external_record_id)),
+            external_record_id=external_record_id,
             connector_name=self.c.connector_name,
             connector_id=self.c.connector_id,
             origin=OriginTypes.CONNECTOR,
@@ -458,8 +461,7 @@ class CommentsHelper:
         return RecordUpdate(
             record=filerecord, is_new=existing_record is None, is_updated=existing_record is not None,
             is_deleted=False, metadata_changed=False, content_changed=False, permissions_changed=False,
-            old_permissions=[], new_permissions=[],
-            external_record_id=attachment_key(str(attachment_url), str(record.external_record_id)),
+            old_permissions=[], new_permissions=[], external_record_id=external_record_id,
         )
 
     async def make_file_records_from_list(
@@ -945,7 +947,10 @@ class CommentsHelper:
                     f"{PR_FILE_INLINE_CONTENT_MAX_BYTES}-byte inline limit)"
                 )
             elif file_content:
-                data_parts.append(f"Full File Content:\n{file_content}")
+                # Fenced, like the diff, so the file is read as code, not markdown.
+                data_parts.append(
+                    f"Full File Content:\n{fenced_code(file_content, detect_language(filename) or '')}"
+                )
             # No diff and nothing fetched: say only what the listing shows.
             # GitHub counts a binary's lines as 0/0 even when its bytes
             # changed, so "no changes" is never claimed for a rename or copy.
@@ -956,7 +961,11 @@ class CommentsHelper:
                     f"Diff: omitted ({getattr(file, 'additions', 0) or 0} lines added, "
                     f"{getattr(file, 'deletions', 0) or 0} removed; {over_budget_note})"
                 )
-            elif diff or changed or status not in ("renamed", "copied"):
+            elif diff:
+                # Bare, a diff is read as markdown: removed lines become list
+                # items, and indented context lines code blocks or headings.
+                data_parts.append(f"Diff:\n{fenced_code(patch, 'diff')}")
+            elif changed or status not in ("renamed", "copied"):
                 data_parts.append(f"Diff:\n{patch}")
             sections = review_comment_sections.get(filename)
             if sections:

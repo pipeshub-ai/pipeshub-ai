@@ -28,9 +28,11 @@ from app.connectors.sources.microsoft.common.outlook_constants import (
     OutlookDefaults,
     OutlookSyncConfig,
     OutlookSyncPointKeys,
-    describe_sign_in_error,
     graph_error_status,
     is_expired_delta_link_error,
+)
+from app.connectors.sources.microsoft.common.sign_in_errors import (
+    describe_sign_in_error,
 )
 from app.models.entities import AppUser, FileRecord, RecordType
 from app.services.notification.types import NotificationSeverity, NotificationType

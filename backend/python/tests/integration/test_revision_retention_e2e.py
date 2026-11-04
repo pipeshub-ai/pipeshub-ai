@@ -238,18 +238,21 @@ async def test_the_sweep_against_the_graph(world: _World) -> None:
     await world.state(kept, "r1", "classify", old)
     await world.state(binned, "r0", "classify", old)
     revisions = {
-        vrid: [{"documentId": f"{vrid}-{rev}", "rev": rev, "createdAt": old} for rev in ("r1", "r2", "r3", "r4")]
+        vrid: [{"documentId": f"{vrid}-{rev}", "rev": rev, "createdAt": old, "deleteFence": True} for rev in ("r1", "r2", "r3", "r4")]
         for vrid in (kept, binned)
     }
     store = MagicMock()
-    store.list_revisions = AsyncMock(side_effect=lambda org, vrid: revisions[vrid])
+    store.list_revisions = AsyncMock(side_effect=lambda org, vrid, **_: revisions[vrid])
     store.delete_revision = AsyncMock(return_value=1)
 
     sweep = RevisionRetentionSweep(world.graph, store, logger, page_size=2)
     next_key, report = await sweep.run_page(world.prefix)
 
     assert next_key == binned
-    store.delete_revision.assert_awaited_once_with(world.org_id, f"{kept}-r1")
+    store.delete_revision.assert_awaited_once()
+    assert store.delete_revision.await_args.args == (world.org_id, f"{kept}-r1")
+    assert store.delete_revision.await_args.kwargs["if_unchanged_since"] == old
+    assert store.delete_revision.await_args.kwargs["timeout_seconds"] > 0
     assert (report.revisions_deleted, report.skipped_trashed, report.stage_states_deleted) == (1, 1, 1)
     assert await world.revs_with_states(kept) == set()
     assert await world.graph.stage_states_for_revision(binned, "r0") != []
@@ -354,7 +357,7 @@ async def test_a_record_moving_onto_an_old_revision_under_its_lease_keeps_it(wor
     record_id = await world.record("back", vrid, "r3")
     await world.state(vrid, "r1", "classify", old)
     store = MagicMock()
-    store.list_revisions = AsyncMock(return_value=[{"documentId": "doc-r1", "rev": "r1", "createdAt": old}])
+    store.list_revisions = AsyncMock(return_value=[{"documentId": "doc-r1", "rev": "r1", "createdAt": old, "deleteFence": True}])
     store.delete_revision = AsyncMock(return_value=1)
     leases = _Leases()
     sweep = RevisionRetentionSweep(world.graph, store, logger, leases=leases)  # type: ignore[arg-type]

@@ -37,17 +37,23 @@ from app.agents.constants.mcp_server_constants import (
 from app.agents.mcp import cimd, stdio_policy, step_up
 from app.agents.mcp import dcr as dcr_module
 from app.agents.mcp import lifecycle as mcp_lifecycle
+from app.agents.mcp import logo as mcp_logo
 from app.agents.mcp import oauth_client as oauth_client_module
 from app.agents.mcp import service as mcp_service
 from app.agents.mcp import token_refresh as mcp_token_refresh
 from app.agents.mcp.client import MCPConnectionError
 from app.agents.mcp.discovery import cached_tools_for_owner, discover_tools_for_owner
-from app.agents.mcp.errors import MCPUrlBlockedError
-from app.agents.mcp.failure import classify_mcp_failure
+from app.agents.mcp.errors import MCPUrlBlockedError, insufficient_scope
+from app.agents.mcp.failure import (
+    SIGN_IN_FAILURES,
+    MCPFailureReason,
+    classify_mcp_failure,
+)
 from app.agents.mcp.models import (
     DiscoveredOAuthMetadata,
     MCPAuthMode,
     MCPServerInstanceConfig,
+    MCPServerLogoPayload,
     MCPTransport,
     TokenEndpointAuthMethod,
     is_web_url,
@@ -66,6 +72,7 @@ from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
+from app.core.org_context import current_org_id
 from app.edition_config import (
     build_schedule_refresh_kwargs,
     can_reveal_secrets,
@@ -76,6 +83,7 @@ from app.edition_config import (
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
 )
+from app.utils.concurrency import gather_with_concurrency
 from app.utils.desktop_state import (
     mark_desktop_state,
     strip_desktop_state,
@@ -384,6 +392,8 @@ def _validate_instance_config(payload: MCPServerInstanceConfig, registry: MCPReg
             )
         if template.supported_auth_modes and payload.auth_mode not in template.supported_auth_modes:
             raise _bad_request(f"{template.display_name} does not support the {payload.auth_mode.value} auth mode.")
+        if template.url_editable is True and not (payload.url or "").strip():
+            raise _bad_request(f"{template.display_name} needs your server URL.")
         return
 
     # Custom server — validate transport-specific required fields.
@@ -455,7 +465,11 @@ def _build_instance_record(
     if template:
         # A catalog server's launch and OAuth settings are fixed by its template: taking
         # them from the request would let a "GitHub" instance run any command or URL.
-        record.update(template_connection_fields(template))
+        # `url_editable` is the exception: the admin supplies that one address.
+        fields = template_connection_fields(template)
+        if template.url_editable is True:
+            fields["url"] = payload.url
+        record.update(fields)
     else:
         record.update({
             "command": payload.command,
@@ -755,6 +769,74 @@ async def delete_instance(request: Request, instance_id: str) -> dict[str, Any]:
     await mcp_lifecycle.delete_instance_data(config_service, instance)
 
     return {"success": True, "_id": instance_id}
+
+
+# ============================================================================
+# Logos — custom servers only; a catalog server shows its vendor's
+# ============================================================================
+
+# Logos read at once for a listing.
+_LOGO_READ_CONCURRENCY = 16
+# Uploads decoded at once in this process: decoding a large image takes tens of MiB, so the rest
+# wait their turn rather than adding up.
+_LOGO_NORMALIZE_CONCURRENCY = 2
+_LOGO_NORMALIZE_SLOTS = asyncio.Semaphore(_LOGO_NORMALIZE_CONCURRENCY)
+
+
+@router.get("/logos", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
+async def get_logos(request: Request) -> dict[str, Any]:
+    """The logos of the custom servers the caller can see, by instance id."""
+    config_service = _get_config_service(request)
+    user_context = _get_user_context(request)
+    instances = await resolve_mcp_instances_with_inheritance(
+        config_service, current_org_id(), user_context["user_id"],
+    )
+
+    async def _logo_of(instance_id: str) -> tuple[str, Optional[str]]:
+        owner_svc = await resolve_instance_owner_config_service(instance_id, config_service) or config_service
+        return instance_id, await mcp_logo.load_logo(owner_svc, instance_id)
+
+    pairs = await gather_with_concurrency(
+        _LOGO_READ_CONCURRENCY, *[_logo_of(i["_id"]) for i in instances if i.get("isCustom")],
+    )
+    return {"logos": {instance_id: logo for instance_id, logo in pairs if logo}}
+
+
+async def _logo_target(request: Request, instance_id: str, config_service: ConfigurationService) -> dict[str, Any]:
+    """The instance whose logo the caller may change: the same people who may edit the server."""
+    user_context = _get_user_context(request)
+    instance = await _get_org_instance(instance_id, config_service, current_org_id(), user_context["user_id"])
+    if not instance:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
+    await _require_manage_access(instance, user_context, request, config_service, "change the logo of")
+    forbid_inherited_mcp_mutation(instance)
+    return instance
+
+
+@router.put("/instances/{instance_id}/logo", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
+async def set_instance_logo(request: Request, instance_id: str, payload: MCPServerLogoPayload) -> dict[str, Any]:
+    config_service = _get_config_service(request)
+    instance = await _logo_target(request, instance_id, config_service)
+    if not instance.get("isCustom"):
+        raise _bad_request("Only custom MCP servers take a logo. A catalog server shows its vendor's.")
+    try:
+        # Decoding and shrinking a large image takes long enough to stall other requests.
+        async with _LOGO_NORMALIZE_SLOTS:
+            logo = await asyncio.to_thread(mcp_logo.normalize_logo, payload.logo)
+    except mcp_logo.LogoError as e:
+        raise _bad_request(str(e)) from e
+    if not await mcp_logo.save_logo(config_service, instance_id, logo):
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save the logo.")
+    return {"logo": logo}
+
+
+@router.delete("/instances/{instance_id}/logo", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
+async def remove_instance_logo(request: Request, instance_id: str) -> dict[str, Any]:
+    config_service = _get_config_service(request)
+    await _logo_target(request, instance_id, config_service)
+    if not await mcp_logo.delete_logo(config_service, instance_id):
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to remove the logo.")
+    return {"success": True}
 
 
 # ============================================================================
@@ -1763,6 +1845,26 @@ async def update_oauth_config(
 
 
 _REAUTH_REQUIRED = "Authentication with this MCP server has expired. Reconnect it to continue."
+# No token can fix this one: only whoever can edit the instance (an administrator, or a personal
+# server's owner) choosing the auth mode the server needs.
+_SIGN_IN_WITHOUT_AUTH = "This server asks for a sign-in, but it's set to No authentication."
+
+
+def _failure_reason(instance: dict[str, Any], error: Exception) -> MCPFailureReason:
+    """`classify_mcp_failure`, except for a server set to No authentication that answers 403
+    `insufficient_scope`: with a sign-in, a new one can't fix that refusal, but here nothing is
+    signed in, so only an auth mode that signs in can carry the scope it wants."""
+    reason = classify_mcp_failure(error)
+    if (
+        reason is MCPFailureReason.UNREACHABLE and instance.get("authMode") == MCPAuthMode.NONE.value
+        and insufficient_scope(error) is not None
+    ):
+        return MCPFailureReason.NEEDS_PERMISSION
+    return reason
+
+
+def _asks_for_sign_in_without_auth(instance: dict[str, Any], error: Exception) -> bool:
+    return instance.get("authMode") == MCPAuthMode.NONE.value and _failure_reason(instance, error) in SIGN_IN_FAILURES
 
 
 def _connection_error_text(error: Exception, *, is_admin: bool) -> str:
@@ -1838,8 +1940,11 @@ async def _discover_listing_tools(
         except asyncio.TimeoutError:
             _report_listing_timeout(entry, cut_by_deadline=budget < LISTING_DISCOVERY_BUDGET_SECONDS)
         except MCPConnectionError as e:
-            entry["toolsErrorCode"] = classify_mcp_failure(e).value
-            entry["toolsError"] = _connection_error_text(e, is_admin=is_admin)
+            entry["toolsErrorCode"] = _failure_reason(instance, e).value
+            entry["toolsError"] = (
+                _SIGN_IN_WITHOUT_AUTH if _asks_for_sign_in_without_auth(instance, e)
+                else _connection_error_text(e, is_admin=is_admin)
+            )
         except (mcp_token_refresh.MCPTokenRefreshError, oauth_client_module.MCPOAuthError) as e:
             logger.warning(f"MCP token refresh during discovery failed for instance {instance['_id']}: {e}")
             entry["toolsErrorCode"] = "auth_expired"
@@ -1959,6 +2064,13 @@ async def get_instance_tools(request: Request, instance_id: str, *, cached: bool
         # Live (Refresh, or nothing cached), and what it finds replaces the cached tools.
         tools, _ = await discover_tools_for_owner(instance, effective_auth, owner_id, config_service, namespace=namespace)
     except MCPConnectionError as e:
+        if _failure_reason(instance, e) in SIGN_IN_FAILURES:
+            logger.info("MCP instance %s asks for a sign-in (auth mode %s): %s", instance_id, instance.get("authMode"), e)
+            # 409, not 502: the gateway passes a 409's reason on, so the panel can say what fixes it.
+            raise HTTPException(
+                status_code=HttpStatusCode.CONFLICT.value,
+                detail=_SIGN_IN_WITHOUT_AUTH if _asks_for_sign_in_without_auth(instance, e) else _REAUTH_REQUIRED,
+            ) from e
         logger.warning("Tool discovery failed for MCP instance %s: %s", instance_id, e, exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.BAD_GATEWAY.value, detail=action_failed("load this MCP server's tools"),

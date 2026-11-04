@@ -65,6 +65,7 @@ from sharepoint_behaviour_fakes import (
     user_grant,
 )
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
@@ -154,7 +155,7 @@ class TestClientAndTokens:
         api.token_failure = json_response(
             {"error": "invalid_client", "error_description": "AADSTS7000215: Invalid client secret provided."}, status=401
         )
-        with pytest.raises(ValueError, match="Invalid client secret"):
+        with pytest.raises(ConnectorInitError, match=r"AADSTS7000215.*client secret is wrong"):
             await ready_connector(api, db, checkpoints)
         assert api.graph_calls() == []
 

@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 from app.connectors.core.registry.filters import Filter, FilterCollection, SyncFilterKey
 from app.connectors.sources.google.common.gmail_received_date_query import (
@@ -226,14 +227,14 @@ class TestGmailTeamInit:
 
     async def test_init_no_auth(self, connector):
         connector.config_service.get_config = AsyncMock(return_value={"auth": {}})
-        with pytest.raises(ValueError, match="Service account credentials not found"):
+        with pytest.raises(ConnectorInitError, match="Service account credentials not found"):
             await connector.init()
 
     async def test_init_no_admin_email(self, connector):
         connector.config_service.get_config = AsyncMock(return_value={
             "auth": {"someKey": "someValue"},
         })
-        with pytest.raises(ValueError, match="Admin email not found"):
+        with pytest.raises(ConnectorInitError, match="Admin email not found"):
             await connector.init()
 
     @patch("app.connectors.sources.google.gmail.team.connector.GoogleClient")

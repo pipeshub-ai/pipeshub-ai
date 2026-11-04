@@ -1,6 +1,7 @@
 export enum MessageBrokerType {
   KAFKA = 'kafka',
   REDIS = 'redis',
+  POSTGRES = 'postgres',
 }
 
 /**

@@ -427,6 +427,23 @@ export function askUserQuestionOwnsRow(
   );
 }
 
+/** Whether a settled reply shows the "Stopped" marker. A row whose card is
+ *  its whole output is left out, waiting or answered: Stop cut nothing short.
+ *  That is a card row with no answer text, or one closed by chatting
+ *  (`repliedInChat`), whose answer went to a new row. A stopped resume merges
+ *  its partial answer onto the card row (`loadHistoricalMessages`), so a card
+ *  row with answer text keeps the marker. */
+export function showsStoppedMarker(row: {
+  status: string | undefined;
+  isStreaming: boolean;
+  hasQuestionCard: boolean;
+  hasAnswerText: boolean;
+  repliedInChat: boolean;
+}): boolean {
+  if (row.isStreaming || row.status !== 'stopped') return false;
+  return !(row.hasQuestionCard && (!row.hasAnswerText || row.repliedInChat));
+}
+
 function hasVisibleSelections(
   questions: AskUserQuestionItem[],
   answers: Record<string, AskUserQuestionAnswer>,
@@ -467,7 +484,9 @@ export function AskUserQuestionCard({
     initialStep ?? firstUnansweredStep(questions, initialAnswers),
   );
   const settled = status === 'submitted' || status === 'persisted';
-  const allAnswered = settled && !hasUnansweredQuestions(normalized, answers);
+  // A card closed by a typed reply has no selections to wait for, so it is finished too.
+  const allAnswered =
+    settled && (Boolean(normalized.repliedInChat) || !hasUnansweredQuestions(normalized, answers));
   // A finished card opens the way "Show less" leaves it. Collapse once per
   // completion, including a card that was just submitted, and leave a later
   // "Show more" open until another question is still unanswered.

@@ -316,7 +316,7 @@ def lint_file(path: Path) -> list[str]:
             if re.match(r"GRANT (.*, )?(ALL|CREATE)\b.* ON SCHEMA", u) and not (vetted and re.match(r"GRANT CREATE ON SCHEMA \w+ TO PIPESHUB_VETTED_\w+$", u)):
                 flag("GRANT CREATE on a schema")
             if re.search(r"\bPG_NOTIFY\s*\(|^NOTIFY\b|^LISTEN\b", u):
-                flag("NOTIFY / LISTEN (a channel is shared by every org; payloads must not carry org data)")
+                flag("NOTIFY / LISTEN (a channel is shared by the whole database; payloads must not carry org data)")
             if u.startswith("ALTER DEFAULT PRIVILEGES"):
                 flag("ALTER DEFAULT PRIVILEGES (grants are explicit per table)")
         dv = re.match(rf"DROP VIEW (?:IF EXISTS )?({_N})", s, re.I)

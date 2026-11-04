@@ -41,6 +41,13 @@ _UNKNOWN = "Could not retrieve this item. Please try again."
 
 _DEFAULT_CONNECTOR = "the source"
 
+# Marks an answer that relays the source's refusal of the item (its 4xx). Its detail
+# is written for the person who sees the record, so the indexer stores it as the
+# failure reason and logs the refusal as an expected outcome rather than as an
+# error. An outage at the source (5xx, timeout) is not a refusal and is not marked.
+SOURCE_REFUSAL_HEADER = "X-Source-Refusal"
+_REFUSAL = {SOURCE_REFUSAL_HEADER: "1"}
+
 # Not in HttpStatusCode; a source-side 408 is a timeout like 504.
 _REQUEST_TIMEOUT = 408
 _MAX_HTTP_STATUS = 599
@@ -65,8 +72,13 @@ def map_source_status(
     *,
     connector: str | None = None,
     retry_after: str | None = None,
+    reason: str | None = None,
 ) -> HTTPException:
-    """Translate a source API's HTTP status into one of ours."""
+    """Translate a source API's HTTP status into one of ours.
+
+    ``reason`` replaces the generic message when the connector can say more
+    precisely what the source answered (the web connector names the page's status).
+    """
     name = connector or _DEFAULT_CONNECTOR
 
     # Callers pass through whatever the SDK handed them. A non-numeric status
@@ -74,25 +86,31 @@ def map_source_status(
     if not isinstance(status, int) or isinstance(status, bool):
         return HTTPException(HttpStatusCode.INTERNAL_SERVER_ERROR.value, _UNKNOWN)
 
+    def refused(code: int, message: str, headers: dict[str, str] | None = None) -> HTTPException:
+        return HTTPException(code, reason or message.format(connector=name), headers={**_REFUSAL, **(headers or {})})
+
+    def unavailable(code: int, message: str) -> HTTPException:
+        return HTTPException(code, reason or message.format(connector=name))
+
     if status == HttpStatusCode.UNAUTHORIZED.value:
-        return HTTPException(HttpStatusCode.CONFLICT.value, _RECONNECT.format(connector=name))
+        return refused(HttpStatusCode.CONFLICT.value, _RECONNECT)
     if status == HttpStatusCode.FORBIDDEN.value:
-        return HTTPException(HttpStatusCode.FORBIDDEN.value, _FORBIDDEN.format(connector=name))
+        return refused(HttpStatusCode.FORBIDDEN.value, _FORBIDDEN)
     if status in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.GONE.value):
-        return HTTPException(HttpStatusCode.NOT_FOUND.value, _NOT_FOUND.format(connector=name))
+        return refused(HttpStatusCode.NOT_FOUND.value, _NOT_FOUND)
     if status == HttpStatusCode.TOO_MANY_REQUESTS.value:
         # Sanitized here rather than at each call site: the value is upstream
         # text going onto a response header, and callers pass it through raw.
         safe_retry_after = sanitize_retry_after(retry_after)
-        return HTTPException(
+        return refused(
             HttpStatusCode.TOO_MANY_REQUESTS.value,
-            _RATE_LIMITED.format(connector=name),
-            headers={"Retry-After": safe_retry_after} if safe_retry_after else None,
+            _RATE_LIMITED,
+            {"Retry-After": safe_retry_after} if safe_retry_after else None,
         )
     if status in (_REQUEST_TIMEOUT, HttpStatusCode.GATEWAY_TIMEOUT.value):
-        return HTTPException(HttpStatusCode.GATEWAY_TIMEOUT.value, _TIMEOUT.format(connector=name))
+        return unavailable(HttpStatusCode.GATEWAY_TIMEOUT.value, _TIMEOUT)
     if HttpStatusCode.INTERNAL_SERVER_ERROR.value <= status <= _MAX_HTTP_STATUS:
-        return HTTPException(HttpStatusCode.BAD_GATEWAY.value, _UNAVAILABLE.format(connector=name))
+        return unavailable(HttpStatusCode.BAD_GATEWAY.value, _UNAVAILABLE)
     if status > _MAX_HTTP_STATUS:
         return HTTPException(HttpStatusCode.INTERNAL_SERVER_ERROR.value, _UNKNOWN)
     # Below 400 the source did not report a failure at all. Slack is the live
@@ -104,9 +122,7 @@ def map_source_status(
 
     # Remaining 4xx: the source understood us and refused. The item is not
     # retrievable as requested, which is not a malformed-request 400.
-    return HTTPException(
-        HttpStatusCode.UNPROCESSABLE_ENTITY.value, _NOT_DOWNLOADABLE.format(connector=name)
-    )
+    return refused(HttpStatusCode.UNPROCESSABLE_ENTITY.value, _NOT_DOWNLOADABLE)
 
 
 def not_downloadable(message: str, *, connector: str | None = None) -> HTTPException:

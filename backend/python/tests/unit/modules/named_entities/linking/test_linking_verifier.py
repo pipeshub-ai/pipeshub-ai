@@ -119,3 +119,10 @@ async def test_nothing_to_choose_from_needs_no_call() -> None:
     llm = _Llm('{"1": [1]}')
     assert await _verifier(llm).verify("q", [VerifyItem("Acme", None, [])]) == {0: []}
     assert llm.prompts == []
+
+
+
+def test_the_check_accepts_a_misspelling_as_the_same_name() -> None:
+    from app.modules.named_entities.linking.verifier import INSTRUCTIONS
+
+    assert "a misspelling" in INSTRUCTIONS

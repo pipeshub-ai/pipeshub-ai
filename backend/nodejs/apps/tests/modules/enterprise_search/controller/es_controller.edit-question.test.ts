@@ -34,6 +34,8 @@ function editFlow(options: {
   cardTurnBefore?: boolean
   /** A question asked after the last answer, that has none of its own. */
   unansweredQuestion?: string
+  /** The card's answers sent a second time, after the reply to the first send. */
+  answersSentTwice?: boolean | string
 }): Flow {
   return {
     name: 'regenerateAnswers (edited question)',
@@ -96,6 +98,13 @@ function editFlow(options: {
           } as never)
         }
         store.addMessage(session, { messageType: 'user_query', content: CARD_ANSWERS })
+        if (options.answersSentTwice) {
+          store.addMessage(session, { messageType: 'bot_response', content: 'Pop it is.' })
+          store.addMessage(session, {
+            messageType: 'user_query',
+            content: typeof options.answersSentTwice === 'string' ? options.answersSentTwice : CARD_ANSWERS,
+          })
+        }
       }
       const bot = store.addMessage(session, { messageType: 'bot_response', content: 'An older answer.' })
       if (options.unansweredQuestion) {
@@ -312,25 +321,143 @@ describe('es_controller editing the last question', () => {
         .to.deep.equal([FIRST_QUESTION, CARD_ANSWERS])
     })
 
-    it('regenerates the answers unchanged when the text was not edited', async () => {
+    it('asks the turn again from its first question when the text was not edited', async () => {
       const run = await startStream(editFlow({ edit: FIRST_QUESTION, turn: 'card' }), controllerModule, undefined, { wait: false })
       await settle()
 
       await finish(run, 'Pop and an adventure.')
 
-      expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(CARD_ANSWERS)
-      expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
-        .to.deep.equal([FIRST_QUESTION, CARD_ANSWERS])
+      expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(FIRST_QUESTION)
+      expect(rowsOf(run)).to.deep.equal([`user_query: ${FIRST_QUESTION}`, 'bot_response: Pop and an adventure.'])
     })
 
-    it('still regenerates it as it was when no edit is sent', async () => {
-      const run = await startStream(editFlow({ turn: 'card' }), controllerModule, undefined, { wait: false })
-      await settle()
+    describe('a regenerate with no edit', () => {
+      it('asks the first question again, without the old card turn in its history', async () => {
+        const run = await startStream(editFlow({ turn: 'card', earlierTurn: true }), controllerModule, undefined, { wait: false })
+        await settle()
 
-      await finish(run, 'Pop and an adventure.')
+        const body = run.ai.streamCalls[0]?.body as { query: string; previousConversations: unknown[] }
+        expect(body.query).to.equal(FIRST_QUESTION)
+        const history = JSON.stringify(body.previousConversations)
+        expect(history).to.contain('An earlier question')
+        expect(history).to.not.contain('Which one do you enjoy?')
+        expect(history).to.not.contain('User selections')
+      })
 
-      expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(CARD_ANSWERS)
-      expect(run.answer()?.content).to.equal('Pop and an adventure.')
+      it('replaces the old card, its answers and the old reply with the new answer', async () => {
+        const run = await startStream(editFlow({ turn: 'card', earlierTurn: true }), controllerModule, undefined, { wait: false })
+        await settle()
+
+        await finish(run, 'Pop and an adventure.')
+
+        expect(rowsOf(run)).to.deep.equal([
+          'user_query: An earlier question',
+          'bot_response: An earlier answer.',
+          `user_query: ${FIRST_QUESTION}`,
+          'bot_response: Pop and an adventure.',
+        ])
+        expect(run.answer()?.content).to.equal('Pop and an adventure.')
+        expect(run.conversation().title).to.equal(FIRST_QUESTION)
+      })
+
+      it('leaves only the new card when the run asks again', async () => {
+        const run = await startStream(editFlow({ turn: 'card' }), controllerModule, undefined, { wait: false })
+        await settle()
+
+        run.ai.send('CUSTOM', { name: 'ask_user_question', value: { toolData: { question: 'Which quarter?' } } })
+        run.ai.send('RUN_FINISHED', { runId: RUN, result: { answer: '', citations: [], status: 'waiting_input' } })
+        run.ai.finish()
+        await run.res.ended
+        await run.done
+        await settle()
+
+        expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+          .to.deep.equal([FIRST_QUESTION])
+        // A regenerated answer carries its card itself; the old card's row is gone.
+        expect(run.messages().filter((m) => m.messageType === 'tool_call')).to.deep.equal([])
+        expect(JSON.stringify(run.answer()?.tools)).to.contain('Which quarter?')
+      })
+
+      it('keeps the whole turn when the run fails', async () => {
+        const run = await startStream(editFlow({ turn: 'card' }), controllerModule, undefined, { wait: false })
+        const before = rowsOf(run)
+        await settle()
+
+        run.ai.send('RUN_ERROR', { runId: RUN, message: 'The AI model is not responding right now.', code: 'stream_error' })
+        run.ai.finish()
+        await run.res.ended
+        await run.done
+        await settle()
+
+        expect(rowsOf(run).slice(0, 4)).to.deep.equal(before.slice(0, 4))
+        expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+          .to.deep.equal([FIRST_QUESTION, CARD_ANSWERS])
+      })
+
+      it('keeps the card rows when the new answer cannot be saved', async () => {
+        sinon.stub(searchUtils, 'handleRegenerationSuccess').rejects(new Error('database is down'))
+        const run = await startStream(editFlow({ turn: 'card' }), controllerModule, undefined, { wait: false })
+        const before = rowsOf(run)
+        await settle()
+
+        await finish(run, 'Pop and an adventure.')
+
+        const after = rowsOf(run)
+        for (const row of before.slice(1, 4)) expect(after, `${row} is still there`).to.include(row)
+      })
+
+      it('asks the first question again when the card answers were sent twice', async () => {
+        const run = await startStream(editFlow({ turn: 'card', answersSentTwice: true, earlierTurn: true }), controllerModule, undefined, { wait: false })
+        await settle()
+
+        expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(FIRST_QUESTION)
+        await finish(run, 'Pop and an adventure.')
+
+        expect(rowsOf(run)).to.deep.equal([
+          'user_query: An earlier question',
+          'bot_response: An earlier answer.',
+          `user_query: ${FIRST_QUESTION}`,
+          'bot_response: Pop and an adventure.',
+        ])
+      })
+
+      it('still finds a second send whose typed answer has a quote and an arrow in it', async () => {
+        const quotedAnswer = 'User selections:\n1. "What do you enjoy?" → Say "yes" → continue'
+        const run = await startStream(editFlow({ turn: 'card', answersSentTwice: quotedAnswer }), controllerModule, undefined, { wait: false })
+        await settle()
+
+        expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(FIRST_QUESTION)
+      })
+
+      // Typed after a card turn, these quote the card's question but are not a second send of its answers.
+      for (const [why, typed] of [
+        ['it also quotes a question the card never asked', 'User selections:\n1. "What do you enjoy?" → Pop\n2. "And what next?" → Jazz'],
+        ['it is not written the way the app writes answers', 'User selections: is "What do you enjoy?" → Pop the right pick?'],
+        ['it asks something on a line of its own', 'User selections:\n1. "What do you enjoy?" → Pop\nWhy was this recommended?'],
+      ] as const) {
+        it(`keeps a typed question and the card turn when ${why}`, async () => {
+          const run = await startStream(editFlow({ turn: 'card', answersSentTwice: typed }), controllerModule, undefined, { wait: false })
+          await settle()
+
+          expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(typed)
+          await finish(run, 'Pop and an adventure.')
+
+          expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+            .to.deep.equal([FIRST_QUESTION, CARD_ANSWERS, typed])
+          expect(run.messages().filter((m) => m.messageType === 'tool_call')).to.have.length(1)
+        })
+      }
+
+      it('only redoes the reply when the turn also answered an approval card', async () => {
+        const run = await startStream(editFlow({ turn: 'card-after-approval' }), controllerModule, undefined, { wait: false })
+        await settle()
+
+        await finish(run, 'Pop and an adventure.')
+
+        expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(CARD_ANSWERS)
+        expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+          .to.deep.equal([FIRST_QUESTION, 'Tool approval: allow once', CARD_ANSWERS])
+      })
     })
 
     it('refuses an edit when the turn also answered an approval card', async () => {
@@ -513,11 +640,13 @@ describe('es_controller editing the last question', () => {
       expect(run.ai.streamCalls).to.deep.equal([])
     })
 
-    it('regenerates a card turn as it was when the files sent are the stored ones', async () => {
+    it('asks a card turn again with its stored files when the files sent are the stored ones', async () => {
       const run = await start({ turn: 'card', storedFiles: [FILE_A], files: [FILE_A] })
       await finish(run)
 
-      expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(CARD_ANSWERS)
+      expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(FIRST_QUESTION)
+      expect(sentFiles(run)).to.deep.equal(['rec-a'])
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-a'])
     })
   })
 
@@ -597,6 +726,24 @@ describe('es_controller editing the last question', () => {
       await settle(20)
 
       expect(rowsOf(run)).to.deep.equal(['user_query: What changed in v2?', 'bot_response: Two '])
+    })
+
+    it('keeps the card rows when the user leaves mid-answer and the edited question cannot be saved', async () => {
+      const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      sinon.stub(searchUtils, 'updateUserQueryContent').resolves(null as never)
+      const run = await start({ edit: 'What changed in v2?', turn: 'card' })
+      const before = rowsOf(run)
+
+      run.ai.send('TEXT_MESSAGE_CONTENT', delta('Two '))
+      await settle()
+      run.res.disconnect()
+      await settle(10)
+      clock.tick(DETACHED_RUN_MAX_MS + 1)
+      await settle(20)
+
+      const after = rowsOf(run)
+      for (const row of before.slice(0, 4)) expect(after, `${row} is still there`).to.include(row)
+      expect(after.filter((row) => row.startsWith('tool_call'))).to.have.length(1)
     })
 
     it('keeps the whole card turn when the user leaves before any answer text', async () => {
@@ -786,6 +933,18 @@ describe('es_controller editing the last question', () => {
         'user_query: What changed in v2?',
         'bot_response: Two things.',
       ])
+    })
+
+    it('treats a typed question written like card answers, after a card turn, as a question of its own', async () => {
+      const lookalike = 'User selections:\n1. "What should I read next?" → anything'
+      const run = await start({ question: lookalike, cardTurnBefore: true })
+
+      expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(lookalike)
+      run.ai.send('RUN_FINISHED', finalAnswer('Two things.'))
+      await end(run)
+
+      expect(rowsOf(run)).to.have.length(7)
+      expect(rowsOf(run).slice(-2)).to.deep.equal([`user_query: ${lookalike}`, 'bot_response: Two things.'])
     })
 
     it('edits a first question that starts like card answers as an ordinary question', async () => {

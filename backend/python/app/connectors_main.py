@@ -63,7 +63,8 @@ from app.connectors.core.sync.task_manager import (
 )
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
-from app.connectors.sources.localKB.api.kb_router import kb_router
+from app.connectors.sources.localKB.api.kb_router import install_push_routes, kb_router
+from app.connectors.sources.web.crawl4ai_fetcher import close_shared_fetcher  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
     get_knowledge_hub_service,
     knowledge_hub_router,
@@ -866,6 +867,12 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.error(f"Error closing configuration service: {e}")
 
+        # After the syncs above were cancelled: an idle close would otherwise outlive the loop.
+        try:
+            await close_shared_fetcher()
+        except Exception as e:
+            logger.warning(f"Error closing the shared headless browser: {e}")
+
         # Last, and the only place the shared pool is ever shut down — connector
         # cleanup() only drains its own lease, since other connectors share this.
         thread_pool = getattr(container, "connector_thread_pool", None)
@@ -931,6 +938,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
 
+    from app.services.permissions.wiring import register_viewer_scope_version
+
+    await register_viewer_scope_version(app_container.config_service(), logger)
+    from app.services.permissions.wiring import register_scope_generation
+
+    await register_scope_generation(app_container.config_service(), logger)
+
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
@@ -994,7 +1008,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
         repair_result = await run_connector_oauth_toolset_fields_repair(
-            app_container.config_service(), oauth_registry, logger
+            app_container.config_service(), oauth_registry, logger, graph_provider
         )
         if not repair_result.get("skipped"):
             logger.info(
@@ -1185,7 +1199,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         run_flat_storage_migration,
     )
 
-    app.state.flat_storage_migration_task = asyncio.create_task(
+    app.state.flat_storage_migration_task = spawn_detached(
         run_flat_storage_migration(app_container, graph_provider), name="flat_storage_migration",
     )
 
@@ -1352,6 +1366,9 @@ async def health_check() -> JSONResponse:
         )
 
 
+PG_PROBE_TIMEOUT_SEC = 3.0
+
+
 @app.get("/health/graph-db")
 async def graph_db_health_check(request: Request) -> JSONResponse:
     """Probe the configured graph database using the same driver the app uses.
@@ -1490,6 +1507,29 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                 },
             )
 
+    # ── PostgreSQL ────────────────────────────────────────────────────────────
+    if data_store == "postgres":
+        try:
+            # Under Node's 5s graph timeout (also the Helm probe budget): a saturated pool must answer 503, not hang the probe.
+            # Not wait_for: that also waits for the cancelled ping to finish, and a stalled unit can take seconds to roll back.
+            ping = spawn_detached(request.app.state.graph_provider.ping(), name="pg_graph_health_ping")
+            try:
+                done, _ = await asyncio.wait({ping}, timeout=PG_PROBE_TIMEOUT_SEC)
+            finally:  # a timeout or the handler's own cancellation: do not leave the ping holding a pooled connection
+                if not ping.done():
+                    ping.cancel()
+                    ping.add_done_callback(lambda t: t.cancelled() or t.exception())  # retrieved, so nothing logs "never retrieved"
+            if not done:
+                raise TimeoutError("PostgreSQL graph ping timed out")
+            ping.result()
+            return JSONResponse(status_code=200, content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()})
+        except Exception:
+            request.app.container.logger().error("PostgreSQL graph health check failed", exc_info=True)
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unhealthy", "error": "PostgreSQL graph health check failed", "timestamp": get_epoch_timestamp_in_ms()},
+            )
+
     # Unknown DATA_STORE value — treat as healthy so we don't block deployments.
     return JSONResponse(
         status_code=200,
@@ -1622,6 +1662,7 @@ app.include_router(toolsets_router)
 app.include_router(mcp_servers_router)
 app.include_router(api_toolsets_router)
 app.include_router(kb_router)
+install_push_routes(app)  # the push routes and the ENABLE_KB_PUSH gate (off by default)
 app.include_router(knowledge_hub_router)
 app.include_router(demo_data_router)
 app.include_router(connector_router)

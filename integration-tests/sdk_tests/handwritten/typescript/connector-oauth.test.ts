@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "vitest";
-import { createClient } from "./client.js";
+import { createAdminClient } from "./client.js";
 
 // Completing the flow needs a person to consent in a browser, so this stops at the consent URL.
 test("Handwritten Connector OAuth Authorization", async () => {
-  const pipeshub = createClient();
+  const pipeshub = createAdminClient();
   // OAuth app and connector names are unique in an org.
   const name = `sdk-test-jira-${randomUUID()}`;
 

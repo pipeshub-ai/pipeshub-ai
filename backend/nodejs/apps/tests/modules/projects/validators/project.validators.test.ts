@@ -58,6 +58,36 @@ describe('projects/validators/project.validators', () => {
       expect(result.success).to.equal(true)
     })
 
+    // The Mongo schema counts UTF-16 units; a name that passed here as 100
+    // code points used to fail the save with a 500.
+    it('counts an emoji as two characters, as the database does', () => {
+      const overByEmoji = createProjectSchema.safeParse({
+        body: { name: 'a'.repeat(PROJECT_NAME_MAX_LENGTH - 1) + '\u{1F680}' },
+      })
+      expect(overByEmoji.success).to.equal(false)
+      expect(overByEmoji.error!.issues[0].code).to.equal('too_big')
+
+      const exactlyFull = createProjectSchema.safeParse({
+        body: { name: '\u{1F680}'.repeat(PROJECT_NAME_MAX_LENGTH / 2) },
+      })
+      expect(exactlyFull.success).to.equal(true)
+    })
+
+    it('counts emoji the same way in description and instructions', () => {
+      expect(
+        createProjectSchema.safeParse({ body: { name: 'x', description: '\u{1F680}'.repeat(501) } }).success,
+      ).to.equal(false)
+      expect(
+        createProjectSchema.safeParse({ body: { name: 'x', instructions: '\u{1F680}'.repeat(4001) } }).success,
+      ).to.equal(false)
+      expect(
+        updateProjectSchema.safeParse({
+          params: { projectId: VALID_OID },
+          body: { name: '\u{1F680}'.repeat(51) },
+        }).success,
+      ).to.equal(false)
+    })
+
     it('accepts optional description/icon/color/instructions/knowledgeScope/appliedFilters', () => {
       const result = createProjectSchema.safeParse({
         body: {
@@ -166,6 +196,21 @@ describe('projects/validators/project.validators', () => {
   })
 
   describe('updateProjectSchema', () => {
+    for (const color of ['#fff', '#1a2b3c', '#1a2b3c80', 'teal', 'var(--accent-9)']) {
+      it(`accepts the color ${color}`, () => {
+        const result = updateProjectSchema.safeParse({ params: { projectId: VALID_OID }, body: { color } })
+        expect(result.success).to.equal(true)
+      })
+    }
+
+    it('rejects a color that carries more CSS', () => {
+      const result = updateProjectSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { color: 'red;background:url(https://x.test)' },
+      })
+      expect(result.success).to.equal(false)
+    })
+
     it('accepts a partial patch with a valid projectId param', () => {
       const result = updateProjectSchema.safeParse({
         params: { projectId: VALID_OID },
@@ -289,6 +334,8 @@ describe('projects/validators/project.validators', () => {
       ['a non-numeric page', { page: 'abc' }],
       ['limit 0', { limit: '0' }],
       ['a non-numeric limit', { limit: 'ten' }],
+      ['a fractional page', { page: '1.5' }],
+      ['a fractional limit', { limit: '2.5' }],
     ] as const) {
       it(`rejects ${label}`, () => {
         expect(listProjectsQuerySchema.safeParse({ query }).success).to.equal(false)
@@ -360,6 +407,33 @@ describe('projects/validators/project.validators', () => {
       expect(result.success).to.equal(true)
     })
 
+    it('rejects the same member twice in one request, pointing at the repeat', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: {
+          members: [
+            { principalId: VALID_OID, role: 'viewer' },
+            { principalId: VALID_OID, principalType: 'user', role: 'editor' },
+          ],
+        },
+      })
+      expect(result.success).to.equal(false)
+      expect(result.error!.issues[0].path).to.deep.equal(['body', 'members', 1, 'principalId'])
+    })
+
+    it('treats a user and a team with different ids as different members', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: {
+          members: [
+            { principalId: VALID_OID, role: 'viewer' },
+            { principalId: '11111111-2222-4333-8444-555555555555', principalType: 'team', role: 'viewer' },
+          ],
+        },
+      })
+      expect(result.success).to.equal(true)
+    })
+
     it('rejects an empty members array', () => {
       const result = upsertProjectMembersSchema.safeParse({
         params: { projectId: VALID_OID },
@@ -387,9 +461,52 @@ describe('projects/validators/project.validators', () => {
     it('accepts an explicit principalType of "team"', () => {
       const result = upsertProjectMembersSchema.safeParse({
         params: { projectId: VALID_OID },
-        body: { members: [{ principalId: VALID_OID, principalType: 'team', role: 'editor' }] },
+        body: { members: [{ principalId: `all_${VALID_OID}`, principalType: 'team', role: 'editor' }] },
       })
       expect(result.success).to.equal(true)
+    })
+
+    it('accepts a team member whose id is a graph UUID', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: {
+          members: [
+            { principalId: 'a3e8fa11-1c2d-4e5f-8a9b-0c1d2e3f4a5b', principalType: 'team', role: 'viewer' },
+          ],
+        },
+      })
+      expect(result.success).to.equal(true)
+    })
+
+    it('rejects a team id that is neither a UUID nor all_<orgId>', () => {
+      for (const principalId of ['{"$gt":""}', 'team-1', VALID_OID]) {
+        const result = upsertProjectMembersSchema.safeParse({
+          params: { projectId: VALID_OID },
+          body: { members: [{ principalId, principalType: 'team', role: 'viewer' }] },
+        })
+        expect(result.success, principalId).to.equal(false)
+      }
+    })
+
+    it('reports a bad principal id even when the role is bad too', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { members: [{ principalId: 'a3e8fa11-1c2d-4e5f-8a9b-0c1d2e3f4a5b', role: 'god' }] },
+      })
+      expect(result.success).to.equal(false)
+      const paths = result.error?.issues.map((i) => i.path.join('.'))
+      expect(paths).to.include('body.members.0.principalId')
+      expect(paths).to.include('body.members.0.role')
+    })
+
+    it('reports the same path on every parse', () => {
+      const input = {
+        params: { projectId: VALID_OID },
+        body: { members: [{ principalId: 'a3e8fa11-1c2d-4e5f-8a9b-0c1d2e3f4a5b', role: 'viewer' }] },
+      }
+      upsertProjectMembersSchema.safeParse(input)
+      const again = upsertProjectMembersSchema.safeParse(input)
+      expect(again.error?.issues[0]?.path).to.deep.equal(['body', 'members', 0, 'principalId'])
     })
 
     it('rejects an invalid principalType', () => {
@@ -447,7 +564,7 @@ describe('projects/validators/project.validators', () => {
 
     it('accepts an explicit principalType=team query param', () => {
       const result = removeProjectMemberParamsSchema.safeParse({
-        params: { projectId: VALID_OID, memberUserId: VALID_OID },
+        params: { projectId: VALID_OID, memberUserId: `all_${VALID_OID}` },
         query: { principalType: 'team' },
       })
       expect(result.success).to.equal(true)
@@ -460,6 +577,24 @@ describe('projects/validators/project.validators', () => {
       const result = removeProjectMemberParamsSchema.safeParse({
         params: { projectId: VALID_OID, memberUserId: VALID_OID },
         query: { principalType: 'group' },
+      })
+      expect(result.success).to.equal(false)
+    })
+
+    it('accepts a graph team id (UUID or all_<orgId>) when principalType=team', () => {
+      for (const memberUserId of ['a3e8fa11-1c2d-4e5f-8a9b-0c1d2e3f4a5b', `all_${VALID_OID}`]) {
+        const result = removeProjectMemberParamsSchema.safeParse({
+          params: { projectId: VALID_OID, memberUserId },
+          query: { principalType: 'team' },
+        })
+        expect(result.success, memberUserId).to.equal(true)
+      }
+    })
+
+    it('still requires an ObjectId for a user member', () => {
+      const result = removeProjectMemberParamsSchema.safeParse({
+        params: { projectId: VALID_OID, memberUserId: 'a3e8fa11-1c2d-4e5f-8a9b-0c1d2e3f4a5b' },
+        query: {},
       })
       expect(result.success).to.equal(false)
     })

@@ -412,7 +412,7 @@ class LinearGraphQLOperations:
                     teams(first: $first, after: $after, filter: $filter) {
                         nodes {
                             ...TeamFields
-                            members(first: 100) {
+                            members(first: 10) {
                                 nodes {
                                     id
                                     email
@@ -436,6 +436,26 @@ class LinearGraphQLOperations:
             """,
             "fragments": ["TeamFields"],
             "description": "Get teams with optional filtering and cursor-based pagination"
+        },
+
+        # No members: Linear multiplies a nested connection by the page size, and the team
+        # filter dropdown asks for pages of any size.
+        "teamList": {
+            "query": """
+                query teamList($first: Int, $after: String, $filter: TeamFilter) {
+                    teams(first: $first, after: $after, filter: $filter) {
+                        nodes {
+                            ...TeamFields
+                        }
+                        pageInfo {
+                            hasNextPage
+                            endCursor
+                        }
+                    }
+                }
+            """,
+            "fragments": ["TeamFields"],
+            "description": "Teams without their members"
         },
 
         "users": {

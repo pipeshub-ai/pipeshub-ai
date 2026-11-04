@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   deriveClassificationStatus,
   deriveEntitiesStatus,
+  deriveRecordsStatus,
   stageApplicableCount,
 } from '../derive-records-status';
 import type {
@@ -88,5 +89,22 @@ describe('deriveEntitiesStatus', () => {
 
   it('reads the entities stage, not classification', () => {
     expect(deriveEntitiesStatus(statsWith({ FAILED: 9 }, { FAILED: 2 }))?.failed).toBe(2);
+  });
+});
+
+describe('deriveRecordsStatus', () => {
+  it('counts password-protected records in their own bucket, not as failed', () => {
+    const stats = statsWith();
+    stats.stats.indexingStatus = { ...stats.stats.indexingStatus, FAILED: 2, PASSWORD_PROTECTED: 3 };
+
+    const status = deriveRecordsStatus(stats);
+
+    expect(status.passwordProtected).toBe(3);
+    expect(status.failed).toBe(2);
+  });
+
+  it('reads 0 from a backend that predates the status', () => {
+    expect(deriveRecordsStatus(statsWith()).passwordProtected).toBe(0);
+    expect(deriveRecordsStatus(null).passwordProtected).toBe(0);
   });
 });

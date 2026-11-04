@@ -23,7 +23,7 @@ here. ``README.md`` in this directory is the contract for adding tests.
   order 7  TC-JIRA-IDX-001    — reference issue indexing COMPLETED; then manual indexing on
   order 8  TC-INCR-001        — dedicated connector: create + incremental (by id) + delete
   order 9  TC-UPDATE-001      — dedicated connector: create + edit + revision (by id) + delete
-  order 10 TC-JIRA-HIER-001   — Epic↔child and Task↔sub-task PARENT_CHILD
+  order 10 TC-JIRA-HIER-001   — a sub-task under its task (PARENT_CHILD); an epic's child under its epic when its readers can read the epic
   order 11 TC-JIRA-ENTITY-001 — CREATED_BY/REPORTED_BY/ASSIGNED_TO entityRelations
   order 12 TC-JIRA-LINKS-001  — outward issuelinks → RECORD_LINK
   order 13 TC-JIRA-ATTACH-001 — attachment FILE record
@@ -341,9 +341,27 @@ class TestJiraConnector:
             f"ATTACHMENT edges {attach} != synced Jira attachments "
             f"{jira_connector['expected_attachment_edges']}"
         )
+        wrong = {}
+        for parent_id, child_id in jira_connector["expected_parent_child_pairs"]:
+            parents = await graph_provider.get_record_incoming_relations(connector_id, child_id, "PARENT_CHILD")
+            if parents != [parent_id]:
+                wrong[child_id] = {"expected": parent_id, "graph": parents}
+        # A story that shares its epic's level is filed under it only if the level grants the
+        # same people on every issue, which the live count cannot see: its epic or no parent.
+        filed_by_level = 0
+        for epic_id, story_id in jira_connector["parent_child_by_level_pairs"]:
+            parents = await graph_provider.get_record_incoming_relations(connector_id, story_id, "PARENT_CHILD")
+            if parents == [epic_id]:
+                filed_by_level += 1
+            elif parents:
+                wrong[story_id] = {"expected": f"{epic_id} or none", "graph": parents}
+        assert not wrong, f"PARENT_CHILD parents differ from Jira for {len(wrong)} children: {dict(list(wrong.items())[:10])}"
+        # The children above account for every edge, so an edge on any other record fails here.
         pc = await graph_provider.count_parent_child_edges(connector_id)
-        assert pc == jira_connector["expected_parent_child_edges"], (
-            f"PARENT_CHILD {pc} != Jira issues-with-parent {jira_connector['expected_parent_child_edges']}"
+        expected_pc = jira_connector["expected_parent_child_edges"] + filed_by_level
+        assert pc == expected_pc, (
+            f"PARENT_CHILD {pc} != Jira's {jira_connector['expected_parent_child_edges']} sub-tasks and stories "
+            f"filed under their parent, plus {filed_by_level} filed under an epic whose level they share"
         )
 
         # Independent: record-group count from filter scope (primary only).
@@ -449,13 +467,14 @@ class TestJiraConnector:
                 # Assert the delta by external id (parallel-safe), not a global count delta.
                 actual = await graph_provider.get_typed_record_by_external_id(connector_id, new_id)
                 assert actual is not None, f"typed TICKET record missing for external id {new_id}"
-                expected = await JiraExpected.ticket_record(
+                expected, unsettled = await JiraExpected.ticket_record_and_unsettled(
                     new_key, connector_id=connector_id, datasource=jira_datasource,
                     site_base_url=base_url or None,
                 )
                 await assert_graph_entity_with_edges(
                     expected, actual, entity="ticket_record",
                     connector_id=connector_id, graph_provider=graph_provider,
+                    skip_compare=unsettled,
                 )
                 await graph_provider.assert_record_paths_or_names_contain(connector_id, [title])
                 logger.info("TC-INCR-001 passed: %s synced", new_key)
@@ -759,8 +778,11 @@ class TestJiraValidation:
         target_id = jira_connector["reference_issue_id"]
         base_url = connector_base_url()
 
+        unsettled: frozenset[str] = frozenset()
+
         async def _live_and_graph() -> tuple[Any, Any]:
-            live = await JiraExpected.ticket_record(
+            nonlocal unsettled
+            live, unsettled = await JiraExpected.ticket_record_and_unsettled(
                 target_key, connector_id=connector_id, datasource=jira_datasource,
                 site_base_url=base_url or None,
             )
@@ -786,6 +808,7 @@ class TestJiraValidation:
         await assert_graph_entity_with_edges(
             expected, actual, entity="ticket_record",
             connector_id=connector_id, graph_provider=graph_provider,
+            skip_compare=unsettled,
         )
         logger.info("TC-JIRA-004 passed: %s", target_key)
 
@@ -958,18 +981,35 @@ class TestJiraHierarchy:
         jira_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-HIER-001: Epic↔child and Task↔sub-task hierarchy built as PARENT_CHILD (read-only)."""
+        """TC-JIRA-HIER-001: a sub-task hangs under its task as PARENT_CHILD; an epic's child hangs under
+        its epic when everyone who reads the child reads the epic, and off its project otherwise."""
         connector_id = jira_connector["connector_id"]
         checked = 0
 
-        # Epic ↔ child
+        # Epic ↔ child: Jira copies a parent's security level onto its sub-tasks but not onto an epic's
+        # children, so a story is filed under its epic only when that hides it from nobody who may open
+        # it. Setup picked a pair whose placement does not depend on a level's members.
         epic_id = jira_connector.get("epic_id")
         child_id = jira_connector.get("epic_child_id")
         if epic_id and child_id:
             child = await graph_provider.get_record_by_external_id(connector_id, child_id)
-            assert child is not None and str(child.parent_external_record_id) == str(epic_id)
+            assert child is not None, f"{child_id} was not synced"
+            # The project's record group holds it through the same edge; it has no record id, so only a
+            # record parent shows up here.
             incoming = await graph_provider.get_record_incoming_relations(connector_id, child_id, "PARENT_CHILD")
-            assert str(epic_id) in incoming, f"PARENT_CHILD epic {epic_id} → child {child_id} missing ({incoming!r})"
+            record_parents = [parent for parent in incoming if parent]
+            if jira_connector["epic_child_filed_under_epic"]:
+                assert str(child.parent_external_record_id) == str(epic_id), (
+                    f"{child_id} must be filed under its epic {epic_id}, which every reader of it can read "
+                    f"(parent={child.parent_external_record_id!r})"
+                )
+                assert str(epic_id) in incoming, f"PARENT_CHILD epic {epic_id} → {child_id} missing"
+            else:
+                assert not child.parent_external_record_id, (
+                    f"{child_id} must not be filed under its epic, whose level not every reader of it holds "
+                    f"(parent={child.parent_external_record_id!r})"
+                )
+                assert not record_parents, f"{child_id} must have no record parent, got {record_parents!r}"
             checked += 1
 
         # Task ↔ sub-task
@@ -1354,7 +1394,11 @@ def _jira_ph_env() -> tuple[str, str, str, str]:
 async def _jira_ph_out_of_window_ancestors(
     datasource: JiraDataSource, child_key: str, cut: int,
 ) -> tuple[str, list[str]]:
-    """Resolve child id + ancestor ids with ``created <= cut``. Requires depth >= 2."""
+    """Resolve the sub-task's id and the ids of the ancestors the connector files it under, with ``created <= cut``.
+
+    Only a sub-task is filed under its parent, so that parent is the one ancestor; the parent's own parent
+    (an epic) is not in the chain.
+    """
     child_resp = await jira_api_call_with_retry(
         datasource.get_issue, issueIdOrKey=child_key, fields="created",
         context=f"ph child {child_key}",
@@ -1376,11 +1420,9 @@ async def _jira_ph_out_of_window_ancestors(
             break
         ancestors.append(ancestor_id)
 
-    if len(ancestors) < 2:
-        pytest.fail(
-            f"TC-JIRA-PH-001: {child_key} has {len(ancestors)} ancestor(s) with "
-            f"created <= cut={cut}; >= 2 required (BFS proof)"
-        )
+    ancestors = ancestors[:1]
+    if not ancestors:
+        pytest.fail(f"TC-JIRA-PH-001: the parent of {child_key} must have created <= cut={cut}")
     return child_id, ancestors
 
 
@@ -1397,8 +1439,8 @@ class TestJiraPlaceholders:
         """TC-JIRA-PH-001: dedicated connector — stubs swept, then promoted on widen.
 
         Dedicated connector required: narrowing the shared fixture after a full sync
-        finds ancestors already as real records, so no stubs are minted. Depth >= 2
-        proves BFS (grandparent only appears after the parent stub is swept).
+        finds ancestors already as real records, so no stubs are minted. The sub-task's
+        parent is the only ancestor the connector files it under.
         """
         cut = JIRA_PH_CREATED_CUT_MS
         _base_url, _email, _api_token, primary_key = _jira_ph_env()

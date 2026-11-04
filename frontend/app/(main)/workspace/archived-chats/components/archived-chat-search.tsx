@@ -204,9 +204,9 @@ export function ArchivedChatSearch({
           style={{
             width: isMobile ? '100%' : overlayWidth(600),
             maxHeight: isMobile ? '100dvh' : '512px',
-            backdropFilter: 'blur(25px)',
-            WebkitBackdropFilter: 'blur(25px)',
-            backgroundColor: 'var(--effects-translucent)',
+            backdropFilter: 'var(--frost-filter)',
+            WebkitBackdropFilter: 'var(--frost-filter)',
+            backgroundColor: 'var(--frost-bg-strong)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
             boxShadow: '0px 20px 48px 0px var(--black-a6)',

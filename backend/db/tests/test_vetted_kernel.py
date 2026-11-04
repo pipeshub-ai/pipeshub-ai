@@ -180,3 +180,13 @@ def test_a_secdef_built_in_is_also_a_catalog_violation(db):
             c.execute("ROLLBACK")
 
 
+
+
+def test_a_carriage_return_ends_a_line_comment_for_the_sql_helper_and_its_python_mirror(db):
+    cluster, name = db
+    assert run_migrate(cluster.url(name, "pipeshub_migrate")).returncode == 0
+    for text, want in (("a -- c" + "\r" + "DELETE FROM t;", "a DELETE FROM t;"), ("a -- c" + "\n" + "DELETE FROM t;", "a DELETE FROM t;"),
+                       ("a -- c DELETE FROM t;", "a"), ("a 'x -- y' b", "a '' b")):
+        with cluster.admin(name) as c:
+            assert c.execute("SELECT kernel.src_text(%s)", (text,)).fetchone()[0].strip() == want
+        assert vetted.normalise(text).strip() == want

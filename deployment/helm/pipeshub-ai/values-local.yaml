@@ -12,7 +12,8 @@
 #     --set secretKey="$(openssl rand -hex 32)" \
 #     --set mongodb.auth.rootPassword="..." \
 #     --set redis.auth.password="..." \
-#     --set neo4j.auth.password="..."
+#     --set neo4j.auth.password="..." \
+#     --set qdrant.apiKey="$(openssl rand -hex 32)"
 #
 # Swap to the slim image (smaller, models download on first use):
 #   ... --set image.tag=slim

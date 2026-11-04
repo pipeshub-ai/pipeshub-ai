@@ -78,8 +78,10 @@ class Behaviour:
     # Compare reports a pure move as "renamed" (GitHub's rename detection) rather than
     # as removed + added.
     compare_detects_renames: bool = True
-    # github.com/user-attachments with an API token: live-verified 404 (even on a public
-    # repository); without one, 302 to signed storage for a public repository.
+    # github.com/user-attachments with an API token: live-verified 404 on a public
+    # repository; without one, 302 to signed storage for a public repository and 404 for
+    # a private one. A personal access token opens a private repository's attachments
+    # (the live nightly suite reads them), so a private-repository test sets this.
     attachment_token_accepted: bool = False
     # The issues listing refuses ``page`` once page x per_page reaches this many items
     # (422, "use cursor based pagination"); its Link header carries an ``after`` cursor

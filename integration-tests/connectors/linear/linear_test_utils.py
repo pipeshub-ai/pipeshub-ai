@@ -453,14 +453,15 @@ async def fetch_first_file_in_teams(
             if not issue_id:
                 continue
             weburl = issue.get("url")
-            for source in (
-                issue.get("description") or "",
-                *[
-                    (c.get("body") or "")
-                    for c in (issue.get("comments") or {}).get("nodes", [])
-                ],
-            ):
-                files = extract_file_urls_from_markdown(source, exclude_images=True)
+            # A file linked from a comment hangs off the issue but takes the comment's
+            # link and times, as _issue_to_records stores it.
+            sources = [(issue.get("description") or "", weburl, issue.get("createdAt"), issue.get("updatedAt"))]
+            sources.extend(
+                (c.get("body") or "", c.get("url") or weburl, c.get("createdAt"), c.get("updatedAt"))
+                for c in (issue.get("comments") or {}).get("nodes", [])
+            )
+            for body, source_weburl, created_at, updated_at in sources:
+                files = extract_file_urls_from_markdown(body, exclude_images=True)
                 if files:
                     return {
                         "url": files[0]["url"],
@@ -468,9 +469,9 @@ async def fetch_first_file_in_teams(
                         "parent_external_id": issue_id,
                         "parent_record_type": "TICKET",
                         "team_id": team_id,
-                        "parent_weburl": weburl,
-                        "parent_created_at": parse_linear_timestamp(issue.get("createdAt")),
-                        "parent_updated_at": parse_linear_timestamp(issue.get("updatedAt")),
+                        "parent_weburl": source_weburl,
+                        "parent_created_at": parse_linear_timestamp(created_at),
+                        "parent_updated_at": parse_linear_timestamp(updated_at),
                     }
 
     for project in await fetch_unique_projects_for_teams(datasource, team_ids):

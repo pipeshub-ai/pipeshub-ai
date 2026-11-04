@@ -190,10 +190,9 @@ def test_calls_attach_to_the_enclosing_symbol() -> None:
     assert [e["toName"] for e in run.code_metadata.pending_edges] == ["helper"]
 
 
-def test_builtin_method_calls_on_untyped_receivers_are_dropped() -> None:
-    """`d.get()` / `s.lower()` can never resolve -- resolution needs a receiver
-    type, and these receivers are language primitives. Recording them would only
-    bloat a traversed node."""
+def test_python_keeps_builtin_named_calls_on_untyped_receivers() -> None:
+    """`payload.get()` may be a dict's or a repo object's (`qs.get()`, `cache.get()`);
+    the builder decides from the receiver's type and never guesses these by name."""
     src = b'''
 def go(payload, label):
     payload.get("k")
@@ -202,7 +201,7 @@ def go(payload, label):
 '''
     container = CodeFileParser().parse_to_blocks(src, "a.py", "src/a.py", "python")
     go = _blocks_by_name(container)["go"]
-    assert [e["toName"] for e in go.code_metadata.pending_edges] == ["custom"]
+    assert [e["toName"] for e in go.code_metadata.pending_edges] == ["get", "lower", "custom"]
 
 
 def test_typed_receiver_keeps_a_builtin_named_method() -> None:
@@ -244,6 +243,26 @@ export class Service extends Base implements Runnable {
     run = _blocks_by_name(container)["run"]
     find = next(e for e in run.code_metadata.pending_edges if e["toName"] == "find")
     assert find["receiverType"] == "Repo"  # from `const r: Repo`
+
+
+def test_typescript_field_types_resolve_member_calls() -> None:
+    src = b'''
+export class Controller {
+  private _model: CodeActionModel;
+  private readonly _list = new List();
+  private _hover?: Hover | undefined;
+  go() {
+    this._model.trigger();
+    this._list.reveal();
+    this._hover?.hide();
+  }
+}
+'''
+    container = CodeFileParser().parse_to_blocks(src, "c.ts", "src/c.ts", "typescript")
+    edges = {e["toName"]: e for e in _blocks_by_name(container)["go"].code_metadata.pending_edges}
+    assert edges["trigger"]["receiverType"] == "CodeActionModel"  # annotated field
+    assert edges["reveal"]["receiverType"] == "List"  # `= new List()`
+    assert edges["hide"]["receiverType"] == "Hover"  # `Hover | undefined`
 
 
 def test_pending_edges_are_not_capped() -> None:

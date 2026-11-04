@@ -34,6 +34,30 @@ def github_slug(heading):
     return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
 
 
+def narrative(log, version):
+    """The narrative paragraph of the version's CHANGELOG.md entry, or None.
+
+    The entry is its "## <version> — <date>" heading, the "**<headline>** · ..." metadata
+    paragraph, then the narrative, then "### " sections. A wrapped narrative is joined.
+    """
+    entry, inside = [], False
+    for line in log.split("\n"):
+        heading = re.match(r"(#{2,3}) (\S+)", line)
+        if inside and heading:
+            break  # the entry's first section, or the next entry
+        if heading and heading.groups() == ("##", version):
+            inside = True
+        elif inside:
+            entry.append(line.strip())
+    paragraphs = re.split(r"\n\n+", "\n".join(entry).strip())
+    if len(paragraphs) < 2 or not paragraphs[0].startswith("**"):
+        return None
+    text = paragraphs[1]
+    if re.match(r"[#>|*+-]|\d+\.\s", text):  # a heading, quote, table or list, not prose
+        return None
+    return " ".join(text.split("\n"))
+
+
 def convert(src, out_dir):
     version = src.stem
     lines = src.read_text(encoding="utf-8").split("\n")
@@ -55,13 +79,17 @@ def convert(src, out_dir):
         sys.exit(f"{src}: unknown channel {channel!r} or month {month!r}")
     date = datetime.date(int(year), MONTHS[month], int(day)).isoformat()
 
-    # Mintlify builds heading ids differently and numbers repeats across all versions
-    # on the page, so linked headings get an explicit id that is unique per version.
-    linked = set(re.findall(r"\]\(#([^)\s]+)\)", "\n".join(lines)))
-    suffix = re.sub(r"[^0-9a-z]+", "-", version.lower())
-    ids = {a: f"{a}-{suffix}" for a in linked}  # kept as is so distinct anchors stay distinct
+    # The docs summary page shows the release's narrative from the CHANGELOG.md entry.
+    log = (src.parent.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+    text = narrative(log, version)
+    if not text:
+        sys.exit(f"CHANGELOG.md: the {version} entry has no narrative paragraph after its metadata line")
+    summary = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)  # its links are relative to CHANGELOG.md
 
-    body, in_fence = [], False
+    # Mintlify builds heading ids differently, so linked headings keep GitHub's id explicitly.
+    linked = set(re.findall(r"\]\(#([^)\s]+)\)", "\n".join(lines)))
+
+    body, in_fence = [f"Released {month} {int(day)}, {year} · {channel} · [View on GitHub]({url})"], False
     for line in lines[3:]:
         if line.lstrip().startswith("```"):  # fences may be indented inside list items
             in_fence = not in_fence
@@ -69,19 +97,16 @@ def convert(src, out_dir):
         elif in_fence:
             body.append(line)
         else:
-            line = re.sub(r"\]\(#([^)\s]+)\)", lambda m: f"](#{ids[m.group(1)]})", line)
-            # Every version is on one page, so a version link is an in-page anchor: 0.6.0-beta -> #v0-6-0-beta.
-            line = re.sub(r"\]\((\d[\w.\-]*)\.md\)",
-                          lambda m: "](#v" + re.sub(r"[^0-9a-z]+", "-", m.group(1).lower()) + ")", line)
+            # Each version has its own page: 0.9.0.md -> /changelog/platform/0.9.0.
+            line = re.sub(r"\]\((\d[\w.\-]*)\.md\)", r"](/changelog/platform/\1)", line)
             heading = re.match(r"#{2,6} (.+)", line)
             anchor = heading and github_slug(heading.group(1))
-            line = escape(line) + (f" {{#{ids[anchor]}}}" if anchor in ids else "")
-            # The page uses ## for the version, so sections move down one level.
-            body.append("#" + line if heading else line)
+            body.append(escape(line) + (f" {{#{anchor}}}" if anchor in linked else ""))
 
     front = ["---", f"title: {json.dumps(version)}", f"version: {json.dumps(version)}",
              f"date: {json.dumps(date)}", f"channel: {json.dumps(channel)}",
-             f"release_url: {json.dumps(url)}", f"summary: {json.dumps(head.group(2))}", "---", ""]
+             f"release_url: {json.dumps(url)}", f"description: {json.dumps(head.group(2))}",
+             f"summary: {json.dumps(summary, ensure_ascii=False)}", "---", ""]
     out = out_dir / f"{version}.mdx"
     out.write_text("\n".join(front + body).rstrip("\n") + "\n", encoding="utf-8")
     print(out)

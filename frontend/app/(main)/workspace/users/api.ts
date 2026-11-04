@@ -46,10 +46,19 @@ export async function getUserGroupsForProfile(
 
 const BASE_URL = '/api/v1/users';
 
+export interface InviteUsersResult {
+  queued: boolean;
+  /** Counts are absent when the server predates them. */
+  invited?: number;
+  reinvited?: number;
+  restored?: number;
+  alreadyActive?: number;
+}
+
 export const UsersApi = {
   /**
    * List users with pagination and server-side filters.
-   * GET /api/v1/users?page=&limit=&search=&hasLoggedIn=&groupIds=
+   * GET /api/v1/users?page=&limit=&search=&hasLoggedIn=&groupIds=&joinedFrom=&joinedTo=&lastActiveFrom=&lastActiveTo=
    * Queries MongoDB directly with filters applied at the database level.
    */
   async listUsers(params?: {
@@ -59,6 +68,12 @@ export const UsersApi = {
     hasLoggedIn?: string;
     isBlocked?: string;
     groupIds?: string;
+    /** Epoch-ms bounds on the join date: `From` inclusive, `To` exclusive. */
+    joinedFrom?: string;
+    joinedTo?: string;
+    /** Epoch-ms bounds on last activity: `From` inclusive, `To` exclusive. */
+    lastActiveFrom?: string;
+    lastActiveTo?: string;
     /** `'true'` also returns service accounts, which are left out by default. */
     includeServiceAccounts?: string;
   }, options?: { suppressErrorToast?: boolean }): Promise<{ users: User[]; totalCount: number }> {
@@ -111,6 +126,12 @@ export const UsersApi = {
     hasLoggedIn?: string;
     isBlocked?: string;
     groupIds?: string;
+    /** Epoch-ms bounds on the join date: `From` inclusive, `To` exclusive. */
+    joinedFrom?: string;
+    joinedTo?: string;
+    /** Epoch-ms bounds on last activity: `From` inclusive, `To` exclusive. */
+    lastActiveFrom?: string;
+    lastActiveTo?: string;
     /** `'true'` also returns service accounts, which are left out by default. */
     includeServiceAccounts?: string;
   }): Promise<{ users: User[]; totalCount: number }> {
@@ -146,11 +167,15 @@ export const UsersApi = {
    * Invite users by email, optionally adding them to groups.
    * POST /api/v1/users/bulk/invite
    */
+  /**
+   * Answers 409 when every address already belongs to an active account, so
+   * nothing was sent.
+   */
   async inviteUsers(
     emails: string[],
     groupIds?: string[],
     role?: string,
-  ): Promise<{ queued: boolean }> {
+  ): Promise<InviteUsersResult> {
     const payload: { emails: string[]; groupIds?: string[]; role?: string } = { emails };
     if (groupIds && groupIds.length > 0) {
       payload.groupIds = groupIds;
@@ -159,12 +184,19 @@ export const UsersApi = {
       payload.role =
         role === USER_ROLES.ADMIN || role === 'admin' ? 'admin' : 'member';
     }
-    const { data } = await apiClient.post<{ queued?: boolean }>(
+    const { data } = await apiClient.post<Partial<InviteUsersResult>>(
       `${BASE_URL}/bulk/invite`,
       payload,
       { suppressErrorToast: true },
     );
-    return { queued: data?.queued === true };
+    const count = (n: unknown) => (typeof n === 'number' ? n : undefined);
+    return {
+      queued: data?.queued === true,
+      invited: count(data?.invited),
+      reinvited: count(data?.reinvited),
+      restored: count(data?.restored),
+      alreadyActive: count(data?.alreadyActive),
+    };
   },
 
   /**

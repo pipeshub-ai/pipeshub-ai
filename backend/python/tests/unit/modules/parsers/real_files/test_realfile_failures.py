@@ -19,7 +19,10 @@ from urllib.parse import unquote, urlparse
 
 import pytest
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    PasswordProtectedError,
+)
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
@@ -156,11 +159,6 @@ def test_csv_row_longer_than_its_header_keeps_every_value() -> None:
     assert "surprise-extra" in [str(v) for v in rows[0].values()]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="excel_parser.py: a damaged or non-xlsx file raises zipfile.BadZipFile out of "
-    "parse(), which the parsing service reports as a 500 outage instead of a parse error",
-)
 @pytest.mark.parametrize(
     "content", [b"not a workbook", OLE_SIGNATURE + b"\0" * 512], ids=["garbage", "old-binary-container"]
 )
@@ -185,11 +183,6 @@ async def test_empty_xlsx_is_reported_as_empty(logger) -> None:
     assert result.block_container.blocks == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="smart_pdf_parser.py: a password-protected PDF is not recognised; after the "
-    "main parser fails it is sent to OCR, which spends AI-model calls on a file no one can open",
-)
 async def test_password_protected_pdf_is_reported_and_not_sent_to_ocr() -> None:
     primary = MagicMock()
     primary.parse = AsyncMock(side_effect=ParseError(ParseErrorCode.PARSE_FAILED, "cannot open"))
@@ -197,10 +190,11 @@ async def test_password_protected_pdf_is_reported_and_not_sent_to_ocr() -> None:
     ocr.parse = AsyncMock(return_value=MagicMock(spec=ParseResult))
     content = make_pdf([["Confidential salaries"]], encrypt="s3cret")
 
-    with pytest.raises(ParseError) as caught:
+    with pytest.raises(PasswordProtectedError) as caught:
         await SmartPDFParser(primary, ocr).parse(content, "salaries.pdf")
     assert "password" in caught.value.message.lower()
     ocr.parse.assert_not_called()
+    primary.parse.assert_not_called()
 
 
 @pytest.mark.xfail(

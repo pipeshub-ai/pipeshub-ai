@@ -12,12 +12,13 @@ Targets:
 import asyncio
 import logging
 from collections.abc import Coroutine
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.services.event_service import EventService
+from app.models.entities import FileRecord, RecordType
 from tests.unit.connectors.services.coordinator_stub import installed_stub, spawned
 
 # ---------------------------------------------------------------------------
@@ -247,6 +248,26 @@ class TestRunReindexModes:
         assert args.kwargs["is_placeholder"] is False
 
     @pytest.mark.asyncio
+    async def test_an_explicit_password_protected_filter_is_reindexed(self, service) -> None:
+        """The default selection is FAILED only; asking for PASSWORD_PROTECTED by name works,
+        for when the source file has lost its password."""
+        connector = AsyncMock()
+        connector.reindex_records = AsyncMock()
+        locked = _make_mock_record("r1")
+        service.graph_provider.get_records_by_status = AsyncMock(side_effect=[[locked], []])
+
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=["PASSWORD_PROTECTED"],
+        )
+
+        first = service.graph_provider.get_records_by_status.call_args_list[0]
+        assert first.kwargs["status_filters"] == ["PASSWORD_PROTECTED"]
+        assert first.kwargs["exclude_statuses"] == [ProgressStatus.IN_PROGRESS.value]
+        connector.reindex_records.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_reindex_processes_batch(self, service):
         """When records are returned, they are processed and status updated."""
         connector = AsyncMock()
@@ -279,6 +300,36 @@ class TestRunReindexModes:
         # Verify indexing_status was cleared in memory
         assert rec1.indexing_status == ProgressStatus.NOT_STARTED.value
         assert rec2.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_reindex_marks_folders_completed_not_pending(self, service) -> None:
+        """A folder is set COMPLETED, not NOT_STARTED: connectors may never publish it."""
+        connector = AsyncMock()
+        connector.reindex_records = AsyncMock()
+
+        folder = FileRecord(
+            id="dir", record_name="src", record_type=RecordType.FILE,
+            external_record_id="repo/src", version=0, origin="CONNECTOR",
+            connector_name="GITHUB", connector_id="c1", is_file=False,
+            indexing_status=ProgressStatus.COMPLETED.value,
+        )
+        file_rec = _make_mock_record("f1", indexing_status=ProgressStatus.COMPLETED.value)
+        service.graph_provider.get_records_by_status = AsyncMock(side_effect=[[folder, file_rec], []])
+
+        await service._run_reindex(
+            connector=connector, connector_name="github", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=[ProgressStatus.COMPLETED.value],
+        )
+
+        update = service.graph_provider.update_indexing_status_for_record_ids
+        assert update.await_args_list == [
+            call(["f1"], ProgressStatus.NOT_STARTED.value),
+            call(["dir"], ProgressStatus.COMPLETED.value),
+        ]
+        assert folder.indexing_status == ProgressStatus.COMPLETED.value
+        assert file_rec.indexing_status == ProgressStatus.NOT_STARTED.value
+        connector.reindex_records.assert_awaited_once_with([folder, file_rec])
 
     @pytest.mark.asyncio
     async def test_reindex_skips_placeholder_records(self, service):
@@ -693,6 +744,33 @@ class TestStageReruns:
         service._ensure_connector = AsyncMock()
         assert await service._handle_reindex("gmail", payload) is False
         service._ensure_connector.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [({}, "reindex:c1:*:0:*:FAILED"), ({"stages": ["classify"]}, "reindex:c1:*:0:*:FAILED:stages=classify")],
+        ids=["indexing", "classification"],
+    )
+    async def test_a_connector_wide_reindex_without_filters_selects_only_failed(self, service, extra, expected) -> None:
+        """The panels' "Reindex failed" buttons send no filter and rely on this default: a record that needs
+        a password is not a failure, and a retry cannot help it."""
+        from unittest.mock import patch
+
+        connector = MagicMock()
+        connector.app.get_app_name.return_value.name = "GOOGLE_DRIVE"
+        service._ensure_connector = AsyncMock(return_value=connector)
+        keys: list[str] = []
+
+        async def start_if_idle(key: str, coro: Coroutine[object, object, object]) -> object:
+            keys.append(key)
+            coro.close()
+            return object()
+
+        with patch("app.connectors.services.event_service.reindex_task_manager") as manager:
+            manager.start_if_idle = start_if_idle
+            assert await service._handle_reindex("gmail", {"orgId": "o1", "connectorId": "c1", **extra}) is True
+        assert keys == [expected]
+        assert "PASSWORD_PROTECTED" not in keys[0]
 
     @pytest.mark.asyncio
     async def test_a_kb_stage_rerun_without_filters_retries_only_failures(self, service) -> None:

@@ -8,7 +8,9 @@ implicit `this` and typed receivers. guava: a package copied into two source tre
 import pytest
 
 from app.config.constants.arangodb import RecordRelations
+from app.modules.code_graph.edge_builder import build_code_graph_edges
 
+from .conftest import GROUP_ID, ORG_ID
 from .test_import_binding import _build, _package, _targets
 
 CALLS = RecordRelations.CALLS.value
@@ -117,3 +119,235 @@ async def test_a_java_import_prefers_the_copy_in_its_own_source_tree(graph, inde
     await _build(graph)
     assert _targets(graph, IMPORTS, "guava/src/com/x/base/Absent.java") == {
         "guava/src/com/x/base/Preconditions.java::class:Preconditions"}
+
+
+async def test_typescript_receivers_typed_by_return_types_and_initializers(graph, index_file) -> None:
+    # vscode: `const c = Ctl.get(editor)`, `this._editor.getModel()!.x()`, `_register(new Emitter())`.
+    await index_file("model", "src/model.ts",
+                     b"export interface ITextModel {\n  getLineCount(): number;\n}\n"
+                     b"export interface IEditor {\n  getModel(): ITextModel | null;\n}\n"
+                     b"export class Emitter {\n  fire(): void {}\n}\n", "typescript")
+    await index_file("ctl", "src/ctl.ts",
+                     b"import { IEditor } from './model';\n"
+                     b"export class Ctl {\n  static get(editor: IEditor): Ctl | null { return null; }\n"
+                     b"  goToBottom(): void {}\n}\n", "typescript")
+    await index_file("app", "src/app.ts",
+                     b"import { IEditor, Emitter } from './model';\nimport { Ctl } from './ctl';\n"
+                     b"export class View {\n  private readonly _onClose = this._register(new Emitter());\n"
+                     b"  constructor(private readonly _editor: IEditor) {}\n"
+                     b"  run(editor: IEditor) {\n    const c = Ctl.get(editor);\n    c.goToBottom();\n"
+                     b"    this._editor.getModel()!.getLineCount();\n    this._onClose.fire();\n"
+                     b"    const ctl = this._store.add(Ctl.get(editor));\n    ctl.goToBottom();\n"
+                     b"    accessor.get(Ctl).goToBottom();\n  }\n"
+                     b"  _register<T>(x: T): T { return x; }\n}\n", "typescript")
+    await _build(graph)
+    calls = _targets(graph, CALLS, "src/app.ts")
+    assert {"src/ctl.ts::method:Ctl.goToBottom", "src/model.ts::method:ITextModel.getLineCount",
+            "src/model.ts::method:Emitter.fire"} <= calls
+
+
+async def test_a_class_argument_call_types_an_untyped_receiver(graph, index_file) -> None:
+    # vscode: `accessor.get(ICtl).run()` where `accessor` has no type the graph knows.
+    await index_file("ctl", "src/ctl.ts",
+                     b"export class Ctl {\n  goToBottom(): void {}\n}\n"
+                     b"export class Other {\n  goToBottom(): void {}\n}\n", "typescript")
+    await index_file("app", "src/app.ts",
+                     b"import { Ctl } from './ctl';\n"
+                     b"export function run(accessor: ServicesAccessor) {\n  accessor.get(Ctl).goToBottom();\n}\n",
+                     "typescript")
+    await _build(graph)
+    calls = _targets(graph, CALLS, "src/app.ts")
+    assert "src/ctl.ts::method:Ctl.goToBottom" in calls
+    assert "src/ctl.ts::method:Other.goToBottom" not in calls
+
+
+async def test_a_method_call_result_is_not_typed_by_a_same_named_function(graph, index_file) -> None:
+    # `editor.getModel().getValue()` must not take the return type of a local `function getModel()`.
+    await index_file("model", "src/model.ts",
+                     b"export interface ITextModel {\n  getValue(): string;\n}\n"
+                     b"export interface IEditor {\n  getModel(): ITextModel;\n}\n", "typescript")
+    await index_file("app", "src/app.ts",
+                     b"import { IEditor } from './model';\n"
+                     b"export class Foo {\n  getValue(): string { return ''; }\n}\n"
+                     b"function getModel(): Foo { return new Foo(); }\n"
+                     b"export function run(editor: IEditor) {\n  return editor.getModel().getValue();\n}\n",
+                     "typescript")
+    await _build(graph)
+    calls = _targets(graph, CALLS, "src/app.ts")
+    assert "src/model.ts::method:ITextModel.getValue" in calls
+    assert "src/app.ts::method:Foo.getValue" not in calls
+
+
+async def test_a_call_on_a_union_alias_reaches_every_member(graph, index_file) -> None:
+    # vscode: `expr.serialize()` with `type ContextKeyExpression = ContextKeyAndExpr | ...`.
+    await index_file("expr", "src/expr.ts",
+                     b"export class AndExpr {\n  serialize(): string { return ''; }\n}\n"
+                     b"export class OrExpr {\n  serialize(): string { return ''; }\n}\n"
+                     b"export class NotExpr {\n  serialize(): string { return ''; }\n"
+                     b"  constructor(private readonly _actual: Expr) {}\n"
+                     b"  run() { return this._actual.serialize(); }\n}\n"
+                     b"export type Leaf = AndExpr | (OrExpr);\n"
+                     b"export type Expr = (Leaf | NotExpr);\n"
+                     b"export type Public = Expr;\n", "typescript")
+    await index_file("app", "src/app.ts",
+                     b"import { Public } from './expr';\nexport function show(e: Public) { return e.serialize(); }\n",
+                     "typescript")
+    await _build(graph)
+    members = {"src/expr.ts::method:AndExpr.serialize", "src/expr.ts::method:OrExpr.serialize",
+               "src/expr.ts::method:NotExpr.serialize"}
+    assert members <= _targets(graph, CALLS, "src/app.ts")
+    assert members <= _targets(graph, CALLS, "src/expr.ts")
+
+
+async def test_a_call_on_an_inline_union_reaches_every_member(graph, index_file) -> None:
+    await index_file("a", "src/a.ts",
+                     b"export class A {\n  go(): void {}\n}\nexport class B {\n  go(): void {}\n}\n"
+                     b"export function f(e: A | B | undefined) { e!.go(); }\n", "typescript")
+    await _build(graph)
+    assert {"src/a.ts::method:A.go", "src/a.ts::method:B.go"} <= _targets(graph, CALLS, "src/a.ts")
+
+
+async def test_a_call_in_a_local_closure_is_also_the_enclosing_methods(graph, index_file) -> None:
+    # vscode: `const map = (r) => ... this.toRuntime(r)` inside `SessionStorageIdentity._record`.
+    await index_file("a", "src/a.ts",
+                     b"export class Id {\n  toRuntime(r: string): string { return r; }\n"
+                     b"  record(v: string): string {\n"
+                     b"    const map = (r: string) => this.toRuntime(r);\n"
+                     b"    const run = () => map(v);\n    return run();\n  }\n}\n",
+                     "typescript")
+    await _build(graph)
+    callers = {(graph.blocks[e["_from"].split("/", 1)[1]]["qualifiedName"],
+                graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]) for e in graph.code_edges(CALLS)}
+    assert ("method:Id.record", "method:Id.toRuntime") in callers
+    assert ("function:Id.record.map", "method:Id.toRuntime") in callers
+    # `run` calling its sibling `map` is not `record` calling it a second way.
+    assert ("function:Id.record.run", "function:Id.record.map") in callers
+    assert {t for f, t in callers if f == "method:Id.record"} == {
+        "method:Id.toRuntime", "function:Id.record.run"}
+
+
+async def test_a_generic_read_returns_the_type_argument(graph, index_file) -> None:
+    # vscode: `this.model.read(reader)` on a field typed `IObservable<Model | undefined>`.
+    await index_file("o", "src/o.ts",
+                     b"export interface IObservable<T> {\n  read(reader: unknown): T;\n}\n"
+                     b"export class Ghost {\n  render(): string { return ''; }\n}\n"
+                     b"export class Model {\n  readonly primary: IObservable<Ghost | undefined>;\n}\n"
+                     b"export class Part {\n  constructor(readonly model: IObservable<Model>) {}\n"
+                     b"  show(reader: unknown) {\n"
+                     b"    const g = this.model.read(reader)?.primary.read(reader);\n"
+                     b"    return g?.render();\n  }\n}\n", "typescript")
+    await _build(graph)
+    assert "src/o.ts::method:Ghost.render" in _targets(graph, CALLS, "src/o.ts")
+
+
+async def test_a_generic_read_uses_its_own_functions_type_argument(graph, index_file) -> None:
+    # Two functions in one file name `v` with different type arguments.
+    await index_file("o", "src/o.ts",
+                     b"export interface IObservable<T> {\n  read(): T;\n}\n"
+                     b"export class A {\n  go(): void {}\n}\nexport class B {\n  go(): void {}\n}\n"
+                     b"export function first(v: IObservable<A>) {\n  v.read().go();\n}\n"
+                     b"export function second(v: IObservable<B>) {\n  v.read().go();\n}\n", "typescript")
+    await _build(graph)
+    callers = {(graph.blocks[e["_from"].split("/", 1)[1]]["qualifiedName"],
+                graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]) for e in graph.code_edges(CALLS)}
+    assert {t for f, t in callers if f == "function:first" and t.endswith(".go")} == {"method:A.go"}
+    assert {t for f, t in callers if f == "function:second" and t.endswith(".go")} == {"method:B.go"}
+
+
+async def test_a_typescript_namespace_function_is_called_through_the_namespace(graph, index_file) -> None:
+    # vscode: `Event.map(...)`, where `namespace Event` shares its name with an interface.
+    await index_file("event", "src/event.ts",
+                     b"export interface Event<T> { (listener: (e: T) => void): void }\n"
+                     b"export namespace Event {\n  export function map(x: number): number { return x; }\n"
+                     b"  export function once(x: number): number { return map(x); }\n}\n", "typescript")
+    await index_file("app", "src/app.ts",
+                     b"import { Event } from './event';\nexport function run() { return Event.map(1); }\n",
+                     "typescript")
+    await _build(graph)
+    assert any(t.startswith("src/event.ts::") and t.endswith("map") for t in _targets(graph, CALLS, "src/app.ts"))
+
+
+async def test_typescript_merged_declarations_and_bare_calls(graph, index_file) -> None:
+    # vscode: `import { Event }` names both `interface Event` and `namespace Event`;
+    # `dispose(x)` inside a class with a `dispose()` method is the module function.
+    await index_file("event", "src/event.ts",
+                     b"export interface Event<T> { (listener: (e: T) => void): void }\n"
+                     b"export namespace Event {\n  export function map(x: number): number { return x; }\n}\n"
+                     b"export function dispose(x: number): number { return x; }\n"
+                     b"export class Store {\n  dispose(): void {}\n  clear(): void { dispose(1); }\n}\n", "typescript")
+    await index_file("app", "src/app.ts",
+                     b"import { Event } from './event';\nexport function run() { return Event.map(1); }\n",
+                     "typescript")
+    await _build(graph)
+    assert "src/event.ts::function:Event.map" in _targets(graph, CALLS, "src/app.ts")
+    assert "src/event.ts::function:dispose" in _targets(graph, CALLS, "src/event.ts")
+    assert "src/event.ts::method:Store.dispose" not in _targets(graph, CALLS, "src/event.ts")
+
+
+async def test_typescript_receivers_typed_per_function_by_loops_and_instanceof(graph, index_file) -> None:
+    # vscode: one file reuses `provider` for two types; `for (const s of this._snippets)`;
+    # `xs.forEach(x => x.go())`; `if (c instanceof Variable) c.resolve()`.
+    await index_file("types", "src/types.ts",
+                     b"export class Plain {\n  read(): void {}\n}\nexport class Openable {\n  open(): void {}\n}\n"
+                     b"export class Snippet {\n  move(): void {}\n  go(): void {}\n}\n"
+                     b"export class Variable {\n  resolve(): void {}\n}\n", "typescript")
+    await index_file("app", "src/app.ts",
+                     b"import { Plain, Openable, Snippet, Variable } from './types';\n"
+                     b"export class Session {\n  private _snippets: Snippet[] = [];\n"
+                     b"  a(provider: Plain) { provider.read(); }\n"
+                     b"  b(provider: Openable) { provider.open(); }\n"
+                     b"  c() {\n    for (const s of this._snippets) { s.move(); }\n"
+                     b"    this._snippets.forEach(x => x.go());\n  }\n"
+                     b"  d(c: unknown) { if (c instanceof Variable) { c.resolve(); } }\n}\n", "typescript")
+    await _build(graph)
+    calls = _targets(graph, CALLS, "src/app.ts")
+    assert {"src/types.ts::method:Openable.open", "src/types.ts::method:Plain.read",
+            "src/types.ts::method:Snippet.move", "src/types.ts::method:Snippet.go",
+            "src/types.ts::method:Variable.resolve"} <= calls
+
+
+async def test_a_call_through_a_function_typed_property_is_tagged(graph, index_file) -> None:
+    # vscode: `this.options.showHistoryHint()` on `showHistoryHint?: () => boolean`.
+    await index_file("a", "src/a.ts",
+                     b"export interface Opts {\n  onPick?: (x: number) => void;\n  run(): void;\n}\n"
+                     b"export class Box {\n  constructor(private readonly opts: Opts) {}\n"
+                     b"  static make = ((n: number) => n) as (n: number) => number;\n"
+                     b"  pick() {\n    this.opts.onPick?.(1);\n    this.opts.run();\n    Box.make(1);\n  }\n}\n",
+                     "typescript")
+    await _build(graph)
+    resolution = {graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]: e["resolution"]
+                  for e in graph.code_edges(CALLS)}
+    assert resolution["field:Opts.onPick"] == "callback-property"
+    assert resolution["method:Opts.run"] != "callback-property"
+    # A field holding an arrow function is a definition, not a slot.
+    assert resolution["field:Box.make"] != "callback-property"
+
+
+async def test_an_incremental_build_tags_calls_into_an_unchanged_file(graph, index_file) -> None:
+    # The caller changes; the file defining the field and the slot does not, so
+    # its type table is not among the re-resolved files' facts.
+    await index_file("rec-def", "src/def.ts",
+                     b"export interface Opts {\n  onPick?: (x: number) => void;\n}\n"
+                     b"export class Kit {\n  static make = (n: number) => n;\n}\n", "typescript")
+    caller = (b"import { Opts, Kit } from './def';\n"
+              b"export class Box {\n  constructor(private readonly opts: Opts) {}\n"
+              b"  pick() {\n    this.opts.onPick?.(1);\n    Kit.make(1);\n  }\n}\n")
+    await index_file("rec-use", "src/use.ts", caller, "typescript")
+    await _build(graph)
+    await index_file("rec-use", "src/use.ts", caller + b"// edited\n", "typescript")
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={"rec-use"}, facts_source=graph)
+    resolution = {graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]: e["resolution"]
+                  for e in graph.code_edges(CALLS)}
+    assert resolution["field:Opts.onPick"] == "callback-property"
+    assert resolution["field:Kit.make"] != "callback-property"
+
+
+async def test_a_javascript_field_holding_a_function_is_not_tagged(graph, index_file) -> None:
+    await index_file("a", "src/a.js",
+                     b"export class Box {\n  static make = (n) => n;\n  pick() {\n    return Box.make(1);\n  }\n}\n",
+                     "javascript")
+    await _build(graph)
+    resolution = {graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]: e["resolution"]
+                  for e in graph.code_edges(CALLS)}
+    assert resolution["field:Box.make"] != "callback-property"

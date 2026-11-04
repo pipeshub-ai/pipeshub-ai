@@ -20,7 +20,7 @@ import { ConnectRow } from './connect-row';
 
 type SignInState = Extract<
   McpConnectionState,
-  'needs_connect' | 'needs_reconnect' | 'waiting_for_admin' | 'shared_credential_missing'
+  'needs_connect' | 'needs_reconnect' | 'waiting_for_admin' | 'shared_credential_missing' | 'needs_auth_mode'
 >;
 
 // The ones this person can fix here come first.
@@ -28,6 +28,7 @@ const SIGN_IN_ORDER: Record<SignInState, number> = {
   needs_reconnect: 0,
   needs_connect: 1,
   shared_credential_missing: 2,
+  needs_auth_mode: 2,
   waiting_for_admin: 3,
 };
 
@@ -123,7 +124,7 @@ export function McpConnectRows({ servers, rowStyle, onConnected }: McpConnectRow
             key={entry._id}
             testId="mcp-connect-row"
             rowStyle={rowStyle}
-            icon={<McpServerIcon typeId={entry.typeId} name={entry.name} size={18} color="var(--gray-9)" />}
+            icon={<McpServerIcon instanceId={entry._id} typeId={entry.typeId} name={entry.name} size={18} color="var(--gray-9)" />}
             name={entry.name}
             action={
               canConnect ? (

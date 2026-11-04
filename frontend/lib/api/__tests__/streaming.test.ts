@@ -66,6 +66,63 @@ afterEach(() => {
 });
 
 describe('streamSSERequest frame parsing', () => {
+  it.each([
+    ['event field without optional space', 'event:status\ndata: {"step":1}\n\n'],
+    ['data field without optional space', 'event: status\ndata:{"step":1}\n\n'],
+    ['both fields without optional space', 'event:status\ndata:{"step":1}\n\n'],
+    ['both fields with optional space', 'event: status\ndata: {"step":1}\n\n'],
+  ])('parses the %s', async (_description, frame) => {
+    fetchMock.mockResolvedValueOnce(sseResponse([frame]));
+    const sink = collect();
+
+    await streamSSERequest('/s', {}, sink);
+
+    expect(sink.errors).toEqual([]);
+    expect(sink.events).toEqual([{ event: 'status', data: { step: 1 } }]);
+  });
+
+  it.each([
+    ['omitted event', 'data: {"step":1}\n\n'],
+    ['colonless event', 'event\ndata: {"step":1}\n\n'],
+    ['empty event', 'event:\ndata: {"step":1}\n\n'],
+    ['empty event with optional space', 'event: \ndata: {"step":1}\n\n'],
+    ['colonless event resetting a name', 'event: status\nevent\ndata: {"step":1}\n\n'],
+  ])('defaults the %s to message across chunks', async (_description, frame) => {
+    fetchMock.mockResolvedValueOnce(sseResponse([...frame]));
+    const sink = collect();
+
+    await streamSSERequest('/s', {}, sink);
+
+    expect(sink.errors).toEqual([]);
+    expect(sink.events).toEqual([{ event: 'message', data: { step: 1 } }]);
+  });
+
+  it('discards frames without data and resets their event names', async () => {
+    fetchMock.mockResolvedValueOnce(sseResponse([
+      'event: stale\n\n: keepalive\n\ndata\n\n',
+      'data: {"step":1}\n\nevent: status\ndata: {"step":2}\n\n',
+    ]));
+    const sink = collect();
+
+    await streamSSERequest('/s', {}, sink);
+
+    expect(sink.errors).toEqual([]);
+    expect(sink.events).toEqual([
+      { event: 'message', data: { step: 1 } },
+      { event: 'status', data: { step: 2 } },
+    ]);
+  });
+
+  it('waits for the blank line before dispatching an unnamed event', async () => {
+    fetchMock.mockResolvedValueOnce(sseResponse(['data: {"step":1}\n']));
+    const sink = collect();
+
+    await streamSSERequest('/s', {}, sink);
+
+    expect(sink.errors).toEqual([]);
+    expect(sink.events).toEqual([]);
+  });
+
   it('delivers each event once, in order, however the bytes are split', async () => {
     const wire =
       sseFrame('RUN_STARTED', { type: 'RUN_STARTED' }) +

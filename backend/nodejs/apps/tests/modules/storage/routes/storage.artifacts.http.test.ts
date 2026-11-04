@@ -36,10 +36,23 @@ type Filter = Record<string, unknown>
 const valueAt = (row: Row, key: string): unknown =>
   key.split('.').reduce<any>((v, k) => (v == null ? undefined : v[k]), row)
 
+const setAt = (row: Row, key: string, value: unknown): void => {
+  const parts = key.split('.')
+  const last = parts.pop()!
+  const parent = parts.reduce<any>((v, k) => (v[k] ??= {}), row)
+  parent[last] = value
+}
+
 const matches = (row: Row, filter: Filter): boolean =>
   Object.entries(filter).every(([key, want]) => {
     if (key === '$or') return (want as Filter[]).some((branch) => matches(row, branch))
     const have = valueAt(row, key)
+    if (want !== null && typeof want === 'object' && '$lte' in want) {
+      return typeof have === 'number' && have <= (want as { $lte: number }).$lte
+    }
+    if (want !== null && typeof want === 'object' && '$lt' in want) {
+      return typeof have === 'number' && have < (want as { $lt: number }).$lt
+    }
     if (want !== null && typeof want === 'object' && '$in' in want) {
       return (want as { $in: unknown[] }).$in.map(String).includes(String(have))
     }
@@ -132,6 +145,19 @@ describe('Artifact sets over HTTP: the local disk path', () => {
       rows.push(doc)
       return doc
     }) as never)
+    sinon.stub(DocumentModel, 'findOneAndUpdate').callsFake(((filter: Filter, update: { $set: Row; $unset?: Row }) =>
+      query(() => {
+        const row = rows.find((r) => matches(r, filter))
+        if (!row) return null
+        for (const [key, value] of Object.entries(update.$set)) setAt(row, key, value)
+        for (const key of Object.keys(update.$unset ?? {})) {
+          const parts = key.split('.')
+          const last = parts.pop()!
+          const parent = parts.reduce<any>((v, k) => v?.[k], row)
+          if (parent) delete parent[last]
+        }
+        return row
+      })) as never)
     sinon.stub(DocumentModel, 'deleteOne').callsFake(((filter: Filter) => {
       rows = rows.filter((r) => !matches(r, filter))
       return Promise.resolve({ acknowledged: true })
@@ -202,6 +228,53 @@ describe('Artifact sets over HTTP: the local disk path', () => {
     expect(purged).to.deep.equal({ status: 200, body: { purged: 1 } })
     expect(filesOnDisk()).to.deep.equal([])
     expect(rows).to.deep.equal([])
+  })
+
+  it('deletes with ifUnchangedSince only while the listed stamp holds, and refuses presign once claimed', async () => {
+    const files = [{ path: 'record.json', contentType: 'application/json' }]
+    const p = await presign(files)
+    await fetch(p.body.files[0].url, { method: 'PUT', headers: p.body.files[0].headers, body: Buffer.from('{}') })
+    const listed = await call('GET', `/internal/artifacts?virtualRecordId=${VRID}`)
+    const stamp = listed.body.revisions[0].updatedAt as number
+    expect(stamp).to.be.a('number')
+    rows[0]!.updatedAt = stamp + 1
+
+    const refused = await call('DELETE', `/internal/artifacts/${String(p.body.documentId)}?ifUnchangedSince=${String(stamp)}`)
+    expect(refused).to.deep.equal({ status: 409, body: { purged: 0, reason: 'changed' } })
+    expect(filesOnDisk()).to.have.length(1)
+
+    rows[0]!.artifactSet.retiringAt = Date.now()
+    const again = await presign(files)
+    expect(again.status).to.equal(409)
+    expect(again.body.files).to.be.undefined
+    delete rows[0]!.artifactSet.retiringAt
+
+    const purged = await call('DELETE', `/internal/artifacts/${String(p.body.documentId)}?ifUnchangedSince=${String(stamp + 1)}`)
+    expect(purged).to.deep.equal({ status: 200, body: { purged: 1 } })
+    expect(filesOnDisk()).to.deep.equal([])
+    expect(rows).to.deep.equal([])
+  })
+
+  it('refuses an ifUnchangedSince that is not a non-negative integer with 400', async () => {
+    const p = await presign([{ path: 'record.json', contentType: 'application/json' }])
+    for (const bad of ['soon', '-1', '1.5', '', '1e3']) {
+      const r = await call('DELETE', `/internal/artifacts/${String(p.body.documentId)}?ifUnchangedSince=${bad}`)
+      expect(r.status, bad).to.equal(400)
+    }
+    for (const bad of ['ifUnchangedSince[]=1', 'ifUnchangedSince=1&ifUnchangedSince=2', 'ifUnchangedSince[$gt]=0']) {
+      const r = await call('DELETE', `/internal/artifacts/${String(p.body.documentId)}?${bad}`)
+      expect(r.status, bad).to.equal(400)
+    }
+    expect(rows).to.have.length(1)
+  })
+
+  it('refuses a query key it does not know, so a misspelt stamp is not an unfenced delete', async () => {
+    const p = await presign([{ path: 'record.json', contentType: 'application/json' }])
+    for (const bad of ['ifunchangedsince=0', 'ifUnchangedSince=0&force=1', 'force=1']) {
+      const r = await call('DELETE', `/internal/artifacts/${String(p.body.documentId)}?${bad}`)
+      expect(r.status, bad).to.equal(400)
+    }
+    expect(rows).to.have.length(1)
   })
 
   it('answers the same document when the revision is presigned again', async () => {

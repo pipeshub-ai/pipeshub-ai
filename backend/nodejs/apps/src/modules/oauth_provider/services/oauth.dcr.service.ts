@@ -1,10 +1,11 @@
+import { forOrg } from '../../../libs/context/orgContext';
 import { injectable, inject } from 'inversify'
 import { Logger } from '../../../libs/services/logger.service'
 import { BadRequestError, ForbiddenError } from '../../../libs/errors/http.errors'
 import { InvalidScopeError } from '../../../libs/errors/oauth.errors'
-import { Org } from '../../user_management/schema/org.schema'
-import { Users } from '../../user_management/schema/users.schema'
-import { OAuthGrantType } from '../schema/oauth.app.schema'
+import { getIdentityPort } from '../../../libs/repositories/identity'
+import { getUserRepository } from '../../../libs/repositories/user'
+import { OAuthGrantType } from '../../../libs/repositories/oauth-app'
 import { OAuthAppService } from './oauth.app.service'
 import { ScopeValidatorService } from './scope.validator.service'
 import { AgentMcpScopes } from '../config/scopes.config'
@@ -175,26 +176,18 @@ export class OAuthDcrService {
     orgId: string
     createdBy: string
   }> {
-    const orgs = await Org.find({ isDeleted: { $ne: true } })
-      .sort({ createdAt: 1 })
-      .select('_id')
-      .lean()
-    const org = orgs[0]
-    if (!org) {
+    const orgId = await getIdentityPort().oldestOrgId()
+    if (!orgId) {
       throw new BadRequestError('Instance is not initialized')
     }
-    const orgId = org._id.toString()
-    const user = await Users.findOne({
-      orgId: org._id,
-      isDeleted: { $ne: true },
-    })
-      .sort({ createdAt: 1 })
-      .select('_id')
-      .lean()
-    if (!user?._id) {
+    // No session here: the server itself reads the install's organisation.
+    const oldestUserId = await forOrg(orgId, 'oauth.dcr', () =>
+      getUserRepository().getOldestId(orgId),
+    )
+    if (!oldestUserId) {
       throw new BadRequestError('Instance has no users')
     }
     this.logger.info('DCR bound to instance org', { orgId })
-    return { orgId, createdBy: user._id.toString() }
+    return { orgId, createdBy: oldestUserId }
   }
 }

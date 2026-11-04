@@ -22,7 +22,11 @@ spec:
       {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- $podAnnotations := deepCopy (.Values.podAnnotations | default dict) }}
+      {{- if include "pipeshub-ai.createSecrets" . }}
+      {{- $_ := set $podAnnotations "checksum/qdrant-api-key" (include "pipeshub-ai.qdrantApiKeyChecksum" .) }}
+      {{- end }}
+      {{- with $podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -447,6 +451,8 @@ spec:
             {{- end }}
             - name: MAX_AUTH_REQUESTS_PER_MINUTE
               value: {{ .Values.maxAuthRequestsPerMinute | default 10 | quote }}
+            - name: ADDRESS_RATE_LIMIT_PER_MINUTE
+              value: {{ .Values.addressRateLimitPerMinute | default 60 | quote }}
           {{- with .Values.extraEnvFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}

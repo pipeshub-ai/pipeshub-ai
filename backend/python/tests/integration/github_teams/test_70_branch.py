@@ -8,6 +8,7 @@ GitHub in ``sim/``; see README.md.
 
 import pytest
 
+from app.connectors.sources.github_teams.repos import ReposSync
 from tests.integration.github_teams.sim.model import Commit, Repo, World
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
@@ -63,6 +64,54 @@ async def test_switching_branch_and_back_updates_records_in_place(world, org) ->
     assert diff.clean(), diff
     assert (await world.record(f"/{repo.id}/blob/src/app.py")).id == app_id
     assert await world.stream(f"/{repo.id}/blob/src/app.py") == b"print('hi')\n"
+
+
+async def test_switching_branch_syncs_only_what_differs(world, org, monkeypatch) -> None:
+    """A switch is the delta between the two branch heads: no tree walk, and a file that
+    is the same on both branches is not written again."""
+    gh, repo = world.gh, org["repo"]
+    _branch_from_default(gh, repo, "release", {"src/app.py": "print('release')\n"})
+    await world.sync()
+    readme = await world.record(f"/{repo.id}/blob/README.md")
+    walks: list[str] = []
+    walk = ReposSync._full_sync
+
+    async def counted(self: ReposSync, *args: object) -> bool:
+        walks.append(self.branch_for(args[0]))
+        return await walk(self, *args)
+
+    monkeypatch.setattr(ReposSync, "_full_sync", counted)
+    world.set_branch("release")
+    await world.sync()
+
+    diff = await world.diff()
+    assert diff.clean(), diff
+    assert walks == []
+    assert await world.stream(f"/{repo.id}/blob/src/app.py") == b"print('release')\n"
+    after = await world.record(f"/{repo.id}/blob/README.md")
+    assert (after.updated_at, after.version) == (readme.updated_at, readme.version)
+
+
+async def test_a_walk_leaves_unchanged_files_stamped_as_they_were(world, org, monkeypatch) -> None:
+    """The code edge build re-resolves every file stamped since its last run; a walk
+    re-saves every file, so restamping unchanged ones made it rebuild the whole repo."""
+    gh, repo = world.gh, org["repo"]
+    _branch_from_default(gh, repo, "release", {"src/app.py": "print('release')\n"})
+    await world.sync()
+    readme = await world.record(f"/{repo.id}/blob/README.md")
+    app = await world.record(f"/{repo.id}/blob/src/app.py")
+
+    async def no_delta(*_args: object) -> bool:
+        return False
+
+    monkeypatch.setattr(ReposSync, "_incremental_sync", no_delta)
+    world.set_branch("release")
+    await world.sync()
+
+    diff = await world.diff()
+    assert diff.clean(), diff
+    assert (await world.record(f"/{repo.id}/blob/README.md")).updated_at == readme.updated_at
+    assert (await world.record(f"/{repo.id}/blob/src/app.py")).updated_at > app.updated_at
 
 
 async def test_branch_that_does_not_exist_fails_the_sync_and_keeps_the_records(world, org) -> None:

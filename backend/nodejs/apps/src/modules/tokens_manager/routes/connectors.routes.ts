@@ -12,7 +12,7 @@ import { Router, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 import { z } from 'zod';
 import axios from 'axios';
-import axiosRetry from 'axios-retry';
+import axiosRetry, { retryAfter } from 'axios-retry';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
@@ -67,7 +67,7 @@ import {
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
-import { ConnectorsConfig } from '../../configuration_manager/schema/connectors.schema';
+import { getConnectorsConfigRepository } from '../../../libs/repositories/connectors-config';
 import { GoogleWorkspaceApp, scopeToAppMap } from '../types/connector.types';
 import {
   GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH,
@@ -89,7 +89,7 @@ import {
   Event,
 } from '../services/entity_event.service';
 import { integerCheck } from '../../../libs/utils/zod-formats';
-import { ConnectorId, ConnectorIdToNameMap, ConnectorNames } from '../../../libs/types/connector.types';
+import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector.types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
@@ -98,11 +98,22 @@ const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
 });
 
+// A 429 whose Retry-After is longer than this goes straight back to the caller
+// with its Retry-After: waiting it out would hold the request open (a preview
+// would hang for the length of a source's rate limit).
+const MAX_RETRY_AFTER_MS = 5000;
+
 // Configure axios retry logic
 axiosRetry(axios, {
   retries: 3,
   retryDelay: axiosRetry.exponentialDelay,
   retryCondition: (error) => {
+    if (
+      error.response?.status === 429 &&
+      retryAfter(error) > MAX_RETRY_AFTER_MS
+    ) {
+      return false;
+    }
     return !!(
       axiosRetry.isNetworkOrIdempotentRequestError(error) ||
       (error.response && error.response.status >= 500)
@@ -400,6 +411,8 @@ const getRecordContentSchema = z.object({
         z.number().check(integerCheck()).min(2000).max(140000),
       )
       .optional(),
+    // With `query`: only the passages that answer it, picked out by a model.
+    extract: z.enum(['true', 'false']).optional(),
   }),
 });
 
@@ -457,6 +470,8 @@ const testConnectorConnectionSchema = z.object({
   }),
   body: z.object({
     auth: z.record(z.string(), z.unknown()),
+    // The chosen form when a connector offers several: `auth` holds only its fields.
+    authType: z.string().min(1).max(64).optional(),
     connectorId: z
       .string()
       .regex(
@@ -1109,10 +1124,12 @@ export function createConnectorRouter(
         }
 
         // Find or create connector in database
-        let connector = await ConnectorsConfig.findOne({
-          name: ConnectorIdToNameMap[connectorId] as ConnectorNames,
-          orgId: req.user.orgId,
-        });
+        const connectorsConfig = getConnectorsConfigRepository();
+        const connectorName = ConnectorIdToNameMap[connectorId];
+        let connector = await connectorsConfig.find(
+          req.user.orgId as string,
+          connectorName,
+        );
 
         // Extract received scopes and filter enabled apps
         const receivedScopes = tokenData.scope.split(' ');
@@ -1125,17 +1142,14 @@ export function createConnectorRouter(
         let event: Event;
 
         if (connector) {
-          // Update existing connector
-          connector.isEnabled = true;
-          connector.lastUpdatedBy = req.user.userId;
-
+          // Update existing connector (written after the event is queued)
           event = {
             eventType: EventType.AppEnabledEvent,
             timestamp: Date.now(),
             payload: {
               orgId: req.user.orgId,
               appGroup: connector.name,
-              appGroupId: connector._id.toString(),
+              appGroupId: connector._id,
               credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH}`,
               refreshTokenRoute: `${config.cmBackend}/${REFRESH_TOKEN_PATH}`,
               apps: enabledApps,
@@ -1145,7 +1159,12 @@ export function createConnectorRouter(
 
           await eventService.publishEvent(event);
           await eventService.stop();
-          await connector.save();
+          connector =
+            (await connectorsConfig.enable(
+              req.user.orgId as string,
+              connectorName,
+              req.user.userId as string,
+            )) ?? connector;
 
           logger.info('Google Workspace connector enabled', {
             connectorId: connector._id,
@@ -1158,19 +1177,11 @@ export function createConnectorRouter(
           });
         } else {
           // Create new connector
-          connector = new ConnectorsConfig({
-            orgId: req.user.orgId,
-            name: ConnectorIdToNameMap[connectorId],
-            lastUpdatedBy: req.user.userId,
-            isEnabled: true,
-          });
-
-          await connector.save();
-
-          connector = await ConnectorsConfig.findOne({
-            name: ConnectorIdToNameMap[connectorId] as ConnectorNames,
-            orgId: req.user.orgId,
-          });
+          connector = await connectorsConfig.createEnabled(
+            req.user.orgId as string,
+            connectorName,
+            req.user.userId as string,
+          );
 
           if (!connector) {
             throw new InternalServerError('Error creating connector');
@@ -1182,7 +1193,7 @@ export function createConnectorRouter(
             payload: {
               orgId: req.user.orgId,
               appGroup: connector.name,
-              appGroupId: connector._id.toString(),
+              appGroupId: connector._id,
               credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH}`,
               refreshTokenRoute: `${config.cmBackend}/${REFRESH_TOKEN_PATH}`,
               apps: [

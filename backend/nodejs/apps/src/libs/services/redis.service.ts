@@ -4,7 +4,10 @@ import { Logger } from './logger.service';
 
 import { RedisCacheError } from '../errors/redis.errors';
 import { CacheOptions, RedisConfig } from '../types/redis.types';
-import { getRedisProvider } from './redis/connectionProviderFactory';
+import {
+  defaultRedisMode,
+  getRedisProvider,
+} from './redis/connectionProviderFactory';
 import { redisConnectionConfigFromHostPort } from './redis/connectionConfig';
 import { IRedisConnectionProvider } from './redis/connectionProvider.interface';
 import { ICacheService } from './cache/cacheService.interface';
@@ -35,7 +38,7 @@ export class RedisService implements ICacheService {
     // `keyPrefix`, so it also covers `SCAN`/pattern-based lookups.
     this.keyPrefix = provider.keyNamespace
       ? `${provider.keyNamespace}:${config.keyPrefix ?? 'app:'}`
-      : config.keyPrefix ?? 'app:';
+      : (config.keyPrefix ?? 'app:');
     this.initializeClient(provider);
   }
 
@@ -182,6 +185,105 @@ export class RedisService implements ICacheService {
 const cacheServices = new Map<string, RedisService>();
 
 /**
+ * A cache in this process's memory, for a deployment with no Redis server (`REDIS_MODE=inprocess`, or the key-value
+ * store and the broker both PostgreSQL). Holds sessions, the SAML desktop hand-off and the e-mail rate-limit counters:
+ * all short-lived and rebuilt by signing in again, so losing them on a restart is acceptable on one node. Not shared
+ * between processes: do not run two API replicas on it.
+ */
+export class InProcessCacheService implements ICacheService {
+  private readonly entries = new Map<
+    string,
+    { value: string; expiresAt: number }
+  >();
+  private readonly defaultTTL = 3600;
+  private connected = true;
+
+  private key(key: string, namespace?: string): string {
+    return namespace !== undefined && namespace !== ''
+      ? `${namespace}:${key}`
+      : key;
+  }
+
+  private live(key: string): { value: string; expiresAt: number } | undefined {
+    const e = this.entries.get(key);
+    if (e !== undefined && e.expiresAt <= Date.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return e;
+  }
+
+  private lastSweep = Number.NEGATIVE_INFINITY;
+
+  private sweep(): void {
+    const now = Date.now();
+    // a full scan on every write would block the event loop once the map is large: at most one scan a minute
+    if (this.entries.size < 1000 || now - this.lastSweep < 60_000) return;
+    this.lastSweep = now;
+    for (const [k, e] of this.entries)
+      if (e.expiresAt <= now) this.entries.delete(k);
+  }
+
+  get<T>(key: string, options: CacheOptions = {}): Promise<T | null> {
+    const e = this.live(this.key(key, options.namespace));
+    return Promise.resolve(e === undefined ? null : (JSON.parse(e.value) as T));
+  }
+
+  set(key: string, value: unknown, options: CacheOptions = {}): Promise<void> {
+    this.sweep();
+    this.entries.set(this.key(key, options.namespace), {
+      value: JSON.stringify(value),
+      expiresAt: Date.now() + (options.ttl ?? this.defaultTTL) * 1000,
+    });
+    return Promise.resolve();
+  }
+
+  delete(key: string, options: CacheOptions = {}): Promise<void> {
+    this.entries.delete(this.key(key, options.namespace));
+    return Promise.resolve();
+  }
+
+  /** INCR whose expiry is set when the counter is created; later increments do not extend it (RedisService.increment refreshes the TTL on every call). */
+  increment(key: string, options: CacheOptions = {}): Promise<number> {
+    this.sweep();
+    const k = this.key(key, options.namespace);
+    const e = this.live(k);
+    const next = e === undefined ? 1 : Number(e.value) + 1;
+    this.entries.set(k, {
+      value: String(next),
+      // No ttl: no expiry, as RedisService.increment (INCR alone sets none). A finite expiry is fixed when the counter is created, but a
+      // counter that has none takes the first ttl it is given, as EXPIRE on a key without one does in Redis.
+      expiresAt:
+        e?.expiresAt !== undefined && Number.isFinite(e.expiresAt)
+          ? e.expiresAt
+          : options.ttl === undefined
+            ? Number.POSITIVE_INFINITY
+            : Date.now() + options.ttl * 1000,
+    });
+    return Promise.resolve(next);
+  }
+
+  disconnect(): Promise<void> {
+    this.connected = false;
+    this.entries.clear();
+    return Promise.resolve();
+  }
+
+  isConnected(): boolean {
+    return this.connected;
+  }
+}
+
+let inProcessCache: InProcessCacheService | undefined;
+
+/** True when no Redis server is configured: `REDIS_MODE` is `postgres` or `inprocess`, or both the key-value store and the broker are PostgreSQL. */
+export function usesInProcessCache(): boolean {
+  // `postgres` and `inprocess` both mean no Redis server; any other value names one (standalone, cluster, an edition's)
+  const mode = defaultRedisMode().toLowerCase();
+  return mode === 'inprocess' || mode === 'postgres';
+}
+
+/**
  * Endpoint identity only. Credentials are deliberately NOT part of the key:
  * hashing them here protected nothing (the cached `RedisService` retains the
  * cleartext config for its lifetime, so an attacker who can read this map can
@@ -202,7 +304,12 @@ function endpointKey(config: RedisConfig): string {
 export function getSharedRedisService(
   config: RedisConfig,
   logger: Logger,
-): RedisService {
+): ICacheService {
+  if (usesInProcessCache()) {
+    if (!inProcessCache?.isConnected())
+      inProcessCache = new InProcessCacheService();
+    return inProcessCache;
+  }
   const key = endpointKey(config);
   const existing = cacheServices.get(key);
   // Same endpoint is not the same connection: a cached instance built with

@@ -1,10 +1,11 @@
 """Unit tests for app.modules.transformers.sink_orchestrator.SinkOrchestrator."""
 
 import logging
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.models.entities import EntityRecord, EntityType
@@ -75,12 +76,21 @@ class TestApply:
         orch.blob_storage.apply.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
-    async def test_record_not_found_raises(self):
+    async def test_a_deleted_record_raises_record_deleted(self):
         orch = _make_orchestrator(graph_doc=None)
         ctx = _make_ctx("missing-id")
 
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(RecordDeletedError):
             await orch.apply(ctx)
+
+    @pytest.mark.asyncio
+    async def test_a_trashed_record_raises_record_deleted(self) -> None:
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "IN_PROGRESS", "isDeleted": True})
+
+        with pytest.raises(RecordDeletedError):
+            await orch.apply(_make_ctx("trashed-id"))
+
+        orch.vector_store.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_completed_skips_vector_and_does_not_classify(self) -> None:
@@ -157,21 +167,31 @@ class TestApply:
         await orch.apply(ctx)
 
         orch.graph_provider.get_document.assert_awaited_once_with(
-            "my-record-id", "records"
+            "my-record-id", "records", raise_on_error=True
         )
 
     @pytest.mark.asyncio
-    async def test_failed_completed_status_write_is_non_fatal(self):
+    async def test_a_record_deleted_while_indexed_saves_nothing_more(self) -> None:
+        """The COMPLETED write finds the record gone: no reconciliation save (it would
+        bring back the content mapping the delete removed, without its org), and the
+        event ends as deleted."""
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "IN_PROGRESS"},
             vector_result=True,
         )
         orch.graph_provider.batch_update_nodes.return_value = False
+        ctx = _make_ctx()
+        ctx.record.virtual_record_id = "vr-1"
+        ctx.record.org_id = "org-1"
+        ctx.reconciliation_context = MagicMock(new_metadata={"hashes": {}})
 
-        await orch.index(_make_ctx())
+        with pytest.raises(RecordDeletedError):
+            await orch.index(ctx)
 
         orch.vector_store.apply.assert_awaited_once()
-        orch.graph_provider.batch_update_nodes.assert_awaited()
+        orch.blob_storage.save_reconciliation_metadata.assert_not_awaited()
+        orch.graph_provider.create_node_if_absent.assert_not_awaited()
+        orch.graph_provider.batch_upsert_nodes.assert_not_awaited()
 
 
 class TestSkipBlob:
@@ -600,6 +620,25 @@ class TestIndexedWriteWhenEnrichmentFollows:
         assert row["parsingStatus"] == "COMPLETED"
         # Nothing on the record path is still running; the stage runtime owns the rest.
         assert row["processingStartedAt"] is None
+
+    @pytest.mark.asyncio
+    async def test_classification_left_for_first_use_marks_extraction_not_started(self) -> None:
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+        ctx.settings = {"enrichment_follows": True}
+
+        with patch(
+            "app.modules.transformers.sink_orchestrator.is_classify_on_first_use_enabled",
+            AsyncMock(return_value=True),
+        ):
+            await orch._update_indexing_status(ctx)
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert row["extractionStatus"] == "NOT_STARTED"
+        assert row["extractionDeferred"] is True
+        # The dispatch reads the same decision, so it cannot queue what this left unqueued.
+        assert ctx.settings["enrichment_deferred"] is True
+        assert not ctx.settings["enrichment_follows"]
 
     @pytest.mark.asyncio
     async def test_without_a_stage_to_follow_extraction_is_left_alone(self) -> None:

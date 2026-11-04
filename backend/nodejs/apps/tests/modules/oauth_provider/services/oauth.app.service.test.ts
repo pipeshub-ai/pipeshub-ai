@@ -1140,7 +1140,7 @@ describe('OAuthAppService - branch coverage', () => {
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
       const result = await service.getAppByClientId('client-1')
-      expect(result).to.equal(mockApp)
+      expect(result).to.deep.equal(mockApp)
     })
   })
 
@@ -1630,7 +1630,7 @@ describe('isAppUsableInOrg', () => {
   const otherOrgId = new Types.ObjectId().toString()
 
   it('allows the workspace that owns the app and refuses another one', () => {
-    const app = { orgId: appOrgId, clientId: 'c1' } as any
+    const app = { orgId: appOrgId.toString(), clientId: 'c1' } as any
     expect(isAppUsableInOrg(app, appOrgId.toString())).to.be.true
     expect(isAppUsableInOrg(app, otherOrgId)).to.be.false
   })

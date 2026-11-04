@@ -1,4 +1,4 @@
-"""What indexing needs to know about a PDF before parsing it, read in a parse worker.
+"""What indexing and chat attachments need to know about a PDF before parsing it, read in a parse worker.
 
 These functions run in a ``parse_pool`` worker process (see ``untrusted_pdf``),
 which imports this module by name: keep its imports to the PDF libraries and
@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import logging
 import math
+import random
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -16,6 +17,11 @@ from typing import TYPE_CHECKING
 import pdfplumber
 import pypdfium2
 
+from app.exceptions.indexing_exceptions import PasswordProtectedError
+from app.modules.parsers.encryption import (
+    PASSWORD_PROTECTED_MESSAGE,
+    pdfium_password_error,
+)
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 
 if TYPE_CHECKING:
@@ -27,6 +33,10 @@ _logger = logging.getLogger(__name__)
 
 # A PDF needs OCR when at least this share of its (sampled) pages do.
 OCR_PAGE_SHARE = 0.5
+
+# Pages with a text layer that are checked to decide whether a PDF needs OCR.
+OCR_SAMPLE_PAGES = 30
+
 
 
 @dataclass(frozen=True)
@@ -51,20 +61,112 @@ def detect_ocr(content: bytes, sample_pages: int) -> bool:
         return pages_need_ocr([pages[i] for i in sample_page_indices(len(pages), sample_pages)])
 
 
+def text_layer_char_counts(content: bytes) -> list[int] | None:
+    """pdfium's count of text-layer characters on each page; None when pdfium cannot read it."""
+    try:
+        document = pypdfium2.PdfDocument(content)
+        try:
+            counts: list[int] = []
+            for page in document:
+                textpage = page.get_textpage()
+                try:
+                    counts.append(textpage.count_chars())
+                finally:
+                    textpage.close()
+                    page.close()
+            return counts
+        finally:
+            document.close()
+    except Exception:
+        _logger.warning(
+            "Could not read the PDF's text layer with pdfium; checking every page with pdfplumber",
+            exc_info=True,
+        )
+        return None
+
+
+def needs_ocr_and_page_count(content: bytes, max_pages: int | None = None) -> tuple[bool, int]:
+    """Whether at least half of *content*'s pages need OCR, and its page count.
+
+    A document of more than *max_pages* pages is answered ``(False, page count)``
+    from the page count alone: counting text-layer characters walks every page
+    (about 11 s for 4,000 pages), and a caller that refuses such a document needs
+    the count before its deadline, not the OCR verdict.
+
+    A page with no text layer always needs OCR (``needs_ocr`` sees zero text
+    density), so pdfium's character counts settle those without pdfplumber,
+    which can spend minutes walking a page whose glyphs are drawn as vector paths.
+    Of the pages that have text, at most ``OCR_SAMPLE_PAGES`` evenly spread ones
+    are checked, each released as soon as it is: pdfplumber keeps every parsed
+    char and layout of a page until it is closed, which for a long document
+    otherwise grows with the page count. A document of that many text pages or
+    fewer is checked in full, exactly as before. Past that, the verdict is an
+    estimate from the sample (a sampling limit: a document whose share of pages
+    needing OCR is near one half can be called either way). Pages without a text
+    layer are always counted exactly.
+    """
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        pages = pdf.pages
+        total = len(pages)
+        if total == 0:
+            return False, 0
+        if max_pages is not None and total > max_pages:
+            return False, total
+        chars_per_page = text_layer_char_counts(content)
+        counts: Sequence[int | None] = chars_per_page or ()
+        if len(counts) != total:
+            counts = [None] * total
+        textless = sum(1 for chars in counts if chars == 0)
+        if textless / total >= OCR_PAGE_SHARE:
+            return True, total
+        with_text = [index for index, chars in enumerate(counts) if chars != 0]
+        sampled = [with_text[i] for i in sample_page_indices(len(with_text), OCR_SAMPLE_PAGES)]
+        sampled_ocr = 0
+        for index in sampled:
+            try:
+                if OCRStrategy.needs_ocr(pages[index], _logger):
+                    sampled_ocr += 1
+            finally:
+                pages[index].close()
+        # A sample stands for all the pages with text.
+        ocr_with_text = (
+            sampled_ocr if len(sampled) == len(with_text) else len(with_text) * sampled_ocr / len(sampled)
+        )
+    return (textless + ocr_with_text) / total >= OCR_PAGE_SHARE, total
+
+
 def sample_page_indices(page_count: int, limit: int) -> list[int]:
-    """Every page up to *limit*; past it, *limit* pages evenly spread, first and last included.
+    """Every page up to *limit*; past it, *limit* distinct pages, first and last included.
 
     Deciding OCR from a sample keeps the cost of the decision flat: each page
     checked runs pdfminer's full layout analysis, and the decision can need
     half the pages of a long document.
+
+    The pages between come one from each of *limit* - 2 equal runs of pages,
+    at an offset drawn per run, not at a fixed stride or any other regular
+    sequence: a regular placement can line up with a layout that repeats (say
+    two scanned pages in every three) and see only one kind of page. A drawn
+    offset sees each page of its run equally often, so the share it finds is
+    the document's own on average, whatever the layout. The draw is seeded by
+    the page count, so a document always gets the same sample. The result is
+    still a sample: past *limit* pages the share is an estimate, and a document
+    whose true share sits near one half can be called either way.
     """
     limit = max(1, limit)
     if page_count <= limit:
         return list(range(page_count))
     if limit == 1:
         return [0]
-    step = (page_count - 1) / (limit - 1)
-    return [round(i * step) for i in range(limit)]
+    draw = random.Random(page_count)
+    runs = limit - 2
+    middle = page_count - 2
+    chosen = [0]
+    for run in range(runs):
+        start = 1 + run * middle // runs
+        end = 1 + (run + 1) * middle // runs
+        chosen.append(draw.randrange(start, end))
+    chosen.append(page_count - 1)
+    return chosen
 
 
 def pages_need_ocr(pages: Sequence[Page]) -> bool:
@@ -88,9 +190,17 @@ def repair_pdf(content: bytes) -> bytes:
 
     pdfium reconstructs a damaged table from the objects themselves and drops
     trailing garbage, which pdfminer otherwise reads one byte at a time.
-    Raises ``pypdfium2.PdfiumError`` when pdfium cannot open the file either.
+    Raises ``PasswordProtectedError`` when the file needs a password, and
+    ``pypdfium2.PdfiumError`` when pdfium cannot open it for another reason.
     """
-    document = pypdfium2.PdfDocument(content)
+    try:
+        document = pypdfium2.PdfDocument(content)
+    except pypdfium2.PdfiumError as exc:
+        if pdfium_password_error(exc):
+            raise PasswordProtectedError(
+                PASSWORD_PROTECTED_MESSAGE, details={"format": "pdf"}
+            ) from exc
+        raise
     try:
         rewritten = io.BytesIO()
         document.save(rewritten)

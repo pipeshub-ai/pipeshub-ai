@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { OAuthGrantType } from '../schema/oauth.app.schema';
+import { OAuthGrantType } from '../../../libs/repositories/oauth-app/types';
 import { messageForUnknownOption } from '../../../libs/utils/validation.utils';
 import {
   guidCheck,

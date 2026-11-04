@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import { desktopAuthorizeParams } from '@/lib/electron';
 import type { ConnectorOAuthCallbackRaw } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
@@ -132,10 +133,13 @@ export const ConnectorsApi = {
     return data;
   },
 
-  /** Try auth settings before saving them; `connectorId` when editing an instance. */
+  /**
+   * Try auth settings before saving them; `connectorId` when editing an instance.
+   * `authType` names the chosen form when a connector offers several: `auth` holds only its fields.
+   */
   async testConnection(
     connectorType: string,
-    payload: { auth: Record<string, unknown>; connectorId?: string }
+    payload: { auth: Record<string, unknown>; authType?: string; connectorId?: string }
   ): Promise<ConnectionCheckResponse> {
     const { data } = await apiClient.post<ConnectionCheckResponse>(
       `${BASE_URL}/registry/${encodeURIComponent(connectorType)}/test-connection`,
@@ -164,6 +168,7 @@ export const ConnectorsApi = {
     baseUrl?: string;
   }) {
     const { data } = await apiClient.post(BASE_URL, payload);
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 
@@ -173,6 +178,7 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}`,
       { suppressErrorToast: true }
     );
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return parseDeleteConnectorInstanceBody(data ?? null, connectorId);
   },
 
@@ -181,6 +187,7 @@ export const ConnectorsApi = {
     const { data } = await apiClient.put(`${BASE_URL}/${connectorId}/name`, {
       instanceName,
     });
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 
@@ -369,6 +376,7 @@ export const ConnectorsApi = {
       { type, ...device },
       { suppressErrorToast: isDesktopOfflineError }
     );
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 

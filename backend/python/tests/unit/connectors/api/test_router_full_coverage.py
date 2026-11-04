@@ -846,6 +846,15 @@ class TestGetPdfConversionInfo:
         assert needs is True
         assert "ppt" in ext
 
+    def test_legacy_doc_needs_conversion(self) -> None:
+        from app.connectors.api.router import get_pdf_conversion_info
+        record = MagicMock()
+        record.record_name = "tiny_random"
+        record.mime_type = "application/msword"
+        needs, name, ext = get_pdf_conversion_info(record)
+        assert needs is True
+        assert ext == "doc"
+
     def test_pdf_no_conversion(self):
         from app.connectors.api.router import get_pdf_conversion_info
         record = MagicMock()

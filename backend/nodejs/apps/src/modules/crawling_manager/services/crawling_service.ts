@@ -18,6 +18,8 @@ import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
 import { IRedisConnectionProvider } from '../../../libs/services/redis/connectionProvider.interface';
 import { crawlingQueuePrefix, crawlingRedisProvider } from './crawling_queue';
+import { pgReconcilePending, usesPgScheduler } from './crawling_pg';
+import { PgJobQueue } from '../../../libs/services/pg-job-queue.service';
 import {
   CrawlingJobData,
   ScheduleJobOptions,
@@ -69,13 +71,34 @@ export class CrawlingSchedulerService {
   private readonly logger: Logger;
   private repeatableJobMap: Map<string, string> = new Map(); // customJobId -> repeatableJobKey
   private pausedJobs: Map<string, PausedJobInfo> = new Map(); // jobId -> PausedJobInfo
-  private readonly provider: IRedisConnectionProvider;
+  // undefined when the scheduler runs on PostgreSQL (no Redis at all)
+  private readonly provider: IRedisConnectionProvider | undefined;
   // One hash, so it lives in one Redis Cluster slot: connector id -> {orgId, at}.
-  private readonly reconcilePendingKey: string;
+  private readonly reconcilePendingKey: string = '';
 
   constructor(@inject('RedisConfig') redisConfig: RedisConfig) {
     this.logger = Logger.getInstance({ service: 'CrawlingSchedulerService' });
 
+    const defaultJobOptions = {
+      removeOnComplete: 10, // Keep only last 10 completed jobs per connector type
+      removeOnFail: 10, // Keep only last 10 failed jobs per connector type
+      attempts: 3,
+      backoff: {
+        type: 'exponential' as const,
+        delay: 5000,
+      },
+    };
+    if (usesPgScheduler()) {
+      this.provider = undefined;
+      this.queue = new PgJobQueue(
+        'crawling-scheduler',
+        defaultJobOptions,
+      ) as unknown as Queue;
+      this.logger.info(
+        'CrawlingSchedulerService initialized (PostgreSQL scheduler)',
+      );
+      return;
+    }
     const provider = crawlingRedisProvider(redisConfig);
     this.provider = provider;
     this.reconcilePendingKey = `${crawlingQueuePrefix(provider)}:schedule-reconcile-pending`;
@@ -86,15 +109,7 @@ export class CrawlingSchedulerService {
       // on this connection.
       connection: provider.createClient({ blocking: true }),
       prefix: crawlingQueuePrefix(provider),
-      defaultJobOptions: {
-        removeOnComplete: 10, // Keep only last 10 completed jobs per connector type
-        removeOnFail: 10, // Keep only last 10 failed jobs per connector type
-        attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 5000,
-        },
-      },
+      defaultJobOptions,
     };
 
     this.queue = new Queue('crawling-scheduler', queueOptions);
@@ -109,6 +124,8 @@ export class CrawlingSchedulerService {
     connectorId: string,
     orgId: string,
   ): Promise<void> {
+    if (this.provider === undefined)
+      return pgReconcilePending.mark(connectorId, orgId);
     await this.provider
       .getClient()
       .hset(
@@ -123,6 +140,8 @@ export class CrawlingSchedulerService {
     connectorId: string,
     since: number,
   ): Promise<void> {
+    if (this.provider === undefined)
+      return pgReconcilePending.clear(connectorId, since);
     const client = this.provider.getClient();
     const raw = await client.hget(this.reconcilePendingKey, connectorId);
     if (raw === null || (JSON.parse(raw) as { at: number }).at > since) return;
@@ -139,6 +158,7 @@ export class CrawlingSchedulerService {
   async listReconcilesPending(): Promise<
     { connectorId: string; orgId: string; at: number }[]
   > {
+    if (this.provider === undefined) return pgReconcilePending.list();
     const all = await this.provider
       .getClient()
       .hgetall(this.reconcilePendingKey);

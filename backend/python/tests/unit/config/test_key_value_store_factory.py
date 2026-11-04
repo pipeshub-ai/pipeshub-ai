@@ -60,7 +60,7 @@ class TestStoreConfig:
 class TestKeyValueStoreFactoryCreateStore:
     """Tests for KeyValueStoreFactory.create_store dispatch."""
 
-    @patch("app.config.key_value_store_factory.Etcd3DistributedKeyValueStore")
+    @patch("app.config.providers.etcd.etcd3_store.Etcd3DistributedKeyValueStore")
     def test_create_etcd3_store(self, mock_etcd3_cls):
         mock_store = MagicMock()
         mock_etcd3_cls.__getitem__ = MagicMock(return_value=mock_etcd3_cls)
@@ -94,7 +94,7 @@ class TestKeyValueStoreFactoryCreateStore:
         )
         assert isinstance(store, InMemoryKeyValueStore)
 
-    @patch("app.config.key_value_store_factory.RedisDistributedKeyValueStore")
+    @patch("app.config.providers.redis.redis_store.RedisDistributedKeyValueStore")
     def test_create_redis_store(self, mock_redis_cls):
         mock_store = MagicMock()
         mock_redis_cls.__getitem__ = MagicMock(return_value=mock_redis_cls)
@@ -194,7 +194,7 @@ class TestKeyValueStoreFactoryUnsupportedType:
 class TestKeyValueStoreFactoryExceptionWrapping:
     """Tests that construction exceptions are wrapped properly."""
 
-    @patch("app.config.key_value_store_factory.Etcd3DistributedKeyValueStore")
+    @patch("app.config.providers.etcd.etcd3_store.Etcd3DistributedKeyValueStore")
     def test_etcd3_constructor_exception_is_wrapped(self, mock_etcd3_cls):
         mock_etcd3_cls.__getitem__ = MagicMock(return_value=mock_etcd3_cls)
         mock_etcd3_cls.side_effect = RuntimeError("connection refused")
@@ -208,7 +208,7 @@ class TestKeyValueStoreFactoryExceptionWrapping:
                 config=config,
             )
 
-    @patch("app.config.key_value_store_factory.RedisDistributedKeyValueStore")
+    @patch("app.config.providers.redis.redis_store.RedisDistributedKeyValueStore")
     def test_redis_constructor_exception_is_wrapped(self, mock_redis_cls):
         mock_redis_cls.__getitem__ = MagicMock(return_value=mock_redis_cls)
         mock_redis_cls.side_effect = ConnectionError("redis down")

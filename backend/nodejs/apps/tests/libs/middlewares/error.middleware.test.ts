@@ -16,6 +16,8 @@ import { markClientSafe } from '../../../src/libs/errors/reader-friendly'
 import { KafkaError } from '../../../src/libs/errors/kafka.errors'
 import { RedisServiceNotInitializedError } from '../../../src/libs/errors/redis.errors'
 import { ConnectionError } from '../../../src/libs/errors/database.errors'
+import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../src/libs/errors/backend-error'
+import { Logger } from '../../../src/libs/services/logger.service'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -111,38 +113,116 @@ describe('ErrorMiddleware', () => {
   // Log level of an expected answer
   // -----------------------------------------------------------------------
   describe('log level', () => {
-    it('logs a not-found the thrower marked as expected at warn, and still answers 404', () => {
-      const res = createMockResponse()
+    // A 4xx is the caller's mistake answered as intended; logging each at error
+    // buried the real failures (half of one session's errors were these).
+    for (const error of [
+      new BadRequestError('A connector with this name already exists'),
+      new UnauthorizedError('Wrong email or password'),
+      new NotFoundError('Document not found'),
+    ]) {
+      it(`logs a ${String(error.statusCode)} at warn, without a stack, and still answers it`, () => {
+        const res = createMockResponse()
 
-      handler(new NotFoundError('Document not found', { logLevel: 'warn' }), createMockRequest(), res, createMockNext())
+        handler(error, createMockRequest(), res, createMockNext())
 
-      expect(loggerWarnStub.calledOnce).to.be.true
-      expect(loggerErrorStub.called).to.be.false
-      expect(res.status.calledWith(404)).to.be.true
-      expect(res.json.firstCall.args[0].error.message).to.equal('Document not found')
-    })
+        expect(loggerWarnStub.calledOnce).to.be.true
+        expect(loggerErrorStub.called).to.be.false
+        expect(loggerWarnStub.firstCall.args[1].error).to.not.have.property('stack')
+        expect(res.status.calledWith(error.statusCode)).to.be.true
+        expect(res.json.firstCall.args[0].error.message).to.equal(error.message)
+      })
+    }
 
-    it('keeps logging an unmarked not-found at error', () => {
-      handler(new NotFoundError('Document not found'), createMockRequest(), createMockResponse(), createMockNext())
+    it('logs a server error at error, with its stack', () => {
+      handler(new InternalServerError('Error fetching document information'), createMockRequest(), createMockResponse(), createMockNext())
 
       expect(loggerErrorStub.calledOnce).to.be.true
       expect(loggerWarnStub.called).to.be.false
+      expect(loggerErrorStub.firstCall.args[1].error).to.have.property('stack')
     })
 
-    it('never lowers a server error, whatever it is marked', () => {
-      handler(
-        new InternalServerError('Error fetching document information', { logLevel: 'warn' }),
-        createMockRequest(), createMockResponse(), createMockNext(),
-      )
+    it('logs an error that is not ours at error', () => {
+      handler(new Error('boom'), createMockRequest(), createMockResponse(), createMockNext())
 
       expect(loggerErrorStub.calledOnce).to.be.true
-      expect(loggerWarnStub.called).to.be.false
     })
   })
 
   // -----------------------------------------------------------------------
   // BaseError handling
   // -----------------------------------------------------------------------
+  describe('body-parser rejections', () => {
+    function parserError(type: string, status: number): Error {
+      return Object.assign(new SyntaxError('Unexpected token } in JSON at position 12'), {
+        type,
+        status,
+        statusCode: status,
+        expose: true,
+      })
+    }
+
+    it('answers a malformed JSON body with 400 and does not echo the body', () => {
+      const res = createMockResponse()
+
+      handler(parserError('entity.parse.failed', 400), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(400)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.error.code).to.equal('HTTP_BAD_REQUEST')
+      expect(response.error.message).to.equal('The request body is not valid JSON.')
+    })
+
+    it('answers a body that does not match its Content-Length with 400', () => {
+      const res = createMockResponse()
+
+      handler(parserError('request.size.invalid', 400), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(400)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.error.code).to.equal('HTTP_BAD_REQUEST')
+      expect(response.error.message).to.equal('The request body does not match its Content-Length.')
+    })
+
+    it('answers a form body with too many fields with 413', () => {
+      const res = createMockResponse()
+
+      handler(parserError('parameters.too.many', 413), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(413)).to.be.true
+    })
+
+    it('answers an oversized body with 413', () => {
+      const res = createMockResponse()
+
+      handler(parserError('entity.too.large', 413), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(413)).to.be.true
+    })
+
+    for (const [type, message] of [
+      ['encoding.unsupported', 'The request body uses an unsupported content encoding.'],
+      ['charset.unsupported', 'The request body uses an unsupported character set.'],
+    ]) {
+      it(`answers ${type} with 415 and a fixed message`, () => {
+        const res = createMockResponse()
+
+        handler(parserError(type, 415), createMockRequest(), res, createMockNext())
+
+        expect(res.status.calledWith(415)).to.be.true
+        expect(res.json.firstCall.args[0].error.message).to.equal(message)
+      })
+    }
+
+    it('keeps an unexposed error with a parser-like type on the 500 path', () => {
+      const error = Object.assign(new Error('boom'), { type: 'entity.parse.failed' })
+      const res = createMockResponse()
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+    })
+  })
+
   describe('BaseError handling', () => {
     it('should respond with correct status code for BadRequestError', () => {
       const error = new BadRequestError('Invalid input')
@@ -372,6 +452,101 @@ describe('ErrorMiddleware', () => {
   })
 
   // -----------------------------------------------------------------------
+  // A call to another PipesHub service that got no answer
+  // -----------------------------------------------------------------------
+  describe('a call to another service that got no answer', () => {
+    // What Node's fetch throws when the connectors or query service is not listening yet.
+    const refused = () =>
+      Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8088'), { code: 'ECONNREFUSED' }) })
+
+    it('answers a refused connection with 503 and the shared message, not 500', () => {
+      const res = createMockResponse()
+
+      handler(refused(), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(503)).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(body.error.code).to.equal('HTTP_SERVICE_UNAVAILABLE')
+      expect(body.error.message).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
+      expect(loggerErrorStub.calledOnce).to.be.true
+    })
+
+    it('logs the cause it could not show the reader', () => {
+      const logged = sinon.stub(Logger.prototype, 'error')
+
+      handler(refused(), createMockRequest({ method: 'GET', path: '/api/v1/teams/user/teams' }), createMockResponse(), createMockNext())
+
+      const call = logged.getCalls().find((c) => (c.args[0] as string).includes('Could not reach the service'))
+      expect(call, 'cause logged').to.exist
+      expect(call!.args[0]).to.include('GET /api/v1/teams/user/teams')
+      expect(call!.args[1]).to.deep.equal({ cause: 'ECONNREFUSED' })
+    })
+
+    it('answers a host that does not resolve with 503 too', () => {
+      const res = createMockResponse()
+      const error = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }) })
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(503)).to.be.true
+    })
+
+    it("answers axios's request that got no response with 503", () => {
+      const res = createMockResponse()
+      const error = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3000'), { code: 'ECONNREFUSED', request: {} })
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(503)).to.be.true
+    })
+
+    it('still answers a certificate error with 500: retrying will not fix it', () => {
+      const res = createMockResponse()
+      const error = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('Hostname/IP does not match'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' }) })
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+    })
+
+    it('answers a timed-out call with 504', () => {
+      const res = createMockResponse()
+
+      handler(new DOMException('The operation was aborted due to timeout', 'TimeoutError'), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(504)).to.be.true
+    })
+
+    it('still answers an aborted call with 500', () => {
+      const res = createMockResponse()
+
+      handler(new DOMException('This operation was aborted', 'AbortError'), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+    })
+
+    it('keeps the cause out of the body in development', () => {
+      process.env.NODE_ENV = 'development'
+      const res = createMockResponse()
+
+      handler(refused(), createMockRequest(), res, createMockNext())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.error.metadata).to.equal(undefined)
+      expect(JSON.stringify(body)).to.not.include('ECONNREFUSED')
+    })
+
+    it('does nothing once the response has started', () => {
+      const res = createMockResponse()
+      res.headersSent = true
+
+      handler(refused(), createMockRequest(), res, createMockNext())
+
+      expect(res.status.called).to.be.false
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // Infrastructure failures
   // -----------------------------------------------------------------------
   describe('Infrastructure errors', () => {
@@ -581,8 +756,8 @@ describe('ErrorMiddleware', () => {
 
       handler(error, req, res, next)
 
-      expect(loggerErrorStub.called).to.be.true
-      const logged = JSON.stringify(loggerErrorStub.firstCall.args)
+      expect(loggerWarnStub.called).to.be.true
+      const logged = JSON.stringify(loggerWarnStub.firstCall.args)
       expect(logged).to.not.contain('secret-token')
       expect(logged).to.not.contain('session=abc')
       expect(logged).to.contain('application/json')

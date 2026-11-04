@@ -350,3 +350,12 @@ class TestNavigateView:
         assert "exists, but its content is not indexed yet (status: AUTO_INDEX_OFF)" in text
         assert "Indexed:" not in text
         assert "fetch_record" not in text
+
+
+def test_a_password_protected_record_is_described_as_such() -> None:
+    from app.utils.not_indexed import not_indexed_note
+
+    note = not_indexed_note("PASSWORD_PROTECTED")
+
+    assert "password-protected" in note
+    assert "status: PASSWORD_PROTECTED" in note

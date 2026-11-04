@@ -7,6 +7,7 @@ through the real ``StorageCleanupHelper`` holder logic.
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import logging
 from typing import Any
@@ -248,6 +249,37 @@ class TestAReplacedDocumentIsNotLostContent:
         world.blob.get_document_ids_by_virtual_record_ids = real
         await _run_until_idle(world.heal())
         assert world.reindexed() == ["a1"]
+
+
+    @pytest.mark.parametrize("fault", ["exception", "route_unavailable"])
+    async def test_a_failed_second_missing_check_re_indexes_nothing_and_the_page_is_retried(
+        self, world, fault: str
+    ) -> None:
+        world.record("a1", "conn-a", "v-moved", doc="d-old", exists=False)
+        world.existing.add("d-new")
+        world.blob.replaced_after_first_read["v-moved"] = "d-new"
+        heal = world.heal()
+        real = world.helper.find_missing_documents
+        calls = 0
+
+        async def flaky(org_id, ids) -> list[str]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                if fault == "exception":
+                    raise RuntimeError("storage 503")
+                raise MissingDocumentsRouteUnavailable(404)
+            return await real(org_id, ids)
+
+        world.helper.find_missing_documents = flaky
+        with contextlib.suppress(RuntimeError):
+            await heal.tick()
+
+        assert world.events == [], "re-index published on a transient failure"
+        assert world.graph.apps["conn-a"].get(StoredContentHealState.AFTER_KEY) is None
+        world.helper.find_missing_documents = real
+        await _run_until_idle(world.heal())
+        assert world.events == []
 
 
 class TestMissingContentIsRebuilt:

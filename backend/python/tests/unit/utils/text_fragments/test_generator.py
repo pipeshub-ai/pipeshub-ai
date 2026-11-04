@@ -114,6 +114,13 @@ class TestBuildDirective:
         directive = generator.build_directive("a\n\nreal content block here")
         assert directive == TextDirective(start="real content block here")
 
+    @pytest.mark.parametrize("contraction", ["don't", "don’t"])
+    def test_mixed_script_range_does_not_end_inside_contraction(self, contraction: str) -> None:
+        snippet = f"日,本,語,{contraction} words here with enough content and trailing units 東京大阪京都札幌"
+        directive = _directive_of(generator.build_url(BASE, snippet, SourceFormat.PLAIN))
+        assert directive.start.endswith(contraction)
+        assert directive.end is not None
+
     def test_cjk_terms_are_never_cut_inside_a_run(self) -> None:
         sentence = "日本語のテキストは単語の間に空白がありません"
         directive = generator.build_directive((sentence + "。") * 4)

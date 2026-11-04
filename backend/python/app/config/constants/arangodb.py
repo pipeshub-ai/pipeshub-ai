@@ -231,6 +231,7 @@ class CollectionNames(Enum):
     ARTIFACTS = "artifacts"
     CODE_FILES = "codeFiles"
     SQL_TABLES = "sqlTables"
+    SQL_COLUMNS = "sqlColumns"
     SQL_VIEWS = "sqlViews"
 
     # Users and groups
@@ -470,6 +471,8 @@ class MimeTypes(Enum):
     SHELLSCRIPT = "text/x-shellscript"
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
+    SQL_COLUMN = "application/vnd.sql.column"
+
 
 # Every mimeType a folder record has been written with. Folders are written as
 # MimeTypes.FOLDER only; readers accept the older values too, so a folder the
@@ -663,6 +666,9 @@ class ProgressStatus(Enum):
     QUEUED = "QUEUED"
     # A stage that does not apply to this record (policy off, nothing to process).
     SKIPPED = "SKIPPED"
+    # The file needs a password to open. Terminal: only a new version of the
+    # file (or, later, a password) changes the outcome, so nothing retries it.
+    PASSWORD_PROTECTED = "PASSWORD_PROTECTED"
 
 
 class DeleteSource(str, Enum):
@@ -822,6 +828,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "CODE_FILE": CollectionNames.CODE_FILES.value,
     "PULL_REQUEST":CollectionNames.PULLREQUESTS.value,
     "SQL_TABLE": CollectionNames.SQL_TABLES.value,
+    "SQL_COLUMN": CollectionNames.SQL_COLUMNS.value,
     "SQL_VIEW": CollectionNames.SQL_VIEWS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

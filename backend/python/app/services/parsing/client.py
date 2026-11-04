@@ -22,6 +22,7 @@ from docling_core.types.doc.document import DoclingDocument
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from app.config.constants.service import TokenScopes
+from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.models.blocks import BlocksContainer
 from app.services.base_client import (
     BaseServiceClient,
@@ -208,6 +209,12 @@ class ParsingClient(BaseServiceClient):
                 code = ParseErrorCode(code_str)
             except ValueError:
                 code = ParseErrorCode.PARSE_FAILED
+            if code == ParseErrorCode.PASSWORD_REQUIRED:
+                # The typed error the legacy pipeline raises for the same file.
+                raise PasswordProtectedError(
+                    error.get("message", "The file is password-protected"),
+                    details=error.get("details", {}),
+                )
             raise ParsingClientError(
                 code=code,
                 message=error.get("message", "Parsing failed"),

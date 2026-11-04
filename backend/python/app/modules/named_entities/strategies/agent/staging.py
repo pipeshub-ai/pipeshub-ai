@@ -17,6 +17,11 @@ class StagingSet:
         self.rejected += 1
         self.rejected_reasons[reason] = self.rejected_reasons.get(reason, 0) + 1
 
+    def drop(self, reason: str) -> None:
+        """Counted by reason, but not a rejection the model can correct: it
+        earns no feedback turn and does not hold back a clean finish."""
+        self.rejected_reasons[reason] = self.rejected_reasons.get(reason, 0) + 1
+
     def upsert(self, mention: RawMention) -> bool:
         key = (mention.block_index, mention.char_start, mention.char_end, mention.kind.value)
         is_new = key not in self._items

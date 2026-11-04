@@ -190,7 +190,7 @@ class Linear:
     @tool(
         path="/tools/linear/get_teams",
         short_description="List Linear teams",
-        description="Get all teams in the Linear workspace with optional pagination.",
+        description="Get all teams in the Linear workspace with optional pagination. Each team lists all its members.",
         parameters=[
             ToolParameter(
                 name="first",
@@ -216,13 +216,39 @@ class Linear:
         try:
             response = await self.client.teams(first=first, after=after)
 
-            if response.success:
-                return True, json.dumps({"data": response.data})
-            else:
+            if not response.success:
                 return False, json.dumps({"error": response.message})
+            for team in ((response.data or {}).get("teams") or {}).get("nodes") or []:
+                error = await self._read_all_members(team)
+                if error:
+                    return False, json.dumps({"error": error})
+            return True, json.dumps({"data": response.data})
         except Exception as e:
             logger.error(f"Error getting teams: {e}")
             return False, json.dumps({"error": str(e)})
+
+    async def _read_all_members(self, team: dict) -> Optional[str]:
+        """Add the members ``teams`` leaves out (it lists 10 per team). Returns an error, or None."""
+        members = team.get("members") or {}
+        nodes = list(members.get("nodes") or [])
+        info = members.get("pageInfo") or {}
+        cursor = None
+        while info.get("hasNextPage"):
+            if not info.get("endCursor") or info["endCursor"] == cursor:
+                return f"Linear reported more members of team {team.get('id')} without a cursor to read them"
+            cursor = info["endCursor"]
+            page = await self.client.execute_operation(
+                "teamMembers", {"id": team.get("id"), "first": 100, "after": cursor})
+            if not page.success:
+                return page.message or f"Failed to read the members of team {team.get('id')}"
+            more = ((page.data or {}).get("team") or {}).get("members")
+            if more is None:
+                return f"Linear returned no members page for team {team.get('id')}"
+            nodes.extend(more.get("nodes") or [])
+            info = more.get("pageInfo") or {}
+        if members:
+            team["members"] = {"nodes": nodes, "pageInfo": info}
+        return None
 
     @tool(
         path="/tools/linear/get_team",

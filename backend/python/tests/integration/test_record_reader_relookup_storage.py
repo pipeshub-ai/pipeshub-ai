@@ -154,7 +154,7 @@ async def test_t12_control_a_mapped_document_that_is_gone_is_still_a_404(
         assert isinstance(raised.value, StorageDocumentNotFoundError)
 
 
-@pytest.mark.skipif(STORAGE_TYPE == "local", reason="local storage serves the record inline: no signed URL")
+@pytest.mark.skipif(STORAGE_TYPE == "local", reason="not applicable on local: local storage serves the record inline: no signed URL")
 @pytest.mark.parametrize("size_known", [True, False], ids=["single", "ranged"])
 async def test_t20_purge_between_signing_and_fetching(
     blob: BlobStorage, graph: MappingGraph, size_known: bool
@@ -173,7 +173,7 @@ async def test_t20_purge_between_signing_and_fetching(
     assert graph.reads == 1
 
 
-@pytest.mark.skipif(STORAGE_TYPE == "local", reason="local storage serves the record inline: no signed URL")
+@pytest.mark.skipif(STORAGE_TYPE == "local", reason="not applicable on local: local storage serves the record inline: no signed URL")
 @pytest.mark.parametrize("size_known", [True, False], ids=["single", "ranged"])
 async def test_t20_control_the_mapped_document_is_the_one_that_failed(
     blob: BlobStorage, graph: MappingGraph, size_known: bool

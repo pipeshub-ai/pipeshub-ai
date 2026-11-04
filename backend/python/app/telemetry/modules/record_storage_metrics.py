@@ -33,7 +33,9 @@ def record_artifact_write(outcome: str) -> None:
 # revision on the mapping), stale (the stored record holds another revision, or
 # the mapping does not say which), missing (a file or the set is gone), too_large,
 # integrity (a file's size or sha256 is not the manifest's), invalid (a manifest
-# or file this reader cannot use), failed (storage or another error).
+# or file this reader cannot use), stale_sidecar (the classification the mapping names is
+# not stored, or is not of this stored write; kept apart from stale), failed (storage or
+# another error).
 ARTIFACT_READS = METRICS_BACKEND.counter(
     "pipeshub_record_artifact_reads_total",
     "Record reads from artifact sets, by outcome",
@@ -68,7 +70,9 @@ def record_artifact_shadow_read(outcome: str, reason: str | None = None) -> None
 
 
 # kind=revision: artifact-set revisions the retention sweep looked at, outcome
-# deleted, kept or failed; kind=virtual_record, outcome=skipped_trashed: virtual
+# deleted, kept, unfenced (storage does not report the delete fence), changed (storage refused the delete: written again since it
+# was listed), gone (already removed when the delete arrived) or failed;
+# kind=virtual_record, outcome=skipped_trashed: virtual
 # records left whole because a record holding them is in the trash, or
 # skipped_busy: left for the next pass because a holder's record lease was held;
 # kind=stage_state, outcome=deleted: stage states of revisions no record is on.
@@ -82,6 +86,20 @@ RETENTION = METRICS_BACKEND.counter(
 def record_retention(kind: str, outcome: str, count: int = 1) -> None:
     if count:
         RETENTION.inc(kind, outcome, value=float(count))
+
+
+# job: the recovery pass (queued_sweep, stranded_republish, orphan_mapping_sweep, duplicate_reconcile, named_entity_persist_retry);
+# outcome: failed (one organisation's part failed; the later ones ran) or no_org_row (a retry row naming no organisation, cleared).
+RECOVERY_ORG_PASS = METRICS_BACKEND.counter(
+    "pipeshub_recovery_org_pass_total",
+    "Recovery passes that failed for one organisation, and retry rows with no organisation that were cleared, by job and outcome",
+    ["job", "outcome"],
+)
+
+
+def record_recovery_org_pass(job: str, outcome: str, count: int = 1) -> None:
+    if count:
+        RECOVERY_ORG_PASS.inc(job, outcome, value=float(count))
 
 
 # trigger: not_found (the gateway answered 404), signed_url (a 403 or 404 on a URL
@@ -99,3 +117,61 @@ RECORD_READER_RELOOKUP = METRICS_BACKEND.counter(
 
 def record_reader_relookup(outcome: str, trigger: str) -> None:
     RECORD_READER_RELOOKUP.inc(outcome, trigger)
+
+
+# outcome: switched (the mapping now names the writer's document), conflict (the
+# compare-and-set found the mapping moved: the write re-reads once, then is
+# superseded), superseded (the write gave up: its document is a stray),
+# record_gone (the record was deleted before the switch), deadline (the writer took
+# longer than its deadline), retired_overflow (an entry was dropped from a full
+# ``retired`` list), invalidated (an in-place write marked the stored run unservable
+# before its upload), invalidation_skipped (it was already unservable).
+STORE_SWITCH = METRICS_BACKEND.counter(
+    "pipeshub_record_store_switch_total",
+    "Stored-record writes switching the virtual record's mapping, by layout and outcome",
+    ["layout", "outcome"],
+)
+
+
+def record_store_switch(layout: str, outcome: str, count: int = 1) -> None:
+    if count:
+        STORE_SWITCH.inc(layout, outcome, value=float(count))
+
+
+# outcome: marked, gone (no such document, nothing to fence), failed (the mark could not be
+# set; the switch goes on), unavailable (the storage service has no retire route: no write fence).
+RETIRE_MARK = METRICS_BACKEND.counter(
+    "pipeshub_record_retire_mark_total",
+    "Retire marks set on replaced stored documents, by outcome",
+    ["outcome"],
+)
+
+
+def record_retire_mark(outcome: str) -> None:
+    RETIRE_MARK.inc(outcome)
+
+
+# outcome: written, current (nothing to write), no_union (the scope projects no property), no_stamp (the
+# record has no usable source stamp), failed:<reason> (values unreadable or untrusted; nothing written),
+# fenced_by_generation / superseded / content_changed / contention (a newer writer or version won; the
+# sweep converges the record), error (an unexpected exception, swallowed so indexing completes).
+PROPERTY_PROJECTIONS = METRICS_BACKEND.counter(
+    "pipeshub_record_property_projections_total",
+    "Record property projections written at index time, by outcome",
+    ["outcome"],
+)
+
+
+def record_property_projection(outcome: str) -> None:
+    PROPERTY_PROJECTIONS.inc(outcome)
+
+
+PROPERTY_VALUES_DROPPED = METRICS_BACKEND.counter(
+    "pipeshub_record_property_values_dropped_total",
+    "Property values not projected because they do not fit their property's stored form",
+    [],
+)
+
+
+def record_property_value_dropped() -> None:
+    PROPERTY_VALUES_DROPPED.inc()

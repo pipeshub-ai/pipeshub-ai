@@ -3,7 +3,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge } from '@radix-ui/themes';
-import type { McpMyServerEntry } from './types';
+import { isPersonalMcpInstance, type McpMyServerEntry } from './types';
 
 /** One answer, everywhere, to "can I use this server right now, and if not, what fixes it?" */
 export type McpConnectionState =
@@ -16,6 +16,9 @@ export type McpConnectionState =
   | 'waiting_for_admin'
   /** The same, seen by an administrator, who can fix it. */
   | 'shared_credential_missing'
+  /** The server asks for a sign-in but is set to No authentication: whoever can edit it picks
+   * the auth mode it needs (an administrator, or the owner of a personal server). */
+  | 'needs_auth_mode'
   /** This deployment's URL guard or local-command policy refuses it: an administrator's fix. */
   | 'blocked'
   /** Connected, but the server answered with an error or couldn't be reached. */
@@ -25,7 +28,7 @@ export type McpConnectionState =
 
 type StateEntry = Pick<
   McpMyServerEntry,
-  'authMode' | 'useAdminAuth' | 'isAuthenticated' | 'toolsError' | 'toolsErrorCode' | 'toolsTimedOut'
+  'authMode' | 'useAdminAuth' | 'isAuthenticated' | 'toolsError' | 'toolsErrorCode' | 'toolsTimedOut' | 'scope'
 >;
 
 /** Mirrors the backend's `uses_shared_credential`: OAuth is always per person, even when marked shared. */
@@ -44,6 +47,8 @@ export function mcpConnectionState(entry: StateEntry, { isAdmin = false }: { isA
     case 'unauthorized':
     // Signing in again asks for the scopes the server said it needs.
     case 'needs_permission':
+      // There's nothing to sign in with: a token typed in would be refused.
+      if (entry.authMode === 'none') return isAdmin || isPersonalMcpInstance(entry) ? 'needs_auth_mode' : 'waiting_for_admin';
       // A shared credential that stopped working is the administrator's to replace.
       if (shared) return isAdmin ? 'shared_credential_missing' : 'waiting_for_admin';
       return 'needs_reconnect';
@@ -69,6 +74,7 @@ const BADGES: Record<McpConnectionState, { color: 'green' | 'amber' | 'red' | 'g
   needs_reconnect: { color: 'amber', key: 'workspace.mcpServers.status.reconnectNeeded' },
   waiting_for_admin: { color: 'gray', key: 'workspace.mcpServers.status.waitingForAdmin' },
   shared_credential_missing: { color: 'amber', key: 'workspace.mcpServers.status.sharedCredentialMissing' },
+  needs_auth_mode: { color: 'amber', key: 'workspace.mcpServers.status.needsAuthMode' },
   blocked: { color: 'red', key: 'workspace.mcpServers.status.blocked' },
   unreachable: { color: 'red', key: 'workspace.mcpServers.status.unreachable' },
   slow: { color: 'gray', key: 'workspace.mcpServers.status.slow' },

@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.blob_storage import BlobStorage, StorageDocumentNotFoundError
 from app.utils.storage_path import sanitize_path_segment
 
 
@@ -22,11 +22,26 @@ from app.utils.storage_path import sanitize_path_segment
 
 
 def _make_bs(*, config_service=None, graph_provider=None):
-    return BlobStorage(
+    bs = BlobStorage(
         logger=MagicMock(),
         config_service=config_service or AsyncMock(),
         graph_provider=graph_provider or AsyncMock(),
     )
+    # The seams of a stored write: the mapping node, its switch, the record re-check, the retire mark.
+    bs._mapping_node = AsyncMock(return_value=None)
+    bs._switch_mapping = AsyncMock(return_value=True)
+    bs._record_still_exists = AsyncMock(return_value=True)
+    bs._retire_document = AsyncMock()
+    bs._get_document_row = AsyncMock(return_value=None)
+    return bs
+
+
+def _node(document_id) -> dict:
+    """A mapping node whose last stored write was in place."""
+    return {
+        "id": "vr-1", "documentId": document_id, "record_doc_id": document_id,
+        "storedRun": "none:previous", "switchSeq": 3,
+    }
 
 
 def _configure_auth(bs, storage_type="local"):
@@ -154,6 +169,7 @@ class TestApplyUsesOverride:
         record.model_dump = MagicMock(return_value={"id": "rec-1"})
         ctx = MagicMock()
         ctx.record = record
+        ctx.settings = {}
         return ctx
 
     @pytest.mark.asyncio
@@ -164,11 +180,11 @@ class TestApplyUsesOverride:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-existing"}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-existing"))
         bs._build_hierarchical_storage_path = AsyncMock(return_value="records/conn-1/Finance/doc.pdf")
         bs._get_current_document_path = AsyncMock(return_value="org-1/PipesHub/records/vr-1")
         bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
         bs.save_record_to_storage = AsyncMock(return_value=("doc-new", 200))
-        bs.store_virtual_record_mapping = AsyncMock()
         bs._clean_empty_values = MagicMock(side_effect=lambda x: x)
 
         ctx = self._make_transform_ctx()
@@ -179,16 +195,16 @@ class TestApplyUsesOverride:
 
     @pytest.mark.asyncio
     async def test_existing_doc_buffer_failure_falls_back_to_new_upload(self):
-        """When buffer override fails, apply() falls back to creating a new
+        """When the mapped document is gone (404), apply() creates a new
         document at the hierarchical storage path."""
         bs = _make_bs()
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-existing"}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-existing"))
         bs._build_hierarchical_storage_path = AsyncMock(return_value="records/conn-1/Finance/doc.pdf")
-        bs.update_record_buffer = AsyncMock(side_effect=Exception("buffer 404"))
+        bs.update_record_buffer = AsyncMock(side_effect=StorageDocumentNotFoundError("buffer 404"))
         bs.save_record_to_storage = AsyncMock(return_value=("doc-new", 200))
-        bs.store_virtual_record_mapping = AsyncMock()
         bs._clean_empty_values = MagicMock(side_effect=lambda x: x)
 
         ctx = self._make_transform_ctx()
@@ -208,11 +224,11 @@ class TestApplyUsesOverride:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-existing"}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-existing"))
         bs._build_hierarchical_storage_path = AsyncMock(return_value="records/conn-1/Finance/doc.pdf")
         bs._get_current_document_path = AsyncMock(return_value="org-1/PipesHub/records/vr-1")
         bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
         bs.save_record_to_storage = AsyncMock()
-        bs.store_virtual_record_mapping = AsyncMock()
         bs._clean_empty_values = MagicMock(side_effect=lambda x: x)
 
         ctx = self._make_transform_ctx()
@@ -232,7 +248,6 @@ class TestApplyUsesOverride:
         bs._build_hierarchical_storage_path = AsyncMock(return_value=expected_path)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-new", 200))
         bs.update_record_buffer = AsyncMock()
-        bs.store_virtual_record_mapping = AsyncMock()
         bs._clean_empty_values = MagicMock(side_effect=lambda x: x)
 
         ctx = self._make_transform_ctx()
@@ -249,12 +264,12 @@ class TestApplyUsesOverride:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-123"}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-123"))
         bs._build_hierarchical_storage_path = AsyncMock(return_value="records/conn-1")
         bs._get_current_document_path = AsyncMock(return_value="org-1/PipesHub/records/conn-1")
         bs.save_record_to_storage = AsyncMock(return_value=("doc-new", 200))
         bs.update_record_buffer = AsyncMock(return_value=("doc-123", 50))
         bs.upload_next_version = AsyncMock()
-        bs.store_virtual_record_mapping = AsyncMock()
         bs._clean_empty_values = MagicMock(side_effect=lambda x: x)
 
         ctx = self._make_transform_ctx()

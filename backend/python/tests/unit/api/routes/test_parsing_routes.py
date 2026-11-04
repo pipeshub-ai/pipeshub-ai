@@ -277,6 +277,51 @@ def test_parse_endpoint_unexpected_exception(caplog: pytest.LogCaptureFixture) -
     assert any(r.exc_info and "Boom" in str(r.exc_info[1]) for r in caplog.records)
 
 
+def _post_pdf_to_parser_raising(exc: Exception) -> Response:
+    registry = MagicMock(spec=ParserRegistry)
+    mock_parser = MagicMock()
+    mock_parser.parse = AsyncMock(side_effect=exc)
+    registry.resolve = MagicMock(return_value=mock_parser)
+    client = TestClient(_build_app(registry))
+    return client.post(
+        "/api/v1/parse",
+        files={"file": ("scan.pdf", b"data", "application/pdf")},
+        data={"mime_type": "application/pdf", "extension": "pdf", "provider": "default"},
+    )
+
+
+def test_no_model_that_reads_images_is_a_422_carrying_the_reason_to_store() -> None:
+    """A scanned PDF with no multimodal model set up fails the same way on
+    every attempt. As a 500 the indexer retried it as an outage and then told
+    the person of a temporary problem instead of what to fix."""
+    from app.exceptions.indexing_exceptions import MultimodalModelNotConfiguredError
+    from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
+
+    response = _post_pdf_to_parser_raising(
+        MultimodalModelNotConfiguredError(
+            "No multimodal LLM found in configuration.", details={"required": "multimodal LLM"}
+        )
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "PARSE_FAILED"
+    assert error["message"] == SCANNED_DOCUMENT_NEEDS_OCR
+    assert error["details"] == {"required": "multimodal LLM"}
+
+
+def test_any_other_document_processing_error_is_still_a_500() -> None:
+    """Reading the AI settings can fail during an outage; that stays retryable."""
+    from app.exceptions.indexing_exceptions import DocumentProcessingError
+
+    response = _post_pdf_to_parser_raising(
+        DocumentProcessingError("Failed to get multimodal LLM: store unavailable")
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["message"] == "Unexpected error while parsing the document"
+
+
 # ---------------------------------------------------------------------------
 # GET /api/v1/parse/providers
 # ---------------------------------------------------------------------------
@@ -651,8 +696,21 @@ async def test_a_parse_already_braked_in_this_memory_is_not_braked_again(
     monkeypatch.setattr(memory_domain_module, "memory_domain_id", lambda: "dom-1")
 
     release_event = asyncio.Event()
+    entered: list[asyncio.Event] = [asyncio.Event(), asyncio.Event()]
+    started = 0
+
+    async def _parse(*_args: object, **_kwargs: object) -> ParseResult:
+        # Holds its slot until released, so no wall-clock hold can expire under load.
+        nonlocal started
+        entered[started].set()
+        started += 1
+        await release_event.wait()
+        return _ok_result()
+
+    parser = MagicMock()
+    parser.parse = _parse
     registry = MagicMock(spec=ParserRegistry)
-    registry.resolve = MagicMock(return_value=_slow_parser(release_event, hold_seconds=1.0))
+    registry.resolve = MagicMock(return_value=parser)
     app = _build_app(registry, heavy_limit=4)
     # As parsing_main installs it: it reads the stamp an upstream service sent.
     app.add_middleware(RequestContextMiddleware)
@@ -662,17 +720,34 @@ async def test_a_parse_already_braked_in_this_memory_is_not_braked_again(
     form = {"mime_type": "application/pdf", "extension": "pdf", "provider": "default"}
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        first = asyncio.create_task(client.post("/api/v1/parse", files=pdf, data=form))
-        await asyncio.sleep(0.05)  # the first request holds the one braked slot
-        braked_elsewhere = await client.post(
-            "/api/v1/parse", files=pdf, data=form, headers={"x-pipeshub-admitted-in": "dom-2"}
-        )
-        braked_here = asyncio.create_task(
-            client.post("/api/v1/parse", files=pdf, data=form, headers={"x-pipeshub-admitted-in": "dom-1"})
-        )
-        await asyncio.sleep(0.2)
-        release_event.set()
-        first_response, same_memory_response = await asyncio.gather(first, braked_here)
+        tasks: list[asyncio.Task] = []
+
+        def post(headers: dict[str, str] | None = None) -> asyncio.Task:
+            task = asyncio.create_task(client.post("/api/v1/parse", files=pdf, data=form, headers=headers))
+            tasks.append(task)
+            return task
+
+        try:
+            first = post()
+            await asyncio.wait_for(entered[0].wait(), timeout=30)  # the first request holds the one braked slot
+            elsewhere = post({"x-pipeshub-admitted-in": "dom-2"})
+            # Rejected it ends at once; wrongly admitted it would sit in the parser, so the wait is bounded.
+            await asyncio.wait({elsewhere}, timeout=10)
+            assert elsewhere.done(), "a parse braked in another memory was admitted"
+            braked_here = post({"x-pipeshub-admitted-in": "dom-1"})
+            # Admitted past the brake it enters the parser; if it queued instead it ends as a 429.
+            entry = asyncio.create_task(entered[1].wait())
+            tasks.append(entry)
+            done, _ = await asyncio.wait({entry, braked_here}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+            assert entry in done, "a parse braked in this memory was not admitted"
+            release_event.set()
+            first_response, same_memory_response = await asyncio.gather(first, braked_here)
+            braked_elsewhere = elsewhere.result()
+        finally:
+            release_event.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     assert first_response.status_code == 200
     assert braked_elsewhere.status_code == 429

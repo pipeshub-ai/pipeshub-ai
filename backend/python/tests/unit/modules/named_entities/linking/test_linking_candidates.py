@@ -36,12 +36,33 @@ def _node(kind: str, key: str, name: str) -> dict[str, Any]:
 
 
 class _Graph:
-    def __init__(self, nodes: list[dict[str, Any]]) -> None:
+    def __init__(self, nodes: list[dict[str, Any]], spellings: dict[str, list[str]] | None = None) -> None:
         self.nodes = {node["id"]: node for node in nodes}
         self.prefix_calls: list[list[tuple[str, str]]] = []
+        # How readable records spell each node; by default as it is stored.
+        self.spellings = spellings
+
+    async def get_named_entity_mentions_in_records(
+        self, org_id: str, entity_ids: list[str], record_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        spelled = self.spellings if self.spellings is not None else {
+            i: [self.nodes[i]["name"]] for i in entity_ids if i in self.nodes
+        }
+        return [{"entityId": i, "recordId": r, "extractedNames": spelled.get(i, [])}
+                for i in entity_ids for r in record_ids]
 
     async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict[str, Any]]:
         return [self.nodes[i] for i in ids if i in self.nodes]
+
+    async def find_named_entities_by_alias(self, org_id: str, pairs, limit: int = 3) -> list[dict[str, Any]]:
+        rows = []
+        for kind, key in pairs:
+            hits = [
+                n for n in self.nodes.values()
+                if n["kind"] == kind and key in (n.get("normalizedAliases") or []) and n["normKey"] != key
+            ]
+            rows += [{**n, "key": key} for n in hits[:limit]]
+        return rows
 
     async def find_named_entities_by_key_prefix(self, org_id: str, prefixes, limit: int) -> list[dict[str, Any]]:
         self.prefix_calls.append(list(prefixes))
@@ -136,7 +157,7 @@ async def test_dense_runs_only_for_embedded_kinds_and_never_repeats_an_exact_can
         return [_hit(acme["id"], "Acme"), _hit("other", "Acme Labs")]
 
     _, found = await _find([acme], {acme["id"]}, [{"name": "Acme", "kind": "organization"}, {"name": "Sam Lee", "kind": "person"}], dense=dense)
-    assert calls == [("Acme", ["organization"])]
+    assert calls == [("Acme", ["product", "organization"])]
     assert [(c.name, c.source) for c in found.per_mention[0].candidates] == [
         ("Acme", CandidateSource.EXACT), ("Acme Labs", CandidateSource.DENSE),
     ]
@@ -203,3 +224,235 @@ async def test_an_exact_node_does_not_push_a_longer_name_out_of_the_cap() -> Non
     assert entry.candidates[0].source is CandidateSource.EXACT
     assert [c.name for c in entry.candidates[1:]] == [f"Sam {c}" for c in "abcde"]
     assert entry.ambiguous is False
+
+
+def _people(*names: str) -> list[dict[str, Any]]:
+    return [_node("person", f"name:person:{n.lower()}", n) for n in names]
+
+
+@pytest.mark.asyncio
+async def test_a_misspelled_surname_finds_the_person_by_a_near_spelling() -> None:
+    target, other, longer = _people("Maya Castellanos", "Maya Chen", "Maya Castellanos Ruiz")
+    graph, found = await _find(
+        [target, other, longer], {target["id"], other["id"], longer["id"]},
+        [{"name": "Maya Castelanos", "kind": "person"}],
+    )
+    (entry,) = found.per_mention
+    assert [(c.name, c.source) for c in entry.candidates] == [("Maya Castellanos", CandidateSource.FUZZY)]
+    # The first word's rows are read in the same call as the prefixes.
+    assert graph.prefix_calls == [[("person", "name:person:maya"), ("person", "name:person:maya castelanos")]]
+
+
+@pytest.mark.asyncio
+async def test_only_near_spellings_are_access_checked() -> None:
+    target, *others = _people("Maya Castellanos", "Maya Chen", "Maya Lopez")
+    graph = _Graph([target, *others])
+    probe = _probe({n["id"] for n in [target, *others]})
+    await CandidateFinder(graph, CONTEXT, dense=None, probe=probe).find(
+        parse_mentions([{"name": "Maya Castelanos", "kind": "person"}]).mentions,
+    )
+    assert [entity_id for entity_id, _ in probe.seen[0]] == [target["id"]]
+
+
+@pytest.mark.asyncio
+async def test_many_people_sharing_the_first_word_do_not_make_a_misspelling_ambiguous() -> None:
+    crowd = _people(*(f"Maya Person{i}" for i in range(MAX_CANDIDATES + 2)), "Maya Castellanos")
+    _, found = await _find(crowd, {n["id"] for n in crowd}, [{"name": "Maya Castelanos", "kind": "person"}])
+    (entry,) = found.per_mention
+    assert not entry.ambiguous and [c.name for c in entry.candidates] == ["Maya Castellanos"]
+
+
+@pytest.mark.asyncio
+async def test_a_one_word_name_shares_the_first_word_rows_as_plain_prefixes() -> None:
+    target, other = _people("Maya Castellanos", "Maya Chen")
+    graph, found = await _find(
+        [target, other], {target["id"], other["id"]},
+        [{"name": "Maya", "kind": "person"}, {"name": "Maya Castelanos", "kind": "person"}],
+    )
+    assert [c.name for c in found.per_mention[0].candidates] == ["Maya Castellanos", "Maya Chen"]
+    assert all(c.source is CandidateSource.PREFIX for c in found.per_mention[0].candidates)
+    assert [c.name for c in found.per_mention[1].candidates] == ["Maya Castellanos"]
+    assert len(graph.prefix_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("asked", "stored", "found"), [
+    ("Anna Berg", "Anna Borg", False),
+    ("John Smith", "John Smyth", False),
+    ("Maya Castelanos", "Maya Castellanos", True),
+])
+async def test_a_near_spelling_compares_the_surname_only(asked: str, stored: str, found: bool) -> None:
+    (node,) = _people(stored)
+    _, result = await _find([node], {node["id"]}, [{"name": asked, "kind": "person"}])
+    assert bool(result.per_mention[0].candidates) is found
+
+
+@pytest.mark.asyncio
+async def test_a_correct_full_name_is_exact_and_organizations_get_no_fuzzy_lookup() -> None:
+    (maya,) = _people("Maya Castellanos")
+    graph, found = await _find([maya], {maya["id"]}, [
+        {"name": "Maya Castellanos", "kind": "person"}, {"name": "Acme Robotics", "kind": "organization"},
+    ])
+    assert [(c.name, c.source) for c in found.per_mention[0].candidates] == [("Maya Castellanos", CandidateSource.EXACT)]
+    assert ("organization", "name:organization:acme") not in graph.prefix_calls[0]
+
+
+
+@pytest.mark.asyncio
+async def test_related_kind_prefixes_fill_the_cap_but_never_make_a_name_ambiguous() -> None:
+    products = [_node("product", f"name:product:halcyon {w}", f"Halcyon {w}") for w in ("ledger", "pay", "books")]
+    companies = [_node("organization", f"name:organization:halcyon {w}", f"Halcyon {w}") for w in ("foods", "labs", "group", "capital")]
+    nodes = [*products, *companies]
+    _, found = await _find(nodes, {n["id"] for n in nodes}, [{"name": "Halcyon", "kind": "product"}])
+    (entry,) = found.per_mention
+    assert not entry.ambiguous
+    names = [c.name for c in entry.candidates]
+    assert names[:3] == ["Halcyon books", "Halcyon ledger", "Halcyon pay"] and len(names) == MAX_CANDIDATES
+    assert entry.more_related
+
+
+@pytest.mark.asyncio
+async def test_related_kind_prefixes_that_fit_the_cap_report_nothing_cut() -> None:
+    nodes = [
+        _node("product", "name:product:halcyon ledger", "Halcyon ledger"),
+        _node("organization", "name:organization:halcyon foods", "Halcyon foods"),
+    ]
+    _, found = await _find(nodes, {n["id"] for n in nodes}, [{"name": "Halcyon", "kind": "product"}])
+    (entry,) = found.per_mention
+    assert len(entry.candidates) == 2 and not entry.more_related
+
+
+@pytest.mark.asyncio
+async def test_a_product_hint_reaches_a_name_filed_as_an_organization() -> None:
+    company = _node("organization", "name:organization:halcyon ledger", "Halcyon Ledger")
+    _, found = await _find([company], {company["id"]}, [{"name": "Halcyon Ledger", "kind": "product"}])
+    assert [(c.name, c.kind) for c in found.per_mention[0].candidates] == [("Halcyon Ledger", "organization")]
+
+
+# --- learned aliases -------------------------------------------------------------------
+
+_FULL_KEY = "name:organization:pinecrest hospitality"
+_SHORT_KEY = "name:organization:pinecrest"
+
+
+def _aliased(node: dict[str, Any], *aliases: str) -> dict[str, Any]:
+    return {**node, "normalizedAliases": [node["normKey"], *aliases]}
+
+
+@pytest.mark.asyncio
+async def test_a_short_name_reaches_the_one_company_it_is_a_learned_alias_of() -> None:
+    full = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "Pinecrest")
+    _, found = await _find([full, short], {full["id"], short["id"]}, [{"name": "Pinecrest", "kind": "organization"}])
+    sources = {c.name: c.source for c in found.per_mention[0].candidates}
+    assert sources == {"Pinecrest": CandidateSource.EXACT, "Pinecrest Hospitality": CandidateSource.ALIAS}
+
+
+@pytest.mark.asyncio
+async def test_a_full_name_reaches_its_learned_short_forms_node() -> None:
+    full = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "Pinecrest")
+    _, found = await _find([full, short], {full["id"], short["id"]}, [{"name": "Pinecrest Hospitality", "kind": "organization"}])
+    sources = {c.name: c.source for c in found.per_mention[0].candidates}
+    assert sources == {"Pinecrest Hospitality": CandidateSource.EXACT, "Pinecrest": CandidateSource.ALIAS}
+
+
+@pytest.mark.asyncio
+async def test_an_alias_two_companies_carry_ties_neither() -> None:
+    hospitality = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    bank = _aliased(_node("organization", "name:organization:pinecrest bank", "Pinecrest Bank"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "Pinecrest")
+    readable = {n["id"] for n in (hospitality, bank, short)}
+    _, from_short = await _find([hospitality, bank, short], readable, [{"name": "Pinecrest", "kind": "organization"}])
+    _, from_full = await _find([hospitality, bank, short], readable, [{"name": "Pinecrest Hospitality", "kind": "organization"}])
+    assert not any(c.source is CandidateSource.ALIAS for c in from_short.per_mention[0].candidates)
+    assert [c.name for c in from_full.per_mention[0].candidates if c.source is CandidateSource.ALIAS] == []
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_alias_node_is_no_candidate() -> None:
+    full = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "Pinecrest")
+    _, found = await _find([full, short], {short["id"]}, [{"name": "Pinecrest", "kind": "organization"}])
+    assert [c.name for c in found.per_mention[0].candidates] == ["Pinecrest"]
+
+
+@pytest.mark.asyncio
+async def test_a_persons_name_never_reaches_by_alias() -> None:
+    maya = _aliased(_node("person", "name:person:maya castellanos", "Maya Castellanos"), "name:person:maya")
+    _, found = await _find([maya], {maya["id"]}, [{"name": "Maya", "kind": "person"}])
+    assert not any(c.source is CandidateSource.ALIAS for c in found.per_mention[0].candidates)
+
+
+@pytest.mark.asyncio
+async def test_alias_linking_turned_off_adds_nothing() -> None:
+    full = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "Pinecrest")
+    graph = _Graph([full, short])
+    finder = CandidateFinder(graph, CONTEXT, dense=None, probe=_probe({full["id"], short["id"]}), aliases=False)
+    found = await finder.find(parse_mentions([{"name": "Pinecrest", "kind": "organization"}]).mentions)
+    # The longer name is still offered to the check as a prefix match, as before.
+    assert {c.name: c.source for c in found.per_mention[0].candidates} == {
+        "Pinecrest": CandidateSource.EXACT, "Pinecrest Hospitality": CandidateSource.PREFIX,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_nodes_alias_family_is_its_learned_short_and_full_forms_that_the_user_can_read() -> None:
+    from app.modules.named_entities.linking.candidates import alias_family
+
+    full = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "Pinecrest")
+    graph = _Graph([full, short])
+    readable = {full["id"], short["id"]}
+    assert [n["name"] for n in await alias_family(graph, CONTEXT, full["id"], probe=_probe(readable))] == ["Pinecrest"]
+    assert [n["name"] for n in await alias_family(graph, CONTEXT, short["id"], probe=_probe(readable))] == ["Pinecrest Hospitality"]
+    # Unreadable: never named.
+    assert await alias_family(graph, CONTEXT, full["id"], probe=_probe({full["id"]})) == []
+
+
+@pytest.mark.asyncio
+async def test_an_alias_node_is_named_only_as_a_readable_record_spells_it() -> None:
+    from app.modules.named_entities.linking.candidates import alias_family
+
+    full = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "PINECREST (LEGAL HOLD)")
+    readable = {full["id"], short["id"]}
+    graph = _Graph([full, short], spellings={short["id"]: ["Pinecrest"]})
+    assert await alias_family(graph, CONTEXT, full["id"], probe=_probe(readable)) == [
+        {"id": short["id"], "kind": "organization", "name": "Pinecrest"},
+    ]
+    # No readable record spells it: left out, never shown under its stored name.
+    assert await alias_family(_Graph([full, short], spellings={}), CONTEXT, full["id"], probe=_probe(readable)) == []
+
+
+@pytest.mark.asyncio
+async def test_a_shared_alias_gives_no_family() -> None:
+    from app.modules.named_entities.linking.candidates import alias_family
+
+    hospitality = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    bank = _aliased(_node("organization", "name:organization:pinecrest bank", "Pinecrest Bank"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "Pinecrest")
+    graph = _Graph([hospitality, bank, short])
+    readable = {n["id"] for n in (hospitality, bank, short)}
+    assert await alias_family(graph, CONTEXT, hospitality["id"], probe=_probe(readable)) == []
+    assert await alias_family(graph, CONTEXT, short["id"], probe=_probe(readable)) == []
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_names_alias_never_shows_through_a_readable_alias_node() -> None:
+    # The full node is unreadable; its learned alias node is readable. Asking for the full
+    # name must read as "no readable entity", not reach the alias node.
+    full = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "Pinecrest")
+    _, found = await _find([full, short], {short["id"]}, [{"name": "Pinecrest Hospitality", "kind": "organization"}])
+    assert not any(c.source is CandidateSource.ALIAS for c in found.per_mention[0].candidates)
+
+
+@pytest.mark.asyncio
+async def test_the_alias_family_of_an_unreadable_node_is_empty() -> None:
+    from app.modules.named_entities.linking.candidates import alias_family
+
+    full = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "Pinecrest")
+    assert await alias_family(_Graph([full, short]), CONTEXT, full["id"], probe=_probe({short["id"]})) == []

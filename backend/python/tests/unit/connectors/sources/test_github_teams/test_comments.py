@@ -988,7 +988,7 @@ class TestCommentBlockFailures:
         )
 
         group = next(bg for bg in block_groups if bg.name == "File change: a.py")
-        assert group.data == "[modified file]\n\nDiff:\n@@ -1 +1 @@\n-a\n+b"
+        assert group.data == "[modified file]\n\nDiff:\n```diff\n@@ -1 +1 @@\n-a\n+b\n```"
         assert group.sub_type == GroupSubType.PR_FILE_CHANGE
 
     async def test_removed_file_without_diff_is_not_fetched(self) -> None:
@@ -1052,7 +1052,7 @@ class TestCommentBlockFailures:
             filename="src/new.py", previous_filename="src/old.py",
             status="renamed", patch="@@ -1 +1 @@\n-a\n+b", additions=1, deletions=1,
         ))
-        assert group.data == "[renamed file]\n\nRenamed from src/old.py.\n\nDiff:\n@@ -1 +1 @@\n-a\n+b"
+        assert group.data == "[renamed file]\n\nRenamed from src/old.py.\n\nDiff:\n```diff\n@@ -1 +1 @@\n-a\n+b\n```"
 
     async def test_mode_change_without_diff_says_so(self) -> None:
         group = await _single_file_group(SimpleNamespace(
@@ -1083,7 +1083,7 @@ class TestCommentBlockFailures:
             "acme", "widgets", 1, pull_request, parent_index=0, record=record,
         )
         group = next(bg for bg in block_groups if bg.name == "File change: gen/new.py")
-        assert "Full File Content:\nprint(2)" in group.data
+        assert "Full File Content:\n```python\nprint(2)\n```" in group.data
 
     async def test_binary_file_without_diff_is_not_inlined(self) -> None:
         # A binary file has no diff either; decoding it as text would index
@@ -1215,13 +1215,13 @@ class TestPullRequestDiffLimit:
         )
 
         assert set(groups) == {"a.py", "b.py", "c.py"}
-        assert groups["a.py"].data == "[modified file]\n\nDiff:\n" + "a" * 60
+        assert groups["a.py"].data == "[modified file]\n\nDiff:\n```diff\n" + "a" * 60 + "\n```"
         # b.py doesn't fit in what a.py left; c.py, smaller, still does.
         assert "b" * 60 not in groups["b.py"].data
         assert "Diff: omitted (1 lines added, 1 removed; this pull request's changes exceed" in groups["b.py"].data
         assert "https://github.com/acme/widgets/pull/1/files" in groups["b.py"].data
         assert "why this change?" in groups["b.py"].data
-        assert groups["c.py"].data == "[modified file]\n\nDiff:\n" + "c" * 30
+        assert groups["c.py"].data == "[modified file]\n\nDiff:\n```diff\n" + "c" * 30 + "\n```"
 
     async def test_a_whole_repository_diff_stays_within_the_limit(self) -> None:
         # The shape of apache/airflow#68316: a commit that deleted the
@@ -1243,7 +1243,8 @@ class TestPullRequestDiffLimit:
             contents={"get_file_contents": ok_response(SimpleNamespace(decoded_content=content, content=None))},
         )
 
-        assert content.decode() in groups["big.py"].data
+        # A single long line is fenced in pieces, all of it kept.
+        assert sum(len(run) for run in groups["big.py"].data.split() if set(run) == {"y"}) == len(content)
         assert "Diff: omitted" in groups["small.py"].data
 
     async def test_inlined_text_is_measured_after_redaction(self, monkeypatch) -> None:
@@ -1313,3 +1314,55 @@ class TestAttachmentIndexingFilter:
         ru = helper._attachment_file_update(self._ATTACH, self._parent("TICKET"), None, None)
 
         assert ru.record.indexing_status != "AUTO_INDEX_OFF"
+
+
+class TestAttachmentMetByTwoWritersAtOnce:
+    """The issue or pull request sync and the stream of the same issue (indexing reads
+    it while the sync goes on) can each look for an attachment before either has stored
+    it. Each then created its own record, so the graph held two records for one upload.
+    The next full sync rewrote the one its lookup found and unlinked the other, which
+    lost its parent issue and the access it inherits."""
+
+    BODY = f"[spec.pdf]({_PDF_ATTACHMENT['href']})"
+
+    async def test_the_sync_and_the_stream_store_one_record(self) -> None:
+        c = make_mock_connector()
+        stored_parent = _parent_ticket()
+        # The sync builds the issue afresh; the processor swaps in the stored id later.
+        synced_parent = stored_parent.model_copy(update={"id": "freshly-built"})
+        # Both writers look before either has stored the attachment.
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_record_id: (
+                stored_parent if external_record_id == stored_parent.external_record_id else None))
+        helper = CommentsHelper(c)
+
+        synced = await helper.make_file_records_from_list([_PDF_ATTACHMENT], synced_parent)
+        children, streamed = await helper.make_child_records_of_attachments(self.BODY, stored_parent)
+        stored = {update.record.id: update.record for update in [*synced, *streamed]}
+
+        assert [r.external_record_id for r in stored.values()] == [
+            f"{_PDF_ATTACHMENT['href']}#{stored_parent.external_record_id}"
+        ], f"one attachment stored as {len(stored)} records: {sorted(stored)}"
+        assert [child.child_id for child in children] == list(stored)
+
+    async def test_a_new_attachment_gets_the_same_id_from_every_writer(self) -> None:
+        async def ids(helper: CommentsHelper) -> list[str]:
+            listed = await helper.make_file_records_from_list([_PDF_ATTACHMENT], _parent_ticket())
+            _, from_body = await helper.make_child_records_of_attachments(self.BODY, _parent_ticket())
+            _, from_review = await helper.make_block_comment_of_attachments(self.BODY, _parent_ticket())
+            return [u.record.id for u in [*listed, *from_body, *from_review]]
+
+        first = await ids(CommentsHelper(make_mock_connector()))
+        second = await ids(CommentsHelper(make_mock_connector()))
+        assert first == second
+        assert len(set(first)) == 1
+
+    async def test_a_stored_attachment_keeps_its_id(self) -> None:
+        c = make_mock_connector()
+        stored = SimpleNamespace(id="stored-node", source_created_at=1, is_deleted=False)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=[None, stored])
+        helper = CommentsHelper(c)
+
+        (update,) = await helper.make_file_records_from_list([_PDF_ATTACHMENT], _parent_ticket())
+
+        assert update.record.id == "stored-node"

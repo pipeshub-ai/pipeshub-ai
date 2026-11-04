@@ -44,11 +44,12 @@ function OAuthStep() {
   return <AuthorizeTab startOAuthPopup={startOAuthPopup} isAuthenticating={isAuthenticating} />;
 }
 
-type FakePopup = { closed: boolean; focus: () => void; close: () => void };
+type FakePopup = { closed: boolean; location: { href: string }; focus: () => void; close: () => void };
 
 function fakePopup(): FakePopup {
   const popup: FakePopup = {
     closed: false,
+    location: { href: 'about:blank' },
     focus: vi.fn(),
     close: vi.fn(() => {
       popup.closed = true;
@@ -114,16 +115,60 @@ describe('Authorize tab: starting OAuth', () => {
 
     fireEvent.click(signInButton());
 
-    await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(popup.location.href).toBe(AUTH_URL));
     expect(getOAuthAuthorizationUrl).toHaveBeenCalledWith('conn-1');
+    expect(openSpy).toHaveBeenCalledTimes(1);
     const [url, name, features] = openSpy.mock.calls[0] as [string, string, string];
-    expect(url).toBe(AUTH_URL);
+    expect(url).toBe('about:blank');
     expect(name).toBe('connector-oauth-conn-1');
     expect(features).toContain('width=600');
     expect(features).toContain('height=700');
     // `noopener` would drop window.opener, which the callback page needs to report back.
     expect(features).not.toContain('noopener');
     expect(popup.focus).toHaveBeenCalled();
+  });
+
+  it('opens the popup on the click itself, before the sign-in link arrives', async () => {
+    // iOS Safari blocks a window opened after an await, so the open must not wait for the link.
+    let resolveUrl: (value: { authorizationUrl: string }) => void = () => {};
+    getOAuthAuthorizationUrl.mockReturnValue(
+      new Promise((resolve) => {
+        resolveUrl = resolve;
+      })
+    );
+    const popup = fakePopup();
+    openSpy.mockReturnValue(popup as unknown as Window);
+    openInstance(false);
+    renderInTheme(<OAuthStep />);
+
+    fireEvent.click(signInButton());
+
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    expect(popup.location.href).toBe('about:blank');
+    resolveUrl({ authorizationUrl: AUTH_URL });
+    await waitFor(() => expect(popup.location.href).toBe(AUTH_URL));
+  });
+
+  it('closes the blank popup and leaves it alone when the panel unmounts before the link arrives', async () => {
+    let resolveUrl: (value: { authorizationUrl: string }) => void = () => {};
+    getOAuthAuthorizationUrl.mockReturnValue(
+      new Promise((resolve) => {
+        resolveUrl = resolve;
+      })
+    );
+    const popup = fakePopup();
+    openSpy.mockReturnValue(popup as unknown as Window);
+    openInstance(false);
+    const { unmount } = renderInTheme(<OAuthStep />);
+
+    fireEvent.click(signInButton());
+    unmount();
+
+    expect(popup.close).toHaveBeenCalled();
+    await act(async () => {
+      resolveUrl({ authorizationUrl: AUTH_URL });
+    });
+    expect(popup.location.href).toBe('about:blank');
   });
 
   it('shows that sign-in is in progress while the popup is open', async () => {
@@ -164,15 +209,28 @@ describe('Authorize tab: starting OAuth', () => {
     });
   });
 
-  it('shows a failure when the sign-in link cannot be fetched', async () => {
+  it('shows a failure and closes the blank popup when the sign-in link cannot be fetched', async () => {
     getOAuthAuthorizationUrl.mockRejectedValue({ type: 'SERVER_ERROR', message: 'down' });
+    const popup = fakePopup();
+    openSpy.mockReturnValue(popup as unknown as Window);
     openInstance(false);
     renderInTheme(<OAuthStep />);
 
     fireEvent.click(signInButton());
 
     expect(await screen.findByText('Failed to authenticate your Jira')).toBeTruthy();
-    expect(openSpy).not.toHaveBeenCalled();
+    expect(popup.close).toHaveBeenCalled();
+  });
+
+  it('does not ask the server for a link when the browser blocks the popup', async () => {
+    openSpy.mockReturnValue(null);
+    openInstance(false);
+    renderInTheme(<OAuthStep />);
+
+    fireEvent.click(signInButton());
+
+    await waitFor(() => expect(toasts()).toHaveLength(1));
+    expect(getOAuthAuthorizationUrl).not.toHaveBeenCalled();
   });
 });
 

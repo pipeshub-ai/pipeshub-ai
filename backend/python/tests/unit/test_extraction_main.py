@@ -33,3 +33,12 @@ async def _free_slots(semaphore) -> int:
         semaphore.release()
     return taken
 
+
+
+def test_classify_body_is_capped_before_parsing() -> None:
+    from app.api.middlewares.body_limit import BodyLimitMiddleware
+    from app.api.routes.extraction import CLASSIFY_PATH, MAX_CLASSIFY_REQUEST_BYTES
+
+    caps = [m.kwargs["limits"] for m in extraction_main.app.user_middleware if m.cls is BodyLimitMiddleware]
+    assert caps == [{CLASSIFY_PATH: MAX_CLASSIFY_REQUEST_BYTES}]
+    assert any(r.path == CLASSIFY_PATH for r in extraction_main.app.routes)

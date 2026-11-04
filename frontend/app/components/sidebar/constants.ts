@@ -10,6 +10,8 @@
  * - All spacing values designed for 32px base rhythm
  */
 
+import { TOUCH_TARGET_PX } from '@/app/components/ui/responsive';
+
 // ============================================
 // CORE DIMENSIONS
 // ============================================
@@ -27,7 +29,7 @@ export const SIDEBAR_MAX_WIDTH = 450;
 export const HEADER_HEIGHT = 56;
 
 /** Height of the optional sidebar footer area (e.g., org selector in Chat) */
-export const FOOTER_HEIGHT = 60;
+export const FOOTER_HEIGHT = 58; // 8px inset + 42px org button + 8px inset
 
 /** Height of a single sidebar element/item row (nav items, time-group labels) */
 export const ELEMENT_HEIGHT = 32;
@@ -47,9 +49,10 @@ export const HEADER_ELEMENT_SIZE = 24;
  * edge of the viewport. Page headers should reserve this much left padding on
  * mobile so their content does not sit under the hamburger.
  *
- * Value = `var(--space-3)` left offset (12px) + IconButton size-2 (~32px).
+ * Value = the 44px button at the left edge + 8px so the first letter of a title
+ * does not touch it.
  */
-export const MOBILE_HAMBURGER_GUTTER_PX = 44;
+export const MOBILE_HAMBURGER_GUTTER_PX = TOUCH_TARGET_PX + 8;
 
 // ============================================
 // SPACING & PADDING

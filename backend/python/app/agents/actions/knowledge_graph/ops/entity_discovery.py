@@ -14,6 +14,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    limited_scope_note,
     load_entity_access_context,
     remember_entities,
 )
@@ -24,6 +25,7 @@ from app.modules.named_entities.domain.kinds import (
     VALUE_KINDS,
     VECTOR_KINDS,
     EntityKind,
+    kind_family,
 )
 from app.modules.retrieval.entity_permissions import (
     RECORD_ENTITY_TYPE,
@@ -60,8 +62,9 @@ MAX_QUERIES = 5
 _ENTITY_KIND_NAMES: frozenset[str] = frozenset(kind.value for kind in EntityKind)
 
 
-def _error(message: str) -> str:
-    return json.dumps({"status": "error", "message": message})
+def _error(message: str, *, retryable: bool = False) -> str:
+    """``retryable``: the search could not run (not a bad request), so an API caller is told to try again, not to fix its request."""
+    return json.dumps({"status": "error", "message": message, **({"retryable": True} if retryable else {})})
 
 
 async def execute_search_entities(
@@ -96,7 +99,7 @@ async def execute_search_entities(
     entity_vector_store = state.get("entity_vector_store")
     graph_provider = state.get("graph_provider")
     if not entity_vector_store or not graph_provider:
-        return False, _error("Entity search is not available in this deployment")
+        return False, _error("Entity search is not available in this deployment", retryable=True)
 
     requested = [str(t).strip().lower() for t in (entity_types or []) if str(t).strip()]
     kinds = [str(k).strip().lower() for k in (named_entity_kinds or []) if str(k).strip()]
@@ -146,7 +149,7 @@ async def execute_search_entities(
             context,
             query,
             entity_types=valid_types or None,
-            kinds=kinds or None,
+            kinds=_with_related_kinds(kinds) or None,
             top_k=bounded_top_k,
             include_named=enabled,
         )
@@ -154,11 +157,12 @@ async def execute_search_entities(
         logger.warning("search_entities timed out", exc_info=True)
         return False, _error(
             "Entity search timed out before it could confirm which matches you can access — "
-            "this is not an empty result. Try again, or use knowledgegraph__search."
+            "this is not an empty result. Try again, or use knowledgegraph__search.",
+            retryable=True,
         )
     except EntityAccessError:
         logger.warning("search_entities failed", exc_info=True)
-        return False, _error("Entity search failed — try again.")
+        return False, _error("Entity search failed — try again.", retryable=True)
 
     ignored = sorted(set(requested) - SEARCHABLE_ENTITY_TYPES)
     if not hits:
@@ -167,6 +171,8 @@ async def execute_search_entities(
             "message": "No accessible entities matched",
             "results": [],
         }
+        if note := limited_scope_note(context):
+            payload["scopeNote"] = note
         if ignored:
             payload["ignoredEntityTypes"] = ignored
         if kind_notes:
@@ -240,6 +246,19 @@ async def _search_many(
     if len(queries) > MAX_QUERIES:
         result["note"] = f"Only the first {MAX_QUERIES} queries were searched."
     return True, json.dumps(result)
+
+
+def _with_related_kinds(kinds: list[str]) -> list[str]:
+    """``kinds`` and the kinds the extractor files the same names under, so a
+    product filed as its company is still found."""
+    widened: list[str] = []
+    for value in kinds:
+        try:
+            family = kind_family(EntityKind(value))
+        except ValueError:
+            family = ()
+        widened.extend([value, *(kind.value for kind in family if kind in VECTOR_KINDS)])
+    return list(dict.fromkeys(widened))
 
 
 def _searchable_kinds(requested: list[str]) -> tuple[list[str], list[str]]:

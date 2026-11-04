@@ -192,7 +192,7 @@ class FakeEntityVectorDB:
                 id=point.id, dense_vector=list(point.dense_vector or []), payload=copy.deepcopy(point.payload),
             )
 
-    async def update_payload_by_ids(self, collection_name: str, ids: list[str], payload: dict) -> None:
+    async def update_payload_by_ids(self, collection_name: str, ids: list[str], payload: dict, *, org_id) -> None:
         self._require(collection_name)
         for point_id in ids:
             if point_id in self.points:

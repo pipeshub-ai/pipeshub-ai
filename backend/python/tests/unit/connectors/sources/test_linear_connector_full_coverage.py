@@ -119,6 +119,7 @@ def _make_connector():
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
@@ -3426,7 +3427,7 @@ class TestGetTeamOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_paginated(
                 "teams",
                 [
@@ -3447,14 +3448,14 @@ class TestGetTeamOptions:
             )
 
         # Linear does the matching, on name or key, so paging stays correct.
-        mock_ds.teams.assert_awaited_once_with(
-            first=2,
-            after="cursor-1",
-            filter={"or": [
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {
+            "first": 2,
+            "after": "cursor-1",
+            "filter": {"or": [
                 {"name": {"containsIgnoreCase": "eng"}},
                 {"key": {"containsIgnoreCase": "eng"}},
             ]},
-        )
+        })
         # What Linear returned is shown as is: a key match is not filtered away.
         assert [o.label for o in result.options] == ["Engineering (ENG)", "Platform (PENG)"]
         assert result.has_more is True
@@ -3466,7 +3467,7 @@ class TestGetTeamOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_response(success=False, message="Error")
         )
 

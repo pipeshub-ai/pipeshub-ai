@@ -728,6 +728,18 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(omitted.data!.body).to.not.have.property('rewriteQuery')
     })
 
+    it('keeps saveHistory when the caller sets it, and refuses one that is not a boolean', () => {
+      for (const saveHistory of [true, false]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', saveHistory } })
+        expect(result.success).to.be.true
+        expect(result.data!.body.saveHistory).to.equal(saveHistory)
+      }
+      for (const saveHistory of ['false', 0, null]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', saveHistory } })
+        expect(result.success, JSON.stringify(saveHistory)).to.be.false
+      }
+    })
+
     it('rejects a rewriteQuery that is not a boolean', () => {
       for (const rewriteQuery of ['false', 0, null]) {
         const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', rewriteQuery } })

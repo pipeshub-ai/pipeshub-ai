@@ -5,6 +5,7 @@ import { Flex, Box, Text, Badge, IconButton, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { SearchResultsExtras } from '@/config';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { SearchDegradedNote } from '../message-area/search-degraded-note';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useChatStore } from '@/chat/store';
 import { useCitationActions } from '../message-area/response-tabs/citations/use-citation-actions';
@@ -112,6 +113,8 @@ export function SearchResultsView() {
   const isSearching = useChatStore((s) => s.isSearching);
   const searchError = useChatStore((s) => s.searchError);
   const searchResponseMeta = useChatStore((s) => s.searchResponseMeta);
+  const serverEmptyMessage =
+    typeof searchResponseMeta?.message === 'string' ? searchResponseMeta.message : '';
   const setMode = useChatStore((s) => s.setMode);
   const { onPreview } = useCitationActions();
 
@@ -252,6 +255,11 @@ export function SearchResultsView() {
           paddingBottom: 'var(--space-4)',
         }}
       >
+        {!isSearching && !searchError &&
+          (searchResponseMeta?.searchResponse as { searchDegraded?: boolean } | undefined)?.searchDegraded === true && (
+            <SearchDegradedNote />
+          )}
+
         {/* Loading state */}
         {isSearching && (
           <>
@@ -285,7 +293,7 @@ export function SearchResultsView() {
             style={{ padding: 'var(--space-6)' }}
           >
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              No results found for &ldquo;{searchQuery}&rdquo;
+              {serverEmptyMessage || t('chat.noResultsFor', { query: searchQuery })}
             </Text>
           </Flex>
         )}

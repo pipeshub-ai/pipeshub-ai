@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+import types
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.core import org_context
 from app.modules.artifacts import retention as retention_module
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import ARTIFACT_ROUTES, ArtifactRoutesUnavailable
@@ -16,6 +19,14 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+
+def current_org_id_or_none() -> str | None:
+    try:
+        return org_context.current_org_id()
+    except Exception:
+        return None
+
 
 NOW = 10_000 * 3600 * 1000
 HOUR = 3600 * 1000
@@ -35,11 +46,14 @@ class FakeGraph:
     fail_holders_for: set[str] = field(default_factory=set)
     fail_stage_states: bool = False
     after_page_read: Any = None
+    pointer_orgs: list[str | None] = field(default_factory=list)
+    delete_orgs: list[str | None] = field(default_factory=list)
 
     def map(self, vrid: str, current: str | None = None, previous: str | None = None, org: str | None = ORG) -> None:
         self.mappings[vrid] = {"orgId": org, "currentRev": current, "previousRev": previous}
 
     async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        self.pointer_orgs.append(current_org_id_or_none())
         keys = sorted(k for k in self.mappings if after_key is None or k > after_key)[:limit]
         return [{"virtualRecordId": k, **{f: self.mappings[k].get(f) for f in ("orgId", "currentRev", "previousRev")}}
                 for k in keys]
@@ -83,6 +97,7 @@ class FakeGraph:
     async def stage_states_delete_unheld_revisions(
         self, revisions: list[tuple[str, str]], *, updated_before_ms: int
     ) -> int:
+        self.delete_orgs.append(current_org_id_or_none())
         doomed = set(self._unheld({v for v, _ in revisions}, updated_before_ms)) & set(revisions)
         before = len(self.states)
         self.states = [s for s in self.states if (s[0], s[1]) not in doomed]
@@ -97,24 +112,47 @@ class FakeStore:
     routes_missing: bool = False
     list_calls: int = 0
     before_delete: Any = None
+    # Removed by something else after they were listed: storage answers purged 0.
+    gone: set[str] = field(default_factory=set)
+    list_timeouts: list[float | None] = field(default_factory=list)
+    delete_stamps: list[int | None] = field(default_factory=list)
+    delete_timeouts: list[float | None] = field(default_factory=list)
+    # Written again after they were listed: storage refuses the delete (None).
+    rewritten: set[str] = field(default_factory=set)
 
     def add(self, vrid: str, rev: str, created_at: int | None = OLD) -> None:
-        entry: dict[str, Any] = {"documentId": f"{vrid}@{rev}", "rev": rev}
+        entry: dict[str, Any] = {"documentId": f"{vrid}@{rev}", "rev": rev, "deleteFence": True}
         if created_at is not None:
             entry["createdAt"] = created_at
         self.revisions.setdefault(vrid, []).append(entry)
 
-    async def list_revisions(self, org_id: str, vrid: str) -> list[dict[str, Any]]:
+    async def list_revisions(
+        self, org_id: str, vrid: str, *, timeout_seconds: float | None = None
+    ) -> list[dict[str, Any]]:
         self.list_calls += 1
+        self.list_timeouts.append(timeout_seconds)
         if self.routes_missing:
             raise ArtifactRoutesUnavailable(404)
         if vrid in self.fail_list_for:
             raise RuntimeError("storage down")
         return [r for r in self.revisions.get(vrid, []) if r["documentId"] not in self.deleted]
 
-    async def delete_revision(self, org_id: str, document_id: str) -> int:
+    async def delete_revision(
+        self,
+        org_id: str,
+        document_id: str,
+        *,
+        if_unchanged_since: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> int | None:
+        self.delete_stamps.append(if_unchanged_since)
+        self.delete_timeouts.append(timeout_seconds)
         if self.before_delete is not None:
             await self.before_delete(document_id)
+        if document_id in self.rewritten:
+            return None
+        if document_id in self.gone:
+            return 0
         self.deleted.append(document_id)
         return 1
 
@@ -125,8 +163,10 @@ class FakeStore:
 @pytest.fixture(autouse=True)
 def _routes() -> Iterator[None]:
     ARTIFACT_ROUTES.reset()
+    retention_module.reset_unfenced_warning()
     yield
     ARTIFACT_ROUTES.reset()
+    retention_module.reset_unfenced_warning()
 
 
 @dataclass
@@ -217,6 +257,101 @@ async def test_a_record_moving_onto_an_old_revision_during_the_page_keeps_it() -
     await _sweep(graph, store).run_page(None)
 
     assert store.deleted == []
+
+
+async def test_each_delete_carries_the_stamp_it_was_listed_with() -> None:
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r3", "r2")
+    _revs(store, "v", "r1")
+    store.revisions["v"].append({"documentId": "v@r0", "rev": "r0", "createdAt": OLD - HOUR, "updatedAt": OLD, "deleteFence": True})
+
+    await _sweep(graph, store).run_page(None)
+
+    assert store.deleted == ["v@r1", "v@r0"]
+    assert store.delete_stamps == [OLD, OLD]
+
+
+async def test_a_revision_storage_saw_written_again_is_kept_as_changed(monkeypatch: pytest.MonkeyPatch) -> None:
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r3", "r2")
+    _revs(store, "v", "r1", "r0")
+    store.rewritten.add("v@r1")
+    counted: list[tuple[str, str, int]] = []
+    monkeypatch.setattr(retention_module, "record_retention", lambda k, o, n=1: counted.append((k, o, n)))
+
+    _, report = await _sweep(graph, store).run_page(None)
+
+    assert store.deleted == ["v@r0"]
+    assert (report.revisions_deleted, report.revisions_kept, report.failed) == (1, 1, 0)
+    assert ("revision", "changed", 1) in counted
+    assert ("revision", "failed", 1) not in counted
+
+
+async def test_each_delete_is_one_bounded_attempt_well_under_the_lease_term() -> None:
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r3", "r2")
+    _revs(store, "v", "r1")
+
+    await _sweep(graph, store).run_page(None)
+
+    assert store.delete_timeouts == [retention_module.RETENTION_DELETE_TIMEOUT_SECONDS]
+    assert retention_module.RETENTION_DELETE_TIMEOUT_SECONDS < 120 / 2
+
+
+async def test_a_delete_is_bounded_by_what_is_left_of_the_tick_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r3", "r2")
+    _revs(store, "v", "r1")
+    monkeypatch.setattr(retention_module, "time", types.SimpleNamespace(monotonic=lambda: 100.0))
+
+    await _sweep(graph, store).run_page(None, deadline=108.0)
+
+    assert store.delete_timeouts == [8.0]
+
+
+async def test_past_the_deadline_the_rest_of_a_virtual_records_revisions_are_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r9", "r8")
+    _revs(store, "v", "r1", "r2", "r3", "r4")
+    clock = iter([0.0, 0.0, 100.0])  # first delete in time; then past the deadline
+    monkeypatch.setattr(retention_module, "time", types.SimpleNamespace(monotonic=lambda: next(clock, 100.0)))
+
+    _, report = await _sweep(graph, store).run_page(None, deadline=50.0)
+
+    assert store.deleted == ["v@r1"]
+    assert (report.revisions_deleted, report.revisions_kept) == (1, 3)
+
+
+async def test_a_delete_that_outlasts_the_leases_stops_the_rest() -> None:
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r9", "r8")
+    graph.records.append(("v", "r9", False))
+    _revs(store, "v", "r1", "r2", "r3")
+    leases = FakeLeases()
+
+    async def lapse(_: str) -> None:
+        leases.owners.clear()  # the term passed while the tree was being deleted
+
+    store.before_delete = lapse
+
+    _, report = await _sweep(graph, store, leases=leases).run_page(None)
+
+    assert store.deleted == ["v@r1"]
+    assert (report.revisions_deleted, report.revisions_kept) == (1, 2)
+
+
+async def test_the_first_virtual_record_is_tried_even_when_the_budget_was_spent_reading_the_page() -> None:
+    graph, store = FakeGraph(), FakeStore()
+    for vrid in "abc":
+        graph.map(vrid, "r3", "r2")
+        _revs(store, vrid, "r1")
+
+    key, report = await _sweep(graph, store, concurrency=1).run_page(None, deadline=0.0)
+
+    # Its deletes wait for the next walk (the budget is spent), but the cursor moved past it.
+    assert report.cut_short and key == "a" and store.list_calls == 1
 
 
 async def test_a_trashed_holder_leaves_the_virtual_record_whole() -> None:
@@ -436,6 +571,155 @@ async def test_a_lease_that_cannot_be_renewed_stops_the_deletes() -> None:
     assert store.deleted == [] and report.revisions_kept == 2
 
 
+async def test_a_revision_already_gone_is_kept_not_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r3", "r2")
+    _revs(store, "v", "r1", "r0")
+    store.gone.add("v@r1")
+    counted: list[tuple[str, str, int]] = []
+    monkeypatch.setattr(retention_module, "record_retention", lambda k, o, n=1: counted.append((k, o, n)))
+
+    _, report = await _sweep(graph, store).run_page(None)
+
+    assert (report.revisions_deleted, report.revisions_kept) == (1, 1)
+    assert counted.count(("revision", "gone", 1)) == 1
+    assert counted.count(("revision", "deleted", 1)) == 1
+
+
+async def test_listings_are_bounded_by_the_sweeps_timeout() -> None:
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r3", "r2")
+
+    await _sweep(graph, store).run_page(None)
+
+    assert store.list_timeouts == [retention_module.RETENTION_LIST_TIMEOUT_SECONDS]
+
+
+class _Clock:
+    """``time.monotonic`` that moves one second per ``tick()`` (a delete), not per read."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def tick(self, _: str) -> None:
+        self.now += 1.0
+
+
+async def test_past_the_deadline_the_page_stops_and_the_walk_resumes_where_it_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph, store = FakeGraph(), FakeStore()
+    for vrid in "abcdef":
+        graph.map(vrid, "r3", "r2")
+        _revs(store, vrid, "r1")
+    clock = _Clock()
+    store.before_delete = clock.tick
+    monkeypatch.setattr(retention_module, "time", clock)
+    sweep = _sweep(graph, store, concurrency=1)
+
+    key, report = await sweep.run_page(None, deadline=2.5)
+
+    assert report.cut_short and key == "c"
+    assert sorted(store.deleted) == ["a@r1", "b@r1", "c@r1"]
+    key, rest = await sweep.run_page(key)
+    assert key is None and not rest.cut_short
+    assert sorted(store.deleted) == [f"{v}@r1" for v in "abcdef"]
+    assert store.list_calls == 6
+
+
+async def test_failures_in_a_row_end_the_page_and_the_walk_resumes_after_them() -> None:
+    graph, store = FakeGraph(), FakeStore()
+    for vrid in "abcdef":
+        graph.map(vrid, "r3", "r2")
+        _revs(store, vrid, "r1")
+    store.fail_list_for |= {"b", "c", "d"}
+
+    key, report = await _sweep(graph, store, concurrency=1).run_page(None)
+
+    assert report.cut_short and report.failed == 3 and key == "d"
+    assert store.deleted == ["a@r1"] and store.list_calls == 4
+
+
+async def test_a_failure_between_successes_is_passed_over_when_the_page_is_cut_short(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph, store = FakeGraph(), FakeStore()
+    for vrid in "abcd":
+        graph.map(vrid, "r3", "r2")
+        _revs(store, vrid, "r1")
+    store.fail_list_for.add("a")
+    clock = _Clock()
+    store.before_delete = clock.tick
+    monkeypatch.setattr(retention_module, "time", clock)
+
+    key, report = await _sweep(graph, store, concurrency=1).run_page(None, deadline=0.5)
+
+    # "a" failed on its own and is the next walk's to retry; the cut resumes after "b".
+    assert report.cut_short and key == "b" and report.failed == 1
+
+
+async def test_storage_that_does_not_report_the_delete_fence_is_never_sent_a_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A storage service from before the fence ignores the stamp and would delete unfenced."""
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r3", "r2")
+    _revs(store, "v", "r1", "r0")
+    for entry in store.revisions["v"]:
+        del entry["deleteFence"]
+    counted: list[tuple[str, str, int]] = []
+    monkeypatch.setattr(retention_module, "record_retention", lambda k, o, n=1: counted.append((k, o, n)))
+
+    _, report = await _sweep(graph, store).run_page(None)
+
+    assert store.deleted == [] and store.delete_stamps == []
+    assert (report.revisions_deleted, report.revisions_kept, report.failed) == (0, 2, 0)
+    assert counted.count(("revision", "unfenced", 1)) == 2
+
+
+async def test_the_unfenced_storage_warning_is_given_once_per_process_not_once_per_sweep() -> None:
+    """The recovery loop builds a new sweep each pass; an old storage service must not log every minute."""
+    warned = MagicMock()
+    for _ in range(3):
+        graph, store = FakeGraph(), FakeStore()
+        graph.map("v", "r3", "r2")
+        _revs(store, "v", "r1")
+        for entry in store.revisions["v"]:
+            del entry["deleteFence"]
+        sweep = RevisionRetentionSweep(graph, store, warned, now_ms=lambda: NOW)  # type: ignore[arg-type]
+        await sweep.run_page(None)
+
+    assert warned.warning.call_count == 1
+
+
+class _RenewalFailsAfterTheFirstDelete(FakeLeases):
+    def __init__(self) -> None:
+        super().__init__()
+        self.renewals = 0
+
+    async def renew_many(self, leases: list[tuple[str, str]], lease_seconds: float) -> dict[tuple[str, str], bool]:
+        self.renewals += 1
+        refuse = self.renewals == 2  # 1: before the first delete; 2: right after it (later ones would succeed)
+        return {(p, o): not refuse and self.owners.get(p) == o for p, o in leases}
+
+
+async def test_the_lease_is_checked_after_a_delete_and_a_lapse_stops_the_rest() -> None:
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r9", "r8")
+    graph.records.append(("v", "r9", False))
+    _revs(store, "v", "r1", "r2", "r3")
+    leases = _RenewalFailsAfterTheFirstDelete()
+
+    _, report = await _sweep(graph, store, leases=leases).run_page(None)
+
+    assert store.deleted == ["v@r1"]
+    assert leases.renewals == 2
+    assert (report.revisions_deleted, report.revisions_kept) == (1, 2)
+
+
 def test_a_zero_grace_is_refused() -> None:
     with pytest.raises(ValueError):
         RevisionRetentionSweep(FakeGraph(), FakeStore(), logger, grace_ms=0)  # type: ignore[arg-type]
@@ -455,3 +739,195 @@ def test_metrics_count_by_kind_and_outcome(monkeypatch: pytest.MonkeyPatch) -> N
     record_storage_metrics.record_retention("revision", "kept", 0)
     assert seen == [("stage_state", "deleted", 3.0)]
     assert retention_module.record_retention is record_storage_metrics.record_retention
+
+
+async def test_a_lease_that_lapsed_during_the_last_delete_is_reported(caplog: pytest.LogCaptureFixture) -> None:
+    """The check after a delete is what notices a delete that outlived the leases."""
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v", "r9", "r8")
+    graph.records.append(("v", "r9", False))
+    _revs(store, "v", "r1")
+
+    with caplog.at_level(logging.WARNING, logger="retention-test"):
+        await _sweep(graph, store, leases=_RenewalFailsAfterTheFirstDelete()).run_page(None)
+
+    assert store.deleted == ["v@r1"]
+    assert "lapsed during a delete" in caplog.text
+
+
+async def test_a_delete_storage_answers_lost_is_counted_failed_not_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Over the real store client: 409 `lost` means files may be gone, so it is a failure."""
+    from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
+    from tests.unit.modules.artifacts.fake_storage import FakeStorage
+
+    storage = FakeStorage()
+    storage.delete_conflict_body = {"purged": 0, "reason": "lost"}
+    await storage.start()
+    try:
+        real = NodeArtifactStore(storage.blob_storage(), logger)
+        graph, store = FakeGraph(), FakeStore()
+        graph.map("v", "r3", "r2")
+        _revs(store, "v", "r1")
+
+        async def delete_via_real_client(org: str, doc: str, **kw: Any) -> int | None:  # noqa: ANN401
+            return await real.delete_revision(org, doc, **kw)
+
+        store.delete_revision = delete_via_real_client  # type: ignore[method-assign]
+        counted: list[tuple[str, str, int]] = []
+        monkeypatch.setattr(retention_module, "record_retention", lambda k, o, n=1: counted.append((k, o, n)))
+
+        _, report = await _sweep(graph, store).run_page(None)
+    finally:
+        await storage.stop()
+
+    assert report.failed == 1 and report.revisions_deleted == 0
+    assert ("revision", "failed", 1) in counted
+    assert ("revision", "changed", 1) not in counted
+    assert issubclass(ArtifactStoreError, Exception)
+
+
+@pytest.mark.asyncio
+async def test_under_system_each_virtual_record_retires_in_its_own_org_and_one_with_none_is_skipped() -> None:
+    graph, store = FakeGraph(), FakeStore()
+    for vrid, org in (("v-a", "org-a"), ("v-b", "org-b"), ("v-none", None)):
+        graph.map(vrid, current="r2", org=org)
+        graph.states.append((vrid, "r1", OLD))
+    caplog_orgs: list[str | None] = []
+    holders = graph.get_virtual_record_holders
+
+    async def recording_holders(vrids: list[str], org_id: str) -> dict[str, list[dict[str, Any]]]:
+        caplog_orgs.append(current_org_id_or_none())
+        return await holders(vrids, org_id)
+
+    graph.get_virtual_record_holders = recording_holders  # type: ignore[method-assign]
+
+    with org_context.system("retention_test"):
+        _, report = await _sweep(graph, store).run_page(None)
+
+    assert sorted(o for o in caplog_orgs if o) == ["org-a", "org-b"]
+    assert graph.delete_orgs == ["org-a", "org-b"] or graph.delete_orgs == ["org-b", "org-a"]
+    assert report.skipped_no_org == 1 and report.stage_states_deleted == 2
+    assert [s[0] for s in graph.states] == ["v-none"]
+
+
+@pytest.mark.asyncio
+async def test_a_trash_check_that_cannot_run_fails_the_page_before_anything_is_deleted() -> None:
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v-a", current="r2", org="org-a")
+    graph.states.append(("v-a", "r1", OLD))
+    _revs(store, "v-a", "r1", "r2")
+
+    async def unavailable(*_a: Any, **_k: Any) -> set[str]:  # noqa: ANN401
+        raise NotImplementedError("not available on this store")
+
+    graph.get_virtual_record_ids_in_use = unavailable  # type: ignore[method-assign]
+
+    with org_context.system("retention_test"), pytest.raises(NotImplementedError):
+        await _sweep(graph, store).run_page(None)
+
+    assert store.deleted == [] and store.list_calls == 0 and len(graph.states) == 1
+
+
+@dataclass
+class _TwoOrgGraph(FakeGraph):
+    """The same virtual record id in two organisations: pointers, trash and stage states are each told by organisation."""
+
+    trashed_orgs: set[str] = field(default_factory=set)
+    org_states: dict[str, list[tuple[str, str, int]]] = field(default_factory=dict)
+    pointers: list[dict[str, Any]] = field(default_factory=list)
+
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        return [p for p in self.pointers if after_key is None or p["virtualRecordId"] > after_key][:limit]
+
+    async def get_virtual_record_ids_in_use(
+        self, vrids: list[str], *, visibility: RecordVisibility = RecordVisibility.LIVE
+    ) -> set[str]:
+        return set(vrids) if current_org_id_or_none() in self.trashed_orgs else set()
+
+    async def get_virtual_record_holders(self, vrids: list[str], org_id: str) -> dict[str, list[dict[str, Any]]]:
+        return {}
+
+    async def stage_states_unheld_revisions(self, vrids: list[str], *, updated_before_ms: int) -> list[tuple[str, str]]:
+        return sorted({(v, r) for v, r, at in self.org_states.get(current_org_id_or_none() or "", []) if v in vrids and at < updated_before_ms})
+
+    async def stage_states_delete_unheld_revisions(self, revisions: list[tuple[str, str]], *, updated_before_ms: int) -> int:
+        org = current_org_id_or_none() or ""
+        self.delete_orgs.append(org)
+        before = len(self.org_states[org])
+        self.org_states[org] = [s for s in self.org_states[org] if (s[0], s[1]) not in set(revisions)]
+        return before - len(self.org_states[org])
+
+
+@pytest.mark.asyncio
+async def test_two_orgs_that_share_a_virtual_record_id_never_touch_each_others_state() -> None:
+    """The retention state was told by virtual record id alone, so the pointer of the later organisation took the id over: the first one's
+    pass ran under the wrong organisation, and one organisation's trashed copy kept the other's revisions from being retired."""
+    graph, store = _TwoOrgGraph(), FakeStore()
+    graph.pointers = [{"virtualRecordId": "v", "orgId": o, "currentRev": "r2", "previousRev": None} for o in ("org-a", "org-b")]
+    graph.trashed_orgs = {"org-b"}
+    graph.org_states = {"org-a": [("v", "r1", OLD)], "org-b": [("v", "r1", OLD)]}
+
+    with org_context.system("retention_test"):
+        _, report = await _sweep(graph, store).run_page(None)
+
+    assert graph.delete_orgs == ["org-a"]                      # org-a's stale revision is retired, under org-a
+    assert graph.org_states == {"org-a": [], "org-b": [("v", "r1", OLD)]}      # org-b's copy is in the trash: nothing of it is touched
+    assert report.skipped_trashed == 1 and report.stage_states_deleted == 1
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_never_cuts_inside_the_organisations_that_share_a_virtual_record_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cursor is a virtual record id, so a walk cut between two organisations' pointers of one id could only resume before the group and start it again, and a group
+    wider than a walk's budget would never be passed. The group is finished, and the cursor moves past it."""
+    graph, store = _TwoOrgGraph(), FakeStore()
+    orgs = ("org-a", "org-b", "org-c")
+    graph.pointers = [{"virtualRecordId": "v", "orgId": o, "currentRev": "r2", "previousRev": None} for o in orgs] + [
+        {"virtualRecordId": "w", "orgId": "org-a", "currentRev": "r2", "previousRev": None}]
+    graph.org_states = {o: [("v", "r1", OLD), ("w", "r1", OLD)] for o in orgs}
+    monkeypatch.setattr(retention_module, "time", types.SimpleNamespace(monotonic=lambda: 100.0))          # the budget is spent from the first pointer on
+
+    with org_context.system("retention_test"):
+        key, report = await _sweep(graph, store, concurrency=1).run_page(None, deadline=50.0)
+        after_first = {o: [s[0] for s in states] for o, states in graph.org_states.items()}
+        second, _ = await _sweep(graph, store, concurrency=1).run_page(key, deadline=50.0)
+
+    assert report.cut_short and key == "v"                                   # cut after the whole group, before "w"
+    assert after_first == {"org-a": ["w"], "org-b": ["w"], "org-c": ["w"]}   # every organisation of "v" was done in the first walk
+    assert second is None and graph.org_states["org-a"] == [] and graph.org_states["org-b"] == [("w", "r1", OLD)]      # "w" has one pointer, in org-a
+
+
+@dataclass
+class _PerOrgStore(FakeStore):
+    """Revisions told by organisation: what each organisation deleted."""
+
+    org_deleted: set[tuple[str, str]] = field(default_factory=set)
+
+    async def list_revisions(self, org_id: str, vrid: str, *, timeout_seconds: float | None = None) -> list[dict[str, Any]]:
+        return [r for r in self.revisions.get(vrid, []) if (org_id, r["documentId"]) not in self.org_deleted]
+
+    async def delete_revision(self, org_id: str, document_id: str, **_: object) -> int | None:
+        self.org_deleted.add((org_id, document_id))
+        return 1
+
+
+@dataclass
+class _MappedPerOrgGraph(_TwoOrgGraph):
+    async def get_document(self, key: str, collection: str) -> dict[str, Any] | None:
+        return {"id": key, "orgId": current_org_id_or_none(), "currentRev": "r2", "previousRev": None}
+
+
+@pytest.mark.asyncio
+async def test_the_organisations_joining_a_started_group_after_the_deadline_still_retire_their_revisions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finished is final for the cursor: left to the deadline, a later organisation of the group kept its old revisions and was not looked at again until the next lap."""
+    graph, store = _MappedPerOrgGraph(), _PerOrgStore()
+    orgs = ("org-a", "org-b", "org-c")
+    graph.pointers = [{"virtualRecordId": "v", "orgId": o, "currentRev": "r2", "previousRev": None} for o in orgs]
+    store.add("v", "r1")
+    monkeypatch.setattr(retention_module, "time", types.SimpleNamespace(monotonic=lambda: 100.0))          # the budget is spent from the first pointer on
+
+    with org_context.system("retention_test"):
+        await _sweep(graph, store, concurrency=1).run_page(None, deadline=50.0)
+
+    assert {("org-b", "v@r1"), ("org-c", "v@r1")} <= store.org_deleted      # the first one is held to the budget as before; the ones that join it are not

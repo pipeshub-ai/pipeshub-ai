@@ -9,11 +9,12 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import {
   stripMarkdownAndCitations,
   formatChatMode,
+  answerSearchSource,
 } from '@/lib/utils/formatters';
-import type { ModelInfo, AppliedFilters } from '@/chat/types';
+import type { ModelInfo, AppliedFilters, MessagePart } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
-import { ChatMessageExtras } from '@/config';
+import { ChatMessageExtras, chatModelOptions } from '@/config';
 import { toast } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
@@ -73,6 +74,8 @@ interface MessageActionsProps {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** False for a reply that ran an action a person approved: regenerating could run it again. */
   canRegenerate?: boolean;
+  /** The answer's tool activity: the footer names the search it actually used. */
+  parts?: MessagePart[];
 }
 
 /**
@@ -126,6 +129,7 @@ export function MessageActions({
   appliedFilters,
   feedbackInfo,
   canRegenerate = true,
+  parts,
 }: MessageActionsProps) {
   const isMobile = useIsMobile();
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
@@ -358,8 +362,19 @@ export function MessageActions({
 
   if (isStreaming) return null;
 
-  const chatModeLabel = formatChatMode(modelInfo?.chatMode);
-  const modelName = modelInfo?.modelFriendlyName || modelInfo?.modelName || '';
+  // Plain assistant turns all run as `agent`; the Internal/Web search toggles
+  // only gate tools, so the tools it called say what this answer used.
+  const searchSource = modelInfo?.chatMode === 'agent' ? answerSearchSource(parts) : null;
+  const chatModeLabel =
+    searchSource === 'internal'
+      ? t('chat.answerMode.internalSearch', 'Internal search')
+      : searchSource === 'web'
+        ? t('chat.answerMode.webSearch', 'Web search')
+        : searchSource === 'internal_and_web'
+          ? t('chat.answerMode.internalAndWebSearch', 'Internal + web search')
+          : formatChatMode(modelInfo?.chatMode);
+  const answerLabel = chatModelOptions.answerLabel(t, modelInfo);
+  const modelName = answerLabel?.label || modelInfo?.modelFriendlyName || modelInfo?.modelName || '';
 
   return (
     <>
@@ -725,7 +740,7 @@ export function MessageActions({
                   borderRadius: 'var(--radius-1)',
                   border: '1px solid var(--olive-3)',
                   background: 'var(--olive-2)',
-                  backdropFilter: 'blur(25px)',
+                  backdropFilter: 'var(--frost-filter)',
                   gap: 'var(--space-1)',
                 }}
               >
@@ -856,32 +871,36 @@ export function MessageActions({
 
         {/* Model name with icon */}
         {modelName && (
-          <Flex
-            align="center"
-            justify="center"
-            gap="1"
-            style={{
-              height: '24px',
-              padding: '0 var(--space-2)',
-              borderRadius: 'var(--radius-1)',
-            }}
-          >
-            <MaterialIcon
-              name="memory"
-              size={ICON_SIZES.PRIMARY}
-              color="var(--slate-11)"
-            />
-            <Text
-              size="1"
+          <OptionalTooltip content={answerLabel?.tooltip}>
+            <Flex
+              align="center"
+              justify="center"
+              gap="1"
+              // Focusable only when it opens a tooltip, so keyboard users can read it.
+              tabIndex={answerLabel?.tooltip ? 0 : undefined}
               style={{
-                color: 'var(--slate-11)',
-                lineHeight: 'var(--line-height-1)',
-                whiteSpace: 'nowrap',
+                height: '24px',
+                padding: '0 var(--space-2)',
+                borderRadius: 'var(--radius-1)',
               }}
             >
-              {modelName}
-            </Text>
-          </Flex>
+              <MaterialIcon
+                name={answerLabel?.icon ?? 'memory'}
+                size={ICON_SIZES.PRIMARY}
+                color="var(--slate-11)"
+              />
+              <Text
+                size="1"
+                style={{
+                  color: 'var(--slate-11)',
+                  lineHeight: 'var(--line-height-1)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {modelName}
+              </Text>
+            </Flex>
+          </OptionalTooltip>
         )}
       </Flex>
       </Flex>
@@ -988,4 +1007,8 @@ function FeedbackChip({ label, selected, onClick }: FeedbackChipProps) {
       </button>
     </Box>
   );
+}
+
+function OptionalTooltip({ content, children }: { content?: string; children: React.ReactElement }) {
+  return content ? <Tooltip content={content} side="top">{children}</Tooltip> : children;
 }

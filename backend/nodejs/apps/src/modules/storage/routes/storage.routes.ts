@@ -8,6 +8,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import {
   UploadNewSchema,
   DocumentIdParams,
+  DocumentInfoParams,
   GetBufferSchema,
   CreateDocumentSchema,
   UploadNextVersionSchema,
@@ -26,7 +27,7 @@ import {
   PresignArtifactsSchema,
   ArtifactReadUrlsSchema,
   ArtifactFileParams,
-  ArtifactSetParams,
+  PurgeArtifactSetSchema,
   ListArtifactSetsSchema,
 } from '../validators/validators';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
@@ -222,7 +223,7 @@ export function createStorageRouter(container: Container): Router {
   router.delete(
     '/internal/artifacts/:documentId',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    ValidationMiddleware.validate(ArtifactSetParams),
+    ValidationMiddleware.validate(PurgeArtifactSetSchema),
     async (
       req: AuthenticatedServiceRequest,
       res: Response,
@@ -239,7 +240,7 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/internal/:documentId',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    ValidationMiddleware.validate(DocumentIdParams),
+    ValidationMiddleware.validate(DocumentInfoParams),
     async (
       req: AuthenticatedServiceRequest,
       res: Response,
@@ -264,6 +265,23 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         return await storageController.deleteDocumentById(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/internal/:documentId/retire',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgeDocumentParams),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.retireDocumentById(req, res, next);
       } catch (error) {
         next(error);
       }

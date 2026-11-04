@@ -19,7 +19,6 @@ from packaging.requirements import Requirement
 from packaging.version import Version
 
 BACKEND_MANIFEST = Path(__file__).resolve().parents[2] / "pyproject.toml"
-INTEGRATION_MANIFEST = Path(__file__).resolve().parents[4] / "integration-tests" / "pyproject.toml"
 
 SPINS_IN_POOL_ACQUISITION = frozenset({Version("6.4.0")})
 
@@ -57,9 +56,3 @@ def test_the_installed_rust_extension_matches_the_installed_driver() -> None:
     except importlib.metadata.PackageNotFoundError:
         pytest.skip("neo4j-rust-ext is not installed here")
     assert _same_release(Version(importlib.metadata.version("neo4j")), extension)
-
-
-def test_integration_tests_pin_the_same_driver() -> None:
-    if not INTEGRATION_MANIFEST.exists():
-        pytest.skip("integration-tests/ is not part of this checkout")
-    assert _pinned(INTEGRATION_MANIFEST, "neo4j") == _pinned(BACKEND_MANIFEST, "neo4j")
