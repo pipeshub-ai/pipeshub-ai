@@ -220,6 +220,25 @@ describe('OAuthAuthorizeView scope choice', () => {
     expect(allow().disabled).toBe(false);
   });
 
+  it('keeps openid ticked, so an OIDC sign-in always gets it', async () => {
+    const withOpenid: Scope[] = [
+      { name: 'openid', description: 'OpenID Connect authentication', category: 'Identity' },
+      ...scopes,
+    ];
+    get.mockResolvedValue(consentResponse([], false, withOpenid));
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    await screen.findByText('kb:write');
+    expect(state('openid')).toBe('true');
+    fireEvent.click(box('openid'));
+    fireEvent.click(box('Identity'));
+    expect(state('openid')).toBe('true');
+    fireEvent.click(allow());
+
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect((post.mock.calls[0][1] as { scope: string }).scope).toBe('openid kb:read');
+  });
+
   it('disables Allow when every scope is unticked', async () => {
     get.mockResolvedValue(consentResponse([], false, scopes));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));

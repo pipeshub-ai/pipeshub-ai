@@ -65,12 +65,18 @@ interface AuthorizeResponse {
   error_description?: string;
 }
 
-/** The default scopes among those listed; every listed scope when none of them is a default, so Allow is not left disabled. */
+// OIDC needs openid for the ID token and /userinfo, so the person cannot untick it.
+const REQUIRED_SCOPES = new Set<string>(['openid']);
+
+/** The default scopes among those listed; every listed scope when none of them is a default, so Allow is not left disabled. Required scopes stay ticked. */
 function initiallyTicked(scopes: ScopeInfo[] | undefined): Set<string> {
   const names = asArray(scopes).map((s) => s.name);
   const defaults = new Set<string>(DEFAULT_SELECTED_SCOPES);
   const picked = names.filter((name) => defaults.has(name));
-  return new Set(picked.length > 0 ? picked : names);
+  return new Set([
+    ...(picked.length > 0 ? picked : names),
+    ...names.filter((name) => REQUIRED_SCOPES.has(name)),
+  ]);
 }
 
 function normalizeScopeForPost(scopeFromUrl: string | null): string {
@@ -320,7 +326,7 @@ export function OAuthAuthorizeView() {
       const next = new Set(prev);
       for (const { name } of items) {
         if (on) next.add(name);
-        else next.delete(name);
+        else if (!REQUIRED_SCOPES.has(name)) next.delete(name);
       }
       return next;
     });
@@ -721,7 +727,7 @@ export function OAuthAuthorizeView() {
                             mt="1"
                             checked={ticked.has(scopeItem.name)}
                             onCheckedChange={(c) => toggleScopes([scopeItem], c === true)}
-                            disabled={submitting}
+                            disabled={submitting || REQUIRED_SCOPES.has(scopeItem.name)}
                           />
                           <Flex direction="column" gap="1" style={{ minWidth: 0, flex: 1 }}>
                             <Text as="div" size="2" weight="medium">
