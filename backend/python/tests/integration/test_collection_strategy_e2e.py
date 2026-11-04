@@ -203,7 +203,7 @@ class FakeVectorDBService(IVectorDBService):
         scroll_filter: FilterExpression,
         limit: int,
         offset: str | None = None,
-        with_payload: List[str] | None = None,
+        with_payload: list[str] | None = None,
     ) -> ScrollResult:
         points = self.collections.get(collection_name, [])
         matched = [p for p in points if _filter_matches(p.payload, scroll_filter)]
