@@ -245,10 +245,10 @@ describe('Team connectors page: reads it can reuse', () => {
     config: { auth: {}, sync: { selectedStrategy: 'SCHEDULED', scheduledConfig: { intervalMinutes: 60 } }, filters: {} },
   });
 
-  function openTypePage() {
+  function openTypePage(readConfig: () => Promise<unknown> = async () => scheduled) {
     nav.params = new URLSearchParams('connectorType=Jira');
     api.getActiveConnectors.mockResolvedValue({ connectors: [makeInstance()] });
-    api.getConnectorConfig.mockResolvedValue(scheduled);
+    api.getConnectorConfig.mockImplementation(readConfig);
     return renderInTheme(<TeamConnectorsPage />);
   }
 
@@ -406,16 +406,16 @@ describe('Team connectors page: reads it can reuse', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(61_000);
       });
-      let answer: (config: unknown) => void = () => {};
-      api.getConnectorConfig.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
-
-      openTypePage();
+      let answer: ((config: unknown) => void) | null = null;
+      openTypePage(() => new Promise((resolve) => { answer = resolve; }));
 
       await waitFor(() => expect(api.getConnectorConfig).toHaveBeenCalledTimes(2));
       expect(api.getActiveConnectors).toHaveBeenCalledTimes(2);
+      // The re-read is still in flight: the cards stay, with no loading skeleton.
+      expect(answer).not.toBeNull();
       expect(screen.getByText('Scheduled')).toBeTruthy();
       expect(screen.queryByRole('status')).toBeNull();
-      await act(async () => answer(scheduled));
+      await act(async () => answer!(scheduled));
     } finally {
       vi.useRealTimers();
     }
