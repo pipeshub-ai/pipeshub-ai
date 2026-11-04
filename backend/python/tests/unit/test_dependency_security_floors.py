@@ -92,9 +92,11 @@ def test_no_compromised_file_in_site_packages() -> None:
     directories = {Path(p) for p in [*site.getsitepackages(), site.getusersitepackages(), *sys.path] if p}
     found = _compromised_files(directories)
     # The payload sends credentials out and its files run at every Python start, this test run included.
+    # A loader the payload already started can outlive its files and take any credential rotated from this host.
     assert not found, (
-        f"found {found}: rotate the credentials reachable from this environment, remove these files from a shell "
-        "before running Python again, then rebuild the environment"
+        f"found {found}: treat this host or container as compromised. Isolate it and rebuild it from a clean image "
+        "(deleting these files does not stop a loader that is already running), then rotate every credential it "
+        "could reach, working from a different, clean machine"
     )
 
 
