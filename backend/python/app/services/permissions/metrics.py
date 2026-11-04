@@ -14,3 +14,13 @@ SCOPE_CACHE = METRICS_BACKEND.counter(
     "Viewer-scope cache lookups by result (hit, miss, bypass when the version is unreadable)",
     ["result"],
 )
+SCOPE_REFUSED = METRICS_BACKEND.counter(
+    "pipeshub_scope_fields_refused_total",
+    "Records the scope-field stamper refused (they keep the legacy filter), by reason",
+    ["reason"],
+)
+SCOPE_STAMP_FAILED = METRICS_BACKEND.counter(
+    "pipeshub_scope_fields_failed_total",
+    "Scope fields that could not be computed (the point is left without them and keeps the legacy filter), by where",
+    ["where"],
+)

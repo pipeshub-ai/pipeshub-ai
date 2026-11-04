@@ -541,3 +541,27 @@ async def test_a_vrid_whose_records_name_no_org_is_skipped_and_does_not_block_th
     update = graph.update_node.await_args.args[2]
     assert update[ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILLED] is True
     assert ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_ATTEMPTS not in update or update[ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_ATTEMPTS] == 0
+
+
+@pytest.mark.asyncio
+async def test_each_sync_runs_in_the_organisation_of_the_app_being_backfilled() -> None:
+    from app.core.org_context import MissingOrgContext, current_org_id
+
+    graph = AsyncMock()
+    graph.get_app_needing_vector_membership_backfill = AsyncMock(return_value={"_key": "app-1", "orgId": "org-7"})
+    graph.page_records_for_vector_membership_backfill = AsyncMock(return_value=[{"_key": "r1", "virtualRecordId": "v1"}])
+    graph.update_node = AsyncMock()
+    seen: list[object] = []
+
+    async def sync(vrid: str) -> None:
+        try:
+            seen.append(current_org_id())
+        except MissingOrgContext:
+            seen.append(None)
+
+    pipeline = AsyncMock()
+    pipeline.sync_vector_membership = sync
+    await run_vector_membership_backfill_tick(
+        logger=_logger(), graph_provider=graph, pipeline=pipeline, lock=_Lock(), page_size=50, vrid_pause_ms=0
+    )
+    assert seen == ["org-7"]

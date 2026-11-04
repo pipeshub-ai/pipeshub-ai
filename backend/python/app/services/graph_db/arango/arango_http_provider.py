@@ -174,6 +174,7 @@ from app.services.graph_db.arango.arango_http_client import (
     ArangoQueryError,
 )
 from app.services.graph_db.arango.permission_scopes import ArangoHierarchyView
+from app.services.graph_db.arango.permission_stamps import ArangoStampGraph
 from app.services.graph_db.common.full_sync_unlink import (
     FULL_SYNC_EDGE_COLLECTIONS,
     split_unseen_by_window,
@@ -25052,6 +25053,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def permission_hierarchy_view(self) -> ArangoHierarchyView:
         return ArangoHierarchyView(lambda: self.http_client)
+
+    def permission_stamp_graph(self) -> ArangoStampGraph:
+        return ArangoStampGraph(lambda: self.http_client)
 
     async def get_accessible_containers(
         self,
