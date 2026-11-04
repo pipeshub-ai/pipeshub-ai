@@ -3,7 +3,6 @@ Unit tests for OpenSearchUtils and OpenSearchService filter-related functionalit
 
 Tests cover:
 - OpenSearchUtils.build_conditions: dict to FieldCondition list conversion
-- OpenSearchUtils._is_valid_value: value validation logic
 - OpenSearchUtils.filter_expression_to_bool_query: FilterExpression to OpenSearch bool query
 - OpenSearchUtils._field_condition_to_clause: single FieldCondition to OpenSearch clause
 - OpenSearchUtils.vector_point_to_document: VectorPoint to OpenSearch document
@@ -37,58 +36,6 @@ from app.services.vector_db.models import (
     SparseVector,
     VectorPoint,
 )
-
-
-# ---------------------------------------------------------------------------
-# OpenSearchUtils._is_valid_value
-# ---------------------------------------------------------------------------
-
-class TestIsValidValue:
-
-    def test_none_is_invalid(self):
-        assert OpenSearchUtils._is_valid_value(None) is False
-
-    def test_empty_string_is_invalid(self):
-        assert OpenSearchUtils._is_valid_value("") is False
-
-    def test_whitespace_only_string_is_invalid(self):
-        assert OpenSearchUtils._is_valid_value("   ") is False
-
-    def test_tab_only_string_is_invalid(self):
-        assert OpenSearchUtils._is_valid_value("\t") is False
-
-    def test_non_empty_string_is_valid(self):
-        assert OpenSearchUtils._is_valid_value("hello") is True
-
-    def test_string_with_surrounding_whitespace_is_valid(self):
-        assert OpenSearchUtils._is_valid_value("  hello  ") is True
-
-    def test_integer_is_valid(self):
-        assert OpenSearchUtils._is_valid_value(42) is True
-
-    def test_zero_integer_is_valid(self):
-        assert OpenSearchUtils._is_valid_value(0) is True
-
-    def test_negative_integer_is_valid(self):
-        assert OpenSearchUtils._is_valid_value(-1) is True
-
-    def test_float_is_valid(self):
-        assert OpenSearchUtils._is_valid_value(3.14) is True
-
-    def test_zero_float_is_valid(self):
-        assert OpenSearchUtils._is_valid_value(0.0) is True
-
-    def test_bool_true_is_valid(self):
-        assert OpenSearchUtils._is_valid_value(True) is True
-
-    def test_bool_false_is_valid(self):
-        assert OpenSearchUtils._is_valid_value(False) is True
-
-    def test_list_is_valid(self):
-        assert OpenSearchUtils._is_valid_value(["a", "b"]) is True
-
-    def test_empty_list_is_valid(self):
-        assert OpenSearchUtils._is_valid_value([]) is True
 
 
 # ---------------------------------------------------------------------------
@@ -148,13 +95,15 @@ class TestBuildConditions:
         assert len(result) == 1
         assert result[0].values == ["admin", "user"]
 
-    def test_list_all_none_values_produces_no_condition(self):
+    def test_list_all_none_values_matches_nothing(self):
         result = OpenSearchUtils.build_conditions({"roles": [None, None]})
-        assert result == []
+        assert [c.key for c in result] == ["metadata.roles"]
+        assert result[0].values == []
 
-    def test_empty_list_produces_no_condition(self):
+    def test_empty_list_matches_nothing(self):
         result = OpenSearchUtils.build_conditions({"roles": []})
-        assert result == []
+        assert [c.key for c in result] == ["metadata.roles"]
+        assert result[0].values == []
 
     def test_none_value_filtered_out(self):
         result = OpenSearchUtils.build_conditions({"orgId": None})
@@ -185,9 +134,9 @@ class TestBuildConditions:
             "roles": ["admin"],
             "empty_list": [],
         })
-        assert len(result) == 2
+        assert len(result) == 3
         keys = {c.key for c in result}
-        assert keys == {"metadata.orgId", "metadata.roles"}
+        assert keys == {"metadata.orgId", "metadata.roles", "metadata.empty_list"}
 
     def test_zero_integer_is_valid_condition(self):
         result = OpenSearchUtils.build_conditions({"count": 0})

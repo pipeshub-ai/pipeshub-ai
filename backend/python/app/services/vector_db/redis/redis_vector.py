@@ -48,7 +48,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.vector_db.filters import (
-    canonical_filter_key,
+    build_generic_conditions,
     split_values_count_conditions,
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -1285,20 +1285,7 @@ def _build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCond
     We store the canonical ``metadata.x`` key here; conversion to Redis
     query syntax happens in utils.field_conditions_to_redis_query.
     """
-    conditions: list[FieldCondition] = []
-    for key, value in filters.items():
-        if value is None:
-            continue
-        field_key = canonical_filter_key(key)
-        if isinstance(value, (list, tuple)):
-            filtered = [v for v in value if v is not None]
-            if filtered:
-                conditions.append(FieldCondition(key=field_key, values=filtered))
-        elif isinstance(value, str) and not value.strip():
-            continue
-        else:
-            conditions.append(FieldCondition(key=field_key, value=value))
-    return conditions
+    return build_generic_conditions(filters)
 
 
 def _combine_text_and_filter(text_query: str, filter_query: str) -> str:
