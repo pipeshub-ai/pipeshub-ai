@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 from app.services.graph_db.postgres.base import (
-    NotImplementedInPostgres,
     PgBase,
     _arango,
     _doc,
@@ -122,8 +121,8 @@ class CoreMixin(PgBase):
                 await tx.execute("""/* pipeshub:graph.batch_upsert_nodes_clear */ UPDATE graph.nodes n SET doc = n.doc - x.nulls
                     FROM jsonb_to_recordset($3::jsonb) AS x(id text, nulls text[]) WHERE n.org_id = $1 AND n.coll = $2 AND n.id = x.id""", org, collection, clears)
             await tx.execute("""/* pipeshub:graph.batch_upsert_nodes */ INSERT INTO graph.nodes (org_id, coll, id, doc)
-                SELECT $1, $2, x.id, jsonb_strip_nulls(x.doc) FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb)
-                ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = jsonb_strip_nulls(graph.nodes.doc || EXCLUDED.doc)""", org, collection, payload)
+                SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb) FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb)
+                ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(graph.nodes.doc || EXCLUDED.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)""", org, collection, payload)
         await self._q(go, transaction, write=True)
         return True
 
@@ -132,7 +131,7 @@ class CoreMixin(PgBase):
         doc = _node(node, collection)
         doc["id"] = key
         r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.create_node_if_absent */ WITH i AS (INSERT INTO graph.nodes (org_id, coll, id, doc)
-            VALUES ($1, $2, $3, jsonb_strip_nulls($4::jsonb)) ON CONFLICT (org_id, coll, id) DO NOTHING RETURNING 1) SELECT count(*) FROM i""",
+            VALUES ($1, $2, $3, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each($4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)) ON CONFLICT (org_id, coll, id) DO NOTHING RETURNING 1) SELECT count(*) FROM i""",
                                                  current_org_id(), collection, key, _j(doc)), transaction, write=True)
         return bool(r)
 
@@ -148,7 +147,7 @@ class CoreMixin(PgBase):
     async def update_node(self, key: str, collection: str, node_updates: dict, transaction: str | None = None) -> bool:
         org = current_org_id()
         upd = {k: v for k, v in node_updates.items() if k not in ("_key", "_id", "id")}
-        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node */ WITH u AS (UPDATE graph.nodes SET doc = jsonb_strip_nulls(doc || $4::jsonb)
+        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node */ WITH u AS (UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
             WHERE org_id = $1 AND coll = $2 AND id = $3 RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd)), transaction, write=True)
         return bool(r)
 
@@ -156,7 +155,7 @@ class CoreMixin(PgBase):
         """One statement, so a batch outside a transaction is all or nothing; a node that does not exist is left alone."""
         items = [{"id": k, "doc": {f: v for f, v in it.items() if f not in ("id", "_key", "_id")}} for it in nodes if (k := it.get("id") or it.get("_key"))]
         if items:
-            await self._q(lambda tx: tx.execute("""/* pipeshub:graph.batch_update_nodes */ UPDATE graph.nodes n SET doc = jsonb_strip_nulls(n.doc || x.doc)
+            await self._q(lambda tx: tx.execute("""/* pipeshub:graph.batch_update_nodes */ UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
                 FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb) WHERE n.org_id = $1 AND n.coll = $2 AND n.id = x.id""",
                                                   current_org_id(), collection, _j(items)), transaction, write=True)
         return True
@@ -165,8 +164,8 @@ class CoreMixin(PgBase):
         if not keys:
             return True
         if collection == "records":
-            # A record goes with its type documents and blocks; that cascade belongs to the records module, so a plain delete would leave them behind.
-            raise NotImplementedInPostgres("deleting records needs the records module of the PostgreSQL graph provider")
+            # A record goes with its type documents and every edge of them (``RecordsMixin``), as ``_delete_records_with_their_types`` on Neo4j.
+            return await self._delete_records_with_their_types(keys, transaction) == len(set(keys))
         org = current_org_id()
 
         async def go(tx: Tx) -> int:
@@ -225,7 +224,7 @@ class CoreMixin(PgBase):
             raise ValueError("update_node_fields_if_match needs an expectation")
         org = current_org_id()
         upd = {k: v for k, v in updates.items() if k not in ("_key", "_id", "id")}      # as update_node; a None removes the field
-        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_fields_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = jsonb_strip_nulls(n.doc || $4::jsonb)
+        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_fields_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
             WHERE org_id = $1 AND coll = $2 AND id = $3 AND NOT EXISTS (SELECT 1 FROM jsonb_each($5::jsonb) f WHERE n.doc->f.key IS DISTINCT FROM f.value
                 AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL)) RETURNING 1) SELECT count(*) FROM u""",
                                                   org, collection, key, _j(upd), _j(expected)), transaction, write=True)
@@ -264,7 +263,7 @@ class CoreMixin(PgBase):
                         WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_id = d.fi AND e.from_coll = d.fc AND e.to_id = d.ti AND e.to_coll = d.tc AND e.ekey = d.k""",
                                      org, [r["fc"] for r in stale], [r["fi"] for r in stale], [r["tc"] for r in stale], [r["ti"] for r in stale], [r["ekey"] for r in stale])
             await tx.execute("""/* pipeshub:graph.batch_create_edges */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
-                SELECT $1, $2, x.fc, x.fi, x.tc, x.ti, x.k, jsonb_strip_nulls(x.doc)
+                SELECT $1, $2, x.fc, x.fi, x.tc, x.ti, x.k, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
                 FROM jsonb_to_recordset($3::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc, from_coll = EXCLUDED.from_coll, to_coll = EXCLUDED.to_coll""",
                              org, collection, payload)

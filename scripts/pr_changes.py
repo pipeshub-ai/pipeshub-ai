@@ -219,6 +219,7 @@ CONNECTOR_SHARDS = {
     ),
     "connectors-2": (
         "jira", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual", "servicenow",
+        "zammad_sim",
     ),
     "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres", "salesforce"),
     "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear", "servicenow_sim"),
@@ -321,7 +322,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "salesforce": ("salesforce",),
     "servicenow": ("servicenow", "servicenow_sim"),
     "smb": ("smb",),
-    "zammad": ("zammad",),
+    "zammad": ("zammad", "zammad_sim"),
     "zendesk": ("zendesk",),
 }
 CONNECTOR_TESTS = "integration-tests/connectors"
@@ -330,6 +331,7 @@ CONNECTOR_TESTS = "integration-tests/connectors"
 CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "bookstack": ("bookstack", "bookstack_sim"),
     "servicenow": ("servicenow", "servicenow_sim"),
+    "zammad": ("zammad", "zammad_sim"),
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
     "local_fs": ("local_fs", "local_fs_sim"),

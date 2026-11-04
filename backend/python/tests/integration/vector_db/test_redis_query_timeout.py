@@ -11,6 +11,9 @@ leave points behind.
 """
 
 import asyncio
+import fcntl
+import os
+import tempfile
 from collections.abc import AsyncIterator
 
 import pytest
@@ -21,7 +24,11 @@ from app.services.vector_db.models import (
     VectorPoint,
 )
 from tests.integration.vector_db.conftest import make_collection
-from tests.integration.vector_db.helpers import make_collection_config, make_dense
+from tests.integration.vector_db.helpers import (
+    make_collection_config,
+    make_dense,
+    wait_for,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
@@ -63,15 +70,23 @@ async def seeded(redis_service) -> AsyncIterator[tuple[str, FilterExpression]]:
         key="metadata.virtualRecordId",
         values=[f"vr-{i}" for i in range(VRIDS)],
     )])
-    original = (await redis_service.client.execute_command(
-        "CONFIG", "GET", "search-timeout"))[1]
-    await redis_service.client.execute_command("CONFIG", "SET", "search-timeout", "1")
-    try:
-        yield col, filt
-    finally:
-        await redis_service.client.execute_command(
-            "CONFIG", "SET", "search-timeout", original)
-        await redis_service.delete_collection(col)
+    # search-timeout belongs to the server, not to this test: under xdist two workers that each read the
+    # "original" while the other has it at 1 ms would restore 1 ms for good. The lock makes the tests of
+    # this module take turns, so the original is only ever read while nobody has changed it.
+    with open(os.path.join(tempfile.gettempdir(), "pipeshub-redis-search-timeout.lock"), "w") as lock:
+        await asyncio.to_thread(fcntl.flock, lock, fcntl.LOCK_EX)
+        original = (await redis_service.client.execute_command(
+            "CONFIG", "GET", "search-timeout"))[1]
+        if str(original) in ("1", "b'1'"):  # left behind by a run that died before restoring it
+            original = "500"
+        await redis_service.client.execute_command("CONFIG", "SET", "search-timeout", "1")
+        try:
+            yield col, filt
+        finally:
+            await redis_service.client.execute_command(
+                "CONFIG", "SET", "search-timeout", original)
+            await redis_service.delete_collection(col)
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 class TestRedisFilterOpsUnderTimeout:
@@ -89,3 +104,70 @@ class TestRedisFilterOpsUnderTimeout:
         col, filt = seeded
         page = await redis_service.scroll(col, filt, limit=5000)
         assert len(page.points) == 5000
+
+
+class TestRedisKeyScan:
+    async def test_key_scan_sees_every_point_exactly_once(self, redis_service) -> None:
+        """An unsorted offset page repeats some keys and misses others while documents are still settling
+        in the index, so a payload write skipped points. Scanned the moment the index counts them all."""
+        n = 30000
+        col = make_collection("redis_key_scan")
+        await redis_service.create_collection(col, make_collection_config())
+        try:
+            for start in range(0, n, 2000):
+                await redis_service.upsert_points(col, [
+                    VectorPoint(
+                        id=f"pt-{i}", dense_vector=make_dense([1.0]),
+                        payload={"page_content": f"c{i}", "metadata": {"orgId": "org1", "virtualRecordId": f"vr-{i % 500}"}},
+                    )
+                    for i in range(start, start + 2000)
+                ])
+            async def indexed() -> bool:
+                return await _count(redis_service, col) >= n
+
+            await wait_for(indexed, timeout=300, poll=0.2)
+
+            keys = await redis_service._keys_matching_filter(
+                col, FilterExpression(must=[FieldCondition(key="metadata.orgId", value="org1")]),
+            )
+
+            assert len(keys) == n == len(set(keys))
+        finally:
+            await redis_service.delete_collection(col)
+
+    async def test_a_truncated_cursor_raises_instead_of_answering_with_a_part(self, redis_service) -> None:
+        """The scan is held to a separate count of the matches: a cursor that ends early (here, cut after its
+        first batch) must not be taken for the whole set."""
+        n = 3000
+        col = make_collection("redis_key_scan_cut")
+        await redis_service.create_collection(col, make_collection_config())
+        try:
+            await redis_service.upsert_points(col, [
+                VectorPoint(
+                    id=f"pt-{i}", dense_vector=make_dense([1.0]),
+                    payload={"page_content": f"c{i}", "metadata": {"orgId": "org1", "virtualRecordId": f"vr-{i % 50}"}},
+                )
+                for i in range(n)
+            ])
+
+            async def indexed() -> bool:
+                return await _count(redis_service, col) >= n
+
+            await wait_for(indexed, timeout=120, poll=0.2)
+            real = redis_service.client.execute_command
+
+            async def cut(*args, **kwargs) -> list:
+                if args[:2] == ("FT.CURSOR", "READ"):
+                    return [[0], 0]  # the cursor "ends" after the first batch
+                return await real(*args, **kwargs)
+
+            redis_service.client.execute_command = cut
+            try:
+                with pytest.raises(RuntimeError, match=r"of 3000 counted"):
+                    await redis_service._keys_matching_filter(
+                        col, FilterExpression(must=[FieldCondition(key="metadata.orgId", value="org1")]),
+                    )
+            finally:
+                redis_service.client.execute_command = real
+        finally:
+            await redis_service.delete_collection(col)

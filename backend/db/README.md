@@ -32,7 +32,7 @@ It runs in its own image (`backend/db/Dockerfile`, `pipeshubai/pipeshub-migrate`
   `backend/`). Empty here.
 
 ## Graph (`versions/graph/`)
-The `graph` schema (the PostgreSQL graph store, `DATA_STORE=postgres`) is created whole by its baseline revision `graph_0001`: tables, partitions, indexes, row policies and the vetted organisation and connector reads; there is no chain of revisions before the first release. Until then a change to it edits the baseline in place. After the first release a change is a normal step revision.
+The `graph` schema (the PostgreSQL graph store, `DATA_STORE=postgres`) is created whole by its baseline revision `graph_0001`: tables, partitions, indexes, row policies and the vetted organisation and connector reads; a change after the baseline is a normal step revision (`graph_0002` adds the index on records by virtual record and content revision).
 
 ## Running
 `PG_MIGRATE_URL=postgresql+psycopg://pipeshub_migrate:...@host:5432/db python -m db.migrate` (from `backend/`).
@@ -41,6 +41,22 @@ session really holds it, and refuses (exit 2) when it does not, which is what ha
 Exit codes: 0 done, 1 a migration failed, 2 configuration, 3 lock wait timed out
 (`PG_MIGRATE_LOCK_TIMEOUT_S`, default 600), 4 `kernel.rls_violations` not empty. Downgrade is development
 only (`PG_MIGRATE_ALLOW_DOWNGRADE=1 python -m db.migrate downgrade <rev>`).
+
+## Placement worker (`python -m db.maintain placement`)
+The vector tables are partitioned by organisation. Each organisation gets a partition of its own before its first vector row; creating a partition is DDL, so the writing service files a request (`retrieval.org_leaf_request`) and waits for this worker to close it (`retrieval.org_leaf_status`). Run one worker per database wherever the PostgreSQL vector store is used (not selectable yet): `PG_MIGRATE_URL=... PG_JOBS_URL=... python -m db.maintain placement --watch [SECONDS]` (both direct addresses; the migrate login creates the partitions as the owner role, the jobs login reads and closes the requests). One pass handles at most 20 requests, oldest first, and takes the migrate lock only when there is one, so an idle worker never holds up a deployment; without `--watch` it makes one pass and exits (0 done, 1 a request failed, 2 configuration, 3 lock wait timed out, 5 a request was refused). It creates the partition of every partitioned table, secures it and attaches it in one transaction per table (a run that stopped half way is finished by the next), builds the bit-HNSW index of each registered embedding space on the points partition, and closes the request. An organisation that already has rows in a shared partition is refused and its request closed with the reason in `note`; a malformed organisation id is refused the same way; any other failure is retried with a growing delay (1, 2, 4 ... 60 seconds) and given up after 8 attempts, about two minutes after the first. A new ask re-opens a failed request once it is 30 seconds old.
+
+## Vector maintenance jobs (`python -m db.maintain`)
+Nothing here runs unless it is invoked, and the pgvector store is not selectable yet: these jobs only matter once it is. Every job works one organisation at a time (statements carry the org as a bound value and name only that org's rows), is idempotent, and can be killed at any point: each batch is one transaction, so a rerun finds a consistent state and finishes. A pass is bounded (100 batches per org), so a job that reports more to do is simply run again. Two runs of the same job on the same org never work it twice (a per-org advisory lock; the second skips the org; a second nightly exits busy). Jobs that read or change org data use `PG_JOBS_URL` (the jobs login, direct address); jobs that change the schema (indexes, leaf options) use `PG_MIGRATE_URL`, take the same lock as the migrate job one leaf at a time, and run as the owner role.
+
+| Command | What it does | Credential |
+| --- | --- | --- |
+| `fold [--watch [SECONDS]]` | folds the point-count deltas of every org into `retrieval.collection_stats` | jobs |
+| `recount [<org>]` | recomputes the point counts from the live points; exit 6 if an org was busy | jobs |
+| `group-gc` | deletes the membership of groups that have no point and are older than one hour | jobs |
+| `build-indexes` | the vector indexes of every points leaf for every embedding space that lacks them, built concurrently and sized to the leaf, one leaf at a time under the migrate lock | migrate |
+| `nightly [--all]` | pgvector before 0.8.4 only (HNSW safe mode, where deletes are tombstoned): deletes the points of tombstoned rows, rebuilds the vector indexes of the leaves that had tombstones (`--all`: every leaf), vacuums them and drops the tombstones; gives a leaf without a `vacuum_index_cleanup` setting `off` (an existing setting is never changed: after upgrading pgvector, remove it with `ALTER TABLE ... RESET (vacuum_index_cleanup)`), and runs `build-indexes`; only one nightly runs at a time, a second exits 6 (busy) | jobs and migrate |
+
+The placement worker never builds indexes on live leaves (it holds the migrate lock only to create a new leaf); a space registered later is indexed by `build-indexes` or the nightly. `VECTOR_BUILD_MEMORY_MB` and `VECTOR_BUILD_WORKERS` bound the memory and workers of an index build (a value that is not an integer of at least 1, or 0 for the workers, stops `placement`, `build-indexes` and `nightly` at start with an error naming the setting; empty means the default). Exit codes: 0 done, 1 failed, 2 configuration, 3 lock wait timed out, 5 refused, 6 done but some org or leaf failed or was busy (the failure is on the log line; the next run resumes).
 
 ## Writing a revision
 Expand then contract; never rename; backfills are jobs, not revisions. Index builds on existing tables go

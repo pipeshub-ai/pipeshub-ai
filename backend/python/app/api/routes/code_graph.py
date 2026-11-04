@@ -11,7 +11,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -32,7 +32,8 @@ from app.agents.actions.code_graph.repos import (
     repo_for_record,
     repo_not_found_message,
 )
-from app.api.middlewares.auth import require_scopes
+from app.api.connection_limit import ids_outside_connection
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.service import OAuthScopes
 from app.modules.code_graph.build_state import BuildStateStore, graph_status
 from app.modules.transformers.blob_storage import BlobStorage
@@ -169,19 +170,36 @@ async def _deps(request: Request) -> tuple["QueryAppContainer", "IGraphDBProvide
     return container, graph_provider, org_id, user_id
 
 
+async def _inside_limit(
+    request: Request, graph_provider: "IGraphDBProvider", org_id: str, user_id: str, repos: list[CodeRepo],
+) -> list[CodeRepo]:
+    """Of ``repos``, those a connected app's knowledge limit reaches; all of them without a limit."""
+    outside = await ids_outside_connection(request, graph_provider, org_id, user_id, [r.group_id for r in repos])
+    return [r for r in repos if r.group_id not in outside]
+
+
 async def _target(
-    graph_provider: "IGraphDBProvider", org_id: str, user_id: str, repo: str | None, record_id: str | None = None,
+    request: Request, graph_provider: "IGraphDBProvider", org_id: str, user_id: str,
+    repo: str | None, record_id: str | None = None,
 ) -> CodeRepo | JSONResponse:
     """The repo a request names, or the 404/409 that says why there is none.
 
-    The messages are built from the request, not from an exception.
+    The messages are built from the request, not from an exception. A repo
+    outside the caller's knowledge limit reads as absent, like one it cannot read.
     """
-    if not repo and record_id:
+    # A tool reads a record_id's own repo even when ``repo`` names another, so
+    # under a limit the record's repo is checked too.
+    if record_id and (not repo or connection_limit(request.state.user) is not None):
         try:
-            return await repo_for_record(graph_provider, org_id, user_id, record_id)
+            found = await repo_for_record(graph_provider, org_id, user_id, record_id)
         except RepoNotFoundError:
-            return _response({"error": repo_not_found_message(repo, record_id)}, 404)
+            found = None
+        if not found or not await _inside_limit(request, graph_provider, org_id, user_id, [found]):
+            return _response({"error": repo_not_found_message(None, record_id)}, 404)
+        if not repo:
+            return found
     matches = await matching_code_repos(graph_provider, org_id, user_id, repo or "")
+    matches = await _inside_limit(request, graph_provider, org_id, user_id, matches)
     if not matches:
         return _response({"error": repo_not_found_message(repo, record_id)}, 404)
     if len(matches) > 1:
@@ -212,7 +230,9 @@ async def _run(request: Request, body: RepoRef, record_id: str | None, call: Too
                *, semantic: bool = False) -> JSONResponse:
     container, graph_provider, org_id, user_id = await _deps(request)
     try:
-        repo = await _target(graph_provider, org_id, user_id, body.repo, record_id)
+        repo = await _target(request, graph_provider, org_id, user_id, body.repo, record_id)
+    except HTTPException:
+        raise
     except Exception:
         container.logger().exception("code-graph repo lookup failed")
         return _response({"error": "graph unavailable"}, 503)
@@ -237,6 +257,9 @@ async def code_repos(request: Request) -> JSONResponse:
     container, graph_provider, org_id, user_id = await _deps(request)
     try:
         repos = await list_code_repos(graph_provider, org_id, user_id)
+        repos = await _inside_limit(request, graph_provider, org_id, user_id, repos)
+    except HTTPException:
+        raise
     except Exception:
         container.logger().exception("code-graph repo listing failed")
         return _response({"error": "graph unavailable"}, 503)
