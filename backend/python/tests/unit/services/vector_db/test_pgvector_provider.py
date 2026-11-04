@@ -536,6 +536,84 @@ async def test_a_dense_search_ranks_like_a_one_leg_fusion_with_the_payload_of_ea
     assert [h.payload for h in bare] == [{}, {}, {}] and len(calls.retrieved) == 1
 
 
+@pytest.fixture
+def lexical_rows(searcher, monkeypatch) -> SimpleNamespace:
+    """The lexical leg answers what the test sets; ``asked`` records its arguments."""
+    from app.services.vector_db.pgvector import lexical
+
+    u = lambda n: (100 + n, str(__import__("uuid").UUID(int=n)))  # noqa: E731
+    box = SimpleNamespace(answer=([u(3), u(4)], None), asked=[], u=u)
+
+    async def search(db, org, collection_id, sparse, scope, leg, t) -> tuple[list, str | None]:
+        box.asked.append((org, collection_id, sparse.indices, leg))
+        return box.answer
+
+    monkeypatch.setattr(lexical, "search", search)
+    return box
+
+
+@pytest.mark.asyncio
+async def test_the_legs_are_fused_by_reciprocal_rank_and_a_lexical_only_request_is_answered(searcher, lexical_rows) -> None:
+    from app.services.vector_db.models import HybridSearchRequest, SparseVector
+
+    svc, calls = searcher
+    sparse = SparseVector([7, 9], [1.0, 0.5])
+    [hits] = await svc.query_nearest_points("records", [request(limit=10, sparse_query=sparse)])
+    ids = [h.id for h in hits]
+    uid = lambda n: str(__import__("uuid").UUID(int=n))  # noqa: E731
+    # dense: 2, 1, 3 (1/2, 1/3, 1/4); lexical: 3, 4 (1/2, 1/3): the point in both legs is first, equal scores go by id
+    assert ids == [uid(3), uid(2), uid(1), uid(4)]
+    assert [h.score for h in hits] == [pytest.approx(0.75), pytest.approx(0.5), pytest.approx(1 / 3), pytest.approx(1 / 3)]
+    assert lexical_rows.asked == [(ORG, ROW.collection_id, [7, 9], 20)]
+    calls.dense.clear()
+    [only] = await svc.query_nearest_points("records", [HybridSearchRequest(dense_query=None, sparse_query=sparse, filter=request().filter, limit=10)])
+    assert [h.id for h in only] == [uid(3), uid(4)] and not calls.dense                       # no dense leg ran
+    assert await svc.query_nearest_points("records", [request(sparse_query=SparseVector([], []))]) != [[]]      # an empty lexical query is the dense answer
+
+
+@pytest.mark.asyncio
+async def test_a_failing_leg_cancels_the_other_instead_of_leaving_it_running(searcher, monkeypatch) -> None:
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import dense, lexical
+    from app.services.vector_db.pgvector.errors import PgVectorError
+
+    svc, _ = searcher
+    parked, seen = asyncio.Event(), SimpleNamespace(cancelled=False, finished=False)
+
+    async def lexical_leg(*a, **k) -> tuple[list, None]:
+        parked.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            seen.cancelled = True
+            raise
+        seen.finished = True
+        return [], None
+
+    async def broken_dense(*a, **k) -> None:
+        await parked.wait()                                          # the lexical leg is parked when the dense leg fails
+        raise PgVectorError("the dense leg failed")
+
+    monkeypatch.setattr(lexical, "search", lexical_leg)
+    monkeypatch.setattr(dense, "search", broken_dense)
+    with pytest.raises(PgVectorError, match="dense leg failed"):
+        await svc.query_nearest_points("records", [request(limit=10, sparse_query=SparseVector([7], [1.0]))])
+    assert seen.cancelled and not seen.finished                      # it saw the cancellation before the call returned
+
+
+@pytest.mark.asyncio
+async def test_a_lexical_leg_that_failed_leaves_the_dense_answer_flagged(searcher, lexical_rows) -> None:
+    from app.services.vector_db.models import SparseVector
+
+    svc, _ = searcher
+    lexical_rows.answer = ([], "timeout")
+    [hits] = await svc.query_nearest_points("records", [request(limit=10, sparse_query=SparseVector([7], [1.0]))])
+    assert len(hits) == 3 and {h.degraded for h in hits} == {"timeout"}
+    lexical_rows.answer = (lexical_rows.answer[0], None)
+    [hits] = await svc.query_nearest_points("records", [request(limit=10, sparse_query=SparseVector([7], [1.0]))])
+    assert {h.degraded for h in hits} == {None}
+
+
 @pytest.mark.asyncio
 async def test_what_a_search_refuses_and_what_it_finds_nothing_for(searcher) -> None:
     from app.services.vector_db.models import (
@@ -555,8 +633,8 @@ async def test_what_a_search_refuses_and_what_it_finds_nothing_for(searcher) -> 
         await svc.query_nearest_points("records", [request(limit=0)])
     with pytest.raises(SpaceMismatch, match="dimensions"):
         await svc.query_nearest_points("records", [request(dense=[1.0, 0.0])])
-    with pytest.raises(NotImplementedError, match="lexical"):
-        await svc.query_nearest_points("records", [HybridSearchRequest(dense_query=[1.0] * 4, sparse_query=SparseVector([1], [1.0]), filter=request().filter)])
+    with pytest.raises(ValueError, match="term id"):
+        await svc.query_nearest_points("records", [HybridSearchRequest(dense_query=[1.0] * 4, sparse_query=SparseVector([2**32], [1.0]), filter=request().filter)])
     assert await svc.query_nearest_points("records", [request(dense=None)]) == [[]]
     assert await svc.query_nearest_points("records", []) == []
     svc._catalog.active_space = AsyncMock(return_value=None)
