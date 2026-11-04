@@ -89,12 +89,29 @@ export async function startCluster(bin: string, work: string): Promise<Cluster> 
     return p
   }, PORT_BASE, PORT_SPAN)
   const probe = new Cluster(bin, root, port, 0)
-  const major = await probe.admin(async (c) => {
-    // JIT compiles the catalog queries of every migration and made each test of the reverse shard about six times slower, so a cluster with it on is a harness fault
-    if ((await c.query('SHOW jit')).rows[0].jit !== 'off') throw new Error('the test cluster started with jit on')
-    return Math.floor(Number((await c.query("SHOW server_version_num")).rows[0].server_version_num) / 10000)
-  })
-  return new Cluster(bin, root, port, major)
+  try {
+    // PGOPTIONS (read by every pg client) could set a session value and hide the server's, so it is out of the environment while the probe connects.
+    const pgoptions = process.env.PGOPTIONS
+    delete process.env.PGOPTIONS
+    const c = new Client({ host: '127.0.0.1', port, user: 'postgres', database: 'postgres' })
+    try {
+      await c.connect()
+    } finally {
+      if (pgoptions !== undefined) process.env.PGOPTIONS = pgoptions
+    }
+    let major: number
+    try {
+      // JIT compiles the catalog queries of every migration and made each test of the reverse shard about six times slower, so a cluster with it on is a harness fault.
+      if ((await c.query('SHOW jit')).rows[0].jit !== 'off') throw new Error('the test cluster started with jit on')
+      major = Math.floor(Number((await c.query('SHOW server_version_num')).rows[0].server_version_num) / 10000)
+    } finally {
+      await c.end()
+    }
+    return new Cluster(bin, root, port, major)
+  } catch (e) {
+    probe.stop() // the caller never gets the cluster, so nothing else would stop this server or free its port
+    throw e
+  }
 }
 
 export interface Bouncer {
