@@ -1483,6 +1483,7 @@ class TestZeroRowNote:
         ("SELECT name FROM cards WHERE year = 2020", [], False),
         ("SELECT a, b FROM t WHERE c = 'x'", [(0, 0), (0, 0)], False),
         ("SELECT name FROM t WHERE name = 'a\\'b'", [], False),
+        ("SELECT COUNT(*) FROM t WHERE c = 'x'", [(False,)], False),
     ])
     def test_only_an_empty_result_on_a_text_literal_gets_the_note(self, query: str, rows: list, expected: bool) -> None:
         from app.utils.execute_query import _zero_row_note
@@ -1494,7 +1495,18 @@ class TestZeroRowNote:
 
         note = _zero_row_note("SELECT * FROM p WHERE p.country = 'America'", "mariadb", [])
         assert "p.country = 'America'" in note
-        assert "LOWER(p.country) LIKE '%america%'" in note
+        assert "LOWER(p.country) LIKE LOWER('%America%')" in note
+
+    @pytest.mark.parametrize("query", [
+        "SELECT * FROM p WHERE \"Country\" = 'America'",
+        "SELECT * FROM p WHERE p.\"Country\" = 'America'",
+        "SELECT * FROM p WHERE \"my \"\"odd\"\" col\" = 'America'",
+    ])
+    def test_a_quoted_column_is_kept_whole(self, query: str) -> None:
+        from app.utils.execute_query import _zero_row_note
+
+        column = query.split(" WHERE ")[1].split(" = ")[0]
+        assert f"LOWER({column}) LIKE" in _zero_row_note(query, "postgres", [])
 
     def test_a_decimal_zero_counts_as_empty(self) -> None:
         from decimal import Decimal
@@ -1508,7 +1520,7 @@ class TestZeroRowNote:
 
         note = _zero_row_note("SELECT id FROM t WHERE name = 'O''Brien'", "postgres", [])
         assert "name = 'O'Brien'" in note
-        assert "LIKE '%o''brien%'" in note
+        assert "LIKE LOWER('%O''Brien%')" in note
 
     def test_postgres_reads_only_the_statement_it_ran(self) -> None:
         from app.utils.execute_query import _zero_row_note

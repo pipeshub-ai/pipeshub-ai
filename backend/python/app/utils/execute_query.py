@@ -559,8 +559,10 @@ async def _execute_mariadb_query(
 
 # An empty result on a filter against a literal copied from the question was
 # answered as a confident "none" when the stored spelling or case differed.
+_IDENTIFIER_PART = r'(?:"(?:[^"]|"")+"|`[^`]+`|[A-Za-z_]\w*)'
 _TEXT_LITERAL_FILTER = re.compile(
-    r"([A-Za-z_][\w.\"`]*)\s*(?:=|\bI?LIKE\b)\s*'((?:[^']|'')+)'", re.IGNORECASE
+    rf"((?<![\w\"`]){_IDENTIFIER_PART}(?:\.{_IDENTIFIER_PART})*)\s*(?:=|\bI?LIKE\b)\s*'((?:[^']|'')+)'",
+    re.IGNORECASE,
 )
 
 
@@ -571,7 +573,10 @@ def _empty_result(rows: list[Any]) -> bool:
     if len(rows) > 1:
         return False
     values = rows[0].values() if isinstance(rows[0], dict) else rows[0]
-    return all(value is None or (isinstance(value, (int, float, Decimal)) and value == 0) for value in values)
+    return all(
+        value is None or (isinstance(value, (int, float, Decimal)) and not isinstance(value, bool) and value == 0)
+        for value in values
+    )
 
 
 def _zero_row_note(query: str, source_type: str, rows: list[Any]) -> str | None:
@@ -585,13 +590,13 @@ def _zero_row_note(query: str, source_type: str, rows: list[Any]) -> str | None:
     if not match:
         return None
     column, literal = match.group(1), match.group(2).replace("''", "'").strip("%")
-    # LOWER on both sides is case-insensitive in every dialect and collation.
-    pattern = literal[:20].lower().replace("'", "''")
+    # LOWER on both sides, in the database, is case-insensitive in every dialect and collation.
+    pattern = literal[:20].replace("'", "''")
     return (
         f"The result has no rows, or only zeros and NULLs. If rows were expected, the filter "
         f"{column} = '{literal}' may not match the stored value, which can differ in spelling, "
         f"case or abbreviation: look it up first (e.g. SELECT {column}, COUNT(*) ... WHERE "
-        f"LOWER({column}) LIKE '%{pattern}%' GROUP BY {column}) and rerun with the stored "
+        f"LOWER({column}) LIKE LOWER('%{pattern}%') GROUP BY {column}) and rerun with the stored "
         "value before reporting the result."
     )
 
