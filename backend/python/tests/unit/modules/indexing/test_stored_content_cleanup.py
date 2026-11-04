@@ -229,7 +229,7 @@ class TestPipelineUsesTheStorageStep:
         registry = MagicMock()
         registry.strategy = MagicMock()
         registry.manifest_store = MagicMock()
-        return IndexingPipeline(
+        pipeline = IndexingPipeline(
             logger=MagicMock(),
             config_service=MagicMock(),
             graph_provider=AsyncMock(),
@@ -237,6 +237,10 @@ class TestPipelineUsesTheStorageStep:
             vector_db_service=AsyncMock(),
             stored_content=stored_content,
         )
+        pipeline.vector_db_service.scroll = AsyncMock(return_value=MagicMock(points=[]))  # no other org holds points
+        pipeline.collection_locator = MagicMock()
+        pipeline.collection_locator.all_collections = AsyncMock(return_value=["records"])
+        return pipeline
 
     @pytest.mark.asyncio
     async def test_forgetting_a_mapping_goes_through_the_storage_step(self):

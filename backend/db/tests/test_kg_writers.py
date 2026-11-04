@@ -315,6 +315,9 @@ def test_a_class_id_is_not_reused_for_other_content_and_its_clauses_are_an_array
 
 
 # ---- locks are taken in key order -----------------------------------------------------------------------------------------------------------------------
+CLASS_A = ([7], [1], [None], ['[[1,"@self"]]'], [b"\x01" * 32])
+
+
 def _hammer(pdb, name: str, make, rounds: int) -> list[str]:
     """Two sessions of one org call ``name`` with the same keys, one ascending and one descending; the errors they met."""
     import threading
@@ -337,6 +340,39 @@ def _hammer(pdb, name: str, make, rounds: int) -> list[str]:
     for t in threads:
         t.join()
     return errors
+
+
+def test_a_class_committed_meanwhile_with_other_content_is_refused_not_taken_for_written(pdb):
+    """The check before the insert cannot see a row another transaction has not committed yet; the insert waits for it, skips on the conflict, and the writer must not answer as if its class were stored."""
+    import threading
+    import time
+
+    with conn(pdb) as c:
+        clean(c)
+    outcome: list[object] = []
+    with conn(pdb) as holder, conn(pdb) as writer, conn(pdb) as watch:
+        def run() -> None:
+            try:
+                outcome.append(call(writer, "kg.w_classes_set", ORG_A, ([7], [1], [None], ['[[1,"@self"]]'], [b"\x02" * 32])))
+            except Exception as exc:
+                outcome.append(exc)
+
+        thread = threading.Thread(target=run)
+        with unit(holder, "pipeshub_connectors", ORG_A):
+            holder.execute(f"SELECT {'kg.w_classes_set'}({marks(CLASS_A, 'kg.w_classes_set')})", CLASS_A).fetchall()        # not committed yet
+            thread.start()
+            deadline = time.monotonic() + 60
+            while not watch.execute(
+                "SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND pid NOT IN (pg_backend_pid(), %s) AND query LIKE '%%w_classes_set%%'",
+                (holder.info.backend_pid,),
+            ).fetchone():
+                assert time.monotonic() < deadline, "the writer never reached the conflicting insert"
+        thread.join()
+        stored = holder.execute("SELECT hash FROM kg.scope_classes WHERE org_id = %s AND id = 7", (ORG_A,)).fetchall()
+    assert len(outcome) == 1 and isinstance(outcome[0], pg.InvalidParameterValue), outcome
+    assert stored == [(b"\x01" * 32,)]
+    with conn(pdb) as c:
+        clean(c)
 
 
 @pytest.mark.parametrize("name, make", [
