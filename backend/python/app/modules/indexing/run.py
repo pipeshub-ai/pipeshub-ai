@@ -28,6 +28,9 @@ from app.services.vector_db.membership import (
     write_membership_batch_locked,
 )
 from app.services.vector_db.membership import (
+    orgs_holding_points as _orgs_holding_points,
+)
+from app.services.vector_db.membership import (
     rewrite_or_delete_virtual_record as _rewrite_or_delete_virtual_record,
 )
 from app.services.vector_db.membership import (
@@ -64,8 +67,6 @@ CONNECTOR_DELETE_SCROLL_PAGE_SIZE = 500
 # retried rather than written from a read that proved nothing.
 MEMBERSHIP_REREAD_MAX_POINTS = 10_000
 
-
-_MAX_ORGS_PER_VIRTUAL_RECORD = 50  # a shared record is held by a handful of orgs at most
 
 
 class ScanResult(NamedTuple):
@@ -197,31 +198,13 @@ class IndexingPipeline:
         )
 
     async def orgs_holding_points(self, virtual_record_id: str) -> set[str]:
-        """The orgs that hold points of this virtual record, read from the points themselves.
+        """The orgs that hold points of this virtual record, read from the points themselves (see ``membership.orgs_holding_points``).
 
-        For a maintenance pass that finds a virtual record whose mapping row names no org (written before rows
-        did): the points are the only thing left that names an owner. A read, one scroll per org found.
+        For a maintenance pass that finds a virtual record whose mapping row or records name no org: the points are what is left
+        that names an owner.
         """
         collections = await self.collection_locator.all_collections(fresh=True, strict=True)
-        orgs: set[str] = set()
-        while len(orgs) < _MAX_ORGS_PER_VIRTUAL_RECORD:
-            must_not = {"orgId": sorted(orgs)} if orgs else None
-            filt = await self.vector_db_service.filter_collection(
-                must={"virtualRecordId": virtual_record_id}, **({"must_not": must_not} if must_not else {})
-            )
-            found = None
-            for name in collections:
-                page = await self.vector_db_service.scroll(
-                    collection_name=name, scroll_filter=filt, limit=1, with_payload=["metadata.orgId"],
-                )
-                points = list(getattr(page, "points", None) or [])
-                if points:
-                    found = ((points[0].payload or {}).get("metadata") or {}).get("orgId")
-                    break
-            if not found:
-                break
-            orgs.add(found)
-        return orgs
+        return await _orgs_holding_points(self.vector_db_service, collections, virtual_record_id)
 
     async def release_orphan_mapping(self, virtual_record_id: str) -> bool:
         """Drop the mapping row (and the stored content behind it) of a virtual record nothing references and no

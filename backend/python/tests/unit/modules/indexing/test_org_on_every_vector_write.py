@@ -472,3 +472,25 @@ async def test_a_payload_cannot_move_points_to_another_org(db, payload) -> None:
     with pytest.raises(OrgMismatch):
         await db.overwrite_payload(COLL, payload, flt)
     assert _payload(db, A)["metadata"]["orgId"] == A
+
+
+# the org-less invalidation of a scope stamp reaches the points of that record, org by org, and nothing else
+async def test_marking_a_record_stale_with_no_org_bound_invalidates_every_owners_stamp_and_only_this_records(db, monkeypatch) -> None:
+    from app.services.permissions.mode import ENV_SCOPE_FIELDS
+    from app.services.permissions.scope_fields import ScopeFields
+    from app.services.vector_db.membership import mark_scope_stale
+
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "1")
+    other = _point(A, "o1")
+    other.id, other.payload["metadata"]["virtualRecordId"] = "a-other", "vr-other"
+    await db.upsert_points(COLL, [other])
+    trusted = ScopeFields.container().to_payload()
+    for point in db.collections[COLL].values():
+        point.payload.update(trusted)
+        assert ScopeFields.from_payload(point.payload).trusted
+
+    await mark_scope_stale(db, StaticCollectionLocator([COLL]), VRID, MagicMock())          # no org bound
+
+    for pid in ("a-b1", "a-b2", "b-b1", "b-b2"):
+        assert not ScopeFields.from_payload(db.collections[COLL][pid].payload).trusted, pid
+    assert ScopeFields.from_payload(db.collections[COLL]["a-other"].payload).trusted

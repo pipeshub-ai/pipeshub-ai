@@ -284,28 +284,31 @@ async def run_vector_membership_backfill_tick(
             orgs_of[row_vrid].append(row_org)
     for processed, vrid in enumerate(vrids, start=1):
         owners = orgs_of.get(vrid) or ([str(app_org)] if app_org else [])
-        if not owners:
-            # Not a failure: retrying cannot name an org, and a failure would hold the connector's backfill open for ever.
-            ORG_SKIPPED.inc("membership_backfill")
-            logger.warning(
-                "Vector membership backfill skipped virtualRecordId=%s connector=%s: none of its records names an org",
-                vrid, connector_id,
-            )
-        else:
-            try:
-                for org_id in owners:
-                    with for_org(org_id, job="vector_membership_backfill"):
-                        await pipeline.sync_vector_membership(vrid)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                failed += 1
-                logger.exception(
-                    "Vector membership backfill failed for virtualRecordId=%s "
-                    "connector=%s; continuing page",
-                    vrid,
-                    connector_id,
+        try:
+            if not owners:
+                # No record and no app names an org: the points are what is left that names their owners. Syncing under each owner
+                # recomputes the membership and re-stamps (or invalidates) the scope fields of its points, and only of this record.
+                owners = sorted(await pipeline.orgs_holding_points(vrid))
+            if not owners:
+                # No point holds this record, so there is no stamp to invalidate and nothing to sync. Not a failure.
+                ORG_SKIPPED.inc("membership_backfill")
+                logger.info(
+                    "Vector membership backfill: virtualRecordId=%s connector=%s has no org and no points; nothing to sync",
+                    vrid, connector_id,
                 )
+            for org_id in owners:
+                with for_org(org_id, job="vector_membership_backfill"):
+                    await pipeline.sync_vector_membership(vrid)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            failed += 1
+            logger.exception(
+                "Vector membership backfill failed for virtualRecordId=%s "
+                "connector=%s; continuing page",
+                vrid,
+                connector_id,
+            )
         if vrid_pause_ms > 0:
             await asyncio.sleep(vrid_pause_ms / 1000.0)
 

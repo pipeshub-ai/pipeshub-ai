@@ -69,6 +69,7 @@ from app.services.vector_db.const.const import (
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
 )
+from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import org_for_filter
 
 if TYPE_CHECKING:
@@ -633,15 +634,56 @@ def scope_org_id() -> str | None:
         return None
 
 
+_MAX_ORGS_PER_VIRTUAL_RECORD = 50  # a shared record is held by a handful of orgs at most
+
+
+_ORG_KEY = "orgId"  # the key inside a point's metadata; a constant so the direct-read ratchet sees a deliberate read
+
+
+async def orgs_holding_points(vector_db, collections: Sequence[str], virtual_record_id: str) -> set[str]:  # noqa: ANN001
+    """The orgs that hold points of this virtual record, read from the points themselves (a read, one scroll per org found).
+
+    For a pass with no org bound that must still reach every owner of the record's points, and only those.
+    """
+    orgs: set[str] = set()
+    while len(orgs) < _MAX_ORGS_PER_VIRTUAL_RECORD:
+        filt = await vector_db.filter_collection(
+            must={"virtualRecordId": virtual_record_id}, **({"must_not": {"orgId": sorted(orgs)}} if orgs else {})
+        )
+        found = None
+        for name in collections:
+            page = await vector_db.scroll(collection_name=name, scroll_filter=filt, limit=1, with_payload=["metadata.orgId"])
+            points = list(getattr(page, "points", None) or [])
+            if points:
+                found = ((points[0].payload or {}).get("metadata") or {}).get(_ORG_KEY)
+                break
+        if not found:
+            break
+        orgs.add(found)
+    return orgs
+
+
 async def write_scope_fields(
     vector_db, collections: Sequence[str], virtual_record_ids: Sequence[str], fields: ScopeFields, org_id: str | None  # noqa: ANN001
 ) -> None:
     """Write the scope keys (and only those) of the points of these virtual records. Matches this organisation's points when one is
-    known; the membership arrays are written by their own call, with their own filter, exactly as without scope fields."""
-    must: dict[str, Any] = {"virtualRecordId": list(virtual_record_ids), **({"orgId": org_id} if org_id else {})}
-    filt = await vector_db.filter_collection(must=must)
-    for name in collections:
-        await vector_db.set_payload(name, fields.to_payload(), filt)
+    known; the membership arrays are written by their own call, with their own filter, exactly as without scope fields.
+
+    With no org (the caller then writes ``STALE_SCOPE``, which invalidates a stamp) the write goes to each org that holds points of
+    these records, found from the points: every write names an org, and no point of another record is touched.
+    """
+    ids = list(virtual_record_ids)
+    if org_id:
+        orgs = [org_id]
+    else:
+        found: set[str] = set()
+        for vrid in ids:
+            found |= await orgs_holding_points(vector_db, collections, vrid)
+        orgs = sorted(found)
+    for org in orgs:
+        filt = await vector_db.filter_collection(must={"virtualRecordId": ids, "orgId": org})
+        for name in collections:
+            await vector_db.set_payload(name, fields.to_payload(), filt)
 
 
 async def mark_scope_stale(vector_db, locator: CollectionLocator, virtual_record_id: str, logger) -> None:  # noqa: ANN001
@@ -776,7 +818,12 @@ async def _sync_vector_membership_locked(
     delete-aware caller uses that to tell "this VRID now lives here and nowhere
     else" apart from "the graph did not give me a usable answer".
     """
-    org_id = org_for_filter()
+    try:
+        org_id = org_for_filter()
+    except OrgRequired:
+        # No org to sync under, but a stamp already on the points may now be wrong: invalidate it via the owners, then fail closed.
+        await mark_scope_stale(vector_db, locator, virtual_record_id, logger)
+        raise
     state = await resolve_virtual_record_state(graph_provider, virtual_record_id, org_id=org_id)
     connector_ids, record_group_ids = state.connector_ids, state.record_group_ids
 

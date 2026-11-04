@@ -208,7 +208,7 @@ class TestMembershipIsOrgScoped:
         assert vdb.payload_writes == [COLL_A]
 
     @pytest.mark.parametrize("_bound_org, coll", [(ORG_A, COLL_A), (ORG_B, COLL_B)], indirect=["_bound_org"])
-    async def test_a_vrid_shared_by_two_orgs_is_rewritten_for_the_calling_org_only(self, coll):
+    async def test_a_vrid_shared_by_two_orgs_is_rewritten_for_the_calling_org_only(self, coll) -> None:
         """Legacy cross-org duplicates exist on upgraded deployments, from when
         dedup was global. Each org's own sync writes its own copy from its own records."""
         vdb = FakeVectorDB()
