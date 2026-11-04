@@ -225,6 +225,8 @@ describe('AgentRegistrationService', () => {
         expect(stored).to.not.include(secret);
       }
       expect(stored).to.include(hashOpaqueToken(r.claim_token));
+      // A 6-digit code's bare digest is found by trying all 10^6 codes.
+      expect(stored).to.not.include(hashOpaqueToken(r.claim.user_code));
     });
 
     it('answers an unknown and a known address alike (it never looks users up)', async () => {

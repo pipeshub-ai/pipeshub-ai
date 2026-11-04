@@ -91,6 +91,13 @@ type AgentTokenResponse = TokenResponse & {
 const fail = (code: string, message: string): DeviceGrantError =>
   new DeviceGrantError(code, message);
 
+/**
+ * The claim code has only 10^6 values, so its bare digest is reversed by trying them all. Bound to its attempt token,
+ * a random value stored only as a digest, the stored hash says nothing without the claim link.
+ */
+const claimCodeHash = (attemptToken: string, userCode: string): string =>
+  hashOpaqueToken(`${attemptToken}:${userCode}`);
+
 const sameHash = (a: string, b: string): boolean =>
   a.length === b.length &&
   crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -277,7 +284,10 @@ export class AgentRegistrationService {
       });
       return 'revoked';
     }
-    const typed = hashOpaqueToken((userCode ?? '').replace(/\s+/g, ''));
+    const typed = claimCodeHash(
+      attemptToken,
+      (userCode ?? '').replace(/\s+/g, ''),
+    );
     if (!sameHash(typed, reg.userCodeHash)) {
       await repo.recordAgentFailedAttempt(reg._id, MAX_FAILED_CODE_ATTEMPTS);
       throw fail('invalid_user_code', 'that code is not right');
@@ -521,7 +531,7 @@ export class AgentRegistrationService {
       token,
       userCode,
       hash: hashOpaqueToken(token),
-      userCodeHash: hashOpaqueToken(userCode),
+      userCodeHash: claimCodeHash(token, userCode),
       expiresAt: new Date(Date.now() + CLAIM_CODE_TTL_SECONDS * 1000),
     };
   }
