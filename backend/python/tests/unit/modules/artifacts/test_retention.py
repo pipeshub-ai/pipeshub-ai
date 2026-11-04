@@ -828,3 +828,106 @@ async def test_a_trash_check_that_cannot_run_fails_the_page_before_anything_is_d
         await _sweep(graph, store).run_page(None)
 
     assert store.deleted == [] and store.list_calls == 0 and len(graph.states) == 1
+
+
+@dataclass
+class _TwoOrgGraph(FakeGraph):
+    """The same virtual record id in two organisations: pointers, trash and stage states are each told by organisation."""
+
+    trashed_orgs: set[str] = field(default_factory=set)
+    org_states: dict[str, list[tuple[str, str, int]]] = field(default_factory=dict)
+    pointers: list[dict[str, Any]] = field(default_factory=list)
+
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        return [p for p in self.pointers if after_key is None or p["virtualRecordId"] > after_key][:limit]
+
+    async def get_virtual_record_ids_in_use(
+        self, vrids: list[str], *, visibility: RecordVisibility = RecordVisibility.LIVE
+    ) -> set[str]:
+        return set(vrids) if current_org_id_or_none() in self.trashed_orgs else set()
+
+    async def get_virtual_record_holders(self, vrids: list[str], org_id: str) -> dict[str, list[dict[str, Any]]]:
+        return {}
+
+    async def stage_states_unheld_revisions(self, vrids: list[str], *, updated_before_ms: int) -> list[tuple[str, str]]:
+        return sorted({(v, r) for v, r, at in self.org_states.get(current_org_id_or_none() or "", []) if v in vrids and at < updated_before_ms})
+
+    async def stage_states_delete_unheld_revisions(self, revisions: list[tuple[str, str]], *, updated_before_ms: int) -> int:
+        org = current_org_id_or_none() or ""
+        self.delete_orgs.append(org)
+        before = len(self.org_states[org])
+        self.org_states[org] = [s for s in self.org_states[org] if (s[0], s[1]) not in set(revisions)]
+        return before - len(self.org_states[org])
+
+
+@pytest.mark.asyncio
+async def test_two_orgs_that_share_a_virtual_record_id_never_touch_each_others_state() -> None:
+    """The retention state was told by virtual record id alone, so the pointer of the later organisation took the id over: the first one's
+    pass ran under the wrong organisation, and one organisation's trashed copy kept the other's revisions from being retired."""
+    graph, store = _TwoOrgGraph(), FakeStore()
+    graph.pointers = [{"virtualRecordId": "v", "orgId": o, "currentRev": "r2", "previousRev": None} for o in ("org-a", "org-b")]
+    graph.trashed_orgs = {"org-b"}
+    graph.org_states = {"org-a": [("v", "r1", OLD)], "org-b": [("v", "r1", OLD)]}
+
+    with org_context.system("retention_test"):
+        _, report = await _sweep(graph, store).run_page(None)
+
+    assert graph.delete_orgs == ["org-a"]                      # org-a's stale revision is retired, under org-a
+    assert graph.org_states == {"org-a": [], "org-b": [("v", "r1", OLD)]}      # org-b's copy is in the trash: nothing of it is touched
+    assert report.skipped_trashed == 1 and report.stage_states_deleted == 1
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_never_cuts_inside_the_organisations_that_share_a_virtual_record_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cursor is a virtual record id, so a walk cut between two organisations' pointers of one id could only resume before the group and start it again, and a group
+    wider than a walk's budget would never be passed. The group is finished, and the cursor moves past it."""
+    graph, store = _TwoOrgGraph(), FakeStore()
+    orgs = ("org-a", "org-b", "org-c")
+    graph.pointers = [{"virtualRecordId": "v", "orgId": o, "currentRev": "r2", "previousRev": None} for o in orgs] + [
+        {"virtualRecordId": "w", "orgId": "org-a", "currentRev": "r2", "previousRev": None}]
+    graph.org_states = {o: [("v", "r1", OLD), ("w", "r1", OLD)] for o in orgs}
+    monkeypatch.setattr(retention_module, "time", types.SimpleNamespace(monotonic=lambda: 100.0))          # the budget is spent from the first pointer on
+
+    with org_context.system("retention_test"):
+        key, report = await _sweep(graph, store, concurrency=1).run_page(None, deadline=50.0)
+        after_first = {o: [s[0] for s in states] for o, states in graph.org_states.items()}
+        second, _ = await _sweep(graph, store, concurrency=1).run_page(key, deadline=50.0)
+
+    assert report.cut_short and key == "v"                                   # cut after the whole group, before "w"
+    assert after_first == {"org-a": ["w"], "org-b": ["w"], "org-c": ["w"]}   # every organisation of "v" was done in the first walk
+    assert second is None and graph.org_states["org-a"] == [] and graph.org_states["org-b"] == [("w", "r1", OLD)]      # "w" has one pointer, in org-a
+
+
+@dataclass
+class _PerOrgStore(FakeStore):
+    """Revisions told by organisation: what each organisation deleted."""
+
+    org_deleted: set[tuple[str, str]] = field(default_factory=set)
+
+    async def list_revisions(self, org_id: str, vrid: str, *, timeout_seconds: float | None = None) -> list[dict[str, Any]]:
+        return [r for r in self.revisions.get(vrid, []) if (org_id, r["documentId"]) not in self.org_deleted]
+
+    async def delete_revision(self, org_id: str, document_id: str, **_: object) -> int | None:
+        self.org_deleted.add((org_id, document_id))
+        return 1
+
+
+@dataclass
+class _MappedPerOrgGraph(_TwoOrgGraph):
+    async def get_document(self, key: str, collection: str) -> dict[str, Any] | None:
+        return {"id": key, "orgId": current_org_id_or_none(), "currentRev": "r2", "previousRev": None}
+
+
+@pytest.mark.asyncio
+async def test_the_organisations_joining_a_started_group_after_the_deadline_still_retire_their_revisions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finished is final for the cursor: left to the deadline, a later organisation of the group kept its old revisions and was not looked at again until the next lap."""
+    graph, store = _MappedPerOrgGraph(), _PerOrgStore()
+    orgs = ("org-a", "org-b", "org-c")
+    graph.pointers = [{"virtualRecordId": "v", "orgId": o, "currentRev": "r2", "previousRev": None} for o in orgs]
+    store.add("v", "r1")
+    monkeypatch.setattr(retention_module, "time", types.SimpleNamespace(monotonic=lambda: 100.0))          # the budget is spent from the first pointer on
+
+    with org_context.system("retention_test"):
+        await _sweep(graph, store, concurrency=1).run_page(None, deadline=50.0)
+
+    assert {("org-b", "v@r1"), ("org-c", "v@r1")} <= store.org_deleted      # the first one is held to the budget as before; the ones that join it are not
