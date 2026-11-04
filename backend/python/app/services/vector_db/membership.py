@@ -41,6 +41,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import (
+    TYPE_CHECKING,
     Any,
     AsyncIterator,
     Awaitable,
@@ -53,12 +54,26 @@ from typing import (
 )
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import (
+    MissingOrgContext,
+    SystemContextNotAllowed,
+    current_org_id,
+)
 from app.services.graph_db.common.utils import ROOT_SCOPED_CONNECTOR_TYPES
+from app.services.permissions.metrics import SCOPE_REFUSED, SCOPE_STAMP_FAILED
+from app.services.permissions.mode import scope_fields_enabled
+from app.services.permissions.projector import ScopeProjector
+from app.services.permissions.scope_fields import ScopeFields
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
 )
+
+if TYPE_CHECKING:
+    import logging
+
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
 @runtime_checkable
@@ -114,15 +129,24 @@ _RECORD_GROUPS_PREFIX = f"{CollectionNames.RECORD_GROUPS.value}/"
 _MAX_GROUP_ROOT_DEPTH = 20  # cycle guard; real hierarchies are 1-2 deep
 
 
+_cv_scope: ContextVar[ScopeFields | None] = ContextVar("vector_scope_fields", default=None)
+
+#: Marks a point whose scope fields must be recomputed (the projection failed, or the point's records changed under it): it
+#: has no exact stamp, so it stays on the legacy filter, and `version` 0 makes the back-fill redo it.
+STALE_SCOPE = ScopeFields.stale()
+
+
 def set_membership_context(
     connector_ids: Sequence[str],
     record_group_ids: Sequence[str],
     root_record_group_ids: Sequence[str] = (),
-) -> tuple[Token, Token, Token]:
+    scope: ScopeFields | None = None,
+) -> tuple[Token, Token, Token, Token]:
     return (
         _cv_connector_ids.set(tuple(connector_ids)),
         _cv_record_group_ids.set(tuple(record_group_ids)),
         _cv_root_record_group_ids.set(tuple(root_record_group_ids)),
+        _cv_scope.set(scope),
     )
 
 
@@ -131,17 +155,23 @@ def reset_membership_context(tokens: tuple[Token, ...]) -> None:
     _cv_record_group_ids.reset(tokens[1])
     if len(tokens) > 2:
         _cv_root_record_group_ids.reset(tokens[2])
+    if len(tokens) > 3:
+        _cv_scope.reset(tokens[3])
 
 
 def vector_point_payload(metadata: dict, page_content: str) -> dict[str, Any]:
-    """Build a VectorPoint payload including current VRID membership."""
-    return {
+    """Build a VectorPoint payload including current VRID membership (and the scope fields, when they are written)."""
+    payload: dict[str, Any] = {
         "page_content": page_content,
         "metadata": metadata,
         CONNECTOR_IDS_FIELD: list(_cv_connector_ids.get()),
         RECORD_GROUP_IDS_FIELD: list(_cv_record_group_ids.get()),
         ROOT_RECORD_GROUP_IDS_FIELD: list(_cv_root_record_group_ids.get()),
     }
+    scope = _cv_scope.get()
+    if scope is not None:
+        payload.update(scope.to_payload())
+    return payload
 
 
 # Membership writes are read-graph → recompute → overwrite, with no CAS in any
@@ -532,6 +562,73 @@ async def resolve_virtual_record_state(
     )
 
 
+def records_of_state(state: VirtualRecordState) -> dict[str, str]:
+    """`record id -> app id` of the records a VRID stands for."""
+    out: dict[str, str] = {}
+    for doc in state.records:
+        key, app = _record_key(doc), _connector_id_from_record(doc)
+        if key and app:
+            out[key] = app
+    return out
+
+
+async def scope_fields_for_state(
+    graph_provider: IGraphDBProvider, state: VirtualRecordState, org_id: str, logger: logging.Logger | None = None,
+    projector: ScopeProjector | None = None,
+) -> ScopeFields:
+    """The scope fields of the point a VRID's records stand for, computed from the graph (never from a viewer). Any
+    failure, an incomplete read, or no records: `STALE_SCOPE`, which keeps the point on the legacy filter and is redone.
+    Refused records are counted (`pipeshub_scope_fields_refused_total`); their point is `legacy`, never container."""
+    records = records_of_state(state)
+    if not records or not state.complete:
+        return STALE_SCOPE
+    try:
+        projector = projector or ScopeProjector(graph_provider.permission_stamp_graph())
+        fields, outcomes = await projector.project_virtual_record(org_id, records)
+    except Exception as exc:
+        SCOPE_STAMP_FAILED.inc("membership")
+        if logger is not None:
+            logger.warning("Scope fields not computed (the point stays on the legacy filter): %s", type(exc).__name__)
+        return STALE_SCOPE
+    for p in outcomes:
+        if p.refused:
+            SCOPE_REFUSED.inc(p.reason.split(":", 1)[-1].strip()[:60])
+    return fields
+
+
+def scope_org_id() -> str | None:
+    """The org the scope fields are computed for: the ambient one. None when none is bound (the caller then writes `STALE_SCOPE`)."""
+    try:
+        return current_org_id()
+    except (MissingOrgContext, SystemContextNotAllowed):
+        SCOPE_STAMP_FAILED.inc("no_org")
+        return None
+
+
+async def write_scope_fields(
+    vector_db, collections: Sequence[str], virtual_record_ids: Sequence[str], fields: ScopeFields, org_id: str | None  # noqa: ANN001
+) -> None:
+    """Write the scope keys (and only those) of the points of these virtual records. Matches this organisation's points when one is
+    known; the membership arrays are written by their own call, with their own filter, exactly as without scope fields."""
+    must: dict[str, Any] = {"virtualRecordId": list(virtual_record_ids), **({"orgId": org_id} if org_id else {})}
+    filt = await vector_db.filter_collection(must=must)
+    for name in collections:
+        await vector_db.set_payload(name, fields.to_payload(), filt)
+
+
+async def mark_scope_stale(vector_db, locator: CollectionLocator, virtual_record_id: str, logger) -> None:  # noqa: ANN001
+    """With scope fields on, a sync that wrote nothing (no connector, no collection) must not leave a stamp that may be wrong: put the
+    stale marker on the points in every collection. Best effort; a failure is logged and the point keeps what it had."""
+    if not scope_fields_enabled():
+        return
+    try:
+        await write_scope_fields(vector_db, await locator.all_collections(fresh=True), [virtual_record_id], STALE_SCOPE, scope_org_id())
+    except Exception as exc:
+        SCOPE_STAMP_FAILED.inc("marker")
+        if logger is not None:
+            logger.error("could not mark the scope fields of %s stale: %s", virtual_record_id, type(exc).__name__)
+
+
 @asynccontextmanager
 async def vrid_write_locks(
     virtual_record_ids: Sequence[str],
@@ -597,6 +694,10 @@ async def write_membership_batch_locked(
     payload: dict[str, Any] = {CONNECTOR_IDS_FIELD: list(remaining_connector_ids)}
     if remaining_record_group_ids is not None:
         payload[RECORD_GROUP_IDS_FIELD] = list(remaining_record_group_ids)
+    if scope_fields_enabled():
+        # the points lost records, so whatever they were stamped with may admit through a record that is gone; the next
+        # sync or the back-fill recomputes it. Written first, so a failure after it leaves the marker, never a stale stamp.
+        await write_scope_fields(vector_db, [collection_name], ordered, STALE_SCOPE, scope_org_id())
 
     filt = await vector_db.filter_collection(must={"virtualRecordId": ordered})
     # refresh: the connector purge re-reads the matched set after each write to
@@ -663,6 +764,7 @@ async def _sync_vector_membership_locked(
                 "connectorIds, which would blank existing membership",
                 virtual_record_id,
             )
+        await mark_scope_stale(vector_db, locator, virtual_record_id, logger)
         return None
 
     # Derived from the records just fetched, so under a strategy that splits by
@@ -676,8 +778,16 @@ async def _sync_vector_membership_locked(
                 "Skipping vector membership write for %s: resolved no collections",
                 virtual_record_id,
             )
+        await mark_scope_stale(vector_db, locator, virtual_record_id, logger)
         return None
 
+    # The org comes first, outside any try: a missing one is a stale stamp (counted), never an unscoped read of the graph.
+    if scope_fields_enabled():
+        org_id = scope_org_id()
+        scope = await scope_fields_for_state(graph_provider, state, org_id, logger) if org_id else STALE_SCOPE
+        # First, and with the org in its filter: a failure after it leaves the new stamp beside the old membership, which the
+        # legacy filter reads as it always did; the membership write below keeps its filter exactly as it was.
+        await write_scope_fields(vector_db, collections, [virtual_record_id], scope, org_id)
     filt = await vector_db.filter_collection(
         must={"virtualRecordId": virtual_record_id}
     )

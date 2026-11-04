@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from .service import ViewerScopeService
 
 ENV_ACL_FILTER_MODE = "ACL_FILTER_MODE"
+ENV_SCOPE_FIELDS = "ACL_SCOPE_FIELDS"
 _logger = logging.getLogger(__name__)
 
 
@@ -51,3 +52,13 @@ async def scopes_or_legacy(
     except ViewerScopesUnavailable as exc:
         SCOPES_UNAVAILABLE.inc(exc.reason.split(":", 1)[0])
         return None
+
+
+def scope_fields_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Whether writers stamp scope fields on vector points. Off by default and independent of the filter mode while it is
+    legacy: the fields must be able to be written (and back-filled) before any mode other than legacy is switched on. A mode
+    other than legacy implies the fields, since a filter that reads them needs them written."""
+    source = env if env is not None else os.environ
+    if source.get(ENV_SCOPE_FIELDS, "").strip().lower() in ("1", "true", "on", "yes"):
+        return True
+    return AclFilterMode.from_env(source) is not AclFilterMode.LEGACY
