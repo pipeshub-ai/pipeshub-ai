@@ -978,18 +978,6 @@ li > blockquote {
     max-height: max(calc(var(--space-9) * 2), calc(60dvh - var(--space-9) * 3));
   }
 }
-/* The document form's borderless headline field: the house focus ring, and a hairline when invalid. */
-.tool-approval-headline {
-  border-radius: var(--radius-2);
-  outline: none;
-}
-.tool-approval-headline:focus-visible {
-  outline: 2px solid var(--focus-8);
-  outline-offset: 1px;
-}
-.tool-approval-headline[aria-invalid='true'] {
-  box-shadow: 0 0 0 1px var(--red-8);
-}
 
 @media (prefers-reduced-motion: reduce) {
   .typing-cursor {

@@ -545,15 +545,12 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Suggest a change' }));
   });
 
-  it('pill opens a popover editor and Esc closes it without leaving edit mode', async () => {
+  it('a short field is edited in place in edit mode, with no pill to open', () => {
     const schema = { type: 'object', properties: { title: { type: 'string' }, project: { type: 'string' } } } as const;
     renderInTheme(<ToolApprovalCard approval={editable({ arguments: { title: 'Login fails', project: 'WEB' }, inputSchema: schema })} isLatest rowId="row-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-    fireEvent.click(screen.getByRole('button', { name: /^Project: WEB/ }));
-    const input = screen.getByRole('textbox', { name: 'Project' });
-
-    fireEvent.keyDown(input, { key: 'Escape' });
-    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Project' })).toBeNull());
+    expect((screen.getByRole('textbox', { name: 'Project' }) as HTMLInputElement).value).toBe('WEB');
+    expect(screen.queryByRole('button', { name: /^Project: WEB/ })).toBeNull();
     expect(titleField()).toBeTruthy();
   });
 

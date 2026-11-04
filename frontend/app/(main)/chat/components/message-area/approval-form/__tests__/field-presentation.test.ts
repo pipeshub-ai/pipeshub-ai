@@ -73,7 +73,7 @@ describe('argumentFields', () => {
 });
 
 describe('documentLayout with values', () => {
-  it('the Jira call: summary headline, description body, project and type as metadata, the cloud id in details', () => {
+  it('the Jira call: summary headline, description body, project and type as fields, the cloud id in details', () => {
     const values = {
       cloudId: 'c7f37664-a798-44ef-a525-ecacfeb1087d',
       projectKey: 'PP',
@@ -84,7 +84,7 @@ describe('documentLayout with values', () => {
     const l = documentLayout(argumentFields(undefined, values), values);
     expect(l.headline?.name).toBe('summary');
     expect(l.body.map((f) => f.name)).toEqual(['description']);
-    expect(l.pills.map((f) => f.label)).toEqual(['Project', 'Issue type']);
+    expect(l.fields.map((f) => f.label)).toEqual(['Project', 'Issue type']);
     expect(l.more.map((f) => f.label)).toEqual(['Cloud ID']);
   });
 });
@@ -106,14 +106,14 @@ describe('documentLayout of the Jira call as the model sent it', () => {
   it('keeps the summary, Project, Issue type and the description in view; ids, format switches and unset optional fields fold away', () => {
     const l = documentLayout(schemaFields(schema, values), values);
     expect(l.headline?.name).toBe('summary');
-    expect(l.pills.map((f) => f.label)).toEqual(['Project', 'Issue type']);
+    expect(l.fields.map((f) => f.label)).toEqual(['Project', 'Issue type']);
     expect(l.body.map((f) => f.name)).toEqual(['description']);
     expect(l.more.map((f) => f.name)).toEqual(['cloudId', 'parent', 'assigneeAccountId', 'contentFormat', 'responseContentFormat']);
   });
 
   it('keeps a required field in view when it is empty, so it can be filled', () => {
     const l = documentLayout(schemaFields(schema, { ...values, projectKey: '' }), { ...values, projectKey: '' });
-    expect(l.pills.map((f) => f.name)).toContain('projectKey');
+    expect(l.fields.map((f) => f.name)).toContain('projectKey');
   });
 });
 
