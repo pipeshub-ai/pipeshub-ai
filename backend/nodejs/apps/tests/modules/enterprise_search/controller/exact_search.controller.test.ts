@@ -7,11 +7,13 @@ import yaml from 'js-yaml'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import {
   entityNeighbors,
+  grepRecords,
   searchEntities,
 } from '../../../../src/modules/enterprise_search/controller/exact_search.controller'
 import {
   enterpriseSearchEntitiesSchema,
   enterpriseSearchEntityNeighborsSchema,
+  enterpriseSearchGrepSchema,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
 
 const appConfig: any = { aiBackend: 'http://ai:8000' }
@@ -43,6 +45,27 @@ describe('entity search controller', () => {
   const answer = (statusCode: number, data: any) =>
     execute.callsFake(async function (this: any) { uris.push(this.url ?? ''); return { statusCode, data } })
 
+  it('forwards only the grep fields, so a body cannot name another user or organisation, and returns the AI service answer as is', async () => {
+    answer(200, { status: 'success', records: [{ recordId: 'r1' }] })
+    const { res, error } = await run(grepRecords(appConfig), { pattern: 'a.b', regex: true, orgId: 'other-org', userId: 'u', evil: 'x' })
+    expect(error).to.equal(undefined)
+    expect(res.statusCode).to.equal(200)
+    expect(res.payload.records).to.have.length(1)
+    expect(JSON.parse(bodies[0] ?? '{}')).to.deep.equal({ pattern: 'a.b', regex: true })
+  })
+
+  it('passes an empty grep answer through: a caller without access gets 0 matches', async () => {
+    answer(200, { status: 'success', records: [], totalRecords: 0 })
+    expect((await run(grepRecords(appConfig), { pattern: 'secret' })).res.payload.records).to.deep.equal([])
+  })
+
+  it('turns an AI service refusal of a pattern into an error for the error handler', async () => {
+    answer(400, { detail: 'Invalid regular expression: x' })
+    const { res, error } = await run(grepRecords(appConfig), { pattern: '(' })
+    expect(res.payload).to.equal(undefined)
+    expect(error).to.be.instanceOf(Error)
+  })
+
   it('forwards only the entity fields, so a body cannot name another user or organisation', async () => {
     answer(200, { status: 'success', results: [{ entityId: 'e1' }] })
     const { res, error } = await run(searchEntities(appConfig), {
@@ -72,6 +95,13 @@ describe('entity search controller', () => {
     expect(error).to.be.instanceOf(Error)
   })
 
+  it('keeps the AI service\'s 501 (no local file storage) a 501, with its words', async () => {
+    answer(501, { detail: 'Exact-text search needs local file storage.' })
+    const { error } = await run(grepRecords(appConfig), { pattern: 'x' })
+    expect(error.statusCode).to.equal(501)
+    expect(error.message).to.contain('local file storage')
+  })
+
   it('reports an unreachable AI service as 503 and a slow one as 504, not as a 500', async () => {
     execute.rejects(Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))
     const refused = await run(searchEntities(appConfig), { query: 'x' })
@@ -85,6 +115,25 @@ describe('entity search controller', () => {
 })
 
 describe('entity request schemas', () => {
+  it('accepts a minimal grep and bounds the pattern, the work and the answer', () => {
+    expect(enterpriseSearchGrepSchema.safeParse({ body: { pattern: 'x' } }).success).to.equal(true)
+    for (const body of [
+      { pattern: '' },
+      { pattern: 'a\nb' },
+      { pattern: 'a\0b' },
+      { pattern: 'x'.repeat(501) },
+      { pattern: 'x', limit: 101 },
+      { pattern: 'x', contextLines: 11 },
+      { pattern: 'x', maxMatchesPerRecord: 51 },
+      { pattern: 'x', timeBudgetMs: 100 },
+      { pattern: 'x', timeBudgetMs: 31000 },
+      { pattern: 'x', paths: Array(21).fill('a') },
+      { pattern: 'x', filters: { nope: ['a'] } },
+    ]) {
+      expect(enterpriseSearchGrepSchema.safeParse({ body }).success, JSON.stringify(body)).to.equal(false)
+    }
+  })
+
   it('limits entity types and neighbour sizes', () => {
     expect(enterpriseSearchEntitiesSchema.safeParse({ body: { query: 'x', entityTypes: ['topic'] } }).success).to.equal(true)
     expect(enterpriseSearchEntitiesSchema.safeParse({ body: { query: 'x', entityTypes: ['galaxy'] } }).success).to.equal(false)
@@ -101,7 +150,7 @@ describe('entity routes match the published spec', () => {
   )
 
   it('documents both routes behind a bearer token and the semantic scopes', () => {
-    for (const path of ['/search/entities', '/search/entities/neighbors']) {
+    for (const path of ['/search/grep', '/search/entities', '/search/entities/neighbors']) {
       const op = spec.paths[path].post
       expect(op.operationId, path).to.be.a('string')
       expect(Object.keys(op.responses), path).to.include.members(['200', '400', '401', '403', '503'])
@@ -115,7 +164,7 @@ describe('entity routes match the published spec', () => {
       expect(enterpriseSearchEntityNeighborsSchema.safeParse({ body: { entityId: 'e', entityType: t } }).success, t).to.equal(true)
     }
     expect(enterpriseSearchEntityNeighborsSchema.safeParse({ body: { entityId: 'e', entityType: 'galaxy' } }).success).to.equal(false)
-    for (const name of ['EntitySearchRequest', 'EntityNeighborsRequest']) {
+    for (const name of ['GrepRequest', 'EntitySearchRequest', 'EntityNeighborsRequest']) {
       const fields = Object.keys(spec.components.schemas[name].properties)
       expect(fields.filter((f) => /^(org|user)/i.test(f)), name).to.deep.equal([])
     }
