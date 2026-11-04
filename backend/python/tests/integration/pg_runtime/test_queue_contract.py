@@ -508,7 +508,7 @@ class _Rollback(Exception):
     pass
 
 
-async def _claim_buffers(pg) -> int:  # noqa: ANN001
+async def _claim_buffers(pg) -> int:
     """Buffer pages the ordered claim touches (planner and executor counts, not a clock). EXPLAIN ANALYZE runs the claim, so
     it runs in a transaction that is rolled back."""
     from app.services.messaging.postgres import queue as qmod
