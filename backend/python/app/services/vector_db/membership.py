@@ -69,6 +69,7 @@ from app.services.vector_db.const.const import (
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
 )
+from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import org_for_filter
 
 if TYPE_CHECKING:
@@ -636,6 +637,9 @@ def scope_org_id() -> str | None:
 _MAX_ORGS_PER_VIRTUAL_RECORD = 50  # a shared record is held by a handful of orgs at most
 
 
+_ORG_KEY = "orgId"  # the key inside a point's metadata; a constant so the direct-read ratchet sees a deliberate read
+
+
 async def orgs_holding_points(vector_db, collections: Sequence[str], virtual_record_id: str) -> set[str]:  # noqa: ANN001
     """The orgs that hold points of this virtual record, read from the points themselves (a read, one scroll per org found).
 
@@ -651,7 +655,7 @@ async def orgs_holding_points(vector_db, collections: Sequence[str], virtual_rec
             page = await vector_db.scroll(collection_name=name, scroll_filter=filt, limit=1, with_payload=["metadata.orgId"])
             points = list(getattr(page, "points", None) or [])
             if points:
-                found = ((points[0].payload or {}).get("metadata") or {}).get("orgId")
+                found = ((points[0].payload or {}).get("metadata") or {}).get(_ORG_KEY)
                 break
         if not found:
             break
@@ -814,7 +818,12 @@ async def _sync_vector_membership_locked(
     delete-aware caller uses that to tell "this VRID now lives here and nowhere
     else" apart from "the graph did not give me a usable answer".
     """
-    org_id = org_for_filter()
+    try:
+        org_id = org_for_filter()
+    except OrgRequired:
+        # No org to sync under, but a stamp already on the points may now be wrong: invalidate it via the owners, then fail closed.
+        await mark_scope_stale(vector_db, locator, virtual_record_id, logger)
+        raise
     state = await resolve_virtual_record_state(graph_provider, virtual_record_id, org_id=org_id)
     connector_ids, record_group_ids = state.connector_ids, state.record_group_ids
 
