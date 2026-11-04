@@ -1,5 +1,5 @@
 """The kg schema (kg_0001): the typed tables are read-only to the graph services, every row belongs to one organisation, and the change log refuses an
-empty entry. Nothing writes or reads them yet; the writers and the change capture are later revisions."""
+empty entry. The services write only the change log (the capture triggers, kg_0004); the typed tables are written by the vetted writers alone."""
 import psycopg
 import pytest
 
@@ -16,12 +16,15 @@ def test_the_graph_services_read_the_tables_and_nothing_can_write_them(rdb):
             for t in TABLES:
                 assert c.execute("SELECT has_table_privilege(%s, %s, 'SELECT')", (role, f"kg.{t}")).fetchone()[0], (role, t)
                 for priv in ("INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+                    if (t, priv) == ("graph_changes", "INSERT"):      # the capture trigger inserts as the role that wrote the graph (kg_0004): the one write the services hold
+                        assert c.execute("SELECT has_table_privilege(%s, %s, %s)", (role, f"kg.{t}", priv)).fetchone()[0], role
+                        continue
                     assert not c.execute("SELECT has_table_privilege(%s, %s, %s)", (role, f"kg.{t}", priv)).fetchone()[0], (role, t, priv)
         # no column-level write either (a column grant does not show in the table privilege)
         for role in READERS:
             assert c.execute("SELECT count(*) FROM pg_attribute a WHERE a.attrelid = ANY(%s::regclass[]) AND a.attnum > 0 AND NOT a.attisdropped"
                              " AND (has_column_privilege(%s, a.attrelid, a.attnum, 'INSERT') OR has_column_privilege(%s, a.attrelid, a.attnum, 'UPDATE'))",
-                             ([f"kg.{t}" for t in TABLES], role, role)).fetchone()[0] == 0, role
+                             ([f"kg.{t}" for t in TABLES if t != "graph_changes"], role, role)).fetchone()[0] == 0, role
 
 
 @pytest.mark.parametrize("role", ["pipeshub_node", "pipeshub_kv", "pipeshub_jobs"])
@@ -48,11 +51,14 @@ def test_the_change_log_refuses_an_entry_that_names_no_node(rdb):
             c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES ('o', '{}')")
 
 
-def test_the_graph_is_not_touched_by_the_schema(rdb):
-    """No trigger on the document store yet: a write to it logs nothing and truncating it is allowed to the owner as before."""
+def test_the_graph_carries_the_eight_capture_triggers_and_refuses_a_truncate(rdb):
+    """Statement triggers on the partitioned parents (always enabled, so a replica session logs too); a truncate of either table is refused."""
     cluster, name = rdb
     with connect(cluster, name) as c:
-        assert c.execute("SELECT count(*) FROM pg_trigger WHERE tgrelid IN ('graph.nodes'::regclass, 'graph.edges'::regclass) AND NOT tgisinternal").fetchone()[0] == 0
+        rows = {tuple(r) for r in c.execute("SELECT tgrelid::regclass::text, tgname, tgenabled FROM pg_trigger WHERE tgrelid IN ('graph.nodes'::regclass, 'graph.edges'::regclass) AND NOT tgisinternal")}
+        assert rows == {(t, f"kg_{t.split('.')[1]}_{ev}", "A") for t in ("graph.nodes", "graph.edges") for ev in ("insert", "update", "delete", "truncate")}
+        with pytest.raises(psycopg.errors.FeatureNotSupported):
+            c.execute("TRUNCATE graph.edges")
 
 
 def test_a_downgrade_takes_the_schema_away_and_an_upgrade_brings_it_back(db):
