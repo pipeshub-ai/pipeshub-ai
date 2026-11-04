@@ -21,6 +21,11 @@ import { appliedFiltersFromNodes, restoreAppliedFilters } from '@/chat/utils/res
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
 import {
+  clearTemporaryChatSession,
+  readTemporaryChatSession,
+  writeTemporaryChatSession,
+} from '@/chat/utils/temporary-chat-session';
+import {
   AgentsApi,
   buildAgentChatToolGroups,
   buildAgentChatMcpGroups,
@@ -39,7 +44,7 @@ import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
-import { Flex, Box, Text, Avatar, Tooltip } from '@radix-ui/themes';
+import { Flex, Box, Text, Avatar, Tooltip, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { FilePreviewInlinePanel, FilePreviewFullscreen } from '@/app/components/file-preview';
 import { FilePreviewMobile } from '@/app/components/file-preview/file-preview-mobile';
@@ -238,6 +243,9 @@ function ChatContent() {
   const activeSlotIsTemp = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isTemp ?? false : false
   );
+  const activeSlotIsTemporaryChat = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.isTemporaryChat ?? false : false
+  );
   const activeSlotIsInitialized = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isInitialized ?? false : false
   );
@@ -314,6 +322,14 @@ function ChatContent() {
       const agentIdInUrl = rawAgentInUrl?.trim() ? rawAgentInUrl : null;
       const rawProjectInUrl = urlParams?.get('projectId');
       const projectIdInUrl = !agentIdInUrl && rawProjectInUrl?.trim() ? rawProjectInUrl : null;
+
+      const leaving = store.activeSlotId ? store.slots[store.activeSlotId] : null;
+      if (leaving?.isTemporaryChat && leaving.convId) {
+        clearTemporaryChatSession();
+        void ChatApi.purgeTemporaryConversation(leaving.convId).catch(() => undefined);
+      } else if (leaving?.isTemporaryChat) {
+        clearTemporaryChatSession();
+      }
 
       // 1. Detach visible thread only — background streams keep running (parallel chats)
       store.clearActiveSlot();
@@ -525,6 +541,17 @@ function ChatContent() {
       store.clearSearchResults();
     }
 
+    const leaving = store.activeSlotId ? store.slots[store.activeSlotId] : null;
+    if (
+      conversationId &&
+      leaving?.isTemporaryChat &&
+      leaving.convId &&
+      leaving.convId !== conversationId
+    ) {
+      clearTemporaryChatSession();
+      void ChatApi.purgeTemporaryConversation(leaving.convId).catch(() => undefined);
+    }
+
     if (!conversationId) {
       const activeSlot = store.activeSlotId ? store.slots[store.activeSlotId] : null;
       if (agentId) {
@@ -551,9 +578,27 @@ function ChatContent() {
         // for a *different* project scope was active — don't leak it here.
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'switch-project-scope' });
         store.clearActiveSlot();
-      } else if (store.activeSlotId && (!activeSlot || !activeSlot.isTemp)) {
+      } else if (
+        store.activeSlotId &&
+        (!activeSlot || (!activeSlot.isTemp && !activeSlot.isTemporaryChat))
+      ) {
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null });
         useChatStore.setState({ activeSlotId: null });
+      } else if (!agentId && !projectId && !store.activeSlotId) {
+        const stored = readTemporaryChatSession();
+        if (stored) {
+          const existing = stored.conversationId
+            ? store.getSlotByConvId(stored.conversationId, { forAgentId: null })
+            : null;
+          if (existing) {
+            store.updateSlot(existing.slotId, { isTemporaryChat: true });
+            store.setActiveSlot(existing.slotId);
+          } else {
+            const slotId = store.createSlot(stored.conversationId);
+            store.updateSlot(slotId, { isTemporaryChat: true });
+            store.setActiveSlot(slotId);
+          }
+        }
       }
     } else {
       const urlAgentId = agentId;
@@ -665,6 +710,7 @@ function ChatContent() {
       const prevSlot = prev.activeSlotId === slotId ? prev.slots[slotId] : null;
 
       // If convId changed from null to a real value, update URL
+      if (slot?.isTemporaryChat) return;
       if (slot?.convId && (!prevSlot || prevSlot.convId !== slot.convId)) {
         const loc = new URLSearchParams(window.location.search);
         const rawAid = slot.threadAgentId ?? loc.get('agentId');
@@ -1022,7 +1068,10 @@ function ChatContent() {
   // Only the owner sees the Share button, for plain and agent chats alike. Agent chats are shared
   // read-only: the backend refuses `write`, and a recipient gets no composer (see showChatInput).
   const showConversationShare = Boolean(
-    conversationId && chatShareAdapter && activeSlotIsOwner === true
+    conversationId &&
+      chatShareAdapter &&
+      activeSlotIsOwner === true &&
+      !activeSlotIsTemporaryChat
   );
 
   useEffect(() => {
@@ -1075,6 +1124,14 @@ function ChatContent() {
       cancelled = true;
     };
   }, [headerSharedWith]);
+
+  useEffect(() => {
+    return useChatStore.subscribe((state) => {
+      const slot = state.activeSlotId ? state.slots[state.activeSlotId] : null;
+      if (!slot?.isTemporaryChat) return;
+      writeTemporaryChatSession(slot.convId);
+    });
+  }, []);
 
   // Show new chat view when no active slot, or slot is new with no messages
   const showNewChatView = !activeSlotId || (
@@ -1296,7 +1353,65 @@ function ChatContent() {
             <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
           ) : null
         }
+        temporaryToggle={
+          showNewChatView && !agentId && !projectId ? (
+            <Tooltip
+              content={
+                activeSlotIsTemporaryChat
+                  ? t('chat.temporaryChatTooltipOn')
+                  : t('chat.temporaryChatTooltip')
+              }
+            >
+              <IconButton
+                variant="ghost"
+                color={activeSlotIsTemporaryChat ? 'orange' : 'gray'}
+                highContrast={activeSlotIsTemporaryChat}
+                size="2"
+                aria-label={
+                  activeSlotIsTemporaryChat
+                    ? t('chat.temporaryChatTooltipOn')
+                    : t('chat.temporaryChatToggleAria')
+                }
+                aria-pressed={activeSlotIsTemporaryChat}
+                onClick={() => {
+                  const store = useChatStore.getState();
+                  let slotId = store.activeSlotId;
+                  if (!slotId) {
+                    slotId = store.createSlot(null);
+                    store.setActiveSlot(slotId);
+                  }
+                  const current = store.slots[slotId];
+                  const next = !current?.isTemporaryChat;
+                  store.setTemporaryChat(slotId, next);
+                  if (next) writeTemporaryChatSession(current?.convId ?? null);
+                  else clearTemporaryChatSession();
+                }}
+              >
+                <MaterialIcon name="visibility_off" size={20} />
+              </IconButton>
+            </Tooltip>
+          ) : null
+        }
       />
+
+      {activeSlotIsTemporaryChat && (
+        <Flex
+          align="center"
+          justify="center"
+          gap="2"
+          px="3"
+          py="2"
+          style={{
+            background: 'var(--orange-3)',
+            color: 'var(--orange-11)',
+            borderBottom: '1px solid var(--orange-6)',
+            flexShrink: 0,
+          }}
+        >
+          <MaterialIcon name="visibility_off" size={16} />
+          <Text size="2">{t('chat.temporaryChatBanner')}</Text>
+        </Flex>
+      )}
 
       {/* Full-width pane: message list scrolls here (scrollbar on the pane edge).
           Message content + composer share chatContentColumnStyle so widths match. */}

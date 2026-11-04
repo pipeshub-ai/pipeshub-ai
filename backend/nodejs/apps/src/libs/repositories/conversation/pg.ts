@@ -12,8 +12,9 @@
  * SQL, so another viewer's copy is never read from the table.
  */
 import { randomUUID } from 'crypto';
-import { pgRuntime } from '../../db';
+import { pgRuntime, withJobsUow } from '../../db';
 import type { Tx as PgKernelTx } from '../../db';
+import { system } from '../../context/orgContext';
 import { CONVERSATION_STATUS } from '../../../modules/enterprise_search/constants/constants';
 import { BadRequestError, InternalServerError } from '../../errors/http.errors';
 import { ConflictError, NotFoundError } from '../errors';
@@ -81,7 +82,7 @@ const LIVE = CONVERSATION_STATUS.INPROGRESS;
 const SESSION_COLS = `s.id, s.session_type, s.user_id, s.initiator, s.title, s.is_shared, s.share_link, s.is_deleted, s.deleted_by,
   s.is_archived, s.archived_by, s.last_activity_at, s.status, s.fail_reason, s.next_seq, s.model_info, s.conversation_errors, s.metadata,
   s.agent_key, s.conversation_source, s.compacted_summary, s.compacted_at_turn_index, s.compacted_at_timestamp, s.project_id,
-  s.project_visibility, s.version, s.nulls, s.is_pinned, s.created_at, s.updated_at`;
+  s.project_visibility, s.version, s.nulls, s.is_pinned, s.is_temporary, s.expires_at, s.created_at, s.updated_at`;
 const SHARED_WITH = `COALESCE((SELECT jsonb_agg(jsonb_build_object('userId', m.user_id, 'accessLevel', m.access_level, '_id', m.entry_id) ORDER BY m.pos)
   FROM conversation.chat_session_members m WHERE m.org_id = $1 AND m.session_id = s.id), '[]'::jsonb) AS shared_with`;
 
@@ -228,6 +229,7 @@ export function planOf(q: SessionListQuery, p: Params): Plan {
     common.push(
       `s.is_archived AND (s.archived_by IS NOT NULL OR 'archived_by' = ANY(s.nulls))`,
     );
+  if (!(q.id && q.includeTemporary)) common.push('NOT s.is_temporary');
   const projects = oidsOf(q.accessibleProjectIds ?? []);
   const plan: Plan = {
     common: common.join(' AND '),
@@ -458,8 +460,8 @@ export class PgConversationRepository
     const { rows } = await k.query<SessionRow>(
       SQL(`/* pipeshub:conversation.open_session */ INSERT INTO conversation.chat_sessions AS s
         (org_id, id, session_type, user_id, initiator, title, last_activity_at, status, model_info, agent_key, conversation_source,
-         project_id, project_visibility, metadata, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14::jsonb, $15, $15)
+         project_id, project_visibility, metadata, is_temporary, expires_at, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $17)
         RETURNING @{S}`),
       [
         k.orgId,
@@ -476,6 +478,8 @@ export class PgConversationRepository
         fields.projectId ?? null,
         fields.projectVisibility ?? null,
         fields.metadata ? JSON.stringify(fields.metadata) : null,
+        fields.isTemporary === true,
+        fields.expiresAt ?? null,
         now,
       ],
     );
@@ -676,7 +680,7 @@ export class PgConversationRepository
       const { rows } = await k.query<SessionRow>(
         SQL(
           `/* pipeshub:conversation.agent_shared_with_me */ SELECT @{SC} FROM conversation.chat_sessions s
-            WHERE s.org_id = $1 AND s.session_type = 'agent' AND s.agent_key = $3 AND NOT s.is_deleted AND s.is_shared AND NOT s.is_archived
+            WHERE s.org_id = $1 AND s.session_type = 'agent' AND s.agent_key = $3 AND NOT s.is_deleted AND s.is_shared AND NOT s.is_archived AND NOT s.is_temporary
               AND ($4::text IS NULL OR s.status = $4)
               AND EXISTS (SELECT 1 FROM conversation.chat_session_members w WHERE w.org_id = $1 AND w.session_id = s.id AND w.user_id = $2::text)
             ORDER BY @{ORDER} OFFSET $5 LIMIT $6`,
@@ -702,7 +706,7 @@ export class PgConversationRepository
     return inUnit(undefined, { write: false }, async (k) => {
       assertOrg(k, q.orgId);
       const m = {
-        BASE: `s.org_id = $1 AND NOT s.is_deleted AND s.is_archived AND (s.archived_by IS NOT NULL OR 'archived_by' = ANY(s.nulls))
+        BASE: `s.org_id = $1 AND NOT s.is_deleted AND s.is_archived AND NOT s.is_temporary AND (s.archived_by IS NOT NULL OR 'archived_by' = ANY(s.nulls))
           AND (s.title ILIKE $3 OR s.id = ANY($4::text[]))`,
         CHATS: `(s.session_type = 'chat' AND (s.user_id = $2::text OR (s.is_shared AND EXISTS (SELECT 1 FROM conversation.chat_session_members w
           WHERE w.org_id = $1 AND w.session_id = s.id AND w.user_id = $2::text))))`,
@@ -765,7 +769,7 @@ export class PgConversationRepository
       assertOrg(k, q.orgId);
       const m = {
         WHERE: `s.org_id = $1 AND s.user_id = $2::text AND s.is_archived AND (s.archived_by IS NOT NULL OR 'archived_by' = ANY(s.nulls))
-          AND NOT s.is_deleted AND s.session_type = 'agent' AND ($3::text[] IS NULL OR NOT COALESCE(s.agent_key = ANY($3::text[]), false))`,
+          AND NOT s.is_deleted AND NOT s.is_temporary AND s.session_type = 'agent' AND ($3::text[] IS NULL OR NOT COALESCE(s.agent_key = ANY($3::text[]), false))`,
       };
       const [total, groups] = await Promise.all([
         k.query<{ n: number }>(
@@ -887,7 +891,7 @@ export class PgConversationRepository
         is_archived: boolean;
       }>(
         `/* pipeshub:conversation.visible_summaries */ SELECT s.id, s.title, s.session_type, s.agent_key, s.project_id, s.is_archived FROM conversation.chat_sessions s
-          WHERE s.org_id = $1 AND s.id = ANY($2::text[]) AND NOT s.is_deleted
+          WHERE s.org_id = $1 AND s.id = ANY($2::text[]) AND NOT s.is_deleted AND NOT s.is_temporary
             AND (s.user_id = $3::text
               OR (s.is_shared AND (s.session_type <> 'agent' OR NOT s.is_archived)
                   AND EXISTS (SELECT 1 FROM conversation.chat_session_members w WHERE w.org_id = $1 AND w.session_id = s.id AND w.user_id = $3::text))
@@ -918,7 +922,7 @@ export class PgConversationRepository
     return inUnit(undefined, { write: false }, async (k) => {
       assertOrg(k, q.orgId);
       const m = {
-        WHERE: `s.org_id = $1 AND s.project_id = $2::text AND NOT s.is_deleted AND (s.user_id = $3::text OR s.project_visibility = 'project')`,
+        WHERE: `s.org_id = $1 AND s.project_id = $2::text AND NOT s.is_deleted AND NOT s.is_temporary AND (s.user_id = $3::text OR s.project_visibility = 'project')`,
       };
       const [rows, total] = await Promise.all([
         k.query<SessionRow>(
@@ -956,7 +960,7 @@ export class PgConversationRepository
       assertOrg(k, orgId);
       const { rows } = await k.query<{ project_id: string; n: number }>(
         `/* pipeshub:conversation.count_by_projects */ SELECT s.project_id, count(*)::int AS n FROM conversation.chat_sessions s
-          WHERE s.org_id = $1 AND s.project_id = ANY($2::text[]) AND NOT s.is_deleted
+          WHERE s.org_id = $1 AND s.project_id = ANY($2::text[]) AND NOT s.is_deleted AND NOT s.is_temporary
             AND (s.user_id = $3 OR s.project_visibility = 'project') GROUP BY s.project_id`,
         [k.orgId, want, viewer],
       );
@@ -1168,6 +1172,76 @@ export class PgConversationRepository
         [k.orgId, oid],
       );
     });
+  }
+
+  async hardDeleteTemporary(
+    id: string,
+    actor: SessionActor,
+    tx?: Tx,
+  ): Promise<{ session: ChatSessionDto; citationIds: string[] } | null> {
+    const oid = oidOf(id);
+    if (!oid) return null;
+    return inUnit(tx, { write: true }, async (k) => {
+      assertOrg(k, actor.orgId);
+      const session = await this.one(
+        k,
+        SQL(
+          `/* pipeshub:conversation.find_temporary */ SELECT @{S} FROM conversation.chat_sessions s
+            WHERE s.org_id = $1 AND s.id = $2::text AND s.user_id = $3::text AND s.is_temporary AND NOT s.is_deleted`,
+        ),
+        [k.orgId, oid, actor.userId],
+        DOC_SHAPE,
+      );
+      if (!session) return null;
+      const { rows } = await k.query<{
+        citations: Array<{ citationId?: string }>;
+      }>(
+        `/* pipeshub:conversation.temporary_citations */ SELECT m.citations FROM conversation.chat_messages m
+          WHERE m.org_id = $1 AND m.session_id = $2::text`,
+        [k.orgId, oid],
+      );
+      const citationIds = rows
+        .flatMap((r) => r.citations.map((c) => c.citationId))
+        .filter((x): x is string => !!x);
+      if (citationIds.length) {
+        await k.query(
+          '/* pipeshub:conversation.delete_temporary_citations */ DELETE FROM conversation.citations WHERE org_id = $1 AND id = ANY($2::text[])',
+          [k.orgId, citationIds],
+        );
+      }
+      await k.query(
+        '/* pipeshub:conversation.hard_delete_temporary */ DELETE FROM conversation.chat_sessions WHERE org_id = $1 AND id = $2::text',
+        [k.orgId, oid],
+      );
+      return { session, citationIds };
+    });
+  }
+
+  async listExpiredTemporary(
+    now: Date,
+    limit: number,
+  ): Promise<Array<{ id: string; orgId: string; userId: string }>> {
+    // Jobs role, every org: the sweeper has no request org, and a normal
+    // unit would throw MissingOrgContext or see only one tenant.
+    return system('ttl-sweeper', () =>
+      withJobsUow({ write: false }, async (k) => {
+        const { rows } = await k.query<{
+          id: string;
+          org_id: string;
+          user_id: string;
+        }>(
+          `/* pipeshub:conversation.expired_temporary */ SELECT s.id, s.org_id, s.user_id FROM conversation.chat_sessions s
+            WHERE s.is_temporary AND s.expires_at IS NOT NULL AND s.expires_at <= $1
+            ORDER BY s.expires_at LIMIT $2`,
+          [now, Math.max(1, limit)],
+        );
+        return rows.map((r) => ({
+          id: r.id,
+          orgId: r.org_id,
+          userId: r.user_id,
+        }));
+      }),
+    );
   }
 
   async setPinned(

@@ -316,6 +316,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     agentStreamTools: null,
     projectId: null,
     isTemp: isNew,
+    isTemporaryChat: false,
     isInitialized: isNew,      // new chats have nothing to load
     refreshGeneration: 0,
     hasLoaded: false,
@@ -564,6 +565,8 @@ interface ChatState {
   createSlot: (convId: string | null) => string;
   /** Patch fields in a single slot. Only that slot's reference changes. */
   updateSlot: (slotId: string, patch: Partial<ChatSlot>) => void;
+  /** Toggle temporary mode on an empty new chat. After the first send it is locked. */
+  setTemporaryChat: (slotId: string, value: boolean) => void;
   /** Replace interactive questionnaire state for a slot (alias for `updateSlot`). */
   setPendingAskUserQuestion: (slotId: string, value: PendingAskUserQuestion | null) => void;
   /** Switch the active slot. Updates lastAccessedAt on the target. */
@@ -981,6 +984,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     return slotId;
+  },
+
+  setTemporaryChat: (slotId, value) => {
+    const slot = get().slots[slotId];
+    if (!slot || slot.messages.length > 0 || slot.isStreaming) return;
+    get().updateSlot(slotId, { isTemporaryChat: value });
   },
 
   updateSlot: (slotId, patch) => {

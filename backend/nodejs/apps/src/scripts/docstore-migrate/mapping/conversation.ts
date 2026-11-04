@@ -114,6 +114,13 @@ export const chatSessions: CollectionMapping = {
     { col: 'archived_by', path: 'archivedBy', type: 'oid', presence: 'listed' },
     // the application stores the pin only while set; a stored false reads as unset (transform below)
     { col: 'is_pinned', path: 'isPinned', type: 'bool', absentWhen: false },
+    {
+      col: 'is_temporary',
+      path: 'isTemporary',
+      type: 'bool',
+      readAbsentAs: false,
+    },
+    { col: 'expires_at', path: 'expiresAt', type: 'date' },
     { col: 'last_activity_at', path: 'lastActivityAt', type: 'epoch_ms' },
     { col: 'status', path: 'status', type: 'text' },
     { col: 'fail_reason', path: 'failReason', type: 'text' },

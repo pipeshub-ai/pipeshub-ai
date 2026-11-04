@@ -182,6 +182,7 @@ export function buildSessionFilter(
   if (q.archived === 'notTrue') filter.isArchived = { $ne: true };
   else if (q.archived === 'only')
     Object.assign(filter, { isArchived: true, archivedBy: { $exists: true } });
+  if (!(q.id && q.includeTemporary)) filter.isTemporary = { $ne: true };
   const scoped = { ...filter, ...scopeFilter(q.scope) };
   if (
     q.scope.kind === 'chat' &&
@@ -207,6 +208,7 @@ export function buildAgentSharedWithMeFilter(q: {
     isDeleted: false,
     isShared: true,
     'sharedWith.userId': q.userId,
+    isTemporary: { $ne: true },
   };
   if (q.status) filter.status = q.status;
   filter.isArchived = { $ne: true };
@@ -580,6 +582,7 @@ export class MongoConversationRepository implements ConversationRepository {
       isArchived: true,
       archivedBy: { $exists: true },
       compareOf: { $exists: false },
+      isTemporary: { $ne: true },
       $and: [titleOrContentMatch],
     };
     const [rows, assistantCount, agentCount] = await Promise.all([
@@ -626,6 +629,7 @@ export class MongoConversationRepository implements ConversationRepository {
       archivedBy: { $exists: true },
       isDeleted: false,
       sessionType: 'agent',
+      isTemporary: { $ne: true },
     };
     if (q.deletedAgentKeys !== null)
       filter.agentKey = { $nin: q.deletedAgentKeys };
@@ -702,6 +706,7 @@ export class MongoConversationRepository implements ConversationRepository {
         orgId: oid(orgId),
         isDeleted: { $ne: true },
         compareOf: { $exists: false },
+        isTemporary: { $ne: true },
         $or: [
           { userId: userObjectId },
           {
@@ -753,6 +758,7 @@ export class MongoConversationRepository implements ConversationRepository {
       projectId: oid(q.projectId),
       isDeleted: false,
       compareOf: { $exists: false },
+      isTemporary: { $ne: true },
       $or: [{ userId: oid(q.userId) }, { projectVisibility: 'project' }],
     };
     const [rows, total] = await Promise.all([
@@ -784,6 +790,7 @@ export class MongoConversationRepository implements ConversationRepository {
           projectId: { $in: oids(projectIds) },
           isDeleted: false,
           compareOf: { $exists: false },
+          isTemporary: { $ne: true },
           $or: [{ userId: oid(userId) }, { projectVisibility: 'project' }],
         },
       },
@@ -1008,6 +1015,68 @@ export class MongoConversationRepository implements ConversationRepository {
   async discardSession(id: string, orgId: string, tx?: Tx): Promise<void> {
     await ChatSessionMessage.deleteMany({ sessionId: id, orgId }, opts(tx));
     await ChatSession.deleteOne({ _id: id, orgId }, opts(tx));
+  }
+
+  async hardDeleteTemporary(
+    id: string,
+    actor: SessionActor,
+    tx?: Tx,
+  ): Promise<{ session: ChatSessionDto; citationIds: string[] } | null> {
+    const session = await ChatSession.findOne(
+      {
+        _id: id,
+        orgId: actor.orgId,
+        userId: actor.userId,
+        isTemporary: true,
+        isDeleted: { $ne: true },
+      },
+      null,
+      opts(tx),
+    );
+    if (!session) return null;
+    const dto = toPlain<ChatSessionDto>(session);
+    const messages = await ChatSessionMessage.find(
+      { sessionId: id, orgId: actor.orgId },
+      { citations: 1 },
+      opts(tx),
+    ).lean();
+    const citationIds = messages.flatMap((msg) =>
+      (msg.citations ?? []).map((citation) => String(citation.citationId)),
+    );
+    if (citationIds.length > 0) {
+      await Citation.deleteMany(
+        { _id: { $in: citationIds }, orgId: actor.orgId },
+        opts(tx),
+      );
+    }
+    await ChatSessionMessage.deleteMany(
+      { sessionId: id, orgId: actor.orgId },
+      opts(tx),
+    );
+    await ChatSession.deleteOne(
+      { _id: id, orgId: actor.orgId },
+      opts(tx),
+    );
+    return { session: dto, citationIds };
+  }
+
+  async listExpiredTemporary(
+    now: Date,
+    limit: number,
+  ): Promise<Array<{ id: string; orgId: string; userId: string }>> {
+    const rows = await ChatSession.find({
+      isTemporary: true,
+      expiresAt: { $lte: now },
+    })
+      .select('_id orgId userId')
+      .limit(Math.max(1, limit))
+      .lean()
+      .exec();
+    return rows.map((r) => ({
+      id: String(r._id),
+      orgId: String(r.orgId),
+      userId: String(r.userId),
+    }));
   }
 
   async setPinned(

@@ -56,6 +56,8 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
      * missing rows in a descending sort and scramble recency order.
      */
     isPinned: { type: Boolean },
+    isTemporary: { type: Boolean, default: false },
+    expiresAt: { type: Date },
     /** Identifies the run that currently owns the thread, so only it can release or keep it alive. Internal: never selected. */
     activeRunId: { type: String, select: false },
     status: {
@@ -134,6 +136,10 @@ chatSessionSchema.index({ userId: 1, agentKey: 1 });
 chatSessionSchema.index({ isShared: 1 });
 chatSessionSchema.index({ projectId: 1, orgId: 1, isDeleted: 1, lastActivityAt: -1 });
 chatSessionSchema.index({ lastActivityAt: -1 });
+chatSessionSchema.index(
+  { expiresAt: 1 },
+  { partialFilterExpression: { isTemporary: true } },
+);
 
 export const ChatSession: Model<IChatSessionDocument> =
   mongoose.model<IChatSessionDocument>('ChatSession', chatSessionSchema);
