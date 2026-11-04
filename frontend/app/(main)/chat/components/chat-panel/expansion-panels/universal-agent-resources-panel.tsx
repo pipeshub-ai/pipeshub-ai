@@ -40,6 +40,7 @@ import { McpServerIcon } from '@/app/(main)/workspace/mcp-servers/components';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
+import { onSessionEnd } from '@/lib/api/session-cache';
 import { CollectionsTab } from './connectors-collections/collections-tab';
 import { McpConnectRows, mcpServersToConnect } from './mcp-connect-rows';
 import { ToolsetConnectRows, actionName, actionsToConnect } from './toolset-connect-rows';
@@ -166,11 +167,11 @@ const ACTIONS_PAGE_SIZE = 50;
  * within the same page session so we never re-fetch on every remount.
  *
  * `lastFetchedAt` is set on each successful page-1 fetch.  When the component mounts
- * and detects a stale cache (older than CACHE_TTL_MS) it re-fetches from page 1,
- * preventing leftover data from a prior user/session from being served.
+ * and detects a stale cache (older than CACHE_TTL_MS) it re-fetches from page 1.
+ * Emptied at session end, so the next person to sign in never sees these lists.
  */
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-let _actionsPageCache: {
+interface ActionsPageCache {
   toolsets: BuilderSidebarToolset[];
   page: number;
   hasMore: boolean;
@@ -181,7 +182,13 @@ let _actionsPageCache: {
   apiActions: ApiToolset[];
   /** The API actions flag when `apiActions` was loaded: flags can arrive after the panel first loads. */
   apiActionsEnabled: boolean;
-} = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0, toConnect: [], apiActions: [], apiActionsEnabled: false };
+}
+
+function emptyActionsCache(apiActionsEnabled = false): ActionsPageCache {
+  return { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0, toConnect: [], apiActions: [], apiActionsEnabled };
+}
+
+let _actionsPageCache: ActionsPageCache = emptyActionsCache();
 
 /** Without this list the tab still shows the connected actions, so a failure only hides Connect. */
 async function loadActionsToConnect(): Promise<BuilderSidebarToolset[]> {
@@ -199,14 +206,17 @@ async function loadActionsToConnect(): Promise<BuilderSidebarToolset[]> {
 
 /**
  * Module-level MCP cache, mirroring `_actionsPageCache`. `getMyMcpServers` isn't paginated —
- * a single fetch on mount is enough — but the same TTL-based staleness check applies so a
- * stale prior session's data isn't served after remount. Holds every server, connected or not:
- * the ones a sign-in keeps out are listed with a Connect button.
+ * a single fetch on mount is enough — but the same TTL-based staleness check applies.
+ * Holds every server, connected or not: the ones a sign-in keeps out are listed with a
+ * Connect button.
  */
-let _mcpCache: {
-  instances: McpMyServerEntry[];
-  lastFetchedAt: number;
-} = { instances: [], lastFetchedAt: 0 };
+const EMPTY_MCP_CACHE: { instances: McpMyServerEntry[]; lastFetchedAt: number } = { instances: [], lastFetchedAt: 0 };
+let _mcpCache = EMPTY_MCP_CACHE;
+
+onSessionEnd(() => {
+  _actionsPageCache = emptyActionsCache();
+  _mcpCache = EMPTY_MCP_CACHE;
+});
 
 interface UniversalAgentResourcesPanelProps {
   onToggleView?: () => void;
@@ -300,15 +310,7 @@ export function UniversalAgentResourcesPanel({
 
       if (page === 1) {
         if (!quiet) {
-          _actionsPageCache = {
-            toolsets: [],
-            page: 0,
-            hasMore: false,
-            lastFetchedAt: 0,
-            toConnect: [],
-            apiActions: [],
-            apiActionsEnabled,
-          };
+          _actionsPageCache = emptyActionsCache(apiActionsEnabled);
           setToolsLoading(true);
         }
       } else {

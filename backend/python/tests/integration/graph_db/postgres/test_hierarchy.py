@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
+import asyncpg
 import pytest
 
 from app.core import org_context
@@ -276,17 +278,64 @@ async def test_the_first_of_two_duplicate_edges_in_a_batch_wins(pg_db) -> None:
     assert edges["BOOKMARK"]["note"] == "first" and edges["PARENT_CHILD"]["to_id"] == "b" and "ATTACHMENT" not in edges      # one hierarchy edge per pair: the first
 
 
+async def xid_of(p, txn: str) -> str:
+    """The id of an open transaction as the text of the 32-bit ``xid`` that pg_locks shows (``txid_current()`` is 64-bit and would not compare)."""
+    return await p._q(lambda tx: tx.fetchval("SELECT pg_current_xact_id()::xid::text"), txn)
+
+
+async def a_backend_waits_on(xid: str, seconds: float = 15) -> None:
+    """Wait until a backend is waiting for the transaction ``xid`` to finish: the interleaving the test is about, seen and not timed. The observer has a connection of its own, outside
+    the pool the writer and the delete use (a pool of two would leave it none), and reads pg_locks, which any role may read (pg_stat_activity shows the waits of other roles only to a
+    monitoring role). Only a wait on this transaction counts: another backend's wait is not the one under test."""
+    con = await asyncpg.connect(os.environ["PG_CORE_URL"])
+    try:
+        for _ in range(int(seconds / 0.05)):
+            if await con.fetchval("SELECT 1 FROM pg_locks WHERE NOT granted AND locktype = 'transactionid' AND transactionid = $1::text::xid LIMIT 1", xid):
+                return
+            await asyncio.sleep(0.05)
+    finally:
+        await con.close()
+    raise AssertionError(f"no backend waited for transaction {xid}")
+
+
 async def test_a_recursive_delete_waits_for_a_writer_that_is_attaching_a_type_document_with_another_id(pg_db) -> None:
     p = bound(pg_db)
     await p.batch_upsert_nodes([rec(p.org, "w")], "records")
     txn = await p.begin_transaction(read=[], write=[])
-    await p.batch_update_nodes([{"id": "w", "recordName": "W2"}], "records", transaction=txn)               # the writer holds the record's row
-    await p.batch_upsert_nodes([{"_key": "typedoc", "name": "t"}], "files", transaction=txn)
-    await p.batch_create_edges([{"from_id": "w", "from_collection": "records", "to_id": "typedoc", "to_collection": "files"}], "isOfType", transaction=txn)
-    deleting = asyncio.create_task(p.delete_records_recursive(["w"], "c1"))
-    await asyncio.sleep(0.5)
-    assert not deleting.done()                                                                       # it waits on the record's row before it reads what hangs on it
-    await p.commit_transaction(txn)
-    out = await asyncio.wait_for(deleting, 20)
-    assert out["success"] and out["successfully_deleted"] == 1
-    assert await p.get_document("typedoc", "files") is None and await p.get_edges_from_node("records/w", "isOfType") == []
+    deleting: asyncio.Task | None = None
+    try:
+        await p.batch_update_nodes([{"id": "w", "recordName": "W2"}], "records", transaction=txn)               # the writer holds the record's row
+        await p.batch_upsert_nodes([{"_key": "typedoc", "name": "t"}], "files", transaction=txn)
+        await p.batch_create_edges([{"from_id": "w", "from_collection": "records", "to_id": "typedoc", "to_collection": "files"}], "isOfType", transaction=txn)
+        deleting = asyncio.create_task(p.delete_records_recursive(["w"], "c1"))
+        await a_backend_waits_on(await xid_of(p, txn))                                                              # it waits on the record's row before it reads what hangs on it
+        assert not deleting.done()
+        await p.commit_transaction(txn)
+        out = await asyncio.wait_for(deleting, 20)
+        assert out["success"] and out["successfully_deleted"] == 1
+        assert await p.get_document("typedoc", "files") is None and await p.get_edges_from_node("records/w", "isOfType") == []
+    finally:
+        await p.rollback_transaction(txn)                                                                    # a no-op once committed: a failed test must not keep the connection
+        if deleting is not None:
+            deleting.cancel()
+            await asyncio.gather(deleting, return_exceptions=True)
+
+
+async def test_the_wait_of_another_transaction_is_not_the_wait_under_test(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "w"), rec(p.org, "u")], "records")
+    mine, other = await p.begin_transaction(read=[], write=[]), await p.begin_transaction(read=[], write=[])
+    deleting: asyncio.Task | None = None
+    try:
+        await p.batch_update_nodes([{"id": "w", "recordName": "W2"}], "records", transaction=mine)
+        await p.batch_update_nodes([{"id": "u", "recordName": "U2"}], "records", transaction=other)
+        deleting = asyncio.create_task(p.delete_records_recursive(["u"], "c1"))                       # waits, but for the other transaction
+        await a_backend_waits_on(await xid_of(p, other))
+        with pytest.raises(AssertionError):
+            await a_backend_waits_on(await xid_of(p, mine), seconds=1)
+    finally:
+        await p.rollback_transaction(other)
+        await p.rollback_transaction(mine)
+        if deleting is not None:
+            deleting.cancel()
+            await asyncio.gather(deleting, return_exceptions=True)
