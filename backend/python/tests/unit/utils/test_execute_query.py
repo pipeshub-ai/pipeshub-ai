@@ -1494,11 +1494,31 @@ class TestZeroRowNote:
 
         note = _zero_row_note("SELECT * FROM p WHERE p.country = 'America'", "mariadb", [])
         assert "p.country = 'America'" in note
-        assert "p.country LIKE '%America%'" in note
+        assert "LOWER(p.country) LIKE '%america%'" in note
+
+    def test_a_decimal_zero_counts_as_empty(self) -> None:
+        from decimal import Decimal
+
+        from app.utils.execute_query import _zero_row_note
+
+        assert _zero_row_note("SELECT SUM(amount) FROM t WHERE region = 'West'", "postgres", [(Decimal("0"),)])
+
+    def test_the_suggested_lookup_keeps_apostrophes_escaped(self) -> None:
+        from app.utils.execute_query import _zero_row_note
+
+        note = _zero_row_note("SELECT id FROM t WHERE name = 'O''Brien'", "postgres", [])
+        assert "name = 'O'Brien'" in note
+        assert "LIKE '%o''brien%'" in note
+
+    def test_postgres_reads_only_the_statement_it_ran(self) -> None:
+        from app.utils.execute_query import _zero_row_note
+
+        query = "SELECT name FROM t WHERE name = 'Alpha'; SELECT COUNT(*) FROM t WHERE id = -1;"
+        assert _zero_row_note(query, "postgres", [(0,)]) is None
 
     @pytest.mark.asyncio
     async def test_the_note_reaches_the_model_with_the_empty_result(self) -> None:
         with patch.object(eq, "_execute_postgres_query", AsyncMock(return_value={"ok": True, "columns": ["n"], "rows": [(0,)]})):
             out = await eq._execute_query_impl("SELECT COUNT(*) AS n FROM p WHERE country = 'America'", "PostgreSQL", MagicMock(), "c")
-        assert "Nothing matched the filter country = 'America'" in out["markdown_result"]
+        assert "the filter country = 'America' may not match the stored value" in out["markdown_result"]
         assert out["raw_rows"] == [(0,)]

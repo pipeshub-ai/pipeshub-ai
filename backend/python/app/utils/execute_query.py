@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from decimal import Decimal
 from typing import Any, Callable, Collection, Dict, List, Optional, TYPE_CHECKING
 
 from langchain_core.tools import tool
@@ -561,7 +562,6 @@ async def _execute_mariadb_query(
 _TEXT_LITERAL_FILTER = re.compile(
     r"([A-Za-z_][\w.\"`]*)\s*(?:=|\bI?LIKE\b)\s*'((?:[^']|'')+)'", re.IGNORECASE
 )
-_CASE_INSENSITIVE_MATCH = {"postgres": "ILIKE", "snowflake": "ILIKE", "mariadb": "LIKE"}
 
 
 def _empty_result(rows: list[Any]) -> bool:
@@ -571,7 +571,7 @@ def _empty_result(rows: list[Any]) -> bool:
     if len(rows) > 1:
         return False
     values = rows[0].values() if isinstance(rows[0], dict) else rows[0]
-    return all(value is None or (isinstance(value, (int, float)) and value == 0) for value in values)
+    return all(value is None or (isinstance(value, (int, float, Decimal)) and value == 0) for value in values)
 
 
 def _zero_row_note(query: str, source_type: str, rows: list[Any]) -> str | None:
@@ -579,16 +579,20 @@ def _zero_row_note(query: str, source_type: str, rows: list[Any]) -> str | None:
     # Backslash escapes and dollar quoting change where a literal ends per dialect.
     if not _empty_result(rows) or "\\" in query or "$" in query:
         return None
+    if source_type == "postgres":  # only the last statement runs there
+        query = query.rstrip().rstrip(";").rsplit(";", 1)[-1]
     match = _TEXT_LITERAL_FILTER.search(query)
     if not match:
         return None
     column, literal = match.group(1), match.group(2).replace("''", "'").strip("%")
-    op = _CASE_INSENSITIVE_MATCH.get(source_type, "LIKE")
+    # LOWER on both sides is case-insensitive in every dialect and collation.
+    pattern = literal[:20].lower().replace("'", "''")
     return (
-        f"Nothing matched the filter {column} = '{literal}'. The stored value may be spelled, "
-        f"cased or abbreviated differently: look it up first (e.g. SELECT {column}, COUNT(*) "
-        f"... WHERE {column} {op} '%{literal[:20]}%' GROUP BY {column}) and rerun with the "
-        "stored value before answering that there are none."
+        f"The result has no rows, or only zeros and NULLs. If rows were expected, the filter "
+        f"{column} = '{literal}' may not match the stored value, which can differ in spelling, "
+        f"case or abbreviation: look it up first (e.g. SELECT {column}, COUNT(*) ... WHERE "
+        f"LOWER({column}) LIKE '%{pattern}%' GROUP BY {column}) and rerun with the stored "
+        "value before reporting the result."
     )
 
 
