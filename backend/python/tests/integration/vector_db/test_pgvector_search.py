@@ -123,6 +123,12 @@ async def test_deleted_points_are_not_found_and_the_refusals(store) -> None:
         await store.query_nearest_points("nope", [req(A)])
     with pytest.raises(ValueError, match="term id"):
         await store.query_nearest_points("records", [HybridSearchRequest(dense_query=Q, sparse_query=SparseVector([2**32], [1.0]), filter=req(A).filter)])
+    for bad in (SparseVector([], [1.0]), SparseVector([1, 2], [1.0])):                                       # unequal lengths: refused, as Qdrant refuses them
+        for dq in (Q, None):
+            with pytest.raises(ValueError, match="same length"):
+                await store.query_nearest_points("records", [HybridSearchRequest(dense_query=dq, sparse_query=bad, filter=req(A).filter)])
+    [hits] = await store.query_nearest_points("records", [HybridSearchRequest(dense_query=Q, sparse_query=SparseVector([], []), filter=req(A).filter)])
+    assert hits                                                                                              # an empty query has no lexical leg: the dense answer stands
 
 
 async def test_every_tier_answers_the_same_nearest_points(store) -> None:

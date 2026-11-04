@@ -87,6 +87,11 @@ class InMemoryStampGraph:
         self.reads.append(len(ids))
         return {i: self.node_map[i] for i in ids if i in self.node_map} if org_id == self.org_id else {}
 
+    async def record_page(self, org_id: str, app_id: str, after: str | None, limit: int) -> list[str]:
+        self._check()
+        ids = sorted(i for i, n in self.node_map.items() if n.kind == "record" and n.connector_id == app_id)
+        return [i for i in ids if after is None or i > after][:limit] if org_id == self.org_id else []
+
     def _check(self) -> None:
         if self.failure is not None:
             raise self.failure
