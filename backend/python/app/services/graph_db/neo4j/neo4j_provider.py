@@ -228,6 +228,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
     is_write_conflict,
 )
 from app.services.graph_db.neo4j.permission_scopes import Neo4jHierarchyView
+from app.services.graph_db.neo4j.permission_stamps import Neo4jStampGraph
 from app.services.graph_db.push_claim import (
     KB_DELETING_STATUS,
     PushClaim,
@@ -8151,9 +8152,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # reaches its own hidden KB — is honoured as-is.
             kb_filter_clause = ""
             if kb_ids:
-                kb_filter_clause = f" WHERE {_kb_edge_role_ok('kbp')} AND kb.id IN $kb_ids"
+                kb_filter_clause = " WHERE kb.id IN $kb_ids"
             else:
-                kb_filter_clause = f" WHERE {_kb_edge_role_ok('kbp')} AND coalesce(kb.isHidden, false) = false"
+                kb_filter_clause = " WHERE coalesce(kb.isHidden, false) = false"
 
             # Prepare parameters (populated further below, and mutated by time-range conditions)
             parameters = {
@@ -8177,6 +8178,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 // Direct user-KB permissions (KB is now an App node with type="KB")
                 OPTIONAL MATCH (userDoc)-[kbp:PERMISSION]->(kb:App {{type: "KB"}})
                 {kb_filter_clause}
+                // The role is read before the next match: Neo4j 5.26 cannot read it from the edge after it.
+                WITH userDoc, kb, {_kb_edge_role_ok('kbp')} AS kb_role_ok
+                WITH userDoc, kb WHERE kb_role_ok = true
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
                 WHERE {cypher_searchable_record("r")}
                   AND {live_record}
@@ -8638,6 +8642,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def permission_hierarchy_view(self) -> Neo4jHierarchyView:
         return Neo4jHierarchyView(lambda: self.client)
+
+    def permission_stamp_graph(self) -> Neo4jStampGraph:
+        return Neo4jStampGraph(lambda: self.client)
 
     async def get_accessible_containers(
         self,

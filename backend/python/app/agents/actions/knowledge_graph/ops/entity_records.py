@@ -9,7 +9,9 @@ response, so the tool never confirms that inaccessible data exists.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
+import operator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -44,6 +46,8 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
     EntityRecordPage,
+    RecordCount,
+    count_accessible_entity_records,
     first_readable_offsets,
     list_accessible_entity_records,
 )
@@ -137,7 +141,8 @@ async def execute_find_records_by_entity(
         if cursor:
             return True, NO_FURTHER_RECORDS_MSG
         empty = " ".join(filter(None, (NO_ACCESSIBLE_RECORDS_MSG, limited_scope_note(context))))
-        return True, empty + await _alias_note(state, context, resolved_id, resolved_type)
+        note, _ = await _first_page_counts(state, context, resolved_id, resolved_type, wanted_types, page)
+        return True, empty + note
 
     record_ids = [r["_key"] for r in page.records if r.get("_key")]
     remember_record_ids(
@@ -152,7 +157,9 @@ async def execute_find_records_by_entity(
         {r["_key"]: listing_facts(r, said) for r in page.records if r.get("_key")},
     )
     # The first page names the same entity's other nodes, so a count or listing covers them too.
-    note = "" if cursor else await _alias_note(state, context, resolved_id, resolved_type)
+    note, total = ("", None) if cursor else await _first_page_counts(
+        state, context, resolved_id, resolved_type, wanted_types, page,
+    )
     return True, note.strip() + ("\n" if note else "") + _render_page(
         page.records,
         context,
@@ -161,17 +168,47 @@ async def execute_find_records_by_entity(
         entity_name=name,
         next_cursor=page.next_cursor,
         capped=page.capped,
+        # Later pages carry no total: the first page stated it.
+        shown=f"{len(page.records)} shown" if cursor else _shown(len(page.records), total, wanted_types),
         shortener=shortener,
         cite_refs=cite_refs,
         frontend_url=await resolve_frontend_url(state.get("config_service")),
     )
 
 
-async def _alias_note(state: "ChatState", context: EntityAccessContext, entity_id: str, entity_type: str) -> str:
-    """The same company or product's other nodes, under a learned short or full name,
-    with the call that lists each; empty when it has none or alias linking is off."""
+async def _first_page_counts(
+    state: "ChatState",
+    context: EntityAccessContext,
+    entity_id: str,
+    entity_type: str,
+    record_types: list[str] | None,
+    page: EntityRecordPage,
+) -> tuple[str, RecordCount | None]:
+    """The alias note and this entity's total. The note carries the family's total,
+    each record counted once: the agent sees only totals, so it cannot remove overlap."""
+    family, total = await asyncio.gather(
+        _alias_family(state, context, entity_id, entity_type),
+        _total(state, context, entity_id, entity_type, record_types, page),
+    )
+    if not family:
+        return "", total
+    together = None
+    if total is not None:
+        counts = await asyncio.gather(*(
+            _count(state, context, node["id"], NAMED_ENTITY_TYPE, record_types) for node in family
+        ))
+        if all(c is not None for c in counts):
+            together = functools.reduce(operator.or_, counts, total)
+    return _alias_note(family, together), total
+
+
+async def _alias_family(
+    state: "ChatState", context: EntityAccessContext, entity_id: str, entity_type: str,
+) -> list[dict[str, Any]]:
+    """The same company or product's other nodes, under a learned short or full name;
+    empty when it has none or alias linking is off."""
     if entity_type != NAMED_ENTITY_TYPE:
-        return ""
+        return []
     try:
         family = await asyncio.wait_for(_linked_aliases(state, context, entity_id), timeout=ALIAS_NOTE_SECONDS)
     except TimeoutError:
@@ -180,21 +217,36 @@ async def _alias_note(state: "ChatState", context: EntityAccessContext, entity_i
             "find_records_by_entity: alias lookup timed out org=%s entity=%s after %.1fs",
             context.org_id, entity_id, ALIAS_NOTE_SECONDS,
         )
-        return ""
+        return []
     except Exception:
         # Only a pointer to more records: the listing stands without it.
         logger.warning("find_records_by_entity: alias lookup failed", exc_info=True)
-        return ""
-    if not family:
-        return ""
+        return []
+    return family
+
+
+def _alias_note(family: list[dict[str, Any]], together: RecordCount | None) -> str:
+    """The call that lists each alias node, and how many readable records they are on together."""
     calls = "; ".join(
         f'{_trunc(node.get("name") or "")} ({node.get("kind")}): '
         f'knowledgegraph__find_records_by_entity(entity_id="{node["id"]}", entity_type="{NAMED_ENTITY_TYPE}")'
         for node in family
     )
+    if together is None:
+        how_many = "For a count, list them all and count each record_id once: a record can be under both."
+    elif together.exact:
+        how_many = (
+            f"Together with this entity they are on {together.count} readable record(s), each counted once: "
+            "use that for a count, not a sum of the listings' totals."
+        )
+    else:
+        how_many = (
+            f"Together with this entity they are on at least {together.count} readable record(s), each counted "
+            "once (counting stopped early, so this is a minimum)."
+        )
     return (
-        f"\nThe same entity is also stored under a learned alias; list these too for every record "
-        f"(and add them to a count): {calls}."
+        f"\nThe same entity is also stored under a learned alias; list these too for every record: {calls}. "
+        f"{how_many}"
     )
 
 
@@ -202,6 +254,45 @@ async def _linked_aliases(state: "ChatState", context: EntityAccessContext, enti
     if not (await load_named_entity_config(state.get("config_service"))).link_aliases:
         return []
     return await alias_family(state["graph_provider"], context, entity_id)
+
+
+async def _total(
+    state: "ChatState",
+    context: EntityAccessContext,
+    entity_id: str,
+    entity_type: str,
+    record_types: list[str] | None,
+    page: EntityRecordPage,
+) -> RecordCount | None:
+    """The entity's readable records in all; None when the count failed.
+
+    Every candidate before the page's end is decided (unreadable ones before its
+    first row, the probe jump included), so only the rest is counted."""
+    # A capped page's end is the end of the provider's sample, not of the entity.
+    shown = RecordCount(frozenset(str(r["_key"]) for r in page.records if r.get("_key")), exact=not page.capped)
+    if page.next_cursor is None:
+        return shown
+    rest = await _count(state, context, entity_id, entity_type, record_types, cursor=page.next_cursor)
+    return None if rest is None else shown | rest
+
+
+async def _count(
+    state: "ChatState",
+    context: EntityAccessContext,
+    entity_id: str,
+    entity_type: str,
+    record_types: list[str] | None,
+    cursor: str | None = None,
+) -> RecordCount | None:
+    try:
+        return await count_accessible_entity_records(
+            state["graph_provider"], context, entity_id=entity_id, entity_type=entity_type,
+            record_types=record_types, cursor=cursor,
+        )
+    except Exception:
+        # Only the total is lost: the listing stands without it.
+        logger.warning("find_records_by_entity: count failed", exc_info=True)
+        return None
 
 
 def _continue_call(entity_ref: str, entity_type: str, cursor: str) -> str:
@@ -251,6 +342,7 @@ def _render_page(
     entity_name: str | None,
     next_cursor: str | None,
     capped: bool = False,
+    shown: str,
     shortener: "RecordIdShortener | None",
     frontend_url: str | None = None,
     cite_refs: "Mapping[str, str] | None" = None,
@@ -258,7 +350,7 @@ def _render_page(
     cite_refs = cite_refs or {}
     subject = f'{entity_type} "{_trunc(entity_name)}"' if entity_name else f"this {entity_type}"
     order = "newest of a sample" if capped else "newest first"
-    lines = [f"Records {_preposition(entity_type)} {subject}, {order} ({len(records)} shown):"]
+    lines = [f"Records {_preposition(entity_type)} {subject}, {order} ({shown}):"]
     lines.extend(cite_note(records, cite_refs))
     lines.extend(
         record_line(record, context, shortener, frontend_url, cite=cite_refs.get(record["_key"])) for record in records
@@ -274,6 +366,18 @@ def _render_page(
         "to see where a record sits."
     )
     return "\n".join(lines)
+
+
+def _shown(shown: int, total: RecordCount | None, record_types: list[str] | None) -> str:
+    if total is None:
+        return f"{shown} shown; total not available this time - page to the end to count, never report the page size as the total"
+    kind = f"{'/'.join(record_types)} " if record_types else ""
+    if total.exact:
+        return f"{shown} shown of {total.count} readable {kind}record(s) in all"
+    return (
+        f"{shown} shown; at least {total.count} readable {kind}record(s) - counting stopped "
+        "before the last one, so this is a minimum, not the total"
+    )
 
 
 def _preposition(entity_type: str) -> str:

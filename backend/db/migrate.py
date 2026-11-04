@@ -140,11 +140,15 @@ def _report(conn: psycopg.Connection) -> None:
     rows: list[tuple[str, str]] = []
     if conn.execute("SELECT to_regclass('kernel.rls_violations') IS NOT NULL").fetchone()[0]:
         conn.execute("SET search_path = pg_catalog")      # policy texts are deparsed with the caller's search_path
+        # the catalog views are big expressions run once: compiling them (JIT, on by default from PostgreSQL 12 where it is built in) costs
+        # seconds to tens of seconds and saves nothing
+        conn.execute("SET jit = off")
         rows = [tuple(r) for r in conn.execute("SELECT * FROM kernel.rls_violations")]
         for rule, obj in conn.execute("SELECT * FROM kernel.rls_warnings"):
             log(f"WARNING {rule}: {obj}")
         conn.execute("RESET search_path")
         rows += vetted.problems(conn)                                   # the vetted function manifests agree with the registry
+        conn.execute("RESET jit")
         extra = os.environ.get("PG_MIGRATE_SURFACE_FILES", "").split(os.pathsep)
         if os.environ.get("PG_MIGRATE_SURFACE_CHECK") == "skip":
             log("WARNING *** the security surface check was SKIPPED (PG_MIGRATE_SURFACE_CHECK=skip): development only ***")

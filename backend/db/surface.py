@@ -65,6 +65,8 @@ QUERIES = [
     ("member", f"""SELECT m.member::regrole || ' -> ' || m.roleid::regrole || ' inherit=' || m.inherit_option || ' set=' || m.set_option || ' admin=' || m.admin_option
         FROM pg_auth_members m WHERE m.member::regrole::text NOT LIKE 'pg\\_%'
         AND NOT (m.member::regrole::text = ANY ({_ADMINS}) AND m.roleid::regrole::text = ANY ({_ADMINS}))"""),
+    ("pin", """SELECT p.proc::text || ' ' || p.rel::text || ' ' || p.op || ' key=' || COALESCE(array_to_string(p.key_cols, ','), '-') || ' set=' || COALESCE(array_to_string(p.set_cols, ','), '-')
+        || ' txn=' || COALESCE(p.txn_col::text, '-') || ' max=' || p.max_items FROM kernel.vetted_write_pins p"""),
     ("settings", """SELECT 'admins=' || array_to_string(admins, ',') || ' extensions=' || array_to_string(extensions, ',') || ' services=' || array_to_string(services, ',')
         FROM kernel.settings"""),
     ("database", "SELECT 'owner=' || d.datdba::regrole FROM pg_database d WHERE d.datname = current_database()"),
@@ -209,6 +211,8 @@ def live_lines(conn: psycopg.Connection) -> list[str]:
         admins_ok = conn.execute("SELECT to_regclass('kernel.settings') IS NOT NULL").fetchone()[0]
         for kind, text in QUERIES:
             if kind == "settings" and not admins_ok:
+                continue
+            if kind == "pin" and not conn.execute("SELECT to_regclass('kernel.vetted_write_pins') IS NOT NULL").fetchone()[0]:
                 continue
             sql = text if folding else text.replace(_FOLD_SELECT, "SELECT NULL::oid WHERE false")
             query = sql if admins_ok else sql.replace("COALESCE((SELECT admins FROM kernel.settings), '{}')", "'{}'::name[]")
