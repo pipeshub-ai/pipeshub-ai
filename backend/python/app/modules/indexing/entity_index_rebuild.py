@@ -48,6 +48,7 @@ from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
+from app.services.messaging.record_titles import clean_record_title
 from app.services.messaging.utils import MessagingUtils
 from app.utils.loop_share import LoopShare
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -584,6 +585,9 @@ class EntityIndexRebuilder:
                 # Its point, written while it was live, would keep it findable by name.
                 trashed.setdefault(org_id, []).append(key)
                 continue
+            if phase == _RECORDS:
+                # Same cut as the live title path, so both write identical text.
+                name = clean_record_title(row.get("name")) or ""
             if not name:
                 continue
             # The live path gives these no point.

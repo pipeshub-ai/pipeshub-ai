@@ -419,6 +419,13 @@ class TestConnectorPass:
             ("org-2", "record", ["r5"]),
         ]
 
+    async def test_long_record_names_are_cut_like_the_live_title_path(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.sources[(RECORDS, "app-1")] = [{**_rec("r1"), "name": "x" * 600}]
+        await _run_until_idle(_rebuilder(graph, store, page_size=10))
+        assert [len(e.name) for e in store.written()] == [512]
+
     async def test_internal_records_and_stubs_get_no_point(self) -> None:
         graph, store = FakeGraph(), FakeStore()
         graph.docs[APPS]["app-1"] = _app()
