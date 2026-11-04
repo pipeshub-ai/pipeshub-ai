@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Flex } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -23,6 +23,16 @@ export function McpLogoField({ logo, onChange, onReadingChange }: McpLogoFieldPr
   const [error, setError] = useState<string | null>(null);
   // Reading a file takes a moment: only the latest pick or remove may change the logo.
   const latestAction = useRef(0);
+
+  // The panel outlives this field (closed, or opened for another server): a file still being
+  // read is dropped rather than landing in whatever form is there when it finishes.
+  useEffect(() => {
+    const actions = latestAction;
+    return () => {
+      actions.current++;
+      onReadingChange(false);
+    };
+  }, [onReadingChange]);
 
   const pick = async (file: File) => {
     const action = ++latestAction.current;

@@ -194,6 +194,7 @@ export function McpInstanceConfigPanel({
     setConfirmDiscard(false);
     setPendingImpact('none');
     setLogoDraft(undefined);
+    setIsReadingLogo(false);
     if (editingInstance) {
       setName(editingInstance.name);
       setDescription(editingInstance.description ?? '');
@@ -716,6 +717,7 @@ export function McpInstanceConfigPanel({
 
       {!isTemplateBased && !isReadOnly && (
         <McpLogoField
+          key={editingInstance?._id ?? 'new'}
           logo={logoDraft === undefined ? savedLogo : logoDraft}
           onChange={setLogoDraft}
           onReadingChange={setIsReadingLogo}

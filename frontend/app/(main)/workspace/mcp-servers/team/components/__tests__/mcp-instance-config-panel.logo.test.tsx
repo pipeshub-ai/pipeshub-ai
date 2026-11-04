@@ -304,6 +304,46 @@ describe('McpInstanceConfigPanel logo', () => {
       expect(saveButton().disabled).toBe(false);
     });
 
+    describe("leaves another server's form alone when the read finishes later", () => {
+      const other = { ...custom, _id: 'inst-2', name: 'Other tools' } as Instance;
+      const editOther = { open: true, mode: 'edit', editingInstance: other, prefillTemplate: null } as PanelProps['state'];
+
+      async function finishAfter(next: (rerender: (ui: React.ReactElement) => void) => void) {
+        let finish: (logo: string) => void = () => {};
+        picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((resolve) => (finish = resolve)));
+        const { rerender } = render(panel(editCustom));
+        await waitFor(() => expect(preview()).toBe(SAVED));
+        await pickFile();
+        expect(saveButton().disabled).toBe(true);
+
+        next(rerender);
+        await act(async () => finish(NEW));
+      }
+
+      async function expectOtherUntouched() {
+        expect(preview()).toBeNull();
+        expect(saveButton().disabled).toBe(false);
+        await save();
+        expect(api.updateInstance).toHaveBeenCalledWith('inst-2', expect.anything());
+        expect(api.setLogo).not.toHaveBeenCalled();
+      }
+
+      it('after the panel was closed and opened for it', async () => {
+        await finishAfter((rerender) => {
+          rerender(panel({ ...editCustom, open: false }));
+          rerender(panel(editOther));
+        });
+
+        await expectOtherUntouched();
+      });
+
+      it('after the open panel switched to it', async () => {
+        await finishAfter((rerender) => rerender(panel(editOther)));
+
+        await expectOtherUntouched();
+      });
+    });
+
     it('frees Save when the logo is removed instead', async () => {
       picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>(() => {}));
       render(panel(editCustom));
