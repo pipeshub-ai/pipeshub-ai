@@ -1091,8 +1091,24 @@ def _changed_fields(asked: dict[str, Any], edited: dict[str, Any]) -> list[str]:
     return sorted(k for k in asked.keys() | edited.keys() if asked.get(k, _MISSING) != edited.get(k, _MISSING))
 
 
+_MAX_NOTE_VALUE_CHARS = 200
+
+
+def _note_value(value: Any) -> str:  # noqa: ANN401
+    text = "(cleared)" if value is _MISSING else json.dumps(value, default=str, ensure_ascii=False)
+    return text if len(text) <= _MAX_NOTE_VALUE_CHARS else text[:_MAX_NOTE_VALUE_CHARS] + "…"
+
+
 def _changed_note(asked: dict[str, Any], edited: dict[str, Any]) -> str:
-    return f"The user changed {', '.join(f'`{k}`' for k in _changed_fields(asked, edited))} before approving."
+    # Said outright: told only which fields changed, a model that later saw the new values (a sent
+    # email's address) took them for a mistake and ran the call again with its own.
+    fields = _changed_fields(asked, edited)
+    changes = "; ".join(f"`{k}` = {_note_value(edited.get(k, _MISSING))}" for k in fields)
+    return (
+        f"The user changed {', '.join(f'`{k}`' for k in fields)} before approving, and the call ran with their values: {changes}. "
+        "Their edit is their latest instruction and overrides anything said earlier: don't run the call again to undo or "
+        "repeat it, and don't call the difference a mistake."
+    )
 
 
 async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApprovalAnswer) -> _Settled:
