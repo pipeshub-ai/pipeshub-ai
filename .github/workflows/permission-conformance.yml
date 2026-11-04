@@ -77,7 +77,7 @@ jobs:
       - name: Run oracle, scenario and matrix tests
         run: |
           cd backend/python
-          pytest tests/permissions -m "not integration" -v -rx --junitxml="$RUNNER_TEMP/oracle-junit.xml"
+          pytest tests/permissions -m "not integration" -n 4 -v -rx --junitxml="$RUNNER_TEMP/oracle-junit.xml"
 
       # --min-tests pins the suite size, so a module that stopped being collected fails the job; a PR that adds tests raises it.
       # The one allowed skip is the strict expected failure that reports matrix cells without a scenario, by its exact name.
