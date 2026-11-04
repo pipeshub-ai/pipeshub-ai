@@ -84,4 +84,7 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="vercel" name="Vercel" />)).toBe('vercel icon');
   });
 
+  it("shows Zapier's logo", () => {
+    expect(logo(<McpServerIcon typeId="zapier" name="Zapier" />)).toBe('zapier icon');
+  });
 });

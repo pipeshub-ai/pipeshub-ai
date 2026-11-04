@@ -86,6 +86,7 @@ class TestMCPRegistry:
         assert "context7" in type_ids
         assert "huggingface" in type_ids
         assert "vercel" in type_ids
+        assert "zapier" in type_ids
         assert "docusign" in type_ids
         assert "okta" in type_ids
         assert "zoom" in type_ids
