@@ -17,6 +17,7 @@ import logging
 import time
 from collections.abc import AsyncGenerator
 from concurrent.futures import Future
+from concurrent.futures import wait as futures_wait
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -154,15 +155,18 @@ class TestWaitForActiveFuturesExtended:
         with consumer._futures_lock:
             consumer._active_futures.update(futures)
 
-        with patch.object(
-            type(messaging_env), "shutdown_task_timeout", new_callable=PropertyMock, return_value=0.2,
+        with (
+            patch.object(
+                type(messaging_env), "shutdown_task_timeout", new_callable=PropertyMock, return_value=0.2,
+            ),
+            patch(f"{type(consumer).__module__}.futures_wait", wraps=futures_wait) as waited,
         ):
-            start = time.monotonic()
             consumer._wait_for_active_futures()
-            elapsed = time.monotonic() - start
 
-        # Bounded by ~one timeout window, not 5x.
-        assert elapsed < 1.0
+        # One wait over all five with one timeout window, not five waits of one window each.
+        waited.assert_called_once()
+        assert set(waited.call_args.args[0]) == set(futures)
+        assert waited.call_args.kwargs == {"timeout": 0.2}
 
 
 # ===================================================================
@@ -498,13 +502,20 @@ class TestRetryDelayBeforeSemaphore:
             "payload": {"k": "v", "_retry_not_before": time.time() - 5},
         }).encode("utf-8"))
 
-        start = time.monotonic()
-        result = await asyncio.wait_for(
-            consumer._IndexingKafkaConsumer__process_message_wrapper(msg), timeout=1.0
-        )
-        elapsed = time.monotonic() - start
+        sleeps: list[float] = []
+        real_sleep = asyncio.sleep
+
+        async def recording_sleep(delay: float, *args: object) -> object:
+            sleeps.append(delay)
+            return await real_sleep(delay, *args)
+
+        with patch("asyncio.sleep", recording_sleep):
+            result = await asyncio.wait_for(
+                consumer._IndexingKafkaConsumer__process_message_wrapper(msg), timeout=30
+            )
         assert result is True
-        assert elapsed < 0.5
+        # No wait is asked for: the delay is what is asserted, not how long the host took.
+        assert max(sleeps, default=0) < 1.0
 
     @pytest.mark.asyncio
     async def test_shutdown_interrupts_delay_without_committing(self, logger, plain_config):

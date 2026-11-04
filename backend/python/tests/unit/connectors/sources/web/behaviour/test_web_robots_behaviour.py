@@ -445,10 +445,17 @@ async def test_only_the_first_512_kib_of_robots_txt_are_read(
 
 
 def test_a_pathological_pattern_is_matched_quickly() -> None:
+    """Timed as a ratio, not against a limit: doubling the path costs about 4x at worst when the
+    scan is linear, and thousands of times as much when the pattern backtracks."""
     rules = RobotsRules.parse("User-agent: *\nDisallow: /*a*a*a*a*a*a*a*a*b\n", "PipesHub")
 
-    started = time.monotonic()
-    allowed = rules.allows("http://site.test/" + "a" * 40)
+    def best_of_five(size: int) -> float:
+        runs = []
+        for _ in range(5):
+            started = time.monotonic()
+            assert rules.allows("http://site.test/" + "a" * size) is True
+            runs.append(time.monotonic() - started)
+        return min(runs)
 
-    assert allowed is True
-    assert time.monotonic() - started < 0.5
+    small, large = best_of_five(12), best_of_five(24)
+    assert large <= max(small, 0.0005) * 40, (small, large)

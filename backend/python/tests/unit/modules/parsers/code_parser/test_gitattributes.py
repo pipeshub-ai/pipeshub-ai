@@ -42,13 +42,24 @@ def test_linguist_rules(rules: str, path: str, excluded: bool) -> None:
 
 
 def test_a_crafted_pattern_matches_in_linear_time() -> None:
-    """Repository content writes these rules; `*a*a…*b` must not backtrack over every split."""
+    """Repository content writes these rules; `*a*a…*b` must not backtrack over every split.
+
+    Timed as a ratio, not against a limit: doubling the text costs about twice as much when the
+    match is linear, and thousands of times as much when it backtracks over every split."""
     import time
 
-    rules = parse_linguist_exclusions("*a" * 40 + "*b linguist-generated")
-    started = time.perf_counter()
-    assert rules.excludes("a" * 255) is False
-    assert time.perf_counter() - started < 0.5
+    rules = parse_linguist_exclusions("*a" * 8 + "*b linguist-generated")
+
+    def best_of_five(size: int) -> float:
+        runs = []
+        for _ in range(5):
+            started = time.perf_counter()
+            assert rules.excludes("a" * size) is False
+            runs.append(time.perf_counter() - started)
+        return min(runs)
+
+    small, large = best_of_five(14), best_of_five(28)
+    assert large <= max(small, 0.0005) * 40, (small, large)  # linear is about 2x; backtracking about 10**4x
 
 
 def test_no_linguist_rules_is_falsy() -> None:
