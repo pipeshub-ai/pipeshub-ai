@@ -223,6 +223,65 @@ class TestOpenSearchMutations:
         finally:
             await opensearch_service.delete_collection(col)
 
+    async def test_delete_removes_a_point_indexed_since_the_last_refresh(self, opensearch_service) -> None:
+        """A record indexed and deleted before the next refresh must not turn up once the index refreshes."""
+        col = make_collection("os_del_unrefreshed")
+        try:
+            await opensearch_service.create_collection(col, make_collection_config())
+            await opensearch_service.upsert_points(col, sample_points("org1"))  # no refresh
+
+            await opensearch_service.delete_points(
+                col, FilterExpression(must=[FieldCondition(key="metadata.orgId", value="org1")]),
+            )
+            await _refresh(opensearch_service, col)
+
+            req = HybridSearchRequest(dense_query=make_dense([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]), limit=5)
+            assert (await opensearch_service.query_nearest_points(col, [req]))[0] == []
+        finally:
+            await opensearch_service.delete_collection(col)
+
+    async def test_delete_sees_a_recent_write_when_the_index_never_refreshes_by_itself(self, opensearch_service) -> None:
+        """refresh_interval -1 (a bulk load, a restore): nothing becomes visible on its own, so a delete cannot
+        rely on the 30 s interval."""
+        col = make_collection("os_del_no_refresh")
+        try:
+            await opensearch_service.create_collection(col, make_collection_config())
+            await opensearch_service.client.indices.put_settings(index=col, body={"index": {"refresh_interval": "-1"}})
+            await opensearch_service.upsert_points(col, sample_points("org1"))
+            # Older than the default 30 s interval would explain: with -1 the point is still not visible.
+            aged = {k: t - 120 for k, t in opensearch_service._unrefreshed[col].items()}
+            opensearch_service._unrefreshed[col] = aged
+
+            await opensearch_service.delete_points(
+                col, FilterExpression(must=[FieldCondition(key="metadata.virtualRecordId", value="r1")]),
+            )
+            await _refresh(opensearch_service, col)
+
+            req = HybridSearchRequest(dense_query=make_dense([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]), limit=5)
+            results = (await opensearch_service.query_nearest_points(col, [req]))[0]
+            assert not any(r.id == point_id("doc-python") for r in results)
+        finally:
+            await opensearch_service.delete_collection(col)
+
+    async def test_delete_removes_a_point_rewritten_since_the_last_refresh(self, opensearch_service) -> None:
+        """delete_by_query sees the last refreshed view, so a rewritten point is a version conflict that
+        conflicts=proceed skips; the point must still go."""
+        col = make_collection("os_del_conflict")
+        try:
+            await opensearch_service.create_collection(col, make_collection_config())
+            points = sample_points("org1")
+            await opensearch_service.upsert_points(col, points)
+            await _refresh(opensearch_service, col)
+            await opensearch_service.upsert_points(col, points)  # new versions, not refreshed
+
+            await opensearch_service.delete_points(
+                col, FilterExpression(must=[FieldCondition(key="metadata.orgId", value="org1")]),
+            )
+
+            assert await opensearch_service.retrieve_points(col, [p.id for p in points]) == []
+        finally:
+            await opensearch_service.delete_collection(col)
+
     async def test_scroll(self, opensearch_service):
         col = make_collection("os_scroll")
         cfg = make_collection_config()
