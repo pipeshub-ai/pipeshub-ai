@@ -495,7 +495,7 @@ async def test_reads_and_classified_writers_pass_through_the_proxy() -> None:
     provider.delete_single_record.assert_awaited_once()
 
 
-def _production_store(monkeypatch, *, doc: dict, org_apps: list[dict]):  # noqa: ANN202
+def _production_store(monkeypatch, *, doc: dict, org_apps: list[dict], explicit: bool = True):  # noqa: ANN202
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     provider = MagicMock()
     provider.logger = MagicMock()
@@ -503,7 +503,7 @@ def _production_store(monkeypatch, *, doc: dict, org_apps: list[dict]):  # noqa:
     provider.get_nodes_by_field_in = _by_field_in
     provider.get_org_apps = AsyncMock(return_value=org_apps)
     provider.begin_transaction = AsyncMock(return_value="t")
-    provider.opens_explicit_transaction = MagicMock(return_value=True)
+    provider.opens_explicit_transaction = MagicMock(return_value=explicit)
     provider.commit_transaction = AsyncMock()
     provider.rollback_transaction = AsyncMock()
     provider.update_node = AsyncMock()
@@ -549,6 +549,47 @@ async def test_an_unclassified_write_with_no_organisation_is_refused_before_it_r
     provider.batch_create_edges.assert_not_awaited()  # nothing was written: there is nothing to mark or to undo
     provider.commit_transaction.assert_not_awaited()
     provider.get_org_apps.assert_not_awaited()
+
+
+async def test_outside_a_transaction_an_unclassified_write_is_refused_when_the_organisations_connectors_cannot_be_listed(monkeypatch) -> None:
+    from app.core import org_context
+
+    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[], explicit=False)
+    provider.get_org_apps = AsyncMock(side_effect=RuntimeError("graph down"))
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError):
+        async with store_provider.transaction() as tx:
+            await tx._connector_of_node(R, "r1")
+            await _Scratch.via_local_alias(tx, "r1")
+    provider.batch_create_edges.assert_not_awaited()  # it would have committed with nothing to undo or to mark
+
+
+async def test_outside_a_transaction_every_connector_of_the_organisation_is_marked_before_an_unclassified_write_that_then_fails(monkeypatch) -> None:
+    from app.core import org_context
+
+    provider, store_provider = _production_store(
+        monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}, {"_key": "c2"}, {"id": "c3"}], explicit=False)
+    order: list[str] = []
+
+    async def write(*args, **kwargs) -> None:
+        order.append("write")
+        raise RuntimeError("connection reset")
+
+    async def mark(*args, **kwargs) -> None:
+        order.append("mark")
+
+    provider.batch_create_edges = AsyncMock(side_effect=write)
+    provider.update_node = AsyncMock(side_effect=mark)
+    # the listing works once (before the write) and is down when the failure handler would look again
+    provider.get_org_apps = AsyncMock(side_effect=[[{"_key": "c1"}, {"_key": "c2"}, {"id": "c3"}], RuntimeError("graph down")])
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError):
+        async with store_provider.transaction() as tx:
+            await tx._connector_of_node(R, "r1")
+            await _Scratch.via_local_alias(tx, "r1")
+    assert order[:4] == ["mark", "mark", "mark", "write"]  # every connector is marked before the write, which then fails
+    assert set(order[4:]) <= {"mark"}
+    marked = {c.args[0] for c in provider.update_node.await_args_list if c.args[2] == {"scopeProjectionUnsafe": True}}
+    assert marked == {"c1", "c2", "c3"}  # also the ones the block never looked at
+    assert all(c.args[3] is None for c in provider.update_node.await_args_list)  # on their own: they survive the failure
 
 
 async def test_a_failed_lookup_in_a_wrapper_fails_the_block_instead_of_looking_like_a_new_node() -> None:

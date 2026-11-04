@@ -242,11 +242,15 @@ def _is_read(name: str) -> bool:
 
 
 class _GuardedProvider:
-    __slots__ = ("_provider", "_on_unclassified")
+    __slots__ = ("_provider", "_on_unclassified", "_before_unclassified")
 
-    def __init__(self, provider: IGraphDBProvider, on_unclassified: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self, provider: IGraphDBProvider, on_unclassified: Callable[[], None] | None = None,
+        before_unclassified: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         object.__setattr__(self, "_provider", provider)
         object.__setattr__(self, "_on_unclassified", on_unclassified)
+        object.__setattr__(self, "_before_unclassified", before_unclassified)
 
     def __getattr__(self, name: str):  # noqa: ANN204
         attr = getattr(self._provider, name)
@@ -261,7 +265,16 @@ class _GuardedProvider:
         if name not in _warned:
             _warned.add(name)
             logging.getLogger(__name__).error("graph_provider.%s reached outside a classified store method", name)
-        return attr
+        before = self._before_unclassified
+        if before is None or not callable(attr):
+            return attr
+
+        async def after_marking(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            await before()  # may refuse: then the write never reaches the provider
+            result = attr(*args, **kwargs)
+            return await result if inspect.isawaitable(result) else result
+
+        return after_marking
 
     def __setattr__(self, name: str, value: object) -> None:
         setattr(self._provider, name, value)
@@ -274,10 +287,12 @@ class GraphTransactionStore(TransactionStore):
 
     def __init__(self, graph_provider: IGraphDBProvider, txn: str, *, explicit: bool = False) -> None:
         self.unclassified_write = False
+        self._org_marked_for_unclassified = False
         # The structure bookkeeping (the guarded provider, the reads before and after a structural write, the bump) exists only while the
         # scope fields are on: with them off the store reaches the provider directly and makes no query it did not make before.
         self.tracked = scope_fields_enabled()
-        self.graph_provider = _GuardedProvider(graph_provider, self._note_unclassified) if self.tracked else graph_provider
+        self.graph_provider = (
+            _GuardedProvider(graph_provider, self._note_unclassified, self._mark_org_before_unclassified_write) if self.tracked else graph_provider)
         self.txn = txn  # Transaction ID (string) for HTTP provider
         self.explicit = explicit  # the block runs in one real transaction
         self.logger = graph_provider.logger
@@ -300,6 +315,20 @@ class GraphTransactionStore(TransactionStore):
         # transaction it would already be committed with nothing to mark or roll back. It is refused instead (`MissingOrgContext`).
         org_context.current()
         self.unclassified_write = True
+
+    async def _mark_org_before_unclassified_write(self) -> None:
+        """Outside an explicit transaction an unclassified write commits as it runs and cannot be undone, and which connector it touches
+        is not known: every connector of the organisation is marked unsafe first, and the write is refused (the error propagates) when
+        the lookup or a mark fails. In an explicit transaction the rollback undoes it, and the marks are written when the block ends."""
+        if self.explicit or self._org_marked_for_unclassified:
+            return
+        org_id = org_context.current().org_id
+        apps = await self.graph_provider._provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
+        seen = {c for c in self._connector_of.values() if c} | self.structural_connectors
+        ids = seen | {str(k) for a in apps if (k := a.get("_key") or a.get("id"))}
+        for connector_id in sorted(ids):
+            await self.graph_provider._provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, None)
+        self._org_marked_for_unclassified = True
 
     async def _connector_of_node(self, collection: str, node_id: str) -> str | None:
         return (await self._connectors_of([(collection, node_id)])).get((collection, node_id))
