@@ -13,6 +13,13 @@ from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
 CONFLICT = Exception('{"errorNum": 1200, "errorMessage": "conflict: write-write conflict"}')
 
 
+@pytest.fixture(autouse=True)
+def backoff(monkeypatch) -> AsyncMock:
+    wait = AsyncMock()
+    monkeypatch.setattr("app.services.graph_db.arango.arango_http_provider.cascade_backoff", wait)
+    return wait
+
+
 @pytest.fixture
 def p() -> ArangoHTTPProvider:
     provider = ArangoHTTPProvider(MagicMock(spec=logging.Logger), AsyncMock())
@@ -135,3 +142,42 @@ async def test_get_existing_keys_reads_the_collection_and_raises_on_a_failed_rea
     with pytest.raises(RuntimeError):
         await q.get_existing_keys("files", ["a"])
     assert await q.get_existing_keys("files", []) == set()
+
+
+@pytest.mark.asyncio
+async def test_a_conflict_deleting_stage_states_runs_the_transaction_again(p, backoff) -> None:
+    """Indexing still writing the connector's stage states: the round is run again, after a
+    longer wait than a push conflict needs, instead of failing the delete outright."""
+    p._delete_stage_states_by_connector_id = AsyncMock(side_effect=[CONFLICT, (3, True)])
+
+    result = await p.delete_connector_instance("c1", "org1")
+
+    assert result["success"] is True, result
+    assert result["cascade_retries"] == 1
+    assert backoff.await_args.kwargs["base"] >= 0.5
+
+
+@pytest.mark.asyncio
+async def test_the_stage_state_delete_raises_a_conflict_and_reports_other_failures() -> None:
+    provider = ArangoHTTPProvider(MagicMock(spec=logging.Logger), AsyncMock())
+    provider.http_client = AsyncMock()
+
+    provider.http_client.execute_aql = AsyncMock(side_effect=CONFLICT)
+    with pytest.raises(Exception, match="1200"):
+        await provider._delete_stage_states_by_connector_id("txn1", "c1")
+
+    provider.http_client.execute_aql = AsyncMock(side_effect=RuntimeError("disk full"))
+    assert await provider._delete_stage_states_by_connector_id("txn1", "c1") == (0, False)
+
+
+
+@pytest.mark.asyncio
+async def test_blocks_and_stage_states_written_during_the_delete_are_swept_after_it(p) -> None:
+    p.delete_blocks_by_connector_id = AsyncMock(side_effect=[0, 6])
+    p._delete_stage_states_by_connector_id = AsyncMock(side_effect=[(0, True), (1, True)])
+
+    result = await p.delete_connector_instance("c1", "org1")
+
+    assert result["success"] is True, result
+    assert p.delete_blocks_by_connector_id.await_args_list[-1].args == ("c1",)
+    assert p._delete_stage_states_by_connector_id.await_args_list[-1].args == (None, "c1")

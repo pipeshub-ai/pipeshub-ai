@@ -388,6 +388,12 @@ def _remove_opts(transaction: str | None) -> str:
     return "OPTIONS { ignoreErrors: true }" if transaction is None else ""
 
 
+# Indexing and stage jobs already in flight keep writing a deleted connector's records
+# and stage states for seconds after its sync stops: 50 ms rounds (0.75 s in all) lost
+# every attempt to them, so a connector delete backs off from 0.5 s (about 7.5 s in all).
+_CONNECTOR_DELETE_BACKOFF_S = 0.5
+
+
 def _is_write_conflict(exc: Exception) -> bool:
     """ArangoDB errorNum 1200: a write-write conflict or a lock timeout."""
     return bool(_WRITE_CONFLICT_RE.search(str(exc)))
@@ -12049,6 +12055,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if deleted < _STAGE_STATE_DELETE_BATCH:
                     return (total, True)
         except Exception as e:
+            if self.is_write_conflict(e):
+                # The transaction is aborted; raised as it is, the cascade runs again.
+                raise
             self.logger.error(f"❌ Failed to delete the stage states of connector {connector_id}: {str(e)}")
             return (total, False)
 
@@ -12494,6 +12503,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
                             )
                         try:
+                            # In-flight indexing can write after the steps above ran: a duplicate code file
+                            # projects its blocks, a stage job records its state. Both carry the connector id.
+                            late_blocks = await self.delete_blocks_by_connector_id(connector_id)
+                            late_states, _ = await self._delete_stage_states_by_connector_id(None, connector_id)
+                            if late_blocks or late_states:
+                                self.logger.warning(
+                                    f"Connector {connector_id} gained {late_blocks} block(s) and {late_states} "
+                                    "stage state(s) during delete; removed them"
+                                )
+                        except Exception as late_err:
+                            self.logger.warning(
+                                f"⚠️ Could not remove blocks or stage states written during delete of {connector_id}: {late_err}"
+                            )
+                        try:
                             orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
                         except Exception as sweep_err:
                             self.logger.warning(
@@ -12567,7 +12590,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             "Connector %s delete lost to a concurrent write (attempt %d); retrying",
                             connector_id, attempt + 1,
                         )
-                        await cascade_backoff(attempt)
+                        await cascade_backoff(attempt, base=_CONNECTOR_DELETE_BACKOFF_S)
                         continue
                     raise tx_error
 

@@ -375,7 +375,10 @@ class TestAConnectorDeleteTakesItsStageStates:
         result = await provider.delete_connector_instance("c1", "org1")
 
         assert result["success"] is True
-        provider._delete_stage_states_by_connector_id.assert_awaited_once_with("txn1", "c1")
+        assert [c.args for c in provider._delete_stage_states_by_connector_id.await_args_list] == [
+            ("txn1", "c1"),  # in the delete transaction
+            (None, "c1"),  # swept again after the commit, for states written meanwhile
+        ]
         assert "stageStates" in provider.begin_transaction.await_args.kwargs["write"]
         provider.commit_transaction.assert_awaited_once_with("txn1")
 

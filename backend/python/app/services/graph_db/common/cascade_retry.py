@@ -14,6 +14,6 @@ CASCADE_ATTEMPTS = 5
 _BASE_SECONDS = 0.05
 
 
-async def backoff(attempt: int) -> None:
-    """Sleep 50 ms * 2^attempt with jitter before attempt ``attempt + 1``."""
-    await asyncio.sleep(_BASE_SECONDS * (2 ** attempt) * (0.5 + random.random()))
+async def backoff(attempt: int, *, base: float = _BASE_SECONDS) -> None:
+    """Sleep *base* (50 ms by default) * 2^attempt with jitter before attempt ``attempt + 1``."""
+    await asyncio.sleep(base * (2 ** attempt) * (0.5 + random.random()))

@@ -11816,6 +11816,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
                         )
                     try:
+                        # In-flight indexing can write after the steps above ran: a duplicate code file
+                        # projects its blocks, a stage job records its state. Both carry the connector id.
+                        late_blocks = await self.delete_blocks_by_connector_id(connector_id)
+                        late_states, _ = await self._delete_stage_states_by_connector_id(None, connector_id)
+                        if late_blocks or late_states:
+                            self.logger.warning(
+                                f"Connector {connector_id} gained {late_blocks} block(s) and {late_states} "
+                                "stage state(s) during delete; removed them"
+                            )
+                    except Exception as late_err:
+                        self.logger.warning(
+                            f"⚠️ Could not remove blocks or stage states written during delete of {connector_id}: {late_err}"
+                        )
+                    try:
                         orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
                     except Exception as sweep_err:
                         self.logger.warning(

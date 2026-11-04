@@ -264,3 +264,21 @@ async def test_get_existing_keys_reads_the_collection_and_raises_on_a_failed_rea
     with pytest.raises(RuntimeError):
         await p.get_existing_keys("records", ["a"])
     assert await p.get_existing_keys("records", []) == set()
+
+
+@pytest.mark.asyncio
+async def test_blocks_and_stage_states_written_during_the_delete_are_swept_after_it() -> None:
+    """A duplicate code file indexed while the delete runs projects its blocks after the blocks
+    step; a stage job can record a state. Both carry the connector id and must not outlive it."""
+    p = _provider()
+    p.delete_blocks_by_connector_id = AsyncMock(side_effect=[0, 6])
+    p._delete_stage_states_by_connector_id = AsyncMock(side_effect=[(0, True), (1, True)])
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is True, result
+    assert p.delete_blocks_by_connector_id.await_args_list[-1].args == ("c1",)
+    assert p._delete_stage_states_by_connector_id.await_args_list[-1].args == (None, "c1")
+    p.logger.warning.assert_any_call(
+        "Connector c1 gained 6 block(s) and 1 stage state(s) during delete; removed them"
+    )
