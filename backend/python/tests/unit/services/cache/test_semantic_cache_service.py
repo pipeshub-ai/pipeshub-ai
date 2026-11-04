@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1134,6 +1135,7 @@ class TestFailOpenAndMetrics:
     @pytest.mark.asyncio
     async def test_author_mismatch_between_metadata_and_payload_treats_as_miss(
         self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """When concurrent store changes data_key author, lookup treats mismatch as cache miss and avoids eviction."""
         fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
@@ -1172,19 +1174,29 @@ class TestFailOpenAndMetrics:
         await fake_redis.set(data_key, bob_payload)
 
         # 3. Lookup occurs where metadata still says author is 'alice'
-        res = await service.lookup(
-            org_id="org_shared",
-            user_id="alice",
-            query="shared query for testing concurrent author mismatch",
-            query_embedding=[1.0, 0.0],
-            context_digest="digest_shared",
-            config_hash="conf_shared",
-        )
+        with caplog.at_level(logging.WARNING):
+            res = await service.lookup(
+                org_id="org_shared",
+                user_id="alice",
+                query="shared query for testing concurrent author mismatch",
+                query_embedding=[1.0, 0.0],
+                context_digest="digest_shared",
+                config_hash="conf_shared",
+            )
 
         # Must be treated as a cache miss! Never pair alice's author with bob's payload!
         assert res.hit is False
         assert res.completion_data is None
         assert res.author_user_id is None
+
+        # Verify entry_id is logged without exposing user IDs in the mismatch warning
+        warning_records = [
+            r for r in caplog.records if "Author mismatch for cache entry" in r.message
+        ]
+        assert len(warning_records) >= 1
+        for rec in warning_records:
+            assert "alice" not in rec.message
+            assert "bob" not in rec.message
 
         # Data key must NOT be deleted (preserving bob's concurrent write)
         await asyncio.sleep(0.05)
@@ -1274,3 +1286,24 @@ class TestFailOpenAndMetrics:
         await asyncio.sleep(0.05)
         # Entry in bucket hash should have been evicted
         assert await fake_redis.hget(b_key, field_name) is None
+
+    @pytest.mark.asyncio
+    async def test_tracked_background_task_retained_until_completion(self) -> None:
+        """_spawn_detached_tracked retains task in background task set until finished."""
+        from app.services.cache.semantic_cache_service import (
+            _spawn_detached_tracked,
+            get_background_tasks,
+        )
+
+        fut: asyncio.Future[None] = asyncio.Future()
+
+        async def _sample_task() -> None:
+            await fut
+
+        task = _spawn_detached_tracked(_sample_task())
+        assert task in get_background_tasks()
+
+        fut.set_result(None)
+        await task
+        # After completion and done callback execution:
+        assert task not in get_background_tasks()

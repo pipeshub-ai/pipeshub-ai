@@ -440,7 +440,7 @@ class TestEvaluateCacheability:
         assert is_cacheable is False
         assert reason == "user_context_shared"
 
-    def test_per_user_caching_allowed_when_user_context_enabled(
+    def test_per_user_caching_bypassed_when_user_context_enabled(
         self,
         base_prefetch: PrefetchResult,
         base_config_params: SemanticCacheConfigHashParams,

@@ -38,7 +38,8 @@ from app.services.cache.guard import compare as guard_compare
 from app.services.cache.guard import normalize_for_key, normalize_query
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    import asyncio
+    from collections.abc import Callable, Coroutine
 
     from redis.asyncio import Redis as RedisClient
 
@@ -49,6 +50,28 @@ logger = logging.getLogger(__name__)
 
 PROMPT_TEMPLATE_VERSION: int = 1
 STORAGE_SCHEMA_VERSION: str = "v1"
+
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _track_background_task(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
+
+def _spawn_detached_tracked(
+    coro: Coroutine[Any, Any, Any], *, name: str | None = None
+) -> asyncio.Task[Any]:
+    """Spawn detached background task and retain a strong reference until completion."""
+    task = spawn_detached(coro, name=name)
+    return _track_background_task(task)
+
+
+def get_background_tasks() -> set[asyncio.Task[Any]]:
+    """Return in-flight background tasks (for diagnostics and test verification)."""
+    return _BACKGROUND_TASKS
+
 
 # Lua script to write completion data to data key, metadata to bucket hash, update LRU score,
 # evict excess entries beyond cap together with their data keys, and refresh TTL on keys.
@@ -479,7 +502,7 @@ class SemanticCacheService:
             try:
                 entry_data_raw = json.loads(raw_str)
                 if not isinstance(entry_data_raw, dict):
-                    _ = spawn_detached(
+                    _ = _spawn_detached_tracked(
                         self._cleanup_orphan_entry(
                             redis,
                             bucket_key,
@@ -497,7 +520,7 @@ class SemanticCacheService:
                         ver,
                         field_name,
                     )
-                    _ = spawn_detached(
+                    _ = _spawn_detached_tracked(
                         self._cleanup_orphan_entry(
                             redis,
                             bucket_key,
@@ -513,7 +536,7 @@ class SemanticCacheService:
                         "Cache entry %s missing or invalid author_user_id; evicting",
                         field_name,
                     )
-                    _ = spawn_detached(
+                    _ = _spawn_detached_tracked(
                         self._cleanup_orphan_entry(
                             redis,
                             bucket_key,
@@ -530,7 +553,7 @@ class SemanticCacheService:
                     continue
                 active_entries.append(entry_data)
             except Exception:
-                _ = spawn_detached(
+                _ = _spawn_detached_tracked(
                     self._cleanup_orphan_entry(
                         redis,
                         bucket_key,
@@ -543,7 +566,7 @@ class SemanticCacheService:
 
         # Best-effort async cleanup of expired entries
         if expired_ids:
-            _ = spawn_detached(
+            _ = _spawn_detached_tracked(
                 self._cleanup_expired_entries(
                     redis, bucket_key, lru_key, data_prefix, expired_ids
                 )
@@ -577,7 +600,7 @@ class SemanticCacheService:
                 )
                 if completion_data is not None:
                     self.metrics.exact_hits += 1
-                    _ = spawn_detached(
+                    _ = _spawn_detached_tracked(
                         self._touch_lru(redis, lru_key, entry_id, now_ts)
                     )
                     cache_ref: dict[str, object] = {
@@ -663,7 +686,9 @@ class SemanticCacheService:
             )
             if completion_data is not None:
                 self.metrics.semantic_hits += 1
-                _ = spawn_detached(self._touch_lru(redis, lru_key, entry_id, now_ts))
+                _ = _spawn_detached_tracked(
+                    self._touch_lru(redis, lru_key, entry_id, now_ts)
+                )
                 cache_ref = {
                     "orgId": org_id,
                     "epoch": epoch,
@@ -704,7 +729,7 @@ class SemanticCacheService:
             val = await redis.get(data_key)
             if val is None:
                 # Missing data key => miss plus cleanup
-                _ = spawn_detached(
+                _ = _spawn_detached_tracked(
                     self._cleanup_orphan_entry(
                         redis, bucket_key, lru_key, entry_id, data_key
                     )
@@ -716,7 +741,7 @@ class SemanticCacheService:
                 self._logger.warning(
                     "Cache data entry at %s is not a dict; evicting", data_key
                 )
-                _ = spawn_detached(
+                _ = _spawn_detached_tracked(
                     self._cleanup_orphan_entry(
                         redis, bucket_key, lru_key, entry_id, data_key
                     )
@@ -731,7 +756,7 @@ class SemanticCacheService:
                     schema_ver,
                     STORAGE_SCHEMA_VERSION,
                 )
-                _ = spawn_detached(
+                _ = _spawn_detached_tracked(
                     self._cleanup_orphan_entry(
                         redis, bucket_key, lru_key, entry_id, data_key
                     )
@@ -744,7 +769,7 @@ class SemanticCacheService:
                     "Cache entry missing or invalid 'answer' field; evicting entry %s",
                     entry_id,
                 )
-                _ = spawn_detached(
+                _ = _spawn_detached_tracked(
                     self._cleanup_orphan_entry(
                         redis, bucket_key, lru_key, entry_id, data_key
                     )
@@ -758,7 +783,7 @@ class SemanticCacheService:
                     "Cache entry citations is not a list; evicting entry %s",
                     entry_id,
                 )
-                _ = spawn_detached(
+                _ = _spawn_detached_tracked(
                     self._cleanup_orphan_entry(
                         redis, bucket_key, lru_key, entry_id, data_key
                     )
@@ -774,7 +799,7 @@ class SemanticCacheService:
                         data_key,
                         entry_id,
                     )
-                    _ = spawn_detached(
+                    _ = _spawn_detached_tracked(
                         self._cleanup_orphan_entry(
                             redis, bucket_key, lru_key, entry_id, data_key
                         )
@@ -782,10 +807,8 @@ class SemanticCacheService:
                     return None
                 if payload_author != expected_author:
                     self._logger.warning(
-                        "Author mismatch in data key %s: expected author %r != payload author %r; treating as cache miss",
-                        data_key,
-                        expected_author,
-                        payload_author,
+                        "Author mismatch for cache entry %s; treating as cache miss",
+                        entry_id,
                     )
                     return None
             elif payload_author is not None and not isinstance(payload_author, str):
@@ -794,7 +817,7 @@ class SemanticCacheService:
                     data_key,
                     entry_id,
                 )
-                _ = spawn_detached(
+                _ = _spawn_detached_tracked(
                     self._cleanup_orphan_entry(
                         redis, bucket_key, lru_key, entry_id, data_key
                     )
@@ -812,7 +835,7 @@ class SemanticCacheService:
                 type(exc).__name__,
                 entry_id,
             )
-            _ = spawn_detached(
+            _ = _spawn_detached_tracked(
                 self._cleanup_orphan_entry(
                     redis, bucket_key, lru_key, entry_id, data_key
                 )
@@ -825,7 +848,7 @@ class SemanticCacheService:
                 type(exc).__name__,
                 entry_id,
             )
-            _ = spawn_detached(
+            _ = _spawn_detached_tracked(
                 self._cleanup_orphan_entry(
                     redis, bucket_key, lru_key, entry_id, data_key
                 )
