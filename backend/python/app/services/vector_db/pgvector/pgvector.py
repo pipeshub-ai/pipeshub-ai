@@ -1,9 +1,9 @@
-"""PostgreSQL + pgvector provider: lifecycle, catalog, collections and writes.
+"""PostgreSQL + pgvector provider: lifecycle, catalog, collections, writes and reads.
 
 Every statement runs in a unit of work of the shared database runtime (``app.core.db``): the org is set per transaction and row-level
 security does the rest. Carried so far: the lifecycle (connect, health, capabilities), the collection catalog, the per-org space
-questions and the writes (upsert, delete, payload and membership). Reading and searching points follow, and until then those methods
-raise ``NotImplementedError``. Nothing selects the provider yet (no ``VECTOR_DB_TYPE`` entry).
+questions, the writes (upsert, delete, payload and membership) and the reads (scroll, retrieve). Searching follows, and until then
+``query_nearest_points`` raises ``NotImplementedError``. Nothing selects the provider yet (no ``VECTOR_DB_TYPE`` entry).
 """
 
 from __future__ import annotations
@@ -79,6 +79,7 @@ _CAPABILITIES = VectorDBCapabilities(
     stamps_in_catalog=True,
     spaces_per_org=True,
 )
+MAX_SCROLL_LIMIT = 10_000   # rows one scroll page returns at most: the ceiling the other backends have (OpenSearch caps a page at 10,000)
 UNKNOWN_MODEL = "unknown"      # the model name of a space adopted from points that do not name theirs
 
 
@@ -281,7 +282,7 @@ class PgVectorService(IVectorDBService):
         if row is None:
             return VectorCollectionInfo(name=collection_name, exists=False)
         org = ambient_org()
-        space = await catalog.active_space(org) if org else None
+        space = await catalog.active_space(org, real_time=True) if org else None
         if space is None:
             return VectorCollectionInfo(name=collection_name, exists=True)
         points = await db.run(lambda tx: reads.count(tx, org, row.collection_id, space.space_id), custom_plan=True)
@@ -293,7 +294,7 @@ class PgVectorService(IVectorDBService):
         """Whether changing to ``identity`` (``provider:model:dimension``) of ``dimension`` fits the org's active space. A named space
         takes its own model only. A nameless space (written before records were stamped) that holds points is read as named by the
         model configured now (``current_identity``): what the config says is what wrote them. Without it, it takes any model."""
-        space = await self._assert_connected()[1].active_space(require_org(ambient_org()))
+        space = await self._assert_connected()[1].active_space(require_org(ambient_org()), real_time=True)
         if space is None or space.dim != dimension:
             return False
         if space.effective_model != UNKNOWN_MODEL:
@@ -378,12 +379,47 @@ class PgVectorService(IVectorDBService):
 
     # Reads and search: the changes that follow ---------------------------------------------------------------------
 
-    async def scroll(self, collection_name: str, scroll_filter: FilterExpression, limit: int, offset: str | None = None,
-                     with_payload: list[str] | None = None) -> ScrollResult:
-        raise _pending("scroll")
+    # Reads ---------------------------------------------------------------------------------------------------------
+
+    async def scroll(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: str | None = None,
+        with_payload: list[str] | None = None,
+    ) -> ScrollResult:
+        """A page of the org's points that match the filter, ordered by insertion; the filter must pin ``metadata.orgId``. The offset is
+        opaque and belongs to the org that got it. A missing collection is an error; an org with no embedding space yet has no points."""
+        db, catalog = self._assert_connected()
+        org = _filter_org(scroll_filter)
+        if not 1 <= limit <= MAX_SCROLL_LIMIT:
+            raise ValueError(f"scroll limit must be between 1 and {MAX_SCROLL_LIMIT}")
+        coll = await catalog.require_collection(collection_name)
+        with org_scope(org):
+            space = await catalog.active_space(org, real_time=True)
+            if space is None:
+                return ScrollResult(points=[], next_offset=None)
+            compiled = compile_filter(scroll_filter, first_param=5)
+            points, nxt = await db.run(
+                lambda tx: reads.scroll(tx, org, coll.collection_id, space.space_id, compiled, limit, offset, with_payload or None),
+                custom_plan=True,
+            )
+        return ScrollResult(points=points, next_offset=nxt)
 
     async def retrieve_points(self, collection_name: str, ids: list[str]) -> list[VectorPoint]:
-        raise _pending("retrieve_points")
+        """The points with these ids in the request's org, in the order asked; ids that name no point (or are no UUID) are left out.
+        The interface carries no org: it is the request's."""
+        db, catalog = self._assert_connected()
+        org = ambient_or_required()
+        coll = await catalog.require_collection(collection_name)
+        space = await catalog.active_space(org, real_time=True)
+        wanted = _ids(ids)
+        if space is None or not wanted:
+            return []
+        found = await db.run(lambda tx: reads.retrieve(tx, org, coll.collection_id, space.space_id, wanted), custom_plan=True)
+        position = {str(i): n for n, i in enumerate(wanted)}
+        return sorted(found, key=lambda p: position.get(str(p.id), len(position)))
 
     async def query_nearest_points(self, collection_name: str, requests: list[HybridSearchRequest]) -> list[list[SearchResult]]:
         raise _pending("query_nearest_points")
