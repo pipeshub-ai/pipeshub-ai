@@ -88,6 +88,7 @@ from app.agents.chat_modes.prefetch import (
     search_failure_constraint,
     search_incomplete_constraint,
 )
+from app.core.org_context import spawn_in_request
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
@@ -738,7 +739,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                                     )
 
                             elif cache_config.mode == "shadow":
-                                shadow_lookup_task = asyncio.create_task(
+                                shadow_lookup_task = spawn_in_request(
                                     active_cache.lookup(
                                         org_id=context.org_id,
                                         user_id=context.user_id,
@@ -747,7 +748,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                                         context_digest=cached_context_digest,
                                         config_hash=cached_config_hash,
                                         config=cache_config,
-                                    )
+                                    ),
+                                    name="shadow-lookup",
                                 )
             except Exception as exc:
                 if replay_started:
@@ -1015,7 +1017,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                                         },
                                     )
 
-                            bg_task = asyncio.create_task(_bg_store())
+                            bg_task = spawn_in_request(_bg_store(), name="semantic-cache-bg-store")
                             _track_background_task(bg_task)
                         else:
                             record_event(

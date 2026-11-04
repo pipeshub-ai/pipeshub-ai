@@ -18,7 +18,6 @@ Implements Section 4.1-4.3 of the semantic caching spec:
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownParameterType=false, reportMissingTypeArgument=false, reportMissingImports=false
 from __future__ import annotations
 
-import asyncio
 import base64
 import contextlib
 import hashlib
@@ -30,6 +29,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
+from app.core.org_context import spawn_detached
 from app.services.cache.config import (
     SemanticCacheConfig,
     get_semantic_cache_config,
@@ -483,7 +483,7 @@ class SemanticCacheService:
             try:
                 entry_data_raw = json.loads(raw_str)
                 if not isinstance(entry_data_raw, dict):
-                    _ = asyncio.create_task(
+                    _ = spawn_detached(
                         self._cleanup_orphan_entry(
                             redis, bucket_key, lru_key, field_name, f"{data_prefix}{field_name}"
                         )
@@ -497,7 +497,7 @@ class SemanticCacheService:
                         ver,
                         field_name,
                     )
-                    _ = asyncio.create_task(
+                    _ = spawn_detached(
                         self._cleanup_orphan_entry(
                             redis, bucket_key, lru_key, field_name, f"{data_prefix}{field_name}"
                         )
@@ -510,7 +510,7 @@ class SemanticCacheService:
                     continue
                 active_entries.append(entry_data)
             except Exception:
-                _ = asyncio.create_task(
+                _ = spawn_detached(
                     self._cleanup_orphan_entry(
                         redis, bucket_key, lru_key, field_name, f"{data_prefix}{field_name}"
                     )
@@ -519,7 +519,7 @@ class SemanticCacheService:
 
         # Best-effort async cleanup of expired entries
         if expired_ids:
-            _ = asyncio.create_task(
+            _ = spawn_detached(
                 self._cleanup_expired_entries(
                     redis, bucket_key, lru_key, data_prefix, expired_ids
                 )
@@ -546,7 +546,7 @@ class SemanticCacheService:
                 )
                 if completion_data is not None:
                     self.metrics.exact_hits += 1
-                    _ = asyncio.create_task(
+                    _ = spawn_detached(
                         self._touch_lru(redis, lru_key, entry_id, now_ts)
                     )
                     cache_ref: dict[str, object] = {
@@ -630,7 +630,7 @@ class SemanticCacheService:
             )
             if completion_data is not None:
                 self.metrics.semantic_hits += 1
-                _ = asyncio.create_task(self._touch_lru(redis, lru_key, entry_id, now_ts))
+                _ = spawn_detached(self._touch_lru(redis, lru_key, entry_id, now_ts))
                 cache_ref = {
                     "orgId": org_id,
                     "epoch": epoch,
@@ -668,7 +668,7 @@ class SemanticCacheService:
             val = await redis.get(data_key)
             if val is None:
                 # Missing data key => miss plus cleanup
-                _ = asyncio.create_task(
+                _ = spawn_detached(
                     self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
                 )
                 return None
@@ -676,7 +676,7 @@ class SemanticCacheService:
             parsed = json.loads(val_str)
             if not isinstance(parsed, dict):
                 self._logger.warning("Cache data entry at %s is not a dict; evicting", data_key)
-                _ = asyncio.create_task(
+                _ = spawn_detached(
                     self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
                 )
                 return None
@@ -689,7 +689,7 @@ class SemanticCacheService:
                     schema_ver,
                     STORAGE_SCHEMA_VERSION,
                 )
-                _ = asyncio.create_task(
+                _ = spawn_detached(
                     self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
                 )
                 return None
@@ -700,7 +700,7 @@ class SemanticCacheService:
                     "Cache entry missing or invalid 'answer' field; evicting entry %s",
                     entry_id,
                 )
-                _ = asyncio.create_task(
+                _ = spawn_detached(
                     self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
                 )
                 return None
@@ -712,7 +712,7 @@ class SemanticCacheService:
                     "Cache entry citations is not a list; evicting entry %s",
                     entry_id,
                 )
-                _ = asyncio.create_task(
+                _ = spawn_detached(
                     self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
                 )
                 return None
@@ -726,7 +726,7 @@ class SemanticCacheService:
                 type(exc).__name__,
                 entry_id,
             )
-            _ = asyncio.create_task(
+            _ = spawn_detached(
                 self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
             )
             return None
@@ -737,7 +737,7 @@ class SemanticCacheService:
                 type(exc).__name__,
                 entry_id,
             )
-            _ = asyncio.create_task(
+            _ = spawn_detached(
                 self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
             )
             return None

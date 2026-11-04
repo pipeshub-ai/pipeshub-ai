@@ -36,6 +36,7 @@ from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.containers.query import QueryAppContainer
+from app.core.org_context import spawn_in_request
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import (
@@ -1698,7 +1699,7 @@ async def _stream_chat_via_agent_loop(
     entity_vector_store_task = asyncio.ensure_future(
         load_entity_vector_store(container, logger_, org_id)
     )
-    semantic_cache_task = asyncio.ensure_future(
+    semantic_cache_task = spawn_in_request(
         load_semantic_cache_service(container, logger_)
     )
     background_tasks = [
