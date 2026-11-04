@@ -36,4 +36,19 @@ describe('turn-batch', () => {
     expect(queued.receivedAt).to.equal(42);
     expect(fromQueuedMessage(queued)).to.deep.equal(m);
   });
+
+  it('keeps only file metadata in a queued message', () => {
+    const raw = { id: 'F', name: 'a.txt', size: 1, preview: 'secret', preview_plain_text: 'secret' };
+    const queued = toQueuedMessage('dm', { ts: '1', files: [raw] });
+    expect(queued.files).to.deep.equal([{ id: 'F', name: 'a.txt', size: 1 }]);
+  });
+
+  it('falls back to ts when the message has no thread_ts', () => {
+    expect(toQueuedMessage('dm', { ts: '7' }).threadTs).to.equal('7');
+  });
+
+  it('keeps files without an id', () => {
+    const merged = mergeBatchMessage([{ ts: '1', files: [{ name: 'x' }] }, { ts: '2', files: [{ name: 'y' }] }]);
+    expect(merged.files).to.have.length(2);
+  });
 });

@@ -7,17 +7,18 @@ export function batchText(texts: string[]): string {
 
 /** One message standing for the batch: the newest message's ids, everyone's text and files. */
 export function mergeBatchMessage(batch: SlackMessagePayload[]): SlackMessagePayload {
-  const files = new Map<string, unknown>();
+  const byId = new Map<string, SlackFile>();
+  const noId: SlackFile[] = [];
   for (const message of batch) {
-    for (const file of message.files ?? []) {
-      const id = (file as SlackFile).id;
-      if (!files.has(id)) files.set(id, file);
+    for (const file of (message.files ?? []) as SlackFile[]) {
+      if (file.id === undefined) noId.push(file);
+      else if (!byId.has(file.id)) byId.set(file.id, file);
     }
   }
   return {
     ...batch[batch.length - 1]!,
     text: batchText(batch.map((m) => m.text ?? '')),
-    files: [...files.values()],
+    files: [...byId.values(), ...noId],
   };
 }
 
@@ -27,6 +28,16 @@ export function withoutBatchMessages(
   batchTs: ReadonlySet<string>,
 ): SlackMessagePayload[] {
   return prior.filter((m) => !batchTs.has(m.ts));
+}
+
+/** Only the fields the bot reads; Slack's raw file objects carry previews and content that must not sit in Redis. */
+function toFileMetadata(raw: unknown): SlackFile {
+  const f = raw as SlackFile;
+  const out: SlackFile = { id: f.id };
+  for (const key of ['name', 'mimetype', 'filetype', 'size', 'url_private_download', 'url_private'] as const) {
+    if (f[key] !== undefined) (out as unknown as Record<string, unknown>)[key] = f[key];
+  }
+  return out;
 }
 
 export function toQueuedMessage(
@@ -41,7 +52,7 @@ export function toQueuedMessage(
     channel: message.channel ?? '',
     user: message.user ?? '',
     text: message.text ?? '',
-    files: (message.files ?? []) as SlackFile[],
+    files: (message.files ?? []).map(toFileMetadata),
     receivedAt: now(),
   };
 }
