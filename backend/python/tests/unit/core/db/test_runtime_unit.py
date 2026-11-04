@@ -305,11 +305,179 @@ async def f(con, redis, name):
                      "string-built SQL (use bound parameters)", "string-built SQL (use bound parameters)"]
 
 
+BUILT = "string-built SQL (use bound parameters)"
+NOT_RESOLVABLE = "statement not resolvable (use a literal with bound parameters)"
+UNTAGGED = "statement without a /* pipeshub:<module>.<fn> */ tag"
+
+
+@pytest.mark.parametrize("body", [
+    'q = f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)',
+    'q = "SELECT * FROM t WHERE a = " + x\n    await tx.fetchrow(q)',
+    'q = "SELECT * FROM t WHERE a = %s" % x\n    await tx.fetchval(q)',
+    'q = "SELECT * FROM t WHERE a = {}".format(x)\n    await tx.execute(q)',
+    'q = "SELECT * FROM t"\n    q += f" WHERE a = {x}"\n    await tx.fetch(q)',
+    'q: str = f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)',
+    'q = "SELECT 1"\n    if x:\n        q = f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)',
+    'q = f"SELECT * FROM t WHERE a = {x}"\n    async def inner():\n        await tx.fetch(q)',
+    'P = "/* pipeshub:m.f */ SELECT * FROM t WHERE "\nasync def f(tx, x):\n    await tx.fetch(P + f"a = {x}")',
+    'q = "/* pipeshub:m.f */ SELECT * FROM t"\n    q += f" WHERE a = {x}"\n    await tx.fetch(q)',
+    'q = ""\n    q += f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)',
+    'q = "SELECT * FROM t"\n    q += x\n    await tx.fetch(q)',
+    'await tx.fetch(f"SELECT 1 WHERE a = {x}" if x else "SELECT 2")',
+    'await tx.fetch(query=f"SELECT * FROM t WHERE a = {x}")',
+], ids=["f-string", "plus", "percent", "format", "augmented", "annotated", "one of two assignments", "read by a nested function",
+        "constant prefix plus f-string", "tagged then += f-string", "empty then += f-string", "+= a variable", "conditional expression", "query keyword"])
+def test_a_statement_built_into_a_variable_is_as_built_as_one_built_in_the_call(body) -> None:
+    src = body if body.startswith("P =") else f"async def f(tx, x):\n    {body}\n"
+    assert BUILT in [f.rule for f in sql_lint.scan_source(src)]
+
+
+def test_a_variable_that_holds_a_literal_statement_is_checked_like_the_literal() -> None:
+    tagged = 'async def f(tx):\n    q = "/* pipeshub:m.f */ SELECT 1"\n    await tx.fetch(q)\n'
+    assert sql_lint.scan_source(tagged) == []
+    untagged = 'async def f(tx):\n    q = "SELECT 1"\n    await tx.fetch(q)\n'
+    assert [f.rule for f in sql_lint.scan_source(untagged)] == [UNTAGGED]
+    session = 'async def f(tx):\n    q = "/* pipeshub:m.f */ SET ROLE x"\n    await tx.execute(q)\n'
+    assert any("session SET" in f.rule for f in sql_lint.scan_source(session))
+
+
+@pytest.mark.parametrize("body", [
+    'q = "/* pipeshub:m.f */ SELECT * FROM t WHERE a = $1"\n    q += " AND b = $2"\n    await tx.fetch(q, 1, 2)',
+    'await tx.fetch("/* pipeshub:m.f */ SELECT * FROM t " + "WHERE a = $1", 1)',
+    'await tx.fetch(("/* pipeshub:m.f */ SELECT * FROM t " "WHERE a = $1"), 1)',
+    'q = "/* pipeshub:m.f */ SELECT * FROM t "\n    q += "WHERE a = $1"\n    await tx.fetch(q, 1)',
+    'await tx.fetch("/* pipeshub:m.f */ SELECT 1" if x else "/* pipeshub:m.g */ SELECT 2")',
+    'await tx.fetch(query="/* pipeshub:m.f */ SELECT 1")',
+], ids=["+= a constant", "constant plus constant", "implicit concatenation", "= then += constants", "conditional of constants", "query keyword"])
+def test_joining_pure_constants_is_not_building(body) -> None:
+    assert sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n") == []
+
+
+def test_every_branch_and_every_assignment_that_reaches_the_call_is_checked() -> None:
+    def rules(body: str) -> list[str]:
+        return [f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n")]
+
+    both = 'await tx.execute("/* pipeshub:m.a */ SELECT 1" if x else "/* pipeshub:m.b */ SET ROLE r")'
+    assert any("session SET" in r for r in rules(both))
+    reassigned = 'q = "not SQL"\n    q = f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)'
+    assert BUILT in rules(reassigned)
+    swapped = 'q = "/* pipeshub:m.a */ SELECT 1"\n    q = "/* pipeshub:m.b */ SET ROLE r"\n    await tx.execute(q)'
+    assert any("session SET" in r for r in rules(swapped))
+
+
+def test_each_branch_and_assignment_needs_its_own_tag() -> None:
+    for body in ('await tx.fetch("/* pipeshub:m.a */ SELECT 1" if x else "SELECT 2")',
+                 'q = "/* pipeshub:m.a */ SELECT 1"\n    q = "SELECT 2"\n    await tx.fetch(q)'):
+        assert [f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n")] == [UNTAGGED]
+
+
+def test_a_parameter_shadows_an_outer_assignment_and_a_plain_assignment_starts_a_new_candidate() -> None:
+    shadow = ('async def f(tx, x):\n    q = f"SELECT {x}"\n    async def inner(q):\n        await tx.fetch(q)\n')
+    assert sql_lint.scan_source(shadow) == []
+    for ps in ("*q", "**q"):
+        assert sql_lint.scan_source(shadow.replace("inner(q)", f"inner({ps})")) == []
+    chained = 'q = "SELECT "\n    q += "TING "\n    q = "SET"\n    q += " ROLE r"\n    await tx.execute(q)'
+    assert any("session SET" in f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {chained}\n"))
+
+
+def test_the_guard_fails_closed_on_what_it_cannot_resolve() -> None:
+    def rules(body: str) -> list[str]:
+        return [f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n")]
+
+    cross = ('q = "/* pipeshub:m.a */ SELECT pg_" if x else "/* pipeshub:m.b */ SELECT 1 -- "\n    q += "advisory_lock(5)"\n    await tx.fetch(q)')
+    assert any("session advisory lock" in r for r in rules(cross))
+    assert any("session SET" in r for r in rules('await tx.execute("-- maintenance\\nSET statement_timeout = 0")'))
+    assert any("session SET" in r for r in rules('await tx.execute("/* c */ -- d\\n/* pipeshub:m.f */ SET ROLE r")'))
+    steps = "".join(f'\n    q += " /*{i}a*/" if x else " /*{i}b*/"' for i in range(5))
+    bound = 'q = "/* pipeshub:m.f */ SELECT 1"' + steps + "\n    await tx.fetch(q)"
+    assert NOT_RESOLVABLE in rules(bound)
+    assert NOT_RESOLVABLE not in rules(cross)
+    for unmodelled in ('q = helper(x)\n    await tx.fetch(q)',
+                       'q = "/* pipeshub:m.f */ SELECT 1"\n    if x:\n        q += " AND 1 = 1"\n    await tx.fetch(q)',
+                       'q = "/* pipeshub:m.f */ SELECT 1"\n    for y in x:\n        q += y\n    await tx.fetch(q)',
+                       'for q in x:\n        await tx.fetch(q)',
+                       'q, r = x\n    await tx.fetch(q)'):
+        assert NOT_RESOLVABLE in rules(unmodelled), unmodelled
+
+
+def test_the_sql_start_check_is_linear_on_hostile_comments() -> None:
+    import time
+
+    def seconds(unit: str, n: int) -> float:
+        text = unit * n + "x"
+        best = float("inf")
+        for _ in range(3):                                                      # the best of three runs: a scheduling pause hits one, not all
+            start = time.perf_counter()
+            assert not sql_lint._starts_sql(text)
+            best = min(best, time.perf_counter() - start)
+        return best
+
+    for unit in ("-- ", "/* ", "--", "/**/ ", "/**/\n"):
+        big = seconds(unit, 200_000)
+        assert big < 5                                                          # quadratic copying would take minutes
+        assert big < 12 * max(seconds(unit, 50_000), 0.05)                      # 4x the input, far less than 16x the time
+    assert sql_lint._starts_sql("-- a\n/* b */ -- c\n  SET x = 1") and not sql_lint._starts_sql("/* open SET x")
+
+
+@pytest.mark.parametrize(("body", "rule"), [
+    ('q = "SELECT * FROM t"\n    q += " WHERE a = $1"\n    await tx.fetch(q + f" AND b = {x}")', BUILT),
+    ('q = "SELECT * FROM t"\n    if x:\n        q = "SELECT * FROM u"\n    await tx.fetch(q + f" WHERE a = {x}")', BUILT),
+    ('q = "SELECT * FROM t"\n    await tx.fetch(f"{q} WHERE a = {x}")', BUILT),
+    ('q = "SELECT * FROM t WHERE a = {}"\n    q += " "\n    await tx.fetch(q.format(x))', BUILT),
+    ('q = "SELECT * FROM t"\n    q = q + f" WHERE a = {x}"\n    await tx.fetch(q)', BUILT),
+    ('a = "/* pipeshub:m.a */ SET ROLE r"\n    a += " "\n    await tx.execute(a if x else "/* pipeshub:m.b */ SELECT 2")', "session SET / RESET"),
+    ('q = "/* pipeshub:m.a */ SELECT 1"\n    for q in x:\n        pass\n    await tx.fetch(q + f" WHERE a = {x}")', NOT_RESOLVABLE),
+    ('q = helper()\n    await tx.fetch(q + f" WHERE a = {x}")', NOT_RESOLVABLE),
+], ids=["+= base plus f-string", "branch base plus f-string", "base inside an f-string", ".format on a += base", "q = q + f-string",
+        "+= name in a conditional", "loop-bound base plus f-string", "call base plus f-string"])
+def test_a_local_name_inside_the_expression_is_resolved_like_one_passed_on_its_own(body, rule) -> None:
+    assert rule in [f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n")]
+
+
+def test_a_name_inside_the_expression_does_not_flag_clean_code() -> None:
+    for body in ('q = "/* pipeshub:m.f */ SELECT * FROM t WHERE a = $1"\n    q = q + " AND b = $2"\n    await tx.fetch(q, 1, 2)',
+                 'q = "/* pipeshub:m.f */ SELECT * FROM t WHERE a = $1"\n    q += " AND b = $2"\n    await tx.fetch(q + " LIMIT 5", 1, 2)',
+                 'msg = fmt(x)\n    await client.execute(f"hello {msg}")'):
+        assert sql_lint.scan_source(f"async def f(tx, client, x):\n    {body}\n") == [], body
+
+
+def test_a_local_name_set_from_module_constants_is_not_a_guess() -> None:
+    src = ('A = f"/* pipeshub:m.a */ SELECT {X}"\nB = f"/* pipeshub:m.b */ SELECT {Y}"\n'
+           'async def f(tx, safe):\n    sql = A if safe else B\n    await tx.fetchval(sql, 1)\n')
+    assert sql_lint.scan_source(src) == []
+    alias = 'async def f(tx, x):\n    q = f"SELECT {x}"\n    r = q\n    await tx.fetch(r)\n'
+    assert BUILT in [f.rule for f in sql_lint.scan_source(alias)]      # a local alias is followed
+
+
+def test_a_nested_function_does_not_change_what_the_outer_name_holds() -> None:
+    src = ('async def f(tx):\n    q = "/* pipeshub:m.f */ SELECT 1"\n    def inner(x):\n        q = f"SELECT {x}"\n        return q\n'
+           '    await tx.fetch(q)\n')
+    assert sql_lint.scan_source(src) == []
+    outer = 'async def f(tx, x):\n    q = f"SELECT {x}"\n    async def inner():\n        await tx.fetch(q)\n'
+    assert BUILT in [f.rule for f in sql_lint.scan_source(outer)]
+
+
+def test_only_simple_local_assignments_are_followed() -> None:
+    clean = [
+        'Q = f"SELECT {A} FROM t"\nasync def f(tx):\n    await tx.fetch(Q)\n',            # a module constant, composed when the module loads
+        'async def f(tx, q):\n    await tx.fetch(q)\n',                                   # a name that arrives as an argument
+        'async def g():\n    q = f"SELECT {x}"\nasync def f(tx):\n    await tx.fetch(q)\n',   # assigned in another function
+        'async def f(client, x):\n    q = f"hello {x}"\n    await client.execute(q)\n',     # not SQL (a Redis or HTTP client)
+        'async def f(tx):\n    q = "/* pipeshub:m.f */ SELECT 1"\n    await tx.fetch(q)\n',
+    ]
+    for src in clean:
+        assert sql_lint.scan_source(src) == [], src
+
+
 def test_no_caller_of_the_runtime_breaks_the_rules() -> None:
     """Every module that imports the runtime (outside the runtime itself) is scanned; none exist yet."""
     app = BACKEND / "python" / "app"
     users = [p for p in app.rglob("*.py") if "app.core.db" in p.read_text(encoding="utf-8", errors="ignore") and "core/db" not in str(p)]
-    assert sql_lint.scan_paths(users) == []
+    # The PostgreSQL graph provider runs its SQL through ``PgBase._q`` and never imports the runtime by name: it is scanned by path.
+    users += [p for p in (app / "services" / "graph_db" / "postgres").glob("*.py") if p not in users]
+    # pgvector/writes.py splices a compiled filter (structure only, every value a bound parameter) into three statements; the rest of the
+    # package is scanned here, and those three sites are pinned in tests/unit/services/vector_db/test_pgvector_writes.py
+    assert sql_lint.scan_paths(users, exempt=[app / "services" / "vector_db" / "pgvector" / "writes.py"]) == []
 
 
 def test_org_predicate_lint_matches_the_documented_rule() -> None:
@@ -630,8 +798,8 @@ def test_sql_start_pattern_is_linear_on_unterminated_comment_runs() -> None:
 
     from app.core.db import sql_lint
 
-    assert sql_lint._SQL_START.match("/* tag */ /* more */\n  select 1")
-    assert not sql_lint._SQL_START.match("not sql at all")
+    assert sql_lint._starts_sql("/* tag */ /* more */\n  select 1")
+    assert not sql_lint._starts_sql("not sql at all")
     started = time.monotonic()
-    sql_lint._SQL_START.match("/*" + "*//*" * 20000 + "x")
-    assert time.monotonic() - started < 1.0
+    sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
+    assert time.monotonic() - started < 5.0

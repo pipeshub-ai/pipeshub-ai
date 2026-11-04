@@ -32,7 +32,7 @@ It runs in its own image (`backend/db/Dockerfile`, `pipeshubai/pipeshub-migrate`
   `backend/`). Empty here.
 
 ## Graph (`versions/graph/`)
-The `graph` schema (the PostgreSQL graph store, `DATA_STORE=postgres`) is created whole by its baseline revision `graph_0001`: tables, partitions, indexes, row policies and the vetted organisation and connector reads; there is no chain of revisions before the first release. Until then a change to it edits the baseline in place. After the first release a change is a normal step revision.
+The `graph` schema (the PostgreSQL graph store, `DATA_STORE=postgres`) is created whole by its baseline revision `graph_0001`: tables, partitions, indexes, row policies and the vetted organisation and connector reads; a change after the baseline is a normal step revision (`graph_0002` adds the index on records by virtual record and content revision).
 
 ## Running
 `PG_MIGRATE_URL=postgresql+psycopg://pipeshub_migrate:...@host:5432/db python -m db.migrate` (from `backend/`).
@@ -41,6 +41,9 @@ session really holds it, and refuses (exit 2) when it does not, which is what ha
 Exit codes: 0 done, 1 a migration failed, 2 configuration, 3 lock wait timed out
 (`PG_MIGRATE_LOCK_TIMEOUT_S`, default 600), 4 `kernel.rls_violations` not empty. Downgrade is development
 only (`PG_MIGRATE_ALLOW_DOWNGRADE=1 python -m db.migrate downgrade <rev>`).
+
+## Placement worker (`python -m db.maintain placement`)
+The vector tables are partitioned by organisation. Each organisation gets a partition of its own before its first vector row; creating a partition is DDL, so the writing service files a request (`retrieval.org_leaf_request`) and waits for this worker to close it (`retrieval.org_leaf_status`). Run one worker per database wherever the PostgreSQL vector store is used (not selectable yet): `PG_MIGRATE_URL=... PG_JOBS_URL=... python -m db.maintain placement --watch [SECONDS]` (both direct addresses; the migrate login creates the partitions as the owner role, the jobs login reads and closes the requests). One pass handles at most 20 requests, oldest first, and takes the migrate lock only when there is one, so an idle worker never holds up a deployment; without `--watch` it makes one pass and exits (0 done, 1 a request failed, 2 configuration, 3 lock wait timed out, 5 a request was refused). It creates the partition of every partitioned table, secures it and attaches it in one transaction per table (a run that stopped half way is finished by the next), builds the bit-HNSW index of each registered embedding space on the points partition, and closes the request. An organisation that already has rows in a shared partition is refused and its request closed with the reason in `note`; a malformed organisation id is refused the same way; any other failure is retried with a growing delay (1, 2, 4 ... 60 seconds) and given up after 8 attempts, about two minutes after the first. A new ask re-opens a failed request once it is 30 seconds old.
 
 ## Writing a revision
 Expand then contract; never rename; backfills are jobs, not revisions. Index builds on existing tables go

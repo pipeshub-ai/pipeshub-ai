@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
+import { onSessionEnd } from '@/lib/api/session-cache';
 
 const DEFAULT_MAX_FILE_SIZE_MB = 30;
 export const DEFAULT_MAX_FILE_SIZE_BYTES = DEFAULT_MAX_FILE_SIZE_MB * 1024 * 1024;
@@ -16,6 +17,11 @@ let cachedBytes: number | null = null;
 // admin-editable platform setting, so it must be re-read each time the hook
 // mounts (e.g. after the user changes it in Labs and navigates here).
 let inFlight: Promise<number | null> | null = null;
+// The limit is the org's; a request left over from the last session never settles.
+onSessionEnd(() => {
+  cachedBytes = null;
+  inFlight = null;
+});
 
 function fetchUploadLimit(): Promise<number | null> {
   if (inFlight) return inFlight;
