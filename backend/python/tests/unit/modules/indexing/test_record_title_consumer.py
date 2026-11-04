@@ -86,7 +86,7 @@ def _msg(record_id: str, *, org: str = ORG, kind: str = "upsert", ts: int = 1, n
     })
 
 
-def _writer(graph: FakeGraph, store: FakeStore, **kwargs: Any) -> RecordTitleWriter:
+def _writer(graph: FakeGraph, store: FakeStore, **kwargs: Any) -> RecordTitleWriter:  # noqa: ANN401
     kwargs.setdefault("batch_size", 100)
     kwargs.setdefault("flush_seconds", 60.0)
     kwargs.setdefault("max_attempts", 3)
@@ -337,7 +337,7 @@ class TestOrgs:
         seen: list[str | None] = []
 
         class SeeingStore(FakeStore):
-            async def upsert_entities_batch(self, entities: list, *args: Any, **kwargs: Any) -> EntityWriteOutcome:
+            async def upsert_entities_batch(self, entities: list, *args: Any, **kwargs: Any) -> EntityWriteOutcome:  # noqa: ANN401
                 seen.append(org_context.current_or_system().org_id)
                 return await super().upsert_entities_batch(entities, *args, **kwargs)
 
@@ -585,7 +585,7 @@ class TestConsumerHandle:
             def __init__(self) -> None:
                 self.handler = None
 
-            async def start(self, handler: Any) -> None:
+            async def start(self, handler: Any) -> None:  # noqa: ANN401
                 self.handler = handler
 
             async def stop(self) -> None:
@@ -625,7 +625,7 @@ class TestConsumerHandle:
 
 class TestRequeueProducer:
     @contextlib.asynccontextmanager
-    async def _built(self, producers: list[Any]):
+    async def _built(self, producers: list[Any]):  # noqa: ANN202
         container = MagicMock()
         container._graph_provider = MagicMock()
         with (

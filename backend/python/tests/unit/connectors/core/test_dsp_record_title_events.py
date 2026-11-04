@@ -31,7 +31,7 @@ MODULE = "app.connectors.core.base.data_processor.data_source_entities_processor
 pytestmark = pytest.mark.asyncio
 
 
-def _proc(tx_store=None):
+def _proc(tx_store=None):  # noqa: ANN202
     """The shared test processor, with the real title publisher put back."""
     proc = _make_processor()
     if "_publish_record_titles" in vars(proc):
@@ -229,7 +229,7 @@ class TestUnchangedRecords:
         tx_store.get_record_by_external_id.return_value = existing
         proc, _ = _proc(tx_store)
 
-        async def to_group_two(record, _tx):
+        async def to_group_two(record, _tx):  # noqa: ANN202
             record.record_group_id = "g2"
             return "g2"
 
@@ -298,7 +298,7 @@ class TestOtherWritePaths:
         store.get_record_group_by_external_id = AsyncMock(return_value=None)
 
         @asynccontextmanager
-        async def transaction(**_):
+        async def transaction(**_):  # noqa: ANN202
             yield store
 
         proc = _make_processor()
@@ -318,7 +318,7 @@ class TestOtherWritePaths:
         assert [p["recordName"] for _, p in _titles(proc)] == ["new"]
 
 
-def _move_proc(old, *, new_name="new.py", status=None, internal=False, group=None):
+def _move_proc(old, *, new_name="new.py", status=None, internal=False, group=None):  # noqa: ANN202
     tx_store = _make_tx_store()
     proc = _setup_proc_for_moved(tx_store, old_record=old)
     del proc._publish_record_titles
@@ -326,7 +326,7 @@ def _move_proc(old, *, new_name="new.py", status=None, internal=False, group=Non
     new.indexing_status = status or ProgressStatus.NOT_STARTED.value
     new.is_internal = internal
     if group is not None:
-        async def set_group(record, _tx):
+        async def set_group(record, _tx):  # noqa: ANN202
             record.record_group_id = group
             return group
 
@@ -334,7 +334,7 @@ def _move_proc(old, *, new_name="new.py", status=None, internal=False, group=Non
     return proc, new, tx_store
 
 
-def _old(name="old.py", *, revision="same", group=None, **over):
+def _old(name="old.py", *, revision="same", group=None, **over):  # noqa: ANN202
     return _make_record(record_name=name, external_revision_id=revision, record_group_id=group, **over)
 
 
@@ -399,7 +399,7 @@ class TestFailuresNeverFailTheSync:
     async def test_a_broker_that_refuses_is_logged_and_content_events_still_go(self, caplog) -> None:
         proc, _ = _proc()
 
-        async def send(topic, messages):
+        async def send(topic, messages):  # noqa: ANN202
             return [topic != TITLE_TOPIC] * len(messages)
 
         proc.messaging_producer.send_messages = AsyncMock(side_effect=send)
@@ -413,7 +413,7 @@ class TestFailuresNeverFailTheSync:
         proc, _ = _proc()
         calls = []
 
-        async def send(topic, messages):
+        async def send(topic, messages):  # noqa: ANN202
             calls.append(topic)
             if topic == TITLE_TOPIC:
                 raise ConnectionError("broker down")
@@ -426,7 +426,7 @@ class TestFailuresNeverFailTheSync:
 
     async def test_the_log_does_not_carry_the_name(self) -> None:
         proc, _ = _proc()
-        async def send(topic, messages):
+        async def send(topic, messages):  # noqa: ANN202
             if topic == TITLE_TOPIC:
                 raise ConnectionError("down")
             return [True] * len(messages)
@@ -449,14 +449,14 @@ class TestOnlyAfterCommit:
         order: list[str] = []
         ctx = _make_ctx(tx_store)
 
-        async def leave(*_):
+        async def leave(*_):  # noqa: ANN202
             order.append("commit")
             return False
 
         ctx.__aexit__ = AsyncMock(side_effect=leave)
         proc.data_store_provider.transaction.return_value = ctx
 
-        async def send(topic, messages):
+        async def send(topic, messages):  # noqa: ANN202
             order.append(topic)
             return [True] * len(messages)
 
