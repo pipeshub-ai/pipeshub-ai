@@ -60,9 +60,9 @@ jobs:
             min_tests: 8
             suites: ''
           - shard: kg
-            files: tests/test_kg_schema.py
-            min_tests: 8
-            suites: '--expect-suite tests.test_kg_schema=8'
+            files: tests/test_kg_schema.py tests/test_kg_writers.py tests/test_kg_downgrade.py
+            min_tests: 217
+            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=208 --expect-suite tests.test_kg_downgrade=1'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -100,6 +100,7 @@ jobs:
           python -m db.lib.vetted check db/versions/kernel/vetted/manifest.yaml
           python -m db.lib.vetted check db/versions/platform/vetted/manifest.yaml
           python -m db.lib.vetted check db/versions/graph/vetted/manifest.yaml
+          python -m db.lib.vetted check db/versions/kg/vetted/manifest.yaml
           python -m db.lib.vetted check db/versions/retrieval/vetted/manifest.yaml
 
       - name: Empty database to heads, then the org isolation catalog check
