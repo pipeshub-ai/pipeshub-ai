@@ -5310,6 +5310,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             node_id: Source node ID (e.g., "groups/123")
             edge_collection: Edge collection name
             transaction: Optional transaction ID
+            raise_on_error: Raise a failed read instead of returning []
 
         Returns:
             List[Dict]: List of edges

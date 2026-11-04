@@ -101,7 +101,7 @@ def _graph(by_vrid):
             r["_key"] for r in by_vrid.get(virtual_record_id, [])
         ]
     )
-    gp.get_document = AsyncMock(side_effect=lambda key, _c: all_recs.get(key))
+    gp.get_document = AsyncMock(side_effect=lambda key, _c, **_kw: all_recs.get(key))
     gp.get_edges_from_node = AsyncMock(return_value=[])
     gp.delete_nodes = AsyncMock()
     return gp
