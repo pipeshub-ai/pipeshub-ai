@@ -251,7 +251,7 @@ class _GuardedProvider:
         if os.environ.get("PYTEST_CURRENT_TEST"):
             raise UnclassifiedProviderWrite(f"graph_provider.{name} is reached outside a classified store method")
         if self._on_unclassified is not None:
-            self._on_unclassified()  # fail closed: the connectors this transaction saw are marked unsafe when it ends
+            self._on_unclassified()  # record that this transaction holds an unclassified write (nothing acts on it yet)
         if name not in _warned:
             _warned.add(name)
             logging.getLogger(__name__).error("graph_provider.%s reached outside a classified store method", name)
