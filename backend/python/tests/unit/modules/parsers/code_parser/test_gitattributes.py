@@ -50,16 +50,20 @@ def test_a_crafted_pattern_matches_in_linear_time() -> None:
 
     rules = parse_linguist_exclusions("*a" * 8 + "*b linguist-generated")
 
-    def best_of_five(size: int) -> float:
+    def best_of_three(size: int, reps: int) -> float:
         runs = []
-        for _ in range(5):
+        for _ in range(3):
             started = time.perf_counter()
-            assert rules.excludes("a" * size) is False
+            for _ in range(reps):
+                assert rules.excludes("a" * size) is False
             runs.append(time.perf_counter() - started)
         return min(runs)
 
-    small, large = best_of_five(14), best_of_five(28)
-    assert large <= max(small, 0.0005) * 40, (small, large)  # linear is about 2x; backtracking about 10**4x
+    # Repeat the call until the small input takes at least 5 ms, so the comparison is never against noise.
+    one = best_of_three(14, 1)
+    reps = max(1, int(0.005 / max(one, 1e-7)) + 1)
+    small, large = best_of_three(14, reps), best_of_three(28, reps)
+    assert large <= small * 40, (reps, small, large)  # linear is about 2-4x; backtracking is thousands of times
 
 
 def test_no_linguist_rules_is_falsy() -> None:

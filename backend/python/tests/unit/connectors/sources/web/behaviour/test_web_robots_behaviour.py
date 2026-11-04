@@ -449,13 +449,17 @@ def test_a_pathological_pattern_is_matched_quickly() -> None:
     scan is linear, and thousands of times as much when the pattern backtracks."""
     rules = RobotsRules.parse("User-agent: *\nDisallow: /*a*a*a*a*a*a*a*a*b\n", "PipesHub")
 
-    def best_of_five(size: int) -> float:
+    def best_of_three(size: int, reps: int) -> float:
         runs = []
-        for _ in range(5):
+        for _ in range(3):
             started = time.monotonic()
-            assert rules.allows("http://site.test/" + "a" * size) is True
+            for _ in range(reps):
+                assert rules.allows("http://site.test/" + "a" * size) is True
             runs.append(time.monotonic() - started)
         return min(runs)
 
-    small, large = best_of_five(12), best_of_five(24)
-    assert large <= max(small, 0.0005) * 40, (small, large)
+    # Repeat the call until the small input takes at least 5 ms, so the comparison is never against noise.
+    one = best_of_three(12, 1)
+    reps = max(1, int(0.005 / max(one, 1e-7)) + 1)
+    small, large = best_of_three(12, reps), best_of_three(24, reps)
+    assert large <= small * 40, (reps, small, large)  # linear is about 2-4x; backtracking is thousands of times

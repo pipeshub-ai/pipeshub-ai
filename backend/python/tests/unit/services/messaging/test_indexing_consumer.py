@@ -514,8 +514,8 @@ class TestRetryDelayBeforeSemaphore:
                 consumer._IndexingKafkaConsumer__process_message_wrapper(msg), timeout=30
             )
         assert result is True
-        # No wait is asked for: the delay is what is asserted, not how long the host took.
-        assert max(sleeps, default=0) < 1.0
+        # No wait is asked for at all: the delays requested are asserted, not how long the host took.
+        assert sleeps == []
 
     @pytest.mark.asyncio
     async def test_shutdown_interrupts_delay_without_committing(self, logger, plain_config):
