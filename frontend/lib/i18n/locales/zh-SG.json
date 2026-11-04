@@ -1573,7 +1573,31 @@
       "webSearch": "网络搜索",
       "internalAndWebSearch": "内部 + 网络搜索"
     },
-    "searchDegraded": "结果可能不完整。"
+    "searchDegraded": "结果可能不完整。",
+    "compare": {
+      "toggle": "对比模型",
+      "pickTwo": "选择 {{max}} 个模型进行对比。",
+      "pickedHint": "每个问题会由两个模型并排回答。",
+      "costNote": "每个问题都会在两个模型上运行，因此用量约为两倍。在智能体模式下，两个模型都可以使用工具；需要批准的操作会在每一列中分别询问。",
+      "pillLabel": "对比 {{picked}}/{{max}}",
+      "stop": "停止",
+      "retry": "重试",
+      "failed": "此模型未能回答。请重试。",
+      "useAnswer": "使用此回答",
+      "useAnswerLabel": "使用 {{model}} 的回答",
+      "columnLabel": "{{model}} 的回答",
+      "chooseConflict": "此回答尚不能保留。请等待其完成后重试。",
+      "chooseFailed": "无法保留此回答。请重试。",
+      "primaryFallback": "模型",
+      "starting": "正在启动...",
+      "status": {
+        "starting": "正在启动",
+        "waiting": "等待中",
+        "streaming": "回答中",
+        "done": "已完成",
+        "error": "失败"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",

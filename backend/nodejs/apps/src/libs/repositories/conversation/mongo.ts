@@ -155,6 +155,8 @@ export function buildSessionFilter(
         };
   if (q.scope.kind === 'chat') Object.assign(filter, { isArchived: false });
   if (q.id) filter._id = oid(q.id);
+  // A Compare models branch is opened by its id, never listed.
+  else filter.compareOf = { $exists: false };
   if (q.projectFilter?.kind === 'unassigned')
     filter.projectId = { $exists: false };
   else if (q.projectFilter) filter.projectId = oid(q.projectFilter.id);
@@ -577,6 +579,7 @@ export class MongoConversationRepository implements ConversationRepository {
       isDeleted: false,
       isArchived: true,
       archivedBy: { $exists: true },
+      compareOf: { $exists: false },
       $and: [titleOrContentMatch],
     };
     const [rows, assistantCount, agentCount] = await Promise.all([
@@ -698,6 +701,7 @@ export class MongoConversationRepository implements ConversationRepository {
         _id: { $in: oids(ids) },
         orgId: oid(orgId),
         isDeleted: { $ne: true },
+        compareOf: { $exists: false },
         $or: [
           { userId: userObjectId },
           {
@@ -748,6 +752,7 @@ export class MongoConversationRepository implements ConversationRepository {
       orgId: oid(q.orgId),
       projectId: oid(q.projectId),
       isDeleted: false,
+      compareOf: { $exists: false },
       $or: [{ userId: oid(q.userId) }, { projectVisibility: 'project' }],
     };
     const [rows, total] = await Promise.all([
@@ -778,12 +783,95 @@ export class MongoConversationRepository implements ConversationRepository {
           orgId: oid(orgId),
           projectId: { $in: oids(projectIds) },
           isDeleted: false,
+          compareOf: { $exists: false },
           $or: [{ userId: oid(userId) }, { projectVisibility: 'project' }],
         },
       },
       { $group: { _id: '$projectId', count: { $sum: 1 } } },
     ]);
     return new Map(counts.map((c) => [c._id.toString(), c.count]));
+  }
+
+  async listBranches(
+    orgId: string,
+    parentId: string,
+    userId: string,
+    tx?: Tx,
+  ): Promise<ChatSessionDto[]> {
+    const rows = await ChatSession.find(
+      {
+        compareOf: oid(parentId),
+        orgId: oid(orgId),
+        userId: oid(userId),
+        isDeleted: false,
+      },
+      null,
+      opts(tx),
+    )
+      .sort({ _id: 1 })
+      .lean()
+      .exec();
+    return toPlain<ChatSessionDto[]>(rows);
+  }
+
+  async listStaleBranches(
+    orgId: string,
+    userId: string,
+    beforeMs: number,
+  ): Promise<ChatSessionDto[]> {
+    const rows = await ChatSession.find({
+      compareOf: { $exists: true },
+      orgId: oid(orgId),
+      userId: oid(userId),
+      // Last touched, not created: a branch kept open for a day is still live. A branch never run has no activity yet.
+      $or: [
+        { lastActivityAt: { $lt: beforeMs } },
+        { lastActivityAt: null, createdAt: { $lt: new Date(beforeMs) } },
+      ],
+    })
+      .lean()
+      .exec();
+    return toPlain<ChatSessionDto[]>(rows);
+  }
+
+  async discardBranches(
+    orgId: string,
+    parentId: string,
+    ids?: string[],
+    tx?: Tx,
+  ): Promise<void> {
+    const branches = await ChatSession.find(
+      {
+        compareOf: oid(parentId),
+        orgId: oid(orgId),
+        ...(ids && { _id: { $in: oids(ids) } }),
+      },
+      { _id: 1 },
+      opts(tx),
+    )
+      .lean()
+      .exec();
+    for (const branch of branches) {
+      await this.discardSession(String(branch._id), orgId, tx);
+    }
+  }
+
+  /**
+   * The cascade of a parent's delete or archive. Branches are hidden everywhere, so one left behind by a failure here
+   * is invisible, and it must not fail (or abort the transaction of) the delete itself.
+   */
+  private async discardBranchesQuietly(
+    orgId: string,
+    parentId: string,
+  ): Promise<void> {
+    try {
+      await this.discardBranches(orgId, parentId);
+    } catch (error) {
+      logger.warn('Could not remove the Compare branches of a conversation', {
+        parentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   async unlinkProject(projectId: string, tx?: Tx): Promise<void> {
@@ -910,6 +998,9 @@ export class MongoConversationRepository implements ConversationRepository {
         : { $set: set },
       { returnDocument: 'after', session: sessionOf(tx), runValidators: true },
     ).exec();
+    if (updated && archived) {
+      await this.discardBranchesQuietly(String(updated.orgId), id);
+    }
     return updated ? toPlain<ChatSessionDto>(updated) : null;
   }
 
@@ -964,6 +1055,7 @@ export class MongoConversationRepository implements ConversationRepository {
     );
     if (!updatedConversation)
       throw new InternalServerError('Failed to delete conversation');
+    await this.discardBranchesQuietly(actor.orgId, id);
 
     const sessionMessages = await ChatSessionMessage.find(
       { sessionId: id },

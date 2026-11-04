@@ -132,6 +132,7 @@ import {
   isAGUI,
   resolveProtocol,
 } from '../utils/agui';
+import { emitTurnStarted } from '../utils/compare-turn';
 import { notifyChatShared } from '../utils/share-notification';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -804,6 +805,13 @@ export const streamChat =
             })}\n\n`,
       );
       (res as any).flush?.();
+      await emitTurnStarted(res, req.body, newConversationId, async () => {
+        const [firstRow] = await getMessages(newConversationId, {
+          orgId: savedConversation!.orgId,
+          limit: 1,
+        });
+        return firstRow?._id;
+      });
       timer.mark('conversation_created');
 
       const { agentMode } = parseChatMode(
@@ -1470,6 +1478,7 @@ export const addMessageStream =
     // The stream outlives the request, so its listeners write outside any transaction.
     const session: Tx | null = null;
     let existingConversation: ChatSessionDto | null = null;
+    let addedQuestionId: string | undefined;
     let reservation: RunReservation | null = null;
 
     const modelInfo = extractModelInfo(req.body);
@@ -1507,7 +1516,7 @@ export const addMessageStream =
       }
 
       // First, add the user message to the existing conversation
-      await appendMessages(
+      const [addedQuestion] = await appendMessages(
         conversation._id,
         conversation.orgId,
         [
@@ -1520,6 +1529,7 @@ export const addMessageStream =
         ],
         tx,
       );
+      addedQuestionId = addedQuestion?._id;
 
       // Mark the run in progress (clearing a previous error), update the model
       // and mode information if provided, and save
@@ -1592,6 +1602,12 @@ export const addMessageStream =
         throw new NotFoundError('Conversation not found');
       }
       const confirmedConversation = existingConversation as ChatSessionDto;
+      await emitTurnStarted(
+        res,
+        req.body,
+        confirmedConversation._id,
+        async () => addedQuestionId,
+      );
 
       // Format previous conversations for context (excluding the user message we just added)
       const allMessagesSoFar = (await getMessages(

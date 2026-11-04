@@ -21,6 +21,9 @@ import {
   getAppliedReasoningEffortLabel,
 } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
+import { useCompareAvailable } from '@/chat/compare/components/compare-picker-toggle';
+import { useCompareStore } from '@/chat/compare/compare-store';
+import { MAX_COMPARE_MODELS } from '@/chat/compare/types';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import {
   AgentStrategyModeSwitcher,
@@ -506,8 +509,12 @@ export function ChatInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- getEffectiveModel reads these from the store
     [modelCtxKey, openedProjectId, settings.newChatDefaultModel, settings.selectedModels, settings.defaultModels],
   );
-  const displayModelLabel =
-    chatModelOptions.selectionLabel(t, displayModel) ??
+  const compareAvailable = useCompareAvailable(modelCtxKey);
+  const compareEnabled = useCompareStore((s) => s.enabled) && compareAvailable;
+  const comparePicked = useCompareStore((s) => s.models);
+  const displayModelLabel = compareEnabled
+    ? t('chat.compare.pillLabel', { picked: comparePicked.length, max: MAX_COMPARE_MODELS })
+    : chatModelOptions.selectionLabel(t, displayModel) ??
     (displayModel
       ? (displayModel.modelFriendlyName || displayModel.modelName)
       : t('chat.aiModelsTooltip'));
