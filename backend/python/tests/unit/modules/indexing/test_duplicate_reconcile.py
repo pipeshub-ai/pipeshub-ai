@@ -323,6 +323,30 @@ class TestRetrySweep:
         assert await sweep() == 1                                      # the row behind them is read now
         assert graph.docs["p1"][DUPLICATE_RECONCILE_PENDING_FIELD] is False
 
+    @pytest.mark.parametrize("applied", [False, RuntimeError("write failed")])
+    async def test_a_row_with_no_org_is_counted_as_dropped_only_once_its_flag_is_cleared(self, applied: object) -> None:
+        from unittest.mock import patch
+
+        graph = FakeGraph()
+        _pending(graph)
+        graph.docs["a1"] = {**graph.docs["p1"], "_key": "a1", "orgId": None}
+        graph.update_node_fields_if_match = AsyncMock(side_effect=[applied] if isinstance(applied, Exception) else None, return_value=applied)  # type: ignore[method-assign]
+        reconciler, _ = _reconciler(graph)
+        with patch("app.modules.indexing.duplicate_reconcile.record_recovery_org_pass") as counted:
+            await _sweep(graph, reconciler)
+        counted.assert_not_called()
+
+    async def test_a_row_with_no_org_whose_flag_was_cleared_is_counted(self) -> None:
+        from unittest.mock import patch
+
+        graph = FakeGraph()
+        _pending(graph)
+        graph.docs["a1"] = {**graph.docs["p1"], "_key": "a1", "orgId": None}
+        reconciler, _ = _reconciler(graph)
+        with patch("app.modules.indexing.duplicate_reconcile.record_recovery_org_pass") as counted:
+            await _sweep(graph, reconciler)
+        counted.assert_called_once_with("duplicate_reconcile", "no_org_row")
+
     async def test_not_yet_due_is_left_alone(self) -> None:
         graph = FakeGraph()
         _pending(graph, due=NOW + 1000)

@@ -187,17 +187,19 @@ async def retry_pending_duplicate_reconciles(
         org_id = row.get("orgId")
         due = row.get(DUPLICATE_RECONCILE_DUE_AT_FIELD)
         if not org_id:
-            # Nothing can run for it, and left pending it would take a place in every page: clear the flag and count it.
-            logger.warning("duplicate_reconcile: record %s has no organisation; its pending reconcile is dropped", record_id)
-            record_recovery_org_pass("duplicate_reconcile", "no_org_row")
+            # Nothing can run for it, and left pending it would take a place in every page: clear the flag; it is counted once that applied.
             with system("duplicate_reconcile"):
                 try:
-                    await graph_provider.update_node_fields_if_match(
+                    cleared = await graph_provider.update_node_fields_if_match(
                         record_id, _RECORDS, _cleared(0),
                         {DUPLICATE_RECONCILE_PENDING_FIELD: True, DUPLICATE_RECONCILE_DUE_AT_FIELD: due},
                     )
                 except Exception:
+                    cleared = False
                     logger.warning("duplicate_reconcile: could not drop the pending reconcile of %s", record_id, exc_info=True)
+            if cleared:
+                logger.warning("duplicate_reconcile: record %s has no organisation; its pending reconcile was dropped", record_id)
+                record_recovery_org_pass("duplicate_reconcile", "no_org_row")
             continue
         with for_org(str(org_id), job="duplicate_reconcile"):
             try:

@@ -179,6 +179,13 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
             }],
             collection=CollectionNames.APPS.value,
         )
+        # As a real connector creation writes it: the organisation's node and the edge from it to the app, which is how the organisation's apps are found.
+        await graph.batch_upsert_nodes([{"id": ORG_ID, "name": "Resume IT organisation", "accountType": "enterprise", "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now}], CollectionNames.ORGS.value)
+        await graph.batch_create_edges(
+            [{"from_id": ORG_ID, "from_collection": CollectionNames.ORGS.value, "to_id": connector_id, "to_collection": CollectionNames.APPS.value,
+              "createdAtTimestamp": now}],
+            CollectionNames.ORG_APP_RELATION.value,
+        )
 
         processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
         processor.org_id = ORG_ID
