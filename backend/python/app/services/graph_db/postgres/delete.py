@@ -250,6 +250,7 @@ class DeleteMixin(PgBase):
                 event_data = None
 
             await self._delete_records_with_their_types([*attachment_ids, record_id], transaction)
+            await self.delete_blocks_for_records([*attachment_ids, record_id], transaction=transaction)      # joined by field, not by an edge, so the sweep misses them
             # Their children are left without a parent: the connector's scopes no longer describe its tree.
             if record.get("connectorId"):
                 try:

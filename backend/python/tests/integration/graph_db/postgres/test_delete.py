@@ -96,6 +96,18 @@ async def test_a_mail_goes_with_its_attachments_and_one_event_each_and_a_soft_de
     assert await p.get_existing_record_keys(["mail", "att1", "att2", "keep"]) == {"keep"}
 
 
+async def test_a_hard_delete_takes_the_blocks_of_the_record_and_of_its_attachments(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "mail"), rec(p.org, "att"), rec(p.org, "other")], "records")
+    await p.batch_create_edges([attach("mail", "att")], "nodeRelations")
+    await p.batch_upsert_nodes([{"_key": "b-mail", "orgId": p.org, "recordId": "mail"}, {"_key": "b-att", "orgId": p.org, "recordId": "att"},
+                                {"_key": "b-other", "orgId": p.org, "recordId": "other"}], "blocks")
+    await grant(p, "mail", "OWNER")
+    assert (await p.delete_record("mail", "ext-u", p.org))["success"]
+    assert await p.get_document("b-mail", "blocks") is None and await p.get_document("b-att", "blocks") is None
+    assert await p.get_document("b-other", "blocks") is not None
+
+
 @pytest.mark.parametrize("soft", [False, True])
 async def test_a_user_who_can_only_view_a_connector_record_cannot_delete_it(pg_db, soft: bool) -> None:
     p = bound(pg_db)
