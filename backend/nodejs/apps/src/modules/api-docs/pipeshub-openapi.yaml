@@ -23910,6 +23910,217 @@ components:
         $ref:
           type: string
           example: '#/components/responses/XssRejected'
+    EntityType:
+      type: string
+      description: Kind of knowledge-graph entity.
+      enum: [department, category, subcategory, topic, language, record_group, record, named_entity]
+    EntityRecordDate:
+      type: object
+      description: >-
+        The one date shown for a record, under the key that says what it is: `modified` (last change in the source),
+        `dated` (the document's own date), `fileModified` (the file's last change) or `uploaded` (when it was added).
+        Absent when the record has no date. The same shape in `POST /search/entities` and `POST /search/entities/neighbors`.
+      properties:
+        modified:
+          type: string
+          example: '2026-04-30'
+        dated:
+          type: string
+          example: '2026-04-30'
+        fileModified:
+          type: string
+          example: '2026-04-30'
+        uploaded:
+          type: string
+          example: '2026-04-30'
+    EntitySearchRequest:
+      type: object
+      description: Request body for `POST /search/entities`.
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: A name or phrase.
+        entityTypes:
+          type: array
+          maxItems: 10
+          description: Only these kinds. Leave out for all.
+          items:
+            $ref: '#/components/schemas/EntityType'
+        namedEntityKinds:
+          type: array
+          maxItems: 10
+          description: For `named_entity`, only these kinds, such as `person` or `organization`.
+          items:
+            type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 25
+          default: 10
+          description: Most entities to return.
+    EntitySearchResponse:
+      type: object
+      description: Result of `POST /search/entities`.
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          description: Set when nothing matched.
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              entityId:
+                type: string
+              entityType:
+                $ref: '#/components/schemas/EntityType'
+              name:
+                type: string
+              kind:
+                type: string
+                description: Named-entity kind, for `named_entity` results.
+              apps:
+                type: array
+                description: Connectors whose records carry the entity.
+                items:
+                  type: string
+              records:
+                type: array
+                description: A few readable records, for the first entities only.
+                items:
+                  allOf:
+                    - $ref: '#/components/schemas/EntityRecordDate'
+                    - type: object
+                      properties:
+                        recordId:
+                          type: string
+                        name:
+                          type: string
+                        type:
+                          type: string
+                        app:
+                          type: string
+              moreRecords:
+                type: boolean
+        scopeNote:
+          type: string
+          description: Set when the caller's access covers only part of some connectors' records, so matches can be missing.
+        ignoredEntityTypes:
+          type: array
+          description: Requested `entityTypes` this search does not cover; they were left out.
+          items:
+            type: string
+        kindNotes:
+          type: array
+          description: Why some requested `namedEntityKinds` were not searched.
+          items:
+            type: string
+    EntityNeighborsRequest:
+      type: object
+      description: Request body for `POST /search/entities/neighbors`.
+      required:
+        - entityId
+        - entityType
+      properties:
+        entityId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: "`entityId` from `POST /search/entities`."
+        entityType:
+          $ref: '#/components/schemas/EntityType'
+        recordTypes:
+          type: array
+          maxItems: 20
+          description: Only records of these types, such as `FILE` or `TICKET`.
+          items:
+            type: string
+        recordLimit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+          description: Most records to list.
+        relatedLimit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+          description: Most related entities to list.
+        cursor:
+          type: string
+          maxLength: 64
+          description: "`nextCursor` from the previous page."
+    EntityNeighborsResponse:
+      type: object
+      description: Result of `POST /search/entities/neighbors`.
+      properties:
+        status:
+          type: string
+          example: success
+        entityId:
+          type: string
+        entityType:
+          $ref: '#/components/schemas/EntityType'
+        records:
+          type: array
+          description: Readable records connected to the entity, newest first.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/EntityRecordDate'
+              - type: object
+                properties:
+                  recordId:
+                    type: string
+                  recordName:
+                    type: string
+                  recordType:
+                    type: string
+                  app:
+                    type: string
+                  webUrl:
+                    type: string
+                    nullable: true
+        relatedEntities:
+          type: array
+          description: Entities those records share with this one, most shared first.
+          items:
+            type: object
+            properties:
+              entityId:
+                type: string
+              entityType:
+                $ref: '#/components/schemas/EntityType'
+              name:
+                type: string
+              kind:
+                type: string
+              relation:
+                type: string
+                description: Edge type joining a record to this entity.
+              sharedRecords:
+                type: integer
+                description: How many of the listed records carry it.
+        relationTypes:
+          type: array
+          items:
+            type: string
+        nextCursor:
+          type: string
+          description: Pass as `cursor` for the next page of records.
+        note:
+          type: string
+          description: Set when the entity has more records than one listing can scan.
+        relatedNote:
+          type: string
+          description: Set when `relatedEntities` covers only the records on this page.
   responses:
     XssRejected:
       description: >-
@@ -26004,6 +26215,88 @@ paths:
                 scopes_supported: ["offline_access", "semantic:write", "conversation:chat", "kb:read", "connector:read"]
                 bearer_methods_supported: ["header"]
                 resource_documentation: "https://api.pipeshub.com/api/v1/docs"
+
+  /auth.md:
+    get:
+      tags:
+        - OpenID Connect
+      summary: Authentication guide for agents (auth.md)
+      description: |
+        A Markdown guide an AI agent follows to get a credential for this
+        instance and use it: discovery, the device-code sign-in (with this
+        instance's `pipeshub_device_client_id`), client registration when
+        enabled, personal access tokens, the scopes an agent sign-in gets, and
+        what a `401` or `403` means. Built from the same settings as discovery.
+        `/auth.md` and `/.well-known/auth.md` return the same document.
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+      operationId: authMd
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '200':
+          description: The guide
+          content:
+            text/markdown:
+              schema:
+                type: string
+              example: |
+                # PipesHub: authentication for agents
+
+                You are an agent. This is how to get a credential for the PipesHub at https://pipeshub.example.com and use it.
+
+  /.well-known/auth.md:
+    get:
+      tags:
+        - OpenID Connect
+      summary: Authentication guide for agents (auth.md)
+      description: |
+        A Markdown guide an AI agent follows to get a credential for this
+        instance and use it: discovery, the device-code sign-in (with this
+        instance's `pipeshub_device_client_id`), client registration when
+        enabled, personal access tokens, the scopes an agent sign-in gets, and
+        what a `401` or `403` means. Built from the same settings as discovery.
+        `/auth.md` and `/.well-known/auth.md` return the same document.
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+      operationId: wellKnownAuthMd
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '200':
+          description: The guide
+          content:
+            text/markdown:
+              schema:
+                type: string
+              example: |
+                # PipesHub: authentication for agents
+
+                You are an agent. This is how to get a credential for the PipesHub at https://pipeshub.example.com and use it.
 
   # ==================== OAUTH APP MANAGEMENT ENDPOINTS ====================
   /oauth-clients:
@@ -59205,6 +59498,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/logos:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: List the logos of the MCP servers I can see
+      description: |
+        The logos uploaded for custom MCP servers the caller can see (the organization's servers
+        and the caller's own personal ones), by instance id. A server without a logo is left out.
+        Catalog servers never have one: the app shows their vendor's logo.
+
+        Each logo is a PNG at most 96 pixels on a side, as a base64 data URL.
+      operationId: getMcpLogos
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:read
+      responses:
+        '200':
+          description: Logos by instance id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logos:
+                    type: object
+                    additionalProperties:
+                      type: string
+                      example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAAw...
+                required:
+                  - logos
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:read` scope
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /mcp-servers/instances:
     get:
       tags:
@@ -59560,6 +59907,168 @@ paths:
             Whether agents use the server couldn't be checked, so nothing was deleted
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/instances/{instanceId}/logo:
+    put:
+      tags:
+        - MCP Server Instances
+      summary: Set the logo of a custom MCP server
+      description: |
+        Custom servers only; a catalog server shows its vendor's logo. Organization servers for
+        administrators, a personal server for its owner.
+
+        Send a PNG, JPEG, WebP or GIF image (1 MB at most, under 4096 × 4096 pixels) as a base64
+        data URL. The declared type is ignored: the bytes decide. SVG is refused, since it can
+        carry script; the web app turns an SVG into a PNG before sending it. The image is drawn
+        again as a PNG at most 96 pixels on a side, keeping its shape and transparency (an
+        animated GIF keeps its first frame), and that PNG is stored and returned, never the bytes
+        sent. It replaces any earlier logo.
+
+        The app-wide XSS filter does not check this body: base64 can look like markup to it.
+      operationId: setMcpInstanceLogo
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:write
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                logo:
+                  type: string
+                  maxLength: 1398165
+                  description: The image as a base64 data URL.
+                  example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAABk...
+              required:
+                - logo
+      responses:
+        '200':
+          description: The logo as stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logo:
+                    type: string
+                    description: A PNG at most 96 pixels on a side, as a base64 data URL.
+                    example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAAw...
+                required:
+                  - logo
+        '400':
+          description: |
+            Bad request — one of:
+            - a path id contains characters that are not allowed in an id (for example `/`, `?`, `#`, `%`); this check runs before authentication
+            - the server is a catalog server ("Only custom MCP servers take a logo. ...")
+            - `logo` isn't a base64 data URL, or isn't valid base64, or is empty
+            - the image is not a PNG, JPEG, WebP or GIF, or can't be read
+            - the image is over 1 MB, or over 4096 × 4096 pixels
+            - a JSON body that does not parse ("The request body is not valid JSON.")
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:write` scope
+            - the server is an organization server and the caller isn't an administrator
+            - the server is inherited from another organization and can't be changed here
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such server, or it is another user's personal server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: '`logo` is missing, not a string, or longer than allowed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Unexpected failure in the gateway or in the connectors service, including a failed write of the logo.
+
+            A JSON body larger than 10 MB is answered `413` by the app-wide body parser instead, before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - MCP Server Instances
+      summary: Remove the logo of a custom MCP server
+      description: |
+        The server shows its default icon again. Succeeds when the server has no logo too.
+        Organization servers for administrators, a personal server for its owner. Needs
+        `mcp:write`, not `mcp:delete`: it changes the server and destroys nothing.
+      operationId: removeMcpInstanceLogo
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:write
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: The server has no logo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                required:
+                  - success
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:write` scope
+            - the server is an organization server and the caller isn't an administrator
+            - the server is inherited from another organization and can't be changed here
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such server, or it is another user's personal server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service, including a failed removal.
           content:
             application/json:
               schema:
@@ -71847,6 +72356,121 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /search/entities:
+    post:
+      tags:
+        - Semantic Search
+      summary: Search knowledge-graph entities
+      description: |
+        Find entities in the organisation's knowledge graph by name or meaning:
+        departments, categories, subcategories, topics, languages, record
+        groups (a drive, a space, a project), record titles and, where
+        named-entity extraction is on, people, organisations and other named
+        entities.
+
+        Only entities connected to records the caller can read are returned,
+        decided by the same access check as the assistant's entity tools. Each
+        result carries an `entityId` and `entityType`; pass both to
+        `POST /search/entities/neighbors` to see the records and related
+        entities around it.
+      operationId: searchEntities
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        description: What to look for.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntitySearchRequest'
+            examples:
+              topic:
+                summary: Find a topic
+                value:
+                  query: "payments"
+                  entityTypes: ["topic", "category"]
+      responses:
+        '200':
+          description: Entities the caller can reach, best match first. An empty `results` list means none matched, or none are connected to records the caller can read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntitySearchResponse'
+        '400':
+          description: The request is invalid, for example an unsupported entity type or named-entity lookup turned off.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error, or the AI search service was unreachable.
+        '503':
+          description: Entity search is not available in this deployment or timed out before the access check finished. This is not an empty result; try again.
+
+  /search/entities/neighbors:
+    post:
+      tags:
+        - Semantic Search
+      summary: Get an entity's records, related entities and relation types
+      description: |
+        Walk one step out from an entity: the records connected to it that the
+        caller can read (newest first), the other entities those records are
+        tagged with or mention (most shared first), and the relation types
+        that join them (`belongsToCategory`, `belongsToTopic`,
+        `belongsToLanguage`, `belongsToDepartment`, `mentionsEntity`).
+
+        Related entities are counted over the records listed in the same
+        response, never over records the caller cannot read. An entity the
+        caller cannot reach and an entity with no readable records answer the
+        same way: empty lists. Use `cursor` to page the records.
+      operationId: entityNeighbors
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        description: The entity to expand.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntityNeighborsRequest'
+            examples:
+              topic:
+                summary: Neighbourhood of a topic
+                value:
+                  entityId: "0c9b3e0e-6f4e-4f07-a6d3-2a8c1d7e9b11"
+                  entityType: topic
+      responses:
+        '200':
+          description: Records, related entities and relation types around the entity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityNeighborsResponse'
+        '400':
+          description: The request is invalid, for example an unsupported `entityType`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error, or the AI search service was unreachable.
+        '503':
+          description: The lookup failed or timed out. This is not an empty result; try again.
+
   /search/updateAppConfig:
     post:
       tags:

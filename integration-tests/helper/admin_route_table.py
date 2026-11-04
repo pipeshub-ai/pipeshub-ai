@@ -355,6 +355,8 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/mcp_servers.py::get_oauth_config": "a personal server is its owner's",
     "api/routes/mcp_servers.py::update_oauth_config": "a personal server is its owner's",
     "api/routes/mcp_servers.py::delete_instance": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::set_instance_logo": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::remove_instance_logo": "a personal server is its owner's",
     # A member checks the URL of a server they could add: a personal one, public only.
     "api/routes/mcp_servers.py::discover_oauth_metadata_endpoint": "a member's URL must be public",
     # Everyone gets the listing; only admins see how an org server is reached.

@@ -30,14 +30,21 @@ const KEEP = new Set(['platform.store_epoch', 'platform.deployment_profile', 'pl
 
 for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
   suite(`docstore-migrate: CLI end to end (${bin})`, function () {
-    this.timeout(600_000);
+    this.timeout(240_000);
     let stack: PgStack;
     let mongo: TestMongo;
     let env: NodeJS.ProcessEnv;
     const base = (): Record<string, unknown[]> => ({ ...identityDocs(), ...conversationDocs(), ...contentDocs() });
 
+    // The fence tuning reads process.env (not the env a command is given): without these two every cutover waits the two minutes an application's
+    // write could be held, and the suite runs past the CI job limit.
+    const saved = { hooks: process.env.MIGRATE_TEST_HOOKS, opts: process.env.MIGRATE_FENCE_CLIENT_OPTIONS, ms: process.env.MIGRATE_FENCE_TEST_MS };
+
     before(async () => {
       process.env.DOC_STORE = 'postgres';
+      process.env.MIGRATE_TEST_HOOKS = '1';
+      process.env.MIGRATE_FENCE_CLIENT_OPTIONS = JSON.stringify({ waitQueueTimeoutMS: 100, connectTimeoutMS: 100, serverSelectionTimeoutMS: 100, retryWrites: true });
+      process.env.MIGRATE_FENCE_TEST_MS = '200';
       stack = await startPgStack(bin, 'migrate_cli', { importer: true });
       mongo = await startMongo(process.env.PG_TEST_WORK ?? '/tmp');
       env = {
@@ -56,6 +63,10 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       };
     });
     after(async () => {
+      for (const [k, v] of [['MIGRATE_TEST_HOOKS', saved.hooks], ['MIGRATE_FENCE_CLIENT_OPTIONS', saved.opts], ['MIGRATE_FENCE_TEST_MS', saved.ms]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
       await mongo?.stop();
       await stack?.stop();
     });
@@ -495,7 +506,9 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     });
 
     describe('online path', () => {
-      const ONLINE = { MIGRATE_BATCH_DELAY_MS: '20', MIGRATE_TEST_HOOKS: '1' };
+      const ONLINE = { MIGRATE_TEST_HOOKS: '1' };
+      // the copy is slowed only where a writer runs beside it, so that writes land during the copy
+      const WRITING = { ...ONLINE, MIGRATE_BATCH_DELAY_MS: '20' };
       const FLAGS = ['--fence-armed', '--shadow-clean', '--drain-wait', '20', '--grace', '0.3'];
       const cut = (extra: string[] = [], e: NodeJS.ProcessEnv = {}) => run(['cutover', ...FLAGS, ...extra], { ...ONLINE, ...e });
       const storeEpoch = async () => (await stack.admin((c) => c.query('SELECT backend, epoch, readonly FROM platform.store_epoch'))).rows[0];
@@ -538,7 +551,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       it('copies while the application writes, then cuts over: no lost write, a bounded freeze, MongoDB retired, PostgreSQL the store', async () => {
         const w = startWriter();
         try {
-          const start = await run(['migrate', '--online'], ONLINE);
+          const start = await run(['migrate', '--online'], WRITING);
           expect(start.out.ok, JSON.stringify(start.out).slice(0, 600)).to.equal(true);
           expect(start.out.stage).to.equal('online_ready');
           expect(w.writes()).to.be.greaterThan(10);
@@ -561,7 +574,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       it('a failed step unfreezes: MongoDB writable again, PostgreSQL still closed, and a second cut succeeds', async () => {
         const w = startWriter();
         try {
-          expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
+          expect((await run(['migrate', '--online'], WRITING)).code).to.equal(0);
           const failed = await cut(['--fail-at', 'F5']);
           expect(failed.code).to.equal(1);
           expect(failed.out.aborted).to.equal(true);

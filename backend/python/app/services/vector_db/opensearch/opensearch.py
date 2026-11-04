@@ -127,6 +127,23 @@ _DEFAULT_CONFIDENCE_INTERVAL = 0.99
 _DEFAULT_RRF_RANK_CONSTANT = 60
 # A partial update re-reads the document when another write lands between its
 # read and write; without retries it fails the item with a 409.
+# Bounded: a conflict means a concurrent writer; a few refreshed passes outlast it, more would hide a bug.
+_DELETE_CONFLICT_RETRIES = 5
+_ANY = "*"  # a written point that names no virtual record
+_UNREFRESHED_MAX = 10_000
+_DEFAULT_VISIBLE_AFTER_SECONDS = 35.0  # the 30 s refresh_interval the provider creates indexes with, and a margin
+_VISIBLE_MARGIN_SECONDS = 5.0
+_INTERVAL_REREAD_SECONDS = 60.0
+_INTERVAL_UNITS = {"nanos": 1e-9, "micros": 1e-6, "ms": 1e-3, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+
+
+def _interval_seconds(raw: object) -> float | None:
+    """A refresh_interval setting ("30s", "1m", "500ms") in seconds; None for -1 (never) or anything unreadable."""
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(nanos|micros|ms|s|m|h|d)\s*", str(raw or ""))
+    if match is None:
+        return None
+    seconds = float(match.group(1)) * _INTERVAL_UNITS[match.group(2)]
+    return seconds if seconds > 0 else None
 _UPDATE_RETRY_ON_CONFLICT = 3
 
 # Progress of the stemmed-field backfill, kept in the index's own ``_meta`` so
@@ -171,6 +188,14 @@ class OpenSearchService(IVectorDBService):
         self._clients: LoopLocal[_LoopClient] = LoopLocal(self._new_loop_client)
         # Assigned through `client` (tests); served to every loop as-is.
         self._client_override: AsyncOpenSearch | None = None
+        # Per index, what this process wrote since the index last refreshed: virtual record id -> when
+        # (``_ANY`` for a point that names none). Only a delete that could match such a point refreshes first.
+        # shortcut: writes by other processes are not seen here and wait for the index's own 30 s refresh;
+        # upgrade to a refresh before every delete if cross-process delete-after-write must be exact.
+        self._unrefreshed: dict[str, dict[str, float]] = {}
+        # Per index: (seconds after which a write is visible, or None when the index does not refresh on
+        # its own or the setting is unknown; read at). Re-read now and then, so an operator change is seen.
+        self._visible_after: dict[str, tuple[float | None, float]] = {}
 
     @property
     def client(self) -> AsyncOpenSearch | None:
@@ -1016,19 +1041,97 @@ class OpenSearchService(IVectorDBService):
             for p in points
         ]
 
-        await os_helpers.async_bulk(
-            self.client,
-            actions,
-            chunk_size=batch_size,
-            raise_on_error=True,
-            refresh=refresh,
-        )
+        started = time.monotonic()
+        try:
+            await os_helpers.async_bulk(
+                self.client,
+                actions,
+                chunk_size=batch_size,
+                raise_on_error=True,
+                refresh=refresh,
+            )
+        except BaseException:
+            # Earlier chunks may be indexed and unrefreshed; a later delete must still see them.
+            self._note_unrefreshed(collection_name, points)
+            raise
+        if refresh and actions:  # an empty batch sends no bulk request, so no refresh ran
+            self._forget_refreshed(collection_name, started)
+        else:
+            self._note_unrefreshed(collection_name, points)
 
         elapsed = time.perf_counter() - start
         logger.info(
             f"Upsert complete: {len(points)} points in {elapsed:.2f}s "
             f"({len(points)/elapsed:.0f} pts/s)"
         )
+
+    def _forget_refreshed(self, collection_name: str, refreshed_at: float) -> None:
+        """Drop the pending writes a refresh that began at ``refreshed_at`` covered; a write noted after it
+        (by a concurrent caller) may not be in that refresh and stays."""
+        pending = self._unrefreshed.get(collection_name)
+        if pending is None:
+            return
+        for key in [k for k, t in pending.items() if t <= refreshed_at]:
+            pending.pop(key, None)
+        if not pending:
+            self._unrefreshed.pop(collection_name, None)
+
+    def _note_unrefreshed(self, collection_name: str, points: list[VectorPoint]) -> None:
+        now = time.monotonic()
+        pending = self._unrefreshed.setdefault(collection_name, {})
+        for p in points:
+            meta = (p.payload or {}).get("metadata") or {}
+            pending[meta.get("virtualRecordId") or _ANY] = now
+        window = self._visible_after.get(collection_name, (_DEFAULT_VISIBLE_AFTER_SECONDS, 0.0))[0]
+        if len(pending) > _UNREFRESHED_MAX and window is not None:  # old entries are visible by now
+            for key in [k for k, t in pending.items() if now - t > window]:
+                pending.pop(key, None)
+
+    async def _visible_after_seconds(self, collection_name: str) -> float | None:
+        """How long after a write the index shows it without a refresh from us: its ``refresh_interval`` plus a
+        margin; None when the index never refreshes by itself (-1) or the setting cannot be read."""
+        now = time.monotonic()
+        cached = self._visible_after.get(collection_name)
+        if cached is not None and now - cached[1] < _INTERVAL_REREAD_SECONDS:
+            return cached[0]
+        try:
+            reply = await self.client.indices.get_settings(  # type: ignore
+                index=collection_name, name="index.refresh_interval", include_defaults=True,
+            )
+            body = next(iter(reply.values()))
+            raw = ((body.get("settings") or {}).get("index") or {}).get("refresh_interval") or (
+                (body.get("defaults") or {}).get("index") or {}
+            ).get("refresh_interval")
+            seconds = _interval_seconds(raw)
+            window = None if seconds is None else seconds + _VISIBLE_MARGIN_SECONDS
+        except Exception:
+            window = None
+        self._visible_after[collection_name] = (window, now)
+        return window
+
+    async def _needs_refresh_before_delete(self, collection_name: str, filter: FilterExpression) -> bool:  # noqa: A002
+        """Whether a point the index has not refreshed yet could match the filter."""
+        window = await self._visible_after_seconds(collection_name)
+        if window is None:
+            return True  # no automatic refresh to rely on: every delete refreshes
+        pending = self._unrefreshed.get(collection_name)
+        if not pending:
+            return False
+        now = time.monotonic()
+        live = {k for k, t in pending.items() if now - t <= window}
+        if not live:
+            self._unrefreshed.pop(collection_name, None)
+            return False
+        pinned: set = set()
+        for cond in filter.must:
+            if cond.key == "metadata.virtualRecordId":
+                # Only real ids pin: a length-bound condition (values_count_lte) carries none.
+                if cond.values is not None:
+                    pinned.update(cond.values)
+                elif cond.value is not None:
+                    pinned.add(cond.value)
+        # A filter that names no virtual record (entities, a connector) could match any pending point.
+        return not pinned or _ANY in live or bool(pinned & live)
 
     async def delete_points(
         self,
@@ -1049,18 +1152,36 @@ class OpenSearchService(IVectorDBService):
             )
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(filter)
-        # Opt-in only: the index runs a 30s refresh_interval on purpose, and
-        # forcing a refresh per call creates a Lucene segment per call. The
-        # connector cleanup asks for it because it re-reads the matched set to
-        # decide when it is done; per-record deletes must not.
-        await self.client.delete_by_query(  # type: ignore
-            index=collection_name,
-            body={"query": bool_query},
-            conflicts="proceed",
-            slices="auto",
-            wait_for_completion=True,
-            refresh=refresh,
-        )
+        # ``refresh`` (after the delete) is opt-in: the connector cleanup asks for it because it re-reads
+        # the matched set to decide when it is done; per-record deletes must not.
+        # The query runs on the last refreshed view (the index refreshes every 30 s on purpose). A
+        # document indexed since then is invisible to it and would stay searchable after the delete,
+        # so the index is refreshed first; deletes are rare next to writes, so the cost is accepted.
+        # A document rewritten after that refresh is a version conflict that ``conflicts="proceed"``
+        # would skip: a conflict refreshes and goes again, and one that does not clear raises, never
+        # a silent partial delete.
+        if await self._needs_refresh_before_delete(collection_name, filter):
+            refreshed_at = time.monotonic()
+            await self.client.indices.refresh(index=collection_name)  # type: ignore
+            self._forget_refreshed(collection_name, refreshed_at)
+        for attempt in range(_DELETE_CONFLICT_RETRIES + 1):
+            response = await self.client.delete_by_query(  # type: ignore
+                index=collection_name,
+                body={"query": bool_query},
+                conflicts="proceed",
+                slices="auto",
+                wait_for_completion=True,
+                refresh=refresh,
+            )
+            conflicts = (response or {}).get("version_conflicts") or 0
+            if not conflicts:
+                break
+            if attempt == _DELETE_CONFLICT_RETRIES:
+                raise RuntimeError(
+                    f"delete_points on '{collection_name}' left {conflicts} document(s) behind: "
+                    f"version conflicts did not clear after {_DELETE_CONFLICT_RETRIES} retries"
+                )
+            await self.client.indices.refresh(index=collection_name)  # type: ignore
         logger.info(f"Deleted points from OpenSearch index '{collection_name}'")
 
     async def overwrite_payload(

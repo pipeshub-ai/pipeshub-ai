@@ -190,7 +190,10 @@ from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
     is_live_record,
 )
-from app.services.graph_db.common.team_grant_role import aql_team_grant_role
+from app.services.graph_db.common.team_grant_role import (
+    TEAM_GRANT_ROLES,
+    aql_team_grant_role,
+)
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
@@ -2970,11 +2973,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return updated_keys
         except Exception as e:
+            # Raised, not answered as "no row matched": that answer reads as "the record moved on", and the caller then
+            # drops the write for good (the final-attempt FAILED marking left the record in its old status).
             self.logger.error(
                 "❌ Failed compare-and-set (%s -> %s): %s",
                 expected, new_status, str(e),
             )
-            return []
+            raise
 
     # ==================== Pipeline stage states ====================
 
@@ -3003,6 +3008,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"vrid": virtual_record_id, "rev": rev},
         )
         return [self._stage_doc_from_arango(row) for row in rows]
+
+    @override
+    async def stage_state_org_for_virtual_record(self, virtual_record_id: str) -> str | None:
+        rows = await self._stage_aql(
+            "FOR doc IN @@collection FILTER doc.virtualRecordId == @vrid AND doc.orgId != null "
+            "LIMIT 1 RETURN doc.orgId",
+            {"vrid": virtual_record_id},
+        )
+        return rows[0] if rows else None
 
     @override
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
@@ -14428,7 +14442,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER perm._from == user_from
                     FILTER perm._to == kb_to
                     FILTER perm.type == "USER"
-                    RETURN { role: perm.role, priority: @role_priority[perm.role] || 0 }
+                    LET direct_role = perm.role IN @retired_roles ? "READER" : perm.role
+                    FILTER direct_role IN @kb_roles
+                    RETURN { role: direct_role, priority: @role_priority[direct_role] || 0 }
             )
 
             // Team-based: user -> teams via USER, team -> KB via TEAM
@@ -14476,13 +14492,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "user_id": user_id,
                     "kb_type": Connectors.KNOWLEDGE_BASE.value,
                     "role_priority": role_priority,
+                    "retired_roles": sorted(RETIRED_ROLES),
+                    "kb_roles": list(TEAM_GRANT_ROLES),
                     "@permissions_collection": CollectionNames.PERMISSION.value,
                 },
                 txn_id=transaction
             )
 
-            # A retired role reads as READER.
-            role = read_role(result[0]) if result and result[0] else None
+            role = read_role(result[0]) if result else None
+            role = role if role in TEAM_GRANT_ROLES else None
             if role:
                 self.logger.debug(f"✅ Found permission: user {user_id} has role '{role}' on KB {kb_id}")
             return role
@@ -14540,6 +14558,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER perm._from == @user_from
                     FILTER perm.type == "USER"
                     FILTER STARTS_WITH(perm._to, "apps/")
+                    FILTER (perm.role IN @retired_roles ? "READER" : perm.role) IN @kb_roles
                     LET kb = DOCUMENT(perm._to)
                     FILTER kb != null
                     FILTER kb.orgId == @org_id
@@ -14651,6 +14670,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER perm._from == @count_user_from
                     FILTER perm.type == "USER"
                     FILTER STARTS_WITH(perm._to, "apps/")
+                    FILTER (perm.role IN @retired_roles ? "READER" : perm.role) IN @kb_roles
                     LET kb = DOCUMENT(perm._to)
                     FILTER kb != null
                     FILTER kb.orgId == @count_org_id
@@ -14724,6 +14744,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER perm._from == @filters_user_from
                     FILTER perm.type == "USER"
                     FILTER STARTS_WITH(perm._to, "apps/")
+                    FILTER (perm.role IN @retired_roles ? "READER" : perm.role) IN @kb_roles
                     LET kb = DOCUMENT(perm._to)
                     FILTER kb != null
                     FILTER kb.orgId == @filters_org_id
@@ -14796,6 +14817,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "limit": limit,
                 "role_priority": role_priority_map,
                 "retired_roles": sorted(RETIRED_ROLES),
+                "kb_roles": list(TEAM_GRANT_ROLES),
                 "@permissions_collection": CollectionNames.PERMISSION.value,
                 "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
             }
@@ -14810,6 +14832,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "count_kb_type": Connectors.KNOWLEDGE_BASE.value,
                 "count_role_priority": role_priority_map,
                 "retired_roles": sorted(RETIRED_ROLES),
+                "kb_roles": list(TEAM_GRANT_ROLES),
                 "@count_permissions_collection": CollectionNames.PERMISSION.value,
             }
             if search:
@@ -14823,6 +14846,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "filters_kb_type": Connectors.KNOWLEDGE_BASE.value,
                 "filters_role_priority": role_priority_map,
                 "retired_roles": sorted(RETIRED_ROLES),
+                "kb_roles": list(TEAM_GRANT_ROLES),
                 "@filters_permissions_collection": CollectionNames.PERMISSION.value,
             }
 
