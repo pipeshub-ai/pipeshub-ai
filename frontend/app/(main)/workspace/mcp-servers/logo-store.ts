@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { create } from 'zustand';
-import { onSessionEnd } from '@/lib/api/session-cache';
+import { captureSession, onSessionEnd } from '@/lib/api/session-cache';
 import { McpServersApi } from './api';
 
 /**
@@ -23,8 +23,6 @@ let loading: Promise<void> | null = null;
 let failedAt = Number.NEGATIVE_INFINITY;
 // Logos saved or removed on this page while a read is on its way: the read's answer is older.
 let changedDuringRead: Map<string, string | null> | null = null;
-// Bumped on reset: a read still on its way from before must not touch the state after it.
-let readGeneration = 0;
 
 function withLogo(logos: Record<string, string>, instanceId: string, logo: string | null): Record<string, string> {
   const next = { ...logos };
@@ -39,8 +37,8 @@ export function ensureMcpLogosLoaded(): Promise<void> {
   if (Date.now() - failedAt < RETRY_AFTER_MS) return Promise.resolve();
   const changed = new Map<string, string | null>();
   changedDuringRead = changed;
-  const generation = readGeneration;
-  const isCurrent = () => generation === readGeneration;
+  // A read still on its way when the session ends must not touch the next session's state.
+  const isCurrent = captureSession();
   // Started inside the chain so a call that throws at once is a failed read too, not an error
   // thrown into the component that asked.
   loading = Promise.resolve()
@@ -78,7 +76,6 @@ export function setMcpServerLogo(instanceId: string, logo: string | null): void 
 
 /** Forget every logo, as if the page had just opened. */
 export function resetMcpLogos(): void {
-  readGeneration += 1;
   loaded = false;
   loading = null;
   changedDuringRead = null;

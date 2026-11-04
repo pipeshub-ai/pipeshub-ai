@@ -150,7 +150,7 @@ describe('MCP server logos', () => {
       const { getByTestId } = render(<Probe id="a" />);
       const oldLoad = ensureMcpLogosLoaded();
 
-      act(() => resetMcpLogos());
+      act(() => clearSessionCache());
       await act(async () => {
         old.answer({ logos: { a: OLD } });
         await oldLoad;
@@ -162,7 +162,7 @@ describe('MCP server logos', () => {
     it("leaves the next session's read in flight when an old read finishes", async () => {
       const old = pendingRead();
       const oldLoad = ensureMcpLogosLoaded();
-      resetMcpLogos();
+      clearSessionCache();
       const next = pendingRead();
       const nextLoad = ensureMcpLogosLoaded();
 
@@ -178,7 +178,7 @@ describe('MCP server logos', () => {
     it("does not hold back the next session's read when an old read fails", async () => {
       const old = pendingRead();
       const oldLoad = ensureMcpLogosLoaded();
-      resetMcpLogos();
+      clearSessionCache();
 
       old.fail(new Error('offline'));
       await oldLoad;
