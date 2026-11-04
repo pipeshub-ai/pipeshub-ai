@@ -421,9 +421,9 @@ class ZammadConnector(BaseConnector):
         # Cache for lookups
         self._state_map: Dict[int, str] = {}  # state_id -> state_name
         self._priority_map: Dict[int, str] = {}  # priority_id -> priority_name
-        self._user_id_to_data: Dict[int, Dict[str, Any]] = {}  # user_id -> {"email", "name", "role_ids"} (lightweight mapping)
+        self._user_id_to_data: dict[int, dict[str, Any]] = {}  # user_id -> {"email", "name", "role_ids"} (lightweight mapping)
         # What each synced user brings to ticket access (active, roles, own group rows).
-        self._user_access: Dict[int, UserAccess] = {}
+        self._user_access: dict[int, UserAccess] = {}
         # How the last _fetch_users read ended; run_sync reads it straight after.
         self._users_read = ReadOutcome.COMPLETE
         # Parts of the current sync that could not be read or written (see ZammadSyncIncompleteError).
@@ -706,8 +706,8 @@ class ZammadConnector(BaseConnector):
     # ==================== ENTITY FETCHING & SYNCING ====================
 
     async def _fetch_users(
-        self, roles: Optional[Dict[int, RoleAccess]] = None,
-    ) -> Tuple[List[AppUser], Dict[str, AppUser]]:
+        self, roles: Optional[dict[int, RoleAccess]] = None,
+    ) -> tuple[list[AppUser], dict[str, AppUser]]:
         """
         Fetch all users from Zammad with pagination.
 
@@ -820,7 +820,7 @@ class ZammadConnector(BaseConnector):
 
     async def _fetch_groups(
         self,
-        user_email_map: Dict[str, AppUser],
+        user_email_map: dict[str, AppUser],
         readers: GroupReaders,
     ) -> Tuple[List[Tuple[RecordGroup, List[Permission]]], List[Tuple[AppUserGroup, List[AppUser]]]]:
         """
@@ -918,7 +918,7 @@ class ZammadConnector(BaseConnector):
                     name=group_name,
                     description=group_data.get("note", "") or "",
                 )
-                members: List[AppUser] = []
+                members: list[AppUser] = []
                 for user_id in sorted(readers.readers(group_id, group_active=active)):
                     email = self._user_id_to_data.get(user_id, {}).get("email")
                     if email and email in user_email_map:
@@ -941,7 +941,7 @@ class ZammadConnector(BaseConnector):
         )
         return (record_groups, user_groups)
 
-    def _group_record_group(self, group_data: Dict[str, Any]) -> RecordGroup:
+    def _group_record_group(self, group_data: dict[str, Any]) -> RecordGroup:
         """The RecordGroup a Zammad group's tickets sit in."""
         group_id = group_data.get("id")
         created_at = self._parse_zammad_datetime(group_data.get("created_at", ""))
@@ -1004,7 +1004,7 @@ class ZammadConnector(BaseConnector):
         An inactive role is written with no members: Zammad grants nothing
         through it, so nobody keeps knowledge-base access through it.
         """
-        app_roles: List[Tuple[AppRole, List[AppUser]]] = []
+        app_roles: list[tuple[AppRole, list[AppUser]]] = []
         for role_data in roles_data:
             role_id = role_data.get("id")
             if not role_id:
@@ -1018,7 +1018,7 @@ class ZammadConnector(BaseConnector):
             updated_at = self._parse_zammad_datetime(role_data.get("updated_at", ""))
 
             # Get users assigned to this role by checking user_id_to_data mapping
-            role_users: List[AppUser] = []
+            role_users: list[AppUser] = []
             if active:
                 for user_data in self._user_id_to_data.values():
                     if role_id in user_data.get("role_ids", []):
@@ -1937,7 +1937,7 @@ class ZammadConnector(BaseConnector):
         return attachments
 
     @staticmethod
-    def _article_skip_reason(article: Dict[str, Any]) -> str | None:
+    def _article_skip_reason(article: dict[str, Any]) -> str | None:
         """Why an article is left out of the ticket (a system note, an auto reply, a bounce), or None.
 
         Any of its fields may be null: an article made through the API as an
@@ -2238,7 +2238,7 @@ class ZammadConnector(BaseConnector):
         return file_record
 
     @staticmethod
-    def _attachment_mime_type(preferences: Any, filename: str) -> str:
+    def _attachment_mime_type(preferences: object, filename: str) -> str:
         """An attachment's type: ``Content-Type`` (mail), ``Mime-Type`` (files added through the
         API or the agent UI, which carry no ``Content-Type``), else from the file name."""
         if isinstance(preferences, dict):
@@ -2249,10 +2249,10 @@ class ZammadConnector(BaseConnector):
         return mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
     @staticmethod
-    def _attachment_size(size: Any) -> int:
+    def _attachment_size(size: object) -> int:
         """Zammad sends an attachment's size as a string of digits."""
         try:
-            return max(int(size), 0)
+            return max(int(str(size)), 0)
         except (TypeError, ValueError):
             return 0
 
@@ -2399,7 +2399,7 @@ class ZammadConnector(BaseConnector):
 
         return related_records
 
-    def _linked_ticket_in_scope(self, assets: Dict[str, Any], ticket_id: Any) -> bool:
+    def _linked_ticket_in_scope(self, assets: dict[str, Any], ticket_id: object) -> bool:
         """Whether a linked ticket's group is synced; True when the links' assets do not say."""
         tickets = assets.get("Ticket") if isinstance(assets, dict) else None
         linked = tickets.get(str(ticket_id)) if isinstance(tickets, dict) else None
@@ -3761,9 +3761,9 @@ class ZammadConnector(BaseConnector):
         return blocks_container.model_dump_json(indent=2).encode('utf-8')
 
     @staticmethod
-    def _inline_image_sizes(attachments: List[Dict[str, Any]]) -> Dict[int, int]:
+    def _inline_image_sizes(attachments: list[dict[str, Any]]) -> dict[int, int]:
         """Attachment id -> size in bytes (0 when not stated) for the attachments an answer may inline."""
-        sizes: Dict[int, int] = {}
+        sizes: dict[int, int] = {}
         for attachment in attachments or []:
             if not isinstance(attachment, dict):
                 continue
@@ -3790,7 +3790,7 @@ class ZammadConnector(BaseConnector):
         )
 
     async def _convert_html_images_to_base64(
-        self, html_content: str, allowed_attachments: Optional[Dict[int, int]] = None,
+        self, html_content: str, allowed_attachments: Optional[dict[int, int]] = None,
     ) -> str:
         """
         Convert embedded images in HTML content to base64 data URIs.
