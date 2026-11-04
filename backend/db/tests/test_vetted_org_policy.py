@@ -119,6 +119,9 @@ def test_a_partition_in_another_schema_gets_the_policy_for_the_vetted_role_of_th
            "CREATE TABLE ku.xp_def PARTITION OF kt.xp DEFAULT; "
            "SELECT kernel.apply_rls('kt.xp', 'org', p_vetted_write => true); SELECT kernel.require_vetted_org_policy('kt.xp')")
     assert [r for r in planted(pdb, sql) if r[0].startswith("119")] == []
+    # the repair path: applying RLS again, now that the table requires the policy, goes through _secure_rel, which passes the root too
+    again = sql + "; SELECT kernel.apply_rls('kt.xp', 'org', p_vetted_write => true)"
+    assert [r for r in planted(pdb, again) if r[0].startswith("119")] == []
 
 
 def test_the_registry_refuses_a_flag_on_a_table_that_reads_unbound(pdb):
