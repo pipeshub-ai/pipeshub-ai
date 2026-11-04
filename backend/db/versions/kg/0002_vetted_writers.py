@@ -37,6 +37,11 @@ DECLARE
   t regclass;
   f oid;
 BEGIN
+  -- A function dropped by hand leaves its registry row and pins pointing at nothing; deleting around them would commit kg_0001 with rows the next upgrade's catalog check rejects.
+  IF EXISTS (SELECT 1 FROM kernel.function_registry r WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE oid = r.proc::oid))
+     OR EXISTS (SELECT 1 FROM kernel.vetted_write_pins w WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE oid = w.proc::oid)) THEN
+    RAISE EXCEPTION 'kg_0002 downgrade: kernel.function_registry or kernel.vetted_write_pins names a function that no longer exists; remove those rows first' USING ERRCODE = '55000';
+  END IF;
   SELECT coalesce(array_agg(to_regprocedure(s)::oid), '{}') INTO mine FROM jsonb_array_elements_text(current_setting('kg_0002.writers')::jsonb) s WHERE to_regprocedure(s) IS NOT NULL;
   SELECT coalesce(array_agg(DISTINCT rel), '{}') INTO rels FROM kernel.vetted_write_pins WHERE proc::oid = ANY(mine);
   DELETE FROM kernel.vetted_write_pins WHERE proc::oid = ANY(mine);

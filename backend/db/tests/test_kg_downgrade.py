@@ -80,3 +80,47 @@ def test_a_function_that_only_shares_a_writers_name_is_not_taken_away_with_the_w
         c.execute("SELECT kernel._sync_vetted_privs('kg.links'::regclass)")
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
+
+
+def _drop_one_writer_by_hand(c) -> str:
+    from pathlib import Path
+
+    from db.lib.vetted import load
+    sig = next(f.signature for f in load(Path(__file__).resolve().parents[1] / "versions" / "kg" / "vetted" / "manifest.yaml") if f.qualified == "kg.w_links_delete")
+    c.execute(f"DROP FUNCTION {sig}")
+    return sig
+
+
+def test_a_downgrade_refuses_when_a_dropped_writer_left_its_rows_behind(db):
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        _drop_one_writer_by_hand(c)
+        pins = c.execute("SELECT count(*) FROM kernel.vetted_write_pins").fetchone()[0]
+    r = run_migrate(url, "downgrade", "kg_0001", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode != 0 and "no longer exists" in r.stdout, r.stdout
+    with connect(cluster, name) as c:        # nothing was deleted or dropped
+        assert c.execute("SELECT count(*) FROM kernel.vetted_write_pins").fetchone()[0] == pins
+        assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname LIKE 'w\\_%'").fetchone()[0] == 15
+
+
+def test_a_downgrade_goes_through_when_a_dropped_writer_took_its_rows_with_it(db):
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        sig = _drop_one_writer_by_hand(c)
+        c.execute("DELETE FROM kernel.vetted_write_pins WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
+        c.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
+        assert sig
+        c.execute("SELECT kernel._sync_vetted_privs('kg.links'::regclass)")
+    r = run_migrate(url, "downgrade", "kg_0001", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+        assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname LIKE 'w\\_%'").fetchone()[0] == 0
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
