@@ -83,7 +83,7 @@ jobs:
       # The one allowed skip is the strict expected failure that reports matrix cells without a scenario, by its exact name.
       - name: Check the oracle run for skips
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 621 \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 623 \
             --allow test_coverage_gaps_are_reported
 
       - name: Run the viewer-scope service tests (no services)
@@ -169,7 +169,7 @@ jobs:
           python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-suite-junit.xml" --min-tests 609 \
             --allow "test_an_edge_from_a_removed_document_is_no_parent[neo4j]" \
             --allow "test_the_tree_labels_follow_the_edges[arango]"
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 128
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 132
 
       - name: Upload the regressions the generator filed
         if: failure()

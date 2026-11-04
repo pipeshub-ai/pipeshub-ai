@@ -404,3 +404,53 @@ async def test_the_summary_is_stamped_under_enforced_org_context_with_none_bound
     store = await _summary_store(vdb, loaded, write)
     await store.index_record_summary("rid", v, ORG, object())
     assert seen == [ORG]
+
+
+async def test_a_record_that_cannot_be_read_leaves_the_membership_alone_and_the_stamp_untrusted(monkeypatch) -> None:
+    """A virtual record shared by two records, one of which the graph does not return: the arrays that would come out are partial, so
+    neither they nor a stamp from them are written."""
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
+    vdb = InMemoryVectorDB()
+    with oc.for_org(ORG, job="scope-fields-test"):
+        loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
+        await sync_all(loaded, vdb)
+        v = next(iter(loaded.records))
+        pid = loaded.points[v][0]
+        await vdb.set_payload(COLL, {"connectorIds": ["conn-a", "conn-b"]}, await vdb.filter_collection(must={"virtualRecordId": v}))
+        keys = await loaded.graph.get_records_by_virtual_record_id(v)
+        real_get, real_keys = loaded.graph.get_document, loaded.graph.get_records_by_virtual_record_id
+
+        async def keys_with_ghost(vrid, *args, **kwargs) -> list[str]:
+            return [*await real_keys(vrid, *args, **kwargs), "ghost"]
+
+        async def get_without_ghost(key, collection, *args, **kwargs) -> dict | None:
+            return None if key == "ghost" else await real_get(key, collection, *args, **kwargs)
+
+        monkeypatch.setattr(loaded.graph, "get_records_by_virtual_record_id", keys_with_ghost)
+        monkeypatch.setattr(loaded.graph, "get_document", get_without_ghost)
+        await sync_vector_membership(vdb, loaded.locator, loaded.graph, v, log)
+    assert keys
+    point = (await vdb.retrieve_points(COLL, [pid]))[0].payload
+    assert point["connectorIds"] == ["conn-a", "conn-b"]  # not replaced by the partial set
+    assert ScopeFields.from_payload(point) == STALE_SCOPE  # never trusted
+
+
+async def test_a_failed_group_edge_read_raises_and_writes_no_membership(monkeypatch) -> None:
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
+    vdb = InMemoryVectorDB()
+    with oc.for_org(ORG, job="scope-fields-test"):
+        loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
+        await sync_all(loaded, vdb)
+        v = next(iter(loaded.records))
+        pid = loaded.points[v][0]
+        before = dict((await vdb.retrieve_points(COLL, [pid]))[0].payload)
+
+        async def edges(node_id, collection, *args, raise_on_error=False, **kwargs) -> list[dict]:  # what a provider does on a failed read
+            if raise_on_error:
+                raise RuntimeError("graph timeout")
+            return []
+
+        monkeypatch.setattr(loaded.graph, "get_edges_from_node", edges)
+        with pytest.raises(RuntimeError):
+            await sync_vector_membership(vdb, loaded.locator, loaded.graph, v, log)
+    assert (await vdb.retrieve_points(COLL, [pid]))[0].payload == before

@@ -137,7 +137,7 @@ class TestResolveVectorMembership:
             edges=[],
         )
 
-        async def _edges(node_id, collection):
+        async def _edges(node_id, collection, **kwargs):
             if node_id.endswith("/r1"):
                 return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/space-a"}]
             return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/space-b"}]
@@ -497,7 +497,7 @@ class TestSyncAndRewriteMembership:
             edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
         )
         # thread-1 belongs to channel-1, which has no parent of its own
-        async def edges_from(node_id, _collection):
+        async def edges_from(node_id, _collection, **kwargs):
             if node_id.endswith("/thread-1"):
                 return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/channel-1"}]
             if node_id.endswith("/channel-1"):
@@ -530,7 +530,7 @@ class TestSyncAndRewriteMembership:
             edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
         )
 
-        async def edges_from(node_id, _collection):
+        async def edges_from(node_id, _collection, **kwargs):
             if node_id.endswith("/thread-1"):
                 raise RuntimeError("graph unavailable")
             return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
