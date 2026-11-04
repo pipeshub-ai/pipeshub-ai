@@ -312,6 +312,20 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(registered).to.deep.equal([])
     })
 
+    it('asks again for another token of the same user, whose knowledge limit may differ', async () => {
+      fetchStub.onFirstCall().resolves(repos([]))
+      fetchStub.onSecondCall().resolves(repos([{ repo: 'acme/shop' }]))
+      await serve('cg-two-tokens', list)
+      expect(registered).to.deep.equal([])
+      const req = createMockRequest({
+        headers: { authorization: 'Bearer other' },
+        user: { userId: 'cg-two-tokens', orgId: 'org-1' },
+        body: list,
+      })
+      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+      expect(registered).to.deep.equal([...CODE_GRAPH_TOOL_NAMES])
+    })
+
     it('leaves them out for an OAuth token without code:read, without asking', async () => {
       await serve('cg-no-scope', list, { isOAuth: true, oauthScopes: ['semantic:read', 'connector:read'] })
       expect(registered).to.deep.equal([])
