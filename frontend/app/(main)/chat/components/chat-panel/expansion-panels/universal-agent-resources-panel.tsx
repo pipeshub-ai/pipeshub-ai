@@ -1126,9 +1126,11 @@ export function UniversalAgentResourcesPanel({
             footerLinkAriaLabel: t('chat.agentResources.browseWorkspaceMcpAria', {
               defaultValue: 'Open MCP servers to add or manage connections',
             }),
-            renderGroupIcon: (group) => <McpServerIcon typeId={group.typeId} name={group.label} size={18} />,
+            renderGroupIcon: (group) => (
+              <McpServerIcon instanceId={group.instanceId} typeId={group.typeId} name={group.label} size={18} />
+            ),
             renderToolIcon: (_fn, group) => (
-              <McpServerIcon typeId={group.typeId} name={group.label} size={16} color="var(--gray-9)" />
+              <McpServerIcon instanceId={group.instanceId} typeId={group.typeId} name={group.label} size={16} color="var(--gray-9)" />
             ),
             extraRows:
               filteredMcpToConnect.length > 0 ? (
