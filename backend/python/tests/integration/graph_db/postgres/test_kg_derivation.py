@@ -158,3 +158,16 @@ async def test_a_node_that_is_gone_loses_its_row(pg_db) -> None:
     await project(p, org, {("records", "f2")})
     got = await held(p, org)
     assert "f2" not in got["records"] and set(got["records"]) == set(EXPECTED["records"]) - {"f2"}
+
+
+async def test_a_hierarchy_edge_to_another_collection_does_not_count_as_a_child_of_a_node_of_the_same_id(pg_db) -> None:
+    """The child is the node of the collection the edge names: an edge to ``files/x`` is not a child because ``records/x`` exists."""
+    p, org = prov(pg_db), new_org()
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("lone", "real", "x", "y")], "records")
+        await p.batch_create_edges([edge("lone", "records", "x", "files", relationshipType="PARENT_CHILD"),
+                                    edge("real", "records", "y", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        keys = {("records", "lone"), ("records", "real")}
+        got = await p._q(lambda tx: reader.load_has_children(tx, org, keys), None)
+    assert got == {("records", "real")}
