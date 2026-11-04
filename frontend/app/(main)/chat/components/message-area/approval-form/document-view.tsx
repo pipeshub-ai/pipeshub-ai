@@ -24,7 +24,7 @@ export function DocumentView({ fields, values }: { fields: FieldSpec[]; values: 
     return f.control === 'switch' && typeof value === 'boolean' ? t(value ? 'common.yes' : 'common.no') : approvalValueText(f.name, value);
   };
   const pair = (f: FieldSpec) => t('chat.toolApproval.pill', { label: f.label, value: text(f) });
-  const meta = [...layout.pills, ...layout.lists].filter(set);
+  const meta = [...layout.fields, ...layout.pills, ...layout.lists].filter(set);
   const body = layout.body.filter(set).map((f) => ({ field: f, ...clipValue(text(f), full) }));
   const headline = layout.headline && set(layout.headline) ? clipValue(text(layout.headline), full) : null;
   const details = layout.more.filter(set);

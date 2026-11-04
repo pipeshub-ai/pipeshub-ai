@@ -2,7 +2,7 @@
 
 import React, { useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Button, DropdownMenu, Flex, Popover, Text } from '@radix-ui/themes';
+import { Box, Button, DropdownMenu, Flex, Grid, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { documentLayout } from './document-layout';
 import { Field, SchemaForm } from './schema-form';
@@ -18,8 +18,8 @@ interface DocumentFormProps {
 
 const blank = (v: unknown) => v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
 
-/** The call's arguments laid out as the thing it makes: recipients, a title, settings as pills,
- * other lists as chip rows, the text, and anything else folded under "More fields". */
+/** The call's arguments laid out as the thing it makes: recipients, a title, short fields side by
+ * side, choices as pills, other lists as chip rows, the text, and anything else folded under "More fields". */
 export function DocumentForm({ fields, values, errors, onChange }: DocumentFormProps) {
   const { t } = useTranslation();
   const base = useId();
@@ -42,7 +42,13 @@ export function DocumentForm({ fields, values, errors, onChange }: DocumentFormP
   return (
     <Flex direction="column" gap="3">
       {layout.recipients.map((field) => <Field key={field.name} {...props(field)} />)}
-      {layout.headline && <Headline {...props(layout.headline)} />}
+      {layout.headline && <Field {...props(layout.headline)} />}
+      {layout.fields.length > 0 && (
+        // As many columns as fit the card at 192px each, so a narrow card stacks them.
+        <Grid columns="repeat(auto-fill, minmax(calc(var(--space-9) * 3), 1fr))" gap="3">
+          {layout.fields.map((field) => <Field key={field.name} {...props(field)} />)}
+        </Grid>
+      )}
       {layout.pills.length > 0 && (
         <Flex direction="column" gap="1">
           <Flex wrap="wrap" gap="2">
@@ -76,41 +82,6 @@ export function DocumentForm({ fields, values, errors, onChange }: DocumentFormP
 
 type RegionProps = React.ComponentProps<typeof Field>;
 
-function Headline({ id, field, value, error, onChange }: RegionProps) {
-  const errorId = `${id}-error`;
-  return (
-    <Flex direction="column" gap="1">
-      <Flex align="center" gap="2">
-        <input
-          id={id}
-          className="tool-approval-headline"
-          type="text"
-          aria-label={field.label}
-          aria-invalid={error ? true : undefined}
-          aria-describedby={error ? errorId : undefined}
-          aria-required={field.required || undefined}
-          placeholder={field.label}
-          value={value === undefined || value === null ? '' : String(value)}
-          onChange={(e) => onChange(e.target.value)}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            border: 'none',
-            backgroundColor: 'transparent',
-            // Room above and below so descenders are never clipped.
-            padding: 'var(--space-1) 0',
-            fontFamily: 'var(--default-font-family)',
-            fontSize: 'var(--font-size-3)',
-            fontWeight: 'var(--font-weight-medium)',
-            lineHeight: 'var(--line-height-3)',
-            color: 'var(--gray-12)',
-          }}
-        />
-      </Flex>
-      {error && <Text id={errorId} size="1" style={{ color: 'var(--red-11)' }}>{error}</Text>}
-    </Flex>
-  );
-}
 
 function pillValue(field: FieldSpec, value: unknown, t: (key: string) => string): string {
   if (field.control === 'switch') return t(value === true ? 'common.yes' : 'common.no');
@@ -166,40 +137,28 @@ function Pill({ id, field, value, error, onChange }: RegionProps) {
     return <PillTrigger {...trigger} face={face(false)} aria-pressed={value === true} onClick={() => onChange(value !== true)} />;
   }
 
-  if (field.control === 'select') {
-    const options = field.options ?? [];
-    const index = options.findIndex((o) => o.value === value);
-    return (
-      <DropdownMenu.Root>
-        <DropdownMenu.Trigger>
-          <PillTrigger {...trigger} face={face(true)} />
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Content size="1">
-          {/* Items are keyed by position so a numeric option is written back as the number it was. */}
-          <DropdownMenu.RadioGroup value={index >= 0 ? String(index) : ''} onValueChange={(i) => onChange(options[Number(i)]?.value)}>
-            {options.map((option, i) => (
-              <DropdownMenu.RadioItem key={i} value={String(i)}>{option.label}</DropdownMenu.RadioItem>
-            ))}
-          </DropdownMenu.RadioGroup>
-          {!field.required && !empty && (
-            <>
-              <DropdownMenu.Separator />
-              <DropdownMenu.Item onSelect={() => onChange(undefined)}>{t('common.clear')}</DropdownMenu.Item>
-            </>
-          )}
-        </DropdownMenu.Content>
-      </DropdownMenu.Root>
-    );
-  }
-
+  // A list to pick from.
+  const options = field.options ?? [];
+  const index = options.findIndex((o) => o.value === value);
   return (
-    <Popover.Root>
-      <Popover.Trigger>
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger>
         <PillTrigger {...trigger} face={face(true)} />
-      </Popover.Trigger>
-      <Popover.Content size="1" minWidth="calc(var(--space-9) * 4)" maxWidth="calc(var(--space-9) * 5)">
-        <Field id={id} field={field} value={value} error={error} onChange={onChange} />
-      </Popover.Content>
-    </Popover.Root>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content size="1">
+        {/* Items are keyed by position so a numeric option is written back as the number it was. */}
+        <DropdownMenu.RadioGroup value={index >= 0 ? String(index) : ''} onValueChange={(i) => onChange(options[Number(i)]?.value)}>
+          {options.map((option, i) => (
+            <DropdownMenu.RadioItem key={i} value={String(i)}>{option.label}</DropdownMenu.RadioItem>
+          ))}
+        </DropdownMenu.RadioGroup>
+        {!field.required && !empty && (
+          <>
+            <DropdownMenu.Separator />
+            <DropdownMenu.Item onSelect={() => onChange(undefined)}>{t('common.clear')}</DropdownMenu.Item>
+          </>
+        )}
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
   );
 }

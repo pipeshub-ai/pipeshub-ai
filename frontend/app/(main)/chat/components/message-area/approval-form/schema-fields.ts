@@ -12,17 +12,19 @@ export type FieldSpec = {
   schema: JsonSchema;
 };
 
-const LONG_TEXT_WORD = new Set(['body', 'description', 'content', 'message', 'text', 'comment', 'markdown', 'html']);
+const LONG_TEXT_WORD = new Set(['body', 'description', 'content', 'message', 'text', 'comment', 'markdown', 'html', 'agenda', 'commentary', 'note', 'notes', 'reason', 'justification', 'signature', 'sql']);
+// Whole names only: `product_code` and `assignee_query` are short.
+const LONG_TEXT_NAME = new Set(['code', 'query', 'prompt']);
 const LONG_TEXT_FORMAT = new Set(['markdown', 'html', 'textarea']);
 
 /** The name's last word, so `email_body` and `issueDescription` match but `message_id` and `contentType` don't. */
 export const lastWord = (name: string) => (name.split(/[_\-\s]+|(?<=[a-z0-9])(?=[A-Z])/).pop() ?? '').toLowerCase();
 
 function longText(name: string, schema: JsonSchema): boolean {
-  return LONG_TEXT_FORMAT.has(schema.format ?? '') || (schema.maxLength ?? 0) > 200 || LONG_TEXT_WORD.has(lastWord(name));
+  return LONG_TEXT_FORMAT.has(schema.format ?? '') || (schema.maxLength ?? 0) > 200 || LONG_TEXT_WORD.has(lastWord(name)) || LONG_TEXT_NAME.has(name.toLowerCase());
 }
 
-/** A string field that reads as a body of text: by its name, a `maxLength` over 200, or a markdown/html/textarea format. */
+/** A string field that reads as a body of text: by its name (`mail_body`, `agenda`, `query`), a `maxLength` over 200, or a markdown/html/textarea format. */
 export const isLongText = (field: FieldSpec): boolean => field.control === 'textarea';
 
 /** `anyOf`/`oneOf` of one schema plus null is that schema, nullable; any other union stays as is. */

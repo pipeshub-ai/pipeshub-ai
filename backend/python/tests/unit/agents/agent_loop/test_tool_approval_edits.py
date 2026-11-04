@@ -281,8 +281,16 @@ async def test_model_is_told_which_fields_changed() -> None:
     approval_id = await _ask(store, mcp)
     answered = await _edited(store, mcp, approval_id, {"title": "Signin is broken", "labels": ["auth"]})
     text = _result_of(answered.sent[0]).content
-    assert text.startswith("The user changed `labels`, `title` before approving.")
+    assert text.startswith("The user changed `labels`, `title` before approving, and the call ran with their values: "
+                           '`labels` = ["auth"]; `title` = "Signin is broken".')
+    assert "overrides anything said earlier: don't run the call again" in text
     assert text.endswith("created Signin is broken")
+
+
+def test_change_note_clips_long_values_and_names_a_cleared_one() -> None:
+    note = approvals._changed_note({"body": "x", "cc": ["a@example.com"]}, {"body": "y" * 500})
+    assert "`body` = \"" + "y" * 199 + "…" in note
+    assert "`cc` = (cleared)" in note
 
 
 async def test_history_call_rewritten_to_edited_arguments() -> None:
@@ -403,7 +411,7 @@ async def test_second_answer_after_edited_allow_shows_first_outcome() -> None:
     again = await _edited(store, mcp, approval_id, {"title": 5})
     assert len(mcp.calls) == 1
     assert again.events.of(EventType.TOOL_BLOCKED, "c1") == []
-    assert _result_of(again.sent[0]).content.startswith("The user changed `title` before approving.")
+    assert _result_of(again.sent[0]).content.startswith("The user changed `title` before approving, and the call ran with their values: `title` = \"Signin is broken\".")
     (started,) = again.events.of(EventType.TOOL_CALL_START, "c1")
     assert (started["edited"], started["args"]) == (True, {"title": "Signin is broken"})
 
