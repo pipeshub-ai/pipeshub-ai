@@ -129,11 +129,35 @@ async def test_a_role_given_through_a_group_counts_and_a_connector_s_own_delete_
     await p.batch_upsert_nodes([rec(p.org, "g1"), rec(p.org, "g2")], "records")
     await p.batch_upsert_nodes([{"_key": "k-m", "userId": "ext-m", "orgId": p.org}], "users")
     await p.batch_upsert_nodes([{"_key": "team", "orgId": p.org}], "groups")
-    await p.batch_create_edges([{"from_id": "k-m", "from_collection": "users", "to_id": "team", "to_collection": "groups", "entityType": "GROUP"}], "belongsTo")
+    await p.batch_create_edges([{"from_id": "k-m", "from_collection": "users", "to_id": "team", "to_collection": "groups", "type": "USER", "role": "READER"}], "permission")
     await p.batch_create_edges([{"from_id": "team", "from_collection": "groups", "to_id": "g1", "to_collection": "records", "type": "GROUP", "role": "OWNER"}], "permission")
     assert (await p.delete_record("g1", "ext-m", p.org))["success"]
     assert (await p.delete_record("g2", "ext-m", p.org))["code"] == 403
     assert (await p.delete_record("g2", "ext-m", p.org, soft_delete=True, delete_source=DeleteSource.CONNECTOR))["success"]
+
+
+async def test_a_belongs_to_edge_to_a_group_is_not_membership_for_a_deleting_role(pg_db) -> None:
+    """Membership is what the access check reads: a USER permission edge from the user to the group, not a belongsTo edge."""
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "g1")], "records")
+    await p.batch_upsert_nodes([{"_key": "k-m", "userId": "ext-m", "orgId": p.org}], "users")
+    await p.batch_upsert_nodes([{"_key": "team", "orgId": p.org}], "groups")
+    await p.batch_create_edges([{"from_id": "k-m", "from_collection": "users", "to_id": "team", "to_collection": "groups", "entityType": "GROUP"}], "belongsTo")
+    await p.batch_create_edges([{"from_id": "team", "from_collection": "groups", "to_id": "g1", "to_collection": "records", "type": "GROUP", "role": "OWNER"}], "permission")
+    assert (await p.delete_record("g1", "ext-m", p.org))["code"] == 403
+
+
+async def test_a_failed_block_delete_leaves_the_record_in_place(pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "r1")], "records")
+    await p.batch_upsert_nodes([{"_key": "b1", "orgId": p.org, "recordId": "r1"}], "blocks")
+    await grant(p, "r1", "OWNER")
+
+    async def boom(*_a: object, **_k: object) -> int:
+        raise RuntimeError("block delete failed")
+    monkeypatch.setattr(StandInProvider, "delete_blocks_for_records", boom)
+    assert (await p.delete_record("r1", "ext-u", p.org))["success"] is False
+    assert await p.get_existing_record_keys(["r1"]) == {"r1"} and await p.get_document("b1", "blocks") is not None
 
 
 async def test_delete_by_external_id_hard_and_soft_and_a_missing_one_is_none(pg_db) -> None:

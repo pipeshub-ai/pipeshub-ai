@@ -80,7 +80,7 @@ class DeleteMixin(PgBase):
         return ids, payloads
 
     async def _refuse_without_delete_role(self, record_id: str, record: dict, user_id: str, transaction: str | None) -> dict | None:
-        """A refusal unless the user holds a deleting role on the record (granted to them or to a group of theirs); a role that cannot be read refuses."""
+        """A refusal unless the user holds a deleting role on the record (granted to them, or to a group, role or team they hold a USER permission on, as the access check reads membership); a role that cannot be read refuses."""
         user = await self.get_user_by_user_id(user_id)
         if not user:
             return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
@@ -88,9 +88,9 @@ class DeleteMixin(PgBase):
         rows = await self._drows("""/* pipeshub:graph.delete_record_roles */ SELECT p.doc->>'role' AS role FROM graph.edges p
             WHERE p.org_id = $1 AND p.coll = 'permission' AND p.to_coll = 'records' AND p.to_id = $2
               AND ((p.from_coll = 'users' AND p.from_id = $3 AND p.doc->>'type' = 'USER')
-                OR (p.doc->>'type' IN ('GROUP', 'ROLE') AND p.from_coll = 'groups' AND EXISTS (SELECT 1 FROM graph.edges b WHERE b.org_id = $1
-                    AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = $3 AND b.to_coll = 'groups' AND b.to_id = p.from_id
-                    AND b.doc->>'entityType' = 'GROUP')))""", current_org_id(), record_id, user_key, transaction=transaction)
+                OR (p.from_coll IN ('groups', 'roles', 'teams') AND EXISTS (SELECT 1 FROM graph.edges b WHERE b.org_id = $1
+                    AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $3 AND b.to_coll = p.from_coll AND b.to_id = p.from_id
+                    AND b.doc->>'type' = 'USER')))""", current_org_id(), record_id, user_key, transaction=transaction)
         allowed = _DELETE_ROLES.get(record.get("connectorName", ""), _DEFAULT_DELETE_ROLES)
         if not any(r["role"] in allowed for r in rows):
             return {"success": False, "code": 403, "reason": "User lacks permission to delete this record"}
@@ -249,8 +249,17 @@ class DeleteMixin(PgBase):
                 self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
                 event_data = None
 
-            await self._delete_records_with_their_types([*attachment_ids, record_id], transaction)
-            await self.delete_blocks_for_records([*attachment_ids, record_id], transaction=transaction)      # joined by field, not by an edge, so the sweep misses them
+            # The record and its blocks (joined by field, not by an edge, so the sweep misses them) go together or not at all.
+            txn = transaction or await self.begin_transaction([], [])
+            try:
+                await self._delete_records_with_their_types([*attachment_ids, record_id], txn)
+                await self.delete_blocks_for_records([*attachment_ids, record_id], transaction=txn)
+            except BaseException:
+                if txn != transaction:
+                    await self.rollback_transaction(txn)
+                raise
+            if txn != transaction:
+                await self.commit_transaction(txn)
             # Their children are left without a parent: the connector's scopes no longer describe its tree.
             if record.get("connectorId"):
                 try:
