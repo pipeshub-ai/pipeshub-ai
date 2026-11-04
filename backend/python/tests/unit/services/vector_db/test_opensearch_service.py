@@ -24,9 +24,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.vector_db.errors import OrgRequired
+
 pytest.importorskip("opensearchpy", reason="opensearch-py not installed")
 
-from app.services.vector_db.opensearch.opensearch import OpenSearchService
+from app.services.vector_db.opensearch.opensearch import _MERGE_IF_ORG_SCRIPT, OpenSearchService
 from app.services.vector_db.opensearch.config import OpenSearchConfig
 from app.services.vector_db.opensearch.utils import OpenSearchUtils
 from app.services.vector_db.models import (
@@ -825,6 +827,7 @@ class TestDeletePoints:
         client.indices.refresh = AsyncMock()
         connected_service._unrefreshed = {"my-idx": {"vr-9": time.monotonic()}}
         flt = FilterExpression(must=[
+            GenericFieldCondition(key="metadata.orgId", value="org1"),
             GenericFieldCondition(key="metadata.connectorIds", value="c1"),
             GenericFieldCondition(key="metadata.virtualRecordId", values_count_lte=1),
         ])
@@ -1165,7 +1168,7 @@ class TestSetPayload:
     @pytest.mark.asyncio
     async def test_merges_top_level_membership_fields(self, connected_service):
         filter_expr = FilterExpression(
-            must=[GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+            must=[GenericFieldCondition(key="metadata.orgId", value="o1"), GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         await connected_service.set_payload(
             "my-idx",
@@ -1375,7 +1378,7 @@ class TestOverwritePayloadPainlessScript:
         from app.services.vector_db.models import FilterExpression, FieldCondition
 
         filter_expr = FilterExpression(
-            must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         await svc.overwrite_payload("records", {"metadata.status": "archived"}, filter_expr)
 
@@ -1397,7 +1400,7 @@ class TestOverwritePayloadPainlessScript:
         from app.services.vector_db.models import FilterExpression, FieldCondition
 
         filter_expr = FilterExpression(
-            must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         await svc.overwrite_payload("records", {"page_content": "new"}, filter_expr)
 
@@ -1424,7 +1427,7 @@ class TestOpenSearchDeletePoints:
         svc.client.indices.refresh = AsyncMock()
 
         filt = FilterExpression(
-            must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         await svc.delete_points("records", filt)
 
@@ -1859,15 +1862,19 @@ class TestUpdatePayloadByIds:
         bulk = AsyncMock(return_value=(2, []))
         with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=bulk):
             await connected_service.update_payload_by_ids(
-                "entities", ["p1", "p2"], {"connectorIds": ["c1"], "metadata.level": "1"},
+                "entities", ["p1", "p2"], {"connectorIds": ["c1"], "metadata.level": "1"}, org_id="o1",
             )
         actions = bulk.await_args.args[1]
-        assert actions == [
-            {"_op_type": "update", "_index": "entities", "_id": "p1",
-             "doc": {"connectorIds": ["c1"], "metadata": {"level": "1"}}, "retry_on_conflict": 3},
-            {"_op_type": "update", "_index": "entities", "_id": "p2",
-             "doc": {"connectorIds": ["c1"], "metadata": {"level": "1"}}, "retry_on_conflict": 3},
+        assert [(a["_op_type"], a["_index"], a["_id"], a["retry_on_conflict"]) for a in actions] == [
+            ("update", "entities", "p1", 3), ("update", "entities", "p2", 3),
         ]
+        # The org is checked on the document by the script itself, with no extra read.
+        for action in actions:
+            assert action["script"]["params"] == {
+                "org": "o1", "doc": {"connectorIds": ["c1"], "metadata": {"level": "1"}},
+            }
+            assert action["script"]["source"] == _MERGE_IF_ORG_SCRIPT
+        connected_service.client.mget.assert_not_called()
         assert bulk.await_args.kwargs["refresh"] is False
 
     @pytest.mark.asyncio
@@ -1875,7 +1882,7 @@ class TestUpdatePayloadByIds:
         missing = {"update": {"_id": "gone", "status": 404, "error": {"type": "document_missing_exception"}}}
         bulk = AsyncMock(return_value=(1, [missing]))
         with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=bulk):
-            await connected_service.update_payload_by_ids("entities", ["p1", "gone"], {"connectorIds": ["c1"]})
+            await connected_service.update_payload_by_ids("entities", ["p1", "gone"], {"connectorIds": ["c1"]}, org_id="o1")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", [409, 429, 400])
@@ -1886,13 +1893,19 @@ class TestUpdatePayloadByIds:
         bulk = AsyncMock(return_value=(1, [failed]))
         with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=bulk):
             with pytest.raises(RuntimeError, match="1 of 2 point"):
-                await connected_service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1"]})
+                await connected_service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1"]}, org_id="o1")
 
     @pytest.mark.asyncio
     async def test_no_ids_makes_no_call(self, connected_service):
         with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=AsyncMock()) as bulk:
-            await connected_service.update_payload_by_ids("entities", [], {"x": 1})
+            await connected_service.update_payload_by_ids("entities", [], {"x": 1}, org_id="o1")
         bulk.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org", [None, "", "  "])
+    async def test_a_missing_org_raises(self, connected_service, org) -> None:
+        with pytest.raises(OrgRequired):
+            await connected_service.update_payload_by_ids("entities", ["p1"], {"x": 1}, org_id=org)
 
 
 class TestRetrievePoints:
@@ -1988,3 +2001,49 @@ class TestFirstClientCheck:
         assert isinstance(results[0], ConnectionError)
         assert results[1] is good
         bad.close.assert_awaited_once()
+
+
+class TestDeletesAndUpdatesNeedAnOrg:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["delete_points", "set_payload", "overwrite_payload"])
+    async def test_a_filter_without_an_org_raises_before_any_call(self, connected_service, method) -> None:
+        from app.services.vector_db.models import FieldCondition, FilterExpression
+
+        no_org = FilterExpression(must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")])
+        blank = FilterExpression(must=[
+            FieldCondition(key="metadata.orgId", value=" "), FieldCondition(key="metadata.virtualRecordId", value="vr-1"),
+        ])
+        for filt in (no_org, blank):
+            call = (
+                connected_service.delete_points("col", filt) if method == "delete_points"
+                else getattr(connected_service, method)("col", {"x": 1}, filt)
+            )
+            with pytest.raises(OrgRequired):
+                await call
+
+
+class TestPayloadKeepsOrg:
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [
+        {"metadata": {"orgId": "o2"}}, {"metadata.orgId": "o2"}, {"metadata_orgId": "o2"},
+    ])
+    async def test_a_payload_that_names_an_org_is_refused(self, connected_service, payload) -> None:
+        """A merge must not move points to another org, in any spelling of the field."""
+        from app.services.vector_db.errors import OrgMismatch
+        from app.services.vector_db.models import FieldCondition, FilterExpression
+
+        flt = FilterExpression(must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")])
+        with pytest.raises(OrgMismatch):
+            await connected_service.set_payload("col", payload, flt)
+        with pytest.raises(OrgMismatch):
+            await connected_service.update_payload_by_ids("col", ["p1"], payload, org_id="o1")
+        with pytest.raises(OrgMismatch):                      # an overwrite may carry the org only if it is the same one
+            await connected_service.overwrite_payload("col", payload, flt)
+
+    @pytest.mark.asyncio
+    async def test_an_overwrite_that_keeps_the_org_is_allowed(self, connected_service) -> None:
+        from app.services.vector_db.models import FieldCondition, FilterExpression
+
+        flt = FilterExpression(must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")])
+        await connected_service.overwrite_payload("col", {"page_content": "t", "metadata": {"orgId": "o1", "virtualRecordId": "vr-1"}}, flt)

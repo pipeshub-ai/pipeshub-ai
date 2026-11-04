@@ -8,6 +8,9 @@ import app.modules.indexing.run as run_mod
 from app.modules.indexing.run import ScanResult
 
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _scan_scope():
     from app.services.vector_db.strategy import DeleteAction, DeleteScope
 
@@ -547,7 +550,7 @@ class TestPurgeConnectorByMembership:
             c.kwargs["filter"] for c in pipeline.vector_db_service.delete_points.await_args_list
         ]
         assert any(
-            f.get("must") == {"connectorIds": "conn-1"}
+            f.get("must") == {"orgId": "org-1", "connectorIds": "conn-1"}
             and f.get("max_values") == {"connectorIds": 1}
             for f in delete_filters
         ), delete_filters

@@ -21,9 +21,12 @@ from app.services.vector_db.membership import (
     sync_vector_membership,
     vector_point_payload,
 )
+from app.services.vector_db.models import ScrollResult
 from tests.support.vector_db import (
     make_collection_registry as _make_collection_registry,
 )
+
+pytestmark = pytest.mark.usefixtures("bound_org")
 
 
 def _loc(names=("records",)) -> StaticCollectionLocator:
@@ -548,6 +551,30 @@ class TestSyncAndRewriteMembership:
         assert payload[RECORD_GROUP_IDS_FIELD] == ["thread-1"]
 
     @pytest.mark.asyncio
+    async def test_a_provider_that_answers_a_failed_walk_read_with_empty_does_not_publish_a_root(self) -> None:
+        """The default providers turn a read error into []: the walk must ask to be told, or the group it started from reads as the root."""
+        gp = _graph(
+            keys=["rec-1"],
+            records={"rec-1": {"connectorId": "c1", "recordGroupId": "thread-1", "connectorName": "SLACK"}},
+            edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
+        )
+
+        async def edges_from(node_id, _collection, *, raise_on_error=False, **kwargs) -> list[dict]:
+            if node_id.endswith("/thread-1"):  # the walk's first hop
+                if raise_on_error:
+                    raise RuntimeError("graph unavailable")
+                return []  # what the providers do otherwise
+            return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
+
+        gp.get_edges_from_node = AsyncMock(side_effect=edges_from)
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+
+        assert ROOT_RECORD_GROUP_IDS_FIELD not in vdb.set_payload.await_args.args[1]  # not "thread-1 is its own root"
+
+    @pytest.mark.asyncio
     async def test_sync_does_not_walk_edges_for_other_connectors(self):
         """The walk is one graph call per group; only root-scoped connectors
         can use the result, so everyone else must not pay for it."""
@@ -597,6 +624,7 @@ class TestSyncAndRewriteMembership:
         gp = _graph(keys=[])
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
 
         result = await rewrite_or_delete_virtual_record(
             vdb, _loc(), gp, "vr-1", MagicMock()
@@ -1176,6 +1204,7 @@ class TestDeleteConfirmation:
         gp.delete_nodes = AsyncMock(side_effect=lambda **k: order.append("mapping"))
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
         vdb.delete_points = AsyncMock(side_effect=lambda **k: order.append("points"))
 
         original = m.EMPTY_CONFIRM_DELAY_SECONDS
