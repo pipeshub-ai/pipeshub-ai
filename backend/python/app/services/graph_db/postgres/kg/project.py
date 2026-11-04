@@ -156,7 +156,8 @@ async def project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | Non
     """Make kg agree with the graph for ``focus``. ``lock_for``: connector ids to lock besides those of the focus ('' = org-wide). The lock comes first and everything kg is
     compared with is read after it. What a change reaches in its neighbours (:func:`expand`, ``parents_of``) is only known once it is read under the lock: when it reaches a
     connector the unit holds no lock for (a hierarchy parent or child of another connector, or a node that spans the organisation), the unit rolls back to its savepoint, which
-    releases its locks, and starts again with the larger set taken in one ascending pass, so no unit waits for a lock below one it holds."""
+    releases its locks, and starts again with the larger set taken in one ascending pass, so no unit waits for a lock below one it holds. After ``MAX_ROUNDS`` it raises ``RuntimeError`` with nothing written: a caller must treat that as "retry later" (leave the work
+    queued), never as success, and never swallow it."""
     extra: set[str] = set()
     wide = False
     for _ in range(MAX_ROUNDS):
