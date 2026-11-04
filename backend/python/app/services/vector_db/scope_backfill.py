@@ -103,7 +103,7 @@ class AppDocCheckpoints:
         self._graph = graph_provider
 
     async def load(self, app_id: str) -> Progress | None:
-        doc = await self._graph.get_document(app_id, CollectionNames.APPS.value)
+        doc = await self._graph.get_document(app_id, CollectionNames.APPS.value, raise_on_error=True)  # a failed read is not "no checkpoint"
         if not doc or doc.get(_KEYS["state"]) is None:
             return None
         return Progress(str(doc[_KEYS["state"]]), doc.get(_KEYS["after"]), int(doc.get(_KEYS["version"]) or 0),
