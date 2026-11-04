@@ -691,13 +691,25 @@ export function OAuthAuthorizeView() {
                     background: 'var(--gray-2)',
                   }}
                 >
-                  <Flex align="center" gap="2">
-                    <Checkbox
-                      aria-label={category}
-                      checked={groupChecked}
-                      onCheckedChange={(c) => toggleScopes(items, c === true)}
-                      disabled={submitting}
-                    />
+                  {/* Below desktop the checkbox's 44px tap area already spaces it from the name. */}
+                  <Flex align="center" gap={isBelowDesktop ? '0' : '2'}>
+                    <Text
+                      as="label"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'flex-start',
+                        cursor: 'pointer',
+                        ...touchTarget(isBelowDesktop),
+                      }}
+                    >
+                      <Checkbox
+                        aria-label={category}
+                        checked={groupChecked}
+                        onCheckedChange={(c) => toggleScopes(items, c === true)}
+                        disabled={submitting}
+                      />
+                    </Text>
                     <button
                       type="button"
                       aria-expanded={open}
@@ -719,6 +731,7 @@ export function OAuthAuthorizeView() {
                         color: 'var(--gray-12)',
                         cursor: 'pointer',
                         textAlign: 'left',
+                        ...touchTarget(isBelowDesktop),
                       }}
                     >
                       <Text size="2" weight="medium" style={{ flex: 1, minWidth: 0 }}>
