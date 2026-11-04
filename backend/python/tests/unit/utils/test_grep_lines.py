@@ -151,18 +151,25 @@ async def test_a_costly_request_does_not_starve_a_cheap_one() -> None:
 
     text = "\n".join(",".join(f"v{i}_{j}" for j in range(60)) for i in range(2000))
     blocks = [{"index": 0, "data": text}]
+    finished: list[str] = []
 
-    async def request(compiled, budget: float, n: int) -> int:
-        start = time.monotonic()
-        results = await asyncio.gather(*(
-            find_matches_bounded(blocks, compiled, context_lines=0, max_matches=5, deadline=start + budget)
-            for _ in range(n)
-        ))
-        return sum(1 for r in results if r[3])
+    async def one(tag: str, compiled: regex.Pattern[str], deadline: float) -> None:
+        await find_matches_bounded(blocks, compiled, context_lines=0, max_matches=5, deadline=deadline)
+        finished.append(tag)
+
+    async def request(tag: str, compiled: regex.Pattern[str], n: int) -> None:
+        deadline = time.monotonic() + 30  # no deadline in play: only the order counts
+        await asyncio.gather(*(one(tag, compiled, deadline) for _ in range(n)))
 
     slow = regex.compile(r"(?:.*?,){40}x|v0_0")
-    done = await asyncio.gather(request(slow, 1.0, 30), request(slow, 1.0, 30), request(regex.compile("v1999_59"), 1.0, 20))
-    assert done[2] == 20
+    await asyncio.gather(
+        request("slow", slow, 30), request("slow", slow, 30), request("cheap", regex.compile("v1999_59"), 20),
+    )
+    # The order, not a wall-clock budget, so a loaded machine cannot fail it: a
+    # first-come pool finishes all 60 costly searches before the last cheap one,
+    # the fair one about 6.
+    last_cheap = max(i for i, tag in enumerate(finished) if tag == "cheap")
+    assert finished[:last_cheap].count("slow") < 30
 
 
 def test_code_blocks_keep_their_source_in_data_text_and_the_file_summary_is_not_searched() -> None:
