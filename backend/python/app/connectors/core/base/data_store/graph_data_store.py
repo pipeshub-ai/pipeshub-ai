@@ -296,6 +296,9 @@ class GraphTransactionStore(TransactionStore):
         self.new_nodes: set[tuple[str, str]] = set()
 
     def _note_unclassified(self) -> None:
+        # Before the write is forwarded: with no organisation it could not be charged to one at the end, and outside an explicit
+        # transaction it would already be committed with nothing to mark or roll back. It is refused instead (`MissingOrgContext`).
+        org_context.current()
         self.unclassified_write = True
 
     async def _connector_of_node(self, collection: str, node_id: str) -> str | None:

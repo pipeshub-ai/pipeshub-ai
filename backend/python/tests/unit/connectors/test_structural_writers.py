@@ -538,7 +538,7 @@ async def test_an_unclassified_write_with_no_lookup_is_charged_to_the_ambient_or
     assert {c.args[0] for c in provider.update_node.await_args_list} == {"c1", "c2"}
 
 
-async def test_an_unclassified_write_with_no_organisation_marks_what_it_saw_and_fails_the_block(monkeypatch) -> None:
+async def test_an_unclassified_write_with_no_organisation_is_refused_before_it_reaches_the_provider(monkeypatch) -> None:
     from app.core.org_context import MissingOrgContext
 
     provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}, {"_key": "c2"}])
@@ -546,8 +546,8 @@ async def test_an_unclassified_write_with_no_organisation_marks_what_it_saw_and_
         async with store_provider.transaction() as tx:
             await tx._connector_of_node(R, "r1")
             await _Scratch.via_local_alias(tx, "r1")
+    provider.batch_create_edges.assert_not_awaited()  # nothing was written: there is nothing to mark or to undo
     provider.commit_transaction.assert_not_awaited()
-    assert {c.args[0] for c in provider.update_node.await_args_list} == {"c1"}
     provider.get_org_apps.assert_not_awaited()
 
 
