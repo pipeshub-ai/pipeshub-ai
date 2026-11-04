@@ -104,6 +104,12 @@ export interface TypedSlackClient {
       unfurl_links?: boolean;
       unfurl_media?: boolean;
     }) => Promise<{ ts?: string }>;
+    postEphemeral: (params: {
+      channel: string;
+      user: string;
+      thread_ts?: string;
+      text: string;
+    }) => Promise<unknown>;
   };
   apiCall: (
     apiMethod: string,

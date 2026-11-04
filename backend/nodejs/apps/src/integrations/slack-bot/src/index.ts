@@ -59,7 +59,22 @@ import {
 import {
   type SlackBotConfig,
   getCurrentMatchedSlackBot,
+  runWithSlackRequestContext,
 } from "./botRegistry";
+import { runLimiterFromEnv } from "./utils/run-limiter";
+import {
+  MemoryThreadQueueStore,
+  ThreadQueue,
+  createThreadQueueStore,
+  threadQueueKey,
+} from "./utils/thread-queue";
+import {
+  batchText,
+  fromQueuedMessage,
+  mergeBatchMessage,
+  toQueuedMessage,
+  withoutBatchMessages,
+} from "./utils/turn-batch";
 
 import {
   type CitationData,
@@ -1466,6 +1481,160 @@ async function processSlackMessage(
   }
 }
 
+const QUEUED_NOTE = "I'll answer this right after my current reply.";
+const QUEUE_FULL_NOTE =
+  "I already have several messages from you waiting. Send this again once I reply.";
+const BUSY_NOTE = "I'm busy right now. Please try again in a minute.";
+
+const runLimiter = runLimiterFromEnv();
+// Replaced at startup by the Redis-backed store when Redis is reachable.
+let threadQueue = new ThreadQueue(new MemoryThreadQueueStore(), runLimiter);
+let threadQueueNamespace = "";
+
+async function postQueueNote(
+  client: TypedSlackClient,
+  message: SlackMessagePayload,
+  text: string,
+): Promise<void> {
+  if (!message.channel || !message.user) return;
+  try {
+    await client.chat.postEphemeral({
+      channel: message.channel,
+      user: message.user,
+      thread_ts: resolveThreadId(message),
+      text,
+    });
+  } catch (error) {
+    console.error("Failed to post Slack queue note:", error);
+  }
+}
+
+/** Answer one turn: one message, or several queued ones from the same person in the same thread. */
+async function prepareAndProcess(
+  kind: "dm" | "mention",
+  batch: SlackMessagePayload[],
+  typedClient: TypedSlackClient,
+  typedContext: TypedSlackContext,
+  resolvedSlackBot: SlackBotConfig | null,
+): Promise<void> {
+  const typedMessage = batch.length === 1 ? batch[0]! : mergeBatchMessage(batch);
+  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
+    typedClient,
+    typedMessage,
+    typedContext.botUserId,
+  );
+  if (!shouldAnswer) return;
+
+  let query = batchText(
+    await Promise.all(batch.map((m) => resolveMentionsInText(m.text, typedClient))),
+  );
+  if (!query) {
+    if (hasSupported) query = kind === "dm" ? "See below attached file(s)." : "Attached file(s).";
+    else query = "Hi";
+  }
+
+  try {
+    if (kind === "dm") {
+      await processSlackMessage(
+        typedMessage,
+        typedClient,
+        typedContext,
+        query,
+        resolvedSlackBot,
+      );
+      return;
+    }
+    const fetched = await fetchThreadContext(typedClient, typedMessage);
+    const thread = {
+      ...fetched,
+      messages: withoutBatchMessages(fetched.messages, new Set(batch.map((m) => m.ts))),
+    };
+    const contextualQuery = await buildQueryWithThreadContext(
+      typedClient,
+      thread.messages,
+      query,
+      typedMessage.user,
+      typedContext.botUserId,
+    );
+    const collected = await collectThreadFiles(
+      typedClient,
+      typedMessage,
+      thread,
+      resolvedSlackBot?.botId ?? 'default',
+      typedContext.botUserId,
+    );
+    // A file sent with the batch is attached already; don't send it twice.
+    const sent = new Set(((typedMessage.files ?? []) as SlackFile[]).map((f) => f.id));
+    const notSent = (files: SlackFile[]) =>
+      files.filter((f) => f.id === undefined || !sent.has(f.id));
+    const threadFiles = {
+      supported: notSent(collected.supported),
+      unsupported: notSent(collected.unsupported),
+      oversized: notSent(collected.oversized),
+    };
+    const { unsupported, oversized } = threadFiles;
+    if (unsupported.length > 0 || oversized.length > 0) {
+      await postSkippedAttachmentsNotice(typedClient, typedMessage, { unsupported, oversized }, 'messageOnly');
+    }
+    await processSlackMessage(
+      typedMessage,
+      typedClient,
+      typedContext,
+      contextualQuery,
+      resolvedSlackBot,
+      threadFiles.supported,
+    );
+  } catch (error) {
+    console.error(kind === "dm" ? "Error handling DM message:" : "Error handling app mention:", error);
+    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, error);
+  }
+}
+
+/** Answer now, or queue behind this person's running answer in the thread. */
+async function submitTurn(
+  kind: "dm" | "mention",
+  message: SlackMessagePayload,
+  client: TypedSlackClient,
+  context: TypedSlackContext,
+  bot: SlackBotConfig | null,
+): Promise<void> {
+  const key = threadQueueKey(
+    {
+      botId: bot?.botId ?? "default",
+      channel: message.channel ?? "",
+      threadTs: resolveThreadId(message),
+      user: message.user ?? "",
+    },
+    threadQueueNamespace,
+  );
+  const outcome = await threadQueue.submit(
+    key,
+    toQueuedMessage(kind, message),
+    // A later batch runs after its own handler returned, so the bot is set again here.
+    (batch) =>
+      runWithSlackRequestContext(bot, () =>
+        prepareAndProcess(
+          kind,
+          // This handler's own message keeps Slack's full payload; queued ones carry metadata only.
+          batch.map((item) => (item.ts === message.ts ? message : fromQueuedMessage(item))),
+          client,
+          context,
+          bot,
+        ),
+      ),
+    async (batch) => {
+      const told = new Set<string>();
+      for (const item of batch) {
+        if (told.has(item.user)) continue;
+        told.add(item.user);
+        await postQueueNote(client, fromQueuedMessage(item), BUSY_NOTE);
+      }
+    },
+  );
+  if (outcome === "queued") await postQueueNote(client, message, QUEUED_NOTE);
+  else if (outcome === "full") await postQueueNote(client, message, QUEUE_FULL_NOTE);
+}
+
 // Handle DMs via message.im events.
 app.message(async ({ message, client, context }) => {
   if (!message || typeof message !== "object") {
@@ -1486,31 +1655,7 @@ app.message(async ({ message, client, context }) => {
   }
 
   const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
-  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
-    typedClient,
-    typedMessage,
-    typedContext.botUserId,
-  );
-  if (!shouldAnswer) return;
-
-  let query = await resolveMentionsInText(typedMessage.text, typedClient);
-  if (!query) {
-    if (hasSupported) query = "See below attached file(s).";
-    else query = "Hi";
-  }
-
-  try {
-    await processSlackMessage(
-      typedMessage,
-      typedClient,
-      typedContext,
-      query,
-      resolvedSlackBot,
-    );
-  } catch (error) {
-    console.error("Error handling DM message:", error);
-    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, error);
-  }
+  await submitTurn("dm", typedMessage, typedClient, typedContext, resolvedSlackBot);
 });
 
 // Handle @mentions in channels via app_mention events.
@@ -1523,51 +1668,7 @@ app.event("app_mention", async ({ event, client, context }) => {
   }
 
   const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
-  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
-    typedClient,
-    typedMessage,
-    typedContext.botUserId,
-  );
-  if (!shouldAnswer) return;
-
-  let query = await resolveMentionsInText(typedMessage.text, typedClient);
-  if (!query) {
-    if (hasSupported) query = "Attached file(s).";
-    else query = "Hi";
-  }
-
-  try {
-    const thread = await fetchThreadContext(typedClient, typedMessage);
-    const contextualQuery = await buildQueryWithThreadContext(
-      typedClient,
-      thread.messages,
-      query,
-      typedMessage.user,
-      typedContext.botUserId,
-    );
-    const threadFiles = await collectThreadFiles(
-      typedClient,
-      typedMessage,
-      thread,
-      resolvedSlackBot?.botId ?? 'default',
-      typedContext.botUserId,
-    );
-    const { unsupported, oversized } = threadFiles;
-    if (unsupported.length > 0 || oversized.length > 0) {
-      await postSkippedAttachmentsNotice(typedClient, typedMessage, { unsupported, oversized }, 'messageOnly');
-    }
-    await processSlackMessage(
-      typedMessage,
-      typedClient,
-      typedContext,
-      contextualQuery,
-      resolvedSlackBot,
-      threadFiles.supported,
-    );
-  } catch (error) {
-    console.error("Error handling app mention:", error);
-    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, error);
-  }
+  await submitTurn("mention", typedMessage, typedClient, typedContext, resolvedSlackBot);
 });
 
 (async () => {
@@ -1585,6 +1686,12 @@ app.event("app_mention", async ({ event, client, context }) => {
 
   // Drop legacy threadId + botId index if it exists
   if (usesMongo()) await dropLegacyThreadBotIndex();
+
+  const queueStore = await createThreadQueueStore(
+    await getPreparedRedisProvider().catch(() => null),
+  );
+  threadQueue = new ThreadQueue(queueStore.store, runLimiter);
+  threadQueueNamespace = queueStore.namespace;
 
   await app.start(process.env.SLACK_BOT_PORT || 3020);
   console.log("Bolt app is running on 3020.");
