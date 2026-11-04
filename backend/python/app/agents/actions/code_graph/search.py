@@ -300,13 +300,16 @@ async def _missing_path_message(
     parts = [p for p in path.split("*", 1)[0].split("/") if p and p != "."]
     for i in range(len(parts) - 1, -1, -1):
         base = "/".join(parts[:i])
-        found, _ = await files_by_pattern(graph_provider, org_id, base)
+        # As far as the search scans: the scan is org-wide, so at the default 400 rows another
+        # repo's files could fill it and leave this repo's directories out, or unlisted.
+        found, capped = await files_by_pattern(graph_provider, org_id, base, scan_limit=_TEXT_SCAN_LIMIT)
         # Scoped like the search: another repo's names may lie outside a connected app's limit.
         readable = await _in_repo(graph_provider, org_id, connector_id, repo, await access.readable(found))
         if readable:
             prefix = f"{base}/" if base else ""
             subs = sorted({found[k][len(prefix):].split("/", 1)[0] for k in readable})
-            shown = ", ".join(subs[:25]) + (", ..." if len(subs) > 25 else "")
+            # A capped scan read only the first paths in order, so later directories are missing.
+            shown = ", ".join(subs[:25]) + (", ..." if len(subs) > 25 or capped else "")
             return (f"No indexed file is under {path!r}; nothing was searched. "
                     f"{prefix or 'The repo root'!s} holds: {shown}. Paths are repo-relative.")
     return f"No indexed file is under {path!r}; nothing was searched."
