@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { Readable } from 'stream';
 import { SlackPlanStream } from '../../../src/integrations/slack-bot/src/utils/plan-stream';
+import { buildSkippedAttachmentsNotice } from '../../../src/integrations/slack-bot/src/helpers';
 
 // Loads a Slack bot index.ts with Slack, storage and the registry faked, so a
 // test can drive one answer through it and check what lands in the thread.
@@ -51,6 +52,15 @@ export const sse = (...frames: Record<string, unknown>[]) =>
         await new Promise((resolve) => setImmediate(resolve));
         yield `event: ${String(f.type)}\ndata: ${JSON.stringify(f)}\n\n`;
       }
+    })(),
+  );
+
+/** Like `sse`, but nothing arrives until `gate` resolves: a run that is still going. */
+export const gatedSse = (frames: Record<string, unknown>[], gate: Promise<void>) =>
+  Readable.from(
+    (async function* held() {
+      await gate;
+      yield* sse(...frames);
     })(),
   );
 
@@ -131,7 +141,10 @@ export function loadBot(src: string, extraFakes: Record<string, unknown>) {
         post: () => undefined,
       },
     },
-    [`${src}/botRegistry.ts`]: { getCurrentMatchedSlackBot: () => BOT },
+    [`${src}/botRegistry.ts`]: {
+      getCurrentMatchedSlackBot: () => BOT,
+      runWithSlackRequestContext: (_bot: unknown, cb: () => unknown) => cb(),
+    },
     [`${src}/utils/db.ts`]: {
       connect: async () => undefined,
       dropLegacyThreadBotIndex: async () => undefined,
@@ -1731,6 +1744,154 @@ export function describeAnswerWiring(
 
     it('posts an expanded answer under a status message it then deletes when Slack cannot stream', async () => {
       expectPostedAnswer(await ask(answerFrames('completed'), true));
+    });
+
+    describe('one answer at a time in a thread', () => {
+      const context = { teamId: 'T1', botUserId: 'UBOT' };
+      const QUEUED_NOTE = "I'll answer this right after my current reply.";
+      const PDF = {
+        id: 'F1',
+        name: 'q3.pdf',
+        filetype: 'pdf',
+        mimetype: 'application/pdf',
+        size: 10,
+        url_private_download: 'https://files.slack.test/q3.pdf',
+      };
+      const isUpload = (url: unknown) => String(url).includes('/attachments/upload');
+      const reply = (ts: string, text: string, extra: Record<string, unknown> = {}) => ({
+        type: 'app_mention',
+        user: 'U1',
+        channel: 'C1',
+        ts,
+        thread_ts: '100.1',
+        text,
+        ...extra,
+      });
+      const send = (client: ReturnType<typeof slackClient>, event: Record<string, unknown>) =>
+        bot.events.get('app_mention')!({ event, client, context });
+      const settle = async (done: () => boolean) => {
+        for (let i = 0; i < 2000 && !done(); i++) await new Promise((r) => setImmediate(r));
+        expect(done()).to.equal(true);
+      };
+      const streamBodies = () =>
+        post.getCalls().filter((c) => !isUpload(c.args[0])).map((c) => c.args[1] as AnyArgs);
+
+      /** The first answer is held open by a gate; every later run answers at once. */
+      function holdFirstAnswer() {
+        let open!: () => void;
+        const gate = new Promise<void>((r) => (open = r));
+        let runs = 0;
+        post.callsFake(async (url: string) => {
+          if (isUpload(url)) return { data: { attachments: [{ recordId: 'att-1' }] } };
+          runs += 1;
+          const frames = answerFrames('completed');
+          return { data: runs === 1 ? gatedSse(frames, gate) : sse(...frames) };
+        });
+        return open;
+      }
+
+      /** Mention 1 is answering; mentions 2 and 3 arrive meanwhile. Resolves once all are answered. */
+      async function twoWhileOneRuns(client: ReturnType<typeof slackClient>, second: Record<string, unknown> = {}) {
+        const open = holdFirstAnswer();
+        const first = send(client, {
+          type: 'app_mention',
+          user: 'U1',
+          channel: 'C1',
+          ts: '100.1',
+          text: 'first question',
+        });
+        try {
+          await settle(() => post.callCount === 1);
+          await send(client, reply('100.2', 'second question', second));
+          await send(client, reply('100.3', 'third question'));
+          return { sentBeforeOpen: post.callCount };
+        } finally {
+          open();
+          await first;
+        }
+      }
+
+      it('answers a second mention only after the first finishes, in one turn with both texts', async () => {
+        const { sentBeforeOpen } = await twoWhileOneRuns(slackClient());
+        expect(sentBeforeOpen).to.equal(1);
+        expect(post.callCount).to.equal(2);
+        const [one, two] = streamBodies();
+        expect(one.query).to.include('first question');
+        expect(two.query).to.match(/second question[\s\S]*third question/);
+        expect(two.query).to.not.include('first question');
+      });
+
+      it('does not cut off the first answer', async () => {
+        const client = slackClient();
+        await twoWhileOneRuns(client);
+        const methods = client.apiCall.getCalls().map((c) => c.args[0] as string);
+        const starts = methods.flatMap((m, i) => (m === 'chat.startStream' ? [i] : []));
+        expect(starts).to.have.length(2);
+        expect(methods.indexOf('chat.stopStream')).to.be.within(0, starts[1]!);
+      });
+
+      it('tells the queued sender privately', async () => {
+        const client = slackClient();
+        await twoWhileOneRuns(client);
+        expect(client.chat.postEphemeral.callCount).to.equal(2);
+        expect(client.chat.postEphemeral.firstCall.args[0]).to.deep.equal({
+          channel: 'C1',
+          user: 'U1',
+          thread_ts: '100.1',
+          text: QUEUED_NOTE,
+        });
+      });
+
+      it("sends the queued messages' files with the next turn", async () => {
+        const get = sinon.stub(axios, 'get').resolves({ data: Buffer.from('%PDF-1.4') });
+        let sentBeforeOpen: number;
+        try {
+          ({ sentBeforeOpen } = await twoWhileOneRuns(slackClient(), { files: [PDF] }));
+        } finally {
+          get.restore();
+        }
+        expect(sentBeforeOpen).to.equal(1);
+        expect(post.getCalls().filter((c) => isUpload(c.args[0]))).to.have.length(1);
+        const [one, two] = streamBodies();
+        expect(one).to.not.have.property('attachments');
+        expect(two.attachments).to.deep.equal([{ recordId: 'att-1' }]);
+      });
+
+      it('keeps two people apart in one thread', async () => {
+        const client = slackClient();
+        const open = holdFirstAnswer();
+        const first = send(client, reply('100.1', 'first question', { thread_ts: undefined }));
+        try {
+          await settle(() => post.callCount === 1);
+          await send(client, reply('100.2', 'my own question', { user: 'U2' }));
+          expect(post.callCount).to.equal(2);
+          expect(client.chat.postEphemeral.called).to.equal(false);
+        } finally {
+          open();
+          await first;
+        }
+      });
+
+      it("says when an earlier thread file can't be read", async () => {
+        const zip = { id: 'F9', name: 'notes.zip', filetype: 'zip', mimetype: 'application/zip', url_private: 'https://files.slack.test/notes.zip' };
+        const current = reply('100.4', 'what is in it?');
+        post.callsFake(async () => ({ data: sse(...answerFrames('completed')) }));
+        const client = slackClient();
+        client.apiCall.withArgs('conversations.replies').resolves({
+          messages: [
+            { ts: '100.1', user: 'U1', text: 'here it is', files: [zip] },
+            { ...current, type: 'message' },
+          ],
+        });
+        await send(client, current);
+        const notice = buildSkippedAttachmentsNotice({ unsupported: [zip], oversized: [] }, 'messageOnly');
+        const texts = [
+          ...client.chat.postEphemeral.getCalls(),
+          ...client.chat.postMessage.getCalls(),
+        ].map((c) => (c.args[0] as AnyArgs).text as string);
+        expect(notice).to.not.equal('');
+        expect(texts).to.include(notice);
+      });
     });
   });
 }
