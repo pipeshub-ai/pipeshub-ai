@@ -6,6 +6,8 @@
 
 <p>Permission-aware search and cited answers across Slack, Google Drive, Jira, Confluence, GitHub and 50+ apps, for your people and for agents through MCP. Self-hosted or PipesHub Cloud.</p>
 
+<p><strong>#1 of 39 systems on <a href="https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard">EnterpriseRAG-Bench</a></strong>, ahead of OpenAI File Search, Amazon Q, Azure AI Search and Vertex AI Search. <a href="#benchmarks">All benchmarks →</a></p>
+
 <p>
   <a href="https://www.pipeshub.com/">Website</a> ·
   <a href="https://docs.pipeshub.com/">Docs</a> ·
@@ -61,6 +63,19 @@ Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems
   <br/>
   <strong><a href="https://youtu.be/VgyND38QZ7w">▶ Watch the 2½-minute demo</a></strong>: Claude Code answering from Jira, Slack, GitHub and Drive, with each person's permissions
 </p>
+
+## Benchmarks
+
+How PipesHub performs, and how each test was run.
+
+| Benchmark | What it measures | Result | Details |
+|---|---|---|---|
+| **EnterpriseRAG-Bench** (independent, run by Onyx) | 500 questions over 500,000+ company documents | **#1 of 39 systems (93.24).** OpenAI File Search 61.03, Amazon Q 48.96, Azure AI Search 48.42, Vertex AI Search 41.87 | [Leaderboard](https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard) |
+| **Google FRAMES** (824 questions) | Answers that need facts from several documents | **92.7%**, against 78.9% for the best of 18 standard RAG pipelines | [Write-up](https://pipeshub.com/blog/agentic-rag-vs-traditional-rag-frames-benchmark) |
+| **Company index vs. per-app MCP connectors** | The same Claude agent on 100 work questions, searching each app through its own connector or through PipesHub | Facts found: Haiku 55% → 80%, Sonnet 65% → 89%, Opus 85% → 92%; 27–45% faster and 27–32% cheaper per answer | [Write-up](https://pipeshub.com/blog/do-ai-agents-need-a-company-index) |
+| **Code graph accuracy** (vs. Graphify, codebase-memory-mcp, CodeGraphContext) | How accurately each tool maps relationships in code across 9 repositories | Highest accuracy (F1 score) on 8 of 9 repositories | [Write-up](https://pipeshub.com/blog/code-graph-benchmark) |
+
+Leaderboard standing as of 3 November 2026. The FRAMES, connector and code-graph tests were run by the PipesHub team. The connector test used questions about our own internal work; we will publish a version on public data.
 
 ## What can you build with PipesHub?
 
