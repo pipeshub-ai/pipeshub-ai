@@ -89,3 +89,38 @@ async def moved_parents(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
     for k in recs:
         out |= now.get(k[1], set()) ^ before.get(k[1], set())
     return {k for k in out if k[0] in RECORD_COLLS} - recs
+
+
+async def children_of(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
+    """The hierarchy children and group members of ``keys`` now (the graph) and in the rows kg held before (which can still name an edge the graph has since lost)."""
+    recs = {k for k in keys if k[0] in RECORD_COLLS}
+    if not recs:
+        return set()
+    ids = _ids(recs)
+    out: set[Key] = set()
+    for r in await tx.fetch("""/* pipeshub:kg.graph_kids */ SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id = ANY($2::text[])
+            AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.to_coll = ANY($4::text[])""", org, ids, list(HIERARCHY), list(RECORD_COLLS)):
+        out.add((r[0], r[1]))
+    for r in await tx.fetch("""/* pipeshub:kg.graph_members */ SELECT e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_id = ANY($2::text[])
+            AND e.from_coll = ANY($3::text[])""", org, ids, list(RECORD_COLLS)):
+        out.add((r[0], r[1]))
+    sks = sorted((await load_sks(tx, org, recs)).values())
+    if sks:
+        found: set[int] = set()
+        found |= {r["x"] for r in await tx.fetch("/* pipeshub:kg.kids_parent */ SELECT sk AS x FROM kg.records WHERE org_id = $1 AND parent_sk = ANY($2::bigint[])", org, sks)}
+        found |= {r["x"] for r in await tx.fetch("/* pipeshub:kg.kids_group */ SELECT sk AS x FROM kg.records WHERE org_id = $1 AND group_sk = ANY($2::bigint[])", org, sks)}
+        found |= {r["x"] for r in await tx.fetch("/* pipeshub:kg.kids_links */ SELECT child_sk AS x FROM kg.links WHERE org_id = $1 AND parent_sk = ANY($2::bigint[])", org, sks)}
+        out |= await _keys_of(tx, org, found)
+    return {k for k in out if k[0] in RECORD_COLLS}
+
+
+async def held_apps(tx: Tx, org: str, keys: set[Key]) -> dict[Key, str | None]:
+    """The connector kg holds each of ``keys`` under (None: a row with no connector); a key kg holds no row for is not in the result."""
+    ks = sorted((COLL_CODE[k[0]], k[1]) for k in keys if k[0] in COLL_CODE)
+    out: dict[Key, str | None] = {}
+    for i in range(0, len(ks), 5000):
+        part = ks[i:i + 5000]
+        rows = await tx.fetch("""/* pipeshub:kg.held_apps */ SELECT r.coll, r.id, a.id AS app FROM kg.records r JOIN unnest($2::smallint[], $3::text[]) AS k(c, i) ON r.coll = k.c AND r.id = k.i
+            LEFT JOIN kg.node_keys a ON a.org_id = r.org_id AND a.sk = r.app_sk WHERE r.org_id = $1""", org, [c for c, _ in part], [x for _, x in part])
+        out |= {(CODE_COLL[r["coll"]], r["id"]): r["app"] for r in rows}
+    return out

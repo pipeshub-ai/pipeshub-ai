@@ -10,11 +10,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.services.graph_db.postgres.kg.dependents import (
+    children_of,
+    held_apps,
     held_keys,
     moved_parents,
     parents_of,
 )
-from app.services.graph_db.postgres.kg.locks import lock_apps
+from app.services.graph_db.postgres.kg.locks import MAX_ROUNDS, NeedLocks, lock_apps
 from app.services.graph_db.postgres.kg.model import (
     CODE_COLL,
     COLL_CODE,
@@ -67,6 +69,22 @@ async def expand(tx: Tx, org: str, focus: set[Key]) -> set[Key]:
     gone_apps = sorted(sks[k] for k in flipped if k[0] == "apps" and k not in nodes)
     if gone_apps:          # the records of a connector that is gone lose their app: re-derive every one of them
         out |= {(CODE_COLL[r["coll"]], r["id"]) for r in await tx.fetch("/* pipeshub:kg.expand_app */ SELECT coll, id FROM kg.records WHERE org_id = $1 AND app_sk = ANY($2::bigint[])", org, gone_apps)}
+    app_ids = sorted(k[1] for k in keys if k[0] == "apps")
+    if app_ids:
+        # the users whose source accounts are linked in the connector: the link is a gate on the connector's organisation and existence, and it is named by the edge's
+        # document, not by an edge to the app
+        out |= {("users", r["from_id"]) for r in await tx.fetch("""/* pipeshub:kg.expand_linked_users */ SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1
+            AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.doc->>'connectorId' = ANY($2::text[])""", org, app_ids)}
+    appeared = sorted(k[1] for k in keys if k[0] == "apps" and k in nodes and k not in held)
+    if appeared:      # the records that name a connector that is (back) there lose their NULL app: no edge links them, their document does
+        out |= {(r["coll"], r["id"]) for r in await tx.fetch("""/* pipeshub:kg.expand_appeared */ SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = $1
+            AND n.coll = ANY($2::text[]) AND n.doc->>'connectorId' = ANY($3::text[])""", org, ["records", "recordGroups"], appeared)}
+    here = {k for k in keys if k[0] in RECORD_COLLS and k[0] != "apps" and k in nodes}
+    if here:          # a record or group that moved to another connector: its children's primary parent and group, and the connector flag, depend on it
+        before = await held_apps(tx, org, here)
+        moved = {k for k, old in before.items() if old != app_id_of(k, nodes[k])}
+        if moved:
+            out |= await children_of(tx, org, moved)
     rows = []
     if flipped:
         rows += await tx.fetch("""/* pipeshub:kg.expand */ SELECT e.coll, e.from_coll, e.from_id, e.to_coll, e.to_id,
@@ -100,6 +118,19 @@ async def _expanded(tx: Tx, org: str, seeds: set[Key], known: set[Key] | None = 
     return out
 
 
+async def _held(tx: Tx, org: str, every: set[Key], locked: set[str], *, org_wide: bool) -> None:
+    """The locks held cover every row the unit is about to write, or the unit starts again with more (:class:`NeedLocks`, raised before anything is written)."""
+    if org_wide:
+        return
+    recs = {k for k in every if k[0] in RECORD_COLLS}
+    docs = await load_nodes(tx, org, recs)
+    needed = {app_id_of(k, doc) or "" for k, doc in docs.items()} | {a for a in (await held_apps(tx, org, recs)).values() if a}
+    wide = any(k[0] not in RECORD_COLLS or k not in docs for k in every) or "" in needed
+    missing = needed - {""} - locked
+    if missing or wide:
+        raise NeedLocks(missing, wide=wide)
+
+
 async def current(tx: Tx, org: str, d: Derived) -> tuple[set, dict, dict]:
     """What kg holds now for the slices ``d`` derived: links of the children, grants on the nodes and by the holders, closure of the users."""
     links, grants, closure = set(), {}, {}
@@ -122,20 +153,35 @@ async def current(tx: Tx, org: str, d: Derived) -> tuple[set, dict, dict]:
 
 
 async def project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | None = None, expand_neighbours: bool = True) -> Stats:
-    """Make kg agree with the graph for ``focus``. ``lock_for``: the app ids to lock ('' = org-wide); the default derives them from the documents. The lock comes first and
-    everything kg is compared with is read after it: what a change reaches in its neighbours (:func:`expand`, ``parents_of``) is found from what kg holds, and kg is only stable
-    while the lock is held. A node that is a principal, that is gone or that belongs to no app makes the org-wide key exclusive (its rows span connectors)."""
+    """Make kg agree with the graph for ``focus``. ``lock_for``: connector ids to lock besides those of the focus ('' = org-wide). The lock comes first and everything kg is
+    compared with is read after it. What a change reaches in its neighbours (:func:`expand`, ``parents_of``) is only known once it is read under the lock: when it reaches a
+    connector the unit holds no lock for (a hierarchy parent or child of another connector, or a node that spans the organisation), the unit rolls back to its savepoint, which
+    releases its locks, and starts again with the larger set taken in one ascending pass, so no unit waits for a lock below one it holds."""
+    extra: set[str] = set()
+    wide = False
+    for _ in range(MAX_ROUNDS):
+        try:
+            async with tx.savepoint("kg_project"):
+                return await _project(tx, org, focus, lock_for=lock_for, expand_neighbours=expand_neighbours, extra=extra, wide=wide)
+        except NeedLocks as e:
+            extra |= e.apps
+            wide = wide or e.wide
+    raise RuntimeError("the projection kept reaching connectors it had not locked")
+
+
+async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | None, expand_neighbours: bool, extra: set[str], wide: bool) -> Stats:
     st = Stats()
     w = KgWriter(tx)
     focus = {k for k in focus if k[0] in COLL_CODE}
     if not focus:
         return st
     docs = await load_nodes(tx, org, {k for k in focus if k[0] in RECORD_COLLS})
-    if lock_for is None:
-        lock_for = {app_id_of(k, doc) or "" for k, doc in docs.items()}
-    org_wide = "" in lock_for or any(k[0] not in RECORD_COLLS or k not in docs for k in focus)
-    await lock_apps(tx, org, lock_for, org_wide=org_wide)
-    st.apps = lock_for - {""}
+    # the connectors of the focus now, and those kg holds its records under (a record that moved is rewritten in both), whatever ``lock_for`` says
+    old_apps = {a for a in (await held_apps(tx, org, set(docs))).values() if a}
+    locked = {*(lock_for or set()), *(app_id_of(k, doc) or "" for k, doc in docs.items()), *old_apps, *extra}
+    org_wide = wide or "" in locked or any(k[0] not in RECORD_COLLS or k not in docs for k in focus) or not locked
+    await lock_apps(tx, org, locked, org_wide=org_wide)
+    st.apps = locked - {""}
     leaf_only: set[Key] = set()
     if expand_neighbours:
         focus = await _expanded(tx, org, focus)
@@ -151,6 +197,7 @@ async def project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | Non
                 break
             focus |= await _expanded(tx, org, fresh, focus)             # this unit writes the row of a node kg has none for: it is a node that appears, and its dependents are looked at
     every = focus | leaf_only
+    await _held(tx, org, every, locked, org_wide=org_wide)
 
     async def allocate(existing: set[Key]) -> dict[Key, int]:
         have = await load_sks(tx, org, existing)                         # most nodes are known already: only a new key needs the writer

@@ -14,10 +14,22 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 LOCK_CLASS = 7360      # registered in kernel.lock_keys by kg_0001
+MAX_ROUNDS = 6         # a unit that keeps finding connectors it has not locked this many times gives up
+
+
+class NeedLocks(Exception):
+    """The unit reaches rows of connectors it does not hold (or of a node that needs the whole org). Raised before anything of theirs is written: the unit rolls back to its
+    savepoint, which releases its locks, and takes the larger set in one ascending pass."""
+
+    def __init__(self, apps: set[str], *, wide: bool = False) -> None:
+        super().__init__(f"the unit reaches connectors {sorted(apps)}" + (" and rows that span the organisation" if wide else ""))
+        self.apps = set(apps)
+        self.wide = wide
 
 
 async def lock_apps(tx: Tx, org: str, app_ids: set[str], *, org_wide: bool) -> None:
-    """Transaction-scoped locks, in the order above, held to the end of the unit."""
+    """Transaction-scoped locks, in the order above, held to the end of the unit. No connector to lock is no reason to lock less: the org key is then exclusive."""
+    org_wide = org_wide or not (app_ids - {""})
     if org_wide:
         await tx.execute("/* pipeshub:kg.lock_org_exclusive */ SELECT pg_advisory_xact_lock($1::int, hashtext($2))", LOCK_CLASS, f"{org}|")
     else:
