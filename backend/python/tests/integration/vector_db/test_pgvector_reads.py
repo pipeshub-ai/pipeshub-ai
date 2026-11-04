@@ -111,11 +111,24 @@ async def test_filters_select_by_column_by_membership_and_an_empty_list_selects_
     assert await scroll_all(store, nobody_id) == []
 
 
-async def test_empty_lists_given_to_filter_collection_are_dropped_as_on_every_provider(store) -> None:
-    """The shared builder drops an empty list: callers short-circuit an empty accessible set before they search (and graph-check every hit)."""
+async def test_an_empty_list_in_a_filter_matches_nothing_and_excludes_nothing_as_on_every_provider(store) -> None:
+    """The shared contract (``test_empty_list_filter_matches_nothing``): an empty list narrows to nothing in a scroll, an allow-list and a
+    delete; as a MUST_NOT it excludes nothing. Dropping it would reach every point of the org."""
     await store.upsert_points("records", [point(A, "p1", "r1", conn=["c1"]), point(A, "p2", "r2", conn=["c2"])])
-    built = await store.filter_collection(must={"orgId": A}, should={"connectorIds": [], "recordGroupIds": []})
-    assert {p.payload["metadata"]["blockId"] for p in await scroll_all(store, built)} == {"p1", "p2"}      # no arm left: the whole organisation
+
+    async def matched(**clauses: object) -> set[str]:
+        return {p.payload["metadata"]["blockId"] for p in await scroll_all(store, await store.filter_collection(**clauses))}
+
+    assert await matched(must={"orgId": A}) == {"p1", "p2"}
+    assert await matched(must={"orgId": A, "virtualRecordId": ["r1"]}) == {"p1"}
+    assert await matched(must={"orgId": A, "virtualRecordId": []}) == set()
+    assert await matched(must={"orgId": A, "virtualRecordId": [None]}) == set()
+    assert await matched(must={"orgId": A}, should={"virtualRecordId": []}) == set()
+    assert await matched(must={"orgId": A}, should={"connectorIds": [], "recordGroupIds": []}) == set()          # an empty allow-list sees nothing
+    assert await matched(must={"orgId": A}, should={"virtualRecordId": [], "connectorIds": ["c1"]}) == {"p1"}    # ORed with another condition
+    assert await matched(must={"orgId": A}, must_not={"virtualRecordId": []}) == {"p1", "p2"}                    # excluding nothing excludes nothing
+    await store.delete_points("records", await store.filter_collection(must={"orgId": A, "virtualRecordId": []}))
+    assert await matched(must={"orgId": A}) == {"p1", "p2"}                                                     # and a delete by it deletes nothing
 
 
 async def test_deleted_points_are_invisible_and_an_org_without_points_or_a_collection_is_handled(store) -> None:
@@ -164,3 +177,21 @@ async def test_a_real_time_read_does_not_trust_a_cached_miss_of_the_orgs_space(s
         assert [p.id for p in (await store.scroll("records", flt(C), 10)).points] == [pid(f"{C}/first")]
         info = await store.get_collection_info("records")
         assert (info.dense_dimension, info.points_count) == (DIM, 1)
+
+
+async def test_a_real_time_read_does_not_trust_a_cached_space_another_service_replaced(store, env) -> None:  # noqa: F811
+    org = "d" * 24
+    catalog = store._assert_connected()[1]
+    with org_context.bind(org_context.OrgContext(org, None, "service", "t", "-")):
+        old = await catalog.activate_space(org, "p:m:4", 4)                                                   # cached as the active space
+        assert (await store.retrieve_points("records", [pid(f"{org}/n")])) == [] and old.dim == 4
+        port = env.start_bouncer()
+        other = await PgVectorService.create(PgVectorConfig(dsn=env.dsn("indexing", port), jobs_dsn=env.dsn("jobs", port), pool_max=2, placement="none"))
+        try:
+            assert await other._assert_connected()[1].replace_empty_space(org, "p:m:8", 8)                     # the org changes its embedding model
+            wide = dataclasses.replace(point(org, "n", embeddingModel="p:m:8"), dense_vector=[1.0] + [0.0] * 7)
+            await other.upsert_points("records", [wide])
+        finally:
+            await other.disconnect()
+        assert [p.id for p in await store.retrieve_points("records", [pid(f"{org}/n")])] == [pid(f"{org}/n")]
+        assert [p.id for p in (await store.scroll("records", flt(org), 10)).points] == [pid(f"{org}/n")]
