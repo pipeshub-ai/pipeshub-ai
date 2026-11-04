@@ -66,6 +66,9 @@ WRITERS: dict[str, tuple[str, str]] = {
     "take_back_kept_record_group": (PROJECTED, ""), "claim_push_record": (PROJECTED, ""),
     "record_purge_failure": (NO_PROJECTION, "purge attempt counters of a trashed record"),
     "retag_push_record": (NO_PROJECTION, "the external revision tag of a pushed record: not an access field"),
+    # delete.py, lookups.py
+    "delete_record": (PROJECTED, ""), "unlink_nodes_missed_by_full_sync": (PROJECTED, ""), "link_record_to_group": (PROJECTED, ""), "update_node_if_match": (PROJECTED, ""),
+    "remove_nodes_by_field": (PROJECTED, ""),
 }
 
 

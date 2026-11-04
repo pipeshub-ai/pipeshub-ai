@@ -125,5 +125,10 @@ class StampGraph(Protocol):
     async def app(self, org_id: str, app_id: str) -> StampApp: ...
 
     async def nodes(self, org_id: str, ids: frozenset[str]) -> dict[str, StampNode]:
-        """The records and record groups of this organisation among `ids`; ids that do not exist are absent."""
+        """The records, record groups and apps (`kind` "app") of this organisation among `ids`; ids that do not exist are absent. The projector
+        needs the app node: a record whose route to the app is not in `nodes` is refused, not stamped."""
+        ...
+
+    async def record_page(self, org_id: str, app_id: str, after: str | None, limit: int) -> list[str]:
+        """Up to `limit` record ids of the app, ordered, strictly after `after` (deleted ones included). A failed read raises."""
         ...
