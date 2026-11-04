@@ -471,6 +471,8 @@ export function createConversationalRouter(container: Container): Router {
     regenerateAnswers(appConfig),
   );
 
+  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
+
   /**
    * @route POST /api/v1/conversations/:conversationId/compare/branch
    * @desc Compare models: create the hidden branch conversation that re-asks a saved question with a second model
@@ -478,7 +480,7 @@ export function createConversationalRouter(container: Container): Router {
    */
   router.post(
     '/:conversationId/compare/branch',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     requireChatCompareEnabled,
     ValidationMiddleware.validate(compareBranchParamsSchema),
@@ -492,7 +494,7 @@ export function createConversationalRouter(container: Container): Router {
    */
   router.get(
     '/:conversationId/compare',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     requireChatCompareEnabled,
     ValidationMiddleware.validate(compareListParamsSchema),
@@ -506,14 +508,12 @@ export function createConversationalRouter(container: Container): Router {
    */
   router.post(
     '/:conversationId/compare/choose',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     requireChatCompareEnabled,
     ValidationMiddleware.validate(compareChooseParamsSchema),
     chooseCompare(compareArtifacts),
   );
-
-  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
 
   /**
    * @route POST /api/v1/conversations/:conversationId/message/:messageId/fork

@@ -91,6 +91,8 @@ interface ModelSelectorPanelProps {
   agentId?: string | null;
   /** Show the edition's entries beside the configured models. Off where a configured model must be chosen. */
   allowExtraOptions?: boolean;
+  /** Enables Compare picks. Pass only where a model click should start a compare turn. */
+  allowCompare?: boolean;
 }
 
 function ModelLogo({ provider }: { provider: string }) {
@@ -111,6 +113,7 @@ export function ModelSelectorPanel({
   hideHeader = false,
   agentId,
   allowExtraOptions = true,
+  allowCompare = false,
 }: ModelSelectorPanelProps) {
   const { t } = useTranslation();
   const router = useRouter();
@@ -182,7 +185,8 @@ export function ModelSelectorPanel({
   // to leak between contexts (e.g. picking default in assistant silently
   // locked that model into every agent the user visited).
 
-  const compareAvailable = useCompareAvailable(ctxKey);
+  const compareAvailableForCtx = useCompareAvailable(ctxKey);
+  const compareAvailable = allowCompare && compareAvailableForCtx;
   const compareOn = useCompareStore((s) => s.enabled) && compareAvailable;
   const comparePicked = useCompareStore((s) => s.models);
   const toggleCompareModel = useCompareStore((s) => s.toggleModel);

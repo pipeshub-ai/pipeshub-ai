@@ -130,7 +130,7 @@ function enableCompare() {
   useCompareStore.setState({ enabled: true, models: [MODEL_A, MODEL_B] });
 }
 
-const flush = () => vi.waitFor(() => undefined, { timeout: 50 }).catch(() => undefined);
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 50));
 
 beforeEach(() => {
   fetchMock.mockReset();

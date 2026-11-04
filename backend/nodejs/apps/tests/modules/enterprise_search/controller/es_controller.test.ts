@@ -387,6 +387,11 @@ describe('Enterprise Search Controller', () => {
     if (!(ChatSession.findOneAndUpdate as any).restore) {
       sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ nextSeq: 1 } as any)
     }
+    // discardBranches looks up compare branches with ChatSession.find; without
+    // this, delete/archive paths buffer against a real Mongo connection for 10s.
+    if (!(ChatSession.find as any).restore) {
+      stubMongooseFind(ChatSession, 'find', [])
+    }
     if (!(ChatSessionMessage.insertMany as any).restore) {
       sinon.stub(ChatSessionMessage, 'insertMany').resolves([createMockMessageDoc()] as any)
     }

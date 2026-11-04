@@ -863,9 +863,10 @@ export class MongoConversationRepository implements ConversationRepository {
   private async discardBranchesQuietly(
     orgId: string,
     parentId: string,
+    tx?: Tx,
   ): Promise<void> {
     try {
-      await this.discardBranches(orgId, parentId);
+      await this.discardBranches(orgId, parentId, undefined, tx);
     } catch (error) {
       logger.warn('Could not remove the Compare branches of a conversation', {
         parentId,
@@ -999,7 +1000,7 @@ export class MongoConversationRepository implements ConversationRepository {
       { returnDocument: 'after', session: sessionOf(tx), runValidators: true },
     ).exec();
     if (updated && archived) {
-      await this.discardBranchesQuietly(String(updated.orgId), id);
+      await this.discardBranchesQuietly(String(updated.orgId), id, tx);
     }
     return updated ? toPlain<ChatSessionDto>(updated) : null;
   }
@@ -1055,7 +1056,7 @@ export class MongoConversationRepository implements ConversationRepository {
     );
     if (!updatedConversation)
       throw new InternalServerError('Failed to delete conversation');
-    await this.discardBranchesQuietly(actor.orgId, id);
+    await this.discardBranchesQuietly(actor.orgId, id, tx);
 
     const sessionMessages = await ChatSessionMessage.find(
       { sessionId: id },

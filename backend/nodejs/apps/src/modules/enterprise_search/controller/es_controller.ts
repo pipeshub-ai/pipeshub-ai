@@ -805,11 +805,12 @@ export const streamChat =
             })}\n\n`,
       );
       (res as any).flush?.();
+      const createdOrgId = savedConversation.orgId;
       await emitTurnStarted(res, req.body, newConversationId, async () => {
-        const [firstRow] = await getMessages(newConversationId, {
-          orgId: savedConversation!.orgId,
+        const [firstRow] = (await getMessages(newConversationId, {
+          orgId: createdOrgId,
           limit: 1,
-        });
+        })) as Array<{ _id?: string }>;
         return firstRow?._id;
       });
       timer.mark('conversation_created');
@@ -1606,7 +1607,7 @@ export const addMessageStream =
         res,
         req.body,
         confirmedConversation._id,
-        async () => addedQuestionId,
+        () => Promise.resolve(addedQuestionId),
       );
 
       // Format previous conversations for context (excluding the user message we just added)

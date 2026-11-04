@@ -135,6 +135,7 @@ describe('Compare models validators', () => {
         body: { choice },
       }).success;
     expect(ok('primary')).to.equal(true);
+    expect(ok('PRIMARY')).to.equal(true);
     expect(ok(OID)).to.equal(true);
     expect(ok('secondary')).to.equal(false);
     expect(ok(undefined)).to.equal(false);

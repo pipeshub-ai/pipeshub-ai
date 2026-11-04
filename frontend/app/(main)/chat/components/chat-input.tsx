@@ -2348,6 +2348,7 @@ export function ChatInput({
             selectedModel={displayModel}
             onModelSelect={handleModelSelect}
             agentId={agentId}
+            allowCompare
           />
         </ChatInputExpansionPanel>
       ) : usesScopedPanel && isAgentResourcesPanelOpen && expansionViewMode === 'inline' ? (

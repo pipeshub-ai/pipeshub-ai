@@ -1,4 +1,5 @@
 import { NextFunction, Response } from 'express';
+import { currentOrgContext } from '../../../libs/context/orgContext';
 import { createUnitOfWork } from '../../../libs/repositories/doc-store';
 import { refuseIfDraining } from '../../../libs/repositories/drain';
 import { isValidId } from '../../../libs/repositories/ids';
@@ -179,7 +180,7 @@ const sweepStaleBranches = async (
 };
 
 const actorOf = (req: AuthenticatedUserRequest): SessionActor => ({
-  orgId: String(req.user?.orgId),
+  orgId: String(currentOrgContext().orgId),
   userId: String(req.user?.userId),
 });
 
@@ -323,7 +324,7 @@ export const chooseCompare =
     try {
       if (await refuseIfDraining(res)) return;
       const actor = actorOf(req);
-      const { choice } = req.body as { choice: string };
+      const choice = (req.body as { choice: string }).choice.toLowerCase();
       const parent = await loadParent(req);
 
       if (choice === 'primary') {
@@ -337,7 +338,7 @@ export const chooseCompare =
         parent._id,
         actor.userId,
       );
-      const branch = branches.find((b) => b._id === choice.toLowerCase());
+      const branch = branches.find((b) => b._id === choice);
       if (!branch) {
         // A retry after the choice went through: nothing is left to choose from.
         if (branches.length === 0) {

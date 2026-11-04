@@ -10,6 +10,7 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema';
 import * as drain from '../../../../src/libs/repositories/drain';
 import { getConversationRepository } from '../../../../src/libs/repositories/conversation';
+import { asAccount } from '../../../../src/libs/context/orgContext';
 import {
   chooseCompare,
   createCompareBranchHandler,
@@ -44,10 +45,12 @@ const call = async (
       };
     },
   };
-  await handler(
-    { user, params, body, context: { requestId: 'r' }, headers: {} },
-    res,
-    (e: any) => (out.error = e),
+  await asAccount(user.orgId, user.userId, 'test', () =>
+    handler(
+      { user, params, body, context: { requestId: 'r' }, headers: {} },
+      res,
+      (e: any) => (out.error = e),
+    ),
   );
   return out;
 };
