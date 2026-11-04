@@ -9,14 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.config.constants.arangodb import FOLDER_MIME_TYPES
-
 # collection -> the small code kg.graph_changes and kg.node_keys store (kg.coll_code)
 COLL_CODE = {"apps": 1, "recordGroups": 2, "records": 3, "users": 4, "groups": 5, "roles": 6, "teams": 7, "organizations": 8}
 CODE_COLL = {v: k for k, v in COLL_CODE.items()}
 RECORD_COLLS = ("apps", "recordGroups", "records")          # the nodes that have a kg.records row; kind = position + 1
 KIND = {"apps": 1, "recordGroups": 2, "records": 3}
 GROUP_LIKE = ("groups", "roles", "teams")                    # what a user is a member of (R1)
+PRINCIPALS = ("users", "groups", "roles", "teams", "organizations")      # the nodes a grant can come from (main's ``access_sql.PRINCIPALS``)
 HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")
 EDGE_COLLS = ("permission", "belongsTo", "nodeRelations", "inheritPermissions", "userAppRelation", "authenticatedAs")
 LINK_HIERARCHY, LINK_GROUP = 1, 2                            # kg.links.kind
@@ -65,11 +64,18 @@ def edge_ends(coll: str, frm: Key, to: Key, doc: dict) -> set[Key]:
     return {k for k in out if k[0] in COLL_CODE}
 
 
+_TRUE_TEXT = frozenset({"true", "t", "yes", "y", "on", "1"})
+
+
+def sql_true(v: object) -> bool:
+    """A document value as the SQL walk's ``(doc->>'x')::boolean IS TRUE`` reads it."""
+    return v is True or (isinstance(v, str) and v.strip().lower() in _TRUE_TEXT) or (isinstance(v, (int, float)) and not isinstance(v, bool) and v == 1)
+
+
 def flag(v: object) -> bool:
-    """A boolean flag of a node document (isDeleted, isPlaceholder): the truthiness of the stored value, whatever its JSON type, as the Python walk reads it (``not doc.get("isDeleted")``).
-    kg.proj_doc keeps the value whole, so an object holding only nulls is true here as it is there. The one definition the records' columns (which read the projected document) and
-    the stamper (which reads the field) share."""
-    return bool(v)
+    """A boolean flag of a node document (isDeleted, isPlaceholder) as the PostgreSQL walk reads it, ``coalesce((doc->>'isDeleted')::boolean, false)``: true, a
+    true word, or the number 1; ``"false"``, ``0`` and everything else are false. The one definition the records' columns and the stamper share."""
+    return sql_true(v)
 
 
 def _ms(v: object) -> int | None:
@@ -134,14 +140,6 @@ class Derived:
     closure_users: set[int] = field(default_factory=set)
 
 
-_TRUE_TEXT = frozenset({"true", "t", "yes", "y", "on", "1"})
-
-
-def sql_true(v: object) -> bool:
-    """A document value as the SQL walk's ``(doc->>'x')::boolean IS TRUE`` reads it."""
-    return v is True or (isinstance(v, str) and v.strip().lower() in _TRUE_TEXT) or (isinstance(v, (int, float)) and not isinstance(v, bool) and v == 1)
-
-
 def listing_ts(doc: dict, source: str, ingest: str) -> int | None:
     """A date as a listing reads it: the source's when there is one, else the ingest date, else 0. A date that is not a number is missing, which sorts last, as in the walk."""
     v = doc.get(source)
@@ -150,14 +148,27 @@ def listing_ts(doc: dict, source: str, ingest: str) -> int | None:
     return _ms(v)
 
 
+def _rank_parent(snap: Snapshot, e: GEdge, app: str | None) -> tuple[int, int, int]:
+    """Which hierarchy parent is the record's primary one: a PARENT_CHILD parent before an ATTACHMENT one, a parent in the record's own connector before one in
+    another, then the lowest sk. The walk of the graph has no primary parent (it visits all of them); the others are in ``kg.links``, and whoever reads ``parent_sk``
+    reads them together."""
+    pdoc = snap.nodes.get(e.frm, {})
+    return (0 if e.doc.get("relationshipType") == "PARENT_CHILD" else 1, 0 if app_id_of(e.frm, pdoc) == app else 1, snap.sk[e.frm])
+
+
 def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
-    """The kg.records columns of a node (everything but the sk and the stamper's columns)."""
+    """The kg.records columns of a node that ``w_records_upsert`` writes (everything but the sk and the stamper's columns).
+
+    The columns ``alien``, ``folder`` and ``hide_children`` keep their default (false) here: the listing pull request that reads them also writes them."""
     coll, nid = k
+    app = app_id_of(k, doc)
     # the name a listing shows and sorts by: ``name`` first, then the record's or the group's own
     name = _s(doc.get("name") or doc.get("recordName") or doc.get("groupName"))
-    parents = sorted(snap.sk[e.frm] for e in snap.edges_to.get(k, []) if hierarchy_edge(e) and snap.exists(e.frm) and e.frm[0] in RECORD_COLLS)
-    groups = sorted(snap.sk[e.to] for e in snap.edges_from.get(k, []) if e.coll == "belongsTo" and e.to_coll == "recordGroups" and snap.exists(e.to))
-    granted = any(e.coll == "permission" and snap.exists(e.frm) for e in snap.edges_to.get(k, []))
+    parent_edges = sorted((e for e in snap.edges_to.get(k, []) if hierarchy_edge(e) and snap.exists(e.frm) and e.frm[0] in RECORD_COLLS), key=lambda e: _rank_parent(snap, e, app))
+    parents = [snap.sk[e.frm] for e in parent_edges]
+    group_edges = [e for e in snap.edges_from.get(k, []) if e.coll == "belongsTo" and e.to_coll == "recordGroups" and snap.exists(e.to)]
+    groups = [snap.sk[e.to] for e in sorted(group_edges, key=lambda e: (0 if app_id_of(e.to, snap.nodes.get(e.to, {})) == app else 1, snap.sk[e.to]))]
+    granted = any(e.coll == "permission" and e.frm[0] in PRINCIPALS and snap.exists(e.frm) for e in snap.edges_to.get(k, []))
     return {
         "coll": COLL_CODE[coll], "id": nid, "kind": KIND[coll], "app_sk": snap.app_sk(k),
         "group_sk": groups[0] if groups else None, "parent_sk": parents[0] if parents else None,
@@ -167,9 +178,6 @@ def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
         "created_ms": listing_ts(doc, "sourceCreatedAtTimestamp", "createdAtTimestamp"),
         "size_bytes": _ms(doc.get("sizeInBytes")), "record_type": _s(doc.get("recordType")), "origin": _s(doc.get("origin")),
         "external_id": _s(doc.get("externalRecordId")), "deleted": flag(doc.get("isDeleted")), "placeholder": flag(doc.get("isPlaceholder")), "granted": granted,
-        "alien": bool(snap.org) and doc.get("orgId") != snap.org,
-        "folder": coll == "records" and (doc.get("mimeType") in FOLDER_MIME_TYPES or str(doc.get("recordType") or "").upper() == "FOLDER"),
-        "hide_children": coll == "recordGroups" and sql_true(doc.get("hideChildren")),
         "_parents": parents[1:], "_groups": groups[1:],
     }
 
@@ -194,9 +202,9 @@ def derive(focus: set[Key], snap: Snapshot) -> Derived:
             d.links |= {(p, LINK_HIERARCHY, sk) for p in row["_parents"]} | {(g, LINK_GROUP, sk) for g in row["_groups"]}
             d.grant_nodes.add(sk)
             for e in snap.edges_to.get(k, []):
-                if e.coll == "permission" and snap.exists(e.frm):
+                if e.coll == "permission" and e.frm[0] in PRINCIPALS and snap.exists(e.frm):
                     d.grants[(snap.sk[e.frm], sk, str(e.doc.get("type") or ""))] = (_s(e.doc.get("role")), snap.app_sk(k), snap.leaf(k))
-                elif e.coll == "userAppRelation" and k[0] == "apps" and snap.exists(e.frm):
+                elif e.coll == "userAppRelation" and k[0] == "apps" and e.frm[0] in PRINCIPALS and snap.exists(e.frm):
                     d.grants[(snap.sk[e.frm], sk, UAR)] = (None, sk, False)
         if k[0] in ("users", "groups", "roles", "teams", "organizations") and present:
             d.grant_holders.add(sk)
@@ -216,8 +224,10 @@ def derive(focus: set[Key], snap: Snapshot) -> Derived:
                     elif e.coll == "belongsTo" and e.to_coll == "organizations" and snap.exists(e.to):
                         d.closure[(sk, snap.sk[e.to], 0)] = "org"
                     elif e.coll == "authenticatedAs":
-                        app = snap.sk.get(("apps", e.doc.get("connectorId"))) if isinstance(e.doc.get("connectorId"), str) else None
-                        if app is None:
+                        # as the walk reads it: an edge to a user, in a connector of this organisation (an app of another organisation is no gate)
+                        cid = e.doc.get("connectorId")
+                        app = snap.sk.get(("apps", cid)) if isinstance(cid, str) else None
+                        if app is None or e.to_coll != "users" or (snap.org and snap.nodes.get(("apps", cid), {}).get("orgId") != snap.org):
                             continue
                         if not snap.exists(e.to):                    # an account that is not a node has no badges: an edge written for it after it was deleted must not give them
                             continue

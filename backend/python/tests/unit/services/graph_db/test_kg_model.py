@@ -6,6 +6,7 @@ import pytest
 from app.services.graph_db.postgres.kg.model import (
     LINK_GROUP,
     LINK_HIERARCHY,
+    PRINCIPALS,
     UAR,
     GEdge,
     Snapshot,
@@ -51,7 +52,7 @@ def test_a_record_has_its_app_group_parent_and_flags() -> None:
     d = derive({CHILD, REC}, snap)
     kid, folder = d.records[snap.sk[CHILD]], d.records[snap.sk[REC]]
     assert (kid["app_sk"], kid["group_sk"], kid["parent_sk"], kid["name"], kid["granted"], kid["deleted"]) == (snap.sk[APP], snap.sk[G], snap.sk[REC], "Kid", True, False)
-    assert folder["folder"] is True and folder["parent_sk"] is None and folder["group_sk"] is None
+    assert folder["parent_sk"] is None and folder["group_sk"] is None
     assert snap.leaf(CHILD) and not snap.leaf(REC)
 
 
@@ -93,12 +94,6 @@ def test_a_node_that_is_gone_is_reported_and_derives_no_row() -> None:
     assert d.gone == {snap.sk[CHILD]} and d.records == {} and snap.sk[CHILD] in d.link_children and snap.sk[CHILD] in d.grant_nodes
 
 
-def test_a_node_of_another_organisation_is_marked_alien() -> None:
-    nodes = {APP: {}, REC: {"connectorId": "a", "orgId": "someone-else"}}
-    snap = world(nodes, [])
-    assert derive({REC}, snap).records[snap.sk[REC]]["alien"] is True
-
-
 @pytest.mark.parametrize(("coll", "frm", "to", "doc", "ends"), [
     ("nodeRelations", ("records", "p"), ("records", "c"), {"relationshipType": "PARENT_CHILD"}, {("records", "c")}),
     ("nodeRelations", ("records", "p"), ("records", "c"), {"relationshipType": "BOOKMARK"}, set()),
@@ -117,6 +112,89 @@ def test_the_ends_an_edge_changes(coll: str, frm: tuple, to: tuple, doc: dict, e
 def test_numbers_and_flags_are_read_the_way_the_walk_reads_them() -> None:
     assert listing_ts({"s": "12"}, "s", "i") == 12 and listing_ts({"i": 7}, "s", "i") == 7 and listing_ts({}, "s", "i") == 0
     assert listing_ts({"s": True}, "s", "i") is None and listing_ts({"s": "x"}, "s", "i") is None and listing_ts({"s": 2 ** 70}, "s", "i") is None
-    assert [flag(v) for v in (True, False, None, 0, 1, {"a": None}, "")] == [True, False, False, False, True, True, False]
+    assert [flag(v) for v in (True, False, None, 0, 1, {"a": None}, "", "false", "False", "true", "t", 2)] == [True, False, False, False, True, False, False, False, False, True, True, False]
     assert [sql_true(v) for v in (True, "TRUE", " yes ", 1, 1.0, 2, "no", False, None)] == [True, True, True, True, True, False, False, False, False]
     assert app_id_of(APP, {}) == "a" and app_id_of(REC, {"connectorId": "x"}) == "x" and app_id_of(REC, {"connectorId": ""}) is None and app_id_of(REC, {}) is None
+
+
+# ---- the closure and the grants are only what the walk of the graph admits ------------------------------------------------------------------------------
+def closure_of(nodes: dict, edges: list[GEdge], user: tuple = USER, *, org: str = "o") -> dict:
+    snap = world(nodes, edges, org=org)
+    d = derive({user}, snap)
+    names = {v: k for k, v in snap.sk.items()}
+    return {(names[u][1], names[p][1], "-" if a == 0 else names[a][1]): via for (u, p, a), via in d.closure.items()}
+
+
+def test_a_source_account_must_be_a_user_not_any_node() -> None:
+    """A user linked to a team in a connector gets nothing from it: the walk reads the link only to a user."""
+    nodes = {APP: {"orgId": "o"}, USER: {}, TEAM: {}}
+    got = closure_of(nodes, [edge("authenticatedAs", *USER, *TEAM, connectorId="a")])
+    assert got == {("u", "u", "-"): "self"}
+
+
+def test_a_connector_of_another_organisation_is_no_link() -> None:
+    """A badge member through an app of another organisation reaches nothing: the walk gates only on the organisation's own connectors."""
+    acct, group = ("users", "acct"), ("groups", "grp")
+    nodes = {APP: {"orgId": "someone-else"}, USER: {}, acct: {}, group: {}}
+    edges = [edge("authenticatedAs", *USER, *acct, connectorId="a"), edge("permission", *acct, *group, type="USER")]
+    assert closure_of(nodes, edges) == {("u", "u", "-"): "self"}
+    nodes[APP] = {"orgId": "o"}
+    assert closure_of(nodes, edges) == {("u", "u", "-"): "self", ("u", "acct", "a"): "link", ("u", "grp", "a"): "link_badge"}
+
+
+def test_a_source_account_that_is_not_a_node_has_no_link_and_no_badges() -> None:
+    nodes = {APP: {"orgId": "o"}, USER: {}}
+    edges = [edge("authenticatedAs", *USER, "users", "gone", connectorId="a"), edge("permission", "users", "gone", *TEAM, type="USER")]
+    assert closure_of(nodes, edges) == {("u", "u", "-"): "self"}
+
+
+def test_a_connector_that_is_missing_or_named_by_no_text_is_no_link() -> None:
+    acct = ("users", "acct")
+    nodes = {APP: {"orgId": "o"}, USER: {}, acct: {}}
+    for doc in ({}, {"connectorId": 7}, {"connectorId": "nope"}):
+        assert closure_of(nodes, [edge("authenticatedAs", *USER, *acct, **doc)]) == {("u", "u", "-"): "self"}
+
+
+def test_a_membership_needs_a_user_typed_permission_and_an_existing_group_and_an_organisation_that_exists() -> None:
+    nodes = {USER: {}, TEAM: {}, ("organizations", "org"): {}}
+    assert closure_of(nodes, [edge("permission", *USER, *TEAM, type="TEAM")]) == {("u", "u", "-"): "self"}                # another type is no membership
+    assert closure_of(nodes, [edge("permission", *USER, "teams", "gone", type="USER")]) == {("u", "u", "-"): "self"}      # a group that does not exist
+    assert closure_of(nodes, [edge("belongsTo", *USER, "organizations", "gone")]) == {("u", "u", "-"): "self"}            # an organisation that does not exist
+    assert closure_of(nodes, [edge("permission", *USER, *TEAM, type="USER"), edge("belongsTo", *USER, "organizations", "org")]) == {
+        ("u", "u", "-"): "self", ("u", "t", "-"): "membership", ("u", "org", "-"): "org"}
+
+
+def test_only_a_principal_grants() -> None:
+    """A record that points a permission edge at another record grants nothing and does not make it granted."""
+    nodes = {APP: {}, REC: {"connectorId": "a"}, CHILD: {"connectorId": "a"}}
+    snap = world(nodes, [edge("permission", *REC, *CHILD, type="USER", role="OWNER"), edge("userAppRelation", *REC, *APP)])
+    d = derive({CHILD, APP}, snap)
+    assert d.grants == {} and d.records[snap.sk[CHILD]]["granted"] is False
+    assert set(PRINCIPALS) == {"users", "groups", "roles", "teams", "organizations"}
+
+
+def test_the_primary_parent_is_a_parent_child_one_in_the_same_connector_then_the_lowest_sk() -> None:
+    other_app = ("apps", "b")
+    att, foreign, pc = ("records", "att"), ("records", "foreign"), ("records", "pc")
+    nodes = {APP: {}, other_app: {}, att: {"connectorId": "a"}, foreign: {"connectorId": "b"}, pc: {"connectorId": "a"}, CHILD: {"connectorId": "a"}}
+    edges = [edge("nodeRelations", *att, *CHILD, relationshipType="ATTACHMENT"), edge("nodeRelations", *foreign, *CHILD, relationshipType="PARENT_CHILD"),
+             edge("nodeRelations", *pc, *CHILD, relationshipType="PARENT_CHILD")]
+    snap = world(nodes, edges)
+    d = derive({CHILD}, snap)
+    assert d.records[snap.sk[CHILD]]["parent_sk"] == snap.sk[pc]
+    assert d.links == {(snap.sk[att], LINK_HIERARCHY, snap.sk[CHILD]), (snap.sk[foreign], LINK_HIERARCHY, snap.sk[CHILD])}
+
+
+def test_the_primary_group_is_one_of_the_records_own_connector_first() -> None:
+    other = ("apps", "b")
+    own, foreign = ("recordGroups", "own"), ("recordGroups", "foreign")
+    nodes = {APP: {}, other: {}, foreign: {"connectorId": "b"}, own: {"connectorId": "a"}, CHILD: {"connectorId": "a"}}   # the foreign group has the lower sk
+    snap = world(nodes, [edge("belongsTo", *CHILD, *foreign), edge("belongsTo", *CHILD, *own)])
+    assert snap.sk[foreign] < snap.sk[own] and derive({CHILD}, snap).records[snap.sk[CHILD]]["group_sk"] == snap.sk[own]
+
+
+def test_a_record_row_has_exactly_the_columns_the_writer_takes() -> None:
+    from app.services.graph_db.postgres.kg.writers import RECORD_COLS
+    snap = basic()
+    row = derive({CHILD}, snap).records[snap.sk[CHILD]]
+    assert set(row) == set(RECORD_COLS) - {"sk"}

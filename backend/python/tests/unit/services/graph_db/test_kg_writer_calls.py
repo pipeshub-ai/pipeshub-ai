@@ -57,3 +57,10 @@ async def test_nothing_is_sent_for_nothing() -> None:
     w = KgWriter(tx)
     assert await w.records_upsert([]) == 0 and await w.links_set([]) == 0 and await w.nodes_upsert(set()) == {}
     assert tx.calls == []
+
+
+@pytest.mark.asyncio
+async def test_records_go_out_in_sk_order() -> None:
+    tx = FakeTx()
+    await KgWriter(tx).records_upsert([row(3), row(1), row(2)])
+    assert tx.calls[0][1][0] == [1, 2, 3]

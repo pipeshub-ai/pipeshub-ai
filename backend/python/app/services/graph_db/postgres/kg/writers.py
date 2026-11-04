@@ -44,7 +44,7 @@ class KgWriter:
 
     async def records_upsert(self, rows: list[dict]) -> int:
         n = 0
-        for part in _chunks(rows):
+        for part in _chunks(sorted(rows, key=lambda r: r["sk"])):       # key order: two writers that overlap take their row locks in the same order
             args = [[r[c] for r in part] for c in RECORD_COLS]
             n += await self.tx.fetchval("/* pipeshub:kg.w_records_upsert */ SELECT kg.w_records_upsert($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)", *args)
         return n
