@@ -810,6 +810,24 @@ export function describeAnswerWiring(
       }
     });
 
+    it('links a file the agent made to its record page, never to the storage or stream URL', async () => {
+      const signed = 'https://bucket.storage.test/org/doc-1?X-Amz-Signature=secret';
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'CUSTOM', runId: 'r1', name: 'artifact', value: { artifactId: 'art-1', recordId: 'art-1', fileName: 'summary.pdf', downloadUrl: signed, visibility: 'VISIBLE' } },
+        // A sandbox working file is not for the user.
+        { type: 'CUSTOM', runId: 'r1', name: 'artifact', value: { artifactId: 'art-2', recordId: 'art-2', fileName: 'main.ts', downloadUrl: 'https://x.test/api/v1/knowledgeBase/stream/record/art-2', visibility: 'STAGING' } },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens('Here is the summary.'),
+        finished('Here is the summary.'),
+      ]);
+      const posted = client.chat.postMessage.getCalls().map((c) => String((c.args[0] as AnyArgs).text ?? '')).join('\n');
+      expect(posted).to.include('/record/art-1|summary.pdf>');
+      expect(posted).to.not.include('X-Amz-Signature');
+      expect(posted).to.not.include('main.ts');
+      expect(posted).to.not.include('/stream/record/');
+    });
+
     it('finishes the reply when a saved citation lost its document', async () => {
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
