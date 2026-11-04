@@ -69,17 +69,17 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-HEADS = {"kernel": (16, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (3, 0), "platform_data": (4, 0),
-         "graph": (2, 0), "retrieval": (1, 0)}
+HEADS = {"kernel": (17, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (3, 0), "platform_data": (4, 0),
+         "graph": (2, 0), "kg": (1, 0), "retrieval": (1, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"kernel_0016", "platform_0004", "content_0003", "oauth_0003", "platform_data_0004", "graph_0002", "retrieval_0001"}
+REVISION_HEADS = {"platform_0004", "content_0003", "oauth_0003", "platform_data_0004", "kg_0001", "retrieval_0001"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
 
 
 def test_fresh_install(db):
     cluster, name = db
     r = run_migrate(cluster.url(name, MIGRATE))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "epoch kernel=16 min_code=11" in r.stdout and "epoch platform_data=4 min_code=0" in r.stdout
+    assert "epoch kernel=17 min_code=11" in r.stdout and "epoch platform_data=4 min_code=0" in r.stdout
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
         assert {n for (n,) in c.execute("SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname IN ('kernel','platform')")} \
@@ -96,7 +96,7 @@ def test_service_role_grants(db):
     assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
     with connect(cluster, name, "pipeshub_node_login") as c:
         c.execute("SET ROLE pipeshub_node")
-        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == 16
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == 17
         c.execute("SELECT kernel.assert_profile_epoch(1)")
         with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState, match="expects 2"):
             c.execute("SELECT kernel.assert_profile_epoch(2)")
@@ -137,7 +137,7 @@ def test_bare_database_as_superuser(bare_db):
     assert run_migrate(url, **skip).returncode == 0                                            # second run: ownership is consistent
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
-        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 17
+        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 18
         assert c.execute("SELECT count(*) FROM pg_tables WHERE schemaname = 'kernel' AND tableowner <> 'pipeshub_owner'").fetchone()[0] == 0
         assert c.execute("SELECT NOT has_database_privilege('pipeshub_query', current_database(), 'TEMP')").fetchone()[0]
 
@@ -207,7 +207,7 @@ def test_failed_revision_rolls_back_cleanly(db, tmp_path):
         assert c.execute("SELECT note FROM probe.t1 LIMIT 1").fetchone() is None
         versions = {v for (v,) in c.execute("SELECT version_num FROM kernel.alembic_version")}
         # the probe fails mid-run; the branches that ran before it (in an order Alembic does not fix) are complete revisions, never partial
-        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in MODULES))) for v in versions)
+        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in (*MODULES, "graph", "kg")))) for v in versions)
     assert epochs(cluster, name)["probe"] == (1, 0)
     write_probe(tmp_path)                                                              # the fix is a plain re-run
     r = run_migrate(url, **env)
@@ -232,7 +232,7 @@ def test_contract_epochs_and_dev_downgrade(db, tmp_path):
     assert r.returncode == 0, r.stdout
     assert epochs(cluster, name) == {"kernel": (1, 11)}                      # the contract stays
     assert run_migrate(url, **env).returncode == 0                                     # and forward again
-    assert epochs(cluster, name)["kernel"] == (16, 11)
+    assert epochs(cluster, name)["kernel"] == (17, 11)
 
 
 def test_one_module_down_and_up_leaves_a_clean_catalog(db):

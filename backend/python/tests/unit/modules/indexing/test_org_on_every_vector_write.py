@@ -299,8 +299,10 @@ async def test_the_orphan_sweep_binds_each_mappings_org_and_skips_one_without() 
 
     pipeline = MagicMock()
     pipeline.rewrite_or_delete_vector_membership = _cleanup
+    pipeline.orgs_holding_points = AsyncMock(return_value=set())  # no org holds points of v-none: nothing to clean for it
     await sweep_orphaned_virtual_record_mappings(graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=10)
     assert seen == [("v-a", A)]
+    pipeline.orgs_holding_points.assert_awaited_once_with("v-none")  # it was looked up, not skipped by an error
 
 
 async def test_the_membership_backfill_binds_the_org_of_each_record() -> None:
@@ -322,12 +324,14 @@ async def test_the_membership_backfill_binds_the_org_of_each_record() -> None:
 
     pipeline = MagicMock()
     pipeline.sync_vector_membership = _sync
+    pipeline.orgs_holding_points = AsyncMock(return_value=set())  # v2: no org on either side and no points
     lock = AsyncMock()
     lock.try_acquire = AsyncMock(return_value=True)
     await run_vector_membership_backfill_tick(
         logger=MagicMock(), graph_provider=graph, pipeline=pipeline, lock=lock, page_size=10, vrid_pause_ms=0,
     )
     assert seen == [("v1", A)]  # v2 names no org: failed, never synced for "any"
+    pipeline.orgs_holding_points.assert_awaited_once_with("v2")
 
 
 # a VRID shared by two orgs: each org's delete removes its own points when it has no record left
@@ -376,6 +380,23 @@ async def test_bulk_delete_of_a_shared_vrid_removes_only_the_deleting_orgs_point
     pipeline.graph_provider = _shared_graph({})
     await pipeline.bulk_delete_embeddings([VRID], B)
     assert _ids(db) == set()
+
+
+async def test_a_shared_vrids_mapping_and_stored_content_stay_while_another_org_holds_points(db) -> None:
+    """Releasing the mapping on the strength of one org's points alone would strand the other org's points."""
+    pipeline = _pipeline(db)
+    del pipeline._forget_virtual_record_mappings  # the real one
+    pipeline.stored_content = MagicMock()
+    pipeline.stored_content.release_virtual_records = AsyncMock(return_value=[])
+    assert await pipeline._forget_virtual_record_mappings([VRID], org_id=A) == []
+    pipeline.stored_content.release_virtual_records.assert_not_awaited()
+    pipeline.graph_provider = _shared_graph({"rb": B})
+    await pipeline.bulk_delete_embeddings([VRID], A)  # A's points go; B's stay
+    assert await pipeline._forget_virtual_record_mappings([VRID], org_id=A) == []
+    pipeline.stored_content.release_virtual_records.assert_not_awaited()
+    pipeline.graph_provider = _shared_graph({})
+    await pipeline.bulk_delete_embeddings([VRID], B)  # the last org's delete releases it
+    pipeline.stored_content.release_virtual_records.assert_awaited_once()
 
 
 async def test_bulk_delete_with_an_org_other_than_the_bound_one_raises(db) -> None:
