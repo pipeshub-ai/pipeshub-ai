@@ -114,6 +114,17 @@ def test_require_vetted_org_policy_refuses(pdb, case):
             c.execute("ROLLBACK")
 
 
+def test_a_partition_in_another_schema_gets_the_policy_for_the_vetted_role_of_the_root(pdb):
+    # the role is the root schema's (check 119 and the vetted_write policy apply_rls gives a partition both use the root), not the leaf schema's
+    sql = ("CREATE TABLE kt.xp (org_id text NOT NULL, id bigint NOT NULL, PRIMARY KEY (org_id, id)) PARTITION BY LIST (org_id); "
+           "CREATE TABLE ku.xp_def PARTITION OF kt.xp DEFAULT; "
+           "SELECT kernel.apply_rls('kt.xp', 'org', p_vetted_write => true); SELECT kernel.require_vetted_org_policy('kt.xp')")
+    assert [r for r in planted(pdb, sql) if r[0].startswith("119")] == []
+    # the repair path: applying RLS again, now that the table requires the policy, goes through _secure_rel, which passes the root too
+    again = sql + "; SELECT kernel.apply_rls('kt.xp', 'org', p_vetted_write => true)"
+    assert [r for r in planted(pdb, again) if r[0].startswith("119")] == []
+
+
 def test_the_registry_refuses_a_flag_on_a_table_that_reads_unbound(pdb):
     with conn(pdb) as c:
         c.execute("BEGIN")
