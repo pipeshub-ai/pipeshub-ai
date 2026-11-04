@@ -44,6 +44,7 @@ async def _main(argv: list[str]) -> int:
     from app.modules.indexing.vector_membership_backfill import (
         _resolve_indexing_pipeline,
     )
+    from app.services.permissions.wiring import register_scope_generation
     from app.services.vector_db.scope_backfill import ScopeBackfill, status
 
     container = IndexingAppContainer.init("scope_projection")
@@ -68,6 +69,8 @@ async def _main(argv: list[str]) -> int:
         if pipeline is None:
             sys.stderr.write(json.dumps({"error": "no indexing pipeline (vector store not configured)"}) + "\n")
             return EXIT_FAILED
+        # The stamps this run writes carry the deployment's generation, which a service resolves at start; so does this process.
+        await register_scope_generation(container.config_service(), logger)
         job = ScopeBackfill(graph_provider, pipeline.vector_db_service, pipeline.collection_locator, logger)
         code = 0
         for connector in args.connector:
