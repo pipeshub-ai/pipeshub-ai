@@ -59,7 +59,9 @@ FROM upd u JOIN platform.queue_messages m ON m.id = u.message_id ORDER BY u.mess
 # Per-key order. Serialised per group by a transaction-scoped advisory lock, so a claimer sees what the previous one claimed and
 # committed. A delivery is handed out only when no other delivery of its key (same group and topic) is open AND earlier, and none is
 # held by a live claim whatever its id (ids follow the sequence, not commit order: a late-committing earlier message must not start
-# beside a later one already running). Both are probes of queue_deliveries_key, so the claim costs O(batch), not O(backlog).
+# beside a later one already running). Both are probes of queue_deliveries_key, so the claim costs O(batch), not O(backlog). Group and
+# topic are compared as (col || '') so that no other index can serve the probe: PostgreSQL 18 skip-scans the primary key on the topic alone
+# and walks the whole backlog for each candidate.
 _LOCK_ORDERED = """/* pipeshub:queue.lockordered */
 SELECT pg_advisory_xact_lock(7401, hashtext($1 || '/' || $2))"""
 _CLAIM_ORDERED = """/* pipeshub:queue.claimordered */
@@ -69,7 +71,7 @@ WITH picked AS (
     AND ((d.status = 'ready' AND d.visible_at <= now()) OR (d.status = 'claimed' AND d.locked_until <= now()))
     AND (d.msg_key IS NULL OR NOT EXISTS (
       SELECT 1 FROM platform.queue_deliveries e
-      WHERE e.msg_key = d.msg_key AND (e.group_id || '') = $1 AND e.topic = ($2::text[])[1] AND e.message_id <> d.message_id
+      WHERE e.msg_key = d.msg_key AND (e.group_id || '') = $1 AND (e.topic || '') = ($2::text[])[1] AND e.message_id <> d.message_id
         AND e.status <> 'dead'   -- open: ready or claimed (an acked row is gone); not IN (...), see queue_deliveries_key
         AND (e.message_id < d.message_id OR (e.status = 'claimed' AND e.locked_until > now()))))
   ORDER BY d.message_id LIMIT $3 FOR UPDATE OF d SKIP LOCKED),
