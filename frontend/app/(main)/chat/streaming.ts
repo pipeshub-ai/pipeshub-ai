@@ -1064,7 +1064,7 @@ export async function streamMessageForSlot(
 
   // For new conversations, push a pending sidebar entry keyed by slotId
   const isNewConversation = slot.isTemp;
-  if (isNewConversation) {
+  if (isNewConversation && !slot.isTemporaryChat) {
     store.addPendingConversation(slotId);
   }
 

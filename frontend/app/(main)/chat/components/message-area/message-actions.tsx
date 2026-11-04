@@ -143,7 +143,11 @@ export function MessageActions({
   const router = useRouter();
   const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
   const forkLabel = isLastMessage ? t('chat.fork') : t('chat.forkFromHere');
-  const canFork = useChatStore((s) => (s.activeSlotId ? s.slots?.[s.activeSlotId]?.isOwner : undefined) !== false);
+  const canFork = useChatStore((s) => {
+    const slot = s.activeSlotId ? s.slots?.[s.activeSlotId] : undefined;
+    if (slot?.isTemporaryChat) return false;
+    return slot?.isOwner !== false;
+  });
   // Only the owner may rate or regenerate an agent chat (the server refuses a recipient with 404),
   // so a recipient of a shared agent chat is not offered those buttons.
   const isAgentThread = useChatStore((s) => Boolean(s.activeSlotId && s.slots?.[s.activeSlotId]?.threadAgentId));

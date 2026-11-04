@@ -479,10 +479,16 @@ const universalStreamChatModeSchema = z.enum(UNIVERSAL_STREAM_CHAT_MODES, {
 });
 
 export const enterpriseSearchStreamCreateSchema = z.object({
-  body: enterpriseSearchCreateBodySchema.extend({
-    chatMode: universalStreamChatModeSchema,
-    compareTurn: compareTurnSchema,
-  }),
+  body: enterpriseSearchCreateBodySchema
+    .extend({
+      chatMode: universalStreamChatModeSchema,
+      compareTurn: compareTurnSchema,
+      temporary: z.boolean().optional(),
+    })
+    .refine((body) => !(body.temporary && body.projectId), {
+      message: 'Temporary chats cannot be added to a project',
+      path: ['temporary'],
+    }),
 });
 
 // ---------------------------------------------------------------------------

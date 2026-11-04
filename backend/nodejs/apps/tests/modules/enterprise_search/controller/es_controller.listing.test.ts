@@ -109,6 +109,7 @@ describe('es_controller listing and paging', () => {
       store.addSession({ orgId: ORG, userId: OTHER, initiator: OTHER, title: 'someone else’s' })
       store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'agent chat', sessionType: 'agent', agentKey: AGENT_KEY })
       store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'archived', isArchived: true })
+      store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'temporary', isTemporary: true })
 
       const first = await call<{ conversations: Array<{ title: string }>; pagination: Record<string, unknown> }>(
         controller.getAllConversations as JsonHandler,

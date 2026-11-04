@@ -130,6 +130,19 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(row._id).to.match(HEX);
     });
 
+    it('hides temporary chats from lists', async () => {
+      const org = fx.newId(), user = fx.newId();
+      await open(org, user, { title: 'kept' });
+      await open(org, user, {
+        title: 'hidden',
+        isTemporary: true,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      const page = await repo.listSessions(q(org, user));
+      expect(page.rows.map((r) => r.title)).to.deep.equal(['kept']);
+      expect(page.total).to.equal(1);
+    });
+
     it('hides other orgs and soft-deleted rows', async () => {
       const org = fx.newId(), other = fx.newId(), user = fx.newId();
       const s = await open(org, user);

@@ -51,4 +51,19 @@ describe('ConversationHeaderOverlay', () => {
 
     expect(container.innerHTML).toBe('');
   });
+
+  it('shows the temporary-chat toggle in the same top-right row', () => {
+    const toggle = <span data-testid="temporary">Temporary</span>;
+    render(
+      <ConversationHeaderOverlay
+        conversationId={null}
+        agentChip={null}
+        shareGroup={null}
+        temporaryToggle={toggle}
+      />,
+    );
+
+    expect(screen.getByTestId('temporary')).toBeTruthy();
+    expect(box('temporary').style.right).toBe('16px');
+  });
 });
