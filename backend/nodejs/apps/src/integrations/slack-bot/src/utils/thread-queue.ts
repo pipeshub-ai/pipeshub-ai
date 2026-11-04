@@ -367,11 +367,13 @@ export class ThreadQueue {
     const runDirect = async (): Promise<SubmitResult> =>
       (await runBatch([item])) === 'busy' ? 'busy' : 'direct';
 
+    // Per answer, not per pod: a stalled answer must not pass the owner checks of the one that took over.
+    const owner = `${this.owner}:${randomUUID()}`;
     let outcome: 'acquired' | 'queued' | 'full';
     try {
       outcome = await this.store.acquireOrEnqueue(
         key,
-        this.owner,
+        owner,
         item,
         this.maxPending,
       );
@@ -388,7 +390,7 @@ export class ThreadQueue {
     // Started outside the request's org context: it only renews the lock, and ends with the drain.
     const timer = spawnDetached(() =>
       setInterval(() => {
-        this.store.renew(key, this.owner).then(
+        this.store.renew(key, owner).then(
           (ok) => {
             if (!ok) lock.lost = true;
           },
@@ -405,9 +407,12 @@ export class ThreadQueue {
     let storeFailedFirst = false;
     try {
       for (;;) {
-        const batch = await this.store.takePendingOrRelease(key, this.owner);
+        const batch = await this.store.takePendingOrRelease(key, owner);
         if (batch.length === 0) break;
-        if ((await runBatch(batch)) === 'busy' && first) result = 'busy';
+        // A Slack retry handled by another pod can queue the same message twice.
+        const seen = new Set<string>();
+        const unique = batch.filter((m) => !seen.has(m.ts) && !!seen.add(m.ts));
+        if ((await runBatch(unique)) === 'busy' && first) result = 'busy';
         first = false;
         // Another owner took over after we stalled past the TTL; it drains.
         if (lock.lost) break;
