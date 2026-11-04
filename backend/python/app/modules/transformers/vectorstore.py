@@ -15,6 +15,7 @@ No LangChain QdrantVectorStore is imported or used.
 
 import asyncio
 import codecs
+import contextlib
 import inspect
 import json
 import logging
@@ -31,6 +32,7 @@ from langchain_core.documents import Document
 
 from app.config.constants.ai_models import TOKENIZE_MAX_CHARS, TOKENIZE_MAX_ITEMS
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import MissingOrgContext, current_or_system, for_org
 from app.exceptions.indexing_exceptions import (
     ChunkingError,
     DocumentProcessingError,
@@ -1271,11 +1273,21 @@ class VectorStore(Transformer):
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
         with stage("vector.delete"):
             await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
-        tokens = await self._bind_membership(virtual_record_id, org_id=org_id)
+        # The stamp is computed under the organisation of the record (enforced context checks read the ambient one), so a caller
+        # with none bound gets the one it names; a context already bound is left as it is.
         try:
-            await self._process_document_chunks([summary_doc], record_id, collection_name)
-        finally:
-            reset_membership_context(tokens)
+            current_or_system()
+            org_scope: contextlib.AbstractContextManager = contextlib.nullcontext()
+        except MissingOrgContext:
+            org_scope = for_org(org_id, job="index_record_summary") if org_id else contextlib.nullcontext()
+        with org_scope:
+            tokens = await self._bind_membership(virtual_record_id, org_id=org_id)
+            try:
+                await self._process_document_chunks([summary_doc], record_id, collection_name)
+            finally:
+                reset_membership_context(tokens)
+            # The membership and the stamp were read before the embedding: what changed meanwhile is applied now, as for the other points
+            await self._resync_membership_after_write(virtual_record_id, record_id)
         self.logger.debug("✅ Indexed record summary for record %s", record_id)
 
     # ------------------------------------------------------------------

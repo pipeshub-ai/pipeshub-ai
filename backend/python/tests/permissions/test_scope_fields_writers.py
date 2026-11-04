@@ -343,3 +343,64 @@ async def test_the_stale_marker_is_written_even_when_no_org_is_bound(monkeypatch
     await mark_scope_stale(vdb, loaded.locator, v, log)  # nothing bound here
     point = (await vdb.retrieve_points(COLL, loaded.points[v]))[0]
     assert ScopeFields.from_payload(point.payload) == STALE_SCOPE
+
+
+async def _summary_store(vdb, loaded, on_write) -> object:
+    from unittest.mock import AsyncMock
+
+    from app.modules.transformers.vectorstore import VectorStore
+
+    store = VectorStore.__new__(VectorStore)
+    store.graph_provider, store.logger, store.vector_db_service, store.collection_locator = loaded.graph, log, vdb, loaded.locator
+    store.dense_embeddings, store.embedding_size = object(), 8
+    store._build_record_summary_document = lambda *a, **k: object()
+    store._ensure_collection = AsyncMock(return_value=COLL)
+    store.delete_blocks_by_ids = AsyncMock()
+    store._record_is_gone = AsyncMock(return_value=False)
+    store._process_document_chunks = on_write
+    return store
+
+
+async def test_a_membership_change_while_the_summary_is_embedded_does_not_leave_a_trusted_stale_stamp(monkeypatch) -> None:
+    """The interleaving, without a sleep: the stamp is read, the graph changes (in the writer standing in for the embedding), then the
+    point lands with the stamp that was read. The summary is resynced after the write, so what it carries is what the graph says now."""
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
+    vdb = InMemoryVectorDB()
+    with oc.for_org(ORG, job="scope-fields-test"):
+        loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
+        await sync_all(loaded, vdb)
+    v = next(iter(loaded.records))
+    before = ScopeFields.from_payload((await vdb.retrieve_points(COLL, loaded.points[v][:1]))[0].payload)
+    assert before.trusted
+
+    async def embed_and_write(docs, record_id, coll) -> None:
+        nodes = loaded.graph.stamps.node_map  # a restriction arrives while the embedding runs
+        loaded.graph.stamps.node_map = {
+            **nodes, **{i: replace(n, rule="RESTRICTED", granted=True) for i, n in nodes.items() if n.kind == "record" and n.vrid == v}}
+        payload = vector_point_payload({"orgId": ORG, "virtualRecordId": v}, "summary")  # the stamp bound before the change
+        await vdb.upsert_points(COLL, [VectorPoint(id="summary-point", dense_vector=[0.0] * 8, payload={**payload, "metadata": {"orgId": ORG, "virtualRecordId": v}})])
+
+    store = await _summary_store(vdb, loaded, embed_and_write)
+    await store.index_record_summary("rid", v, ORG, object())  # no org bound by the caller: it binds the one it names
+    got = ScopeFields.from_payload(vdb.collections[COLL]["summary-point"].payload)
+    with oc.for_org(ORG, job="scope-fields-test"):
+        want = (await ScopeProjector(loaded.graph.stamps).project_virtual_record(ORG, loaded.records[v]))[0]
+    assert got == want and got != before
+
+
+async def test_the_summary_is_stamped_under_enforced_org_context_with_none_bound_by_the_caller(monkeypatch) -> None:
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
+    vdb = InMemoryVectorDB()
+    with oc.for_org(ORG, job="scope-fields-test"):
+        loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
+        await sync_all(loaded, vdb)
+    v = next(iter(loaded.records))
+    seen: list[str | None] = []
+
+    async def write(docs, record_id, coll) -> None:
+        seen.append(oc.current_org_id())  # what the stamp graph's checks read
+
+    store = await _summary_store(vdb, loaded, write)
+    await store.index_record_summary("rid", v, ORG, object())
+    assert seen == [ORG]
