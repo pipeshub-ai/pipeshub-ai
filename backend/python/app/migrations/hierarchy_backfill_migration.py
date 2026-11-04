@@ -44,7 +44,9 @@ class HierarchyBackfillMigrationService:
             return {"success": False, "added": {}, "error": str(e)}
 
         added = (result or {}).get("added", {})
-        await note_org_structure_change(self.graph_provider, None, self.logger)  # hierarchy edges written outside the transaction store
+        if not await note_org_structure_change(self.graph_provider, None, self.logger):  # hierarchy edges written outside the transaction store
+            self.logger.error("structure change not recorded for every connector; the migration stays pending and runs again at the next start")
+            return {"success": False, "added": added, "error": "structure change not recorded"}
         try:
             await self.config_service.set_config(
                 self.MIGRATION_FLAG_KEY,

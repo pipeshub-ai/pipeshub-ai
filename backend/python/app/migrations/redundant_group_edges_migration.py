@@ -43,7 +43,9 @@ class RedundantGroupEdgesMigrationService:
             return {"success": False, "removed": 0, "error": str(e)}
 
         removed = (result or {}).get("removed", 0)
-        await note_org_structure_change(self.graph_provider, None, self.logger)  # group edges removed outside the transaction store
+        if not await note_org_structure_change(self.graph_provider, None, self.logger):  # group edges removed outside the transaction store
+            self.logger.error("structure change not recorded for every connector; the migration stays pending and runs again at the next start")
+            return {"success": False, "removed": removed, "error": "structure change not recorded"}
         try:
             await self.config_service.set_config(
                 self.MIGRATION_FLAG_KEY,
