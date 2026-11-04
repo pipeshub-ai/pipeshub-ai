@@ -8,6 +8,7 @@ import pytest
 from psycopg import errors as pg
 
 from .rls_fixture import ORG_A, ORG_B
+from .test_vetted import install
 from .test_vetted_pins import (  # noqa: F401  (pdb is the module fixture)
     conn,
     mutated,
@@ -105,6 +106,18 @@ PLANTS = [
     ("F4e an inheritance child of a pinned table",
      "SET LOCAL ROLE pipeshub_owner; CREATE TABLE kt.fences_kid () INHERITS (kt.fences); ALTER TABLE kt.fences_kid ADD PRIMARY KEY (org_id, id); SELECT kernel.apply_rls('kt.fences_kid', 'org');", "122"),
     # ---- F5: privileges
+    ("F5 DELETE for the connectors role on an upsert-only table", "GRANT DELETE ON kt.prefs TO pipeshub_connectors", "126"),
+    ("F5 DELETE for the connectors role on an insert-only table", "GRANT DELETE ON kt.keys TO pipeshub_connectors", "126"),
+    ("F5 a column UPDATE grant", "GRANT UPDATE (v) ON kt.prefs TO pipeshub_connectors", "127"),
+    ("F5 the vetted role keeps DELETE on an upsert-only table", "GRANT DELETE ON kt.prefs TO pipeshub_vetted_kt", "124"),
+    ("F5 the vetted role holds DELETE on an upsert-only table", "GRANT DELETE ON kt.keys TO pipeshub_vetted_kt", "124"),
+    ("F5 an access table nobody pinned is not open for the connectors role",
+     "SET LOCAL ROLE pipeshub_owner; CREATE TABLE kt.openacc (org_id text NOT NULL, id bigint NOT NULL, PRIMARY KEY (org_id, id));\n"
+     "SELECT kernel.apply_rls('kt.openacc', 'org', p_vetted_write => true); SELECT kernel.require_vetted_org_policy('kt.openacc'); GRANT INSERT, UPDATE, DELETE ON kt.openacc TO pipeshub_connectors;", "126"),
+    ("F5 pins stripped from a table: it stays closed",
+     "DELETE FROM kernel.vetted_write_pins WHERE rel = 'kt.grants'::regclass; GRANT INSERT, UPDATE, DELETE ON kt.grants TO pipeshub_connectors", "126"),
+    ("F5 pins stripped: the vetted role still holds what they needed",
+     "DELETE FROM kernel.vetted_write_pins WHERE rel = 'kt.grants'::regclass", "124"),
     # ---- F7: a cap that guards nothing
     ("F7 IF cardinality(..) > N THEN NULL", mutated("kt.w_grants_delete", "IF cardinality(p_principals) > 5000 THEN RAISE EXCEPTION 'w_grants_delete: p_principals takes at most 5000 items' USING ERRCODE = '22023'; END IF;",
                                                    "IF cardinality(p_principals) > 5000 THEN NULL; END IF;"), "108"),
@@ -137,8 +150,39 @@ def _as(c, role: str, org: str | None, sql: str, args=()):
         return cur.fetchall() if cur.description else cur.rowcount
 
 
+def test_an_org_rebinding_function_cannot_reach_the_other_org_because_the_policy_binds_the_vetted_role(pdb):
+    """P01 as it ran in the review: the function sets v_org to org B and deletes; with the per-org policy the DELETE sees none of org B's rows."""
+    with conn(pdb) as c:
+        c.execute("DELETE FROM kt.fences")
+        for org in (ORG_A, ORG_B):
+            c.execute("INSERT INTO kt.fences (org_id, id, reason) VALUES (%s, 1, 'r')", (org,))
+        c.execute("BEGIN")
+        try:
+            install(c, hand("p01a", f"  v_org := '{ORG_B}';\n" + DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)))
+            assert _as(c, "pipeshub_connectors", ORG_A, "SELECT kt.p01a(1)") == [(1,)]
+            c.execute("COMMIT")
+        except BaseException:
+            c.execute("ROLLBACK")
+            raise
+        # the policy kept both rows: the function ran as org A, so its DELETE of org B's id 1 saw nothing
+        assert sorted(c.execute("SELECT org_id FROM kt.fences").fetchall()) == sorted([(ORG_A,), (ORG_B,)])
+        c.execute("BEGIN")
+        c.execute("DROP FUNCTION kt.p01a(bigint)")
+        c.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
+        c.execute("DELETE FROM kernel.vetted_write_pins WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
+        c.execute("COMMIT")
+        c.execute("DELETE FROM kt.fences")
 
 
+def test_an_insert_for_the_other_org_is_refused_by_the_policy(pdb):
+    with conn(pdb) as c:
+        c.execute("BEGIN")
+        try:
+            install(c, hand("p03a", f"  INSERT INTO kt.fences (org_id, id, reason) VALUES (v_org, p_id, 'x'), ('{ORG_B}', p_id, 'planted');\n  RETURN 1;", pins=("'kt.fences', 'insert'",)))
+            with pytest.raises(pg.InsufficientPrivilege):
+                _as(c, "pipeshub_connectors", ORG_A, "SELECT kt.p03a(7)")
+        finally:
+            c.execute("ROLLBACK")
 
 
 def test_a_role_that_may_not_write_the_table_cannot_write_it_through_a_wrapper_view_or_child(pdb):

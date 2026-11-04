@@ -321,6 +321,15 @@ NO_REPEATED_PATH_NODES = (
 )
 
 # Search metadata filters: (filter key, relationship, target label, name property, query parameter).
+_LABEL_TO_COLLECTION = {label: collection for collection, label in COLLECTION_TO_LABEL.items()}
+
+
+def collection_of_labels(labels: list[str] | None) -> str:
+    """The collection a node belongs to, from its labels: the known collection label, whatever other labels it carries and in
+    whatever order the store lists them (`labels()` has no order). Several known ones: the smallest, so the answer is stable."""
+    known = sorted(_LABEL_TO_COLLECTION[label] for label in labels or [] if label in _LABEL_TO_COLLECTION)
+    return known[0] if known else ""
+
 # The labels must be the ones the indexing writer stores (see COLLECTION_TO_LABEL).
 _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
     ("departments", "BELONGS_TO_DEPARTMENT", Neo4jLabel.DEPARTMENTS.value, "departmentName", "departmentNames"),
@@ -8642,6 +8651,44 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def permission_hierarchy_view(self) -> Neo4jHierarchyView:
         return Neo4jHierarchyView(lambda: self.client)
+
+    @override
+    async def get_structure_of_nodes(
+        self, collection: str, node_ids: list[str], transaction: str | None = None, *, raise_on_error: bool = False
+    ) -> dict[str, frozenset]:
+        if not node_ids:
+            return {}
+        label = collection_to_label(collection)
+        try:
+            rows = await self.client.execute_query(
+                f"""
+                UNWIND $ids AS id
+                MATCH (n:{label} {{id: id}})
+                RETURN n.id AS id,
+                       [(n)-[:BELONGS_TO]->(g) | [g.id, labels(g)]] AS belongs,
+                       [(n)-[:INHERIT_PERMISSIONS]->(q) | [q.id, labels(q)]] AS inherits,
+                       [(p)-[h:NODE_RELATION]->(n) WHERE h.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] | [p.id, h.relationshipType, labels(p)]] AS parents,
+                       EXISTS {{ ()-[:PERMISSION]->(n) }} AS granted
+                """,
+                parameters={"ids": list(node_ids)},
+                txn_id=transaction,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Get structure of nodes failed: {e}")
+            if raise_on_error:
+                raise
+            return {}
+        out: dict[str, frozenset] = {}
+        for r in rows or []:
+            me = r["id"]
+            # the collection of the other end is part of the edge: an app and a record group may share a key
+            edges = {(CollectionNames.BELONGS_TO.value, me, g, collection_of_labels(c)) for g, c in r["belongs"] or []}
+            edges |= {(CollectionNames.INHERIT_PERMISSIONS.value, me, q, collection_of_labels(c)) for q, c in r["inherits"] or []}
+            edges |= {(CollectionNames.NODE_RELATIONS.value, p, me, t, collection_of_labels(c)) for p, t, c in r["parents"] or []}
+            if r.get("granted"):
+                edges.add(("granted", me))
+            out[me] = frozenset(edges)
+        return out
 
     def permission_stamp_graph(self) -> Neo4jStampGraph:
         return Neo4jStampGraph(lambda: self.client)
@@ -17771,7 +17818,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node.
@@ -17833,6 +17882,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_edges_from_node_with_target_name(

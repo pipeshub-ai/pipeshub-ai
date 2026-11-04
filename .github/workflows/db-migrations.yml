@@ -25,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         pg: ['17', '18']
-        shard: [rls, integration, graph, vetted, pins, placement, upkeep]
+        shard: [rls, integration, graph, vetted, pins, placement, upkeep, upgrade, kg]
         include:
           - shard: rls
             files: tests/test_rls.py tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
@@ -44,8 +44,8 @@ jobs:
             min_tests: 503
             suites: ''
           - shard: pins
-            files: tests/test_vetted_pins.py tests/test_vetted_pins_k2.py tests/test_vetted_pins_k3.py
-            min_tests: 309
+            files: tests/test_vetted_pins.py tests/test_vetted_pins_k2.py tests/test_vetted_pins_k3.py tests/test_vetted_org_policy.py
+            min_tests: 351
             suites: ''
           - shard: placement
             files: tests/test_placement.py
@@ -55,11 +55,20 @@ jobs:
             files: tests/test_upkeep.py
             min_tests: 36
             suites: '--expect-suite tests.test_upkeep=36'
+          - shard: upgrade
+            files: tests/test_pins_upgrade.py
+            min_tests: 8
+            suites: ''
+          - shard: kg
+            files: tests/test_kg_schema.py
+            min_tests: 8
+            suites: '--expect-suite tests.test_kg_schema=8'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: ${{ matrix.shard != 'upgrade' && 1 || 0 }}      # the upgrade test starts from the tree before kernel_0016, read from the history
 
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
