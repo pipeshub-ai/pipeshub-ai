@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import {
   DEFAULT_NOTIFICATION_PAGE_SIZE,
   NotificationsApi,
@@ -223,3 +224,5 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     });
   },
 }));
+
+resetStoreOnSessionEnd(useNotificationStore);
