@@ -225,6 +225,22 @@ async def test_a_hung_delete_is_bounded_like_a_hung_listing(monkeypatch) -> None
         await asyncio.sleep(3600)
         return web.json_response({"purged": 1})
 
+    sock_reads: list[float | None] = []
+    real_session = store_module.get_shared_session
+
+    class Recording:
+        def __init__(self, session: object) -> None:
+            self._session = session
+
+        def delete(self, *args: object, **kwargs: object) -> object:
+            sock_reads.append(getattr(kwargs.get("timeout"), "sock_read", None))
+            return self._session.delete(*args, **kwargs)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._session, name)
+
+    monkeypatch.setattr(store_module, "get_shared_session", lambda: Recording(real_session()))
+
     runner, origin = await _server([("GET", LIST, listing), ("DELETE", DELETE, delete)])
     try:
         took = await _tick(origin, _graph(200))
@@ -234,6 +250,8 @@ async def test_a_hung_delete_is_bounded_like_a_hung_listing(monkeypatch) -> None
     # A hung listing ends the page after ~1 listing timeout; a hung delete should not cost 3 attempts.
     # Attempts are counted, not timed: a loaded host stretches the clock but not the count.
     assert listed and dict(attempts) == dict.fromkeys(listed, 1), f"delete attempts per listed document: {dict(attempts)}"
+    assert sock_reads
+    assert set(sock_reads) == {0.5}, sock_reads  # the scaled read timeout, not the deadline-derived total
     assert took < 20, f"tick ran into its 20 s budget ({took:.1f}s)"
 
 
