@@ -178,9 +178,12 @@ async def one_copy_deleted(
     kb_client.delete_record(two_copies["first"].record_id)
     await fp.settle(fp.assert_graph_gone(graph_provider, two_copies["copies"].graph), "the first copy")
     # Content filed under the deleted copy is handed to the other one; where it ends up.
+    vrid = two_copies["second"].virtual_record_id
+    old = two_copies["copies"].envelope_paths[vrid]
     envelope_now = await fp.settled_envelope_path(
-        blob_store, mongo_store, org_id=test_org_id, virtual_record_id=two_copies["second"].virtual_record_id,
+        blob_store, mongo_store, org_id=test_org_id, virtual_record_id=vrid,
         within=records_folder(test_org_id, two_copies["kb_id"]), vendor=two_copies["vendor"],
+        leaving=old if fp.filed_under(old, two_copies["first"]) else None,
     )
     return {**two_copies, "envelope_now": envelope_now}
 
@@ -574,9 +577,11 @@ class TestAddingACopyWhileTheOriginalIsDeleted:
         race = raced[timing]
         vrid = race.copy.virtual_record_id if race.copy else None
         assert vrid, "The copy has no virtual record id, so no stored content can be its."
+        old = race.before.envelope_paths.get(vrid) if race.shares_content else None
         path = await fp.settled_envelope_path(
             blob_store, mongo_store, org_id=test_org_id, virtual_record_id=vrid,
             within=records_folder(test_org_id, race.kb_id), vendor=race.vendor,
+            leaving=old if old and fp.filed_under(old, race.original) else None,
         )
         envelopes = [
             d for d in await mongo_store.stored_record_documents(test_org_id, virtual_record_id=vrid)

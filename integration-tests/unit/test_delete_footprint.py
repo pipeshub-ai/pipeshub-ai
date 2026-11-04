@@ -580,7 +580,7 @@ async def test_unchanged_reads_handed_over_content_where_it_is_filed_now() -> No
     await fp.assert_unchanged(
         SHARED_BEFORE, graph, vector, blob, mongo, org_id=ORG,
         records=[fp.Tracked(name="copy.md", record_id="r2", virtual_record_id=VRID)],
-        what="x", handed_over={VRID: FOLDER},
+        what="x", handed_over={VRID: fp.Handover(FOLDER, leaving=PREFIX)},
     )
 
     with pytest.raises(AssertionError, match=r"blob files .*: 2 -> 0"):
@@ -588,3 +588,43 @@ async def test_unchanged_reads_handed_over_content_where_it_is_filed_now() -> No
             SHARED_BEFORE, graph, vector, blob, mongo, org_id=ORG,
             records=[fp.Tracked(name="copy.md", record_id="r2", virtual_record_id=VRID)], what="x",
         )
+
+
+@pytest.mark.asyncio
+async def test_the_settled_envelope_path_does_not_stop_on_the_folder_it_must_leave() -> None:
+    """Before the delete's event runs, two reads agree on the deleted record's folder with
+    every piece still in it; settling there would check the content in the wrong place."""
+    _, _, blob, mongo = _survivor_stores({PREFIX: 2, MOVED_TO: 2})
+    reads = iter([PREFIX, PREFIX, PREFIX, MOVED_TO, MOVED_TO])
+    mongo.envelope_path.side_effect = lambda *a, **kw: next(reads)
+
+    path = await fp.settled_envelope_path(
+        blob, mongo, org_id=ORG, virtual_record_id=VRID, within=FOLDER, leaving=PREFIX
+    )
+
+    assert path == MOVED_TO
+
+
+@pytest.mark.asyncio
+async def test_content_that_never_leaves_the_deleted_records_folder_is_reported() -> None:
+    _, _, blob, mongo = _survivor_stores({PREFIX: 2})
+    mongo.envelope_path.return_value = PREFIX
+
+    with pytest.raises(AssertionError, match="still filed under the deleted record's folder"):
+        await fp.settled_envelope_path(
+            blob, mongo, org_id=ORG, virtual_record_id=VRID, within=FOLDER, leaving=PREFIX, attempts=3
+        )
+
+
+@pytest.mark.asyncio
+async def test_content_filed_under_a_remaining_holder_may_stay() -> None:
+    _, _, blob, mongo = _survivor_stores({PREFIX: 2})
+    mongo.envelope_path.return_value = PREFIX
+
+    assert await fp.settled_envelope_path(blob, mongo, org_id=ORG, virtual_record_id=VRID, within=FOLDER) == PREFIX
+
+
+def test_an_envelope_folder_is_the_records_it_is_named_after() -> None:
+    assert fp.filed_under(f"{FOLDER}/a", fp.Tracked(name="a", record_id="r1", virtual_record_id=VRID))
+    assert not fp.filed_under(f"{FOLDER}/copy", fp.Tracked(name="a", record_id="r1", virtual_record_id=VRID))
+

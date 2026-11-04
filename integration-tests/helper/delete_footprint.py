@@ -417,18 +417,19 @@ async def assert_unchanged(
     connector_id: str | None = None,
     vendor: str = "local",
     what: str,
-    handed_over: dict[str, str] | None = None,
+    handed_over: dict[str, Handover] | None = None,
 ) -> None:
     """Every count taken before the delete is the same after it, store by store.
 
-    *handed_over* names shared content (virtual record id -> the collection folder
-    it stays in) whose envelope the delete may have handed to a surviving holder:
-    it is compared where it is filed now, and must have left its old folder.
+    *handed_over* names shared content (by virtual record id) whose envelope the
+    delete may have handed to a surviving holder: it is compared where it is filed
+    now, and must have left its old folder.
     """
     moved: dict[str, str] = {}
-    for vrid, within in (handed_over or {}).items():
+    for vrid, handover in (handed_over or {}).items():
         moved[before.envelope_paths[vrid]] = await settled_envelope_path(
-            blob, mongo, org_id=org_id, virtual_record_id=vrid, within=within, vendor=vendor,
+            blob, mongo, org_id=org_id, virtual_record_id=vrid, within=handover.within,
+            vendor=vendor, leaving=handover.leaving,
         )
     envelopes = {v: moved.get(p, p) for v, p in before.envelope_paths.items()}
     nodes_now = await graph.count_existing_nodes(before.graph.handles)
@@ -477,6 +478,24 @@ def relocated(fp: StoresFootprint, moved: dict[str, str]) -> StoresFootprint:
     )
 
 
+@dataclass(frozen=True)
+class Handover:
+    """Shared content a delete may hand to a surviving holder.
+
+    *within* is the collection folder it stays in. *leaving* is the folder it was filed
+    in when that folder belongs to the deleted record, so the content has to leave it;
+    None when it was filed under a holder that remains, and may stay where it is.
+    """
+
+    within: str
+    leaving: str | None = None
+
+
+def filed_under(path: str, record: Tracked) -> bool:
+    """Whether an envelope folder is *record*'s: the folder is named after the record it is filed under."""
+    return path.rsplit("/", 1)[-1] == record.name
+
+
 async def settled_envelope_path(
     blob: "BlobStoreProbe",
     mongo: "MongoStoreProbe",
@@ -485,13 +504,16 @@ async def settled_envelope_path(
     virtual_record_id: str,
     within: str,
     vendor: str = "local",
-    attempts: int = 24,
+    leaving: str | None = None,
+    attempts: int = 36,
 ) -> str:
     """Where shared content is filed once a delete of one of its holders has settled.
 
-    The delete hands content filed under the deleted record to a surviving holder;
-    a read during the move can see it in neither place, so two reads a poll apart
-    must agree on the folder and on what is in it.
+    The delete's event hands content filed under the deleted record to a surviving
+    holder some time after the record leaves the graph, and a read during the move can
+    see it in neither place. Two reads a poll apart must agree on the folder and on what
+    is in it; with *leaving*, the content must also have left that folder, since two
+    reads before the handover runs would agree on it too.
     """
 
     async def read() -> tuple[str, int, int]:
@@ -502,9 +524,14 @@ async def settled_envelope_path(
     for _ in range(attempts):
         await asyncio.sleep(POLL)
         current = await read()
-        if current == previous:
+        if current == previous and current[0] != leaving:
             return current[0]
         previous = current
+    if previous[0] == leaving:
+        raise AssertionError(
+            f"The shared content {virtual_record_id} is still filed under the deleted record's "
+            f"folder {leaving!r}; it was not handed to a holder that remains."
+        )
     raise AssertionError(f"The shared content {virtual_record_id} kept moving; last read: {previous}")
 
 

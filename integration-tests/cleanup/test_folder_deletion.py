@@ -218,9 +218,13 @@ class TestDeletingAFolderWithASubFolderAndSharedContent:
         That content was filed under the deleted folder, so the delete hands it to
         the copy: it is counted where it is filed now, and must have left the folder.
         """
+        shared = folder_tree_delete["shared"]
+        old = folder_tree_delete["outside_before"].envelope_paths[shared.virtual_record_id]
         await fp.assert_unchanged(
             folder_tree_delete["outside_before"], graph_provider, vector_store, blob_store, mongo_store,
             org_id=test_org_id, records=folder_tree_delete["outside"],
             vendor=folder_tree_delete["vendor"], what="the records outside the folder",
-            handed_over={folder_tree_delete["shared"].virtual_record_id: folder_tree_delete["within"]},
+            handed_over={shared.virtual_record_id: fp.Handover(
+                folder_tree_delete["within"], leaving=old if fp.filed_under(old, shared) else None,
+            )},
         )
