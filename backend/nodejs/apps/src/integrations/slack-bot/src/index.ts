@@ -42,6 +42,7 @@ import {
   stripArtifactMarkers,
 } from "./utils/parse-artifact-markers";
 import {
+  asSlackCitations,
   stripFragmentDirective,
   CitationMarkers,
   splitOpenLinkTail,
@@ -279,7 +280,7 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
   const seenRecordIds = new Set<string>();
   const uniqueRecords: Array<{ name: string; url: string }> = [];
 
-  for (const citation of citations || []) {
+  for (const citation of asSlackCitations(citations)) {
     const recordId = citation.citationData.metadata.recordId;
     if (!recordId) continue;
 
