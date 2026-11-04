@@ -1872,6 +1872,26 @@ export function describeAnswerWiring(
         }
       });
 
+      it('leaves messages newer than the turn out of its thread context', async () => {
+        post.callsFake(async () => ({ data: sse(...answerFrames('completed')) }));
+        const client = slackClient();
+        const current = reply('100.2', 'second question');
+        // Slack's last reply is dropped as "the current message", so m3 needs one after it.
+        client.apiCall.withArgs('conversations.replies').resolves({
+          messages: [
+            { ts: '100.1', user: 'U1', text: 'first question' },
+            { ...current, type: 'message' },
+            { ts: '100.3', user: 'U1', text: 'later question', thread_ts: '100.1' },
+            { ts: '100.4', user: 'U1', text: 'latest question', thread_ts: '100.1' },
+          ],
+        });
+        await send(client, current);
+        const [body] = streamBodies();
+        expect(body.query).to.include('first question');
+        expect(body.query).to.include('second question');
+        expect(body.query).to.not.include('later question');
+      });
+
       it("says when an earlier thread file can't be read", async () => {
         const zip = { id: 'F9', name: 'notes.zip', filetype: 'zip', mimetype: 'application/zip', url_private: 'https://files.slack.test/notes.zip' };
         const current = reply('100.4', 'what is in it?');
