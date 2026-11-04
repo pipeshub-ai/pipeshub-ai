@@ -492,3 +492,22 @@ def test_every_test_file_is_in_exactly_one_shard_of_the_db_migrations_workflow()
     named = [f for shard in matrix["include"] for f in shard["files"].split()]
     assert sorted(named) == _files_on_disk(Path(__file__).parent), named
     assert sorted(s["shard"] for s in matrix["include"]) == sorted(matrix["shard"])
+
+
+@pytest.mark.parametrize("typ", ["smallint[]", "boolean[]", "text[]"])
+def test_item_enum_values_are_quoted_literals_for_every_array_type(typ):
+    # an unquoted 0 on a boolean[] is "boolean = integer", which PostgreSQL has no operator for
+    from db.lib import vetted
+
+    fn = vetted.parse({"name": "kt.w_x", "class": "read", "scope": "org", "returns": "int", "no_org": "0", "body": "BEGIN RETURN 1; END;",
+                       "args": [{"name": "p_a", "type": typ, "max_items": 10, "item_enum": [0, 1]}]})
+    assert "NOT IN ('0', '1')" in vetted.render(fn)
+
+
+@pytest.mark.parametrize("key", ["enum", "item_enum"])
+def test_an_empty_enum_is_refused_rather_than_dropping_its_check(key):
+    from db.lib import vetted
+
+    arg = {"name": "p_a", "type": "text[]", "max_items": 10, key: []}
+    with pytest.raises(vetted.ManifestError, match="non-empty list"):
+        vetted.parse({"name": "kt.w_x", "class": "read", "scope": "org", "returns": "int", "no_org": "0", "body": "BEGIN RETURN 1; END;", "args": [arg]})
