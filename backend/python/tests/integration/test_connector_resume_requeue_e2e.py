@@ -173,6 +173,7 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
                 "appGroup": "Atlassian",
                 "scope": "team",
                 "isActive": True,
+                "orgId": ORG_ID,
                 "createdAtTimestamp": now,
                 "updatedAtTimestamp": now,
             }],

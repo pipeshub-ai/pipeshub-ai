@@ -32,10 +32,15 @@ ON, OFF = "github-on", "github-off"
 class FakeGraph:
     def __init__(self) -> None:
         self.apps = {ON: {"isActive": True}, OFF: {"isActive": False}}
+        self.unlinked: set[str] = set()
         self.records: dict[str, dict[str, Any]] = {}
         self.fail_reads_after: int | None = None
         self.reads = 0
         self.record_reads: list[dict] = []
+
+    async def get_org_apps(self, org_id, *, active_only=True, **_kwargs) -> list[dict]:
+        """The apps linked to the organisation, whether or not their documents name it."""
+        return [{"_key": key, **app} for key, app in self.apps.items() if key not in self.unlinked and (app.get("isActive") or not active_only)]
 
     async def get_document(self, key, collection, transaction=None, *, raise_on_error=False) -> dict | None:
         if collection == CollectionNames.APPS.value:
@@ -364,3 +369,16 @@ async def test_the_sweep_never_resends_the_records_of_a_connector_being_deleted(
     assert producer.sent == [] and graph.records == before
     graph.apps[ON] = {"isActive": True}
     assert await _sweep(graph, producer) == 1, "the control: the same record is sent once the connector is not DELETING"
+
+
+@pytest.mark.asyncio
+async def test_an_app_the_organisation_is_linked_to_is_swept_without_an_org_id_on_its_document_and_an_unlinked_one_is_not() -> None:
+    graph, producer = FakeGraph(), Producer()
+    graph.apps[ON] = {"isActive": True, "enabledAtTimestamp": 1}          # a document written before apps named their organisation
+    graph.records["r1"] = _parked("r1")
+    assert await _sweep(graph, producer) == 1 and producer.sent == ["r1"]
+
+    other, producer = FakeGraph(), Producer()
+    other.unlinked = {ON}                                                 # linked to no organisation: nobody's to sweep
+    other.records["r1"] = _parked("r1")
+    assert await _sweep(other, producer) == 0 and producer.sent == []

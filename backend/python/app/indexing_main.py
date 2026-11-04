@@ -1724,22 +1724,11 @@ async def _republish_stranded_records(
         backlog nor a manual-indexing connector's AUTO_INDEX_OFF records
         (no reason) is read on every pass; each read is a seek in the
         (connectorId, indexingStatus, reason, key) index."""
-        offset = 0
-        while True:
-            apps = await graph_provider.get_documents_paginated(
-                CollectionNames.APPS.value,
-                skip=offset,
-                limit=page_size,
-                filters={"isActive": True, "orgId": org_id},
-                sort_field="_key",
-                raise_on_error=False,
-            )
-            for app in apps:
-                if key := app.get("_key") or app.get("id"):
-                    enabled_at[key] = app.get("enabledAtTimestamp")
-            if len(apps) < page_size:
-                break
-            offset += len(apps)
+        # The organisation's apps are the ones it is linked to, not the ones whose document names it: an app written before documents carried
+        # an orgId is still this organisation's, and an app of no organisation is nobody's to sweep.
+        for app in await graph_provider.get_org_apps(org_id, active_only=True, raise_on_error=False) or []:
+            if key := app.get("_key") or app.get("id"):
+                enabled_at[key] = app.get("enabledAtTimestamp")
         for connector_id in list(enabled_at):
             # "" rather than None, so the first page has the key predicate
             # too: Neo4j uses a composite index only when every property in
