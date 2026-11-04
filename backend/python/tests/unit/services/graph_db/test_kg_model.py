@@ -113,7 +113,7 @@ def test_numbers_and_flags_are_read_the_way_the_walk_reads_them() -> None:
     assert listing_ts({"s": "12"}, "s", "i") == 12 and listing_ts({"i": 7}, "s", "i") == 7 and listing_ts({}, "s", "i") == 0
     assert listing_ts({"s": True}, "s", "i") is None and listing_ts({"s": "x"}, "s", "i") is None and listing_ts({"s": 2 ** 70}, "s", "i") is None
     assert [flag(v) for v in (True, False, None, 0, 1, {"a": None}, "", "false", "False", "true", "t", 2)] == [True, False, False, False, True, False, False, False, False, True, True, False]
-    assert [sql_true(v) for v in (True, "TRUE", " yes ", 1, 1.0, 2, "no", False, None)] == [True, True, True, True, True, False, False, False, False]
+    assert [sql_true(v) for v in (True, "TRUE", " yes ", 1, 1.0, 2, "no", False, None, "1")] == [True, True, True, True, False, False, False, False, False, True]
     assert app_id_of(APP, {}) == "a" and app_id_of(REC, {"connectorId": "x"}) == "x" and app_id_of(REC, {"connectorId": ""}) is None and app_id_of(REC, {}) is None
 
 
@@ -198,3 +198,19 @@ def test_a_record_row_has_exactly_the_columns_the_writer_takes() -> None:
     snap = basic()
     row = derive({CHILD}, snap).records[snap.sk[CHILD]]
     assert set(row) == set(RECORD_COLS) - {"sk"}
+
+
+def test_a_snapshot_without_its_organisation_is_refused() -> None:
+    """The gate on a connector compares its organisation with the snapshot's: an empty one would let every connector through."""
+    snap = world({APP: {"orgId": "o"}, USER: {}}, [], org="")
+    with pytest.raises(ValueError, match="organisation"):
+        derive({USER}, snap)
+
+
+@pytest.mark.parametrize("source", [("apps", "a"), ("recordGroups", "g"), ("records", "c")])
+def test_an_app_a_group_of_records_or_a_record_is_no_grant_source(source: tuple) -> None:
+    """A knowledge base is an app: its node, like a record group or a record, can point a permission edge at a record and grants nothing."""
+    nodes = {APP: {"type": "KB"}, G: {"connectorId": "a"}, CHILD: {"connectorId": "a"}, REC: {"connectorId": "a"}}
+    snap = world(nodes, [edge("permission", *source, *REC, type="USER", role="OWNER")])
+    d = derive({REC, source}, snap)
+    assert d.grants == {} and d.records[snap.sk[REC]]["granted"] is False

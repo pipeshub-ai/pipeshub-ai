@@ -68,8 +68,8 @@ _TRUE_TEXT = frozenset({"true", "t", "yes", "y", "on", "1"})
 
 
 def sql_true(v: object) -> bool:
-    """A document value as the SQL walk's ``(doc->>'x')::boolean IS TRUE`` reads it."""
-    return v is True or (isinstance(v, str) and v.strip().lower() in _TRUE_TEXT) or (isinstance(v, (int, float)) and not isinstance(v, bool) and v == 1)
+    """A document value as the SQL walk's ``(doc->>'x')::boolean IS TRUE`` reads it: true, a true word, or the whole number 1 (``'1.0'`` is not a boolean to the cast)."""
+    return v is True or (isinstance(v, str) and v.strip().lower() in _TRUE_TEXT) or (isinstance(v, int) and not isinstance(v, bool) and v == 1)
 
 
 def flag(v: object) -> bool:
@@ -184,6 +184,8 @@ def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
 
 def derive(focus: set[Key], snap: Snapshot) -> Derived:
     """Everything kg holds for ``focus`` (one of each slice per node, see :class:`Derived`)."""
+    if not snap.org:
+        raise ValueError("a snapshot carries the organisation it was read for: the derivation gates a connector on it")
     d = Derived()
     for k in focus:
         if k[0] not in COLL_CODE or k not in snap.sk:
