@@ -8,8 +8,9 @@ State, through `ConfigurationService` (never the store directly), one set for th
 
 At start a service reads the flag (`scope_fields_enabled`):
 
-- **on, and the state says it was not on** (off, or never recorded): try to create the next generation key, whoever wins; then record
-  enabled=True. Processes that start together bump once. Processes that start later see enabled=True and bump nothing.
+- **on, and the state says it was not on** (off, or never recorded): try to create the generation after the one recorded at the last
+  switch-off (`/services/scopeFields/offAt`, 0 when never switched off), whoever wins; then record enabled=True. The target does not depend
+  on what other processes have already created, so processes that start together bump once even when one finishes before another reads. Processes that start later see enabled=True and bump nothing.
 - **on, already on**: only read the generation.
 - **off**: record enabled=False when it was True; otherwise write nothing, and read nothing else (a deployment that never enabled the
   fields writes no key and reads no graph).
@@ -38,6 +39,9 @@ if TYPE_CHECKING:
 
 ENABLED_KEY = "/services/scopeFields/enabled"
 GENERATION_DIR = "/services/scopeFields/generation/"
+# The generation that was current when the fields were last switched off. The next switch on creates the one after it, so services that
+# switch on together all name the same generation, whichever of them has already created it.
+OFF_AT_KEY = "/services/scopeFields/offAt"
 
 
 async def current_generation(config: ConfigurationService) -> int:
@@ -56,12 +60,16 @@ async def init_scope_generation(config: ConfigurationService, logger: logging.Lo
         enabled = scope_fields_enabled(env)
         was_on = await config.get_config(ENABLED_KEY, use_cache=False, raise_on_error=True) is True
         if not enabled:
-            if was_on and not await config.set_config(ENABLED_KEY, False):
-                raise RuntimeError("enabled=False was not recorded")
+            if was_on:
+                if not await config.set_config(OFF_AT_KEY, {"generation": await current_generation(config)}):
+                    raise RuntimeError("the generation at switch-off was not recorded")
+                if not await config.set_config(ENABLED_KEY, False):
+                    raise RuntimeError("enabled=False was not recorded")
             return None
         generation = await current_generation(config)
         if not was_on:
-            await _create(config, generation + 1)
+            off_at = await config.get_config(OFF_AT_KEY, use_cache=False, raise_on_error=True)
+            await _create(config, int((off_at or {}).get("generation", 0)) + 1)
             if not await config.set_config(ENABLED_KEY, True):
                 raise RuntimeError("enabled=True was not recorded")
         floor = env_scope_generation(env)  # optional: forces a bump past the recorded generation

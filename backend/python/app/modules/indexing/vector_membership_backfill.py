@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
+from app.core.org_context import for_org
 from app.services.messaging.config import RedisConfig, messaging_env
 from app.services.messaging.utils import MessagingUtils
 
@@ -269,9 +270,12 @@ async def run_vector_membership_backfill_tick(
 
     failed = 0
     vrids = distinct_non_empty_vrids(page)
+    # The membership write stamps scope fields for the ambient organisation; this loop has none, so it takes the app's own.
+    app_org = app.get("orgId")
     for processed, vrid in enumerate(vrids, start=1):
         try:
-            await pipeline.sync_vector_membership(vrid)
+            with for_org(str(app_org), job="vector_membership_backfill") if app_org else contextlib.nullcontext():
+                await pipeline.sync_vector_membership(vrid)
         except asyncio.CancelledError:
             raise
         except Exception:
