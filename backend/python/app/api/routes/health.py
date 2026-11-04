@@ -896,10 +896,16 @@ async def handle_model_change(
         and current_identity != new_identity
     )
 
-    if not model_name_changed and not dimension_mismatch and not identity_changed:
+    changed = model_name_changed or dimension_mismatch or identity_changed
+    # The survey sees records only and the identities come from the config: where either is unavailable, an unchanged answer proves
+    # nothing about the org's space (entity points of another dimension or provider may be in it), so the space itself is asked.
+    unknown = _spaces_per_org(retrieval_service) and (
+        existing_vector_size == 0 or current_identity is None or new_identity is None
+    )
+    if not changed and not unknown:
         return
 
-    if model_name_changed:
+    if changed and model_name_changed:
         logger.warning(
             f"Detected embedding model change: '{current_model_name}' -> '{new_model_name}'"
         )
@@ -925,8 +931,8 @@ async def handle_model_change(
         except Exception as e:  # a read that failed proves nothing: refuse (503) rather than let an unaccepted change through
             raise CollectionSurveyError(f"could not read the organisation's vector space: {type(e).__name__}") from e
         if accepts:
-            if existing_vector_size != 0:
-                logger.info("The org's vector space accepts the embedding change: allowed")
+            if existing_vector_size != 0 or not changed:
+                logger.info("The org's vector space accepts the embedding: allowed")
                 return
         else:
             logger.error(

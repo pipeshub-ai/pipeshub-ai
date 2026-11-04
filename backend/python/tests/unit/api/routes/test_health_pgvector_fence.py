@@ -67,8 +67,8 @@ async def test_an_org_without_a_space_and_an_unchanged_model_pass() -> None:
     svc = _service(holds_points=False)
     await handle_model_change(svc, "m1", "m2", 0, 0, 512, MagicMock())     # nothing indexed yet: no space, no point
     svc.vector_db_service.org_holds_points.assert_awaited_once()
-    await handle_model_change(svc, "m1", "m1", 768, 40, 768, MagicMock())  # same model and size
-    svc.vector_db_service.org_holds_points.assert_awaited_once()           # an unchanged model is never asked
+    await handle_model_change(svc, "m1", "m1", 768, 40, 768, MagicMock(), current_identity="p:m1", new_identity="p:m1")
+    svc.vector_db_service.org_holds_points.assert_awaited_once()           # a known, unchanged model and size is never asked
 
 
 async def test_other_stores_keep_their_behaviour(monkeypatch) -> None:
@@ -141,3 +141,24 @@ async def test_an_org_with_entity_points_and_no_records_collection_is_refused_a_
 
 async def test_an_org_with_nothing_at_all_may_change_model_without_a_records_collection() -> None:
     await handle_model_change(_service(holds_points=False), "m1", "m2", 0, 0, 512, MagicMock())
+
+
+async def test_a_dimension_change_is_refused_when_the_records_survey_sees_no_dimension() -> None:
+    """Same model name, no records collection (dimension 0), entity points at another dimension: the space refuses."""
+    svc = _service(holds_points=True, accepts=False)
+    with pytest.raises(HTTPException) as exc:
+        await handle_model_change(svc, "m1", "m1", 0, 0, 512, MagicMock(), current_identity="p:m1", new_identity="p:m1")
+    assert exc.value.detail["code"] == EMBEDDING_CHANGE_UNSUPPORTED_CODE
+
+
+async def test_a_same_model_provider_change_is_refused_when_the_current_identity_could_not_be_read() -> None:
+    svc = _service(holds_points=True, accepts=False)
+    with pytest.raises(HTTPException) as exc:
+        await handle_model_change(svc, "m1", "m1", 768, 40, 768, MagicMock(), current_identity=None, new_identity="azure:m1")
+    assert exc.value.detail["code"] == EMBEDDING_CHANGE_UNSUPPORTED_CODE
+
+
+async def test_an_unchanged_config_that_the_space_accepts_passes_and_rebuilds_nothing() -> None:
+    svc = _service(holds_points=True, accepts=True)
+    await handle_model_change(svc, "m1", "m1", 0, 0, 768, MagicMock(), current_identity="p:m1", new_identity="p:m1")
+    assert not [c for c in svc.vector_db_service.method_calls if "recreate" in c[0] or "delete" in c[0] or "create" in c[0]]
