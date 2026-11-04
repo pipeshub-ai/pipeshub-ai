@@ -248,10 +248,10 @@ export class RedisThreadQueueStore implements ThreadQueueStore {
     return r === 1 ? 'acquired' : r === 0 ? 'queued' : 'full';
   }
 
-  async takePendingOrRelease(
+  private async takeOnce(
     key: string,
     owner: string,
-  ): Promise<QueuedSlackMessage[]> {
+  ): Promise<{ raw: number; batch: QueuedSlackMessage[] }> {
     const items = (await this.run(
       'take',
       key,
@@ -276,11 +276,19 @@ export class RedisThreadQueueStore implements ThreadQueueStore {
       }
       console.warn('[slack-bot] thread queue skipped a corrupt item');
     }
-    // [] would end the caller's loop with the lock still held; take again to release it.
-    if (batch.length === 0 && items.length > 0) {
-      return this.takePendingOrRelease(key, owner);
+    return { raw: items.length, batch };
+  }
+
+  async takePendingOrRelease(
+    key: string,
+    owner: string,
+  ): Promise<QueuedSlackMessage[]> {
+    const first = await this.takeOnce(key, owner);
+    // [] would end the caller's loop with the lock still held; one more take releases it.
+    if (first.batch.length === 0 && first.raw > 0) {
+      return (await this.takeOnce(key, owner)).batch;
     }
-    return batch;
+    return first.batch;
   }
 
   async renew(key: string, owner: string): Promise<boolean> {

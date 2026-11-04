@@ -83,15 +83,24 @@ describe('slack-bot/utils/thread-queue redis store', () => {
 
   it('skips a corrupt queued item instead of losing its batch', async () => {
     const warn = sinon.stub(console, 'warn');
-    const replies: unknown[] = [['{bad', JSON.stringify(msg('1'))], ['null', '{"x":1}'], []];
+    const replies: unknown[] = [['{bad', JSON.stringify(msg('1'))]];
     const evalsha = sinon.stub().callsFake(async () => replies.shift());
     const store = new RedisThreadQueueStore({ evalsha } as any, SHAS);
     expect(await store.takePendingOrRelease(KEY, 'o1')).to.deep.equal([msg('1')]);
+    expect(evalsha.callCount).to.equal(1);
     expect(warn.callCount).to.equal(1);
-    // All corrupt: take again so the lock is released rather than held for a TTL.
+  });
+
+  it('retries an all-corrupt take exactly once', async () => {
+    sinon.stub(console, 'warn');
+    const replies: unknown[] = [['null'], [JSON.stringify(msg('2'))], ['{"x":1}'], ['{bad'], ['{bad']];
+    const evalsha = sinon.stub().callsFake(async () => replies.shift());
+    const store = new RedisThreadQueueStore({ evalsha } as any, SHAS);
+    expect(await store.takePendingOrRelease(KEY, 'o1')).to.deep.equal([msg('2')]);
+    expect(evalsha.callCount).to.equal(2);
     expect(await store.takePendingOrRelease(KEY, 'o1')).to.deep.equal([]);
-    expect(evalsha.callCount).to.equal(3);
-    expect(warn.callCount).to.equal(3);
+    expect(evalsha.callCount).to.equal(4);
+    expect(evalsha.getCalls().every((c) => c.args[0] === SHAS.take)).to.equal(true);
   });
 
   it('falls back to memory when Redis is not configured or does not answer', async () => {
