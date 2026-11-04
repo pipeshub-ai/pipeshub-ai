@@ -341,6 +341,30 @@ describe('Team connectors page: reads it can reuse', () => {
     await waitFor(() => expect(api.getConnectorConfig).toHaveBeenCalledWith('conn-2'));
   });
 
+  it('reads no config for an instance just deleted here that the server still lists', async () => {
+    openTypePage();
+    await screen.findByText('Scheduled');
+    act(() => useConnectorsStore.getState().removeConnectorInstance('conn-2'));
+
+    act(() =>
+      writeSwrKey(ACTIVE_TEAM_CONNECTORS_KEY, { connectors: [makeInstance(), makeInstance({ _key: 'conn-2', name: 'Jira (Ops)' })] }),
+    );
+    await act(async () => {});
+
+    expect(api.getConnectorConfig).not.toHaveBeenCalledWith('conn-2');
+  });
+
+  it('lets a failed list read during Refresh all raise its usual error', async () => {
+    openTypePage();
+    await screen.findByText('Jira (Engineering)');
+    api.getActiveConnectors.mockClear();
+    api.getConnectorInstance.mockResolvedValue(makeInstance());
+
+    fireEvent.click(screen.getByRole('button', { name: /Refresh all/ }));
+
+    await waitFor(() => expect(api.getActiveConnectors).toHaveBeenCalledWith('team'));
+  });
+
   it('shares one list request between the page and its demo check', async () => {
     function DemoCheck() {
       useDemoDataActive();

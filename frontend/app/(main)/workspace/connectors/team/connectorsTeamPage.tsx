@@ -17,6 +17,7 @@ import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import { ACTIVE_TEAM_CONNECTORS_KEY, fetchActiveTeamConnectors } from '../cache-keys';
 import { loadInstanceConfigs } from '../utils/load-instance-configs';
+import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
   startConnectorSync,
   toggleConnectorSyncOn,
@@ -196,14 +197,17 @@ function TeamConnectorsPageContent() {
   }, [activeConnectors, connectorType]);
 
   // Read from the team list itself: the store may still hold the personal page's list for a render.
+  // An instance deleted here can stay in the server's list for a while; the store already hides it.
+  const deletedInstanceIds = useConnectorsStore((s) => s.deletedInstanceIds);
   const teamInstanceKeys = useMemo(() => {
     if (!connectorType || !teamList) return '';
+    const deleted = new Set(deletedInstanceIds);
     return filterConnectorsForScope(teamList.connectors ?? [], 'team')
-      .filter((c) => c.type === connectorType && c._key)
+      .filter((c) => c.type === connectorType && c._key && !deleted.has(c._key))
       .map((c) => c._key as string)
       .sort()
       .join('|');
-  }, [teamList, connectorType]);
+  }, [teamList, connectorType, deletedInstanceIds]);
 
   // ── Instance type page: keep list + header in sync (no loading) ──
   useEffect(() => {
@@ -245,18 +249,11 @@ function TeamConnectorsPageContent() {
 
   /** Re-sync catalog lists without toggling page `isLoading` (e.g. after sync toggle). */
   const refreshConnectorsListsQuiet = useCallback(async () => {
-    const [registryRes, activeRes] = await Promise.allSettled([
-      ConnectorsApi.getRegistryConnectors('team'),
-      fetchActiveTeamConnectors(),
-    ]);
-    if (registryRes.status === 'fulfilled') {
-      setRegistryConnectors(filterConnectorsForScope(registryRes.value.connectors, 'team'));
-    }
-    if (activeRes.status === 'fulfilled') {
-      setActiveConnectors(filterConnectorsForScope(activeRes.value.connectors ?? [], 'team'));
-      // The page re-applies the cached list on mount, so the cache must hold this newer answer.
-      writeSwrKey(ACTIVE_TEAM_CONNECTORS_KEY, activeRes.value);
-    }
+    const { registry, active, activeResponse } = await fetchFilteredConnectorLists('team');
+    if (registry) setRegistryConnectors(registry);
+    if (active) setActiveConnectors(active);
+    // The page re-applies the cached list on mount, so the cache must hold this newer answer.
+    if (activeResponse) writeSwrKey(ACTIVE_TEAM_CONNECTORS_KEY, activeResponse);
   }, [setRegistryConnectors, setActiveConnectors]);
 
   const handleRefreshAllInstances = useCallback(async () => {
