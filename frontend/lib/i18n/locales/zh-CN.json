@@ -5299,6 +5299,7 @@
     "notGrantedOfflineAccess": "此应用不会保持登录状态。会话结束后，你需要重新登录。",
     "unreviewedApp": "此应用是自行注册的，没有管理员审核过。",
     "clientIdHost": "由 {{host}} 标识",
+    "redirectTo": "将您送回 {{uri}}",
     "legalNotice": "点击「允许」，即表示您授权 {{appName}} 按上述说明访问您的数据。",
     "privacyPolicy": "隐私政策",
     "deny": "拒绝",

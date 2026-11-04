@@ -111,5 +111,5 @@ patchRequireCache(mcpHttpPath, { HTTPClient: FakeHTTPClient });
 const mcpOAuthScopesPath = require.resolve('@pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js');
 
 patchRequireCache(mcpOAuthScopesPath, {
-  requiredOAuthScopes: (_tool: string): readonly string[] | undefined => undefined,
+  requiredOAuthScopes: (): readonly string[] | undefined => undefined,
 });

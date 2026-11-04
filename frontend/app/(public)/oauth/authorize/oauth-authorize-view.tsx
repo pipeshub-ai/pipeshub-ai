@@ -609,6 +609,11 @@ export function OAuthAuthorizeView() {
             </Text>
           ) : null}
 
+          {/* In full, port included: a loopback redirect may use any port, so the host alone would not show which program gets the code. */}
+          <Text as="p" size="2" color="gray" style={{ wordBreak: 'break-all' }}>
+            {t('oauthConsent.redirectTo', { uri: consentData.redirectUri })}
+          </Text>
+
           <Separator size="4" />
 
           <Text as="div" size="2" color="gray" style={{ width: '100%' }}>

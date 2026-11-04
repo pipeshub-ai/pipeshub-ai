@@ -2705,8 +2705,9 @@ components:
           description: |
             RFC 8707 resource indicator (authorization_code and refresh_token grants). This
             instance's `/mcp` URL gets an access token whose `aud` is that URL, which `/mcp`
-            accepts and which carries over to refreshes; any other value is `400 invalid_target`.
-            Without it the token has no audience, as before.
+            accepts; any other value is `400 invalid_target`. An authorization_code request
+            without it gets a token with no audience, as before. A refresh without it keeps the
+            audience of the refresh token; naming another resource is `400 invalid_target`.
           oneOf:
             - type: string
               maxLength: 2048

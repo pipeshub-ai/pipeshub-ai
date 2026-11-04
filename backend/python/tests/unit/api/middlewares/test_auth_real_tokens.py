@@ -194,7 +194,7 @@ def test_service_token_claiming_admin_oauth_gets_no_oauth_access(client):
     assert _status(client, "/user", token) == 403
 
 
-def test_token_with_an_audience_reaches_the_same_routes(client):
+def test_token_with_an_audience_reaches_the_same_routes(client) -> None:
     """Node stamps /mcp tokens with an audience; their API calls pass here as before."""
     token = _sign({**_SESSION_CLAIMS, "aud": "https://pipeshub.example.com/mcp"}, JWT_SECRET)
     assert _status(client, "/user", token) == 200

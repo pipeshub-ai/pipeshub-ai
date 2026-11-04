@@ -15,6 +15,23 @@ const nextConfig = {
      * corresponding static callback page so `next dev` matches Netlify `_redirects`.
      * (Rewrites are not applied to `next export` output; production static hosts still need host rules.)
      */
+    // The Express server sets the same headers on these paths; this covers `next dev` and
+    // `next start`. Static export cannot send headers, so its host needs its own rule.
+    ...(electronStaticExport
+        ? {}
+        : {
+              async headers() {
+                  return [
+                      {
+                          source: '/(login|oauth)(/.*)?',
+                          headers: [
+                              { key: 'X-Frame-Options', value: 'DENY' },
+                              { key: 'Content-Security-Policy', value: "frame-ancestors 'none'" },
+                          ],
+                      },
+                  ];
+              },
+          }),
     async rewrites() {
         return [
             { source: '/toolsets/oauth/callback/:slug', destination: '/toolsets/oauth/callback/' },

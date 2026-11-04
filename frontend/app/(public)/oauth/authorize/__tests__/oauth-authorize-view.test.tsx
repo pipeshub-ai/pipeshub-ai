@@ -130,6 +130,16 @@ describe('OAuthAuthorizeView not-granted scopes', () => {
     expect(screen.getByText(en.oauthConsent.unreviewedApp)).toBeTruthy();
   });
 
+  it('shows the full redirect URI, so a changed loopback port is visible', async () => {
+    get.mockResolvedValue(consentResponse([]));
+
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    expect(
+      await screen.findByText('Sends you back to https://claude.ai/api/mcp/auth_callback'),
+    ).toBeTruthy();
+  });
+
   it('shows no not-granted section when every requested scope is granted', async () => {
     get.mockResolvedValue(consentResponse([]));
 

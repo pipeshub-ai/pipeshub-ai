@@ -5293,6 +5293,7 @@
     "requestHeading": "Esta aplicación solicita acceso a:",
     "unreviewedApp": "Esta aplicación se ha registrado por sí misma. Ningún administrador la ha revisado.",
     "clientIdHost": "Identificada por {{host}}",
+    "redirectTo": "Te devuelve a {{uri}}",
     "notGrantedHeading": "Esta aplicación también solicitó estos permisos. La configuración de la aplicación no los permite, por lo que no los obtendrá:",
     "notGrantedOwnerHint": "La persona que creó esta aplicación puede añadirlos en Configuración del espacio de trabajo → Configuración de desarrollador → Apps de OAuth 2.0.",
     "notGrantedOfflineAccess": "La aplicación no mantendrá la sesión iniciada. Tendrás que volver a iniciar sesión cuando la sesión termine.",

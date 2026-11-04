@@ -10,6 +10,10 @@ import { BaseError } from '../../../../src/libs/errors/base.error'
 import { ExpiredTokenError, InvalidTokenError } from '../../../../src/libs/errors/oauth.errors'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
+const sendError: express.ErrorRequestHandler = (err, _req, res, _next) => {
+  res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
+}
+
 describe('MCP Routes — createMCPRouter', () => {
   let container: Container
   let mockAuthMiddleware: any
@@ -272,9 +276,7 @@ describe('MCP Routes — createMCPRouter', () => {
     mockAppConfig.oauthIssuer = 'https://pipeshub.example.com'
     const app = express()
     app.use('/mcp', createMCPRouter(container))
-    app.use((err: any, _req: any, res: any, _next: any) => {
-      res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
-    })
+    app.use(sendError)
     const server = app.listen(0)
     try {
       const { port } = server.address() as AddressInfo
@@ -362,9 +364,7 @@ describe('MCP Routes — createMCPRouter', () => {
       }
       const app = express()
       app.use('/mcp', createMCPRouter(container))
-      app.use((err: any, _req: any, res: any, _next: any) => {
-        res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
-      })
+      app.use(sendError)
       const server = app.listen(0)
       const { port } = server.address() as AddressInfo
       return {
@@ -401,9 +401,7 @@ describe('MCP Routes — createMCPRouter', () => {
       }
       const app = express()
       app.use('/mcp', createMCPRouter(container))
-      app.use((err: any, _req: any, res: any, _next: any) => {
-        res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
-      })
+      app.use(sendError)
       const server = app.listen(0)
       try {
         const { port } = server.address() as AddressInfo

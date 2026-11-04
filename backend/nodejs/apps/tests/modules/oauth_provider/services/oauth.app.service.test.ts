@@ -887,7 +887,28 @@ describe('OAuthAppService', () => {
       expect(mockApp.isDeleted).to.be.true
       expect(mockApp.deletedBy).to.deep.equal(new Types.ObjectId(fakeUserId))
       expect(mockApp.status).to.equal(OAuthAppStatus.REVOKED)
-      expect(mockApp.save.calledOnce).to.be.true
+      expect(mockApp.save.calledTwice).to.be.true
+    })
+
+    it('should leave the app as it was when its tokens cannot be revoked, so the delete can be retried', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(fakeAppId),
+        clientId: 'cid',
+        isDeleted: false,
+        status: OAuthAppStatus.ACTIVE,
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
+      mockOAuthTokenService.revokeAllTokensForApp.rejects(new Error('redis down'))
+
+      try {
+        await service.deleteApp(fakeAppId, fakeOrgId, fakeUserId)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect((error as Error).message).to.equal('redis down')
+      }
+      expect(mockApp.isDeleted).to.be.false
+      expect(mockApp.status).to.equal(OAuthAppStatus.ACTIVE)
     })
 
     it('should throw NotFoundError when app not found', async () => {
@@ -963,6 +984,25 @@ describe('OAuthAppService', () => {
       expect(mockApp.status).to.equal(OAuthAppStatus.SUSPENDED)
       // Suspending stops the tokens it already issued, not only new sign-ins.
       expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('cid')).to.be.true
+    })
+
+    it('should put the status back when its tokens cannot be revoked, so the suspend can be retried', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(fakeAppId),
+        clientId: 'cid',
+        status: OAuthAppStatus.ACTIVE,
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
+      mockOAuthTokenService.revokeAllTokensForApp.rejects(new Error('redis down'))
+
+      try {
+        await service.suspendApp(fakeAppId, fakeOrgId, fakeUserId)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect((error as Error).message).to.equal('redis down')
+      }
+      expect(mockApp.status).to.equal(OAuthAppStatus.ACTIVE)
     })
 
     it('should throw BadRequestError when already suspended', async () => {

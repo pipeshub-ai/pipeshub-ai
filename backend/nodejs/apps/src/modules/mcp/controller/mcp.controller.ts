@@ -5,7 +5,8 @@
  * connected via StreamableHTTP transport.
  */
 
-import { createHash, KeyObject } from 'node:crypto';
+import { createHash } from 'crypto';
+import { KeyObject } from 'node:crypto';
 import { getCurrentOrgId } from '../../../libs/context/orgContext';
 import { Response, NextFunction } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -347,7 +348,11 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
 
       // A client that hangs up cancels the call: closing aborts the running handlers' signals.
       res.on('close', () => {
-        void mcpServer.close();
+        mcpServer.close().catch((error: unknown) => {
+          logger.warn('Closing the MCP server failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       });
       await mcpServer.connect(transport);
       const connectedProps = mcpConnectedProps(req);

@@ -95,7 +95,9 @@ export class OAuthProviderController {
 
     try {
       // Validate client first
-      ({ app } = await this.oauthDcrService.resolveAuthorizeClient(query.client_id));
+      ({ app } = await this.oauthDcrService.resolveAuthorizeClient(
+        query.client_id,
+      ));
 
       // Validate redirect URI - MUST be done before any error redirect
       this.oauthAppService.validateRedirectUriForApp(app, query.redirect_uri);
@@ -243,7 +245,8 @@ export class OAuthProviderController {
       } = req.body;
 
       // Validate client
-      const client = await this.oauthDcrService.resolveAuthorizeClient(client_id);
+      const client =
+        await this.oauthDcrService.resolveAuthorizeClient(client_id);
       const { app } = client;
 
       // Validate redirect URI

@@ -5299,6 +5299,7 @@
     "notGrantedOfflineAccess": "此應用程式不會保持登入狀態。工作階段結束後，你需要重新登入。",
     "unreviewedApp": "此應用程式是自行註冊的，沒有管理員審核過。",
     "clientIdHost": "由 {{host}} 識別",
+    "redirectTo": "將您送回 {{uri}}",
     "legalNotice": "按一下「允許」即表示您授權 {{appName}} 依上述說明存取您的資料。",
     "privacyPolicy": "隱私權政策",
     "deny": "拒絕",

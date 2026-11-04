@@ -475,9 +475,7 @@ describe('MCP Controller — handleMCPRequest', () => {
   describe('loopback calls and disconnects', () => {
     it("marks the tools' API calls with a relay header bound to the caller's token", async () => {
       let capturedOpts: any
-      mcpCoreExports.PipeshubCore = class {
-        constructor(opts: any) { capturedOpts = opts }
-      }
+      mcpCoreExports.PipeshubCore = function (opts: any) { capturedOpts = opts }
       mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
         opts.getSDK()
         return { server: { registerTool: () => undefined, connect: sinon.stub().resolves() } }

@@ -5299,6 +5299,7 @@
     "notGrantedOfflineAccess": "애플리케이션이 로그인 상태를 유지하지 않습니다. 세션이 끝나면 다시 로그인해야 합니다.",
     "unreviewedApp": "이 애플리케이션은 스스로 등록했습니다. 검토한 관리자가 없습니다.",
     "clientIdHost": "{{host}}에서 식별됨",
+    "redirectTo": "{{uri}}(으)로 돌아갑니다",
     "legalNotice": "“허용”을 클릭하면 위에 설명된 대로 {{appName}}이(가) 사용자의 데이터에 액세스하는 것을 승인하게 됩니다.",
     "privacyPolicy": "개인정보 처리방침",
     "deny": "거부",

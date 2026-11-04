@@ -691,18 +691,25 @@ export class OAuthAppService {
    * Delete OAuth app (soft delete)
    */
   async deleteApp(appId: string, orgId: string, userId: string): Promise<void> {
-    const app = await getOAuthAppRepository().updateOwned(
+    const repo = getOAuthAppRepository();
+    const found = await repo.findOwned(orgId, userId, appId);
+    if (!found) {
+      throw new NotFoundError('OAuth app not found');
+    }
+    // Deleted only once its tokens are gone: a deleted app cannot be found again to retry.
+    await this.setStatusAndRevokeTokens(
       orgId,
       userId,
-      appId,
-      { isDeleted: true, deletedBy: userId, status: OAuthAppStatus.REVOKED },
+      found,
+      OAuthAppStatus.REVOKED,
     );
-
+    const app = await repo.updateOwned(orgId, userId, appId, {
+      isDeleted: true,
+      deletedBy: userId,
+    });
     if (!app) {
       throw new NotFoundError('OAuth app not found');
     }
-    // Token checks do not read the app's status, so its tokens would otherwise work until they expire.
-    await this.oauthTokenService.revokeAllTokensForApp(app.clientId);
 
     this.logger.info('OAuth app deleted', {
       appId: app._id,
@@ -763,14 +770,12 @@ export class OAuthAppService {
       throw new BadRequestError('OAuth app is already suspended');
     }
 
-    const updated = await repo.updateOwned(orgId, userId, appId, {
-      status: OAuthAppStatus.SUSPENDED,
-    });
-    if (!updated) {
-      throw new NotFoundError('OAuth app not found');
-    }
-    // Token checks do not read the app's status, so its tokens would otherwise work until they expire.
-    await this.oauthTokenService.revokeAllTokensForApp(updated.clientId);
+    const updated = await this.setStatusAndRevokeTokens(
+      orgId,
+      userId,
+      app,
+      OAuthAppStatus.SUSPENDED,
+    );
 
     this.logger.info('OAuth app suspended', {
       appId: updated._id,
@@ -778,6 +783,32 @@ export class OAuthAppService {
     });
 
     return this.toAppResponse(updated);
+  }
+
+  /**
+   * Sets the status, which stops new tokens, then revokes the ones the app already issued: token
+   * checks do not read the status, so those would work until they expire. A failed revocation
+   * puts the previous status back, so the same call can be retried.
+   */
+  private async setStatusAndRevokeTokens(
+    orgId: string,
+    userId: string,
+    app: OAuthAppDto,
+    status: OAuthAppStatus,
+  ): Promise<OAuthAppDto> {
+    const repo = getOAuthAppRepository();
+    const previous = app.status;
+    const updated = await repo.updateOwned(orgId, userId, app._id, { status });
+    if (!updated) {
+      throw new NotFoundError('OAuth app not found');
+    }
+    try {
+      await this.oauthTokenService.revokeAllTokensForApp(updated.clientId);
+    } catch (error) {
+      await repo.updateOwned(orgId, userId, app._id, { status: previous });
+      throw error;
+    }
+    return updated;
   }
 
   /**
