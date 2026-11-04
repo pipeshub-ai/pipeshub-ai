@@ -2,6 +2,12 @@ import { Response, NextFunction } from 'express';
 import { AuthenticatedUserRequest } from './types';
 import { recordHttpRequest } from '../services/telemetry/modules/http-metrics';
 import {
+  recordClientRequest,
+  recordMcpMessages,
+} from '../services/telemetry/modules/client-metrics';
+import { classifyRequestId } from '../services/telemetry/client';
+import { isHostedMcpPath } from '../context/request-context';
+import {
   domainFromEmail,
   normalizeOrgId,
 } from '../services/telemetry/identity';
@@ -72,6 +78,21 @@ export function metricsMiddleware(): (
         durationSeconds,
         domain,
       );
+
+      const client = classifyRequestId(req.context?.requestId);
+      const hostedMcp = isHostedMcpPath(req.baseUrl || req.path);
+      recordClientRequest(
+        client,
+        client.client !== 'mcp' ? 'none' : hostedMcp ? 'hosted' : 'local',
+        template,
+        req.method,
+        res.statusCode,
+        orgId,
+        domain,
+      );
+      if (hostedMcp && req.method === 'POST') {
+        recordMcpMessages(req.body, res.statusCode, orgId, domain);
+      }
     });
 
     next();

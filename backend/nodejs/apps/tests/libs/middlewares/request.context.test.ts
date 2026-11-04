@@ -88,6 +88,30 @@ describe('Request Context Middleware', () => {
       expect(req.context.requestId).to.match(/^anon-[a-f0-9]{32}$/)
     })
 
+    it('should give a hosted /mcp request an mcp- id', () => {
+      const req = createMockRequest({ path: '/mcp' })
+      requestContextMiddleware(req, createMockResponse(), createMockNext())
+
+      expect(req.context.requestId).to.match(/^mcp-[a-f0-9]{32}$/)
+    })
+
+    it("should keep an MCP client's own id behind the mcp- prefix", () => {
+      const getStub = sinon.stub()
+      getStub.withArgs('X-Request-ID').returns('claude-123')
+      const req = createMockRequest({ path: '/mcp/', get: getStub })
+      requestContextMiddleware(req, createMockResponse(), createMockNext())
+
+      expect(req.context.requestId).to.equal('mcp-claude-123')
+    })
+
+    it('should not prefix MCP server management or discovery paths', () => {
+      for (const path of ['/api/v1/mcp-servers', '/.well-known/oauth-protected-resource/mcp']) {
+        const req = createMockRequest({ path })
+        requestContextMiddleware(req, createMockResponse(), createMockNext())
+        expect(req.context.requestId).to.match(/^anon-/)
+      }
+    })
+
     it('should use existing X-Request-ID header if provided', () => {
       const getStub = sinon.stub()
       getStub.withArgs('user-agent').returns('test-agent')
