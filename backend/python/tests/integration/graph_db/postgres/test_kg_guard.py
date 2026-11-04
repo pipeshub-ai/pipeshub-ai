@@ -132,7 +132,14 @@ async def test_outside_the_provider_a_graph_write_is_logged_and_refused_only_in_
 
 # The writers that reach graph.nodes and graph.edges through a private helper are classified PROJECTED, so what they change must reach kg: each runs on a small world, the
 # flush projects what the triggers logged in the writer's own transaction, and kg then equals a whole projection of the graph.
+async def _trash_then_restore(p) -> None:
+    await p.soft_delete_records(["f1"], "app1", delete_source="USER", batch_id="b2", deleted_by_user_id="u1")
+    await p.restore_records([{"id": "f1"}], "b2")
+
+
 HELPERS = {
+    "soft_delete_records": lambda p: p.soft_delete_records(["f1"], "app1", delete_source="USER", batch_id="b1", deleted_by_user_id="u1"),
+    "restore_records": _trash_then_restore,
     "delete_single_record": lambda p: p.delete_single_record("f1"),
     "delete_records_and_relations": lambda p: p.delete_records_and_relations("fold"),
     "delete_records_recursive": lambda p: p.delete_records_recursive(["fold"], "app1"),
