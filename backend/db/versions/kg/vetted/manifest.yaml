@@ -365,6 +365,12 @@ functions:
         INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT v_org, k.a, k.b, k.c, k.d, k.e FROM unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) AS k(a, b, c, d, e)
           ON CONFLICT (org_id, id) DO NOTHING;
         GET DIAGNOSTICS v_n = ROW_COUNT;
+        -- A row a concurrent writer committed between the check above and the insert was skipped, not written: whatever is stored under each id is now read again,
+        -- and an id that holds other content is refused as it was above (each statement sees what has been committed since the last).
+        IF EXISTS (SELECT 1 FROM kg.scope_classes t JOIN unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) AS k(a, b, c, d, e) ON t.id = k.a
+                   WHERE t.org_id = v_org AND (t.app_sk <> k.b OR t.group_sk IS DISTINCT FROM k.c OR t.clauses <> k.d OR t.hash <> k.e)) THEN
+          RAISE EXCEPTION 'w_classes_set: the class id is taken by other content' USING ERRCODE = '22023';
+        END IF;
         RETURN v_n;
       END;
 
