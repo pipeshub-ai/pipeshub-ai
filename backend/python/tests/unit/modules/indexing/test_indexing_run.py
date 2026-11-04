@@ -47,6 +47,8 @@ def _make_indexing_pipeline():
             collection_registry=_make_collection_registry(),
             vector_db_service=AsyncMock(),
         )
+        # no other org holds points unless a test says so (the shared-VRID release check reads this)
+        pipeline.vector_db_service.scroll = AsyncMock(return_value=MagicMock(points=[]))
         return pipeline
 
 
@@ -208,7 +210,7 @@ class TestVectorDeletesAreScopedToTheOrg:
 
         await pipeline.bulk_delete_embeddings(["vr-1"], "org-1")
 
-        assert pipeline.vector_db_service.filter_collection.await_args.kwargs["must"] == {
+        assert pipeline.vector_db_service.filter_collection.await_args_list[0].kwargs["must"] == {
             "orgId": "org-1",
             "virtualRecordId": ["vr-1"],
         }

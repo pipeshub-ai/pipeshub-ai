@@ -505,3 +505,126 @@ async def test_without_enriched_an_indexed_record_is_settled_while_enrichment_ru
     await fp.wait_for_connector_records(graph, "c1", ["a"])
 
     assert graph.get_record_by_name.await_count == 1
+
+
+# A record delete hands shared content filed under the deleted record to a survivor.
+MOVED_TO = f"{FOLDER}/copy.md"
+SHARED_BEFORE = fp.StoresFootprint(
+    GRAPH, None, {VRID: 3}, {PREFIX: 2}, {f"prefix:{PREFIX}": 1}, envelope_paths={VRID: PREFIX}
+)
+
+
+def test_relocated_keys_the_counts_by_where_the_content_is_filed_now() -> None:
+    moved = fp.relocated(SHARED_BEFORE, {PREFIX: MOVED_TO})
+
+    assert moved.blobs == {MOVED_TO: 2}
+    assert moved.documents == {f"prefix:{MOVED_TO}": 1}
+    assert moved.envelope_paths == {VRID: MOVED_TO}
+    assert moved.points == SHARED_BEFORE.points
+
+
+@pytest.mark.asyncio
+async def test_content_moved_whole_to_the_survivor_passes() -> None:
+    _, vector, blob, mongo = _survivor_stores({MOVED_TO: 2})
+
+    await fp.assert_content_whole_at(
+        SHARED_BEFORE, vector, blob, mongo, virtual_record_id=VRID, new=MOVED_TO, what="x"
+    )
+
+
+@pytest.mark.asyncio
+async def test_content_left_in_place_passes() -> None:
+    _, vector, blob, mongo = _survivor_stores({PREFIX: 2})
+
+    await fp.assert_content_whole_at(
+        SHARED_BEFORE, vector, blob, mongo, virtual_record_id=VRID, new=PREFIX, what="x"
+    )
+
+
+@pytest.mark.asyncio
+async def test_content_copied_rather_than_moved_is_reported() -> None:
+    _, vector, blob, mongo = _survivor_stores({MOVED_TO: 2, PREFIX: 2})
+
+    with pytest.raises(AssertionError, match="left where it was"):
+        await fp.assert_content_whole_at(
+            SHARED_BEFORE, vector, blob, mongo, virtual_record_id=VRID, new=MOVED_TO, what="x"
+        )
+
+
+@pytest.mark.asyncio
+async def test_content_short_after_the_move_is_reported() -> None:
+    _, vector, blob, mongo = _survivor_stores({MOVED_TO: 1})
+
+    with pytest.raises(AssertionError, match="blob files: 2 -> 1"):
+        await fp.assert_content_whole_at(
+            SHARED_BEFORE, vector, blob, mongo, virtual_record_id=VRID, new=MOVED_TO, what="x"
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_settled_envelope_path_waits_for_the_move_to_finish() -> None:
+    _, _, blob, mongo = _survivor_stores({MOVED_TO: 2})
+    reads = iter([PREFIX, MOVED_TO, MOVED_TO])
+    mongo.envelope_path.side_effect = lambda *a, **kw: next(reads)
+
+    path = await fp.settled_envelope_path(blob, mongo, org_id=ORG, virtual_record_id=VRID, within=FOLDER)
+
+    assert path == MOVED_TO
+
+
+@pytest.mark.asyncio
+async def test_unchanged_reads_handed_over_content_where_it_is_filed_now() -> None:
+    graph, vector, blob, mongo = _survivor_stores({MOVED_TO: 2})
+    mongo.envelope_path.return_value = MOVED_TO
+
+    await fp.assert_unchanged(
+        SHARED_BEFORE, graph, vector, blob, mongo, org_id=ORG,
+        records=[fp.Tracked(name="copy.md", record_id="r2", virtual_record_id=VRID)],
+        what="x", handed_over={VRID: fp.Handover(FOLDER, leaving=PREFIX)},
+    )
+
+    with pytest.raises(AssertionError, match=r"blob files .*: 2 -> 0"):
+        await fp.assert_unchanged(
+            SHARED_BEFORE, graph, vector, blob, mongo, org_id=ORG,
+            records=[fp.Tracked(name="copy.md", record_id="r2", virtual_record_id=VRID)], what="x",
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_settled_envelope_path_does_not_stop_on_the_folder_it_must_leave() -> None:
+    """Before the delete's event runs, two reads agree on the deleted record's folder with
+    every piece still in it; settling there would check the content in the wrong place."""
+    _, _, blob, mongo = _survivor_stores({PREFIX: 2, MOVED_TO: 2})
+    reads = iter([PREFIX, PREFIX, PREFIX, MOVED_TO, MOVED_TO])
+    mongo.envelope_path.side_effect = lambda *a, **kw: next(reads)
+
+    path = await fp.settled_envelope_path(
+        blob, mongo, org_id=ORG, virtual_record_id=VRID, within=FOLDER, leaving=PREFIX
+    )
+
+    assert path == MOVED_TO
+
+
+@pytest.mark.asyncio
+async def test_content_that_never_leaves_the_deleted_records_folder_is_reported() -> None:
+    _, _, blob, mongo = _survivor_stores({PREFIX: 2})
+    mongo.envelope_path.return_value = PREFIX
+
+    with pytest.raises(AssertionError, match="still filed under the deleted record's folder"):
+        await fp.settled_envelope_path(
+            blob, mongo, org_id=ORG, virtual_record_id=VRID, within=FOLDER, leaving=PREFIX, attempts=3
+        )
+
+
+@pytest.mark.asyncio
+async def test_content_filed_under_a_remaining_holder_may_stay() -> None:
+    _, _, blob, mongo = _survivor_stores({PREFIX: 2})
+    mongo.envelope_path.return_value = PREFIX
+
+    assert await fp.settled_envelope_path(blob, mongo, org_id=ORG, virtual_record_id=VRID, within=FOLDER) == PREFIX
+
+
+def test_an_envelope_folder_is_the_records_it_is_named_after() -> None:
+    assert fp.filed_under(f"{FOLDER}/a", fp.Tracked(name="a", record_id="r1", virtual_record_id=VRID))
+    assert not fp.filed_under(f"{FOLDER}/copy", fp.Tracked(name="a", record_id="r1", virtual_record_id=VRID))
+
