@@ -165,6 +165,7 @@ async def folder_tree_delete(
             "shared": shared,
             "outside": outside,
             "outside_before": outside_before,
+            "within": within,
             "vendor": vendor,
         }
     finally:
@@ -212,9 +213,14 @@ class TestDeletingAFolderWithASubFolderAndSharedContent:
     async def test_the_sibling_folder_and_the_copy_outside_are_untouched(
         self, folder_tree_delete, graph_provider, vector_store, blob_store, mongo_store, test_org_id
     ) -> None:
-        """Including the embeddings, envelope and documents the copy shares with a deleted record."""
+        """Including the embeddings, envelope and documents the copy shares with a deleted record.
+
+        That content was filed under the deleted folder, so the delete hands it to
+        the copy: it is counted where it is filed now, and must have left the folder.
+        """
         await fp.assert_unchanged(
             folder_tree_delete["outside_before"], graph_provider, vector_store, blob_store, mongo_store,
             org_id=test_org_id, records=folder_tree_delete["outside"],
             vendor=folder_tree_delete["vendor"], what="the records outside the folder",
+            handed_over={folder_tree_delete["shared"].virtual_record_id: folder_tree_delete["within"]},
         )
