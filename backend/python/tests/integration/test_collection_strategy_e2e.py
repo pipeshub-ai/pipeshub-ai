@@ -18,7 +18,7 @@ Run with:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -46,10 +46,18 @@ from app.services.vector_db.strategy import (
     DeleteContext,
     RecordContext,
 )
+from tests.support.bound_org import bind_test_org
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # ---------------------------------------------------------------------------
 # In-memory fake IVectorDBService
 # ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The consumer binds the event's org; membership writes act for it."""
+    yield from bind_test_org("org-1")
 
 
 def _get_path(payload: dict, dotted_key: str) -> Any:
@@ -247,7 +255,7 @@ class FakeVectorDBService(IVectorDBService):
             if _filter_matches(p.payload, filter):
                 p.payload.update(payload)
 
-    async def update_payload_by_ids(self, collection_name: str, point_ids: List[str], payload: dict) -> None:
+    async def update_payload_by_ids(self, collection_name: str, point_ids: List[str], payload: dict, *, org_id) -> None:
         wanted = set(point_ids)
         for p in self.collections.get(collection_name, []):
             if p.id in wanted:

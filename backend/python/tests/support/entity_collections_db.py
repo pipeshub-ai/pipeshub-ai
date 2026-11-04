@@ -80,8 +80,8 @@ class FakeEntityCollections:
     async def upsert_points(self, collection_name: str, points: list[VectorPoint]) -> None:
         await self._of(collection_name).upsert_points(collection_name, points)
 
-    async def update_payload_by_ids(self, collection_name: str, ids: list[str], payload: dict) -> None:
-        await self._of(collection_name).update_payload_by_ids(collection_name, ids, payload)
+    async def update_payload_by_ids(self, collection_name: str, ids: list[str], payload: dict, *, org_id: str) -> None:
+        await self._of(collection_name).update_payload_by_ids(collection_name, ids, payload, org_id=org_id)
 
     async def query_nearest_points(
         self, collection_name: str, requests: list[HybridSearchRequest],

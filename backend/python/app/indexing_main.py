@@ -1115,6 +1115,12 @@ async def _sweep_orphaned_virtual_record_mappings(
             for mapping in page
             if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
         ]
+        # The org a mapping row names is the one its points are cleaned up for.
+        org_of = {
+            vrid: mapping.get("orgId")
+            for mapping in page
+            if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
+        }
         try:
             # One read per page, not one per mapping: the answer is the same,
             # and on Neo4j each read is a millisecond of the indexing loop.
@@ -1142,8 +1148,30 @@ async def _sweep_orphaned_virtual_record_mappings(
         for vrid in unreferenced:
             if vrid in trashed:
                 continue
+            if not org_of.get(vrid):
+                # A row written before rows named their org: the points name their owners. Each org's points go
+                # (the row stays while another org still holds some); with no points left the row goes too.
+                try:
+                    orgs = await pipeline.orgs_holding_points(vrid)
+                    if not orgs:
+                        if await pipeline.release_orphan_mapping(vrid):
+                            swept += 1
+                            swept_this_page += 1
+                        continue
+                    outcome = None
+                    for owner in sorted(orgs):
+                        with for_org(owner, job="orphan-sweep"):
+                            outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
+                except Exception as exc:
+                    logger.error("Failed to clean up the orphaned vectors of org-less mapping %s: %s", vrid, exc)
+                    continue
+                if outcome == "deleted":
+                    swept += 1
+                    swept_this_page += 1
+                continue
             try:
-                outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
+                with for_org(org_of[vrid], job="orphan-sweep"):
+                    outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
             except Exception as exc:
                 logger.error(
                     "Failed to clean up orphaned vectors for virtual record %s: %s",
