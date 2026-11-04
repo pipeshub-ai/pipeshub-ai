@@ -31,6 +31,8 @@ ROUTE = "app.api.routes.search"
 @pytest.fixture(autouse=True)
 def _one_search_per_request(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(DATE_FILTER_SAFETY_NET_ENV_VAR, "false")
+    # A request always runs inside the caller's org context.
+    monkeypatch.setattr(search_route, "current_org_id", lambda: "org1")
 
 
 def _match(record_id: str = "r2", name: str = "Quarterly planning") -> UnindexedMatch:

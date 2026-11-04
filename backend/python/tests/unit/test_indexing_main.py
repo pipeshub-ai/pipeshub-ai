@@ -1388,6 +1388,7 @@ class TestStageTopicsUnavailable:
             patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[record_consumer, stage_consumer]),
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
+            patch("app.indexing_main._start_record_title_consumer", new_callable=AsyncMock),
             patch("app.indexing_main._TOPIC_RETRY_FIRST_S", 0.0),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
         ):
@@ -1432,6 +1433,7 @@ class TestStageTopicsUnavailable:
             ),
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
+            patch("app.indexing_main._start_record_title_consumer", new_callable=AsyncMock),
             patch("app.indexing_main._TOPIC_RETRY_FIRST_S", 0.0),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
         ):
