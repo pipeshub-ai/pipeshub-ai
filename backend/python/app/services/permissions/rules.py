@@ -77,13 +77,15 @@ class AncestorFact:
     open_rule: bool  # accessRule absent or OPEN
     directly_granted: bool  # at least one PERMISSION edge into it
     restricted_above: bool  # some ancestor above it is restricted (rule not OPEN/STRICT, deleted, or does not inherit)
+    reaches_app: bool = True  # a hierarchy route leads from it to the app; one that does not is read only by its own grants
 
 
 def below_seed(ancestors: Iterable[AncestorFact]) -> bool:
-    """Whether a record may sit below a *seed* (R9/R10): an OPEN node with a direct grant below a restricted ancestor.
+    """Whether a record may sit below a *seed* (R9/R10): an OPEN node with a direct grant that is either below a restricted
+    ancestor or cut off from the app (no hierarchy route to it: it reaches nothing, so the grant alone makes it a seed).
     A viewer granted the seed reads it, and what hangs below it over OPEN nodes, whatever the restricted ancestor says.
     Viewer-independent, so a stamper can compute it; it over-approximates (it ignores who is granted)."""
-    return any(a.open_rule and a.directly_granted and a.restricted_above for a in ancestors)
+    return any(a.open_rule and a.directly_granted and (a.restricted_above or not a.reaches_app) for a in ancestors)
 
 
 def connector_is_exact(refused_records: int) -> bool:
@@ -102,6 +104,7 @@ def assert_may_stamp(
     record_group_level_on_path: bool = False,
     multi_parent_on_path: bool = False,
     below_seed_on_path: bool = False,
+    placeholder_on_path: bool = False,
 ) -> None:
     """The check a stamper calls before it writes scope fields. A record it refuses gets **no exact stamp**: it stays on
     the legacy filter (the post-check) and the connector is not exact (`connector_is_exact`). It must never be stamped
@@ -111,11 +114,18 @@ def assert_may_stamp(
     - Container: the stamper must have computed that the record's effective access equals its record group's
       (`equals_record_group=True`); otherwise refused.
     - any exception rule: the registry must declare it for the connector (a connector cannot pick its own).
-    - Intersection is refused on a record with a record-group-level group on its path or in its app, with several
-      hierarchy parents on its path, and below a seed (`below_seed_on_path`, see `below_seed`): the path filter is not
-      exact there.
-    - Union is refused for a record whose rule is not OPEN (`record_is_open=False`) below a seed: the path filter is
-      not exact there either.
+    - Intersection is refused on a record with a record-group-level group on its path or in its app (the batch check
+      skips such a group when it walks, and admits through it when it is declared readable), with several hierarchy
+      parents on its path (a restricted scope on a parent the record does not need hides it from people the check
+      admits), and below a seed (`below_seed_on_path`, see `below_seed`).
+    - Every exception rule is refused when a placeholder (a parent the sync never read) is on the path: the batch check walks through
+      the placeholder to its own ancestors, which the stored path stops short of, so a viewer it admits there would be hidden.
+    - Override is also refused on a path with several hierarchy parents: the nearest node with an access list of its own can then be
+      one the viewer reaches through the other parent without reading it as a scope, and the stamp hides the record from a viewer the
+      batch check admits.
+    - Union and Override are refused below a record-group-level group (the declared arm reads that group, not what is below
+      it) and when a non-OPEN node sits between the record and a seed (`record_is_open=False`, below a seed): the batch check
+      only carries OPEN nodes below a seed. `record_is_open` is about every node of that stretch, not the record alone.
     """
     if rule is Rule.CONTAINER:
         if not equals_record_group:
@@ -124,11 +134,17 @@ def assert_may_stamp(
     declared = rule_for(connector_type)
     if declared is not rule:
         raise RuleNotAllowed(f"{connector_type!r} is registered as {declared.value}, not {rule.value}")
+    if placeholder_on_path:
+        raise RuleNotAllowed(f"{connector_type!r}: a placeholder parent on the path is not exact under {rule.value}")
     if rule is Rule.INTERSECTION and record_group_level_on_path:
         raise RuleNotAllowed(f"{connector_type!r}: Intersection is not exact below a record-group-level group")
     if rule is Rule.INTERSECTION and multi_parent_on_path:
         raise RuleNotAllowed(f"{connector_type!r}: Intersection is not exact on a path with several parents")
     if rule is Rule.INTERSECTION and below_seed_on_path:
         raise RuleNotAllowed(f"{connector_type!r}: Intersection is not exact below a seed")
-    if rule is Rule.UNION and below_seed_on_path and not record_is_open:
-        raise RuleNotAllowed(f"{connector_type!r}: a non-OPEN record below a seed is not exact under Union")
+    if rule is Rule.OVERRIDE and multi_parent_on_path:
+        raise RuleNotAllowed(f"{connector_type!r}: Override is not exact on a path with several parents")
+    if rule in (Rule.UNION, Rule.OVERRIDE) and record_group_level_on_path:
+        raise RuleNotAllowed(f"{connector_type!r}: {rule.value} is not exact below a record-group-level group")
+    if rule in (Rule.UNION, Rule.OVERRIDE) and below_seed_on_path and not record_is_open:
+        raise RuleNotAllowed(f"{connector_type!r}: a non-OPEN node between the record and its seed is not exact under {rule.value}")

@@ -51,6 +51,9 @@ class FakeRecordGraph:
             if record["indexingStatus"] == ProgressStatus.QUEUED.value
         )
 
+    async def get_org_apps(self, org_id: str, *, active_only: bool = True, **_kwargs: object) -> list[dict]:
+        return [{"_key": c, "isActive": True} for c in sorted({r["connectorId"] for r in self.records.values()})]
+
     async def get_documents_paginated(
         self,
         collection: str,

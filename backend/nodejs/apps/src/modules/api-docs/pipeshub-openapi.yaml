@@ -24183,6 +24183,175 @@ components:
         $ref:
           type: string
           example: '#/components/responses/XssRejected'
+    GrepRequest:
+      type: object
+      description: Request body for `POST /search/grep`.
+      required:
+        - pattern
+      properties:
+        pattern:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: One line of text to find. Literal unless `regex` is `true`.
+          example: "compute_invoice_total_v2"
+        regex:
+          type: boolean
+          default: false
+          description: |
+            Read `pattern` as a regular expression (Python syntax, including
+            `\d`, `\w`, `\b`, lookarounds and `(?i)`). Refused with `400`: a
+            back-reference or any reference to an earlier group; a counted
+            repeat above 100; a counted repeat inside another counted repeat or
+            after a group that holds one; groups nested deeper than 20; and any
+            `(?` form other than a plain group, look-around, a named group or
+            `(?i)`. A line matches when the expression matches within it.
+        caseSensitive:
+          type: boolean
+          default: false
+          description: Match case exactly.
+        filters:
+          $ref: '#/components/schemas/Filters'
+        paths:
+          type: array
+          maxItems: 20
+          description: |
+            Shell-style globs (`*.py`, `docs/*`). A record is kept when its name
+            or, for code, its file path matches any. Applied after the access check.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          description: Most records to return.
+        contextLines:
+          type: integer
+          minimum: 0
+          maximum: 10
+          default: 2
+          description: Lines returned before and after each match.
+        maxMatchesPerRecord:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 5
+          description: Most matching lines listed per record. `matchCount` still counts all of them.
+        timeBudgetMs:
+          type: integer
+          minimum: 500
+          maximum: 30000
+          default: 8000
+          description: How long the search may run before it returns what it has found. See `coverage`.
+    GrepMatch:
+      type: object
+      description: One matching line.
+      properties:
+        line:
+          type: integer
+          description: Line number. A source file's own number for code, otherwise a count over the record's indexed text.
+        text:
+          type: string
+          description: The matching line, cut at 400 characters.
+        before:
+          type: array
+          description: Lines before the match, nearest last.
+          items:
+            type: string
+        after:
+          type: array
+          description: Lines after the match, nearest first.
+          items:
+            type: string
+        symbol:
+          type: object
+          description: The smallest function, method or class around the line. Present for code records only.
+          properties:
+            kind:
+              type: string
+              description: "`function`, `method`, `class` and so on."
+            name:
+              type: string
+              description: Qualified name, for example `method:Cart.compute_order_total_v2`.
+            signature:
+              type: string
+            startLine:
+              type: integer
+            endLine:
+              type: integer
+        citation:
+          type: object
+          description: Where to read the line again, for example with `GET /connectors/record/{recordId}/content`.
+          properties:
+            recordId:
+              type: string
+            blockIndex:
+              type: integer
+            line:
+              type: integer
+    GrepRecord:
+      type: object
+      description: One record with matching text.
+      properties:
+        recordId:
+          type: string
+          description: Pass to the record content endpoints.
+        recordName:
+          type: string
+        recordType:
+          type: string
+        app:
+          type: string
+          description: Name of the connector the record came from.
+        webUrl:
+          type: string
+          nullable: true
+          description: Link to the record in its source. Null for a source that has none.
+        language:
+          type: string
+          description: Programming language, for code records.
+        matchCount:
+          type: integer
+          description: Matching lines in the record, including those not listed.
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrepMatch'
+        preview:
+          type: string
+          description: >-
+            Set when the pattern matched the record's title or metadata but no line of its text, so `matches` is empty.
+            It is a fragment of the stored record of a record the caller can read, and may be raw stored text (JSON) rather than prose.
+    GrepResponse:
+      type: object
+      description: Result of `POST /search/grep`.
+      properties:
+        status:
+          type: string
+          example: success
+        pattern:
+          type: string
+        regex:
+          type: boolean
+        totalRecords:
+          type: integer
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrepRecord'
+        coverage:
+          type: object
+          description: Whether the search covered everything it could have.
+          properties:
+            complete:
+              type: boolean
+              description: "`false` when a time limit, a size limit or a failed source cut the search short."
+            note:
+              type: string
+              description: What was missed, in plain words.
     EntityType:
       type: string
       description: Kind of knowledge-graph entity.
@@ -59787,6 +59956,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/logos:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: List the logos of the MCP servers I can see
+      description: |
+        The logos uploaded for custom MCP servers the caller can see (the organization's servers
+        and the caller's own personal ones), by instance id. A server without a logo is left out.
+        Catalog servers never have one: the app shows their vendor's logo.
+
+        Each logo is a PNG at most 96 pixels on a side, as a base64 data URL.
+      operationId: getMcpLogos
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:read
+      responses:
+        '200':
+          description: Logos by instance id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logos:
+                    type: object
+                    additionalProperties:
+                      type: string
+                      example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAAw...
+                required:
+                  - logos
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:read` scope
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /mcp-servers/instances:
     get:
       tags:
@@ -60142,6 +60365,168 @@ paths:
             Whether agents use the server couldn't be checked, so nothing was deleted
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/instances/{instanceId}/logo:
+    put:
+      tags:
+        - MCP Server Instances
+      summary: Set the logo of a custom MCP server
+      description: |
+        Custom servers only; a catalog server shows its vendor's logo. Organization servers for
+        administrators, a personal server for its owner.
+
+        Send a PNG, JPEG, WebP or GIF image (1 MB at most, under 4096 × 4096 pixels) as a base64
+        data URL. The declared type is ignored: the bytes decide. SVG is refused, since it can
+        carry script; the web app turns an SVG into a PNG before sending it. The image is drawn
+        again as a PNG at most 96 pixels on a side, keeping its shape and transparency (an
+        animated GIF keeps its first frame), and that PNG is stored and returned, never the bytes
+        sent. It replaces any earlier logo.
+
+        The app-wide XSS filter does not check this body: base64 can look like markup to it.
+      operationId: setMcpInstanceLogo
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:write
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                logo:
+                  type: string
+                  maxLength: 1398165
+                  description: The image as a base64 data URL.
+                  example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAABk...
+              required:
+                - logo
+      responses:
+        '200':
+          description: The logo as stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logo:
+                    type: string
+                    description: A PNG at most 96 pixels on a side, as a base64 data URL.
+                    example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAAw...
+                required:
+                  - logo
+        '400':
+          description: |
+            Bad request — one of:
+            - a path id contains characters that are not allowed in an id (for example `/`, `?`, `#`, `%`); this check runs before authentication
+            - the server is a catalog server ("Only custom MCP servers take a logo. ...")
+            - `logo` isn't a base64 data URL, or isn't valid base64, or is empty
+            - the image is not a PNG, JPEG, WebP or GIF, or can't be read
+            - the image is over 1 MB, or over 4096 × 4096 pixels
+            - a JSON body that does not parse ("The request body is not valid JSON.")
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:write` scope
+            - the server is an organization server and the caller isn't an administrator
+            - the server is inherited from another organization and can't be changed here
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such server, or it is another user's personal server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: '`logo` is missing, not a string, or longer than allowed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Unexpected failure in the gateway or in the connectors service, including a failed write of the logo.
+
+            A JSON body larger than 10 MB is answered `413` by the app-wide body parser instead, before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - MCP Server Instances
+      summary: Remove the logo of a custom MCP server
+      description: |
+        The server shows its default icon again. Succeeds when the server has no logo too.
+        Organization servers for administrators, a personal server for its owner. Needs
+        `mcp:write`, not `mcp:delete`: it changes the server and destroys nothing.
+      operationId: removeMcpInstanceLogo
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:write
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: The server has no logo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                required:
+                  - success
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:write` scope
+            - the server is an organization server and the caller isn't an administrator
+            - the server is inherited from another organization and can't be changed here
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such server, or it is another user's personal server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service, including a failed removal.
           content:
             application/json:
               schema:
@@ -72743,6 +73128,112 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /search/grep:
+    post:
+      tags:
+        - Semantic Search
+      summary: Find an exact string or regular expression
+      description: |
+        Find records whose text contains an exact string or matches a regular
+        expression, and return the matching lines with their line numbers and
+        surrounding lines. Use it for identifiers, error codes, ticket keys and
+        code, where meaning-based search ranks the wrong things.
+
+        The pattern is literal text unless `regex` is `true`, when it is a
+        regular expression (see `regex` on the request for what is refused).
+        Matching ignores case unless `caseSensitive` is `true`. Any characters
+        can be searched, including `<`, `>`, `&`, `;` and `->`. A pattern that
+        is one line, at most 500 characters, and a valid regular expression is
+        accepted.
+
+        **Who can see what:** only records the caller can read are searched and
+        returned, decided by the same access check as `POST /search`. A record
+        the caller cannot read is never counted or named.
+
+        **Scope:** `filters.apps` and `filters.kb` limit the search to
+        connectors and collections, as in `POST /search`. `paths` keeps only
+        records whose name (or, for code, file path) matches a shell-style
+        glob such as `*.py`. `filters.apps` or `filters.kb` ids the caller
+        cannot reach are ignored; if none remain the result is empty.
+
+        **Scopes:** a token with `semantic:read` or `semantic:write` may call
+        this; it only reads.
+
+        **Line numbers:** for source code they are the file's own line numbers,
+        and each match names the enclosing function or class in `symbol` when
+        the record was indexed as code. For other records they count lines of
+        the record's indexed text.
+
+        **Completeness:** searching and reading the records stops at
+        `timeBudgetMs`; the access check that decides which records the caller
+        can read has no deadline of its own. When it stopped early or could not cover every
+        source, `coverage.complete` is `false` and `coverage.note` says what was
+        missed; a record missing from the result is then not evidence that the
+        text is absent. `coverage` describes only records the caller can read. Nothing is saved
+        to search history.
+
+        Needs local file storage; otherwise `501`.
+      operationId: grepRecords
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        description: The pattern and how to scope the search.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrepRequest'
+            examples:
+              literal:
+                summary: Find an identifier
+                value:
+                  pattern: "compute_invoice_total_v2"
+                  limit: 10
+              regex:
+                summary: Regular expression in Python files
+                value:
+                  pattern: "def \\w+_v2\\("
+                  regex: true
+                  paths: ["*.py"]
+      responses:
+        '200':
+          description: Matching records with their matching lines. An empty `records` list means nothing the caller can read matched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrepResponse'
+        '400':
+          description: |
+            The request is invalid, or the pattern cannot be searched. With
+            `regex: true` the pattern is refused when it is an invalid regular
+            expression; has a back-reference or any other reference to an earlier
+            group (`\1`, `\g<name>`, `\k<name>`, `(?P=name)`, recursion); has a
+            counted repeat above 100 (`{101}`, `{1,101}`); has a counted repeat
+            inside another counted repeat, or after a group that holds one
+            (`(a{2}){3}`); nests groups deeper than 20; or uses a `(?` form other
+            than a plain group, look-around, a named group or `(?i)` (so flags
+            other than `(?i)`, comments and scoped flags are refused). The message
+            says which.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '501':
+          description: This deployment does not keep records on local file storage. Use `POST /search`.
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The AI search service is temporarily unavailable or could not be reached.
+        '504':
+          description: The AI search service did not answer in time.
+
   /search/entities:
     post:
       tags:
@@ -72797,9 +73288,11 @@ paths:
         '403':
           description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
         '500':
-          description: Unexpected server error, or the AI search service was unreachable.
+          description: Unexpected server error.
         '503':
-          description: Entity search is not available in this deployment or timed out before the access check finished. This is not an empty result; try again.
+          description: Entity search is not available in this deployment, could not reach the AI search service, or timed out before the access check finished. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
 
   /search/entities/neighbors:
     post:
@@ -72854,9 +73347,11 @@ paths:
         '403':
           description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
         '500':
-          description: Unexpected server error, or the AI search service was unreachable.
+          description: Unexpected server error.
+        '504':
+          description: The AI search service did not answer in time.
         '503':
-          description: The lookup failed or timed out. This is not an empty result; try again.
+          description: The AI search service could not be reached, or the lookup failed or timed out. This is not an empty result; try again.
 
   /search/updateAppConfig:
     post:

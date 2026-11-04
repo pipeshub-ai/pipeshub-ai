@@ -118,9 +118,9 @@ def test_a_placement_wait_of_zero_is_refused_and_a_zero_cache_time_is_allowed() 
 def test_a_misspelt_search_switch_is_refused_and_a_valid_setting_is_read() -> None:
     from app.services.vector_db.pgvector.tuning import Tuning
 
-    with pytest.raises(ValueError, match="PGVECTOR_FUSED_SEARCH"):
-        Tuning.from_dict({"fused_search": "flase"})
-    assert Tuning.from_dict({"fused_search": "off"}).fused_search is False
+    with pytest.raises(ValueError, match="PGVECTOR_VALIDATE_QUANTIZATION"):
+        Tuning.from_dict({"validate_quantization": "flase"})
+    assert Tuning.from_dict({"validate_quantization": "off"}).validate_quantization is False
     assert Tuning.from_dict({"sampler_max_per_s": "12"}).sampler_max_per_s == 12
     assert Tuning.from_dict({"sampler_max_per_s": 12.0}).sampler_max_per_s == 12
 

@@ -215,7 +215,7 @@ class TestRedisMutations:
             await _wait_index_ready(redis_service, col, expected_docs=len(pts))
 
             del_filter = FilterExpression(
-                must=[FieldCondition(key="metadata.virtualRecordId", value="r1")]
+                must=[FieldCondition(key="metadata.orgId", value="org1"), FieldCondition(key="metadata.virtualRecordId", value="r1")]
             )
             await redis_service.delete_points(col, del_filter)
             # Small pause to let the index reflect the deletion
@@ -255,7 +255,7 @@ class TestRedisMutations:
             await redis_service.upsert_points(col, pts)
             # FT.SEARCH for key lookup doesn't need HNSW to be ready
             update_filter = FilterExpression(
-                must=[FieldCondition(key="metadata.virtualRecordId", value="r1")]
+                must=[FieldCondition(key="metadata.orgId", value="org1"), FieldCondition(key="metadata.virtualRecordId", value="r1")]
             )
             await redis_service.overwrite_payload(
                 col, {"metadata.status": "archived"}, update_filter

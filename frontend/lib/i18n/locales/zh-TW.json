@@ -3512,6 +3512,7 @@
         "disconnected": "已成功中斷連線",
         "disconnectError": "無法中斷連線",
         "credentialsSaveError": "伺服器已儲存，但憑證無法儲存。您可以稍後從「管理」中新增。",
+        "logoSaveError": "伺服器已儲存，但其標誌未能儲存。您可以在「管理」中重試。",
         "credentialsSaved": "憑證已儲存",
         "credentialsReset": "MCP 伺服器已更新。由於連線已變更，已儲存的憑證已被移除；請重新連線後再使用。",
         "oauthTimedOut": "登入時間過長，已停止。請再試一次。",
@@ -3526,6 +3527,16 @@
       "form": {
         "name": "名稱",
         "description": "描述",
+        "logo": "標誌",
+        "logoHint": "PNG、JPEG、WebP、GIF 或 SVG，最大 2 MB。正方形圖片效果最佳。",
+        "logoUpload": "上傳標誌",
+        "logoChange": "更換標誌",
+        "logoRemove": "移除",
+        "logoErrors": {
+          "type": "請使用 PNG、JPEG、WebP、GIF 或 SVG 圖片。",
+          "size": "請使用不超過 2 MB 的圖片。",
+          "unreadable": "無法讀取此圖片，請嘗試其他檔案。"
+        },
         "transport": "傳輸方式",
         "command": "命令",
         "args": "引數",

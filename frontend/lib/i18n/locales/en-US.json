@@ -3531,6 +3531,7 @@
         "disconnected": "Disconnected successfully",
         "disconnectError": "Failed to disconnect",
         "credentialsSaveError": "Server saved, but credentials could not be saved. You can add them later from Manage.",
+        "logoSaveError": "Server saved, but its logo could not be saved. You can try again from Manage.",
         "credentialsSaved": "Credentials saved",
         "credentialsReset": "MCP server updated. Saved credentials were removed because the connection changed; connect again to use it.",
         "oauthTimedOut": "Sign-in took too long and was stopped. Try again.",
@@ -3545,6 +3546,16 @@
       "form": {
         "name": "Name",
         "description": "Description",
+        "logo": "Logo",
+        "logoHint": "PNG, JPEG, WebP, GIF or SVG, up to 2 MB. A square image looks best.",
+        "logoUpload": "Upload logo",
+        "logoChange": "Change logo",
+        "logoRemove": "Remove",
+        "logoErrors": {
+          "type": "Use a PNG, JPEG, WebP, GIF or SVG image.",
+          "size": "Use an image of 2 MB or less.",
+          "unreadable": "This image couldn't be read. Try another file."
+        },
         "transport": "Transport",
         "command": "Command",
         "args": "Arguments",

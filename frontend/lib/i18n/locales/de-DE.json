@@ -3371,6 +3371,7 @@
         "disconnected": "Erfolgreich getrennt",
         "disconnectError": "Trennen fehlgeschlagen",
         "credentialsSaveError": "Server gespeichert, aber die Anmeldedaten konnten nicht gespeichert werden. Sie können sie später über \"Verwalten\" hinzufügen.",
+        "logoSaveError": "Server gespeichert, aber das Logo konnte nicht gespeichert werden. Sie können es unter „Verwalten“ erneut versuchen.",
         "credentialsSaved": "Anmeldedaten gespeichert",
         "credentialsReset": "MCP-Server aktualisiert. Gespeicherte Anmeldedaten wurden entfernt, da sich die Verbindung geändert hat. Verbinden Sie sich erneut, um ihn zu verwenden.",
         "oauthTimedOut": "Die Anmeldung hat zu lange gedauert und wurde abgebrochen. Versuchen Sie es erneut.",
@@ -3385,6 +3386,16 @@
       "form": {
         "name": "Name",
         "description": "Beschreibung",
+        "logo": "Logo",
+        "logoHint": "PNG, JPEG, WebP, GIF oder SVG, bis 2 MB. Ein quadratisches Bild sieht am besten aus.",
+        "logoUpload": "Logo hochladen",
+        "logoChange": "Logo ändern",
+        "logoRemove": "Entfernen",
+        "logoErrors": {
+          "type": "Verwenden Sie ein PNG-, JPEG-, WebP-, GIF- oder SVG-Bild.",
+          "size": "Verwenden Sie ein Bild mit höchstens 2 MB.",
+          "unreadable": "Dieses Bild konnte nicht gelesen werden. Versuchen Sie eine andere Datei."
+        },
         "transport": "Transport",
         "command": "Befehl",
         "args": "Argumente",

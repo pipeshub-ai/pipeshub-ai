@@ -343,6 +343,9 @@ describe('useSidebarConversations', () => {
     act(() => useAuthStore.getState().logout());
 
     expect(useChatStore.getState().conversations).toEqual([]);
+    // The last session's flags are forgotten too; the next one waits for its own.
+    expect(useFeatureFlagsStore.getState().flags).toBeNull();
+    useFeatureFlagsStore.setState({ flags: {} } as never);
     await mount();
     expect(fetchConversations).toHaveBeenCalledTimes(4);
   });

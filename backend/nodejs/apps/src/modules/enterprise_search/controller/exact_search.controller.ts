@@ -1,5 +1,5 @@
 /**
- * Knowledge-graph entity search and lookup.
+ * Exact-text (grep) search and knowledge-graph entities.
  *
  * Thin proxies to the AI service. It decides what the caller may read, in the
  * places search and the assistant's own tools decide it; nothing here widens
@@ -8,7 +8,10 @@
  * organisation. These requests are not saved to search history.
  */
 import { NextFunction, Response } from 'express';
-import { InternalServerError } from '../../../libs/errors/http.errors';
+import {
+  InternalServerError,
+  NotImplementedError,
+} from '../../../libs/errors/http.errors';
 import { handleBackendError } from '../../../libs/errors/backend-error';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
@@ -16,6 +19,17 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { AppConfig } from '../../tokens_manager/config/config';
 
 /** The fields each route sends on; anything else in the body is dropped. */
+const GREP_FIELDS = [
+  'pattern',
+  'regex',
+  'caseSensitive',
+  'filters',
+  'paths',
+  'limit',
+  'contextLines',
+  'maxMatchesPerRecord',
+  'timeBudgetMs',
+] as const;
 const ENTITY_SEARCH_FIELDS = [
   'query',
   'entityTypes',
@@ -66,6 +80,15 @@ const forward =
       if (!aiResponse.data) {
         throw new InternalServerError('Failed to get response from AI service');
       }
+      if (aiResponse.statusCode === 501) {
+        // the AI service says this deployment cannot serve the route; handleBackendError has no 501 and would make it a 500
+        const data = aiResponse.data as { detail?: unknown } | undefined;
+        throw new NotImplementedError(
+          typeof data?.detail === 'string'
+            ? data.detail
+            : 'This deployment does not support this request.',
+        );
+      }
       if (aiResponse.statusCode !== 200) {
         throw handleBackendError(
           {
@@ -79,6 +102,10 @@ const forward =
       next(error);
     }
   };
+
+/** POST /api/v1/search/grep */
+export const grepRecords = (appConfig: AppConfig): Handler =>
+  forward(appConfig, 'grep', GREP_FIELDS, 'Exact-text search');
 
 /** POST /api/v1/search/entities */
 export const searchEntities = (appConfig: AppConfig): Handler =>

@@ -58,6 +58,8 @@ function sanitizeString(value: string): string {
 // repeated back; anything else (a key that is itself markup) is not echoed.
 const SAFE_FIELD_PATH = /^[A-Za-z0-9_.[\]-]{1,200}$/;
 
+const MCP_LOGO_PATH = /^\/api\/v1\/mcp-servers\/instances\/[^/]+\/logo$/;
+
 /**
  * Turns a validation path such as `body.params.arguments.query` into the words
  * a caller needs to find the field: `the field "params.arguments.query"`,
@@ -124,8 +126,23 @@ interface QuestionField {
   key: string;
 }
 
-/** MCP tools whose `query` argument is a question typed for chat or search. */
-const MCP_QUESTION_TOOLS = new Set(['pipeshub_chat', 'pipeshub_search']);
+/** MCP tools with a free-text argument typed for chat or search, and its name.
+ *  `pipeshub_grep`'s pattern is exact text to find, such as `List<String>`. */
+const MCP_QUESTION_TOOLS = new Map([
+  ['pipeshub_chat', 'query'],
+  ['pipeshub_search', 'query'],
+  ['pipeshub_search_entities', 'query'],
+  ['pipeshub_grep', 'pattern'],
+]);
+
+/** The routes behind those tools, and the field each reads. */
+const SEARCH_QUESTION_ROUTES = new Map([
+  ['/api/v1/search', 'query'],
+  // /retrieve takes the same plain-text query and renders nothing.
+  ['/api/v1/retrieve', 'query'],
+  ['/api/v1/search/entities', 'query'],
+  ['/api/v1/search/grep', 'pattern'],
+]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Object.prototype.toString.call(value) === '[object Object]';
@@ -162,18 +179,11 @@ function findQuestionField(req: Request): QuestionField | undefined {
   }
   const body = req.body;
 
-  // The search route MCP's pipeshub_search calls, and the web search box,
-  // and /retrieve and /search/entities, which take the same plain-text query and render nothing.
-  if (
-    req.path === '/api/v1/search' ||
-    req.path === '/api/v1/search/' ||
-    req.path === '/api/v1/retrieve' ||
-    req.path === '/api/v1/retrieve/' ||
-    req.path === '/api/v1/search/entities' ||
-    req.path === '/api/v1/search/entities/'
-  ) {
-    return typeof body.query === 'string'
-      ? { holder: body, key: 'query' }
+  // The search route MCP's pipeshub_search calls, and the web search box.
+  const routeField = SEARCH_QUESTION_ROUTES.get(req.path.replace(/\/$/, ''));
+  if (routeField !== undefined) {
+    return typeof body[routeField] === 'string'
+      ? { holder: body, key: routeField }
       : undefined;
   }
 
@@ -189,8 +199,9 @@ function findQuestionField(req: Request): QuestionField | undefined {
       return undefined;
     }
     const args = params.arguments;
-    return isPlainObject(args) && typeof args.query === 'string'
-      ? { holder: args, key: 'query' }
+    const field = MCP_QUESTION_TOOLS.get(params.name) as string;
+    return isPlainObject(args) && typeof args[field] === 'string'
+      ? { holder: args, key: field }
       : undefined;
   }
 
@@ -439,6 +450,14 @@ export const xssSanitizationMiddleware = (
         req.path.startsWith('/api/v1/api-toolsets/')) &&
       (req.method === 'POST' || req.method === 'PUT')
     ) {
+      next();
+      return;
+    }
+
+    // An MCP server logo is a base64 data URL. The checks below misread it (its last segment
+    // can look like an `on…=` handler) and their length cap is below the upload limit. Python
+    // decodes it and keeps only a PNG it draws again, never the string sent.
+    if (req.method === 'PUT' && MCP_LOGO_PATH.test(req.path)) {
       next();
       return;
     }

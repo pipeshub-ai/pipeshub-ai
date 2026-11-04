@@ -125,6 +125,7 @@ export function createHealthRouter(
         qdrant: 'Qdrant',
         opensearch: 'OpenSearch',
         redis: 'Redis',
+        pgvector: 'pgvector',
       };
       const vectorDbName = vectorDbNames[deployment.vectorDbType || ''] || 'VectorDB';
 
