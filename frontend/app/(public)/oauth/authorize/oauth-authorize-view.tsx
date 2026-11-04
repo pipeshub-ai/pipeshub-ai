@@ -4,13 +4,15 @@ import { asArray } from '@/lib/utils/safe';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import axios, { AxiosError, isAxiosError } from 'axios';
-import { Box, Button, Flex, Separator, Text } from '@radix-ui/themes';
+import { Box, Button, Checkbox, Flex, Separator, Text } from '@radix-ui/themes';
+import type { CheckedState } from '@radix-ui/react-checkbox';
 import { useTranslation } from 'react-i18next';
 
 import { apiClient } from '@/lib/api';
 import { extractApiErrorMessage, isProcessedError, processError } from '@/lib/api/api-error';
 import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useAuthStore, switchToSignedInWorkspace } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -63,6 +65,9 @@ interface AuthorizeResponse {
   error?: string;
   error_description?: string;
 }
+
+// OIDC needs openid for the ID token and /userinfo, so the person cannot untick it.
+const REQUIRED_SCOPES = new Set<string>(['openid']);
 
 function normalizeScopeForPost(scopeFromUrl: string | null): string {
   if (!scopeFromUrl) return '';
@@ -175,6 +180,10 @@ export function OAuthAuthorizeView() {
   const [codeChallenge, setCodeChallenge] = useState('');
   const [codeChallengeMethod, setCodeChallengeMethod] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  // Categories start collapsed; the count on each header shows what is ticked inside.
+  const [openCategories, setOpenCategories] = useState<ReadonlySet<string>>(new Set());
+  // Every requested scope starts ticked once the consent data loads; the person unticks what they don't want.
+  const [ticked, setTicked] = useState<Set<string>>(() => new Set());
   const triedWorkspaceSwitchRef = useRef(false);
 
   const clientId = searchParams.get('client_id');
@@ -250,6 +259,7 @@ export function OAuthAuthorizeView() {
 
         if (data.requiresConsent && data.consentData) {
           setConsentData(data.consentData);
+          setTicked(new Set(asArray(data.consentData.scopes).map((s) => s.name)));
           setCodeChallenge(data.codeChallenge ?? '');
           setCodeChallengeMethod(data.codeChallengeMethod ?? '');
         } else {
@@ -301,8 +311,33 @@ export function OAuthAuthorizeView() {
     };
   }, [outcome]);
 
+  const listedScopes = asArray(consentData?.scopes).map((s) => s.name);
+  const tickedScopes = listedScopes.filter((name) => ticked.has(name));
+  const toggleScopes = (items: ScopeInfo[], on: boolean) => {
+    setTicked((prev) => {
+      const next = new Set(prev);
+      for (const { name } of items) {
+        if (on) next.add(name);
+        else if (!REQUIRED_SCOPES.has(name)) next.delete(name);
+      }
+      return next;
+    });
+  };
+  // Grouped and ordered like the OAuth app form, so the person sees the same layout.
+  const scopeGroups = Object.entries(
+    asArray(consentData?.scopes).reduce<Record<string, ScopeInfo[]>>((acc, s) => {
+      (acc[s.category] ??= []).push(s);
+      return acc;
+    }, {})
+  ).sort(([a], [b]) => a.localeCompare(b));
+
   const handleConsent = async (consent: 'granted' | 'denied') => {
     if (!clientId || !redirectUri) return;
+    // The server re-checks these against the app, so the person can only narrow the request.
+    const postedScope =
+      consent === 'granted' && listedScopes.length > 0
+        ? tickedScopes.join(' ')
+        : normalizeScopeForPost(scope);
 
     setSubmitting(true);
     try {
@@ -318,7 +353,7 @@ export function OAuthAuthorizeView() {
         {
           client_id: clientId,
           redirect_uri: redirectUri,
-          scope: normalizeScopeForPost(scope),
+          scope: postedScope,
           state: state ?? '',
           code_challenge: cc,
           code_challenge_method: ccm,
@@ -494,7 +529,7 @@ export function OAuthAuthorizeView() {
     const granted = outcome.consent === 'granted';
     const scopePermissionSummary = asArray(consentData.scopes).map((s) => ({
       name: s.name,
-      granted,
+      granted: granted && ticked.has(s.name),
     }));
     return (
       <OAuthConnectionOutcome
@@ -646,38 +681,122 @@ export function OAuthAuthorizeView() {
               gap: 'var(--space-2)',
             }}
           >
-            {asArray(consentData.scopes).map((scopeItem) => (
-              <Flex
-                key={scopeItem.name}
-                direction="column"
-                gap="1"
-                align="start"
-                p="3"
-                width="100%"
-                style={{
-                  borderRadius: 'var(--radius-2)',
-                  border: '1px solid var(--gray-6)',
-                  background: 'var(--gray-2)',
-                }}
-              >
-                <Text
-                  as="div"
-                  size="2"
-                  weight="medium"
-                  style={{ width: '100%', lineHeight: 'var(--line-height-2)' }}
+            {scopeGroups.map(([category, items], index) => {
+              const tickedInGroup = items.filter((i) => ticked.has(i.name)).length;
+              const groupChecked: CheckedState =
+                tickedInGroup === items.length ? true : tickedInGroup === 0 ? false : 'indeterminate';
+              const open = openCategories.has(category);
+              const bodyId = `oauth-consent-scopes-${index}`;
+              const toggleOpen = () =>
+                setOpenCategories((prev) => {
+                  const next = new Set(prev);
+                  if (!next.delete(category)) next.add(category);
+                  return next;
+                });
+              return (
+                <Box
+                  key={category}
+                  p="3"
+                  style={{
+                    borderRadius: 'var(--radius-2)',
+                    border: '1px solid var(--gray-6)',
+                    background: 'var(--gray-2)',
+                  }}
                 >
-                  {scopeItem.name}
-                </Text>
-                <Text
-                  as="div"
-                  size="2"
-                  color="gray"
-                  style={{ width: '100%', lineHeight: 'var(--line-height-2)' }}
-                >
-                  {scopeItem.description}
-                </Text>
-              </Flex>
-            ))}
+                  {/* Below desktop the checkbox's 44px tap area already spaces it from the name. */}
+                  <Flex align="center" gap={isBelowDesktop ? '0' : '2'}>
+                    <Text
+                      as="label"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'flex-start',
+                        cursor: 'pointer',
+                        ...touchTarget(isBelowDesktop),
+                      }}
+                    >
+                      <Checkbox
+                        aria-label={category}
+                        checked={groupChecked}
+                        onCheckedChange={(c) => toggleScopes(items, c === true)}
+                        disabled={submitting}
+                      />
+                    </Text>
+                    <button
+                      type="button"
+                      aria-expanded={open}
+                      aria-controls={bodyId}
+                      onClick={toggleOpen}
+                      style={{
+                        appearance: 'none',
+                        margin: 0,
+                        padding: 0,
+                        font: 'inherit',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 'var(--space-2)',
+                        flex: 1,
+                        minWidth: 0,
+                        minHeight: 32,
+                        border: 'none',
+                        background: 'transparent',
+                        color: 'var(--gray-12)',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        ...touchTarget(isBelowDesktop),
+                      }}
+                    >
+                      <Text size="2" weight="medium" style={{ flex: 1, minWidth: 0 }}>
+                        {category}
+                      </Text>
+                      <Text size="2" color="gray">
+                        {tickedInGroup}/{items.length}
+                      </Text>
+                      <span aria-hidden style={{ display: 'inline-flex' }}>
+                        <MaterialIcon
+                          name="expand_more"
+                          size={20}
+                          color="var(--gray-11)"
+                          style={{ transform: open ? 'rotate(180deg)' : undefined, transition: 'transform 150ms ease' }}
+                        />
+                      </span>
+                    </button>
+                  </Flex>
+                  {open ? (
+                    <Flex id={bodyId} direction="column" gap="2" mt="3">
+                      {items.map((scopeItem) => (
+                        <Text as="label" key={scopeItem.name} style={{ cursor: 'pointer' }}>
+                          <Flex
+                            align="start"
+                            gap="2"
+                            p="2"
+                            style={{
+                              borderRadius: 'var(--radius-2)',
+                              border: '1px solid var(--gray-5)',
+                            }}
+                          >
+                            <Checkbox
+                              mt="1"
+                              checked={ticked.has(scopeItem.name)}
+                              onCheckedChange={(c) => toggleScopes([scopeItem], c === true)}
+                              disabled={submitting || REQUIRED_SCOPES.has(scopeItem.name)}
+                            />
+                            <Flex direction="column" gap="1" style={{ minWidth: 0, flex: 1 }}>
+                              <Text as="div" size="2" weight="medium">
+                                {scopeItem.name}
+                              </Text>
+                              <Text as="div" size="2" color="gray">
+                                {scopeItem.description}
+                              </Text>
+                            </Flex>
+                          </Flex>
+                        </Text>
+                      ))}
+                    </Flex>
+                  ) : null}
+                </Box>
+              );
+            })}
           </Box>
 
           {notGrantedScopes.length > 0 ? (
@@ -767,6 +886,7 @@ export function OAuthAuthorizeView() {
               variant="solid"
               size={isBelowDesktop ? '3' : '2'}
               loading={submitting}
+              disabled={listedScopes.length > 0 && tickedScopes.length === 0}
               loadingLabel={t('oauthConsent.submitting')}
               style={{ flex: 1, minHeight: 32, ...touchTarget(isBelowDesktop) }}
               onClick={() => handleConsent('granted')}
