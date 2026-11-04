@@ -503,3 +503,34 @@ async def test_the_retention_reads_carry_each_rows_org(pg_db) -> None:
         for read in (sys_p.get_switch_pointers, sys_p.get_revision_pointers):
             got = {x["virtualRecordId"]: x["orgId"] for x in await read(None, 100000) if x["virtualRecordId"].endswith(tag)}
             assert got == {f"v{i}-{tag}": o for i, o in enumerate(orgs)}
+
+
+async def test_the_inactive_connector_sweep_changes_only_the_org_it_runs_under(pg_db) -> None:
+    from app.core.org_context import for_org
+    from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+    orgs = [new_org(), new_org()]
+    tag = uuid.uuid4().hex
+    for o in orgs:
+        p = bound(pg_db, o)
+        await p.batch_upsert_nodes([{"_key": f"c-{tag}", "isActive": False, "orgId": o}], "apps")
+        await p.batch_upsert_nodes([{"_key": f"r-{tag}", "orgId": o, "connectorId": f"c-{tag}", "origin": "CONNECTOR", "indexingStatus": "QUEUED"}], "records")
+    provider = StandInProvider(logging.getLogger("cg"), pg_db)
+    with for_org(orgs[0], job="test.queued_sweep"):
+        assert await _sweep_queued_records_for_inactive_connectors(graph_provider=provider, logger=logging.getLogger("cg"), page_size=50, org_id=orgs[0]) == 1
+    assert (await bound(pg_db, orgs[0]).get_document(f"r-{tag}", "records"))["indexingStatus"] == "AUTO_INDEX_OFF"
+    assert (await bound(pg_db, orgs[1]).get_document(f"r-{tag}", "records"))["indexingStatus"] == "QUEUED"
+
+
+async def test_a_pointer_page_that_ends_on_a_shared_virtual_record_id_holds_every_orgs_pointer_of_it(pg_db) -> None:
+    orgs = [new_org(), new_org()]
+    vrid = f"v-{uuid.uuid4().hex}"
+    for i, o in enumerate(orgs):
+        p = bound(pg_db, o)
+        await p.batch_upsert_nodes([{"_key": o, "name": f"org{i}"}], "organizations")
+        await p.batch_upsert_nodes([{"_key": vrid, "documentId": f"d{i}", "switchSeq": 1, "retired": [], "currentRev": f"r{i}"}], "virtualRecordToDocIdMapping")
+    sys_p = StandInProvider(logging.getLogger("cg"), pg_db)
+    with org_context.system("test.pointer_page"):
+        for read in (sys_p.get_switch_pointers, sys_p.get_revision_pointers):
+            got = [x for x in await read(vrid[:-1] + chr(ord(vrid[-1]) - 1), 1) if x["virtualRecordId"] == vrid]
+            assert sorted(x["orgId"] for x in got) == sorted(orgs)       # a page of one still holds both, so a walk that continues after it misses neither

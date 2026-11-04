@@ -73,8 +73,11 @@ class TestPath:
         assert result["found"] is True
         assert [h["relation"] for h in result["hops"]][-2:] == ["DEFINES", "DEFINES"]
 
-    async def test_an_exhausted_search_is_a_plain_miss(self, graph) -> None:
-        assert await _path(graph, b=PANEL) == {"found": False, "hops": [], "searched_hops": MAX_PATH_DEPTH}
+    async def test_an_exhausted_search_is_a_miss_that_says_what_it_does_not_prove(self, graph) -> None:
+        result = await _path(graph, b=PANEL)
+        assert {k: v for k, v in result.items() if k != "note"} == {
+            "found": False, "hops": [], "searched_hops": MAX_PATH_DEPTH}
+        assert "not reached" in result["note"]
 
 
 class TestDepth:
@@ -102,7 +105,7 @@ class TestDepth:
 
         graph = Endless()
         result = await _path(graph, max_depth=99)
-        assert result == {"found": False, "hops": [], "searched_hops": MAX_PATH_DEPTH}
+        assert result["found"] is False and result["searched_hops"] == MAX_PATH_DEPTH
         # One query per hop, capped, and once more from the far end when the
         # forward search finds nothing.
         assert graph.calls == 2 * MAX_PATH_DEPTH
@@ -118,6 +121,33 @@ class TestFrontierCap:
         assert result["found"] is False
         assert result["capped"] is True
         assert "cap" in result["note"]
+
+
+class TestUnprovenMiss:
+    """An uncapped miss is no proof either: CALLS holds only calls whose receiver
+    type is known, and agents read a bare `found: False` as "never reached"."""
+
+    async def test_a_target_nothing_calls_says_every_call_to_it_is_unlinked(self, graph) -> None:
+        note = (await _path(graph, b=PANEL))["note"]
+        assert note.startswith("Nothing in the graph calls the second symbol")
+
+    async def test_a_target_with_linked_callers_says_unlinked_calls_can_still_join(self, graph) -> None:
+        graph.edges.append({"_from": f"{BLOCKS}/k_client", "_to": f"{BLOCKS}/k_panel",
+                            "relationshipType": "CALLS"})
+        note = (await _path(graph, b=PANEL))["note"]
+        assert note.startswith("No chain of linked calls joins them")
+
+    async def test_a_caller_in_a_file_the_caller_cannot_read_is_not_counted(self) -> None:
+        """"Something calls it" from a hidden file would reveal that the file calls it."""
+        graph = FakeGraphProvider(deny_records=["rec-d"])
+        graph.edges.append({"_from": f"{BLOCKS}/k_client", "_to": f"{BLOCKS}/k_panel",
+                            "relationshipType": "CALLS"})
+        note = (await _path(graph, b=PANEL))["note"]
+        assert note.startswith("Nothing in the graph calls the second symbol")
+
+    async def test_no_note_when_calls_were_not_searched_or_direction_ignored(self, graph) -> None:
+        assert "note" not in await _path(graph, b=PANEL, edge_types=["INHERITS"])
+        assert "note" not in await _path(graph, b=PANEL, undirected=True)
 
 
 class TestAccessControl:
@@ -153,10 +183,13 @@ class TestDirectedWalkAsksOnlyForEdgesItCanTake:
                 self, node_keys, node_collection, relationship_types, direction,
                 limit=5000, transaction=None, raise_on_error=False
             ) -> list[dict]:
-                self.asked.append((direction, tuple(relationship_types)))
+                self.asked.append((direction, tuple(relationship_types), limit))
                 return []
 
         graph = Recording()
         await _path(graph)
-        assert {d for d, _ in graph.asked} == {"outbound", "inbound"}
-        assert all(set(rels) <= set(STRUCTURAL_RELATIONS) for d, rels in graph.asked if d == "inbound")
+        assert {d for d, _, _ in graph.asked} == {"outbound", "inbound"}
+        inbound_calls = [(r, n) for d, r, n in graph.asked
+                         if d == "inbound" and not set(r) <= set(STRUCTURAL_RELATIONS)]
+        # The miss's note probes the target's callers once, bounded; the walk asks for none.
+        assert inbound_calls == [(("CALLS",), path_mod._CALLER_PROBE)]

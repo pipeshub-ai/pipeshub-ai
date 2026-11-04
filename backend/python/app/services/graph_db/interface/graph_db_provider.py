@@ -422,7 +422,7 @@ if TYPE_CHECKING:
         EntityCandidateRows,
         PermittedEntityRows,
     )
-    from app.services.permissions.ports import HierarchyView
+    from app.services.permissions.ports import HierarchyView, StampGraph
 
 
 def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
@@ -1620,7 +1620,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a specific node.
@@ -2357,7 +2359,9 @@ class IGraphDBProvider(ABC):
         undone. See ``app.modules.indexing.duplicate_reconcile``.
 
         Returns:
-            ``[{"_key", "duplicateReconcileAttempts", "duplicateReconcileDueAt"}]``.
+            ``[{"_key", "orgId", "duplicateReconcileAttempts", "duplicateReconcileDueAt"}]``. The read spans
+            every organisation (the caller runs it under a system context); ``orgId`` is the organisation
+            the follow-up for that row runs under.
 
         Raises:
             Exception: on query failure.
@@ -4949,6 +4953,34 @@ class IGraphDBProvider(ABC):
         Concrete and failing, like ``check_access``: a backend without it must be refused loudly, never read as
         "no scopes"."""
         raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
+
+    async def get_structure_of_nodes(
+        self, collection: str, node_ids: list[str], transaction: str | None = None, *, raise_on_error: bool = False
+    ) -> dict[str, frozenset]:
+        """For each node of ``collection``, the hierarchy (PARENT_CHILD, ATTACHMENT), group (BELONGS_TO) and inherit edges that decide
+        its access, as hashable tuples, and whether it has any grant (a PERMISSION edge into it; which grants, never). Read inside ``transaction`` when given. This default asks edge by edge; the
+        graph providers override it with one query for all the nodes."""
+        out: dict[str, frozenset] = {}
+        for node_id in node_ids:
+            me = f"{collection}/{node_id}"
+            edges: set[tuple] = set()
+            for edge_collection in (CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value):
+                for e in await self.get_edges_from_node(me, edge_collection, transaction=transaction, raise_on_error=raise_on_error) or []:
+                    edges.add((edge_collection, e.get("_from"), e.get("_to")))
+            for e in await self.get_edges_to_node(me, CollectionNames.NODE_RELATIONS.value, transaction=transaction, raise_on_error=raise_on_error) or []:
+                if e.get("relationshipType") in ("PARENT_CHILD", "ATTACHMENT"):
+                    edges.add((CollectionNames.NODE_RELATIONS.value, e.get("_from"), e.get("_to"), e.get("relationshipType")))
+            if await self.get_edges_to_node(me, CollectionNames.PERMISSION.value, transaction=transaction, raise_on_error=raise_on_error):
+                edges.add(("granted", node_id))
+            out[node_id] = frozenset(edges)
+        return out
+
+    def permission_stamp_graph(self) -> "StampGraph":
+        """What a scope-field stamper reads about records and record groups, for `app.services.permissions.ScopeProjector`.
+
+        Concrete and failing, like ``permission_hierarchy_view``: a backend without it must be refused loudly, never read
+        as "every record is its container"."""
+        raise NotImplementedError(f"{type(self).__name__} has no permission stamp graph")
 
     @abstractmethod
     async def get_entity_access_context(
