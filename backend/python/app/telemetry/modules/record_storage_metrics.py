@@ -88,6 +88,20 @@ def record_retention(kind: str, outcome: str, count: int = 1) -> None:
         RETENTION.inc(kind, outcome, value=float(count))
 
 
+# job: the recovery pass (queued_sweep, stranded_republish, orphan_mapping_sweep, duplicate_reconcile, named_entity_persist_retry);
+# outcome: failed (one organisation's part failed; the later ones ran) or no_org_row (a retry row naming no organisation, cleared).
+RECOVERY_ORG_PASS = METRICS_BACKEND.counter(
+    "pipeshub_recovery_org_pass_total",
+    "Recovery passes that failed for one organisation, and retry rows with no organisation that were cleared, by job and outcome",
+    ["job", "outcome"],
+)
+
+
+def record_recovery_org_pass(job: str, outcome: str, count: int = 1) -> None:
+    if count:
+        RECOVERY_ORG_PASS.inc(job, outcome, value=float(count))
+
+
 # trigger: not_found (the gateway answered 404), signed_url (a 403 or 404 on a URL
 # signed in this call), ranged (a failed ranged download).
 # outcome: served (the mapping named a new document and it was read), unchanged

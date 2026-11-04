@@ -120,6 +120,7 @@ class _Day:
                 concurrency_manager=None,
                 page_size=50,
                 read_backlog=self.lane.backlog,
+                org_id="org-1",
             )
 
 
