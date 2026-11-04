@@ -1,0 +1,16 @@
+from ..backend import NOOP
+
+TIER = NOOP
+DEGRADED = NOOP
+EMPTY_LEG = NOOP
+ADMISSION_WAIT = NOOP
+ADMISSION_REJECTED = NOOP
+TIMEOUT = NOOP
+RECALL = NOOP
+SAMPLE_DROPPED = NOOP
+ORG_RECALL_LOW = NOOP
+QUANTIZATION_RECALL = NOOP
+
+
+def leg_band(leg: int) -> str:
+    return "40" if leg <= 40 else "120" if leg <= 120 else "600"
