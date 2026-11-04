@@ -69,6 +69,7 @@ import {
   type AttachmentRef,
   type SlackAttachmentUploadResult,
   type SlackFile,
+  type SlackFileClassification,
   FAILED_RESPONSE_GENERATION_MESSAGE,
   STREAM_UPDATE_THROTTLE_MS,
   STREAM_UPDATE_MAX_CHARS,
@@ -189,16 +190,17 @@ async function collectThreadFiles(
   thread: PriorThreadMessages,
   botCacheKey: string,
   knownBotUserId: string | undefined,
-): Promise<SlackFile[]> {
+): Promise<SlackFileClassification> {
+  const none: SlackFileClassification = { supported: [], unsupported: [], oversized: [] };
   if (!thread.complete) {
-    return [];
+    return none;
   }
   const prior = thread.messages.filter((m) => m.ts !== typedMessage.ts);
   const hasFiles = prior.some(
     (m) => Array.isArray(m.files) && m.files.length > 0,
   );
   if (!hasFiles) {
-    return [];
+    return none;
   }
   const own = await resolveOwnBotIdentity(
     typedClient,
@@ -1550,13 +1552,17 @@ app.event("app_mention", async ({ event, client, context }) => {
       resolvedSlackBot?.botId ?? 'default',
       typedContext.botUserId,
     );
+    const { unsupported, oversized } = threadFiles;
+    if (unsupported.length > 0 || oversized.length > 0) {
+      await postSkippedAttachmentsNotice(typedClient, typedMessage, { unsupported, oversized }, 'messageOnly');
+    }
     await processSlackMessage(
       typedMessage,
       typedClient,
       typedContext,
       contextualQuery,
       resolvedSlackBot,
-      threadFiles,
+      threadFiles.supported,
     );
   } catch (error) {
     console.error("Error handling app mention:", error);
