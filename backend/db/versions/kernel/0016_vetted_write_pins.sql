@@ -200,6 +200,8 @@ dels2 AS (
     (SELECT array_agg(lower(m[1]) ORDER BY lower(m[1])) FROM regexp_matches(COALESCE(d.ra[5], d.rs[2], ''), ' and [a-z_][a-z0-9_]*\.([a-z_][a-z0-9_]*) = ', 'gi') m) AS lefts,
     (SELECT array_agg(lower(m[1]) ORDER BY lower(m[1])) FROM regexp_matches(COALESCE(d.ra[5], ''), ' = [a-z_][a-z0-9_]*\.([a-z_][a-z0-9_]*)', 'gi') m) AS rights,
     (SELECT array_agg(lower(c) ORDER BY lower(c)) FROM unnest(string_to_array(d.ra[4], ', ')) c) AS kcols,
+    (SELECT array_agg(lower(m[1]) || '=' || lower(m[2]) ORDER BY lower(m[1]) || '=' || lower(m[2])) FROM regexp_matches(COALESCE(d.ra[5], ''), ' and [a-z_][a-z0-9_]*\.([a-z_][a-z0-9_]*) = [a-z_][a-z0-9_]*\.([a-z_][a-z0-9_]*)', 'gi') m) AS pairs,
+    (SELECT array_agg(lower(k) || '=' || lower((string_to_array(d.ra[4], ', '))[ord]) ORDER BY lower(k) || '=' || lower((string_to_array(d.ra[4], ', '))[ord])) FROM unnest(d.key_cols) WITH ORDINALITY x(k, ord)) AS want_pairs,
     string_to_array(d.ra[2], ', ') AS arr_args,
     (SELECT array_agg(m[1]) FROM regexp_matches(COALESCE(d.rs[2], ''), ' = ([a-z_][a-z0-9_]*)', 'gi') m) AS scalar_args
   FROM dels d),
@@ -283,7 +285,9 @@ SELECT '106 delete is not an equality on the whole primary key (or on the curren
   WHERE NOT (
     (d.key_cols IS NOT NULL AND d.ra IS NOT NULL AND d.lefts = (SELECT array_agg(lower(c) ORDER BY lower(c)) FROM unnest(d.key_cols) c)
        AND cardinality(d.lefts) = cardinality(d.key_cols) AND d.rights = d.kcols AND cardinality(d.rights) = cardinality(d.kcols)
-       AND cardinality(d.arr_args) = cardinality(d.kcols) AND (SELECT count(DISTINCT lower(c)) FROM unnest(d.arr_args) c) = cardinality(d.arr_args))
+       AND cardinality(d.arr_args) = cardinality(d.kcols) AND (SELECT count(DISTINCT lower(c)) FROM unnest(d.arr_args) c) = cardinality(d.arr_args)
+       -- the pairs, not only the sets: the i-th key column is compared with the i-th column of the alias (in any order of the conditions)
+       AND d.pairs = d.want_pairs)
     OR (d.key_cols IS NOT NULL AND d.rs IS NOT NULL AND d.lefts = (SELECT array_agg(lower(c) ORDER BY lower(c)) FROM unnest(d.key_cols) c)
        AND cardinality(d.lefts) = cardinality(d.key_cols))
     OR (d.txn_col IS NOT NULL AND d.rt IS NOT NULL AND lower(d.rt[2]) = lower(d.txn_col)))
