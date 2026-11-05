@@ -195,7 +195,7 @@ async def _enrich_sql_table_with_fk_relations(
 
     related = {fk_id(e) for e in fk_child_ids + fk_parent_ids} - {None}
     try:
-        allowed = await accessible_node_ids(graph_provider, related, user_id, org_id)
+        allowed = await accessible_node_ids(graph_provider, related, user_id, org_id, with_placeholders=True)
     except PermissionVerificationUnavailableError:
         # The related tables are extra context: the record itself is still shown.
         logger.warning("Could not check access to the tables related to %s", record_id, exc_info=True)
