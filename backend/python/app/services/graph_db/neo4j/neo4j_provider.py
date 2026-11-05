@@ -22842,8 +22842,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         relationship, (label,) = self._ENTITY_CANDIDATE_TARGETS[entity_type]
         rows = await self.client.execute_query(
             f"""
-            MATCH (:Record {{id: $record_id}})-[:{relationship}]{self._candidate_arrow(entity_type)}(e:{label})
-            WHERE {self._ENTITY_ORG_SCOPE[entity_type]}
+            MATCH (rec:Record {{id: $record_id}})-[:{relationship}]{self._candidate_arrow(entity_type)}(e:{label})
+            WHERE rec.orgId = $org_id AND {self._ENTITY_ORG_SCOPE[entity_type]}
             WITH DISTINCT e
             RETURN e.id AS id, {fields}
             ORDER BY id

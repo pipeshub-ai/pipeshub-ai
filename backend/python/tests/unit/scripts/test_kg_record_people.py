@@ -96,7 +96,7 @@ async def test_apply_has_the_entity_index_project_the_orgs_people_again() -> Non
 
     graph, data_store = _graph([["m1"]]), MagicMock()
     tx_store = MagicMock(
-        get_user_by_email=graph.get_user_by_email, get_user_by_source_id=graph.get_user_by_source_id,
+        get_users_by_emails=graph.get_users_by_emails, get_user_by_source_id=graph.get_user_by_source_id,
         delete_edges_between_collections=AsyncMock(), batch_create_entity_relations=AsyncMock(),
         get_record_group_organization=graph.get_record_group_organization,
     )
@@ -105,7 +105,7 @@ async def test_apply_has_the_entity_index_project_the_orgs_people_again() -> Non
         return await fn(tx_store)
 
     data_store.execute_idempotent_in_transaction = AsyncMock(side_effect=_run)
-    await backfill(graph, data_store, "org-1", apply=True, logger=logging.getLogger("t"), out=io.StringIO())
+    assert await backfill(graph, data_store, "org-1", apply=True, logger=logging.getLogger("t"), out=io.StringIO()) == 0
     graph.update_node.assert_awaited_once_with(
         "org-1", "organizations", {EntityIndexState.STATE: None, EntityIndexState.TARGET: None},
     )
