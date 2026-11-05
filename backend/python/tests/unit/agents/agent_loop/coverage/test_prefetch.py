@@ -39,6 +39,8 @@ class TestFacetSearches:
 
         # f2 and f3 are uncovered; the default budget is one search.
         assert searches.await_args.args[1] == ["Northwind EU region rollout"]
+        # They run before the first turn, so a slow search costs at most this much.
+        assert searches.await_args.kwargs["timeout"] == coverage_prefetch.FACET_SEARCH_TIMEOUT_S == 20.0
         assert extra.startswith(coverage_prefetch.FACET_CONTEXT_INTRO)
         assert "EU block" in extra
         assert coverage_state(context.tool_state).was_searched("Northwind EU region rollout")

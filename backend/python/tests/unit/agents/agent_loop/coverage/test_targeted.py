@@ -24,7 +24,7 @@ async def test_results_are_rendered_and_an_empty_or_failed_search_counts_as_noth
     monkeypatch.setattr(search_ops, "execute_search", execute)
     context = AgentContext(org_id="o", user_id="u", user_email="u@example.com")
 
-    results = await run_targeted_searches(context, ["found", "empty", "error"], purpose="gate")
+    results = await run_targeted_searches(context, ["found", "empty", "error"], purpose="gate", timeout=5.0)
 
     assert [r.text is not None for r in results] == [True, False, False]
     assert all(call.kwargs["max_result_chars"] == TARGETED_RESULT_CHARS for call in execute.await_args_list)
@@ -40,5 +40,5 @@ async def test_a_raising_search_leaves_the_others(monkeypatch) -> None:
 
     monkeypatch.setattr(search_ops, "execute_search", _execute)
     context = AgentContext(org_id="o", user_id="u", user_email="u@example.com")
-    results = await run_targeted_searches(context, ["bad", "good"], purpose="facet")
+    results = await run_targeted_searches(context, ["bad", "good"], purpose="facet", timeout=5.0)
     assert [r.text for r in results] == [None, "ok text"]

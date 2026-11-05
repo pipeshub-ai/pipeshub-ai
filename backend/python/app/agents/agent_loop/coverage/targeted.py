@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 # Small enough that a round of them costs less than one search the model makes.
 TARGETED_RESULT_CHARS = 16_000
-_SEARCH_TIMEOUT_S = 60.0
 
 
 @dataclass(frozen=True)
@@ -53,10 +52,11 @@ async def run_targeted_searches(
     queries: list[str],
     *,
     purpose: str,
+    timeout: float,
     max_chars: int = TARGETED_RESULT_CHARS,
-    timeout: float = _SEARCH_TIMEOUT_S,
 ) -> list[TargetedResult]:
-    """Run ``queries`` concurrently; one retrieval frame reports what they added."""
+    """Run ``queries`` concurrently, each bounded by ``timeout`` seconds (a slower
+    one counts as finding nothing); one retrieval frame reports what they added."""
     from app.agents.actions.knowledge_graph.ops.search import execute_search
 
     async def _one(query: str) -> TargetedResult:
