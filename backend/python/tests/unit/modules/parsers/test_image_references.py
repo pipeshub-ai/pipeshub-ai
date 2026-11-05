@@ -9,7 +9,10 @@ from __future__ import annotations
 import random
 import re
 import subprocess
+import sys
+import textwrap
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -21,7 +24,7 @@ from app.modules.parsers.markdown.image_references import extract_and_replace_im
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
+    from types import ModuleType
 
 # --- the previous implementation (oracle) ------------------------------------
 _LEGACY_HTML_IMG_TAG_RE = re.compile(
@@ -172,24 +175,40 @@ class _CountingRe:
         return getattr(re, name)
 
 
+def counted_work(scan: Callable[[str], object], text: str, *modules: ModuleType) -> int:
+    """Characters ``scan(text)`` makes the patterns of ``modules`` examine in total. Counted, not timed: linear is the same number on a
+    loaded runner and on an idle one, and a scan that rescans from each opener (quadratic) or backtracks (exponential) examines many
+    times more."""
+    work = [0, 0]
+    patterns = [(m, name, value) for m in modules for name, value in vars(m).items() if isinstance(value, re.Pattern)]
+    saved_re = [(m, m.re) for m in modules if hasattr(m, "re")]
+    try:
+        for m, name, value in patterns:
+            setattr(m, name, _Counted(value, work))
+        for m, _ in saved_re:
+            m.re = _CountingRe(work)
+        scan(text)
+    finally:
+        for m, name, value in patterns:
+            setattr(m, name, value)
+        for m, original in saved_re:
+            m.re = original
+    return work[0]
+
+
 def scan_work(text: str) -> int:
-    """Characters the scan of ``text`` examines in total. Counted, not timed: linear is the same number on a loaded runner and on an idle one,
-    and a scan that rescans from each opener (quadratic) or backtracks (exponential) examines many times more."""
+    """The work of the Markdown image scan on ``text``."""
     from app.modules.parsers.markdown import image_references as module
 
-    work = [0, 0]
-    patterns = {name: value for name, value in vars(module).items() if isinstance(value, re.Pattern)}
-    saved_re = module.re
-    try:
-        for name, value in patterns.items():
-            setattr(module, name, _Counted(value, work))
-        module.re = _CountingRe(work)
-        module.extract_and_replace_images(text)
-    finally:
-        for name, value in patterns.items():
-            setattr(module, name, value)
-        module.re = saved_re
-    return work[0]
+    return counted_work(module.extract_and_replace_images, text, module)
+
+
+def html_scan_work(parser: object, text: str) -> int:
+    """The work of an HTML extractor's parse on ``text`` (the standard library's HTML tokenizer does its pattern matching)."""
+    import _markupbase
+    import html.parser
+
+    return counted_work(parser.extract_and_replace_images, text, html.parser, _markupbase)
 
 
 # --- parity with the previous implementation ------------------------------------
@@ -398,18 +417,52 @@ def test_openers_sharing_one_tail_are_scanned_in_linear_time(tail: str) -> None:
     assert work_big <= 8 * 64000, (tail, work_big)
 
 
+_HTML_UNITS = ["<img ", "<img a='", "<a b='", "<!--", "<", "<![CDATA[", "<div>"]
+
+
 @pytest.mark.parametrize("parser_class", [SelectolaxHtmlParser, DoclingHtmlParser])
-@pytest.mark.parametrize("unit", ["<img ", "<img a='", "<a b='", "<!--", "<", "<![CDATA[", "<div>"])
-def test_html_extractors_take_linear_time_on_crafted_input(parser_class, unit) -> None:
+@pytest.mark.parametrize("unit", _HTML_UNITS)
+def test_html_extractors_do_linear_work_on_crafted_input(parser_class, unit) -> None:
     parser = parser_class.__new__(parser_class)
     big = unit * (65536 // len(unit))
-    half = unit * (32768 // len(unit))
-    benign = '<p>text <img src="http://x/i.png" alt="a"></p>' * (65536 // 48)
-    t_benign = cpu(parser.extract_and_replace_images, benign, repeat=2)
-    t_big = cpu(parser.extract_and_replace_images, big, repeat=2)
-    t_half = cpu(parser.extract_and_replace_images, half, repeat=2)
-    assert t_big < max(t_benign, 0.05) * 12, (t_big, t_benign)
-    assert t_big < max(t_half, 0.02) * 3.5, (t_big, t_half)
+    quarter = unit * (16384 // len(unit))
+    work_big, work_quarter = html_scan_work(parser, big), html_scan_work(parser, quarter)
+    # About 2 characters examined per character today; four times the input costs four times the work (quadratic would be 16x).
+    assert work_big <= 8 * len(big), (work_big, len(big))
+    assert work_big <= 5 * work_quarter, (work_big, work_quarter)
+
+
+_DEADLINE_SCRIPT = textwrap.dedent(
+    """
+    import faulthandler, sys
+    sys.path.insert(0, {tests!r})
+    from test_image_references import _ADVERSARIAL, _HTML_UNITS
+    from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
+    from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
+    from app.modules.parsers.markdown.image_references import extract_and_replace_images
+
+    scans = [(name, extract_and_replace_images, unit) for name, unit in _ADVERSARIAL.items()]
+    for parser_class in (SelectolaxHtmlParser, DoclingHtmlParser):
+        parser = parser_class.__new__(parser_class)
+        scans += [(parser_class.__name__ + " " + unit, parser.extract_and_replace_images, unit) for unit in _HTML_UNITS]
+    for name, scan, unit in scans:
+        # A regular expression that backtracks inside one call cannot be interrupted or counted; the watchdog thread ends the
+        # process, naming where it was, long before the test runner's own timeout.
+        faulthandler.dump_traceback_later({deadline}, exit=True)
+        scan(unit * (65536 // len(unit)))
+        faulthandler.cancel_dump_traceback_later()
+    """
+)
+
+
+def test_no_crafted_input_makes_a_single_scan_run_away() -> None:
+    """The work counts above cannot see a pattern that backtracks inside one call. Each family's largest input is scanned once in a
+    child process under a deadline of seconds where a scan takes milliseconds: only a real blow-up misses it."""
+    script = _DEADLINE_SCRIPT.format(tests=str(Path(__file__).parent), deadline=3)
+    run = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, cwd=Path(__file__).parents[4], timeout=120, check=False,
+    )
+    assert run.returncode == 0, run.stderr[-1500:]
 
 
 def test_many_real_images_keep_the_tag_scan_complete() -> None:
