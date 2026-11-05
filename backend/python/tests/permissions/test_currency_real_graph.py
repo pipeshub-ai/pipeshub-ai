@@ -92,3 +92,21 @@ async def test_a_change_that_could_not_move_the_generation_marks_the_connector_u
     await sg.mark_scope_dirty(backend.provider, conn, attempts=1)
     assert (await backend.provider.get_document(conn, CollectionNames.APPS.value)).get(sg.UNSAFE_KEY)
     assert not await current(backend.provider, conn)
+
+
+async def test_a_second_mark_after_the_pass_read_the_first_is_told_from_it_on_both_stores(backend, monkeypatch) -> None:  # noqa: F811
+    processor, conn, *_ = await _world(backend)
+
+    async def refuse(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("no bump")
+
+    monkeypatch.setattr(backend.provider, "increment_node_field", refuse)
+    await sg.mark_scope_dirty(backend.provider, conn, attempts=1)
+    first = (await backend.provider.get_document(conn, CollectionNames.APPS.value))[sg.UNSAFE_KEY]
+    assert isinstance(first, int | float) and first > 1
+    await finish_pass(backend.provider, conn)
+    assert await backend.provider.update_node(conn, CollectionNames.APPS.value, {K["unsafe"]: first}) is not False
+    assert await current(backend.provider, conn)                          # the pass read this mark
+    await sg.mark_scope_dirty(backend.provider, conn, attempts=1)          # a second mark, while the first is still set
+    assert (await backend.provider.get_document(conn, CollectionNames.APPS.value))[sg.UNSAFE_KEY] != first
+    assert not await current(backend.provider, conn)

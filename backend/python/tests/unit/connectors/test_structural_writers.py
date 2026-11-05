@@ -11,7 +11,7 @@ import re
 import textwrap
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -297,7 +297,7 @@ async def test_without_explicit_transactions_a_failed_bump_marks_the_connector_u
     with pytest.raises(RuntimeError):
         async with GraphDataStore(MagicMock(), provider).transaction() as tx:
             await tx.delete_single_record("r1")
-    provider.update_node.assert_awaited_with("c1", "apps", {"scopeProjectionUnsafe": True}, None)  # on its own: it must survive the failure
+    provider.update_node.assert_awaited_with("c1", "apps", {"scopeProjectionUnsafe": ANY}, None)  # on its own: it must survive the failure
 
 
 def _block_provider(explicit: bool) -> MagicMock:
@@ -321,7 +321,7 @@ async def test_a_block_that_fails_after_a_structural_write_without_a_transaction
         async with GraphDataStore(MagicMock(), provider).transaction() as tx:
             await tx.delete_single_record("r1")
             raise RuntimeError("connection reset after the first statement")
-    provider.update_node.assert_awaited_with("c1", "apps", {"scopeProjectionUnsafe": True}, None)
+    provider.update_node.assert_awaited_with("c1", "apps", {"scopeProjectionUnsafe": ANY}, None)
 
 
 async def test_a_block_that_fails_in_a_real_transaction_marks_nothing_because_the_rollback_undoes_it() -> None:
@@ -523,7 +523,7 @@ async def test_in_production_an_unclassified_write_marks_every_connector_of_the_
             await _Scratch.via_local_alias(tx, "r1")  # an unclassified write: let through, but remembered
     provider.batch_create_edges.assert_awaited()
     provider.get_org_apps.assert_awaited_with("o1", active_only=False, raise_on_error=True)
-    marked = {c.args[0] for c in provider.update_node.await_args_list if c.args[2] == {"scopeProjectionUnsafe": True}}
+    marked = {c.args[0] for c in provider.update_node.await_args_list if c.args[2] == {"scopeProjectionUnsafe": ANY}}
     assert marked == {"c1", "c2", "c3"}
 
 
@@ -587,7 +587,7 @@ async def test_outside_a_transaction_every_connector_of_the_organisation_is_mark
             await _Scratch.via_local_alias(tx, "r1")
     assert order[:4] == ["mark", "mark", "mark", "write"]  # every connector is marked before the write, which then fails
     assert set(order[4:]) <= {"mark"}
-    marked = {c.args[0] for c in provider.update_node.await_args_list if c.args[2] == {"scopeProjectionUnsafe": True}}
+    marked = {c.args[0] for c in provider.update_node.await_args_list if c.args[2] == {"scopeProjectionUnsafe": ANY}}
     assert marked == {"c1", "c2", "c3"}  # also the ones the block never looked at
     assert all(c.args[3] is None for c in provider.update_node.await_args_list)  # on their own: they survive the failure
 
@@ -852,7 +852,8 @@ async def test_mark_scope_dirty_moves_the_generation_then_falls_back_to_unsafe_t
     await sg.mark_scope_dirty(provider, None)  # no connector: nothing to move
     provider.increment_node_field.side_effect = RuntimeError("down")
     await sg.mark_scope_dirty(provider, "c1")  # three failed bumps, then the unsafe mark lands
-    assert provider.update_node.await_args.args[2] == {"scopeProjectionUnsafe": True}
+    assert provider.update_node.await_args.args[2] == {"scopeProjectionUnsafe": ANY}
+    assert isinstance(provider.update_node.await_args.args[2]["scopeProjectionUnsafe"], int) and provider.update_node.await_args.args[2]["scopeProjectionUnsafe"] > 1
     provider.update_node.side_effect = RuntimeError("down")
     with pytest.raises(RuntimeError):
         await sg.mark_scope_dirty(provider, "c1")

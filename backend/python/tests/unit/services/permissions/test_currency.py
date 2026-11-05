@@ -30,7 +30,9 @@ def test_a_connector_whose_pass_finished_from_its_current_generation_is_current(
     assert app_is_current(good())
     assert app_is_current(good(**{GENERATION_KEY: None, K["structure_generation"]: 0}))          # a connector whose structure never changed
     assert app_is_current(good(**{GENERATION_KEY: 6.0, K["structure_generation"]: 6}))           # AQL increments in doubles
-    assert app_is_current(good(**{GENERATION_KEY: "5"}))
+    assert app_is_current(good(**{UNSAFE_KEY: 1000, K["unsafe"]: 1000}))                          # the pass read this very mark
+    assert app_is_current(good(**{UNSAFE_KEY: True, K["unsafe"]: True}))                          # the mark older code wrote
+    assert app_is_current(good(**{UNSAFE_KEY: False, K["unsafe"]: None}))
 
 
 @pytest.mark.parametrize(("name", "over"), [
@@ -40,6 +42,11 @@ def test_a_connector_whose_pass_finished_from_its_current_generation_is_current(
     ("the structure moved on", {GENERATION_KEY: 6}), ("the pass is from a later generation", {GENERATION_KEY: 4}),
     ("no recorded structure generation", {K["structure_generation"]: None}), ("recorded -1", {K["structure_generation"]: -1}),
     ("unsafe", {UNSAFE_KEY: True}), ("unsafe with a token", {UNSAFE_KEY: 123}),
+    ("a mark written since the pass", {UNSAFE_KEY: 2000, K["unsafe"]: 1000}), ("a mark where the pass read none", {UNSAFE_KEY: 2000}),
+    ("the mark was cleared after the pass read one", {K["unsafe"]: 1000}), ("a bool mark over a token", {UNSAFE_KEY: True, K["unsafe"]: 1000}),
+    ("a token over a bool mark", {UNSAFE_KEY: 1000, K["unsafe"]: True}), ("an unreadable mark", {UNSAFE_KEY: "x", K["unsafe"]: "x"}),
+    ("an unreadable recorded mark", {UNSAFE_KEY: 5, K["unsafe"]: [5]}), ("a zero mark", {UNSAFE_KEY: 0, K["unsafe"]: 0}),
+    ("both generations -1", {GENERATION_KEY: -1, K["structure_generation"]: -1}), ("a negative held generation", {GENERATION_KEY: -5, K["structure_generation"]: 5}),
     ("garbage generation", {GENERATION_KEY: "x"}), ("garbage recorded generation", {K["structure_generation"]: "x"}),
     ("fractional generation", {GENERATION_KEY: 5.5}), ("NaN generation", {GENERATION_KEY: float("nan")}), ("infinite", {GENERATION_KEY: float("inf")}),
     ("boolean recorded generation", {K["structure_generation"]: True}), ("garbage version", {K["version"]: "x"}),
@@ -67,7 +74,8 @@ async def test_the_reader_skips_a_connector_it_cannot_read_and_never_raises() ->
     assert await StampCurrency(Graph()).current(["a", "b", "c", "broken", "unknown"]) == {"a"}
 
 
-GARBAGE = ["x", "", [], [0], {}, {"a": 0}, float("nan"), float("inf"), True, False, 0.5, "0.5", "1e999", b"0"]
+GARBAGE = ["x", "", [], [0], {}, {"a": 0}, float("nan"), float("inf"), True, False, 0.5, "0.5", "1e999", b"0",
+           "1_0", " 5 ", "1e1", "5", "0", "-1", -1, -0.0 - 1.0]
 
 
 @pytest.mark.parametrize("junk", GARBAGE, ids=repr)

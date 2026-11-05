@@ -47,6 +47,7 @@ from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import (
     UNSAFE_KEY,
     ScopeGenerationConflict,
+    new_unsafe_mark,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -330,7 +331,7 @@ class GraphTransactionStore(TransactionStore):
         seen = {c for c in self._connector_of.values() if c} | self.structural_connectors
         ids = seen | {str(k) for a in apps if (k := a.get("_key") or a.get("id"))}
         for connector_id in sorted(ids):
-            await self.graph_provider._provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, None)
+            await self.graph_provider._provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: new_unsafe_mark()}, None)
         self._org_marked_for_unclassified = True
 
     async def _connector_of_node(self, collection: str, node_id: str) -> str | None:
@@ -1557,7 +1558,7 @@ class GraphDataStore(DataStoreProvider):
         without one the statements of the block already committed one by one, so the mark is written on its own and survives the failure."""
         transaction = tx_store.txn if tx_store.explicit else None
         for connector_id in sorted(connector_ids):
-            await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, transaction)
+            await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: new_unsafe_mark()}, transaction)
 
     async def _mark_unsafe_after_unclassified_write(self, tx_store: "GraphTransactionStore") -> None:
         """A write nobody classified reached the provider, and which connector it touched is not known (the proxy sees a method

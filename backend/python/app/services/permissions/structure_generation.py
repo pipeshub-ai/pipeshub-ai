@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
@@ -26,15 +27,35 @@ UNSAFE_KEY = "scopeProjectionUnsafe"
 
 
 def whole_number(value: object) -> int | None:
-    """A whole number, or None. The generation is incremented in AQL, which computes in doubles, so ``6.0`` is 6; ``True``, a fraction,
-    NaN or text that is not a number are not a generation."""
+    """A whole number of zero or more, or None. A generation is stored as a number (the provider returns an int, or a float for a value an
+    AQL increment computed: ``6.0`` is 6); a bool, a negative, a fraction, NaN, infinity and any string (``"5"``, ``" 5 "``, ``"1_0"``,
+    ``"1e1"``) are not a generation."""
     if isinstance(value, bool):
         return None
-    try:
-        number = float(str(value))
-    except (TypeError, ValueError):
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float) and value.is_integer() and 0 <= value < 2**53:
+        return int(value)
+    return None
+
+
+def new_unsafe_mark() -> int:
+    """A fresh unsafe mark: microseconds since the epoch. A connector's mark is rewritten by every change that could not move the generation, and
+    a pass records the mark it read, so a mark written after the read is a different value (a constant would hide it)."""
+    return time.time_ns() // 1000
+
+
+def unsafe_mark(value: object) -> int | bool | None:
+    """The mark a stored value stands for: None for none (absent, None, False), True for the mark older code wrote, the positive whole number
+    `new_unsafe_mark` wrote. Anything else raises ValueError: a mark that cannot be read is not "no mark"."""
+    if value is None or value is False:
         return None
-    return int(number) if number.is_integer() and abs(number) < 2**53 else None
+    if value is True:
+        return True
+    number = whole_number(value)
+    if number is None or number == 0:
+        raise ValueError(f"not an unsafe mark: {value!r}")
+    return number
 
 
 def structure_generation_of(app: Mapping[str, object] | None) -> int | None:
@@ -87,7 +108,7 @@ async def mark_scope_dirty(graph_provider: Any, connector_id: str | None, *, att
             await asyncio.sleep(0.2 * (attempt + 1))
     logging.getLogger(__name__).error("structure generation of %s not moved (%s): marking it unsafe", connector_id, type(last).__name__)
     try:
-        marked = await graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}) is not False
+        marked = await graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: new_unsafe_mark()}) is not False
     except Exception as exc:
         marked, last = False, exc
     if not marked:
