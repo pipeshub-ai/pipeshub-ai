@@ -1272,10 +1272,15 @@ class RedisVectorService(IVectorDBService):
         sx.check_size(flt, "Redis")
         refuse_unsafe_ids(flt)
         node = sx.admits(flt)
-        # With a case-sensitive ``pathIds`` the query carries the excluded scopes. Without it they are left out and enforced by the exact check on
-        # the points the query returns: a case-insensitive tag query would drop a point that stores ``X`` for an excluded ``x``.
+        # With a case-sensitive ``pathIds`` the query carries the excluded and pending scopes. Without it they are left out and enforced by the exact
+        # check on the points the query returns: a case-insensitive tag query would drop a point that stores ``X`` for an excluded ``x``. Blocked
+        # connectors are always left to the exact check (``connectorIds`` is not case-sensitive in the indexes that exist).
+        # shortcut: on an index with case-insensitive tags, blocked (always) and pending (and excluded) are filtered after top-k, a recall cost the
+        # widening loop covers; it goes away when the index is rebuilt with CASESENSITIVE tags (blocked stays: connectorIds is not case-sensitive)
+        leave_out = [sx.Has(CONNECTOR_IDS_FIELD, tuple(sorted(flt.blocked)))]
         if PATH_IDS_FIELD not in await self._case_sensitive_fields(idx):      # an index from before the scope tags were case-sensitive
-            node = sx.relax(node, [sx.Has(PATH_IDS_FIELD, tuple(sorted(flt.excluded)))])
+            leave_out += [sx.Has(PATH_IDS_FIELD, tuple(sorted(flt.excluded))), sx.Has(PATH_IDS_FIELD, tuple(sorted(flt.pending)))]
+        node = sx.relax(node, leave_out)
         outside: dict[str, tuple[str, ...]] = {}
         if node != sx.FALSE:
             held = await self.client.execute_command("FT.TAGVALS", idx, CONNECTOR_IDS_FIELD)  # type: ignore

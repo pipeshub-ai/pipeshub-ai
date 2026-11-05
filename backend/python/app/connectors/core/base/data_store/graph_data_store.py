@@ -45,12 +45,19 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import (
+    CLOSED_KEY,
+    OPENED_KEY,
     UNSAFE_KEY,
     ScopeGenerationConflict,
+    ScopeGenerationError,
+    new_unsafe_mark,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _T = TypeVar("_T")
+
+#: Tries of one unsafe mark written after a write that could not be undone.
+_MARK_ATTEMPTS = 3
 
 # An ArangoDB write-write conflict (1200) clears only once the other transaction
 # commits, and an indexing stream transaction can hold a record for seconds. So
@@ -312,6 +319,11 @@ class GraphTransactionStore(TransactionStore):
         self._connector_of: dict[tuple[str, str], str | None] = {}
         # nodes this transaction created: no stamp can be stale for them, whatever edges it then gives them
         self.new_nodes: set[tuple[str, str]] = set()
+        # Connectors this transaction counted as opened (before an unclassified write outside a transaction), the ones whose unsafe mark was then
+        # written, and the ones counted as closed: only a connector marked is closed, so a closing step never covers a mark that did not land.
+        self.opened: set[str] = set()
+        self.marked: set[str] = set()
+        self.closed: set[str] = set()
 
     def _note_unclassified(self) -> None:
         # Before the write is forwarded: with no organisation it could not be charged to one at the end, and outside an explicit
@@ -330,7 +342,10 @@ class GraphTransactionStore(TransactionStore):
         seen = {c for c in self._connector_of.values() if c} | self.structural_connectors
         ids = seen | {str(k) for a in apps if (k := a.get("_key") or a.get("id"))}
         for connector_id in sorted(ids):
-            await self.graph_provider._provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, None)
+            # One atomic increment each: concurrent blocks each count, and the connector is not current while opened > closed.
+            if await self.graph_provider._provider.increment_node_field(connector_id, CollectionNames.APPS.value, OPENED_KEY) is None:
+                raise ScopeGenerationError(f"could not open the unclassified write on connector {connector_id}: no such connector")
+            self.opened.add(connector_id)
         self._org_marked_for_unclassified = True
 
     async def _connector_of_node(self, collection: str, node_id: str) -> str | None:
@@ -1582,7 +1597,17 @@ class GraphDataStore(DataStoreProvider):
         without one the statements of the block already committed one by one, so the mark is written on its own and survives the failure."""
         transaction = tx_store.txn if tx_store.explicit else None
         for connector_id in sorted(connector_ids):
-            await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, transaction)
+            # Retried; if it never lands the connector stays opened (not current) and is not closed.
+            for attempt in range(_MARK_ATTEMPTS):
+                try:
+                    # False: no such app document, so no mark was written and the opening must not be counted as closed
+                    if await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: new_unsafe_mark()}, transaction) is not False:
+                        tx_store.marked.add(connector_id)
+                    break
+                except Exception:
+                    if attempt + 1 == _MARK_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(0.2 * (attempt + 1))
 
     async def _mark_unsafe_after_unclassified_write(self, tx_store: "GraphTransactionStore") -> None:
         """A write nobody classified reached the provider, and which connector it touched is not known (the proxy sees a method
@@ -1595,6 +1620,21 @@ class GraphDataStore(DataStoreProvider):
         org_id = org_context.current().org_id
         apps = await self.graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
         await self._mark_unsafe(tx_store, {str(k) for a in apps if (k := a.get("_key") or a.get("id"))} - seen)
+        await self._close_opened(tx_store)
+
+    async def _close_opened(self, tx_store: "GraphTransactionStore") -> None:
+        """Count the connectors this block opened as closed, those whose unsafe mark has been written. Tried once: an exception proves nothing (a timeout
+        can arrive after the provider applied the increment), and a second increment of an applied one would count a write that is still running as
+        closed. A closing step with an unknown or negative outcome (logged) leaves the connector opened, which is not current: the fail-closed side."""
+        for connector_id in sorted((tx_store.opened & tx_store.marked) - tx_store.closed):
+            try:
+                if await self.graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, CLOSED_KEY) is not None:
+                    tx_store.closed.add(connector_id)
+                    continue
+            except Exception:
+                pass
+            self.logger.error("could not close the unclassified write on connector %s: it stays not current until the next pass is run "
+                              "with --close-open-mark", connector_id)
 
     async def _mark_unsafe_after_failed_block(self, tx_store: "GraphTransactionStore") -> None:
         """A block that failed without an explicit transaction left its earlier statements committed: the connectors a structural (or an
@@ -1614,6 +1654,10 @@ class GraphDataStore(DataStoreProvider):
                 await self._mark_unsafe(tx_store, [connector_id])
             except BaseException:
                 self.logger.error("could not mark connector %s scope-unsafe after a failed block", connector_id)
+        try:
+            await self._close_opened(tx_store)
+        except BaseException:
+            self.logger.error("could not close the unclassified writes of a failed block")
 
     async def _flush_scope_generation(self, tx_store: "GraphTransactionStore") -> None:
         if not tx_store.tracked:

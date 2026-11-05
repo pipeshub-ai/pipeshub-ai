@@ -442,14 +442,27 @@ export function redactSensitiveQueryParams(url: string): string {
   });
 }
 
+// A quoted JSON field with a string value, as an upstream body quoted in an
+// error message shows it, including one cut off before its closing quote. The
+// value's two alternatives never overlap and its end always matches, so this
+// stays linear.
+const QUOTED_JSON_FIELD =
+  /("([A-Za-z0-9_.-]{1,64})"\s*:\s*")(?:[^"\\]|\\[\s\S])*(?:"|\\?$)/g;
+
 /**
  * Free text such as an error message or stack: each word that could hold a
  * `name=value` pair or a `user:password@` URL is redacted on its own, so the
- * rest of the text (stack frames, Mongo key errors) stays readable.
+ * rest of the text (stack frames, Mongo key errors) stays readable. A quoted
+ * JSON field (`"access_token":"..."`) is redacted by its key.
  */
 export const redactSecretsInText = (text: string): string =>
   // Split, not a \S*[=@]\S* scan: that pattern backtracks quadratically on a long word.
   text
+    .replace(QUOTED_JSON_FIELD, (field, opening: string, key: string) =>
+      isSensitiveQueryKey(key) || SECRET_HEADERS.has(key.toLowerCase())
+        ? `${opening}${REDACTED}"`
+        : field,
+    )
     .split(/(\s+)/)
     .map((word) =>
       word.includes('=') || word.includes('@')
