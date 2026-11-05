@@ -450,11 +450,18 @@ class TestCreateIndex:
 
     @pytest.mark.asyncio
     async def test_create_non_keyword_index(self, connected_service):
-        schema = {"type": "integer"}
+        schema = {"type": "float"}
         await connected_service.create_index("col", "field1", schema)
         connected_service.client.create_payload_index.assert_awaited_once_with(
             "col", "field1", schema
         )
+
+    @pytest.mark.asyncio
+    async def test_create_integer_index(self, connected_service):
+        from qdrant_client.http.models import PayloadSchemaType
+
+        await connected_service.create_index("col", "field1", {"type": "integer"})
+        connected_service.client.create_payload_index.assert_awaited_once_with("col", "field1", PayloadSchemaType.INTEGER)
 
     @pytest.mark.asyncio
     async def test_create_index_not_connected(self, service):

@@ -360,9 +360,3 @@ class ScopeFilter:
         if any(len(x) > MAX_SCOPE_IDS for x in sets):                                                     # refuse before paying for the sort
             raise ScopeFilterTooLarge(f"a scope list holds more than {MAX_SCOPE_IDS} ids")
         return tuple(sorted(x) for x in sets)  # type: ignore[return-value]
-
-
-def reject_scope_filter(requests: Iterable[object], store: str) -> None:
-    """A store that does not translate the scope filter must not run a request that carries one: it would drop the filter and widen the search."""
-    if any(getattr(r, "scope_filter", None) is not None for r in requests):
-        raise NotImplementedError(f"{store} does not translate the scope filter")

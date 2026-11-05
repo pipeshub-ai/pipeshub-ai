@@ -61,8 +61,9 @@ ADMIT_CASES = _cases([
     ({"readable_scopes": frozenset({"own_u"})}, {"union"}),
     ({"readable_scopes": frozenset({"seed"})}, {"override"}),
     ({"readable_groups": frozenset({"g2"})}, {"container_other"}),
+    ({"current": frozenset({"c1", "c9"}), "readable_groups": frozenset({"g1"})}, {"container", "other_connector", "mixed_connectors"}),
     ({}, set()),
-], ['record_group', 'other_group', 'root_group', 'open_app', 'open_app_not_current', 'path', 'path_excluded', 'intersection', 'intersection_excluded', 'intersection_own_id', 'own_id', 'override_seed', 'group_not_union', 'nothing'])
+], ['record_group', 'other_group', 'root_group', 'open_app', 'open_app_not_current', 'path', 'path_excluded', 'intersection', 'intersection_excluded', 'intersection_own_id', 'own_id', 'override_seed', 'group_not_union', 'two_current_connectors', 'nothing'])
 
 #: a viewer that reads everything, with one thing wrong about what it may trust
 TRUST_CASES = _cases([

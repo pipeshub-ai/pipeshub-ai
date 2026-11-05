@@ -263,6 +263,19 @@ class QdrantUtils:
 
     @staticmethod
     def search_request_to_qdrant(req: HybridSearchRequest) -> QueryRequest:
+        qdrant_filter = (
+            QdrantUtils.filter_expression_to_qdrant(req.filter)
+            if req.filter is not None
+            else None
+        )
+        if req.scope_filter is not None:
+            # ANDed with the request's own filter, never in its place
+            sx.check_size(req.scope_filter, "Qdrant")
+            scope = QdrantUtils.scope_node(sx.admits(req.scope_filter))
+            qdrant_filter = Filter(must=[scope] if qdrant_filter is None else [qdrant_filter, scope])
+        # With a scope filter each leg is filtered where it searches: the candidates of a leg are its best ``limit * 2`` AFTER the filter, not a
+        # window of the whole collection that the filter then thins (a request without one is sent exactly as before).
+        legs = {"filter": qdrant_filter} if req.scope_filter is not None else {}
         prefetch_list = []
         if req.dense_query is not None:
             prefetch_list.append(
@@ -271,6 +284,7 @@ class QdrantUtils:
                     using="dense",
                     limit=req.limit * 2,
                     params=dense_search_params(),
+                    **legs,
                 )
             )
         if req.sparse_query is not None:
@@ -282,19 +296,10 @@ class QdrantUtils:
                     ),
                     using="sparse",
                     limit=req.limit * 2,
+                    **legs,
                 )
             )
 
-        qdrant_filter = (
-            QdrantUtils.filter_expression_to_qdrant(req.filter)
-            if req.filter is not None
-            else None
-        )
-        if req.scope_filter is not None:
-            # ANDed with the request's own filter, never in its place
-            sx.check_size(req.scope_filter, "Qdrant")
-            scope = QdrantUtils.scope_node(sx.admits(req.scope_filter))
-            qdrant_filter = Filter(must=[scope] if qdrant_filter is None else [qdrant_filter, scope])
 
         # Only RRF is supported; default to RRF if anything else is requested
         fusion = Fusion.RRF

@@ -527,9 +527,15 @@ class TestCreateIndex:
     @pytest.mark.asyncio
     async def test_create_non_keyword_index_defaults_to_text(self, connected_service):
         connected_service.client.indices.put_mapping = AsyncMock(return_value={"acknowledged": True})
-        await connected_service.create_index("my-idx", "field1", {"type": "integer"})
+        await connected_service.create_index("my-idx", "field1", {"type": "float"})
         call_kwargs = connected_service.client.indices.put_mapping.call_args[1]
         assert call_kwargs["body"]["properties"]["field1"]["type"] == "text"
+
+    @pytest.mark.asyncio
+    async def test_create_integer_index_maps_long(self, connected_service):
+        connected_service.client.indices.put_mapping = AsyncMock(return_value={"acknowledged": True})
+        await connected_service.create_index("my-idx", "field1", {"type": "integer"})
+        assert connected_service.client.indices.put_mapping.call_args[1]["body"]["properties"]["field1"]["type"] == "long"
 
     @pytest.mark.asyncio
     async def test_create_index_not_connected(self, service):

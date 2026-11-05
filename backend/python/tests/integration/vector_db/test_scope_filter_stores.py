@@ -153,3 +153,70 @@ class TestRedisScopeFilter(_ScopeFilterContract):
     @pytest.fixture
     async def vector_service(self, redis_service):  # noqa: ANN201
         return redis_service
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.dropped = 0
+
+    def inc(self, *labels: str, value: float = 1.0) -> None:
+        self.dropped += int(value)
+
+
+class TestRedisPreFilterIsExact(TestRedisScopeFilter):
+    """A Redis tag query compares without case and the connectors it excludes are read just before the search: what it lets through that the
+    exact rule refuses is dropped before the answer is returned, and counted."""
+
+    @pytest.fixture
+    def dropped(self, monkeypatch):  # noqa: ANN201
+        from app.services.vector_db.redis import redis_vector
+
+        rec = _Recorder()
+        monkeypatch.setattr(redis_vector, "SCOPE_PREFILTER_DROPPED", rec)
+        return rec
+
+    async def _put(self, loaded, name: str, **fields) -> None:
+        svc, col = loaded
+        p = _point(A, "container", 50)
+        p.id = _pid(A, name)
+        p.payload["metadata"].update(virtualRecordId=name, blockId=name)
+        p.payload.update(fields)
+        await svc.upsert_points(col, [p])
+
+        async def indexed() -> bool:
+            return name in await self._search(loaded, None)
+        await wait_for(indexed, timeout=30.0)
+
+    async def test_ids_stored_with_capitals_do_not_meet_the_lowercase_ids_of_the_filter(self, loaded, dropped) -> None:
+        await self._put(loaded, "cap_connector", connectorIds=["C1"])
+        await self._put(loaded, "cap_group", recordGroupIds=["G1"])
+        await self._put(loaded, "cap_path", scopeStamp="union", pathIds=["S1"], aclScope=[], recordGroupIds=["g9"])
+        flt = f(readable_groups=frozenset({"g1"}), readable_scopes=frozenset({"s1"}))
+        got = await self._search(loaded, flt)
+        assert {"container", "union", "union_hidden"} <= got
+        for name in ("cap_connector", "cap_group", "cap_path"):
+            assert name not in got, name
+        assert dropped.dropped >= 3                                               # the query let them through (no case); the exact rule did not
+
+    async def test_a_connector_that_appears_between_the_read_and_the_search_is_dropped(self, loaded, dropped) -> None:
+        svc, col = loaded
+        real = svc.client.execute_command
+        planted = {"done": False}
+
+        async def racing(*cmd, **kw):  # noqa: ANN002, ANN003, ANN202
+            out = await real(*cmd, **kw)
+            if cmd[0] == "FT.TAGVALS" and not planted["done"]:
+                planted["done"] = True                                           # a point with a connector the index has not shown yet
+                p = _point(A, "container", 60)
+                p.id, p.payload["connectorIds"] = _pid(A, "raced"), ["c1", "cnew"]
+                p.payload["metadata"].update(virtualRecordId="raced", blockId="raced")
+                await svc.upsert_points(col, [p])
+            return out
+
+        svc.client.execute_command = racing
+        try:
+            got = await self._search(loaded, f(readable_groups=frozenset({"g1"})))
+        finally:
+            svc.client.execute_command = real
+        assert planted["done"] and "raced" not in got and "container" in got
+        assert dropped.dropped >= 1
