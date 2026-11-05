@@ -22329,7 +22329,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "@edges": TAXONOMY_EDGE_COLLECTIONS[collection],
                 "org_id": org_id,
                 # Never null: a constant-true filter lets the optimizer sort
-                # by walking every tenant's nodes in _key order.
+                # by walking every org's nodes in _key order.
                 "after_key": after_key or "",
                 "limit": max(1, int(limit)),
             },
