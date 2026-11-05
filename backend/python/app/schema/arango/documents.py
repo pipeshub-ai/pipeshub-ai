@@ -210,6 +210,9 @@ app_schema = {
             "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},
             "vectorMembershipBackfillVrids": {"type": ["integer", "null"]},
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
+            # app.services.permissions.structure_generation: moves with every structural write of the connector
+            "scopeProjectionGeneration": {"type": ["number", "null"]},  # incremented in AQL, which computes in doubles
+            "scopeProjectionUnsafe": {"type": ["boolean", "null"]},
             # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
             "scopeBackfillState": {"type": ["string", "null"]},
             "scopeBackfillAfter": {"type": ["string", "null"]},
