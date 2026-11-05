@@ -315,3 +315,33 @@ async def test_redis_looks_further_when_the_exact_rule_drops_what_the_query_let_
     never = dataclasses.replace(req, scope_filter=None)
     asked.clear()
     assert [r.id for r in await svc._run_single_hybrid_query("idx", "c", never)] == ["capital"] and asked == [1]       # no scope filter: one search, as before
+
+
+async def test_redis_leaves_the_excluded_scopes_out_of_the_query_and_the_exact_check_enforces_them() -> None:
+    f = flt(readable_scopes=frozenset({"s1"}), excluded=frozenset({"x1"}))
+    cmds = await sr.captured("redis", [scoped("dense_only", f)], tagvals=[b"c1"])
+    knn = redis_filters(cmds)[1]
+    assert "x1" not in knn and "@pathIds:{c1|g1|s1}" in knn                       # the path rule still needs a path that reaches something
+    union = {"connectorIds": ["c1"], "scopeStamp": "union", "scopeFieldsVersion": VERSION, "scopeGeneration": GENERATION, "aclScope": []}
+    node = sx.admits(f)
+    assert sx.evaluate(node, {**union, "pathIds": ["s1", "X1"]}) is True          # stored X1 is not the excluded x1: admitted
+    assert sx.evaluate(node, {**union, "pathIds": ["s1", "x1"]}) is False         # the exact rule still excludes x1
+    assert sx.relax(node, [sx.Has("pathIds", ("x1",))]) != node and sx.relax(node, []) == node
+
+
+async def test_redis_keeps_a_point_that_stores_a_capital_where_the_filter_excludes_the_lowercase_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dataclasses
+
+    from app.services.vector_db.models import SearchResult
+    from app.services.vector_db.redis import redis_vector
+
+    svc = redis_vector.RedisVectorService.__new__(redis_vector.RedisVectorService)
+    base = {"connectorIds": ["c1"], "scopeStamp": "union", "scopeFieldsVersion": VERSION, "scopeGeneration": GENERATION, "aclScope": []}
+    ranked = [SearchResult("cap", 1.0, {**base, "pathIds": ["s1", "X1"]}), SearchResult("excluded", 0.9, {**base, "pathIds": ["s1", "x1"]})]
+
+    async def once(idx: str, coll: str, req: object, limit: int) -> list:
+        return ranked[:limit]
+
+    svc._search_once = once  # type: ignore[method-assign]
+    req = dataclasses.replace(sr.plain_requests()["dense_only"], limit=5, scope_filter=flt(readable_scopes=frozenset({"s1"}), excluded=frozenset({"x1"})))
+    assert [r.id for r in await svc._run_single_hybrid_query("idx", "c", req)] == ["cap"]

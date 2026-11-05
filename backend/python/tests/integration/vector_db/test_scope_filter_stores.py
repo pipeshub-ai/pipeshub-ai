@@ -247,6 +247,11 @@ class TestRedisPreFilterIsExact(TestRedisScopeFilter):
             got = await self._search(loaded, f(readable_groups=frozenset({"g1"})), limit=limit, dense=query)
             assert got == {"container"}, limit
 
+    async def test_a_stored_capital_is_not_the_excluded_lowercase_id(self, loaded, dropped) -> None:
+        await self._put(loaded, "cap_path", scopeStamp="union", pathIds=["s1", "X1"], aclScope=[], recordGroupIds=["g9"])
+        got = await self._search(loaded, f(readable_scopes=frozenset({"s1"}), excluded=frozenset({"x1"})))
+        assert "cap_path" in got and "union_hidden" not in got and "union" in got      # X1 is not x1; the real x1 is still excluded
+
     async def test_ids_with_whitespace_in_them_are_matched_exactly(self, loaded, dropped) -> None:
         await self._put(loaded, "tabbed", recordGroupIds=["g\ttab"])
         await self._put(loaded, "lined", recordGroupIds=["g\nline"])

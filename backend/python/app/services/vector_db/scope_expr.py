@@ -122,6 +122,20 @@ def admits(flt: ScopeFilter) -> Node:
             all_of(has(SCOPE_STAMP_FIELD, PATH_STAMPS), has(PATH_IDS_FIELD, flt.reach), not_(has(PATH_IDS_FIELD, flt.excluded)))))
 
 
+def relax(node: Node, drop: Iterable[Node]) -> Node:
+    """``node`` with every ``Not(p)`` for a ``p`` in ``drop`` replaced by TRUE: a condition that can only admit more. A store that compares ids
+    without case uses it to leave an exclusion out of its query and to check the exact rule on the points it returns (an exclusion that matched
+    ``X`` for ``x`` would remove a point the exact rule admits, and nothing brings it back)."""
+    dropped = frozenset(drop)
+    if isinstance(node, Not):
+        return TRUE if node.part in dropped else node
+    if isinstance(node, All):
+        return all_of(*(relax(p, dropped) for p in node.parts))
+    if isinstance(node, Some):
+        return some_of(*(relax(p, dropped) for p in node.parts))
+    return node
+
+
 def _values(payload: dict[str, Any], field: str) -> list[Any]:
     got = payload.get(field)
     return [] if got is None else list(got) if isinstance(got, (list, tuple)) else [got]

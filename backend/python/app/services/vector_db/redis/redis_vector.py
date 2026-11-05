@@ -50,6 +50,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.permissions.metrics import SCOPE_PREFILTER_DROPPED
 from app.services.vector_db import scope_expr as sx
+from app.services.permissions.scope_fields import PATH_IDS_FIELD
 from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
@@ -1258,6 +1259,9 @@ class RedisVectorService(IVectorDBService):
         sx.check_size(flt, "Redis")
         refuse_unsafe_ids(flt)
         node = sx.admits(flt)
+        # Excluded scopes are left out of the query and enforced by the exact check on the points it returns: a tag query would drop a point
+        # that stores ``X`` for an excluded ``x``, which the exact rule treats as another id.
+        node = sx.relax(node, [sx.Has(PATH_IDS_FIELD, tuple(sorted(flt.excluded)))])
         outside: dict[str, tuple[str, ...]] = {}
         if node != sx.FALSE:
             held = await self.client.execute_command("FT.TAGVALS", idx, CONNECTOR_IDS_FIELD)  # type: ignore
