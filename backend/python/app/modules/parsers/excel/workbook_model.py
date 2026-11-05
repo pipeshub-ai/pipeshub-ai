@@ -817,6 +817,8 @@ def load_workbook_model(
                     if restore is not None:
                         restore()
                         restore = None
+            if cpu_fired.is_set():  # the interrupt was swallowed and the model may be half built
+                raise WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU")
             if max_text_bytes is not None and model.text_bytes > max_text_bytes:
                 raise WorkbookRefused("too_large", f"{model.text_bytes} bytes of text in the blocks")
             return model

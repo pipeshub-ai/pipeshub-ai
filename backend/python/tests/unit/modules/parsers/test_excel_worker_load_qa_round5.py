@@ -11,6 +11,7 @@ The expansion is replaced by a counter, so the tests are fast.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import signal
 import time
@@ -175,6 +176,19 @@ def test_a_cpu_limit_swallowed_by_a_bare_except_in_openpyxl_is_still_a_refusal(m
             signal.raise_signal(signal.SIGXCPU)
         except:  # noqa: E722 - the clause under test
             raise TypeError("expected <class 'bool'>") from None
+
+    monkeypatch.setattr(workbook_model, "_extract", extract)
+    with pytest.raises(WorkbookRefused) as refused:
+        load_workbook_model(
+            workbook_zip("<sheetData/>"), module.EXCEL_LOAD_MAX_BYTES, module.EXCEL_MAX_SHEET_XML_BYTES, module.EXCEL_MAX_TEXT_CHARS, LOAD_SECONDS
+        )
+    assert refused.value.too_large
+
+
+def test_a_cpu_limit_swallowed_silently_does_not_return_a_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    def extract(_data: bytes) -> None:
+        with contextlib.suppress(BaseException):  # a swallowed interrupt, as in openpyxl
+            signal.raise_signal(signal.SIGXCPU)
 
     monkeypatch.setattr(workbook_model, "_extract", extract)
     with pytest.raises(WorkbookRefused) as refused:
