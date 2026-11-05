@@ -48,6 +48,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "ensure_app_membership": (PROJECTED, ""),
     "ensure_nodes": (NO_PROJECTION, _CODE),
     "ensure_team_app_edge": (PROJECTED, ""),
+    "increment_node_field": (NO_PROJECTION, "the counter that serializes an app's structural writes (scopeProjectionGeneration): kg holds no field of it"),
     "remove_authenticated_as": (PROJECTED, ""),
     "remove_sync_point": (NO_PROJECTION, _SYNC),
     "stage_state_compare_and_set": (NO_PROJECTION, "stage states of the indexing pipeline"),
