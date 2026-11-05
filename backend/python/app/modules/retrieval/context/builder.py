@@ -8,11 +8,12 @@ through ``KnowledgeContextBuilder.build``, so they cannot drift apart:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.modules.retrieval.context.neighbours import expand_neighbours
 from app.modules.retrieval.context.ranking import rank_units
+from app.modules.retrieval.context.units import unit_score
 from app.utils.chat_helpers import (
     enrich_records_with_address_links,
     enrich_records_with_graph_context,
@@ -36,6 +37,9 @@ class KnowledgeContext:
     """Chosen units, most relevant first; neighbours and FK tables after the hits."""
     virtual_record_id_to_result: dict[str, Any]
     """The records those units belong to, and nothing else."""
+    matched_record_ids: list[str] = field(default_factory=list[str])
+    """Virtual record ids of every loaded record the hits matched, best first,
+    whether or not any of its units were kept."""
 
 
 class KnowledgeContextBuilder:
@@ -84,7 +88,9 @@ class KnowledgeContextBuilder:
             graph_provider=self._graph_provider,
         )
         units = [unit for unit in units if records.get(unit.get("virtual_record_id")) is not None]
-        ranked = rank_units(units, max_units)
+        by_relevance = rank_units(units)
+        matched = _matched_record_ids(by_relevance, search_results, records)
+        ranked = by_relevance if max_units is None else by_relevance[: max(max_units, 0)]
         spare = None if max_units is None else max(max_units - len(ranked), 0)
         ranked = expand_neighbours(ranked, records, limit=spare)
 
@@ -114,4 +120,20 @@ class KnowledgeContextBuilder:
         await keep_record_text_inside_connection(
             records.values(), self._graph_provider, self._user_id, self._org_id, self._connection_sources,
         )
-        return KnowledgeContext(ranked=ranked, virtual_record_id_to_result=records)
+        return KnowledgeContext(
+            ranked=ranked, virtual_record_id_to_result=records, matched_record_ids=matched,
+        )
+
+
+def _matched_record_ids(
+    ranked_units: list[Unit],
+    search_results: list[dict[str, Any]],
+    records: dict[str, Any],
+) -> list[str]:
+    """Records in the order their best unit ranks, then records with hits but
+    no unit in retrieval-score order; only those whose content loaded."""
+    candidates: list[str | None] = [unit.get("virtual_record_id") for unit in ranked_units]
+    for hit in sorted(search_results, key=lambda hit: -(unit_score(hit) or 0.0)):
+        metadata: dict[str, Any] = hit.get("metadata") or {}
+        candidates.append(metadata.get("virtualRecordId"))
+    return [vrid for vrid in dict.fromkeys(candidates) if vrid and records.get(vrid) is not None]
