@@ -181,3 +181,16 @@ class TestHeadingTextKeepsWhatIsNotMarkup:
 
         assert block_heading_path(_by_text(html)["first"]) == ["Hooks: __init__ in C#"]
         assert block_heading_path(_by_text(markdown)["second"]) == ["Using get_user_id"]
+
+
+class TestHeadingTextAcrossLinesAndCode:
+    def test_a_heading_over_several_lines_is_kept_whole(self) -> None:
+        assert clean_heading_text("Installation\n  Guide", markdown=False) == "Installation Guide"
+
+    def test_code_spans_keep_their_text(self) -> None:
+        assert clean_heading_text("The `__init__` and **setup** hooks") == "The __init__ and setup hooks"
+
+    @pytest.mark.usefixtures("section_paths_on")
+    def test_a_wrapped_html_heading_names_its_section_in_full(self) -> None:
+        container = HtmlToBlocksConverter().convert("<h2>Installation\nGuide</h2><ul><li>third</li></ul>")
+        assert block_heading_path(_by_text(container)["third"]) == ["Installation Guide"]
