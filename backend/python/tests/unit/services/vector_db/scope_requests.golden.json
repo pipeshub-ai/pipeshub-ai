@@ -441,58 +441,36 @@
  "qdrant/dense_only": [
   {
    "filter": {
-    "min_should": null,
     "must": [
      {
-      "geo_bounding_box": null,
-      "geo_polygon": null,
-      "geo_radius": null,
       "key": "metadata.orgId",
       "match": {
        "value": "aaaaaaaaaaaaaaaaaaaaaaaa"
-      },
-      "range": null,
-      "values_count": null
+      }
      },
      {
-      "geo_bounding_box": null,
-      "geo_polygon": null,
-      "geo_radius": null,
       "key": "metadata.virtualRecordId",
       "match": {
        "any": [
         "r1",
         "r2"
        ]
-      },
-      "range": null,
-      "values_count": null
+      }
      }
     ],
     "must_not": [
      {
-      "geo_bounding_box": null,
-      "geo_polygon": null,
-      "geo_radius": null,
       "key": "metadata.blockId",
       "match": {
        "value": "b1"
-      },
-      "range": null,
-      "values_count": null
+      }
      }
-    ],
-    "should": null
+    ]
    },
    "limit": 5,
-   "lookup_from": null,
-   "offset": null,
-   "params": null,
    "prefetch": [
     {
-     "filter": null,
      "limit": 6,
-     "lookup_from": null,
      "params": {
       "exact": false,
       "hnsw_ef": 256,
@@ -503,84 +481,56 @@
        "rescore": true
       }
      },
-     "prefetch": null,
      "query": [
       0.1,
       0.2,
       0.3,
       0.4
      ],
-     "score_threshold": null,
      "using": "dense"
     }
    ],
    "query": {
     "fusion": "rrf"
    },
-   "score_threshold": null,
-   "shard_key": null,
-   "using": null,
-   "with_payload": true,
-   "with_vector": null
+   "with_payload": true
   }
  ],
  "qdrant/dense_text_arms": [
   {
    "filter": {
-    "min_should": null,
     "must": [
      {
-      "geo_bounding_box": null,
-      "geo_polygon": null,
-      "geo_radius": null,
       "key": "metadata.orgId",
       "match": {
        "value": "aaaaaaaaaaaaaaaaaaaaaaaa"
-      },
-      "range": null,
-      "values_count": null
+      }
      }
     ],
-    "must_not": null,
     "should": [
      {
-      "geo_bounding_box": null,
-      "geo_polygon": null,
-      "geo_radius": null,
       "key": "recordGroupIds",
       "match": {
        "any": [
         "g1",
         "g2"
        ]
-      },
-      "range": null,
-      "values_count": null
+      }
      },
      {
-      "geo_bounding_box": null,
-      "geo_polygon": null,
-      "geo_radius": null,
       "key": "connectorIds",
       "match": {
        "any": [
         "c1"
        ]
-      },
-      "range": null,
-      "values_count": null
+      }
      }
     ]
    },
    "limit": 7,
-   "lookup_from": null,
-   "offset": null,
-   "params": null,
    "prefetch": [
     {
-     "filter": null,
      "limit": 10,
-     "lookup_from": null,
      "params": {
       "exact": false,
       "hnsw_ef": 256,
@@ -591,56 +541,37 @@
        "rescore": true
       }
      },
-     "prefetch": null,
      "query": [
       0.1,
       0.2,
       0.3,
       0.4
      ],
-     "score_threshold": null,
      "using": "dense"
     }
    ],
    "query": {
     "fusion": "rrf"
    },
-   "score_threshold": null,
-   "shard_key": null,
-   "using": null,
-   "with_payload": true,
-   "with_vector": null
+   "with_payload": true
   }
  ],
  "qdrant/dense_text_org": [
   {
    "filter": {
-    "min_should": null,
     "must": [
      {
-      "geo_bounding_box": null,
-      "geo_polygon": null,
-      "geo_radius": null,
       "key": "metadata.orgId",
       "match": {
        "value": "aaaaaaaaaaaaaaaaaaaaaaaa"
-      },
-      "range": null,
-      "values_count": null
+      }
      }
-    ],
-    "must_not": null,
-    "should": null
+    ]
    },
    "limit": 9,
-   "lookup_from": null,
-   "offset": null,
-   "params": null,
    "prefetch": [
     {
-     "filter": null,
      "limit": 14,
-     "lookup_from": null,
      "params": {
       "exact": false,
       "hnsw_ef": 256,
@@ -651,44 +582,30 @@
        "rescore": true
       }
      },
-     "prefetch": null,
      "query": [
       0.1,
       0.2,
       0.3,
       0.4
      ],
-     "score_threshold": null,
      "using": "dense"
     }
    ],
    "query": {
     "fusion": "rrf"
    },
-   "score_threshold": null,
-   "shard_key": null,
-   "using": null,
-   "with_payload": true,
-   "with_vector": null
+   "with_payload": true
   }
  ],
  "qdrant/empty_filter": [
   {
    "filter": {
-    "min_should": null,
-    "must": null,
-    "must_not": null,
     "should": []
    },
    "limit": 4,
-   "lookup_from": null,
-   "offset": null,
-   "params": null,
    "prefetch": [
     {
-     "filter": null,
      "limit": 4,
-     "lookup_from": null,
      "params": {
       "exact": false,
       "hnsw_ef": 256,
@@ -699,39 +616,27 @@
        "rescore": true
       }
      },
-     "prefetch": null,
      "query": [
       0.1,
       0.2,
       0.3,
       0.4
      ],
-     "score_threshold": null,
      "using": "dense"
     }
    ],
    "query": {
     "fusion": "rrf"
    },
-   "score_threshold": null,
-   "shard_key": null,
-   "using": null,
-   "with_payload": true,
-   "with_vector": null
+   "with_payload": true
   }
  ],
  "qdrant/no_filter": [
   {
-   "filter": null,
    "limit": 4,
-   "lookup_from": null,
-   "offset": null,
-   "params": null,
    "prefetch": [
     {
-     "filter": null,
      "limit": 4,
-     "lookup_from": null,
      "params": {
       "exact": false,
       "hnsw_ef": 256,
@@ -742,84 +647,56 @@
        "rescore": true
       }
      },
-     "prefetch": null,
      "query": [
       0.1,
       0.2,
       0.3,
       0.4
      ],
-     "score_threshold": null,
      "using": "dense"
     }
    ],
    "query": {
     "fusion": "rrf"
    },
-   "score_threshold": null,
-   "shard_key": null,
-   "using": null,
-   "with_payload": true,
-   "with_vector": null
+   "with_payload": true
   }
  ],
  "qdrant/sparse_dense": [
   {
    "filter": {
-    "min_should": null,
     "must": [
      {
-      "geo_bounding_box": null,
-      "geo_polygon": null,
-      "geo_radius": null,
       "key": "metadata.orgId",
       "match": {
        "value": "aaaaaaaaaaaaaaaaaaaaaaaa"
-      },
-      "range": null,
-      "values_count": null
+      }
      }
     ],
-    "must_not": null,
     "should": [
      {
-      "geo_bounding_box": null,
-      "geo_polygon": null,
-      "geo_radius": null,
       "key": "recordGroupIds",
       "match": {
        "any": [
         "g1",
         "g2"
        ]
-      },
-      "range": null,
-      "values_count": null
+      }
      },
      {
-      "geo_bounding_box": null,
-      "geo_polygon": null,
-      "geo_radius": null,
       "key": "connectorIds",
       "match": {
        "any": [
         "c1"
        ]
-      },
-      "range": null,
-      "values_count": null
+      }
      }
     ]
    },
    "limit": 8,
-   "lookup_from": null,
-   "offset": null,
-   "params": null,
    "prefetch": [
     {
-     "filter": null,
      "limit": 12,
-     "lookup_from": null,
      "params": {
       "exact": false,
       "hnsw_ef": 256,
@@ -830,22 +707,16 @@
        "rescore": true
       }
      },
-     "prefetch": null,
      "query": [
       0.1,
       0.2,
       0.3,
       0.4
      ],
-     "score_threshold": null,
      "using": "dense"
     },
     {
-     "filter": null,
      "limit": 12,
-     "lookup_from": null,
-     "params": null,
-     "prefetch": null,
      "query": {
       "indices": [
        3,
@@ -856,53 +727,33 @@
        0.25
       ]
      },
-     "score_threshold": null,
      "using": "sparse"
     }
    ],
    "query": {
     "fusion": "rrf"
    },
-   "score_threshold": null,
-   "shard_key": null,
-   "using": null,
-   "with_payload": true,
-   "with_vector": null
+   "with_payload": true
   }
  ],
  "qdrant/text_only": [
   {
    "filter": {
-    "min_should": null,
     "must": [
      {
-      "geo_bounding_box": null,
-      "geo_polygon": null,
-      "geo_radius": null,
       "key": "metadata.orgId",
       "match": {
        "value": "aaaaaaaaaaaaaaaaaaaaaaaa"
-      },
-      "range": null,
-      "values_count": null
+      }
      }
-    ],
-    "must_not": null,
-    "should": null
+    ]
    },
    "limit": 6,
-   "lookup_from": null,
-   "offset": null,
-   "params": null,
    "prefetch": [],
    "query": {
     "fusion": "rrf"
    },
-   "score_threshold": null,
-   "shard_key": null,
-   "using": null,
-   "with_payload": true,
-   "with_vector": null
+   "with_payload": true
   }
  ],
  "redis/dense_only": [

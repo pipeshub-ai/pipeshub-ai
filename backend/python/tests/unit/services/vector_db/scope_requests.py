@@ -82,7 +82,7 @@ async def captured(store: str, requests: list[HybridSearchRequest], *, tagvals: 
     if store == "qdrant":
         svc, client = _qdrant()
         await svc.query_nearest_points("col", requests)
-        return [json.loads(r.model_dump_json()) for call in client.query_batch_points.await_args_list for r in call.kwargs["requests"]]
+        return [r.model_dump(mode="json", exclude_none=True) for call in client.query_batch_points.await_args_list for r in call.kwargs["requests"]]       # the fields that are set: the others depend on the client version
     if store == "opensearch":
         svc, client = _opensearch()
         await svc.query_nearest_points("col", requests)

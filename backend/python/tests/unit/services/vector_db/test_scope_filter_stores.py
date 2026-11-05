@@ -114,7 +114,7 @@ async def test_qdrant_ands_the_translation_with_the_requests_own_filter() -> Non
     plain = (await sr.captured("qdrant", [sr.plain_requests()["dense_text_arms"]]))[0]
     [req] = await sr.captured("qdrant", [scoped()])
     assert req["filter"]["must"][0] == plain["filter"]                          # the request's own filter, whole, first
-    assert len(req["filter"]["must"]) == 2 and req["filter"]["should"] is None and req["filter"]["must_not"] is None
+    assert len(req["filter"]["must"]) == 2 and req["filter"].get("should") is None and req["filter"].get("must_not") is None
     texts = json.dumps(req["filter"]["must"][1])
     assert '"except' in texts and "scopeFieldsVersion" in texts and "scopeGeneration" in texts and "connectorIds" in texts
     only = (await sr.captured("qdrant", [scoped("no_filter")]))[0]                  # no filter of its own: the translation stands alone
