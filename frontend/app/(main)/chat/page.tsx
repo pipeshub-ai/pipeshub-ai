@@ -59,7 +59,8 @@ import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useBrand } from '@/lib/branding';
 import { chatContentColumnStyle, clampSplitWidth } from './constants';
 import { useSplitWidth } from '@/chat/hooks/use-split-width';
-import { UsersApi } from '@/app/(main)/workspace/users/api';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { userDisplayName } from '@/lib/utils/formatters';
 import {
   useFeatureFlagsStore,
   selectProjectsEnabled,
@@ -975,36 +976,9 @@ function ChatContent() {
   const isBelowDesktop = useIsBelowDesktop();
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
   const agentContextCreatedBy = useChatStore((s) => s.agentContextCreatedBy);
-  const [agentCreatorName, setAgentCreatorName] = useState<string | null>(null);
-  const [agentCreatorAvatarUrl, setAgentCreatorAvatarUrl] = useState<string | undefined>(
-    undefined
-  );
-
-  useEffect(() => {
-    const mongoUserId = historyAndShareAgentId ? agentContextCreatedBy : null;
-    if (!mongoUserId) {
-      setAgentCreatorName(null);
-      setAgentCreatorAvatarUrl(undefined);
-      return;
-    }
-    let cancelled = false;
-    UsersApi.getUsersByIds([mongoUserId])
-      .then((users) => {
-        if (cancelled) return;
-        const user = users[0];
-        setAgentCreatorName(user?.name?.trim() || user?.email?.trim() || null);
-        setAgentCreatorAvatarUrl(user?.profilePicture ?? undefined);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAgentCreatorName(null);
-          setAgentCreatorAvatarUrl(undefined);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [historyAndShareAgentId, agentContextCreatedBy]);
+  const agentCreator = useUserDirectoryEntry(historyAndShareAgentId ? agentContextCreatedBy : null);
+  const agentCreatorName = userDisplayName(agentCreator);
+  const agentCreatorAvatarUrl = agentCreator?.profilePicture;
 
   // Render decisions
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */

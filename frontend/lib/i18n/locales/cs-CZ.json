@@ -1633,6 +1633,8 @@
     "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také.",
     "sourcesSettingUp": "Ještě se nastavuje: {{sources}}. Odpovědi zatím nemusí zahrnovat vše z těchto zdrojů.",
     "noResultsFor": "Pro „{{query}}“ nebyly nalezeny žádné výsledky",
+    "matchedByName": "Shoda podle názvu",
+    "contentNotIndexedYet": "Obsah zatím není indexován",
     "removeSelectedSource": "Odebrat {{name}}",
     "diagramSourceCopied": "Zdroj diagramu zkopírován",
     "diagramImageCopied": "Obrázek diagramu zkopírován",

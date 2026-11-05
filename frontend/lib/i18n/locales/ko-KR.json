@@ -1563,6 +1563,8 @@
     "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다.",
     "sourcesSettingUp": "아직 설정 중: {{sources}}. 답변에 이 소스의 내용이 아직 모두 포함되지 않을 수 있습니다.",
     "noResultsFor": "“{{query}}”에 대한 결과가 없습니다",
+    "matchedByName": "이름으로 일치",
+    "contentNotIndexedYet": "콘텐츠가 아직 색인되지 않음",
     "removeSelectedSource": "{{name}} 제거",
     "diagramSourceCopied": "다이어그램 소스를 복사했습니다",
     "diagramImageCopied": "다이어그램 이미지를 복사했습니다",

@@ -1478,6 +1478,8 @@
     "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
     "sourcesSettingUp": "Still being set up: {{sources}}. Answers may not include everything from these sources yet.",
     "noResultsFor": "No results found for “{{query}}”",
+    "matchedByName": "Matched by name",
+    "contentNotIndexedYet": "Content not indexed yet",
     "removeSelectedSource": "Remove {{name}}",
     "diagramSourceCopied": "Diagram source copied",
     "diagramImageCopied": "Diagram image copied",

@@ -1478,6 +1478,8 @@
     "deleteChatArtifactsNote": "इस चैट में सहायक द्वारा बनाई गई फ़ाइलें भी हटा दी जाएँगी।",
     "sourcesSettingUp": "अभी सेट अप हो रहे हैं: {{sources}}। हो सकता है कि जवाबों में अभी इन स्रोतों की सारी जानकारी शामिल न हो।",
     "noResultsFor": "“{{query}}” के लिए कोई परिणाम नहीं मिला",
+    "matchedByName": "नाम से मिले",
+    "contentNotIndexedYet": "सामग्री अभी इंडेक्स नहीं हुई",
     "removeSelectedSource": "{{name}} हटाएँ",
     "diagramSourceCopied": "आरेख का स्रोत कॉपी किया गया",
     "diagramImageCopied": "आरेख की छवि कॉपी की गई",

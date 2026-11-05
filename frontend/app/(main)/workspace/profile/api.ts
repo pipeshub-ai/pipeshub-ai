@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { useUserStore } from '@/lib/store/user-store';
 
 // JWT token helpers are in lib/utils — re-exported for convenience
@@ -71,6 +72,7 @@ export const ProfileApi = {
     config?: { suppressErrorToast?: boolean },
   ): Promise<void> {
     await apiClient.put(`${USERS_URL}/${userId}`, payload, config);
+    revalidateSwrNamespace(SWR_NS.userDirectory);
     const store = useUserStore.getState();
     if (store.profile?.userId !== userId) return;
     store.updateProfile({
@@ -108,6 +110,7 @@ export const ProfileApi = {
     await apiClient.put(`${USERS_URL}/dp`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
+    revalidateSwrNamespace(SWR_NS.userDirectory);
     // Fetch back the processed image from server (EXIF stripped, compressed)
     return this.getAvatar();
   },
@@ -115,6 +118,7 @@ export const ProfileApi = {
   /** DELETE /api/v1/users/dp — user resolved from JWT */
   async deleteAvatar(): Promise<void> {
     await apiClient.delete(`${USERS_URL}/dp`);
+    revalidateSwrNamespace(SWR_NS.userDirectory);
   },
 
   // ─────────────────────────────────────────────────────────────────────────

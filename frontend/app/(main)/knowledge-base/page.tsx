@@ -83,7 +83,7 @@ import {
   restoreOpenFoldersInSidebar,
   showCollectionsInSidebar,
 } from './utils/root-app-list';
-import { openFolderChildren, storeChildrenList } from './utils/folder-children';
+import { openFolderChildren, seedChildrenFromListing, storeChildrenList } from './utils/folder-children';
 import { kbSessionToken } from './utils/kb-session';
 import { onSessionEnd } from '@/lib/api/session-cache';
 // Registers the sign-out reset for the knowledge base's cached state.
@@ -666,6 +666,10 @@ function KnowledgeBasePageContent() {
       }
       if (controller.signal.aborted || !stillSignedIn()) return;
       setAllRecordsTableData(data);
+      // An app's tree lives in the app children cache, which this does not fill.
+      if (nodeType && nodeId && nodeType !== 'app') {
+        seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
+      }
       allRecordsBusyTries.current = 0;
       // Sync what the response decided (totals, indices, the two cursors)
       // without touching the cursor the user asked for — overwriting that would
@@ -859,6 +863,7 @@ function KnowledgeBasePageContent() {
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
         setTableData(data);
+        seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
         // The rows are ready: the sidebar path opened below is separate work and
         // must not hold the table's loader.
         setIsLoadingTableData(false);

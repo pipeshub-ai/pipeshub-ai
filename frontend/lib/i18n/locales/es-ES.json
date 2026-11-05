@@ -1500,6 +1500,8 @@
     "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán.",
     "sourcesSettingUp": "Aún se están configurando: {{sources}}. Puede que las respuestas todavía no incluyan todo lo de estas fuentes.",
     "noResultsFor": "No se encontraron resultados para «{{query}}»",
+    "matchedByName": "Coincidencias por nombre",
+    "contentNotIndexedYet": "Contenido aún no indexado",
     "removeSelectedSource": "Quitar {{name}}",
     "diagramSourceCopied": "Código del diagrama copiado",
     "diagramImageCopied": "Imagen del diagrama copiada",

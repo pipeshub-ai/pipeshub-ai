@@ -1563,6 +1563,8 @@
     "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。",
     "sourcesSettingUp": "仍在设置中：{{sources}}。回答可能尚未包含这些来源中的全部内容。",
     "noResultsFor": "未找到“{{query}}”的结果",
+    "matchedByName": "按名称匹配",
+    "contentNotIndexedYet": "内容尚未索引",
     "removeSelectedSource": "移除 {{name}}",
     "diagramSourceCopied": "已复制图表源代码",
     "diagramImageCopied": "已复制图表图片",

@@ -1112,6 +1112,13 @@ class TestRecoverCutShortEnrichment:
 class TestStartKafkaConsumers:
     """Tests for start_kafka_consumers()."""
 
+    @pytest.fixture(autouse=True)
+    def _no_record_title_consumer(self) -> "Iterator[None]":
+        # Wired and tested in tests/unit/modules/indexing/test_record_title_wiring.py; here it would take
+        # a consumer from the factory fakes these tests queue up for the record and stage consumers.
+        with patch("app.indexing_main._start_record_title_consumer", new_callable=AsyncMock):
+            yield
+
     async def test_success_non_neo4j(self) -> None:
         """Record consumer is started successfully for non-neo4j data store."""
         from app.indexing_main import start_kafka_consumers
@@ -1381,6 +1388,7 @@ class TestStageTopicsUnavailable:
             patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[record_consumer, stage_consumer]),
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
+            patch("app.indexing_main._start_record_title_consumer", new_callable=AsyncMock),
             patch("app.indexing_main._TOPIC_RETRY_FIRST_S", 0.0),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
         ):
@@ -1425,6 +1433,7 @@ class TestStageTopicsUnavailable:
             ),
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
+            patch("app.indexing_main._start_record_title_consumer", new_callable=AsyncMock),
             patch("app.indexing_main._TOPIC_RETRY_FIRST_S", 0.0),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
         ):

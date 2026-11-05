@@ -21264,7 +21264,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         "_key", "recordName", "recordType", "connectorId", "virtualRecordId",
         "webUrl", "hideWeburl", "sourceLastModifiedTimestamp", "updatedAtTimestamp",
         "connectorName", "origin", "createdAtTimestamp", "sourceCreatedAtTimestamp",
-        SOURCE_TIMESTAMP_ORIGIN_FIELD,
+        SOURCE_TIMESTAMP_ORIGIN_FIELD, "indexingStatus", HAS_INDEXED_COPY, "mimeType",
     )
 
     async def _get_taxonomy_entities_for_record_via_edge(
@@ -21482,7 +21482,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR ref IN @refs
                 LET rec = DOCUMENT(CONCAT("{records}/", ref.id))
                 LET ok = rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
-                    AND {aql_searchable_record("rec", "completed")}
                     AND rec.connectorId IN ref.connectorIds
                     {record_type_check}
                 RETURN {{id: ref.id, rows: (ok AND @offset == 0) ? [{projection}] : []}}
@@ -21524,7 +21523,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             window = f"""
                 LET one = DOCUMENT(CONCAT("{records}/", ref.id))
                 LET win = (one != null AND @offset == 0 AND one.orgId == @org_id
-                    AND one.isDeleted != true AND {aql_searchable_record("one", "completed")}
+                    AND one.isDeleted != true
                     AND one.connectorId IN ref.connectorIds {record_type_check}
                     AND {self._entity_within_aql("one")}) ? [one] : []
                 LET capped = false"""
@@ -21599,12 +21598,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             bind_vars: dict[str, Any] = {
                 "org_id": org_id,
                 "limit": limit,
-                "completed": ProgressStatus.COMPLETED.value,
                 "users_col": CollectionNames.USERS.value,
                 "user_key": user_key,
                 "app_level_connector_ids": list(app_level_connector_ids),
                 "within": within_param(within),
             }
+            if ref_type != EntityType.RECORD.value:
+                bind_vars["completed"] = ProgressStatus.COMPLETED.value
             if record_types:
                 bind_vars["record_types"] = list(record_types)
             query = self._permitted_entity_records_aql(ref_type, filter_record_types=bool(record_types))
@@ -21801,12 +21801,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "refs": query_refs,
                 "org_id": org_id,
                 "offset": max(0, offset),
-                # Search only returns indexed records; listing others offers
-                # records whose content cannot be read.
-                "completed": ProgressStatus.COMPLETED.value,
             }
             # Arango rejects bind vars the query does not reference.
             if ref_type != EntityType.RECORD.value:
+                # A record found by its own name is shown whether or not its
+                # content is indexed; a taxonomy or group listing offers only
+                # records whose content can be read.
+                bind_vars["completed"] = ProgressStatus.COMPLETED.value
                 bind_vars["limit"] = max(1, limit_per_entity)
                 bind_vars["scan_cap"] = ENTITY_CANDIDATE_SCAN_CAP
             if record_types:
@@ -22540,9 +22541,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }}
         """
         try:
-            if not org_id or node_id not in (await self.check_access(
+            if not org_id:
+                return None
+            checked = await self.check_access(
                 user_key, org_id, node_ids=[node_id], transaction=transaction,
-            )).node_ids:
+            )
+            if node_id not in checked.node_ids:
                 return None
             rows = await self.http_client.execute_aql(
                 query,
@@ -22552,6 +22556,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not rows or not rows[0] or not rows[0].get("result"):
                 return None
             result = dict(rows[0]["result"])
+            # Browsing lists a placeholder; a caller that hands the node out as something to open tells it by this.
+            result["isPlaceholder"] = node_id in checked.placeholder_ids
             kb_id = rows[0].get("kbId")
             result["userRole"] = (
                 await self.get_user_kb_permission(kb_id, user_key, transaction=transaction)
@@ -22876,9 +22882,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # access was granted (role, collection, folder) for the details, and
             # finds nothing for access through inheritance or a declaration.
             user_key = user.get("_key") or user.get("id")
-            if not user_key or record_id not in (await self.check_access(
+            if not user_key:
+                return None
+            checked = await self.check_access(
                 user_key, org_id, node_ids=[record_id], transaction=transaction,
-            )).node_ids:
+            )
+            # A placeholder is reachable for browsing, but it is not a readable record: it is refused here
+            # exactly like a record the user cannot read.
+            if record_id not in checked.node_ids or record_id in checked.placeholder_ids:
                 return None
 
             # Build app record filter for connector records

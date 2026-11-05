@@ -1478,6 +1478,8 @@
     "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
     "sourcesSettingUp": "Wird noch eingerichtet: {{sources}}. Antworten enthalten eventuell noch nicht alles aus diesen Quellen.",
     "noResultsFor": "Keine Ergebnisse für „{{query}}“",
+    "matchedByName": "Nach Name gefunden",
+    "contentNotIndexedYet": "Inhalt noch nicht indexiert",
     "removeSelectedSource": "{{name}} entfernen",
     "diagramSourceCopied": "Diagrammquelle kopiert",
     "diagramImageCopied": "Diagrammbild kopiert",

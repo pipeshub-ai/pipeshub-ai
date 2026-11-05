@@ -53,6 +53,19 @@
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> là một lớp thực thi gốc AI, mã nguồn mở và có thể tự lưu trữ, kết nối tri thức doanh nghiệp, cung cấp tìm kiếm có thể giải thích kèm trích dẫn và tự động hóa quy trình làm việc trên khắp các hệ thống của bạn.
 
+### PipesHub hoạt động như thế nào
+
+PipesHub xây dựng một **lớp ngữ cảnh hợp nhất** trên tài liệu, hội thoại, dữ liệu có cấu trúc, wiki, ticket và mã nguồn. Các connector đồng bộ từng nguồn cùng với quyền truy cập của nó. Pipeline lập chỉ mục phân tích, chia nhỏ và tạo embedding cho nội dung, đồng thời liên kết bản ghi, con người và thực thể trong một đồ thị tri thức.
+
+Câu hỏi được trả lời bởi một **vòng lặp agent**, không phải một lượt "truy xuất rồi sinh" duy nhất. Agent lập kế hoạch, gọi công cụ, đọc kết quả và tiếp tục cho đến khi có đủ bằng chứng:
+
+- **Tìm kiếm lai (hybrid)** — kết hợp truy xuất ngữ nghĩa và từ khóa, khớp cả ý nghĩa lẫn thuật ngữ chính xác.
+- **Grep / khớp mẫu** — định danh chính xác, chuỗi lỗi, mã ticket và ký hiệu trong mã nguồn.
+- **Duyệt đồ thị tri thức** — lần theo liên kết giữa tài liệu, con người, ticket, pull request và luồng thảo luận.
+- **Đọc tài liệu** — mở toàn bộ nguồn thay vì chỉ dựa vào một đoạn khớp.
+
+Mỗi lần gọi công cụ đều được lọc theo quyền của người hỏi, và mỗi câu trả lời đều trích dẫn các khối mà nó dựa vào.
+
 
 ## Tính năng
 

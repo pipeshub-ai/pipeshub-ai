@@ -214,6 +214,8 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}/config/auth`,
       payload
     );
+    // The panel saves auth without bumping the catalog, so the cards' configs are refreshed here.
+    revalidateSwrNamespace(SWR_NS.connectorConfigs);
     return data;
   },
 
@@ -474,6 +476,8 @@ export const ConnectorsApi = {
       params: query,
       suppressErrorToast: true,
     });
+    // The desktop app completes OAuth here even when the instance panel was closed meanwhile.
+    revalidateSwrNamespace(SWR_NS.connectorConfigs);
     return data ?? {};
   },
 
