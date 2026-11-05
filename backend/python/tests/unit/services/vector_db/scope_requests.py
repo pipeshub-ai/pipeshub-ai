@@ -4,6 +4,7 @@ off-identity proof (a request without a scope filter sends exactly what it sent 
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -77,6 +78,12 @@ def _redis(tagvals: list[bytes]) -> tuple[Any, AsyncMock]:
     return svc, client
 
 
+def _bytes(value: object) -> str:
+    """A binary argument (the query vector) as its length and hash: a changed vector changes the golden."""
+    raw = bytes(value) if isinstance(value, (bytes, bytearray)) else repr(value).encode()
+    return f"<{type(value).__name__}:{len(raw)}:{hashlib.sha256(raw).hexdigest()[:16]}>"
+
+
 async def captured(store: str, requests: list[HybridSearchRequest], *, tagvals: list[bytes] | None = None) -> list[Any]:
     """The commands the store's client received for ``requests`` (JSON-able, in order)."""
     if store == "qdrant":
@@ -89,4 +96,4 @@ async def captured(store: str, requests: list[HybridSearchRequest], *, tagvals: 
         return sorted((json.loads(json.dumps({"kwargs": c.kwargs}, default=str)) for c in client.search.await_args_list), key=json.dumps)
     svc, client = _redis([b"c1", b"c9"] if tagvals is None else tagvals)
     await svc.query_nearest_points("col", requests)
-    return sorted(([a if isinstance(a, str) else "<bytes>" for a in c.args] for c in client.execute_command.await_args_list), key=json.dumps)
+    return sorted(([a if isinstance(a, str) else _bytes(a) for a in c.args] for c in client.execute_command.await_args_list), key=json.dumps)
