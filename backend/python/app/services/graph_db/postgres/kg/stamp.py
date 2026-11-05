@@ -255,7 +255,7 @@ async def stamp(tx: Tx, org: str, seeds: set[Key], *, also: set[Key] | None = No
         st.deferred += 1
     rest = a_set - every
     if len(rest) > limit:
-        st.hidden = await restamp.enqueue_rows(tx, org, rest, "reach", skip_apps=frozenset(app_sks[x] for x in deferred))
+        st.hidden = await restamp.enqueue_rows(tx, org, rest, "reach", skip_apps=frozenset(app_sks[x] for x in deferred), locked=locked, org_wide=org_wide)
         a_set -= rest
     await stamp_keys(tx, org, a_set | every, st, app_sks=app_sks, facts=facts, skip_apps=deferred, known=seed_nodes, locked=locked, org_wide=org_wide)
     return st

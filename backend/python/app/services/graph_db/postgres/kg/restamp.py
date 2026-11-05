@@ -131,10 +131,14 @@ async def enqueue_app(tx: Tx, org: str, app_sk: int, reason: str) -> int:
     return job
 
 
-async def enqueue_rows(tx: Tx, org: str, keys: set[Key], reason: str, *, skip_apps: frozenset[int] = frozenset()) -> int:
+async def enqueue_rows(tx: Tx, org: str, keys: set[Key], reason: str, *, skip_apps: frozenset[int] = frozenset(), locked: set[str] | None = None, org_wide: bool = False) -> int:
     """Hide the records of ``keys`` that kg holds and queue their restamp (in the caller's unit), one job per connector the records belong to, so that a job is filed under the
     connector it restamps and does not hold up another connector's flip; returns how many were hidden. A key kg has no row for is left alone: it is stamped when its own
-    projection arrives, and a mark would create a row of nothing but a key. ``skip_apps``: connectors (their sks) already hidden whole by a job of their own."""
+    projection arrives, and a mark would create a row of nothing but a key. ``skip_apps``: connectors (their sks) already hidden whole by a job of their own.
+
+    A mark is a write to the rows of their connector, and a batch of an older job of that connector lifts marks under its lock: the unit marks only the rows of connectors it holds
+    (``locked``, unless ``org_wide``), else :class:`NeedLocks` is raised before anything is written. Otherwise a batch that committed after this unit's mark could lift it, and a stamp
+    the change outdated would be visible with no job left to restamp it."""
     sk_of = await load_sks(tx, org, {k for k in keys if k[0] in COLL_CODE})
     by_app: dict[int, list[tuple[int, int, str, int]]] = {}
     sks = sorted(sk_of.values())
@@ -142,6 +146,13 @@ async def enqueue_rows(tx: Tx, org: str, keys: set[Key], reason: str, *, skip_ap
         got = await tx.fetch("/* pipeshub:kg.hide_read */ SELECT sk, coll, id, kind, app_sk FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])", org, sks[i:i + CAP])
         for r in got:
             by_app.setdefault(r["app_sk"] or 0, []).append((r["sk"], r["coll"], r["id"], r["kind"]))
+    if locked is not None and not org_wide:
+        want = {a for a in by_app if a not in skip_apps}
+        names = {r["sk"]: r["id"] for r in await tx.fetch("/* pipeshub:kg.hide_apps */ SELECT sk, id FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND sk = ANY($2::bigint[])", org, sorted(want))}
+        if 0 in want or want - names.keys():              # records of no connector, or of one whose node key is gone: no connector lock covers them
+            raise NeedLocks(set(), wide=True)
+        if missing := {names[a] for a in want} - locked:
+            raise NeedLocks(missing)
     w = KgWriter(tx)
     for app_sk, rows in sorted(by_app.items()):
         if app_sk in skip_apps:

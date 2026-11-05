@@ -332,3 +332,39 @@ async def test_the_stamps_a_job_leaves_are_those_of_a_fresh_projection(pg_db) ->
     # the same graph, projected whole: the same stamps (the key of the organisation and the sks differ, the ids and the classes' clauses do not)
     got, want = await held_stamps(p, org), await held_stamps(p, other)
     assert {k: v for k, v in got.items() if not k.startswith("org")} == {k: v for k, v in want.items() if not k.startswith("org")}
+
+
+async def test_hiding_records_of_a_connector_the_unit_does_not_hold_asks_for_its_lock_before_it_writes(pg_db, monkeypatch) -> None:
+    from app.services.graph_db.postgres.kg.locks import NeedLocks
+    from app.services.graph_db.postgres.kg.stamp import stamp
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    await add_edge(p, org, ("records", "f2"), ("records", "x1"), "nodeRelations", relationshipType="PARENT_CHILD")      # x1 (app2) hangs under f2 (app1)
+    await drain_org(pg_db, org)
+
+    async def asks(tx) -> set:
+        try:
+            await stamp(tx, org, {("records", "fold")}, locked={"app1"})
+        except NeedLocks as e:
+            return e.apps
+        return set()
+    monkeypatch.setenv("PG_KG_INLINE_MAX", "0")
+    with ctx(org):
+        assert await pg_db.run(asks, write=True) == {"app2"}                 # the reach of the folder includes x1: raised before a mark or a job was written
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == []
+
+
+async def test_a_whole_connector_hidden_leaves_no_outdated_stamp_visible_in_another_connector(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    await add_edge(p, org, ("records", "f2"), ("records", "x1"), "nodeRelations", relationshipType="PARENT_CHILD")
+    await drain_org(pg_db, org)
+    await update_node(p, org, "apps", "app1", name="Drive", type="DRIVE", permissionModel="APP_LEVEL", orgId=org)
+    await drain_org(pg_db, org)
+    for app in ("app1", "app2"):
+        await no_stale_visible(p, pg_db, org, app)
+    await restamp.run_jobs(pg_db, org, "w1", batch=2)
+    for app in ("app1", "app2"):
+        assert await dry_diffs(p, org, app) == []
