@@ -55,7 +55,9 @@ class KgWorker:
         drained (``drain_or_retry`` counts it and leaves the rows) must not stop the gauges."""
         rows = 0
         for org in await self._orgs():
-            rows += await drain_or_retry(self._db, org, page=self._page)
+            if self._stop.is_set():
+                break                                      # what is left stays in the log for the next start
+            rows += await drain_or_retry(self._db, org, page=self._page, stop=self._stop)
             try:
                 with bind(_ctx(org)):
                     async with self._db.uow() as tx:

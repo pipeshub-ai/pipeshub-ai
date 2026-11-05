@@ -79,12 +79,13 @@ def _ctx(org: str) -> OrgContext:
     return OrgContext(org, None, "job", "job:kg-drain", "kg-drain")
 
 
-async def drain_org(db: KernelDB, org: str, *, page: int = PAGE, max_rows: int | None = None) -> DrainStats:
-    """Page after page until the org's log has no committed row left (or ``max_rows`` were taken)."""
+async def drain_org(db: KernelDB, org: str, *, page: int = PAGE, max_rows: int | None = None, stop: asyncio.Event | None = None) -> DrainStats:
+    """Page after page until the org's log has no committed row left (or ``max_rows`` were taken). ``stop``: checked before each page, never inside one (a page commits or rolls back
+    whole, in a unit of its own), so a shutdown leaves what is not drained in the log for the next start."""
     st = DrainStats()
     t0 = time.perf_counter()
     with bind(_ctx(org)):
-        while max_rows is None or st.rows < max_rows:
+        while (max_rows is None or st.rows < max_rows) and not (stop is not None and stop.is_set()):
             n = await drain(db, org, limit=page)
             if not n:
                 break
@@ -158,11 +159,11 @@ async def serves(tx: Tx, org: str, app_id: str) -> bool:
     return bool(row and row["mode"] == "enforce" and row["code_epoch"] == CODE_EPOCH and row["verified_at"] is not None and row["principals"] == "done")
 
 
-async def drain_or_retry(db: KernelDB, org: str, *, page: int = PAGE) -> int:
+async def drain_or_retry(db: KernelDB, org: str, *, page: int = PAGE, stop: asyncio.Event | None = None) -> int:
     """One pass over an org that never raises: the rows taken, or 0 after a failure. A projection that gave up (``RuntimeError``) wrote nothing and leaves its rows in the log:
     it is counted and logged, and the next pass tries again. Any other error is counted as a failed pass and retried the same way."""
     try:
-        return (await drain_org(db, org, page=page)).rows
+        return (await drain_org(db, org, page=page, stop=stop)).rows
     except RuntimeError:
         RETRY_LATER.inc("drain")
         logger.warning("kg drain gave up for an org (connectors it had not locked); the rows stay in the log, retrying later")
