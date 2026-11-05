@@ -72,3 +72,19 @@ def test_the_backoff_doubles_and_stays_below_the_poll_interval_however_long_the_
     assert waits == sorted(waits) and waits[1] == 2 * waits[0] and max(waits) == 5.0
     for stuck in (1024, 10**6, 10**18):          # 2**1024 does not convert to a float: an uncapped exponent raised OverflowError after about 85 minutes
         assert w._backoff(stuck) == 5.0
+
+
+async def test_stop_does_not_wait_out_the_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A worker backing off because rows wait and its pass took none stops at once, not when the backoff ends."""
+    monkeypatch.setattr(worker_mod, "RECHECK_S", 0.01)
+    w = make(poll_s=3600.0)
+    monkeypatch.setattr(w, "_backoff", lambda _stuck: 3600.0)
+
+    async def more() -> bool:
+        return True
+    monkeypatch.setattr(w, "_more", more)
+    w.start()
+    assert await until(lambda: w.passes >= 1)
+    await asyncio.sleep(0.1)                            # it is in the backoff now: the pass is over and `_more` said rows wait
+    await asyncio.wait_for(w.stop(), 5.0)
+    assert w._task.done()

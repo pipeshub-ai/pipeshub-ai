@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 LEGACY = METRICS_BACKEND.gauge("pipeshub_kg_legacy_records", "Records of a connector that keep today's walk, by the compiler's reason", ["org", "app", "reason"])
 QUARANTINED = METRICS_BACKEND.gauge("pipeshub_kg_quarantined_rows", "Change-log rows the drain cannot read (alert on > 0)", ["org"])
 LAG = METRICS_BACKEND.gauge("pipeshub_kg_change_log_rows", "Committed change-log rows not yet projected", ["org"])
+_published: dict[str, set[tuple[str, str]]] = {}      # per org, the LEGACY series it has published: a series is set to 0 when its records are gone, never cleared for every org
 
 
 async def legacy_counts(tx: Tx, org: str) -> dict[tuple[int, str], int]:
@@ -28,8 +29,11 @@ async def legacy_counts(tx: Tx, org: str) -> dict[tuple[int, str], int]:
 async def publish(tx: Tx, org: str) -> None:
     """Set the gauges for one org (the worker calls it after a pass)."""
     names = {r["sk"]: r["id"] for r in await tx.fetch("/* pipeshub:kg.app_names */ SELECT sk, id FROM kg.node_keys WHERE org_id = $1 AND coll = 1", org)}
-    LEGACY.clear()
-    for (app_sk, reason), n in (await legacy_counts(tx, org)).items():
-        LEGACY.set(org, names.get(app_sk, str(app_sk)), reason, value=n)
+    counts = {(names.get(app_sk, str(app_sk)), reason): n for (app_sk, reason), n in (await legacy_counts(tx, org)).items()}
+    for app, reason in _published.get(org, set()) - counts.keys():
+        LEGACY.set(org, app, reason, value=0)
+    for (app, reason), n in counts.items():
+        LEGACY.set(org, app, reason, value=n)
+    _published[org] = set(counts)
     QUARANTINED.set(org, value=len(await drainer.quarantined(tx, org)))
-    LAG.set(org, value=await tx.fetchval("/* pipeshub:kg.lag_gauge */ SELECT COALESCE(sum(cardinality(ends)), 0) FROM kg.graph_changes WHERE org_id = $1", org))
+    LAG.set(org, value=await drainer.lag_in(tx, org))

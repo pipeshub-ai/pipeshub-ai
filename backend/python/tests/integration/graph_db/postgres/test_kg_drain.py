@@ -141,16 +141,34 @@ async def test_a_process_killed_in_the_middle_of_a_page_leaves_the_log_and_kg_as
     assert await log_rows(p, org) == 0 and not await differences(p, org)
 
 
-async def test_the_gauges_report_the_log_and_the_unreadable_rows(pg_db) -> None:
+async def test_the_gauges_report_the_log_and_the_unreadable_rows(pg_db, monkeypatch) -> None:
     from app.services.graph_db.postgres.kg import legacy
+
+    class Gauge:
+        def __init__(self) -> None:
+            self.values: dict[tuple, float] = {}
+
+        def set(self, *labels: str, value: float) -> None:
+            self.values[labels] = value
+
+        def clear(self) -> None:
+            self.values.clear()
+    lag_g, quarantined_g = Gauge(), Gauge()
+    monkeypatch.setattr(legacy, "LAG", lag_g)
+    monkeypatch.setattr(legacy, "QUARANTINED", quarantined_g)
     p, org = prov(pg_db), new_org()
     await world2(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "N" * 300, "orgId": org, "recordName": "bad", "connectorId": "app1", "recordType": "FILE", "origin": "CONNECTOR"}], "records")
 
     async def pub(tx) -> None:
         await legacy.publish(tx, org)
     with ctx(org):
         await p._q(pub, None)
-    assert await drainer.lag(pg_db, org) > 0
+    unread = await drainer.lag(pg_db, org)
+    assert unread > 0
+    assert lag_g.values == {(org,): unread}                     # the unreadable row is counted once, by the other gauge, not in the lag
+    assert quarantined_g.values == {(org,): 1}
 
 
 async def test_an_over_long_node_id_sets_aside_only_its_own_row_and_the_other_nodes_are_projected(pg_db) -> None:
