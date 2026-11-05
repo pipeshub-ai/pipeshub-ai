@@ -42,6 +42,8 @@ MEMBERSHIP = {
     "pathIds": (4, "path_ids"),
     "aclScope": (5, "acl_scope"),
 }
+# Scope conditions select the stored stamps as data (a repair or back-fill job must be able to find stale or future ones): they are not gated by trust.
+# Visibility is decided only by the search scope filter (scope_filter.py), which checks trust; a search refuses these keys (visibility.scope_of).
 # the scalar scope fields of a group: point_groups column. They are stored on the group, not in the payload, so a payload lookup would never find them.
 SCOPE_LISTS = frozenset({"pathIds", "aclScope"})
 SCOPE_COLUMNS = {"scopeStamp": "scope_stamp", "scopeFieldsVersion": "scope_version", "scopeGeneration": "scope_generation"}
