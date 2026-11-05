@@ -495,3 +495,17 @@ async def test_a_demotion_made_while_a_backfill_is_ending_is_not_undone_by_its_f
     out = await bf.backfill(pg_db, org, "app1", page=4)
     assert not out.flipped and out.result.ok
     assert (await state(pg_db, org, "app1"))[:2] == (None, "legacy")
+
+
+async def test_the_verify_names_a_stale_stamp_and_a_backfill_repairs_it(pg_db) -> None:
+    p, org = await shadowed(pg_db)
+    async def stamped(tx) -> int:
+        return await tx.fetchval("SELECT count(*) FROM kg.records WHERE org_id = $1 AND (class_id IS NOT NULL OR legacy_reason IS NOT NULL)", org)
+    assert await run_in(pg_db, org, stamped) > 0                              # the backfill restamped the connector (the copy itself writes none)
+    sk = await sk_of(pg_db, org, ("records", "fold"))
+    await corrupt(pg_db, org, lambda tx, w: w.stamps_set([{"sk": sk, "coll": 3, "id": "fold", "kind": 3, "path": None, "class_id": None, "self_lit": False, "seed": False, "own_grant": False,
+                                                          "under_deleted": False, "legacy_reason": 3, "leaf": True}]))
+    res = await verify(pg_db, org, "app1")
+    assert not res.ok and any(m.startswith("s|fold") for m in res.changed), res.changed
+    again = await bf.backfill(pg_db, org, "app1", page=4)                          # the backfill restamps the connector whole: the stale stamp is repaired
+    assert again.flipped and (await verify(pg_db, org, "app1")).ok
