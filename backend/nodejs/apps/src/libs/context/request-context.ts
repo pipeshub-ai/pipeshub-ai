@@ -14,7 +14,14 @@ export interface RequestContextStore {
    * log record raw: the logging provider decides how, or whether, to show it.
    */
   orgId?: string;
+  /**
+   * The relay header of the /mcp call this request belongs to. Forwarded on calls to the other
+   * services, so the role lookup they make with the same bearer can show it came from /mcp.
+   */
+  mcpRelay?: string;
 }
+
+export const HEADER_MCP_RELAY = 'x-pipeshub-mcp-relay';
 
 export const HEADER_REQUEST_ID = 'x-request-id';
 export const ENVELOPE_REQUEST_ID = 'requestId';
@@ -85,7 +92,7 @@ export function currentDisplayId(suffix = ''): string {
   return `${ctx.rootId}${suffix}`;
 }
 
-/** Add the root id to outbound HTTP headers (returns a copy, never mutates). */
+/** Add the root id and any /mcp relay header to outbound HTTP headers (returns a copy, never mutates). */
 export function injectRequestHeaders(
   headers: Record<string, string> = {},
 ): Record<string, string> {
@@ -93,6 +100,9 @@ export function injectRequestHeaders(
   const ctx = storage.getStore();
   if (ctx && !hasHeader(out, HEADER_REQUEST_ID)) {
     out[HEADER_REQUEST_ID] = ctx.rootId;
+  }
+  if (ctx?.mcpRelay && !hasHeader(out, HEADER_MCP_RELAY)) {
+    out[HEADER_MCP_RELAY] = ctx.mcpRelay;
   }
   return out;
 }

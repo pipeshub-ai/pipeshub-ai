@@ -8,6 +8,7 @@
 import { createHash } from 'crypto';
 import { KeyObject } from 'node:crypto';
 import { getCurrentOrgId } from '../../../libs/context/orgContext';
+import { getRequestContext } from '../../../libs/context/request-context';
 import { Response, NextFunction } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
@@ -271,6 +272,8 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       // The tools call the REST API over loopback; the header tells it those calls belong to this one.
       relaySigningKey ??= relayKey(appConfig.scopedJwtSecret);
       const relay = signMcpRelay(relaySigningKey, token);
+      const requestContext = getRequestContext();
+      if (requestContext) requestContext.mcpRelay = relay;
       const httpClient = new HTTPClient().addHook(
         'beforeRequest',
         (request) => {
