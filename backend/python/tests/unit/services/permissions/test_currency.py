@@ -124,7 +124,12 @@ def test_unclosed_writes_counts_what_is_open_and_reads_a_broken_counter_as_unrea
 
 
 def test_a_new_unsafe_mark_is_a_fresh_number_the_currency_checks_accept() -> None:
-    from app.services.permissions.structure_generation import new_unsafe_mark, same_mark, unsafe_mark, whole_number
+    from app.services.permissions.structure_generation import (
+        new_unsafe_mark,
+        same_mark,
+        unsafe_mark,
+        whole_number,
+    )
 
     marks = [new_unsafe_mark() for _ in range(1000)]
     assert len(set(marks)) == 1000                                   # two writers in the same instant do not share a mark
