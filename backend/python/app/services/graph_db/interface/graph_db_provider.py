@@ -104,10 +104,11 @@ class AccessCheck:
 class SharedContentCount:
     """How much of a request scope's content one other connector also holds."""
 
-    #: Distinct virtual record ids that live records of the scope share with this connector.
+    #: Distinct contents (virtual record ids) that live records of the scope share with this connector.
     shared: int
-    #: All of this connector's records: the size of the storage a file search there walks.
-    records: int
+    #: Distinct contents among all of this connector's records: about how many stored files a
+    #: search of its storage walks (duplicates of one content are stored once).
+    held: int
 
 
 @dataclass(frozen=True)

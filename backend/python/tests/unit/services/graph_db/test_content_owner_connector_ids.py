@@ -20,9 +20,9 @@ from app.services.graph_db.interface.graph_db_provider import SharedContentCount
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 ROWS = [
-    {"cid": "kb-archive", "shared": 812, "records": 2400},
-    {"cid": None, "shared": 1, "records": 1},
-    {"cid": "kb-empty", "shared": 1, "records": None},
+    {"cid": "kb-archive", "shared": 812, "held": 2400},
+    {"cid": None, "shared": 1, "held": 1},
+    {"cid": "kb-empty", "shared": 1, "held": None},
 ]
 
 
@@ -48,14 +48,19 @@ async def _query(make, run: AsyncMock) -> tuple[str, dict]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("make", "live"), [(_neo4j, cypher_live_record("r")), (_arango, aql_live_record("r"))])
-async def test_the_query_is_bounded_by_org_scope_and_liveness(make, live) -> None:
+@pytest.mark.parametrize(("make", "live", "held"), [
+    (_neo4j, cypher_live_record("r"), "count(DISTINCT a.virtualRecordId) AS held"),
+    (_arango, aql_live_record("r"), "LENGTH(UNIQUE("),
+])
+async def test_the_query_is_bounded_by_org_scope_and_liveness(make, live, held) -> None:
     query, params = await _query(make, AsyncMock(return_value=[]))
 
     assert params == {"scope_ids": ["kb-handbook", "kb-policies"], "org_id": "org-1"}
     assert len(re.findall(r"\borgId (?:=|==) [$@]org_id", query)) == 3
     assert "NOT o.connectorId IN $scope_ids" in query or "o.connectorId NOT IN @scope_ids" in query
     assert live in query
+    # Shared and held are both distinct contents: duplicates of one file are stored once.
+    assert held in query
 
 
 @pytest.mark.asyncio
@@ -76,8 +81,8 @@ async def test_rows_without_a_connector_are_dropped(make) -> None:
     result = await make(AsyncMock(return_value=ROWS)).get_content_owner_connector_ids(["kb-handbook"], "org-1")
 
     assert result == {
-        "kb-archive": SharedContentCount(shared=812, records=2400),
-        "kb-empty": SharedContentCount(shared=1, records=0),
+        "kb-archive": SharedContentCount(shared=812, held=2400),
+        "kb-empty": SharedContentCount(shared=1, held=0),
     }
 
 

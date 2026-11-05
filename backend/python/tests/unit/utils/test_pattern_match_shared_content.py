@@ -58,7 +58,7 @@ def _graph(shares: dict[str, SharedContentCount] | Exception) -> MagicMock:
 class TestContentOwnerConnectorIds:
     @pytest.mark.asyncio
     async def test_an_unscoped_search_needs_no_other_storage(self) -> None:
-        graph = _graph({OWNER: SharedContentCount(shared=10, records=10)})
+        graph = _graph({OWNER: SharedContentCount(shared=10, held=10)})
 
         assert await content_owner_connector_ids(graph, "org", None, MagicMock()) == []
         graph.get_content_owner_connector_ids.assert_not_awaited()
@@ -81,7 +81,7 @@ class TestContentOwnerConnectorIds:
 
     @pytest.mark.asyncio
     async def test_a_slow_lookup_is_given_up_and_not_repeated(self) -> None:
-        graph = _graph({OWNER: SharedContentCount(shared=5, records=10)})
+        graph = _graph({OWNER: SharedContentCount(shared=5, held=10)})
 
         with patch.object(pattern_match, "_CONTENT_OWNER_LOOKUP_TIMEOUT", 0.01):
             async def _slow(*_args: object, **_kwargs: object) -> dict:
@@ -96,9 +96,9 @@ class TestContentOwnerConnectorIds:
     @pytest.mark.asyncio
     async def test_storage_with_little_shared_content_is_skipped(self) -> None:
         graph = _graph({
-            OWNER: SharedContentCount(shared=812, records=2400),
-            "kb-sprawl": SharedContentCount(shared=3, records=5000),
-            "kb-policies": SharedContentCount(shared=5, records=5),
+            OWNER: SharedContentCount(shared=812, held=2400),
+            "kb-sprawl": SharedContentCount(shared=3, held=5000),
+            "kb-policies": SharedContentCount(shared=5, held=5),
         })
 
         assert await content_owner_connector_ids(graph, "org", SCOPE, MagicMock()) == [OWNER]
@@ -109,7 +109,7 @@ class TestContentOwnerConnectorIds:
 
     @pytest.mark.asyncio
     async def test_at_most_five_most_shared_first(self) -> None:
-        graph = _graph({f"kb-{i}": SharedContentCount(shared=i, records=10) for i in range(1, 9)})
+        graph = _graph({f"kb-{i}": SharedContentCount(shared=i, held=10) for i in range(1, 9)})
 
         assert await content_owner_connector_ids(graph, "org", SCOPE, MagicMock()) == [
             "kb-8", "kb-7", "kb-6", "kb-5", "kb-4",
@@ -117,7 +117,7 @@ class TestContentOwnerConnectorIds:
 
     @pytest.mark.asyncio
     async def test_cached_per_org_and_scope(self) -> None:
-        graph = _graph({OWNER: SharedContentCount(shared=5, records=10)})
+        graph = _graph({OWNER: SharedContentCount(shared=5, held=10)})
 
         for _ in range(2):
             await content_owner_connector_ids(graph, "org", SCOPE, MagicMock())
@@ -226,7 +226,7 @@ class TestSwitch:
     async def test_off_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("GREP_SHARED_CONTENT", raising=False)
         monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
-        graph = _graph({OWNER: SharedContentCount(shared=5, records=10)})
+        graph = _graph({OWNER: SharedContentCount(shared=5, held=10)})
 
         pipeline = await self._search(graph)
 
@@ -236,7 +236,7 @@ class TestSwitch:
     @pytest.mark.asyncio
     async def test_on_it_looks_the_storage_up_beside_command_generation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GREP_SHARED_CONTENT", "true")
-        graph = _graph({OWNER: SharedContentCount(shared=5, records=10)})
+        graph = _graph({OWNER: SharedContentCount(shared=5, held=10)})
 
         pipeline = await self._search(graph)
 

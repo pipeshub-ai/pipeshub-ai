@@ -4447,8 +4447,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE o.orgId = $org_id AND o.connectorId IS NOT NULL
           AND NOT o.connectorId IN $scope_ids
         WITH o.connectorId AS cid, count(DISTINCT vid) AS shared
-        RETURN cid, shared,
-               COUNT {{ MATCH (a:Record {{connectorId: cid}}) WHERE a.orgId = $org_id }} AS records
+        OPTIONAL MATCH (a:Record {{connectorId: cid}})
+        WHERE a.orgId = $org_id
+        RETURN cid, shared, count(DISTINCT a.virtualRecordId) AS held
         """
         results = await self.client.execute_query(
             query,
@@ -4457,7 +4458,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
         )
         return {
-            row["cid"]: SharedContentCount(shared=int(row["shared"]), records=int(row["records"] or 0))
+            row["cid"]: SharedContentCount(shared=int(row["shared"]), held=int(row["held"] or 0))
             for row in results or []
             if row.get("cid")
         }

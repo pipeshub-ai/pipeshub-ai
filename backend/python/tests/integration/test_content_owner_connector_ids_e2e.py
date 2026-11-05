@@ -3,7 +3,7 @@
 Seeds a scope KB whose records share content (virtual record ids) with two other
 KBs of the same org and with a KB of another org, plus a trashed record in the
 scope. Only same-org connectors outside the scope may come back, counting the
-content live records of the scope share, each with its record count. Both
+content live records of the scope share and how many contents each holds. Both
 backends must answer the same.
 
 Runs on Neo4j and ArangoDB (backend-matrix). Environment: NEO4J_IT_URI,
@@ -89,7 +89,7 @@ async def w(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> 
             (scope, org, v["a"], False), (scope, org, v["b"], False), (scope, org, v["c"], False),
             (scope, org, v["gone"], True),
             (owner, org, v["a"], False), (owner, org, v["b"], False), (owner, org, v["own"], False),
-            (owner, org, v["gone"], False),
+            (owner, org, v["gone"], False), (owner, org, v["own"], False),
             (minor, org, v["c"], True),
             (foreign, other_org, v["a"], False),
         ]
@@ -112,10 +112,11 @@ async def w(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> 
 
 async def test_owners_of_shared_content(w: SimpleNamespace) -> None:
     assert await w.g.get_content_owner_connector_ids([w.scope], w.org) == {
-        # a and b; "gone" is held only by a trashed record of the scope.
-        w.owner: SharedContentCount(shared=2, records=4),
+        # a and b; "gone" is held only by a trashed record of the scope. Its five records
+        # hold four contents: two of them are copies of one.
+        w.owner: SharedContentCount(shared=2, held=4),
         # Its own copy is trashed, but the stored file stays where it was written.
-        w.minor: SharedContentCount(shared=1, records=1),
+        w.minor: SharedContentCount(shared=1, held=1),
     }
 
 

@@ -1011,10 +1011,10 @@ async def content_owner_connector_ids(
     for cid, share in sorted(shares.items(), key=lambda kv: (-kv[1].shared, kv[0])):
         if cid in scope_ids:
             continue
-        if share.records <= 0 or share.shared / share.records < _MIN_CONTENT_OWNER_SHARE:
+        if share.held <= 0 or share.shared / share.held < _MIN_CONTENT_OWNER_SHARE:
             logger_instance.info(
-                "pattern_match: not grepping %s, %d of its %d records shared with the scope",
-                cid, share.shared, share.records,
+                "pattern_match: not grepping %s, %d of the %d contents it holds shared with the scope",
+                cid, share.shared, share.held,
             )
             continue
         owners.append(cid)

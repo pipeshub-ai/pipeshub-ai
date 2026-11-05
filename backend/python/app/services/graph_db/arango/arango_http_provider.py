@@ -25722,13 +25722,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     AND o.connectorId != null AND o.connectorId NOT IN @scope_ids
                 COLLECT cid = o.connectorId, shared_vid = vid
         COLLECT owner = cid WITH COUNT INTO shared
-        LET total = FIRST(
+        LET held = LENGTH(UNIQUE(
             FOR a IN {records}
-                FILTER a.connectorId == owner AND a.orgId == @org_id
-                COLLECT WITH COUNT INTO n
-                RETURN n
-        )
-        RETURN {{cid: owner, shared: shared, records: total}}
+                FILTER a.connectorId == owner AND a.orgId == @org_id AND a.virtualRecordId != null
+                RETURN a.virtualRecordId
+        ))
+        RETURN {{cid: owner, shared: shared, held: held}}
         """
         results = await self.http_client.execute_aql(
             query,
@@ -25737,7 +25736,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             **({"max_runtime": timeout_seconds} if timeout_seconds is not None else {}),
         )
         return {
-            row["cid"]: SharedContentCount(shared=int(row["shared"]), records=int(row["records"] or 0))
+            row["cid"]: SharedContentCount(shared=int(row["shared"]), held=int(row["held"] or 0))
             for row in results or []
             if isinstance(row, dict) and row.get("cid")
         }
