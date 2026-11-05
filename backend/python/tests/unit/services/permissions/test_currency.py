@@ -62,3 +62,27 @@ async def test_the_reader_skips_a_connector_it_cannot_read_and_never_raises() ->
             return {"a": good(), "b": good(**{GENERATION_KEY: 9}), "c": None}.get(key)
 
     assert await StampCurrency(Graph()).current(["a", "b", "c", "broken", "unknown"]) == {"a"}
+
+
+GARBAGE = ["x", "", [], [0], {}, {"a": 0}, float("nan"), float("inf"), True, False, 0.5, "0.5", "1e999", b"0"]
+
+
+@pytest.mark.parametrize("junk", GARBAGE, ids=repr)
+@pytest.mark.parametrize("field", [GENERATION_KEY, K["structure_generation"], K["generation"], K["version"]])
+def test_a_value_that_is_not_a_whole_number_is_never_read_as_zero(field: str, junk: object) -> None:
+    """The stamp was written at generation 0 of a connector whose structure never changed, under ACL generation 0 (the default): a value
+    that does not parse must not be taken for that 0 on either side of the comparison."""
+    set_resolved_generation(0)
+    zero = {K["state"]: DONE, K["version"]: SCOPE_FIELDS_VERSION, K["generation"]: 0, K["structure_generation"]: 0, GENERATION_KEY: 0}
+    assert app_is_current(zero)
+    zero[field] = junk
+    assert not app_is_current(zero), (field, junk)
+
+
+def test_only_an_absent_generation_means_the_structure_never_changed() -> None:
+    from app.services.permissions.structure_generation import structure_generation_of
+
+    assert structure_generation_of({}) == 0 and structure_generation_of(None) == 0 and structure_generation_of({GENERATION_KEY: None}) == 0
+    assert structure_generation_of({GENERATION_KEY: 4}) == 4 and structure_generation_of({GENERATION_KEY: 4.0}) == 4
+    for junk in GARBAGE:
+        assert structure_generation_of({GENERATION_KEY: junk}) is None, junk

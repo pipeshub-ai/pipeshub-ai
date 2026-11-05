@@ -12,14 +12,36 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import MissingOrgContext, current_or_system, for_org, system
 from app.services.permissions.mode import scope_fields_enabled
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 GENERATION_KEY = "scopeProjectionGeneration"
 UNSAFE_KEY = "scopeProjectionUnsafe"
+
+
+def whole_number(value: object) -> int | None:
+    """A whole number, or None. The generation is incremented in AQL, which computes in doubles, so ``6.0`` is 6; ``True``, a fraction,
+    NaN or text that is not a number are not a generation."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(str(value))
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number.is_integer() and abs(number) < 2**53 else None
+
+
+def structure_generation_of(app: Mapping[str, object] | None) -> int | None:
+    """The structure generation an app document holds: 0 when the connector's structure never changed (no field), None when the field is
+    there and is not a whole number. Only an absent field is 0: an empty list, an empty string or ``False`` are not "never changed"."""
+    value = (app or {}).get(GENERATION_KEY)
+    return 0 if value is None else whole_number(value)
 
 
 class ScopeGenerationError(RuntimeError):

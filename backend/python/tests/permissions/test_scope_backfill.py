@@ -474,3 +474,35 @@ async def test_the_unfinished_checkpoint_is_saved_before_the_unsafe_mark_is_clea
         await job.run_connector(ORG, app)
     doc = loaded.graph.app_docs[app]
     assert doc[UNSAFE_KEY] and doc["scopeBackfillState"] == RUNNING and not app_is_current(doc)
+
+
+async def test_a_structure_generation_that_is_not_a_number_stops_the_run_before_it_writes_anything() -> None:
+    from app.services.vector_db.scope_backfill import UnreadableStructureGeneration
+
+    for junk in ("x", [], {}, float("nan"), True, "0.5"):
+        vdb, loaded, job, app = await setup()
+        loaded.graph.app_docs[app] = {"_key": app, GENERATION_KEY: junk}
+        before = dict(loaded.graph.app_docs[app])
+        with pytest.raises(UnreadableStructureGeneration):
+            await job.run_connector(ORG, app)
+        assert loaded.graph.app_docs[app].keys() == before.keys() and not any(keys_of(vdb)), junk        # no checkpoint, no point
+
+
+async def test_a_graph_store_that_refuses_the_checkpoint_stops_the_run_before_anything_else_is_written() -> None:
+    """An app schema older than this release does not list the new key: the first write of the run is refused, with a message that says what
+    to do, and neither a point nor the unsafe mark is touched."""
+    from app.services.vector_db.scope_backfill import CheckpointRefused
+
+    vdb, loaded, job, app = await setup()
+    loaded.graph.app_docs[app] = {"_key": app, UNSAFE_KEY: True}
+    real_update = loaded.graph.update_node
+
+    async def old_schema(key: str, collection: str, updates: dict, *args: object) -> bool:
+        if "scopeBackfillStructureGeneration" in updates:
+            return False
+        return await real_update(key, collection, updates, *args)
+
+    loaded.graph.update_node = old_schema  # type: ignore[method-assign]
+    with pytest.raises(CheckpointRefused, match="restart a connector or indexing service"):
+        await job.run_connector(ORG, app)
+    assert loaded.graph.app_docs[app] == {"_key": app, UNSAFE_KEY: True} and not any(keys_of(vdb))

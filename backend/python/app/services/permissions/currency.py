@@ -21,25 +21,13 @@ from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import CollectionNames
 from app.services.permissions.scope_fields import SCOPE_FIELDS_VERSION, current_scope_generation
-from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY
+from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY, structure_generation_of, whole_number as _int
 from app.services.vector_db.scope_backfill import BACKFILL_KEYS, DONE
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-
-
-def _int(value: object) -> int | None:
-    """A whole number, or None. The generation is incremented in AQL, which computes in doubles, so ``6.0`` is 6; ``True``, a fraction,
-    NaN or text that is not a number are not a generation."""
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(str(value))
-    except (TypeError, ValueError):
-        return None
-    return int(number) if number.is_integer() and abs(number) < 2**53 else None
 
 
 def app_is_current(app: Mapping[str, object] | None) -> bool:
@@ -53,7 +41,8 @@ def app_is_current(app: Mapping[str, object] | None) -> bool:
     if acl < 0 or _int(app.get(keys["generation"])) != acl:
         return False
     stamped_from = _int(app.get(keys["structure_generation"]))
-    return stamped_from is not None and stamped_from == _int(app.get(GENERATION_KEY) or 0)
+    held = structure_generation_of(app)
+    return stamped_from is not None and held is not None and stamped_from == held
 
 
 class StampCurrency:

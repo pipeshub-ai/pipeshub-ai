@@ -40,7 +40,7 @@ from app.services.permissions.scope_fields import (
     ScopeFields,
     current_scope_generation,
 )
-from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY
+from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY, structure_generation_of
 from app.services.vector_db.membership import (
     STALE_SCOPE,
     resolve_virtual_record_state,
@@ -72,6 +72,14 @@ class ScopeFieldsOff(RuntimeError):
 class ScopeGenerationUnavailable(RuntimeError):
     """The shared scope generation could not be read: every stamp this process writes is untrusted, so a pass would only record a
     finished back-fill that no reader may rely on."""
+
+
+class UnreadableStructureGeneration(RuntimeError):
+    """The connector's stored structure generation is not a whole number: a pass could not say what it stamped from."""
+
+
+class CheckpointRefused(RuntimeError):
+    """The first checkpoint of a run could not be written (typically an app schema without the new key): the run stopped before it wrote anything."""
 
 
 class UnknownConnector(ValueError):
@@ -144,7 +152,9 @@ class ScopeBackfill:
             # What the connector's structure was BEFORE any record is read: a change that commits after this moves the generation, so the
             # connector is not current for stamps written from a graph that may predate it (see `permissions.currency`).
             app = await self._graph.get_document(app_id, CollectionNames.APPS.value, raise_on_error=True) or {}
-            structure, unsafe = int(app.get(GENERATION_KEY) or 0), bool(app.get(UNSAFE_KEY))
+            structure, unsafe = structure_generation_of(app), bool(app.get(UNSAFE_KEY))
+            if structure is None:  # a stored generation that is not a number is not read as "never changed": nothing is written
+                raise UnreadableStructureGeneration(f"the structure generation of {app_id} is not a number: {app.get(GENERATION_KEY)!r}")
             # a checkpoint of another field version, scope generation or structure generation says nothing about the points now (a connector
             # marked unsafe too: the mark is cleared only by a pass that starts after it): start over
             generation = current_scope_generation()
@@ -152,7 +162,14 @@ class ScopeBackfill:
                 p = Progress(generation=generation, structure_generation=structure)
                 # The unfinished checkpoint is saved BEFORE the unsafe mark is cleared: a crash in between leaves the mark, never a finished
                 # pass from an older generation with no mark.
-                await self._checkpoints.save(app_id, p)
+                try:
+                    await self._checkpoints.save(app_id, p)
+                except Exception as exc:  # the first write of a run: nothing else has been written
+                    raise CheckpointRefused(
+                        f"the back-fill checkpoint of {app_id} could not be written ({type(exc).__name__}). If the graph store's app schema is older "
+                        "than this release (it must list scopeBackfillStructureGeneration), restart a connector or indexing service, which applies "
+                        "the schema at start, and run again. Nothing was written."
+                    ) from exc
                 if unsafe and not await self._graph.update_node(app_id, CollectionNames.APPS.value, {UNSAFE_KEY: False}):
                     raise RuntimeError("the unsafe mark of the connector was not cleared")
             if p.state == DONE:
