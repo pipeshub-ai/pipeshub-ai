@@ -96,10 +96,20 @@ async def test_the_app_listing_pages_over_an_id_two_orgs_hold(pg_provider, org_c
                     "apps", limit=2, filters={"isActive": True}, after_key=key[:-1], raise_on_error=True)
                 assert sorted((d["_key"], d["orgId"]) for d in both) == sorted((key, org) for org in holders)
             # ``after_key`` continues after the id whichever orgs hold it: neither holder of the shared id comes back, and both holders of
-            # the later id do, in order. Other tests' apps may sit between the two ids, so the check is on this test's rows only.
-            after = await pg_provider.get_documents_paginated("apps", limit=1000, filters={"isActive": True}, after_key=shared, raise_on_error=True)
-            assert shared not in {d["_key"] for d in after}
-            assert [(d["_key"], d["orgId"]) for d in after if d["_key"].endswith(tag)] == [(last, org) for org in holders]
+            # the later id do, in order. Other tests' apps may sit between the two ids, so page on from ``shared`` (a bounded number of
+            # pages) and look at this test's rows only. A page may end between two holders of an id, so the next one restarts at the
+            # id before the last, and a row seen twice counts once.
+            mine: dict[tuple[str, str], None] = {}
+            cursor, size = shared, 50
+            for _ in range(200):
+                page = await pg_provider.get_documents_paginated("apps", limit=size, filters={"isActive": True}, after_key=cursor, raise_on_error=True)
+                assert shared not in {d["_key"] for d in page}
+                mine.update({(d["_key"], d["orgId"]): None for d in page if d["_key"].endswith(tag)})
+                if len(mine) == len(holders) or len(page) < size:
+                    break
+                keys = [d["_key"] for d in page]
+                cursor = max((k for k in keys if k < keys[-1]), default=keys[-1])
+            assert list(mine) == [(last, org) for org in holders]
     finally:
         for org in (a, b):
             with bind(OrgContext(org, None, "job", "job:test", "t")):
