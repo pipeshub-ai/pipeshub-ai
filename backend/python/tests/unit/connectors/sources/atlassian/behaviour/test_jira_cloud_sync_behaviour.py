@@ -38,7 +38,10 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
-from app.connectors.sources.atlassian.jira_cloud.connector import IncompleteSyncError, JiraConnector
+from app.connectors.sources.atlassian.jira_cloud.connector import (
+    IncompleteSyncError,
+    JiraConnector,
+)
 from app.connectors.utils.record_ids import new_record_id
 from app.models.entities import (
     FileRecord,
