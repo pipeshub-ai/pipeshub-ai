@@ -38,10 +38,13 @@ async def demote_org(tx: Tx, org: str) -> int:
     return len(rows)
 
 
-async def try_lock_copies(tx: Tx, org: str) -> bool:
-    """Take, without waiting, the lock of every connector that is on a copy (not ``legacy``, or with a cursor). A flip or a promotion holds its connector's lock from before its verify to its
-    write, so a take-back that demotes without this lock could delete the log row of a change that the verify never saw and demote, and the flip would then overwrite the demotion with
-    ``shadow`` or ``enforce``. False when one is held: the take-back leaves its rows, which then also show the flip a change is waiting."""
+async def try_lock_copies(tx: Tx, org: str, extra: set[str] | None = None, *, org_wide: bool = False) -> bool:
+    """Take, without waiting, the lock of every connector that is on a copy (not ``legacy``, or with a cursor) and of the connectors in ``extra``, with the exclusive org key when
+    ``org_wide``. A flip or a promotion holds its connector's lock from before its verify to its write, so a take-back that demotes without this lock could delete the log row of a
+    change that the verify never saw and demote, and the flip would then overwrite the demotion with ``shadow`` or ``enforce``. ``extra`` names the connectors of the rows the caller is
+    about to take back: a first backfill batch holds its connector's lock but has neither a mode nor a cursor until it commits, so the copies alone would miss it, the take-back would delete
+    the rows, demote nothing, and the batch would commit a copy with no row to show it is behind. False when one is held: the take-back leaves its rows, which then also show the flip a
+    change is waiting."""
     ids = [r["id"] for r in await tx.fetch("""/* pipeshub:kg.copies */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk AND k.coll = 1
         WHERE s.org_id = $1 AND (s.mode <> 'legacy' OR s.backfill_cursor IS NOT NULL)""", org)]
-    return await try_lock_apps(tx, org, set(ids))
+    return await try_lock_apps(tx, org, set(ids) | (extra or set()), org_wide=org_wide)

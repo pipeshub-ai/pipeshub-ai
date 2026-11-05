@@ -122,7 +122,8 @@ async def _take_back(tx: Tx) -> None:
         return
     try:
         async with tx.savepoint("kg_take_back"):
-            if not await modes.try_lock_copies(tx, tx.org_id):      # a flip or a promotion holds a connector: it must see the rows, and this unit must not wait
+            mine = {r["app_id"] for r in await tx.fetch("/* pipeshub:kg.own_apps */ SELECT DISTINCT app_id FROM kg.graph_changes WHERE org_id = $1 AND txid = pg_current_xact_id()", tx.org_id)}
+            if not await modes.try_lock_copies(tx, tx.org_id, mine - {""}, org_wide="" in mine):      # a flip, a promotion or a first backfill batch holds a connector: it must see the rows, and this unit must not wait
                 raise _Busy
             taken = await KgWriter(tx).changes_ack()
             if taken:
@@ -153,15 +154,16 @@ def _after_commit(tx: Tx) -> None:
 async def _sweep(db: KernelDB, org: str) -> None:
     async def go(tx: Tx) -> None:
         w = KgWriter(tx)
-        if not await modes.try_lock_copies(tx, org):
-            TAKE_BACK_FAILED.inc("busy")
-            return
         for _ in range(SWEEP_PAGES):
-            ids = [r["id"] for r in await tx.fetch("/* pipeshub:kg.sweep_read */ SELECT id FROM kg.graph_changes WHERE org_id = $1 ORDER BY id LIMIT $2", org, SWEEP_PAGE)]
-            if ids:
-                await w.changes_delete(ids)
+            page = await tx.fetch("/* pipeshub:kg.sweep_read */ SELECT id, app_id FROM kg.graph_changes WHERE org_id = $1 ORDER BY id LIMIT $2", org, SWEEP_PAGE)
+            apps = {r["app_id"] for r in page}
+            if not await modes.try_lock_copies(tx, org, apps - {""}, org_wide="" in apps):      # the connectors of the rows too (a first backfill batch is on no copy yet)
+                TAKE_BACK_FAILED.inc("busy")
+                return
+            if page:
+                await w.changes_delete([r["id"] for r in page])
                 await modes.demote_org(tx, org)
-            if len(ids) < SWEEP_PAGE:
+            if len(page) < SWEEP_PAGE:
                 break
     token = _in_sweep.set(True)
     try:
