@@ -127,7 +127,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read,project:read,project:write,project:delete}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,connector:write,connector:sync,code:read,project:read,project:write,project:delete}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
@@ -186,6 +186,13 @@ services:
       # Opt-in only: an enterprise-search answer is checked for evidence of
       # every part of the question, and gaps are searched, before it is final.
       - COVERAGE_LOOP=${COVERAGE_LOOP:-}
+      - COVERAGE_LOOP_FACETS=${COVERAGE_LOOP_FACETS:-}
+      - COVERAGE_LOOP_GATE=${COVERAGE_LOOP_GATE:-}
+      - COVERAGE_LOOP_ADJUDICATION=${COVERAGE_LOOP_ADJUDICATION:-}
+      - COVERAGE_LOOP_PROMPT=${COVERAGE_LOOP_PROMPT:-}
+      - COVERAGE_LOOP_FACET_SEARCHES=${COVERAGE_LOOP_FACET_SEARCHES:-}
+      - COVERAGE_LOOP_GATE_ROUNDS=${COVERAGE_LOOP_GATE_ROUNDS:-}
+      - COVERAGE_LOOP_GATE_SEARCHES=${COVERAGE_LOOP_GATE_SEARCHES:-}
       - COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S=${COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S:-}
       # Opt-in only, with COVERAGE_LOOP: a cited answer that opens with a limitation
       # or disputes the question's wording goes back once to lead with the answer.

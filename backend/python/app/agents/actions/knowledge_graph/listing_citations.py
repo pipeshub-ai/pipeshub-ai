@@ -58,6 +58,11 @@ def context_facts(context_block: str | None) -> str:
     return " · ".join(line.removeprefix("* ") for line in lines if line.startswith(_FACT_LINE_PREFIXES))
 
 
+def _joined(earlier: str, later: str) -> str:
+    parts = [part for facts in (earlier, later) for part in (facts or "").split(" · ") if part]
+    return " · ".join(dict.fromkeys(parts))
+
+
 async def cite_listed_records(
     state: ChatState,
     graph_provider: Any,  # noqa: ANN401
@@ -96,14 +101,13 @@ async def cite_listed_records(
         ref_mapper = state["citation_ref_mapper"] = CitationRefMapper()
     existing = state.get("tool_records")
     existing = existing if isinstance(existing, list) else []
-    # A record listed again replaces its earlier listing: the newest facts are
-    # the ones shown. One that states nothing new (a name-only list_files row, or
-    # page 2 of a navigate, which has no header) keeps the facts its Citation ID
-    # was first given for, since that ID is the same.
+    # A record listed again keeps one copy that quotes every listing: its Citation
+    # ID is the same, and the answer may cite what either listing said (an amount
+    # one matched, the entity another connected it to).
     for r in existing:
         rid = r.get("id") if isinstance(r, dict) else None
-        if rid in listed and r.get(LISTED_FACTS_KEY) and not listed[rid][LISTED_FACTS_KEY]:
-            listed[rid][LISTED_FACTS_KEY] = r[LISTED_FACTS_KEY]
+        if rid in listed and r.get(LISTED_FACTS_KEY):
+            listed[rid][LISTED_FACTS_KEY] = _joined(r[LISTED_FACTS_KEY], listed[rid][LISTED_FACTS_KEY])
     state["tool_records"] = [
         r for r in existing if not (isinstance(r, dict) and LISTED_FACTS_KEY in r and r.get("id") in listed)
     ] + list(listed.values())

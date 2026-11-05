@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RENDER_OUTCOMES_KEY
 from app.agents.agent_loop.coverage.facets import tokens
@@ -22,10 +22,10 @@ class EvidenceRecord:
     virtual_record_id: str
     record_id: str | None
     name: str
-    passages: list[str] = field(default_factory=list)
+    passages: list[str] = field(default_factory=list[str])
     fetched: bool = False
     complete: bool = False
-    blocks: dict[int, str] = field(default_factory=dict)
+    blocks: dict[int, str] = field(default_factory=dict[int, str])
     """Shown text by block index, for matching the blocks a draft cites."""
 
     def add(self, text: str, block_index: object = None) -> None:
@@ -49,7 +49,7 @@ class EvidenceRecord:
 
 @dataclass
 class Evidence:
-    records: list[EvidenceRecord] = field(default_factory=list)
+    records: list[EvidenceRecord] = field(default_factory=list["EvidenceRecord"])
 
     def texts(self) -> list[str]:
         return [part for record in self.records for part in (record.name, *record.passages) if part]
@@ -83,12 +83,21 @@ class Evidence:
         return self.records[position - 1] if 0 < position <= len(self.records) else None
 
 
+def _as_mapping(value: object) -> Mapping[str, Any] | None:
+    return cast("Mapping[str, Any]", value) if isinstance(value, Mapping) else None
+
+
+def _as_list(value: object) -> list[object]:
+    return list(cast("Iterable[object]", value)) if isinstance(value, (list, tuple)) else []
+
+
 def _content_text(value: object) -> str:
     if isinstance(value, str):
         return "" if is_base64_image(value) else value
-    if isinstance(value, Mapping):
+    mapping = _as_mapping(value)
+    if mapping is not None:
         for key in _TEXT_KEYS:
-            text = value.get(key)
+            text = mapping.get(key)
             if isinstance(text, str) and text:
                 return text
     return ""
@@ -101,13 +110,13 @@ def _name(record: Mapping[str, Any] | None) -> str:
 
 
 def _record_blocks(record: Mapping[str, Any] | None) -> dict[int, Mapping[str, Any]]:
-    containers = (record or {}).get("block_containers") or {}
-    blocks = containers.get("blocks", []) if isinstance(containers, Mapping) else []
-    return {
-        block["index"]: block
-        for block in blocks
-        if isinstance(block, Mapping) and isinstance(block.get("index"), int)
-    }
+    containers = _as_mapping((record or {}).get("block_containers"))
+    blocks: dict[int, Mapping[str, Any]] = {}
+    for item in _as_list(containers.get("blocks") if containers is not None else None):
+        block = _as_mapping(item)
+        if block is not None and isinstance(block.get("index"), int):
+            blocks[block["index"]] = block
+    return blocks
 
 
 def collect_evidence(tool_state: Mapping[str, Any]) -> Evidence:
@@ -116,7 +125,7 @@ def collect_evidence(tool_state: Mapping[str, Any]) -> Evidence:
 
     def entry(vrid: str) -> EvidenceRecord:
         if vrid not in by_vrid:
-            record = records_map.get(vrid) if isinstance(records_map.get(vrid), Mapping) else None
+            record = _as_mapping(records_map.get(vrid))
             by_vrid[vrid] = EvidenceRecord(
                 virtual_record_id=vrid,
                 record_id=str(record["id"]) if record and record.get("id") else None,
@@ -124,26 +133,28 @@ def collect_evidence(tool_state: Mapping[str, Any]) -> Evidence:
             )
         return by_vrid[vrid]
 
-    for unit in tool_state.get("final_results") or []:
-        if not isinstance(unit, Mapping) or not unit.get("virtual_record_id"):
+    for item in _as_list(tool_state.get("final_results")):
+        unit = _as_mapping(item)
+        if unit is None or not unit.get("virtual_record_id"):
             continue
         record = entry(str(unit["virtual_record_id"]))
         record.add(_content_text(unit.get("content")), unit.get("block_index"))
         for child in unit_children(unit):
             record.add(_content_text(child.get("content")), child.get("block_index"))
 
-    outcomes: Mapping[str, Any] = tool_state.get(FETCH_RENDER_OUTCOMES_KEY) or {}
+    outcomes = _as_mapping(tool_state.get(FETCH_RENDER_OUTCOMES_KEY)) or {}
     for entries in outcomes.values():
-        for outcome in entries or ():
-            vrid = outcome.get("virtualRecordId") if isinstance(outcome, Mapping) else None
-            if not vrid:
+        for item in _as_list(entries):
+            outcome = _as_mapping(item)
+            vrid = outcome.get("virtualRecordId") if outcome is not None else None
+            if outcome is None or not vrid:
                 continue
             record = entry(str(vrid))
             record.fetched = True
             record.complete = record.complete or bool(outcome.get("complete"))
-            blocks = _record_blocks(records_map.get(vrid))
-            for index in outcome.get("shownBlocks") or ():
-                block = blocks.get(index)
+            blocks = _record_blocks(_as_mapping(records_map.get(vrid)))
+            for index in _as_list(outcome.get("shownBlocks")):
+                block = blocks.get(index) if isinstance(index, int) else None
                 if block is not None:
                     record.add(_content_text(block.get("data")), index)
     return Evidence(records=list(by_vrid.values()))

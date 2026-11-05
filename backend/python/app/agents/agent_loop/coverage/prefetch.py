@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from app.agents.agent_loop.coverage.evidence import collect_evidence
 from app.agents.agent_loop.coverage.facets import (
@@ -49,7 +49,7 @@ def start_facet_plan(context: "AgentContext", question: str) -> "asyncio.Future[
             on_usage=llm_usage_reporter(context.tool_state, COVERAGE_USAGE_SOURCE),
         )
 
-    return spawn_in_request(_plan(), name="coverage_facet_plan")
+    return cast("asyncio.Task[FacetPlan | None]", spawn_in_request(_plan(), name="coverage_facet_plan"))
 
 
 async def finish_facet_plan(
@@ -71,7 +71,7 @@ async def finish_facet_plan(
     if plan is not None:
         logger.info(
             "coverage_loop: plan conversation=%s facets=%s",
-            context.conversation_id, [f"{facet.kind}:{facet.text}" for facet in plan.facets],
+            context.conversation_id, [facet.kind for facet in plan.facets],
         )
     return plan
 

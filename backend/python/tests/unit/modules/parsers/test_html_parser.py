@@ -486,7 +486,7 @@ class TestDoclingHtmlParse:
             mock_processor_cls.return_value.parse_document = AsyncMock(return_value=mock_doc)
             result = await parser.parse(b"<img src='x'>", "doc.html")
 
-        mock_b64.assert_awaited_once_with(["https://example.com/pic.png"])
+        mock_b64.assert_awaited_once_with(["https://example.com/pic.png"], allow_remote_fetch=True)
         assert result.metadata["caption_map"] == {"Image_1": "data:image/png;base64,ENC"}
 
     @pytest.mark.asyncio

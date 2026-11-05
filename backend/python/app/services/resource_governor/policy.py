@@ -920,9 +920,9 @@ def _downstream_shrink_target(
 ) -> tuple[int | None, bool]:
     """``(shrink_to, incident)`` the downstream window asks for, if any."""
     if feedback.incident:
-        return max(floor, current // 2), True
+        return min(current, max(floor, current // 2)), True
     if feedback.timeout_count >= DOWNSTREAM_TIMEOUT_SHRINK_THRESHOLD:
-        return max(floor, math.ceil(current * DOWNSTREAM_TIMEOUT_SHRINK_FACTOR)), False
+        return min(current, max(floor, math.ceil(current * DOWNSTREAM_TIMEOUT_SHRINK_FACTOR))), False
     return None, False
 
 
@@ -973,17 +973,22 @@ def _next_pool_limit(
             state = replace(state, downstream_holdoff=max(0, downstream_holdoff - 1))
 
     # Collect every shrink rule that applies this sample and take the
-    # tightest. Rules that fire together are describing one shortage from
+    # tightest. Each rule ends in ``min(current, ...)``: the floor is a lower
+    # bound for a brake, never a level to jump up to. The memory target can
+    # already have held a pool under its floor, and a brake that lifted it
+    # back (1 -> 2 -> 1 -> 2 for heavy parse) would admit another working set
+    # on every other sample. A rule that lands on ``current`` is a hold that
+    # still resets the grow state and starts the cooldown. Rules that fire together are describing one shortage from
     # different angles, so honouring only the gentler one would leave the
     # container over-committed for another whole interval.
     shrink_to: int | None = None
     incident = False
 
     if brake_pressure is not None and brake_pressure >= MEM_HARD:
-        shrink_to = max(floor, current // 2)
+        shrink_to = min(current, max(floor, current // 2))
         incident = True
     elif (brake_pressure is not None and brake_pressure >= MEM_SOFT) or cpu_brake:
-        shrink_to = max(floor, current - shrink_step)
+        shrink_to = min(current, max(floor, current - shrink_step))
 
     downstream_shrink = False
     if downstream is not None:

@@ -1,0 +1,296 @@
+import { ObjectId } from 'mongodb';
+import { at, oid } from '../roundtrip';
+
+export const ORG_A = oid();
+export const ORG_B = oid();
+export const USER_1 = oid();
+export const USER_2 = oid();
+export const SERVICE_ACCOUNT = oid();
+export const SESSION_1 = oid();
+export const SESSION_2 = oid();
+
+/** An ObjectId created at a given time (seconds), so outbox ids and months are under the test's control. */
+const oidAt = (iso: string): ObjectId => ObjectId.createFromTime(Math.floor(new Date(iso).getTime() / 1000));
+
+const APP_1 = oid();
+const DOC_FULL = oid();
+const DOC_NO_ARRAYS = oid();
+const DOC_NULL_INITIATOR = oid();
+
+export const ids = { APP_1, DOC_FULL, DOC_NO_ARRAYS, DOC_NULL_INITIATOR };
+
+export const contentDocs = (): Record<string, unknown[]> => ({
+  documents: [
+    {
+      _id: DOC_FULL,
+      orgId: ORG_A,
+      documentName: 'Quarterly report.pdf',
+      alternateDocumentName: 'q3',
+      documentPath: 'finance/2026',
+      isVersionedFile: true,
+      mutationCount: 4,
+      permissions: 'owner',
+      initiatorUserId: USER_1,
+      sizeInBytes: 9007199254740991,
+      mimeType: 'application/pdf',
+      extension: 'pdf',
+      versionHistory: [
+        { version: 0, s3: { url: 'https://bucket/key/0' }, note: 'first', currentVersion: 0, createdAt: 1767225600000, initiatedByUserId: String(USER_1), size: 10 },
+        { version: 1, s3: { url: 'https://bucket/key/1' }, userAssignedVersionLabel: 'v2', createdAt: 1767312000000 },
+      ],
+      customMetadata: [
+        { key: 'connectorId', value: 'conn-42' },
+        { key: 'labels', value: { 'a.b': 1, nested: ['x', { y: null }] } },
+      ],
+      currentVersion: 1,
+      tags: ['finance', 'q3'],
+      createdAt: 1767225600123,
+      updatedAt: 1767312000456,
+      isDeleted: false,
+      s3: { url: 'https://bucket/key/1' },
+      storageVendor: 's3',
+      idempotencyKey: 'key-1',
+      idempotencyFingerprint: 'abc123',
+      uploadLeaseToken: 'lease-1',
+      uploadLeaseExpiresAt: 1767315600000,
+      awaitingDirectUpload: false,
+      retiredAt: 1767400000000,
+      __v: 3,
+    },
+    {
+      _id: DOC_NO_ARRAYS,
+      orgId: ORG_A,
+      documentName: 'raw-insert.txt',
+      storageVendor: 'local',
+      local: { url: 'file:///data/raw-insert.txt', localPath: '/data/raw-insert.txt' },
+      createdAt: 1767225700000,
+      updatedAt: 1767225700000,
+    },
+    {
+      _id: DOC_NULL_INITIATOR,
+      orgId: ORG_B,
+      documentName: 'bad\u0000name.md',
+      initiatorUserId: null,
+      isVersionedFile: false,
+      mutationCount: 1,
+      versionHistory: [],
+      customMetadata: [{ key: 'note', value: 'tab\u0000bed' }],
+      currentVersion: 0,
+      tags: [],
+      createdAt: 1767225800000,
+      updatedAt: 1767225800000,
+      isDeleted: true,
+      deletedByUserId: String(USER_2),
+      azureBlob: { url: 'https://blob/x' },
+      storageVendor: 'azureBlob',
+      __v: 0,
+    },
+  ],
+  projects: [
+    {
+      _id: oid(),
+      orgId: ORG_A,
+      userId: USER_1,
+      name: 'Launch',
+      description: 'Plan the launch',
+      icon: 'rocket',
+      instructions: 'Be brief',
+      knowledgeScope: { apps: ['drive'], kb: [], recordGroups: [], records: ['r1'] },
+      appliedFilters: { apps: [{ id: 'a1', name: 'Drive', nodeType: 'app', connector: '' }], kb: [], recordGroups: [], records: [] },
+      tools: ['search'],
+      linkedKnowledgeBaseId: null,
+      visibility: 'org',
+      chatSharing: 'members',
+      members: [
+        { principalType: 'user', principalId: USER_2, role: 'editor', addedBy: USER_1, addedAt: at('2026-03-01T10:00:00.000Z') },
+        { principalType: 'team', principalId: '3f2b8c3e-9d4a-4c55-8f0e-0a1b2c3d4e5f', role: 'viewer', addedBy: USER_1, addedAt: at('2026-03-02T10:00:00.000Z') },
+        { principalType: 'team', principalId: `all_${String(ORG_A)}`, role: 'viewer', addedBy: USER_1, addedAt: at('2026-03-02T10:30:00.000Z') },
+      ],
+      isPinned: true,
+      pinnedBy: [USER_2],
+      isArchived: false,
+      isDeleted: false,
+      lastActivityAt: 1772359200000,
+      metadata: { 'x.y': 1, tag: 'beta' },
+      createdAt: at('2026-03-01T09:00:00.000Z'),
+      updatedAt: at('2026-03-02T09:00:00.000Z'),
+      __v: 2,
+    },
+    {
+      _id: oid(),
+      orgId: ORG_A,
+      userId: USER_2,
+      name: 'Archive',
+      linkedKnowledgeBaseId: 'kb-1',
+      archivedBy: USER_2,
+      isArchived: true,
+      lastActivityAt: 1772359200001,
+      createdAt: at('2026-03-03T09:00:00.000Z'),
+      updatedAt: at('2026-03-03T09:00:00.000Z'),
+    },
+  ],
+  notifications: [
+    { _id: oid(), orgId: ORG_A, type: 'sync', title: 'Done', message: 'Sync finished', severity: 'success', status: 'unread', originService: 'Connector Service', assignedTo: USER_1, payload: { count: 3, detail: { a: [1, 2] } }, isDeleted: false, createdAt: at('2026-10-01T10:00:00.000Z'), updatedAt: at('2026-10-01T10:00:00.000Z'), __v: 0 },
+    { _id: oid(), orgId: ORG_A, type: 'old', assignedTo: USER_2, redirectLink: '/x', createdAt: at('2019-03-05T10:00:00.000Z'), updatedAt: at('2019-03-06T10:00:00.000Z') },
+    { _id: oid(), orgId: ORG_B, type: 'gone', status: 'archived', assignedTo: USER_2, isDeleted: true, deletedBy: USER_2, createdAt: at('2026-09-01T10:00:00.000Z'), updatedAt: at('2026-09-02T10:00:00.000Z'), __v: 1 },
+  ],
+  outbox_events: [
+    {
+      _id: oidAt('2026-10-01T10:00:00.000Z'),
+      topic: 'entity-events',
+      key: 'newUser',
+      orderingKey: `user:${String(ORG_A)}:${String(USER_1)}`,
+      value: JSON.stringify({ eventType: 'newUser', payload: { orgId: String(ORG_A), userId: String(USER_1) } }),
+      headers: { eventType: 'newUser', timestamp: '1' },
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: at('2026-10-01T10:00:00.000Z'),
+      createdAt: at('2026-10-01T10:00:00.000Z'),
+      updatedAt: at('2026-10-01T10:00:00.000Z'),
+      __v: 0,
+    },
+    {
+      _id: oidAt('2026-10-01T10:00:05.000Z'),
+      topic: 'entity-events',
+      key: 'updateUser',
+      orderingKey: `user:${String(ORG_A)}:${String(USER_1)}`,
+      value: JSON.stringify({ eventType: 'updateUser', payload: { orgId: String(ORG_A) } }),
+      status: 'publishing',
+      attempts: 1,
+      nextAttemptAt: at('2026-10-01T10:00:05.000Z'),
+      claimedAt: at('2026-10-01T10:00:06.000Z'),
+      createdAt: at('2026-10-01T10:00:05.000Z'),
+      updatedAt: at('2026-10-01T10:00:06.000Z'),
+    },
+    {
+      _id: oidAt('2026-10-01T10:00:09.000Z'),
+      topic: 'entity-events',
+      key: 'deleteUser',
+      orderingKey: `org:${String(ORG_B)}`,
+      value: 'not json',
+      status: 'failed',
+      attempts: 9,
+      lastError: 'broker down',
+      nextAttemptAt: at('2026-10-02T10:00:00.000Z'),
+      createdAt: at('2026-10-01T10:00:09.000Z'),
+      updatedAt: at('2026-10-01T11:00:00.000Z'),
+      __v: 4,
+    },
+    {
+      _id: oidAt('2026-09-30T10:00:00.000Z'),
+      topic: 'entity-events',
+      key: 'newUser',
+      orderingKey: `org:${String(ORG_A)}`,
+      value: JSON.stringify({ payload: { orgId: String(ORG_A) } }),
+      status: 'published',
+      publishedAt: at('2026-09-30T10:00:01.000Z'),
+      attempts: 1,
+      nextAttemptAt: at('2026-09-30T10:00:00.000Z'),
+      createdAt: at('2026-09-30T10:00:00.000Z'),
+      updatedAt: at('2026-09-30T10:00:01.000Z'),
+    },
+    {
+      _id: oidAt('2026-10-01T10:00:10.000Z'),
+      topic: 'entity-events',
+      key: 'other',
+      orderingKey: 'global',
+      value: JSON.stringify({ eventType: 'other', payload: {} }),
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: at('2026-10-01T10:00:10.000Z'),
+      createdAt: at('2026-10-01T10:00:10.000Z'),
+      updatedAt: at('2026-10-01T10:00:10.000Z'),
+    },
+  ],
+  mailInfo: [
+    { _id: oid(), orgId: ORG_A, subject: 'Welcome', from: 'noreply@example.test', to: ['a@example.test', 'b@example.test'], cc: ['c@example.test'], emailTemplateType: 'welcome', createdAt: at('2026-10-02T10:00:00.000Z'), updatedAt: at('2026-10-02T10:00:00.000Z'), __v: 0 },
+    { _id: oid(), orgId: ORG_B, from: 'noreply@example.test', to: ['d@example.test'], emailTemplateType: 'reset', createdAt: at('2025-01-02T10:00:00.000Z'), updatedAt: at('2025-01-02T10:00:00.000Z') },
+    { _id: oid(), from: 'noreply@example.test', to: ['e@example.test'], emailTemplateType: 'reset', createdAt: at('2025-01-03T10:00:00.000Z'), updatedAt: at('2025-01-03T10:00:00.000Z') },
+  ],
+  connectorsConfig: [
+    { _id: oid(), orgId: ORG_A, name: 'GOOGLE_DRIVE', isEnabled: true, lastUpdatedBy: USER_1, createdAt: at('2026-04-01T10:00:00.000Z'), updatedAt: at('2026-04-02T10:00:00.000Z'), __v: 0 },
+    { _id: oid(), orgId: ORG_A, name: 'SLACK', isEnabled: false, lastUpdatedBy: USER_2, createdAt: at('2026-04-01T11:00:00.000Z'), updatedAt: at('2026-04-02T11:00:00.000Z'), __v: 1 },
+  ],
+  oauthApps: [
+    {
+      _id: APP_1,
+      slug: 'oauthapp-1001',
+      clientId: 'client-aaa',
+      clientSecretEncrypted: 'enc:secret-1',
+      name: 'Reporter',
+      description: 'Reads reports',
+      orgId: ORG_A,
+      createdBy: USER_1,
+      redirectUris: ['https://app.example.test/cb', 'http://localhost:3000/cb'],
+      allowedGrantTypes: ['authorization_code', 'refresh_token'],
+      allowedScopes: ['org:read', 'kb:read'],
+      status: 'active',
+      homepageUrl: 'https://app.example.test',
+      knowledgeLimit: { apps: ['11111111-1111-4111-8111-111111111111'], recordGroups: [], records: ['22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'] },
+      isConfidential: true,
+      isDynamic: false,
+      accessTokenLifetime: 3600,
+      refreshTokenLifetime: 2592000,
+      isDeleted: false,
+      createdAt: at('2026-05-01T10:00:00.000Z'),
+      updatedAt: at('2026-05-02T10:00:00.000Z'),
+      __v: 2,
+    },
+    {
+      _id: oid(),
+      slug: 'oauthapp-1002',
+      clientId: 'client-bbb',
+      clientSecretEncrypted: 'enc:secret-2',
+      name: 'Dynamic',
+      orgId: ORG_B,
+      createdBy: USER_2,
+      tokenIdentityUserId: SERVICE_ACCOUNT,
+      allowedScopes: ['org:read'],
+      isDynamic: true,
+      isDeleted: true,
+      deletedBy: USER_2,
+      createdAt: at('2026-05-03T10:00:00.000Z'),
+      updatedAt: at('2026-05-03T10:00:00.000Z'),
+    },
+  ],
+  oauthAccessTokens: [
+    { _id: oid(), tokenHash: 'hash-pat-1', clientId: 'pat-app-1', userId: USER_1, orgId: ORG_A, scopes: ['org:read'], expiresAt: at('2027-01-01T00:00:00.000Z'), isRevoked: false, name: 'laptop', knowledgeLimit: { apps: ['11111111-1111-4111-8111-111111111111'], recordGroups: [], records: ['22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'] }, lastUsedAt: at('2026-10-05T10:00:00.000Z'), createdAt: at('2026-06-01T10:00:00.000Z'), updatedAt: at('2026-06-01T10:00:00.000Z'), __v: 0 },
+    { _id: oid(), tokenHash: 'hash-cc-1', clientId: 'client-aaa', orgId: ORG_A, scopes: ['kb:read'], expiresAt: at('2026-06-02T11:00:00.000Z'), createdAt: at('2026-06-02T10:00:00.000Z'), updatedAt: at('2026-06-02T10:00:00.000Z') },
+    { _id: oid(), tokenHash: 'hash-deleg-1', clientId: 'svc-app', userId: USER_2, actorUserId: SERVICE_ACCOUNT, orgId: ORG_B, scopes: [], expiresAt: at('2026-01-01T00:00:00.000Z'), isRevoked: true, revokedAt: at('2025-12-01T00:00:00.000Z'), revokedBy: USER_2, revokedReason: 'rotated', parentRefreshTokenId: oid(), createdAt: at('2025-11-01T10:00:00.000Z'), updatedAt: at('2025-12-01T00:00:00.000Z') },
+  ],
+  oauthRefreshTokens: [
+    { _id: oid(), tokenHash: 'rhash-1', clientId: 'client-aaa', userId: USER_1, orgId: ORG_A, scopes: ['org:read'], expiresAt: at('2026-12-01T00:00:00.000Z'), isRevoked: false, rotationCount: 2, previousTokenHash: 'rhash-0', knowledgeLimit: { apps: [], recordGroups: ['44444444-4444-4444-8444-444444444444'], records: [] }, createdAt: at('2026-06-03T10:00:00.000Z'), updatedAt: at('2026-06-04T10:00:00.000Z'), __v: 0 },
+  ],
+  authorizationCodes: [
+    { _id: oid(), code: 'plain-code-1', codeChallenge: 'challenge', codeChallengeMethod: 'S256', clientId: 'client-aaa', userId: USER_1, orgId: ORG_A, redirectUri: 'https://app.example.test/cb', scopes: ['org:read'], knowledgeLimit: { apps: ['11111111-1111-4111-8111-111111111111'], recordGroups: [], records: ['22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'] }, expiresAt: at('2026-10-21T10:10:00.000Z'), isUsed: false, createdAt: at('2026-10-21T10:00:00.000Z'), updatedAt: at('2026-10-21T10:00:00.000Z'), __v: 0 },
+    { _id: oid(), code: 'plain-code-2', clientId: 'client-aaa', userId: USER_2, orgId: ORG_A, redirectUri: 'https://app.example.test/cb', scopes: [], expiresAt: at('2026-10-21T09:10:00.000Z'), isUsed: true, usedAt: at('2026-10-21T09:01:00.000Z'), replayedAt: at('2026-10-21T09:02:00.000Z'), createdAt: at('2026-10-21T09:00:00.000Z'), updatedAt: at('2026-10-21T09:02:00.000Z') },
+  ],
+  oauthDeviceCodes: [
+    // good for an hour: a person may be in the middle of it when the store moves
+    { _id: oid(), deviceCodeHash: 'dev-hash-1', userCode: 'ABCD-EFGH', clientId: 'client-aaa', scopes: ['org:read'], status: 'pending', knowledgeLimit: { apps: ['11111111-1111-4111-8111-111111111111'], recordGroups: [], records: ['22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'] }, interval: 5, expiresAt: new Date(Date.now() + 3_600_000), createdAt: at('2026-10-21T10:00:00.000Z'), updatedAt: at('2026-10-21T10:00:00.000Z'), __v: 0 },
+    { _id: oid(), deviceCodeHash: 'dev-hash-2', userCode: 'JKLM-NPQR', clientId: 'client-aaa', scopes: [], status: 'approved', userId: USER_1, orgId: ORG_A, knowledgeLimit: { apps: [], recordGroups: ['44444444-4444-4444-8444-444444444444'], records: [] }, interval: 5, lastPolledAt: at('2026-10-21T10:05:00.000Z'), expiresAt: new Date(Date.now() + 3_600_000), createdAt: at('2026-10-21T10:01:00.000Z'), updatedAt: at('2026-10-21T10:06:00.000Z'), __v: 1 },
+    // long gone: not loaded, and not expected
+    { _id: oid(), deviceCodeHash: 'dev-hash-3', userCode: 'STUV-WXYZ', clientId: 'client-aaa', scopes: ['org:read'], status: 'denied', interval: 5, expiresAt: at('2026-01-01T00:00:00.000Z'), createdAt: at('2025-12-31T00:00:00.000Z'), updatedAt: at('2025-12-31T00:00:00.000Z'), __v: 0 },
+  ],
+  oauthAgentRegistrations: [
+    // claimed, then consumed: the assertion it backs lives for weeks
+    { _id: oid(), claimEmail: 'a@example.test', claimTokenHash: 'agent-claim-1', attemptTokenHash: 'agent-attempt-1', userCodeHash: 'agent-code-1', attemptExpiresAt: at('2026-10-21T10:10:00.000Z'), expiresAt: at('2026-10-22T10:00:00.000Z'), purgeAt: new Date(Date.now() + 40 * 86_400_000), status: 'consumed', failedAttempts: 1, lastPolledAt: at('2026-10-21T10:06:00.000Z'), claimedUserId: USER_1, claimedOrgId: ORG_A, approvedScopes: ['org:read', 'kb:read'], createdAt: at('2026-10-21T10:00:00.000Z'), updatedAt: at('2026-10-21T10:07:00.000Z'), __v: 0 },
+    // still waiting for a person
+    { _id: oid(), claimEmail: 'b@example.test', claimTokenHash: 'agent-claim-2', attemptTokenHash: 'agent-attempt-2', userCodeHash: 'agent-code-2', attemptExpiresAt: new Date(Date.now() + 600_000), expiresAt: new Date(Date.now() + 3_600_000), purgeAt: new Date(Date.now() + 3_600_000), createdAt: at('2026-10-21T11:00:00.000Z'), updatedAt: at('2026-10-21T11:00:00.000Z') },
+    // long past its retention: not loaded, and not expected
+    { _id: oid(), claimEmail: 'c@example.test', claimTokenHash: 'agent-claim-3', attemptTokenHash: 'agent-attempt-3', userCodeHash: 'agent-code-3', attemptExpiresAt: at('2026-01-01T00:10:00.000Z'), expiresAt: at('2026-01-02T00:00:00.000Z'), purgeAt: at('2026-01-02T00:00:00.000Z'), status: 'expired', createdAt: at('2026-01-01T00:00:00.000Z'), updatedAt: at('2026-01-01T00:00:00.000Z'), __v: 0 },
+  ],
+  slack_conversations: [
+    { _id: oid(), threadId: '1700000000.000100', botId: 'B1', email: 'a@example.test', conversationId: SESSION_1, createdAt: at('2026-07-01T10:00:00.000Z'), updatedAt: at('2026-07-02T10:00:00.000Z'), __v: 0 },
+    { _id: oid(), threadId: '1700000000.000200', botId: 'B1', email: 'b@example.test', conversationId: SESSION_2, createdAt: at('2026-07-03T10:00:00.000Z'), updatedAt: at('2026-07-03T10:00:00.000Z') },
+  ],
+  serviceAccountDelegations: [
+    { _id: oid(), orgId: ORG_A, serviceAccountId: SERVICE_ACCOUNT, subjectUserId: USER_1, grantedBy: USER_2, reason: 'reports', createdAt: at('2026-08-01T10:00:00.000Z'), updatedAt: at('2026-08-01T10:00:00.000Z'), __v: 0 },
+    { _id: oid(), orgId: ORG_A, serviceAccountId: SERVICE_ACCOUNT, subjectUserId: USER_2, grantedBy: USER_1, createdAt: at('2026-08-02T10:00:00.000Z'), updatedAt: at('2026-08-02T10:00:00.000Z') },
+  ],
+  delegationEvents: [
+    { _id: oid(), orgId: ORG_A, serviceAccountId: SERVICE_ACCOUNT, subjectUserId: USER_1, requestedSubject: 'a@example.test', outcome: 'issued', scopes: ['org:read'], accessTokenId: oid(), jti: 'jti-1', expiresAt: at('2026-08-03T10:05:00.000Z'), createdAt: at('2026-08-03T10:00:00.000Z'), updatedAt: at('2026-08-03T10:00:00.000Z'), __v: 0 },
+    { _id: oid(), orgId: ORG_A, serviceAccountId: SERVICE_ACCOUNT, outcome: 'refused', refusedReason: 'not_on_allow_list', createdAt: at('2026-08-04T10:00:00.000Z'), updatedAt: at('2026-08-04T10:00:00.000Z') },
+    { _id: oid(), orgId: ORG_A, serviceAccountId: SERVICE_ACCOUNT, subjectUserId: USER_1, requestedSubject: 'a@example.test', outcome: 'granted', actedBy: USER_2, note: 'because', createdAt: at('2026-08-05T10:00:00.000Z'), updatedAt: at('2026-08-05T10:00:00.000Z') },
+  ],
+});

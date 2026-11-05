@@ -64,6 +64,7 @@ from app.agents.agent_loop.respond import AnswerFinalizer
 from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
+    _await_tasks_draining,
     _cancel_orphaned_agent_tasks,
     _heartbeat,
     _pre_stream_error_frame,
@@ -91,6 +92,7 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.modules.retrieval import degraded_notice
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.modules.retrieval.selection_scope import (
     SelectionNotReadyError,
@@ -101,6 +103,7 @@ from app.modules.retrieval.selection_scope import (
 )
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
+from app.utils.conversation_tasks import begin_run, discard_tasks
 from app.utils.coverage_switches import (
     coverage_facets_enabled,
     coverage_gate_enabled,
@@ -389,6 +392,7 @@ async def _run_no_tools_degradation(
         yield create_sse_event("error", {"error": f"Stream error: {exc}"})
 
 
+@degraded_notice.scoped
 @per_turn_lookups  # knowledge-hub access is asked about by several stages of a turn
 async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's call-site symmetry
     query_info: dict[str, Any],
@@ -586,6 +590,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         # weekday included. Set inside this task so it reaches every tool
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
+        begin_run()
         agent: Any = None
         plan_task: asyncio.Future[Any] | None = None
         try:
@@ -799,6 +804,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            # First, and without awaiting: a disconnect can cancel the awaits
+            # below, and this must still run.
+            discard_tasks(query_info.get("conversationId"))
             if plan_task is not None and not plan_task.done():
                 plan_task.cancel()
             if cancellation_registry is not None:
@@ -828,7 +836,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         tasks = [producer]
         if heartbeat:
             tasks.append(heartbeat)
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await _await_tasks_draining(queue, tasks)
 
 
 __all__ = ["run_chat_stream"]

@@ -4,6 +4,7 @@ does not cover."""
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock
 
 from app.agents.agent_loop.context import AgentContext
@@ -57,12 +58,15 @@ class TestFacetSearches:
 
 
 class TestFinishingThePlan:
-    async def test_the_plan_is_kept_for_the_gate(self) -> None:
+    async def test_the_plan_is_kept_for_the_gate(self, caplog) -> None:
         context = _context()
         task = asyncio.ensure_future(asyncio.sleep(0, result=_PLAN))
-        assert await coverage_prefetch.finish_facet_plan(context, task) is _PLAN
+        with caplog.at_level(logging.INFO, logger=coverage_prefetch.__name__):
+            assert await coverage_prefetch.finish_facet_plan(context, task) is _PLAN
         state = coverage_state(context.tool_state)
         assert state.plan is _PLAN and state.planned
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert "condition" in logged and "EU region" not in logged
 
     async def test_a_late_plan_is_cancelled_and_the_turn_goes_on(self, monkeypatch) -> None:
         monkeypatch.setattr(coverage_prefetch, "_PLAN_GRACE_S", 0.01)

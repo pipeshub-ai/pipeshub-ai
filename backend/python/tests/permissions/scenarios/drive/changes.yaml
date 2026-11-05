@@ -1,0 +1,140 @@
+# Drive change scenarios. A My Drive item stores its whole effective list, so a folder-level change rewrites
+# every descendant's grants in the graph while the search index needs none (permission model doc, "Index writes").
+- id: DRIVE-C-01
+  title: Folder shared; Q4 shared with finance, whose members see plan, budget and roadmap but not the minutes
+  source: permission model doc, google-drive section
+  rule: union
+  world: golden/drive_q4
+  mutations:
+    - {kind: grant_added, node: folder:Q4, ref: g:finance}
+    - {kind: grant_added, node: folder:Q4-Eng, ref: g:finance}
+    - {kind: grant_added, node: plan, ref: g:finance}
+    - {kind: grant_added, node: folder:Q4-Ops, ref: g:finance}
+    - {kind: grant_added, node: ops-plan, ref: g:finance}
+    - {kind: grant_added, node: folder:Q4-Legal, ref: g:finance}
+    - {kind: grant_added, node: contracts, ref: g:finance}
+    - {kind: grant_added, node: budget, ref: g:finance}
+    - {kind: grant_added, node: roadmap, ref: g:finance}
+    - {kind: grant_added, node: notes, ref: g:finance}
+  expect:
+    before: {fay: {plan: deny}}
+    verdicts:
+      fay: {plan: admit, budget: admit, roadmap: admit, ops-plan: admit, contracts: admit, minutes: deny}
+    index_writes: 0
+  tags: [drive, "cell:drive/folder-share"]
+- id: DRIVE-C-02
+  title: Sub-folder shared; Ops shared with eng, so everything under it opens to eng
+  source: permission model doc, google-drive section
+  rule: union
+  world: golden/drive_q4
+  mutations:
+    - {kind: grant_added, node: folder:Q4-Ops, ref: g:eng}
+    - {kind: grant_added, node: ops-plan, ref: g:eng}
+  expect:
+    before: {ed: {ops-plan: deny}}
+    verdicts:
+      ed: {ops-plan: admit, folder:Q4-Ops: admit, budget: deny}
+    index_writes: 0
+  tags: [drive, "cell:drive/sub-folder-share"]
+- id: DRIVE-C-03
+  title: File shared directly; the notes shared with Ivy open to her alone
+  source: permission model doc, google-drive section
+  rule: union
+  world: golden/drive_q4
+  mutation: {kind: grant_added, node: notes, ref: ivy}
+  expect:
+    before: {ivy: {notes: deny}}
+    verdicts:
+      ivy: {notes: admit, roadmap: deny, plan: deny}
+    index_writes: 0
+  tags: [drive, "cell:drive/direct-file-share"]
+- id: DRIVE-C-04
+  title: Share removed; leads removed from Q4 lose everything without another grant, Ed and Ivy keep theirs
+  source: permission model doc, google-drive section
+  rule: union
+  world: golden/drive_q4
+  mutations:
+    - {kind: grant_removed, node: folder:Q4, ref: g:leads}
+    - {kind: grant_removed, node: folder:Q4-Eng, ref: g:leads}
+    - {kind: grant_removed, node: plan, ref: g:leads}
+    - {kind: grant_removed, node: folder:Q4-Ops, ref: g:leads}
+    - {kind: grant_removed, node: ops-plan, ref: g:leads}
+    - {kind: grant_removed, node: folder:Q4-Legal, ref: g:leads}
+    - {kind: grant_removed, node: contracts, ref: g:leads}
+    - {kind: grant_removed, node: budget, ref: g:leads}
+    - {kind: grant_removed, node: roadmap, ref: g:leads}
+    - {kind: grant_removed, node: notes, ref: g:leads}
+  expect:
+    before: {lee: {roadmap: admit}}
+    verdicts:
+      lee: {plan: deny, budget: deny, roadmap: deny, notes: deny, ops-plan: deny, contracts: deny}
+      ed: {plan: admit}
+      ivy: {budget: admit}
+    index_writes: 0
+  tags: [drive, "cell:drive/share-removed", narrowing]
+- id: DRIVE-C-05
+  title: Limited access turned on; Legal becomes limited, leads lose its contents, the CEO keeps them
+  source: permission model doc, google-drive section
+  rule: union
+  world: golden/drive_q4
+  mutations:
+    - {kind: grant_removed, node: folder:Q4-Legal, ref: g:leads}
+    - {kind: grant_removed, node: contracts, ref: g:leads}
+    - {kind: grant_added, node: folder:Q4-Legal, ref: ceo}
+    - {kind: grant_added, node: contracts, ref: ceo}
+  expect:
+    before: {lee: {contracts: admit}}
+    verdicts:
+      lee: {contracts: deny, folder:Q4-Legal: deny}
+      ceo: {contracts: admit}
+      henry: {contracts: admit}
+    index_writes: subtree
+    during: fail_closed
+  tags: [drive, "cell:drive/limited-toggle", narrowing]
+- id: DRIVE-C-06
+  title: Shared-drive membership; Ed added to Marketing sees the launch plan
+  source: permission model doc, google-drive section
+  rule: union
+  world: golden/drive_q4
+  mutation: {kind: member_added, node: g:marketing, ref: ed}
+  expect:
+    before: {ed: {launch-plan: deny}}
+    verdicts:
+      ed: {launch-plan: admit}
+    index_writes: 0
+  tags: [drive, "cell:drive/shared-drive-member"]
+- id: DRIVE-C-07
+  title: File moved into the limited Board folder; Eng loses the plan, Board members and the owner keep it
+  source: permission model doc, google-drive section
+  rule: union
+  world: golden/drive_q4
+  mutations:
+    - {kind: moved, node: plan, ref: folder:Q4-Board}
+    - {kind: grant_removed, node: plan, ref: g:leads}
+    - {kind: grant_removed, node: plan, ref: g:eng}
+    - {kind: grant_added, node: plan, ref: ceo}
+    - {kind: grant_added, node: plan, ref: cfo}
+  expect:
+    before: {ed: {plan: admit}}
+    verdicts:
+      ed: {plan: deny}
+      lee: {plan: deny}
+      cfo: {plan: admit}
+      henry: {plan: admit}
+    index_writes: 1
+    during: fail_closed
+  tags: [drive, "cell:drive/move", narrowing]
+- id: DRIVE-C-08
+  title: Link sharing changed; the roadmap made discoverable to the domain is findable by everyone in the org
+  source: permission model doc, google-drive section (a discoverable domain share becomes an org grant)
+  rule: union
+  comment: >
+    The processor drops DOMAIN and ANYONE grants (data_source_entities_processor.py:2317-2331), so the graph is
+    unchanged and org members outside the folder's audience cannot find the file. Safe, but incomplete.
+  world: golden/drive_q4
+  expect:
+    verdicts:
+      mo: {roadmap: admit}
+      lee: {roadmap: admit}
+    source_delta: DELTA-02
+  tags: [drive, "cell:drive/link-discoverability"]

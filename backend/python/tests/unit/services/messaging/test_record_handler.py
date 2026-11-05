@@ -1534,6 +1534,20 @@ class TestDeleteRecordEvent:
         )
 
     @pytest.mark.asyncio
+    async def test_delete_record_without_an_org_takes_it_from_the_record_before_the_embeddings_go(self) -> None:
+        """The embeddings are deleted for one org; an event without its org must not fail
+        closed while the record can still name it."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "orgId": "org-1"})
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        await _collect_events(handler, EventTypes.DELETE_RECORD.value, {"recordId": "r1", "virtualRecordId": "vr1"})
+
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
+
+    @pytest.mark.asyncio
     async def test_delete_record_without_entity_vector_store_still_completes(self):
         """No entity store configured (the default in most deployments/tests)
         must not break the delete — it is a best-effort cleanup."""
@@ -1546,6 +1560,63 @@ class TestDeleteRecordEvent:
         events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
 
         assert len(events) == 2
+
+
+class TestDeleteRecordSharedCopyHandover:
+    """A deleted record may be the one its shared content is filed under; the
+    copy is handed to a record that still holds it, and a failed handover is
+    retried, since nothing else would move it."""
+
+    PAYLOAD = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "connectorId": "kb-1"}
+
+    @staticmethod
+    def _handler() -> "RecordEventHandler":
+        handler = _make_handler()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=None)
+        return handler
+
+    @pytest.mark.asyncio
+    async def test_the_delete_hands_the_copy_over(self) -> None:
+        handler = self._handler()
+        with patch("app.services.messaging.kafka.handlers.record.StorageCleanupHelper") as helper_cls:
+            helper = helper_cls.return_value
+            helper.hand_over_after_record_delete = AsyncMock(return_value=True)
+            helper.close = AsyncMock()
+            events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, dict(self.PAYLOAD))
+
+        assert len(events) == 2
+        helper.hand_over_after_record_delete.assert_awaited_once_with(
+            "org-1", "kb-1", "vr1", deleted_record_id="r1"
+        )
+        helper.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_handover_raises_so_the_delete_is_retried(self) -> None:
+        handler = self._handler()
+        handler._request_code_edge_build_for_deleted = AsyncMock()
+        with patch("app.services.messaging.kafka.handlers.record.StorageCleanupHelper") as helper_cls:
+            helper = helper_cls.return_value
+            helper.hand_over_after_record_delete = AsyncMock(side_effect=RuntimeError("storage is down"))
+            helper.close = AsyncMock()
+            with pytest.raises(IndexingError) as raised:
+                await _collect_events(handler, EventTypes.DELETE_RECORD.value, dict(self.PAYLOAD))
+
+        assert "storage is down" in str(raised.value.__cause__)
+        # A retry runs the whole delete again, so the code-edge build is still asked for.
+        handler._request_code_edge_build_for_deleted.assert_awaited_once()
+        helper.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("missing", ["orgId", "connectorId", "virtualRecordId"])
+    async def test_nothing_is_handed_over_without_the_ids_it_needs(self, missing) -> None:
+        handler = self._handler()
+        payload = {k: v for k, v in self.PAYLOAD.items() if k != missing}
+        with patch("app.services.messaging.kafka.handlers.record.StorageCleanupHelper") as helper_cls:
+            events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
+
+        assert len(events) == 2
+        helper_cls.assert_not_called()
 
 
 class TestDeleteRecordTaxonomyCleanup:
@@ -5698,6 +5769,24 @@ class TestOnMessageAbandoned:
         )
 
         gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_status_write_is_logged_as_an_error_and_not_taken_for_a_record_that_moved_on(self) -> None:
+        """The database failing is not "the record moved on": the swap raises, nothing else is written, and the log says
+        the marking failed (at error level, with the cause), not that the record was left alone."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "indexingStatus": ProgressStatus.QUEUED.value})
+        gp.update_node = AsyncMock(return_value=True)
+        gp.compare_and_set_indexing_status = AsyncMock(side_effect=ConnectionError("graph restarting"))
+
+        await handler.on_message_abandoned(self._message(), reason="4 transient failures", attempts=4)  # never raises
+
+        gp.update_node.assert_not_awaited()
+        errors = [str(c.args[0]) % c.args[1:] for c in handler.logger.error.call_args_list]
+        assert any("Error while marking record r1 FAILED" in e and "graph restarting" in e for e in errors)
+        infos = [str(c.args[0]) for c in handler.logger.info.call_args_list]
+        assert not any("moved on" in i for i in infos)
 
     @pytest.mark.asyncio
     async def test_never_fails_a_record_whose_handler_is_still_running(self):

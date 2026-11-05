@@ -220,6 +220,7 @@ class TestAnswerOpening:
         assert state.gate_rounds == 1 and state.opening_rewrite_sent
         assert state.counters["gate_opening_rewrites"] == 1 and state.counters["gate_rounds_sent"] == 1
         assert any("coverage_loop: answer opening" in record.getMessage() for record in caplog.records)
+        assert not any("export or sign" in record.getMessage() for record in caplog.records)
 
     async def test_switched_off_the_draft_stands(self, stubs, monkeypatch) -> None:
         monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
@@ -539,7 +540,10 @@ class TestCitedValuesStand:
             ctx.recovery_message.content
         )
         assert coverage_state(context.tool_state).counters["gate_found_rulings"] == 1
-        assert any(ruling[:80] in record.getMessage() for record in caplog.records)
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert "rulings=1" in logged
+        # Record names, values and the question's wording stay out of the logs.
+        assert "cold-room handling matrix" not in logged and "Larkspur" not in logged
 
     async def test_a_named_reference_found_unread_is_still_sent_back(self, searches, monkeypatch) -> None:
         searches.side_effect = _shows(

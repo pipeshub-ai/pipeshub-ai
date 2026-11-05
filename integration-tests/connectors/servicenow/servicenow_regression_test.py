@@ -57,7 +57,7 @@ from connectors.servicenow.servicenow_helpers import (
     wait_absent,
     wait_present,
 )
-from connectors.servicenow.servicenow_seed import ServiceNowSeed, readable_numbers
+from connectors.servicenow.servicenow_seed import ServiceNowRest, ServiceNowSeed, readable_numbers
 from helper.clients.connectors_client import ConnectorOAuthConfigsClient
 from helper.graph_provider import GraphProviderProtocol
 from helper.graph_provider_utils import wait_for_sync_completion
@@ -218,9 +218,9 @@ async def test_tc_life_04_delete_while_syncing_leaves_nothing(
     # servicenow_connector deleted it and checked the graph is clean.
 
 
-async def test_tc_sec_01_an_http_instance_url_is_refused(pipeshub_client: PipeshubClient,
+async def test_tc_sec_01_an_http_instance_url_is_refused(sn_rest: ServiceNowRest, pipeshub_client: PipeshubClient,
                                                         graph_provider: GraphProviderProtocol) -> None:
-    host = os.environ[ENV_INSTANCE_URL].strip().rstrip("/").replace("https://", "http://", 1)
+    host = sn_rest.base_url.replace("https://", "http://", 1)
     api = ConnectorOAuthConfigsClient(pipeshub_client)
     resp = api.create_config(SERVICENOW_CONNECTOR_TYPE, {
         "oauthInstanceName": f"servicenow-it-http-{uuid.uuid4().hex[:8]}",

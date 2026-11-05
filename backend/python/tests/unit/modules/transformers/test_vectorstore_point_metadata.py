@@ -101,3 +101,23 @@ async def test_sql_rows_and_tables_carry_their_positions() -> None:
     meta = _metadata_by_block_id(points)
     assert meta[row.id]["blockIndex"] == 0
     assert meta[group.id]["blockGroupIndex"] == 0
+
+
+@pytest.mark.asyncio
+async def test_policy_c_writes_one_point_for_a_table_s_rows_and_names_each_row(monkeypatch) -> None:
+    monkeypatch.setenv("EMBED_POINT_POLICY", "C")
+    vs, points = _capturing_vectorstore()
+    rows = [
+        Block(index=i, type=BlockType.TABLE_ROW, format=DataFormat.JSON, parent_index=0,
+              data={"row_natural_language_text": f"City: {i}", "row_number": i})
+        for i in range(7)
+    ]
+    groups = [BlockGroup(index=0, type=GroupType.TABLE, data={"table_summary": "Cities"},
+                         children=BlockGroupChildren.from_indices(block_indices=list(range(7))))]
+
+    await _index(vs, BlocksContainer(blocks=rows, block_groups=groups))
+
+    row_points = [p.payload["metadata"] for p in points if p.payload["metadata"].get("blockType") == "table_row"]
+    assert [m["rowBlockIds"] for m in row_points] == [[r.id for r in rows[:5]], [r.id for r in rows[5:]]]
+    assert [(m["blockId"], m["blockIndex"]) for m in row_points] == [(rows[0].id, 0), (rows[5].id, 5)]
+    assert not any("_rowGroup" in p.payload["metadata"] for p in points)

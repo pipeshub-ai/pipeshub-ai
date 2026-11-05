@@ -154,12 +154,14 @@ class _InFlightOffset:
     a stalled watermark is never the silent default.
     """
 
-    __slots__ = ("tp", "offset", "resolved")
+    __slots__ = ("tp", "offset", "resolved", "epoch")
 
-    def __init__(self, tp: "TopicPartition", offset: int) -> None:
+    def __init__(self, tp: "TopicPartition", offset: int, epoch: int | None = None) -> None:
         self.tp = tp
         self.offset = offset
         self.resolved = False
+        # The partition's assignment when this delivery began; None when unknown.
+        self.epoch = epoch
 
 
 class _ReadOutcome:
@@ -326,6 +328,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._partitions_with_data: set[TopicPartition] = set()
         # Partitions revoked since the last poll; see __read_phase.
         self._revoked_since_poll: set[TopicPartition] = set()
+        # Bumped on every revocation: a delivery of an earlier assignment settles nothing, however late it ends.
+        self._partition_epoch: dict[TopicPartition, int] = {}
         self._deferred_messages: deque[
             tuple[TopicPartition, ConsumerRecord, StreamMessage, FairnessKey]
         ] = deque()
@@ -831,6 +835,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if not revoked_set:
             return
         self._revoked_since_poll.update(revoked_set)
+        for tp in revoked_set:
+            self._partition_epoch[tp] = self._partition_epoch.get(tp, 0) + 1
 
         purged = self._scheduler.purge(lambda item: item[0] in revoked_set)
         for tp in revoked_set:
@@ -1870,6 +1876,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # from nothing and commit past offsets the next owner still needs.
             if self.consumer is None or tp in self._revoked_since_poll:
                 return
+            # The revocation flag is cleared at the next poll; a delivery that ends after that is still of the
+            # revoked assignment, and settling it would commit from a watermark rebuilt without its backlog.
+            if in_flight.epoch is not None and in_flight.epoch != self._partition_epoch.get(tp, 0):
+                return
             watermark = (
                 offset_tracker.mark_done(tp, offset)
                 if done
@@ -1970,7 +1980,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             key, (tp, message, parsed) = dispatched
             metrics.record_dispatch("kafka", key[0] if key else "unknown")
-            in_flight = _InFlightOffset(tp, message.offset)
+            in_flight = _InFlightOffset(tp, message.offset, self._partition_epoch.get(tp, 0))
             record_key = self.__record_key(message, parsed) if parallel else None
             reserved = (
                 self.__reserve_record(record_key)

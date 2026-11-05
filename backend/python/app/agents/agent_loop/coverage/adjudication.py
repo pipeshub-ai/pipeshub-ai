@@ -28,21 +28,21 @@ class ConflictValue(BaseModel):
     scope: str = ""
     doc_type: str = ""
     same_scope_as_question: bool = True
-    revises: list[str] = Field(default_factory=list)
+    revises: list[str] = Field(default_factory=list[str])
 
 
 class Conflict(BaseModel):
     facet: str = ""
-    draft_leads_with: list[str] = Field(default_factory=list)
-    draft_mentions: list[str] = Field(default_factory=list)
-    values: list[ConflictValue] = Field(default_factory=list)
+    draft_leads_with: list[str] = Field(default_factory=list[str])
+    draft_mentions: list[str] = Field(default_factory=list[str])
+    values: list[ConflictValue] = Field(default_factory=list[ConflictValue])
 
 
 @dataclass
 class Ruling:
     facet: str
     preferred: list[str]
-    set_aside: list[tuple[str, str]] = field(default_factory=list)
+    set_aside: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
     """``(record label, why)``; the why is one of the ``SET_ASIDE_*`` keys."""
 
     def reason_for(self, label: str) -> str | None:

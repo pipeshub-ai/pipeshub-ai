@@ -19,6 +19,7 @@ Redis treats as special inside ``{}``.
 import struct
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from app.services.permissions.scope_fields import SCOPE_GENERATION_FIELD, SCOPE_KEYS, SCOPE_LIST_KEYS, SCOPE_VERSION_FIELD
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -90,7 +91,11 @@ def field_conditions_to_redis_query(conditions: List[FieldCondition]) -> str:
                 f"values_count_lte on '{field}' cannot be expressed as a Redis "
                 "FT query; split it off before building the query"
             )
-        if cond.values is not None:
+        if cond.values is not None and not cond.values:
+            # An empty list matches nothing, and ``{}`` is a syntax error in a
+            # tag query. A tag cannot both be and not be "x".
+            parts.append(f"({redis_field}:{{x}} -{redis_field}:{{x}})")
+        elif cond.values is not None:
             escaped = "|".join(escape_tag_value(str(v)) for v in cond.values)
             parts.append(f"{redis_field}:{{{escaped}}}")
         elif cond.value is not None:
@@ -190,6 +195,10 @@ def vector_point_to_hash_fields(point: VectorPoint, dtype: str = "FLOAT16") -> D
         ROOT_RECORD_GROUP_IDS_FIELD,
     ):
         fields[field] = join_tag_values(point.payload.get(field))
+
+    for key in SCOPE_KEYS:  # only when the writer stamped them
+        if key in point.payload:
+            fields[key] = join_tag_values(point.payload[key]) if key in SCOPE_LIST_KEYS else point.payload[key]
 
     return fields
 
@@ -313,9 +322,24 @@ def _coerce_hash_value(v: Any) -> Union[str, int, float, bytes]:
         return str(v)
 
 
+def _scope_payload(doc: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in SCOPE_KEYS:
+        if key not in doc:
+            continue
+        if key in SCOPE_LIST_KEYS:
+            out[key] = split_tag_values(doc[key])
+        elif key in (SCOPE_VERSION_FIELD, SCOPE_GENERATION_FIELD):
+            out[key] = int(doc[key]) if str(doc[key]).lstrip("-").isdigit() else doc[key]
+        else:
+            out[key] = doc[key]
+    return out
+
+
 def hash_doc_to_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Rebuild a VectorPoint payload from a flattened Redis HASH document."""
     return {
+        **_scope_payload(doc),
         "page_content": doc.get("page_content", ""),
         "metadata": reconstruct_metadata(doc),
         CONNECTOR_IDS_FIELD: split_tag_values(doc.get(CONNECTOR_IDS_FIELD)),

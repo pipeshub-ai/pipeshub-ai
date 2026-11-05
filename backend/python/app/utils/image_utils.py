@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import math
 import os
@@ -6,11 +5,9 @@ import re
 from urllib.parse import unquote, urlparse
 
 from app.utils.logger import create_logger
-from app.utils.url_fetcher import FetchError, fetch_url
 
 logger = create_logger(__name__)
 
-HTTP_STATUS_OK = 200
 _BASE64_CHARSET_RE = re.compile(r"[A-Za-z0-9+/=_-]+")
 
 
@@ -442,51 +439,6 @@ def get_image_info_from_url(url: str) -> tuple[str | None, str | None]:
 
 
 supported_mime_types = ["image/png", "image/jpeg", "image/webp"]
-
-
-async def _fetch_image_as_base64(img_url: str) -> tuple[str, str] | None:
-    """
-    Fetch an image from http(s) URL and return (base64_string, mime_type).
-    Returns None on failure.
-    """
-    try:
-
-        _, mime_type = get_image_info_from_url(img_url)
-
-        if mime_type and mime_type not in supported_mime_types:
-            logger.warning("Image mime type not supported, skipping fetch: %s", mime_type)
-            return None
-
-        result = await asyncio.to_thread(
-            fetch_url,
-            img_url,
-            max_retries=0,
-            strategy="curl_cffi_h2",
-            profile="chrome120",
-            block_private_hosts=True,  # the URL comes from a third-party page
-        )
-        if result.status_code != HTTP_STATUS_OK or not result.content:
-            logger.warning("Failed to fetch image as base64 from %s: %s", img_url, f"status_code: {result.status_code}, content: {result.content[:100]}")
-            return None
-        b64 = base64.b64encode(result.content).decode("utf-8")
-
-        mime_type = None
-        if b64.startswith("data:image/"):
-            mime_type = b64.split(";")[0].split(":")[1]
-
-        if not mime_type:
-            mime_type = get_mime_type_from_base64(b64)
-
-
-        if not mime_type or not mime_type.startswith("image/") or mime_type not in supported_mime_types:
-            logger.warning("Failed to fetch image as base64 from %s: %s", img_url, f"mime_type not found/supported, mimeType: {mime_type}")
-            return None
-
-        return (b64, mime_type)
-    except (FetchError, Exception) as e:
-        logger.warning("Failed to fetch image as base64 from %s: %s", img_url, e)
-        return None
-
 
 
 # extension -> MIME mapping

@@ -63,7 +63,7 @@ class TestPrepareContentTiktokenBranches:
         mock_tiktoken.get_encoding.side_effect = Exception("encoding not found")
 
         with patch.dict("sys.modules", {"tiktoken": mock_tiktoken}):
-            result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000)
+            result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 1
         assert result[0]["text"] == "Hello world"
@@ -80,7 +80,7 @@ class TestPrepareContentTiktokenBranches:
         mock_tiktoken.get_encoding.return_value = mock_enc
 
         with patch.dict("sys.modules", {"tiktoken": mock_tiktoken}):
-            result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000)
+            result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 1
 
@@ -96,7 +96,7 @@ class TestPrepareContentTiktokenBranches:
         ]
 
         with patch.dict("sys.modules", {"tiktoken": None}):
-            result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=50)
+            result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=50, allow_remote_image_uri=True)
 
         # Only first table row should fit; second exceeds budget
         assert len(result) == 1
@@ -108,7 +108,7 @@ class TestPrepareContentTiktokenBranches:
         # A table row with empty text from dict with missing key
         blocks = [_make_table_row_block({"other": "val"}, index=0)]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 1
         assert result[0]["text"] == ""
@@ -141,7 +141,7 @@ class TestExtractMetadataExceptionPropagation:
             )
 
             with pytest.raises(RuntimeError, match="graph DB down"):
-                await ext.extract_metadata(blocks, "org-1")
+                await ext.extract_metadata(blocks, "org-1", allow_remote_image_uri=True)
 
     @pytest.mark.asyncio
     async def test_a_failed_call_is_retried_without_resending_the_document(self) -> None:
@@ -168,7 +168,7 @@ class TestExtractMetadataExceptionPropagation:
             mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
 
             with pytest.raises(ExtractionLLMError, match="Connection error"):
-                await ext.extract_metadata(blocks, "org-1")
+                await ext.extract_metadata(blocks, "org-1", allow_remote_image_uri=True)
 
         assert structured.await_args.kwargs["raise_call_errors"] is True
         fake_llm.ainvoke.assert_not_awaited()
@@ -191,7 +191,7 @@ class TestExtractMetadataExceptionPropagation:
             mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
 
             with pytest.raises(LLMUnavailableError):
-                await ext.extract_metadata([_make_text_block("Some content")], "org-1")
+                await ext.extract_metadata([_make_text_block("Some content")], "org-1", allow_remote_image_uri=True)
 
         assert structured.await_args.kwargs["raise_unavailable"] is True
         fake_llm.ainvoke.assert_not_awaited()
@@ -217,7 +217,7 @@ class TestExtractMetadataExceptionPropagation:
             mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
 
             with pytest.raises(NonRetryableError):
-                await ext.extract_metadata(blocks, "org-1")
+                await ext.extract_metadata(blocks, "org-1", allow_remote_image_uri=True)
 
 
 # =========================================================================
@@ -303,10 +303,10 @@ class TestProcessDocument:
         ext.extract_metadata = AsyncMock(return_value=fake_result)
 
         blocks = [_make_text_block("content")]
-        result = await ext.process_document(blocks, "org-1")
+        result = await ext.process_document(blocks, "org-1", allow_remote_image_uri=True)
 
         ext.extract_metadata.assert_awaited_once_with(
-            blocks, "org-1", record_name="", record_type=""
+            blocks, "org-1", record_name="", record_type="", allow_remote_image_uri=True
         )
         assert result is fake_result
 
@@ -316,7 +316,7 @@ class TestProcessDocument:
         ext = _build_extractor()
         ext.extract_metadata = AsyncMock(return_value=None)
 
-        result = await ext.process_document([], "org-1")
+        result = await ext.process_document([], "org-1", allow_remote_image_uri=True)
         assert result is None
 
 
@@ -362,7 +362,7 @@ class TestExtractMetadataDepartmentsFallback:
             # Return empty list to trigger fallback
             mock_graph.get_departments = AsyncMock(return_value=[])
 
-            result = await ext.extract_metadata(blocks, "org-1")
+            result = await ext.extract_metadata(blocks, "org-1", allow_remote_image_uri=True)
 
         assert result is not None
 
@@ -399,7 +399,7 @@ class TestExtractMetadataDepartmentsFallback:
         ):
             mock_graph.get_departments = AsyncMock(return_value=["HR"])
 
-            result = await ext.extract_metadata(blocks, "org-1")
+            result = await ext.extract_metadata(blocks, "org-1", allow_remote_image_uri=True)
 
         assert result is not None
 
@@ -428,7 +428,7 @@ async def test_content_preparation_does_not_block_the_loop():
         "app.modules.transformers.document_extraction.get_llm_for_role",
         AsyncMock(return_value=(MagicMock(), {})),
     ):
-        result = await ext._classify_blocks([], "org", [], "r", "FILE")
+        result = await ext._classify_blocks([], "org", [], "r", "FILE", allow_remote_image_uri=True)
     ticking.cancel()
 
     assert result is None

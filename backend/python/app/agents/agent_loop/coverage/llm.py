@@ -10,10 +10,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from cachetools import TTLCache
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.llm import get_llm_for_role
@@ -28,12 +28,12 @@ logger = logging.getLogger(__name__)
 
 _ROLE = "query"
 _LOOKUP_TIMEOUT_S = 5.0
-_llm_cache: TTLCache = TTLCache(maxsize=256, ttl=300.0)
+_llm_cache: TTLCache[str, Any] = TTLCache[str, Any](maxsize=256, ttl=300.0)
 
 
 async def coverage_llm(config_service: Any, org_id: str, fallback: Any = None) -> Any:  # noqa: ANN401
     """The planning model for this org, cached; ``fallback`` when none can be built."""
-    cached = _llm_cache.get(org_id)
+    cached: Any = _llm_cache.get(org_id)
     if cached is not None:
         return cached
     if config_service is None:
@@ -61,7 +61,7 @@ def parse_json_object(text: str | None) -> dict[str, Any] | None:
         value = json.loads(text[start:end + 1])
     except ValueError:
         return None
-    return value if isinstance(value, dict) else None
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else None
 
 
 async def complete_json(
@@ -83,7 +83,7 @@ async def complete_json(
     except Exception as exc:
         logger.warning("coverage_loop: %s call failed: %r", purpose, exc)
         return None
-    if on_usage is not None and isinstance(response, AIMessage):
+    if on_usage is not None:
         try:
             on_usage(response)
         except Exception:

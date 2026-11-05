@@ -82,7 +82,7 @@ async def test_structured_result_is_returned_as_semantic_metadata() -> None:
         f"{_MODULE}.invoke_with_structured_output_and_reflection",
         AsyncMock(return_value=_classification()),
     ):
-        metadata = await extraction.extract_metadata(_blocks(), "org-1")
+        metadata = await extraction.extract_metadata(_blocks(), "org-1", allow_remote_image_uri=True)
     assert isinstance(metadata, SemanticMetadata)
     assert metadata.categories == ["Security"]
 
@@ -91,7 +91,7 @@ async def test_structured_result_is_returned_as_semantic_metadata() -> None:
 async def test_no_content_returns_none() -> None:
     extraction = _extraction()
     with patch(f"{_MODULE}.get_llm_for_role", _llm_role()):
-        assert await extraction.extract_metadata([], "org-1") is None
+        assert await extraction.extract_metadata([], "org-1", allow_remote_image_uri=True) is None
 
 
 @pytest.mark.asyncio
@@ -376,5 +376,5 @@ def test_an_image_declared_with_the_wrong_type_is_relabelled() -> None:
             data={"uri": _png_uri(fmt="JPEG", declared="image/png")},
         )
     ]
-    content = _extraction()._prepare_content(blocks, is_multimodal_llm=True, context_length=8000)
+    content = _extraction()._prepare_content(blocks, is_multimodal_llm=True, context_length=8000, allow_remote_image_uri=True)
     assert content[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
