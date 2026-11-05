@@ -71,6 +71,9 @@ class IVectorDBService(ABC):
     # Capabilities and health (new)
     # ------------------------------------------------------------------
 
+    #: Whether a search request may carry a ``ScopeFilter`` (``filters.ScopeFilter``); a store that cannot refuses one.
+    supports_scope_filter = False
+
     @abstractmethod
     def get_capabilities(self) -> VectorDBCapabilities:
         """Return static capability descriptor for this provider."""

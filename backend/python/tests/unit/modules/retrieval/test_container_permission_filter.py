@@ -14,6 +14,7 @@ The flag is forced by patching the module constant, not the environment — it i
 read once at import.
 """
 
+import contextlib
 import math
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1411,3 +1412,96 @@ class TestTheRetryTargetsTheWholeFanOut:
         assert retrieval_service._execute_parallel_searches.await_count == 1
         assert len(admitted) == 25
 
+
+
+class TestTheShadowComparisonDoesNotChangeTheAnswer:
+    """With ACL_FILTER_MODE=shadow a comparator sees every finished search; whatever it does (nothing, an exception, a flood of over-admits),
+    the response is the one it would have been."""
+
+    async def _answer(self, retrieval_service, mock_graph_provider, mock_vector_db_service, shadow) -> dict:
+        mock_vector_db_service.supports_scope_filter = True
+        retrieval_service._shadow = shadow
+        mock_graph_provider.get_accessible_containers = AsyncMock(return_value=_containers(record_group_ids_verify=frozenset({"rg"})))
+
+        async def search(queries, filter, limit, org_id, user_id=None, *, plan=None, record_cut=None) -> list:  # noqa: A002
+            plan.dense, plan.sparse, plan.collections = [[0.1]], [[1]], ["c"]
+            return [_hit("v-allowed"), _hit("v-denied")]
+
+        retrieval_service._execute_parallel_searches = search
+        mock_graph_provider.check_access = AsyncMock(return_value=AccessCheck(records_by_vrid={"v-allowed": "r-allowed"}))
+        mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[{
+            "_key": "r-allowed", "virtualRecordId": "v-allowed", "origin": "CONNECTOR", "recordName": "n", "mimeType": "text/plain",
+            "connectorName": "X", "webUrl": "http://x"}])
+        return await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+
+    @pytest.mark.asyncio
+    async def test_the_response_is_the_same_whatever_the_comparator_does(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        baseline = await self._answer(retrieval_service, mock_graph_provider, mock_vector_db_service, None)
+        assert {r["metadata"]["virtualRecordId"] for r in baseline["searchResults"]} == {"v-allowed"}
+        recording = MagicMock()
+        failing = MagicMock()
+        failing.submit.side_effect = RuntimeError("boom")
+        for shadow in (recording, failing):
+            answer = await self._answer(retrieval_service, mock_graph_provider, mock_vector_db_service, shadow)
+            assert answer == baseline
+        assert recording.submit.called
+        org, user, returned, admitted, *_ = recording.submit.call_args.args
+        assert (org, returned, admitted) == ("o1", {"v-allowed", "v-denied"}, {"v-allowed"})           # it sees what the real path saw, as copies
+
+    @pytest.mark.asyncio
+    async def test_a_search_that_asks_twice_hands_the_comparator_one_search_from_the_kept_attempt(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        shadow = MagicMock()
+        retrieval_service._should_requery = MagicMock(side_effect=[True, False])
+        await self._answer(retrieval_service, mock_graph_provider, mock_vector_db_service, shadow)
+        assert mock_graph_provider.check_access.await_count == 2             # two attempts ...
+        assert shadow.submit.call_count == 1                                 # ... one comparison
+
+    @pytest.mark.asyncio
+    async def test_no_comparison_is_started_when_the_access_check_was_unavailable(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        shadow = MagicMock()
+        retrieval_service._shadow = shadow
+        mock_vector_db_service.supports_scope_filter = True
+        mock_graph_provider.get_accessible_containers = AsyncMock(return_value=_containers(record_group_ids_verify=frozenset({"rg"})))
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[_hit("v-allowed")])
+        mock_graph_provider.check_access = AsyncMock(side_effect=PermissionVerificationUnavailableError("down"))
+        with contextlib.suppress(Exception):
+            await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+        shadow.submit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_without_a_comparator_nothing_is_started_or_logged(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        retrieval_service._submit_shadow = MagicMock()
+        retrieval_service.logger = MagicMock()
+        await self._answer(retrieval_service, mock_graph_provider, mock_vector_db_service, None)
+        retrieval_service._submit_shadow.assert_not_called()
+        assert not [c for c in retrieval_service.logger.method_calls if "shadow" in str(c).lower()]
+
+    @pytest.mark.asyncio
+    async def test_the_deeper_read_for_source_diversity_is_not_compared_again(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        shadow = MagicMock()
+        mock_vector_db_service.supports_scope_filter = True
+        retrieval_service._shadow = shadow
+        containers = _containers(record_group_ids_verify=frozenset({"rg"}))
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[_hit("v-allowed")])
+        mock_graph_provider.check_access = AsyncMock(return_value=AccessCheck(records_by_vrid={"v-allowed": "r-allowed"}))
+        plan = mod._QueryPlan(dense=[[0.1]], collections=["c"])
+        # the page's own search: one comparison
+        await retrieval_service._search_and_adjudicate(["q"], "F", 10, "o1", "u1", containers, allow_requery=True, scope_connector_ids=None,
+                                                        plan=plan, user_key="user-key")
+        assert shadow.submit.call_count == 1
+        # the same search read deeper for source diversity: none more
+        await retrieval_service._diversity_candidates(
+            ["q"], "F", 40, "o1", "u1", plan, containers=containers, enumerated=None, by_record_ids=AsyncMock(), record_ids_first=False,
+            record_cut=None, allow_requery=True, user_key="user-key", scope_connector_ids=None, scopes=())
+        assert shadow.submit.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_store_that_cannot_translate_the_filter_is_never_asked_to_compare(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        shadow = MagicMock()
+        mock_vector_db_service.supports_scope_filter = False
+        retrieval_service._shadow = shadow
+        mock_graph_provider.get_accessible_containers = AsyncMock(return_value=_containers(record_group_ids_verify=frozenset({"rg"})))
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[_hit("v-allowed")])
+        mock_graph_provider.check_access = AsyncMock(return_value=AccessCheck(records_by_vrid={"v-allowed": "r-allowed"}))
+        await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+        shadow.submit.assert_not_called()
