@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.modules.retrieval.context.neighbours import expand_neighbours, fill_small_gaps
 from app.modules.retrieval.context.ranking import rank_units
-from app.modules.retrieval.record_cut import cut_by_record, passages_per_record
+from app.modules.retrieval.record_cut import spread_by_record
 from app.modules.retrieval.switches import (
     context_gap_fill_enabled,
     context_record_spread_enabled,
@@ -74,8 +74,9 @@ class KnowledgeContextBuilder:
     ) -> KnowledgeContext:
         """``max_units`` caps the units shown. Hits take it first; neighbours
         get only the slots the hits left, as they always did. With
-        CONTEXT_RECORD_SPREAD each record keeps a few hits before any record
-        keeps more.
+        CONTEXT_RECORD_SPREAD the hits are cut by record, as a search's hits
+        are. CONTEXT_GAP_FILL's fills are not counted: at most four per record,
+        each dropped by a size budget together with the passage it belongs to.
 
         ``include_fk_children`` adds the DDL of tables related by foreign key
         to any SQL table that was kept.
@@ -127,17 +128,12 @@ class KnowledgeContextBuilder:
 
 
 def _keep_best(ranked: list[Unit], max_units: int | None) -> list[Unit]:
-    """The best ``max_units`` of ``ranked``. Spread across records, one record
-    holds at most as many as a search response gives one record, so a long
-    record that matches everywhere cannot take every slot."""
+    """The best ``max_units`` of ``ranked``. Spread across records, they are cut
+    as a search's hits are (``spread_by_record``): the head caps each record and
+    the reserved share goes to records not yet in it, so a long record that
+    matches everywhere cannot take every slot."""
     if max_units is None:
         return ranked
     if max_units < 1 or not context_record_spread_enabled():
         return ranked[: max(max_units, 0)]
-    return cut_by_record(
-        ranked,
-        max_units,
-        per_record=passages_per_record(max_units),
-        reserve=0,
-        record_of=lambda unit: unit.get("virtual_record_id"),
-    )
+    return spread_by_record(ranked, max_units, lambda unit: unit.get("virtual_record_id"))

@@ -176,6 +176,22 @@ class TestRegistry:
 
         assert registry.lookup("result text.") is None
 
+    def test_one_text_with_two_different_manifests_has_none(self) -> None:
+        """Either could be the one a message shows, so nothing is elided from it."""
+        registry = ManifestRegistry()
+        registry.register("result text", self._manifest())
+        registry.register("result text", ContentManifest(ManifestSource.SEARCH, (), ()))
+        registry.register("result text", self._manifest())
+
+        assert registry.lookup("result text") is None
+
+    def test_the_same_manifest_registered_again_is_kept(self) -> None:
+        registry = ManifestRegistry()
+        registry.register("result text", self._manifest())
+        registry.register("result text", self._manifest())
+
+        assert registry.lookup("result text") == self._manifest()
+
     def test_prefetch_is_kept_apart(self) -> None:
         registry = ManifestRegistry()
         registry.register_prefetch(self._manifest())

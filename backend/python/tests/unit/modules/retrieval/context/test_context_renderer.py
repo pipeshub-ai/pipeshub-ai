@@ -423,6 +423,21 @@ class TestKnowledgeContextBuilder:
             assert keys == [("a", i) for i in range(5)]
 
     @pytest.mark.asyncio
+    async def test_with_record_spread_a_small_limit_still_reaches_a_second_record(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The per-record floor alone (four) would let one record take both
+        slots; the reserved share goes to a record not yet shown."""
+        monkeypatch.setenv("CONTEXT_RECORD_SPREAD", "true")
+        records = {"a": _record("a", "A", blocks=0), "b": _record("b", "B", blocks=0)}
+        units = [_unit("a", 0, "a0", 0.9), _unit("a", 1, "a1", 0.8), _unit("b", 0, "b0", 0.7)]
+        flatten, graph, fk = self._patches(units, records)
+        with flatten, graph, fk:
+            knowledge = await self._builder().build([], {}, is_multimodal_llm=False, max_units=2)
+
+        assert [(u["virtual_record_id"], u["block_index"]) for u in knowledge.ranked] == [("a", 0), ("b", 0)]
+
+    @pytest.mark.asyncio
     async def test_neighbours_take_only_the_slots_the_hits_left(self, records) -> None:
         flatten, graph, fk = self._patches([_unit("a", 4, "a4", 0.2), _unit("b", 2, "b2", 0.9)], records)
         with flatten, graph, fk:

@@ -92,11 +92,17 @@ class ManifestRegistry:
     every call and never shaped, so it always counts as shown.
     """
 
-    _by_digest: dict[str, ContentManifest] = field(default_factory=dict)
+    _by_digest: dict[str, ContentManifest | None] = field(default_factory=dict)
     prefetch: list[ContentManifest] = field(default_factory=list)
 
     def register(self, text: str, manifest: ContentManifest) -> None:
-        self._by_digest[_digest(text)] = manifest
+        """Two results with the same text but different manifests leave that
+        text with none: either could be the one a message shows."""
+        digest = _digest(text)
+        if digest in self._by_digest and self._by_digest[digest] != manifest:
+            self._by_digest[digest] = None
+        else:
+            self._by_digest.setdefault(digest, manifest)
 
     def lookup(self, text: str) -> ContentManifest | None:
         return self._by_digest.get(_digest(text))
