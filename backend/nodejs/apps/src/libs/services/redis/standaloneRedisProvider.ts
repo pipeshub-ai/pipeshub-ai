@@ -47,7 +47,7 @@ export class StandaloneRedisProvider implements IRedisConnectionProvider {
     });
     if (this.config.db) {
       logger.warn(
-        `REDIS_DB=${this.config.db} is deprecated; prefer REDIS_KEY_NAMESPACE for tenant isolation. Ignored entirely in cluster mode.`,
+        `REDIS_DB=${this.config.db} is deprecated; prefer REDIS_KEY_NAMESPACE for deployment isolation. Ignored entirely in cluster mode.`,
       );
     }
     if (this.config.tls && !this.config.tlsRejectUnauthorized) {
@@ -136,7 +136,7 @@ export class StandaloneRedisProvider implements IRedisConnectionProvider {
   }
 
   async prepare(): Promise<void> {
-    // No rotating credentials in OSS; an EE provider overrides this.
+    // No rotating credentials in OSS; an extension provider overrides this.
   }
 
   async *scanKeys(pattern: string, count = 100): AsyncIterable<string> {

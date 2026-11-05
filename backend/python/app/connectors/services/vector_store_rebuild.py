@@ -88,8 +88,8 @@ async def list_rebuild_apps(
     """Return (org_id, connector_id) for every non-DELETING app.
 
     When ``org_id`` is set, only that organisation's apps are returned.
-    Multi-tenant deployments must always pass ``org_id`` so one tenant's
-    admin cannot trigger operations on another tenant's connectors.
+    Multi-org deployments must always pass ``org_id`` so one org's
+    admin cannot trigger operations on another org's connectors.
     """
     pairs: list[tuple[str, str]] = []
     if org_id:

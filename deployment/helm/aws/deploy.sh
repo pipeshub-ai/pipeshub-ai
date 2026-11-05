@@ -604,7 +604,7 @@ destroy() {
   fi
 
   if $EXISTING_CLUSTER; then
-    # The customer's storage class may use reclaimPolicy Delete, so deleting a
+    # The user's storage class may use reclaimPolicy Delete, so deleting a
     # claim could delete its disk.
     note "volume claims left in ${NAMESPACE}: kubectl get pvc -n ${NAMESPACE}"
   elif cluster_exists; then

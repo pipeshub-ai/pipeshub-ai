@@ -196,7 +196,7 @@ export interface SlackTokenClaims {
   /**
    * Id of the Slack bot configuration that received the event. The gateway
    * resolves the org from this against its own encrypted config store, so the
-   * bot process does not get to choose which tenant it is talking to.
+   * bot process does not get to choose which org it is talking to.
    */
   configId?: string;
 }

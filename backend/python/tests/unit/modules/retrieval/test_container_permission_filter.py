@@ -518,7 +518,7 @@ class TestTheAppNameKeepsToTheLimit:
 
 class TestOverfetchSizing:
     def test_no_verify_groups_costs_nothing(self, retrieval_service) -> None:
-        """An all-app-level tenant must not pay for a change it cannot benefit
+        """An all-app-level org must not pay for a change it cannot benefit
         from. `app_ids_trusted` has to cover `app_ids` for that to hold."""
         c = _containers(
             app_ids=frozenset({"a"}),
@@ -529,7 +529,7 @@ class TestOverfetchSizing:
 
     def test_undeclared_apps_are_sized_as_checked_not_trusted(self, retrieval_service) -> None:
         """An app reachable but not declared APP_LEVEL has no verify groups and
-        is still adjudicated per record. Sizing it as trusted hands the tenant
+        is still adjudicated per record. Sizing it as trusted hands the org
         zero headroom and buys a second vector fan-out on every search the
         moment anything is denied."""
         c = _containers(
@@ -547,7 +547,7 @@ class TestOverfetchSizing:
     def test_all_verify_hits_the_multiplier_ceiling(self, retrieval_service) -> None:
         """Pinned to the derived value, not bounded by it: an upper bound is
         also satisfied by a multiplier that silently collapsed to 1.0, which is
-        the failure that makes every all-verify tenant under-fetch and retry.
+        the failure that makes every all-verify org under-fetch and retry.
         """
         c = _containers(record_group_ids_verify=frozenset({"v"}))
         # p_verify == 1.0 with no trusted containers
@@ -584,7 +584,7 @@ class TestRequeryGuards:
         assert retrieval_service._should_requery(**self._args())
 
     def test_no_requery_when_the_corpus_is_exhausted(self, retrieval_service) -> None:
-        """The decisive guard. Without it every small tenant re-queries on
+        """The decisive guard. Without it every small org re-queries on
         every single search, forever."""
         assert not retrieval_service._should_requery(**self._args(max_batch=12))
 

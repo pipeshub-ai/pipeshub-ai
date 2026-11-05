@@ -2392,7 +2392,7 @@ export class StorageController {
 
         if (!response || response.statusCode !== 200) {
           // `data` is the storage service's response body, which can carry the
-          // file or customer content, so only its status and message are kept.
+          // file or user content, so only its status and message are kept.
           this.logger.error('Failed to save the previous version', {
             documentId: document._id,
             statusCode: response?.statusCode,
@@ -2465,7 +2465,7 @@ export class StorageController {
 
           if (!response || response.statusCode !== 200) {
             // `data` is the storage service's response body, which can carry the
-            // file or customer content, so only its status and message are kept.
+            // file or user content, so only its status and message are kept.
             this.logger.error('Failed to save the previous version', {
               documentId: document._id,
               statusCode: response?.statusCode,

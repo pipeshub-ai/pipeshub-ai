@@ -35,8 +35,8 @@ export const STAND_IN_TOKEN_TTL_SECONDS = 60;
  * The OSS Slack bot configuration carries no orgId, so this edition only has a
  * safe answer when there is exactly one org. On a multi-org instance the old
  * `Org.findOne` picked whichever document came back first, which could answer a
- * Slack workspace with another tenant's data — refuse instead. Multi-org Slack
- * is an EE feature and resolves the org from the bot config's own orgId.
+ * Slack workspace with another org's data — refuse instead. Multi-org Slack
+ * is not handled here.
  */
 export const resolveSoleOrgId = async (): Promise<string> => {
   const { count, oldestId } = await getOrgRepository().liveSummary();

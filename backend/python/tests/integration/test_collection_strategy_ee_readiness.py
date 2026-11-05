@@ -1,4 +1,4 @@
-"""The gate on "Enterprise can add multi-tenancy by shipping one class".
+"""The gate on "an extension can add per-org collections by shipping one class".
 
 Every other test in this area exercises the default `single` strategy, where a
 bug that assumes one collection is invisible — the wrong answer and the right
@@ -9,7 +9,7 @@ in-memory vector DB, and asserts each operation touched the collections it
 should have.
 
 `PerOrgStrategy` lives in the test tree, not in `app/`: nothing in OSS depends
-on it. That is the point — if this passes, an EE package can register the same
+on it. That is the point — if this passes, an extension package can register the same
 shape through `CollectionStrategyFactory` and every call site here works
 untouched.
 
@@ -242,7 +242,7 @@ class TestDeleteIsOrgScoped:
 
         B's collection keeps the points and gets fresh membership. A's is
         purged — under a per-org strategy that is also the isolation property:
-        a tenant's collection must not keep vectors for content that tenant has
+        an org's collection must not keep vectors for content that org has
         no record of.
         """
         vdb = FakeVectorDB()
@@ -337,7 +337,7 @@ class TestManifestTracksEveryOrg:
         assert names == {COLL_A, COLL_B}
 
     async def test_rebuild_recreates_every_org_collection(self):
-        """The model-change rebuild must not stop at one tenant's data."""
+        """The model-change rebuild must not stop at one org's data."""
         vdb = FakeVectorDB()
         registry = await _two_org_registry(vdb)
         vdb.created.clear()

@@ -5,7 +5,7 @@ Every Redis-backed feature must depend on ``IRedisConnectionProvider``
 (obtained via ``app.services.redis.get_redis_provider`` /
 ``RedisConnectionProviderFactory``), never ``redis.asyncio.Redis`` /
 ``redis.asyncio.cluster.RedisCluster`` / ``redis.Redis`` directly. That is
-what lets a separate EE repo add AWS MemoryDB support by registering one
+what lets a separate extension repo add AWS MemoryDB support by registering one
 provider class -- no other file has to change.
 
 This test statically scans every ``.py`` file under ``app/`` for a direct

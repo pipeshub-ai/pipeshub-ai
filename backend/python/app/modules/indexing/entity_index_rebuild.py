@@ -71,7 +71,7 @@ ENTITY_INDEX_VERSION = 2
 LEADER_KEY = "entity_index_rebuild:leader"
 PAGE_SIZE = 200
 # Smaller: membership is read per node, and a hub node ("English") reaches
-# most of a tenant's records.
+# most of an org's records.
 TAXONOMY_PAGE_SIZE = 50
 MAX_ATTEMPTS = 3
 # Consecutive ticks that raised on one document before it is given up, so a

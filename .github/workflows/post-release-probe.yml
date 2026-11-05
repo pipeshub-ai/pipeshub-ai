@@ -6,7 +6,7 @@ name: Post-release probe
 # real deployment and open an issue if it degrades.
 #
 # The point is time-to-detection. Releasing daily is only safe if a bad release
-# is noticed by you within minutes rather than reported by a customer the next
+# is noticed by you within minutes rather than reported by a user the next
 # morning.
 #
 # Requires two repository settings:

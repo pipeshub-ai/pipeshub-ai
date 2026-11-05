@@ -2864,8 +2864,8 @@ class TestDeleteConnectorInstance:
         assert exc_info.value.status_code == 404
 
     async def test_an_admin_of_another_org_still_gets_404(self):
-        """Tenant isolation runs before the role, so the wider deletion
-        allowance never becomes a cross-tenant one."""
+        """Org isolation runs before the role, so the wider deletion
+        allowance never becomes a cross-org one."""
         with pytest.raises(HTTPException) as exc_info:
             await self._delete_through_the_real_gate(
                 caller="admin-b", is_admin=True, org_id="other-org", created_by="user-a"

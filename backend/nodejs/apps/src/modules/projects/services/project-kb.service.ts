@@ -170,7 +170,7 @@ export class ProjectKnowledgeBaseService {
     callerUserId?: string,
   ): Promise<string> {
     const project = await getProjectRepository().getLive(projectId);
-    // Tenant isolation defense-in-depth — callers normally reach this only
+    // Org isolation defense-in-depth — callers normally reach this only
     // after `ProjectService.assertAccess`, but a caller-supplied `orgId`
     // must never be trusted to already match without a check here too.
     if (!project || project.orgId !== orgId) {

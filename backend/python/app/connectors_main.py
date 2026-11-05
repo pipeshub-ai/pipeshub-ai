@@ -891,7 +891,7 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
     """Periodically refresh the connector_active gauge; best-effort, never fatal."""
     while True:
         try:
-            # Counted in the database: a tenant can have thousands of collection
+            # Counted in the database: an org can have thousands of collection
             # Apps, and reading every App here stalled the event loop for seconds.
             counts = await graph_provider.count_active_apps_by_type()
             set_connector_active(counts)

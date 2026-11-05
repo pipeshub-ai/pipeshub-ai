@@ -1,7 +1,7 @@
 """Records moved to the trash, back, and out of it for good by the purge.
 
 No per-org or per-connector labels, like ``scheduling_metrics``: the label set
-stays bounded however many tenants an install serves.
+stays bounded however many orgs an install serves.
 """
 
 from app.telemetry.backend import METRICS_BACKEND

@@ -507,7 +507,7 @@ _CRLF_INJECTION = "5" + chr(13) + chr(10) + "X-Injected: 1"
 
 class TestRetryAfterIsSanitized:
     """The value is upstream-controlled and goes straight onto a response
-    header; several sources here are tenant-configured self-hosted endpoints."""
+    header; several sources here are org-configured self-hosted endpoints."""
 
     @staticmethod
     def _exc(headers):

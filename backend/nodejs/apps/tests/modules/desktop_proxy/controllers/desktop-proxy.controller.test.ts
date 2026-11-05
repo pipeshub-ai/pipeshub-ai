@@ -86,7 +86,7 @@ describe('desktop-proxy.controller', () => {
         data: page,
       })
       // orgId/userId must come from the scoped token, or the route becomes a
-      // cross-tenant targeting primitive.
+      // cross-org targeting primitive.
       const [orgId, userId, , payload] = gateway.requestLocalFsFileEvents.firstCall.args
       expect(orgId).to.equal('org-1')
       expect(userId).to.equal('user-1')

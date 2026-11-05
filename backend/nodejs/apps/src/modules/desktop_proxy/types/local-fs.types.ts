@@ -4,7 +4,7 @@
  * returns its answer.
  *
  * `orgId`/`userId` are deliberately absent from the body — they come from the
- * scoped token, so a caller cannot address another tenant's desktop.
+ * scoped token, so a caller cannot address another org's desktop.
  */
 
 export interface LocalFsPullRequestPayload {

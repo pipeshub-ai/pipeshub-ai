@@ -3894,7 +3894,7 @@ class EntityRecord(BaseModel):
     entity_id: str = Field(description="Graph DB node key (_key in Arango, id in Neo4j)")
     entity_type: EntityType = Field(description="Type of the entity")
     name: str = Field(description="Display name (used as the primary embedding text)")
-    org_id: str = Field(default="", description="Organization ID for multi-tenant isolation")
+    org_id: str = Field(default="", description="Organization ID for multi-org isolation")
 
     # Optional semantic enrichment
     canonical_name: str = Field(default="", description="Resolution-time canonical display name (defaults to name)")

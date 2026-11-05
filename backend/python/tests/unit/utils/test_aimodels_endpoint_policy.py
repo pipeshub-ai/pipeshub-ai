@@ -353,7 +353,7 @@ class TestFactoriesStillBuildLocalModels:
         assert get_generator_model("ollama", _config("http://localhost:11434")) is not None
 
     def test_ollama_with_no_endpoint_in_blocked_mode(self, blocked_mode: None, monkeypatch: pytest.MonkeyPatch) -> None:
-        """No endpoint means the deployment's own default, which is not the tenant's to choose."""
+        """No endpoint means the deployment's own default, which is not the org's to choose."""
         monkeypatch.setenv("OLLAMA_API_URL", "http://ollama:11434")
         assert get_generator_model("ollama", _config(None)) is not None
 

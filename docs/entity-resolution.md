@@ -103,7 +103,7 @@ record-group entities are identities and are never merged.
   its payload or membership changed.
 
 Aliases are written only to a node of the writing org: a legacy node (no
-`orgId`) or another org's node is left unchanged, so one tenant's spellings
+`orgId`) or another org's node is left unchanged, so one org's spellings
 never reach another's entity search. A deduplicated record is projected
 from the nodes its copied edges reach. Its own org's nodes keep their
 aliases, nodes without an org (legacy, or global departments) are projected

@@ -42,7 +42,7 @@ def _transport_from_provider(provider_param):
 
 
 # Derived from `PROVIDERS` in `tests/support/redis_provider_matrix.py` (T4)
-# so an EE `conftest.py` appending a `memorydb` entry there runs this same
+# so an extension `conftest.py` appending a `memorydb` entry there runs this same
 # suite against it with no changes here.
 TRANSPORTS = [_transport_from_provider(p) for p in PROVIDERS]
 

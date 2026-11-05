@@ -915,7 +915,7 @@ async def _resolve_oauth_config_for_flow(
     config_service: ConfigurationService,
     request: Request,
 ) -> dict[str, Any] | None:
-    """Resolve an OAuth config by id, walking the inheritance chain in EE."""
+    """Resolve an OAuth config by id, walking the inheritance chain when parent orgs are supported."""
     cfg = await _get_oauth_config_by_id(toolset_type, oauth_config_id, org_id, config_service)
     if cfg:
         return cfg
@@ -2454,7 +2454,7 @@ async def get_instance_oauth_authorization_url(
             "Please ask an administrator to update the instance with OAuth credentials."
         )
     else:
-        # Load OAuth config — walks inheritance in EE so child orgs can use parent configs
+        # Load OAuth config — walks inheritance when parent orgs are supported so child orgs can use parent configs
         oauth_cfg = await _resolve_oauth_config_for_flow(toolset_type, oauth_config_id, org_id, config_service, request)
         if not oauth_cfg:
             raise OAuthConfigError(

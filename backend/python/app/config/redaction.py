@@ -25,7 +25,7 @@ def reveal_requested(request: Request) -> bool:
 
 
 def can_reveal_secrets(request: Request) -> bool:
-    """This edition can only ever hold one org, so there is no other tenant to leak to.
+    """This edition can only ever hold one org, so there is no other org to leak to.
 
     Callers still have to check that the requester is an admin.
     """

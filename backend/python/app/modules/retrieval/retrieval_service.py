@@ -1859,13 +1859,13 @@ class RetrievalService:
 
         Sized from the trusted/verify split, which is known before querying, so
         the retry stays the exception rather than a routine second round trip.
-        When nothing needs verifying — an all-app-level tenant — this returns
+        When nothing needs verifying — an all-app-level org — this returns
         exactly ``limit`` and the change costs nothing.
 
         Counts the same containers the adjudicator actually trusts. ``app_ids``
         is wider than ``app_ids_trusted`` — it admits apps on type alone so
         records carrying no recordGroupIds still have a term to match on — so
-        sizing from it would call a tenant fully trusted whose apps have not
+        sizing from it would call an org fully trusted whose apps have not
         declared a permission model, hand it zero headroom, and then pay for a
         second vector fan-out on every search once a per-record check denied
         anything.

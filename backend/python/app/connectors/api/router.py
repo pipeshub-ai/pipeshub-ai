@@ -3201,7 +3201,7 @@ def _validate_connector_deletion_permissions(
     power to clean up their connector left orphaned instances no one could
     delete once their creator was gone.
 
-    Tenant isolation is enforced upstream in ``_can_access_connector``: the
+    Org isolation is enforced upstream in ``_can_access_connector``: the
     instance has already been matched to the caller's organization before this
     runs.
 
@@ -4972,7 +4972,7 @@ async def get_connector_instance_config(
             )
 
         # The config carries the owner's credentials, so being able to see a personal
-        # connector (as a share recipient can, in the enterprise edition) is not enough to read it.
+        # connector (as a share recipient can) is not enough to read it.
         if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
             logger.warning(f"Config read refused for personal connector {connector_id}: caller is not its creator")
             raise HTTPException(

@@ -107,7 +107,7 @@ class TestCollectionStrategyFactory:
         assert "single" in message
 
     def test_register_makes_a_custom_strategy_resolvable(self):
-        """Proves the EE plug-in path: a package registering its own strategy
+        """Proves the extension plug-in path: a package registering its own strategy
         at import time makes it resolvable by name without touching this
         module."""
 

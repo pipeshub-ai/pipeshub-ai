@@ -24,7 +24,7 @@ async def _build_redis_provider(
     """Resolve the shared connection provider from the stored Redis config."""
     redis_config = await config_service.get_redis_config()
     # `get_prepared_redis_provider`, not `get_redis_provider`: a provider with
-    # rotating credentials (an EE MemoryDB provider resolving IAM tokens)
+    # rotating credentials (an extension MemoryDB provider resolving IAM tokens)
     # needs its one-time async `prepare()` before any client is built.
     provider = await get_prepared_redis_provider(
         RedisConnectionConfig.from_host_port(

@@ -627,7 +627,7 @@ class ConfluenceConnector(BaseConnector):
         self._audit_log_refused: int | None = None
 
     async def _build_confluence_client(self):
-        """EE override point: swap to EE ConfluenceClient for org-scoped OAuth inheritance."""
+        """Override point: another build can swap in a ConfluenceClient with org-scoped OAuth inheritance."""
         return await ExternalConfluenceClient.build_from_services(
             logger=self.logger,
             config_service=self.config_service,

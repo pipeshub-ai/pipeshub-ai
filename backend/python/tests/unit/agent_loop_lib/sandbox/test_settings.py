@@ -251,7 +251,7 @@ class TestInvalidSandboxModeIsRejected:
 class TestLocalModeNeedsDevFlag:
     """`SANDBOX_MODE=local` runs generated code with the query service's UID,
     network and filesystem, and no image ships bwrap, so the mode alone must
-    not enable it: a copied `.env` line would otherwise put every tenant's
+    not enable it: a copied `.env` line would otherwise put every org's
     code execution on the host. `SANDBOX_ALLOW_LOCAL=true` is the opt-in.
     """
 

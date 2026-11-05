@@ -40,7 +40,7 @@ export interface IRedisConnectionProvider {
    * rotate every 12h -- R21); a provider that uses one resolves it here and
    * caches the result for those builders to read. OSS providers no-op.
    *
-   * Idempotent, and safe to call from any startup path; an EE provider that
+   * Idempotent, and safe to call from any startup path; an extension provider that
    * also refreshes on a timer starts that timer here.
    */
   prepare(): Promise<void>;

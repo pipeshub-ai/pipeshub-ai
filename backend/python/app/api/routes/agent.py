@@ -728,7 +728,7 @@ async def _enrich_user_info_for_service_account_agent_chat(
     identity_org = str(identity_doc.get("orgId") or "").strip()
     caller_org = str(caller_org_id or "").strip()
     # Empty or mismatched org must not let a caller run retrieval as another
-    # tenant's identity. A binding is validated when it is set, but an account
+    # org's identity. A binding is validated when it is set, but an account
     # can be moved or removed afterwards, so it is checked again on every run.
     if not identity_org or not caller_org or identity_org != caller_org:
         raise AgentNotFoundError(str(agent.get("_key") or identity_key))

@@ -229,7 +229,7 @@ def resolve_write_collection_name(
 class CollectionStrategyFactory:
     """String-keyed strategy registry.
 
-    OSS ships only ``single``. Enterprise Edition (or future OSS) code
+    OSS ships only ``single``. Extension (or future OSS) code
     registers additional strategies at import time, so the strategy
     resolver can select one by name without this module knowing it exists.
     """

@@ -1984,7 +1984,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # No recordId can be recovered from an envelope that would not
             # parse. The entry itself is not logged: it carries the whole
             # record payload, and XACK leaves it in the stream, so XRANGE on
-            # the id below retrieves it without putting customer data in the
+            # the id below retrieves it without putting user data in the
             # logs. The size is here because a truncated write is the usual
             # cause.
             self.logger.warning(

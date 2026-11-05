@@ -14,7 +14,7 @@ Read [AGENTS.md](./AGENTS.md) first (via [CLAUDE.md](./CLAUDE.md) in Claude Code
 | [docs/connectors/04-intake-questions.md](./docs/connectors/04-intake-questions.md) | What to look up in the vendor's documentation, and what to ask the person who wants the connector | before writing code |
 | [docs/connectors/05-step-by-step.md](./docs/connectors/05-step-by-step.md) | The build in phases, each with a check, and every file to touch | while building |
 | [docs/connectors/06-permissions.md](./docs/connectors/06-permissions.md) | How access is decided and how to map the source's sharing onto it | before mapping any record |
-| [docs/connectors/07-errors-and-logging.md](./docs/connectors/07-errors-and-logging.md) | How to log source API errors so customer issues can be debugged, without leaking secrets | before writing any API call |
+| [docs/connectors/07-errors-and-logging.md](./docs/connectors/07-errors-and-logging.md) | How to log source API errors so user issues can be debugged, without leaking secrets | before writing any API call |
 | [docs/connectors/08-testing.md](./docs/connectors/08-testing.md) | Contract, behaviour and integration tests, and the CI gates | while building |
 | [CONNECTOR_CHECKLIST.md](./CONNECTOR_CHECKLIST.md) | The definition of done | before opening the PR, and when reviewing one |
 

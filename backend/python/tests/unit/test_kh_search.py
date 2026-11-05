@@ -248,7 +248,7 @@ def test_a_failed_partition_fails_the_request() -> None:
 
 
 def test_partition_queries_are_capped() -> None:
-    """A tenant can have a top-level group per user; the cap is what bounds a search."""
+    """An org can have a top-level group per user; the cap is what bounds a search."""
     provider = FakeProvider({f"rg-{index}": [row(f"a{index}", f"name {index:02d}")]
                              for index in range(30)})
     page = asyncio.run(_search(provider, limit=50, max_concurrency=4))

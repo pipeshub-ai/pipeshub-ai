@@ -89,7 +89,7 @@ class BackpressureCoordinator:
 
 # Process-wide default instance. Service clients (ParsingClient,
 # DoclingClient, EmbeddingServerEmbeddings) are constructed from many places
-# — DI container factories, EventProcessor, per-tenant AI-model helpers — and
+# — DI container factories, EventProcessor, per-org AI-model helpers — and
 # threading an explicit coordinator through every one of those call chains
 # would touch far more of the codebase than the feature warrants. Call sites
 # that already hold a specific coordinator (e.g. a test, or a consumer's own

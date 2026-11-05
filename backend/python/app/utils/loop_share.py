@@ -3,7 +3,7 @@
 On Neo4j the indexing service runs its sweeps (record label repair, the
 entity-index rebuild, the orphan scan in stale recovery) on the worker loop
 that runs every in-flight record. Each sweep step is short, but the steps come
-back to back, so a sweep that is working through a large tenant can hold the
+back to back, so a sweep that is working through a large org can hold the
 loop for a large share of its time: every record's await then resumes late,
 and its slot stays held while the host's CPUs sit idle.
 

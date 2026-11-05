@@ -658,7 +658,7 @@ class JiraConnector(BaseConnector):
     # ============================================================================
 
     async def _build_jira_client(self):
-        """EE override point: swap to EE JiraClient for org-scoped OAuth inheritance."""
+        """Override point: another build can swap in a JiraClient with org-scoped OAuth inheritance."""
         return await JiraClient.build_from_services(
             logger=self.logger,
             config_service=self.config_service,

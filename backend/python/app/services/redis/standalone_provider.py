@@ -63,7 +63,7 @@ class StandaloneRedisProvider(IRedisConnectionProvider):
         )
         if self._config.db:
             logger.warning(
-                "REDIS_DB=%s is deprecated; prefer REDIS_KEY_NAMESPACE for tenant "
+                "REDIS_DB=%s is deprecated; prefer REDIS_KEY_NAMESPACE for deployment "
                 "isolation. Ignored entirely in cluster mode.",
                 self._config.db,
             )

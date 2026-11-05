@@ -16,7 +16,7 @@ Hash fields::
 
     page_content       TEXT    (BM25 lexical leg)
     dense_embedding    bytes   (binary FLOAT16/FLOAT32 blob for HNSW)
-    metadata_orgId     str     (TAG-indexed for tenant filtering)
+    metadata_orgId     str     (TAG-indexed for org filtering)
     metadata_virtualRecordId  str  (TAG-indexed)
     connectorIds       str     (comma-joined TAG; instance UUIDs)
     recordGroupIds     str     (comma-joined TAG; record-group UUIDs)
@@ -434,7 +434,7 @@ class RedisVectorService(IVectorDBService):
         # FT.CREATE schema (ON HASH):
         #   page_content       TEXT  (BM25 lexical leg)
         #   dense_embedding    VECTOR HNSW (binary blob stored directly in hash field)
-        #   metadata_orgId     TAG   (tenant filter)
+        #   metadata_orgId     TAG   (org filter)
         #   metadata_virtualRecordId TAG
         #
         # No JSONPath (``$.``) prefixes — hash field names map directly to
@@ -1156,7 +1156,7 @@ class RedisVectorService(IVectorDBService):
             "VSIM", "@dense_embedding", "$vec",
             "KNN", "2", "K", str(window),
         ]
-        # Apply the same filter to the KNN leg so org/tenant isolation is enforced
+        # Apply the same filter to the KNN leg so org isolation is enforced
         # on both the lexical and vector branches.
         if filter_query and filter_query != "*":
             cmd += ["FILTER", filter_query]

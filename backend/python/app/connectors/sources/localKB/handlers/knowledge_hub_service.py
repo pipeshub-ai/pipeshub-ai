@@ -78,7 +78,7 @@ class BrowseRequestError(Exception):
 # few rows it holds, so the bound counts pages. Cursors have no such cost.
 MAX_PAGE_WALK = 50
 
-# Filter options list the user's sources, and a tenant with more Apps and
+# Filter options list the user's sources, and an org with more Apps and
 # collections than this has a filter dropdown nobody can use anyway.
 _MAX_FILTER_SOURCES = 500
 
@@ -617,13 +617,13 @@ class KnowledgeHubService:
         return bool(doc) and doc.get("connectorId") in app_ids
 
     async def _resolve_user(self, user_id: str, org_id: str) -> Any | None:
-        """Resolve graph user node from external userId. EE overrides for org-scoped lookup."""
+        """Resolve graph user node from external userId. An extension point for org-scoped lookup."""
         return await self.graph_provider.get_user_by_user_id(user_id=user_id)
 
     async def _get_user_app_ids(
         self, user_key: str, org_id: str
     ) -> list[str]:
-        """Return app IDs accessible to this user. EE overrides for org-scoped lookup."""
+        """Return app IDs accessible to this user. An extension point for org-scoped lookup."""
         owned_app_ids = await self.graph_provider.get_user_app_ids(user_key)
         shared_app_ids = await self.graph_provider.get_user_permission_app_ids(user_key, org_id)
         return list(dict.fromkeys([*owned_app_ids, *shared_app_ids]))

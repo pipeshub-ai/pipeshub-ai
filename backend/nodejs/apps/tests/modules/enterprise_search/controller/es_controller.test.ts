@@ -6085,7 +6085,7 @@ describe('Enterprise Search Controller', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
-      // Refused before any user lookup, so no tenant's data is touched.
+      // Refused before any user lookup, so no org's data is touched.
       expect(usersFindOne.called).to.be.false
     })
 

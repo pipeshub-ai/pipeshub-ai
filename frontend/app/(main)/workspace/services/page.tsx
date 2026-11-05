@@ -47,7 +47,7 @@ interface Deployment {
   graphDbType: string;
   vectorDbType?: string;
   // Process-env setting (REDIS_MODE), not tied to kvStoreType -- 'standalone'
-  // (default), 'cluster', or an EE-registered mode like 'memorydb'.
+  // (default), 'cluster', or an extension-registered mode like 'memorydb'.
   redisMode?: string;
 }
 

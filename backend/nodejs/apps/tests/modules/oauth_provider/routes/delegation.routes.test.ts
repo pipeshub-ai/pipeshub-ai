@@ -47,7 +47,7 @@ describe('Delegation routes (Community edition)', () => {
   const BASE = '/api/v1/service-account-delegations'
 
   it('needs nothing from the container', () => {
-    // The Enterprise router resolves a controller, a logger and the app
+    // The real router resolves a controller, a logger and the app
     // config. The stub must not, or a Community boot would fail on a binding
     // that is deliberately absent.
     expect(() => createDelegationRouter(new Container())).to.not.throw()
@@ -71,7 +71,7 @@ describe('Delegation routes (Community edition)', () => {
     // 501 rather than 404: a missing route reads as a broken deployment,
     // which is the complaint this is meant to avoid.
     expect(res.status).to.equal(501)
-    expect(body.message).to.contain('Enterprise')
+    expect(body.message).to.contain('not built into')
   })
 
   it('refuses to grant a delegation', async () => {

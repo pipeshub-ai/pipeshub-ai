@@ -1,8 +1,8 @@
-"""Tenant and role scoping on connector access.
+"""Org and role scoping on connector access.
 
 Connector instances are fetched by id alone (`_get_connector_instance_from_db`
 issues a plain `get_document`), so every isolation guarantee lives in
-`_can_access_connector`.  The tenant check uses the instance's ``orgId``
+`_can_access_connector`.  The org check uses the instance's ``orgId``
 field — without it a TEAM connector's gate reduces to `is_admin`, and an
 administrator of one organization who learns an id belonging to another
 would pass it.
@@ -154,7 +154,7 @@ class TestLegacyInstancesWithoutOrgId:
 
 
 class TestRoleScopingUnchanged:
-    """The tenant check is added in front of these, not instead of them."""
+    """The org check is added in front of these, not instead of them."""
 
     async def test_team_admin_allowed(self):
         assert await _registry()._can_access_connector(
@@ -271,8 +271,8 @@ class TestDeletionGate:
         assert allowed is False
 
     async def test_admin_of_another_org_may_not_delete(self):
-        """Tenant isolation is checked before the role, so the wider deletion
-        allowance never becomes a cross-tenant one."""
+        """Org isolation is checked before the role, so the wider deletion
+        allowance never becomes a cross-org one."""
         allowed = await _registry()._can_delete_connector(
             _instance(scope=ConnectorScope.TEAM.value, created_by="user-a"),
             "admin-b",
@@ -283,7 +283,7 @@ class TestDeletionGate:
         assert allowed is False
 
     async def test_creator_in_another_org_may_not_delete(self):
-        """A createdBy match must not defeat the tenant check either."""
+        """A createdBy match must not defeat the org check either."""
         allowed = await _registry()._can_delete_connector(
             _instance(scope=ConnectorScope.PERSONAL.value, created_by="user-a"),
             "user-a",

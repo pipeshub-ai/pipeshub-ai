@@ -3,7 +3,7 @@
  * plain open-source Redis, so OSS ships this both so `REDIS_MODE=cluster`
  * works against a self-hosted cluster and so OSS CI can run the full
  * contract-test suite against a real 3-master cluster. AWS MemoryDB is
- * protocol-compatible with Redis Cluster; an EE `memorydb` provider extends
+ * protocol-compatible with Redis Cluster; an extension `memorydb` provider extends
  * this to add IAM credential rotation, a NAT map, and TLS-by-default, then
  * registers itself with `RedisConnectionProviderFactory`.
  */
@@ -193,7 +193,7 @@ export class ClusterRedisProvider implements IRedisConnectionProvider {
   }
 
   async prepare(): Promise<void> {
-    // No rotating credentials in OSS; an EE provider overrides this.
+    // No rotating credentials in OSS; an extension provider overrides this.
   }
 
   /**

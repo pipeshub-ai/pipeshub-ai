@@ -4217,7 +4217,7 @@ class TestReconcilePromotedDuplicates:
     @pytest.mark.asyncio
     async def test_cross_org_sibling_is_skipped(self):
         """A vrid shared across orgs must not carry this org's taxonomy edges
-        or entities onto another tenant's record."""
+        or entities onto another org's record."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.get_records_by_virtual_record_id = AsyncMock(

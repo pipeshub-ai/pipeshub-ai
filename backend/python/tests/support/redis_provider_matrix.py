@@ -6,7 +6,7 @@ Each of the four existing contract suites (`test_streams_contract.py`,
 `test_cache_contract.py`) plus the new `test_retry_tracker_contract.py`
 previously defined its own local `PROVIDERS`/`TRANSPORTS` list with the same
 two entries (``standalone``, ``cluster``). Centralising them here is what
-makes the promise in the original design doc true: an EE `conftest.py` that
+makes the promise in the original design doc true: an extension `conftest.py` that
 runs before these modules are collected can call `register_provider()` /
 `register_client_transport()` to append a `memorydb` entry, and every one of
 these suites then exercises it with zero changes to the OSS test files.

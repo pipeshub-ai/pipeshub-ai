@@ -827,15 +827,15 @@ class SalesforceConnector(BaseConnector):
     salesforce_instance_url: str
 
     def _get_parent_org_id(self) -> str | None:
-        """EE override: returns this connector's org_id for parentOrgId graph filters."""
+        """Extension point: returns this connector's org_id for parentOrgId graph filters."""
         return None
 
     def _create_person(self, **kwargs) -> Person:
-        """EE override: injects org_id for tenant isolation on Person nodes."""
+        """Extension point: injects org_id to scope Person nodes by org."""
         return Person(**kwargs)
 
     def _create_org(self, **kwargs) -> Org:
-        """EE override: injects org_id as parentOrgId for tenant isolation on external Org nodes."""
+        """Extension point: injects org_id as parentOrgId to scope external Org nodes by org."""
         return Org(**kwargs)
 
     def __init__(

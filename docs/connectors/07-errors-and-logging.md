@@ -1,6 +1,6 @@
 # Connector errors and logging
 
-A connector runs inside a customer's deployment, against a customer's account at the source. When a sync fails there, the connector service log is usually the only evidence anyone gets. Write every error log so that someone who can read the log, but not the customer's source account, can say what the source refused and why.
+A connector runs inside a user's deployment, against a user's account at the source. When a sync fails there, the connector service log is usually the only evidence anyone gets. Write every error log so that someone who can read the log, but not the user's source account, can say what the source refused and why.
 
 The rules below are required. `CONNECTOR_CHECKLIST.md` repeats them as checks.
 
@@ -10,7 +10,7 @@ The rules below are required. `CONNECTOR_CHECKLIST.md` repeats them as checks.
 2. **Log the status and the vendor error code.** Include the HTTP status, and the vendor's error code when the API has one (Microsoft Graph `error.code`, Slack `error`, Google `reason`, Jira `errorMessages`, a GraphQL `extensions.code`).
 3. **Name the operation and the object.** Say which call failed and on what: `list children of folder <external id>`, `fetch page <id> in space <key>`. Use source ids, not names, when the name could be personal data.
 4. **Never log a secret.** No access tokens, refresh tokens, API keys, client secrets, passwords, PATs, signed URLs, `Authorization` / `Cookie` / `X-Api-Key` headers, or whole request or response header maps. This holds at every log level, including `debug`.
-5. **Do not log whole response bodies, customer property values, or message bodies.** A body can echo a token, contain customer content, or be megabytes long. Extract the error fields; if you must keep raw text, bound it and redact URLs in it (see below). Signed URLs stay out of the log at every level (rule 4).
+5. **Do not log whole response bodies, user property values, or message bodies.** A body can echo a token, contain user content, or be megabytes long. Extract the error fields; if you must keep raw text, bound it and redact URLs in it (see below). Signed URLs stay out of the log at every level (rule 4).
 6. **Keep the traceback for unexpected errors.** Use `exc_info=True` (or `logger.exception`) when the failure is not one you anticipated. An expected, handled vendor refusal (404 on a deleted item, 403 on a private space) needs the status and reason, not a traceback.
 7. **Do not swallow a failure.** If you catch a failure while reading one item, either re-raise, or log at `error`/`warning` with the details above and record that item so the saved checkpoint stays before it (`FailedItems.add(modified_ms)`, then save `failed.checkpoint(max_seen_ms)`; `app/connectors/core/base/sync_point/sync_point.py`). A listing or a parent has no item timestamp: propagate that failure. Do not return an empty result or advance the checkpoint. A handled deletion is not an item failure: a direct 404 for an item you requested is logged with its status and reason and deleted (`03-decisions.md`). Do not add it to `FailedItems`. A 404 on a list or a parent stays a failure. A bare `except Exception: pass`, or an `except` that returns an empty list as if the source had no data, makes the connector delete or skip data silently. A 200 with an empty body is not an empty container and it is not a deletion. A 200 that returns the items with their content fields blank, because the token is missing an intent or scope, is not a successful read of those items either (`03-decisions.md`). A WebDAV `207` is a multistatus body, not a per-item batch result. Parse it before using the listing; an empty or malformed body is a failed listing and must not advance the checkpoint. Item failures inside a parsed listing follow the connector's own checkpoint policy. A daily quota (a `429` or `403` that will not clear inside `max_delay`, such as Drive's `dailyLimitExceeded`) is not a short retry: stop, `notify`, and leave the checkpoint. Generated wrappers that store `error=str(exception)` drop the status and the vendor code; fix them before use.
 8. **Pick the level by who must act.** `error`: the sync, or a whole user, group or container, could not be read. `warning`: one item was skipped and the sync continues. `info`: progress and counts. `debug`: per-item detail with no secrets in it.
@@ -43,7 +43,7 @@ except Exception as e:
     self.logger.error(f"Failed to fetch spaces: {e}")
 ```
 
-Bad: the status alone. The customer sees `403` and cannot tell a missing scope from a private space.
+Bad: the status alone. The user sees `403` and cannot tell a missing scope from a private space.
 
 ```python
 self.logger.error(f"Failed to fetch spaces: {response.status}")

@@ -2,7 +2,7 @@
 
 Under `single` every one of these degenerates to today's behaviour — which is
 half the point: the same code path serves both, so the multi-collection case is
-not a separate branch that only runs in Enterprise and rots.
+not a separate branch that only runs in an extension and rots.
 
 The other half is the failure these tests pin down. Before the locator, every
 VRID-scoped write and delete resolved `RecordContext(org_id="")` to get "the"

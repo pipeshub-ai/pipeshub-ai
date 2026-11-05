@@ -80,7 +80,7 @@ def _corpus() -> list[dict]:
     rows = [{"org": ORG, "vrid": f"vr-fill-{i}", "text": t} for i, t in enumerate(_filler(FILLER_CHUNKS))]
     rows += [
         {"org": ORG, "vrid": "vr-needle", "text": NEEDLE},
-        # Same text in another tenant, under the same connector id.
+        # Same text in another org, under the same connector id.
         {"org": OTHER_ORG, "vrid": "vr-other-org", "text": NEEDLE},
         # Same org, a connector this user cannot reach.
         {"org": ORG, "vrid": "vr-private", "text": NEEDLE, "connector": PRIVATE_CONNECTOR},
@@ -99,7 +99,7 @@ _READABLE = {
     **{f"vr-fill-{i}": f"r-fill-{i}" for i in range(FILLER_CHUNKS)},
     "vr-needle": "r-needle", "vr-and": "r-and", "vr-a-only": "r-a", "vr-b-only": "r-b",
     # Claimed readable on purpose: only the vector filter's orgId clause stands
-    # between this user and the other tenant's chunk.
+    # between this user and the other org's chunk.
     "vr-other-org": "r-other-org",
 }
 

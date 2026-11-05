@@ -74,7 +74,7 @@ class TestAuthorizeReadWrite:
     async def test_cross_org_record_raises_not_found_not_denied(self) -> None:
         """A cross-org probe must get the SAME error as a missing artifact
         — never a distinguishable "access denied", which would leak
-        existence across tenants."""
+        existence across orgs."""
         graph = FakeGraphProvider()
         graph.add_user(USER)
         _seed_record(graph, "art-1", org_id="other-org")

@@ -516,7 +516,7 @@ class MessagingEnvConfig:
         first, comma-separated.
 
         The default ``orgId,connectorId`` is deliberate: ``orgId`` separates
-        customers but *not* users within one customer -- every user in an org
+        orgs but *not* users within one org -- every user in an org
         shares its ``orgId``, so keying on it alone gives a single-org
         install one queue and no fairness. ``connectorId`` (the connector
         instance id, and the knowledge-base id for uploads) is what separates

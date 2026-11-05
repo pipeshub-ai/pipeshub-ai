@@ -1,6 +1,6 @@
 name: Storage backends
 
-# The storage choices customers install with that no other automated test
+# The storage choices users install with that no other automated test
 # touches for real:
 #   - file storage on Amazon S3 (checked against MinIO, which speaks the S3 API)
 #     and on Azure Blob Storage (checked against Azurite, Microsoft's emulator);
