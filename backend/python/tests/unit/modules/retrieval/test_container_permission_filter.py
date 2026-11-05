@@ -1422,7 +1422,7 @@ class TestTheShadowComparisonDoesNotChangeTheAnswer:
         retrieval_service._shadow = shadow
         mock_graph_provider.get_accessible_containers = AsyncMock(return_value=_containers(record_group_ids_verify=frozenset({"rg"})))
 
-        async def search(queries, filter, limit, org_id, user_id=None, *, plan=None, record_cut=None) -> list:
+        async def search(queries, filter, limit, org_id, user_id=None, *, plan=None, record_cut=None) -> list:  # noqa: A002
             plan.dense, plan.sparse, plan.collections = [[0.1]], [[1]], ["c"]
             return [_hit("v-allowed"), _hit("v-denied")]
 

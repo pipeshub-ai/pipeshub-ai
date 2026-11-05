@@ -38,7 +38,7 @@ async def test_the_comparator_runs_the_same_search_with_the_filter_and_a_plan_of
     s = service(shadow)
     real_plan = _QueryPlan(dense=[[0.1]], sparse=[[1]], collections=["c"])
 
-    async def search(queries, filter, limit, org_id, user_id, *, plan=None, record_cut=None):
+    async def search(queries, filter, limit, org_id, user_id, *, plan=None, record_cut=None) -> list:  # noqa: A002
         seen.update(queries=queries, filter=filter, limit=limit, org=org_id, plan=plan, scope=_SHADOW_SCOPE_FILTER.get())
         plan.failed_collections.append("shadow-only")
         return [{"metadata": {"virtualRecordId": "v1"}}]
@@ -80,7 +80,7 @@ async def test_a_real_search_request_carries_no_scope_filter_and_the_shadow_sear
     s.cache_service = None
     seen: list = []
 
-    async def fan_out(collections, requests, *a, **k):
+    async def fan_out(collections, requests, *a, **k) -> list:
         seen.extend(requests)
         return [[] for _ in requests]
 
