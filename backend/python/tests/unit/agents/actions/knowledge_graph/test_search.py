@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -1220,7 +1221,8 @@ class TestKeywordSearchBudget:
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
     async def test_a_cut_off_keyword_search_is_not_waited_for_again(self, mock_parse, monkeypatch) -> None:
         """Once the capped wait gave up and the task's short cleanup grace ran
-        out, the search returns without waiting on that cleanup a second time."""
+        out, the search returns without waiting on that cleanup a second time,
+        however long the cleanup takes."""
         monkeypatch.setattr("app.utils.pattern_match.KEYWORD_SEARCH_CLEANUP_GRACE_SECS", 0.05)
         cleanup_may_finish = asyncio.Event()
 
@@ -1228,7 +1230,10 @@ class TestKeywordSearchBudget:
             try:
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
-                await cleanup_may_finish.wait()
+                # A cleanup that outlasts every further cancel.
+                while not cleanup_may_finish.is_set():
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await cleanup_may_finish.wait()
                 raise
             return []
 

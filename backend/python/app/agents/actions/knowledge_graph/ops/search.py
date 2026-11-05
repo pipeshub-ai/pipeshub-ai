@@ -97,6 +97,7 @@ from app.utils.pattern_match import (
     grep_hits_within,
     merge_pattern_match_results,
     pattern_match_wait_budget,
+    release_task,
     render_pattern_match_coverage_note,
     render_pattern_match_hint,
     run_pattern_match_with_llm_grep,
@@ -640,6 +641,9 @@ async def _execute_search(
 
     # Declared outside the try so the finally can always cancel them.
     pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
+    # Set once `await_pattern_match` has had it: that wait already gave it a
+    # bounded grace to stop, which the finally must not extend.
+    pattern_match_waited = False
     # The same search without its date bounds (``ops/outside_dates``).
     outside_dates_task: asyncio.Task[Any] | None = None
     grep_coverage = PatternMatchCoverage()
@@ -1032,6 +1036,7 @@ async def _execute_search(
 
         raw_pattern_records: list[dict[str, Any]] = []
         if pattern_match_task is not None:
+            pattern_match_waited = True
             raw_pattern_records = await await_pattern_match(
                 pattern_match_task, logger_instance, run_timer=state.get("_run_timer"),
                 wait_budget=_keyword_wait(state.get("keyword_search_budget"), keyword_wait_s),
@@ -1319,5 +1324,8 @@ async def _execute_search(
         return json.dumps({"status": "error", "message": f"Search error: {exc}"})
     finally:
         # No-op once awaited; stops the grep + LLM call when semantic search fails.
-        await cancel_task_if_running(pattern_match_task)
+        if pattern_match_waited:
+            release_task(pattern_match_task)
+        else:
+            await cancel_task_if_running(pattern_match_task)
         await cancel_task_if_running(outside_dates_task)
