@@ -44,7 +44,13 @@ from app.exceptions.indexing_exceptions import (
     VectorStoreError,
 )
 from app.exceptions.non_retryable import NonRetryableError
-from app.models.blocks import Block, BlocksContainer, BlockSubType, BlockType, SemanticMetadata
+from app.models.blocks import (
+    Block,
+    BlocksContainer,
+    BlockSubType,
+    BlockType,
+    SemanticMetadata,
+)
 from app.models.entities import Record
 from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.section_paths import (
