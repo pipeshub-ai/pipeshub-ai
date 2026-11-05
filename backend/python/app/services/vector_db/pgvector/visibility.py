@@ -73,6 +73,11 @@ class Scope:
         """Whether conditions beyond the membership arms apply to the rows (the lexical function cannot apply them: see ``lexical``)."""
         return self.extra is not None or self.scope_filter is not None
 
+    @property
+    def matches_nothing(self) -> bool:
+        """Whether the scope filter can trust nothing, so every statement renders ``AND false``: the answer is empty and nothing needs asking."""
+        return self.scope_filter is not None and self.scope_filter.trusts_nothing
+
     def extra_sql(self, first_param: int = 12) -> tuple[str, list]:
         """``(" AND (...)", parameters from first_param)`` for the extra conditions and the scope filter, or ``("", [])``."""
         sql, params = "", []
