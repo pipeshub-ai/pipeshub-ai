@@ -13,8 +13,8 @@ import pytest
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import drainer, restamp
 from app.services.graph_db.postgres.kg.drainer import drain_org
-from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.services.graph_db.postgres.kg.worker import KgWorker
+from app.services.graph_db.postgres.kg.writers import KgWriter
 
 from .pg_support import new_org
 from .test_kg_backfill import run_in, shadowed
@@ -197,7 +197,7 @@ async def test_a_batch_that_fails_leaves_the_records_hidden_and_the_job_is_claim
     real = KgWriter.queue_touch
     calls = {"n": 0}
 
-    async def flaky(self, *a, **k):
+    async def flaky(self, *a: object, **k: object) -> bool:
         calls["n"] += 1
         if calls["n"] == 3:                                  # the second batch's own touch (the claim and the first batch's touch came before)
             raise RuntimeError("boom")

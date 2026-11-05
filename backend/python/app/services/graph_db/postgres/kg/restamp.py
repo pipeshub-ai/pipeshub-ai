@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from app.core.org_context import OrgContext, bind
+from app.core.org_context import OrgContext, bind, spawn_detached
 from app.services.graph_db.postgres.kg import locks, stamp
 from app.services.graph_db.postgres.kg.locks import NeedLocks, lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_COLL, COLL_CODE, Key
@@ -63,7 +63,7 @@ class _Beat:
         self._db, self._org, self._job, self._worker, self._every = db, org, job, worker, stale_ms / 3000
         self.seen = job.heartbeat_ms
         self.lock = asyncio.Lock()
-        self._task = asyncio.get_running_loop().create_task(self._run())
+        self._task = spawn_detached(self._run(), name="kg-restamp-beat")
 
     async def _touch(self) -> bool:
         """One touch in a unit of its own. The unit's connection is taken first and the lock only then, for the touch and the commit: the batch holds a connection and needs this
