@@ -22473,7 +22473,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         "rec {_key: rec.id, .recordName, .recordType, .connectorId, .virtualRecordId, "
         ".webUrl, .hideWeburl, .sourceLastModifiedTimestamp, .updatedAtTimestamp, "
         ".connectorName, .origin, .createdAtTimestamp, .sourceCreatedAtTimestamp, "
-        f".{SOURCE_TIMESTAMP_ORIGIN_FIELD}}}"
+        f".{SOURCE_TIMESTAMP_ORIGIN_FIELD}, .indexingStatus, .{HAS_INDEXED_COPY}, .mimeType}}"
     )
 
     def _entity_node_match(self, entity_type: str) -> tuple[str, str]:
@@ -22493,6 +22493,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 {branches}
               }}"""
 
+    # A record found by its own name is shown whether or not its content is
+    # indexed; the filter for the other entity types keeps only readable ones.
+    _ENTITY_RECORD_TITLE_FILTER = """rec.orgId = $org_id
+                AND coalesce(rec.isDeleted, false) = false
+                AND rec.connectorId IN ref.connectorIds
+                AND ($record_types IS NULL OR rec.recordType IN $record_types)"""
     _ENTITY_CANDIDATE_RECORD_FILTER = f"""rec.orgId = $org_id
                 AND coalesce(rec.isDeleted, false) = false
                 AND {cypher_searchable_record("rec", "completed")}
@@ -22545,7 +22551,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return f"""
             UNWIND $refs AS ref
             OPTIONAL MATCH (rec:Record {{id: ref.id}})
-            WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
+            WHERE {self._ENTITY_RECORD_TITLE_FILTER}
             RETURN ref.id AS id,
                    CASE WHEN rec IS NULL OR $offset > 0 THEN [] ELSE [{projection}] END AS rows
             """
@@ -22611,7 +22617,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL {{
               WITH ref, u
               OPTIONAL MATCH (rec:Record {{id: ref.id}})
-              WHERE $offset = 0 AND {self._ENTITY_CANDIDATE_RECORD_FILTER}
+              WHERE $offset = 0 AND {self._ENTITY_RECORD_TITLE_FILTER}
                 AND {self._ENTITY_WITHIN_FILTER}
               WITH collect(rec) AS win, u
               {walk}

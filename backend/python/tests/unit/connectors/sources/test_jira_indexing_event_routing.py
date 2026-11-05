@@ -83,6 +83,8 @@ def _connector_with_real_processor(existing_by_external_id):
         return True
 
     async def _send_messages(topic, messages):
+        if topic == "record-title-events":
+            return [True] * len(messages)
         for _key, message in messages:
             published.append((message["eventType"], message["payload"]["recordId"]))
         return [True] * len(messages)

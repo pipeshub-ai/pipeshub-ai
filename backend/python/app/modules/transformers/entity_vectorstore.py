@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import time
 import uuid
 import weakref
@@ -1970,6 +1971,20 @@ class EntityVectorStore:
             ]
             results[index] = _interleave(per_group)[:top_k]
         return results
+
+    async def dense_similarities(self, query: str, texts: list[str]) -> list[float]:
+        """Cosine similarity of ``query`` to each of ``texts`` under the dense model
+        that embeds the stored entities. Search scores are rank fused, so they
+        cannot say how close a hit really is."""
+        if not texts:
+            return []
+        await self._ensure_initialized()
+        query_vec, _ = await self._query_vectors(query)
+        query_norm = math.sqrt(sum(x * x for x in query_vec)) or 1.0
+        return [
+            sum(x * y for x, y in zip(query_vec, vec)) / (query_norm * (math.sqrt(sum(y * y for y in vec)) or 1.0))
+            for vec in await self._embed(texts)
+        ]
 
     async def _search_failed(self, collection: str) -> None:
         # Checked again on the next use: it may have been dropped or recreated.
