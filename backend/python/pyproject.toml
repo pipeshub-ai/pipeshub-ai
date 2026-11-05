@@ -299,7 +299,7 @@ dependencies = [
     "opencv-python-headless==5.0.0.93",
     "openpyxl==3.1.5",
     # litellm arrives through opik; 1.82.7, 1.82.8 and 1.107.0 shipped credential stealers, so none of them resolves.
-    "litellm>=1.79.2,!=1.82.7,!=1.82.8,<1.107",
+    "litellm>=1.100.4,<1.107",
     "opik==2.2.119",
     "pagerduty>=5.0.0",
     "pandas==3.1.0",
