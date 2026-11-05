@@ -146,14 +146,17 @@ _BASIS_LABELS = {
 
 
 def project_timeline_enabled() -> bool:
+    """PROJECT_TIMELINE is "true"; HIGH_ACCURACY_MODE does not turn it on."""
     return env_bool(PROJECT_TIMELINE_ENV_VAR, False)
 
 
 def timeline_wanted(subject: TimelineSubject) -> bool:
+    """Whether ``subject`` gets a list: always, unless PROJECT_TIMELINE_PROJECTS_ONLY leaves policies out."""
     return subject.kind == "project" or not env_bool(PROJECT_TIMELINE_PROJECTS_ONLY_ENV_VAR, False)
 
 
 def subject_prompt() -> str:
+    """The subject call's instructions, the stricter ones under PROJECT_TIMELINE_TRIGGER=history."""
     if os.getenv(PROJECT_TIMELINE_TRIGGER_ENV_VAR, "").strip().lower() == "history":
         return _SUBJECT_PROMPT_HISTORY
     return _SUBJECT_PROMPT
@@ -161,6 +164,8 @@ def subject_prompt() -> str:
 
 @dataclass(frozen=True)
 class TimelineSubject:
+    """What the subject call named: ``kind`` is "project" or "policy"; ``searches`` are other phrasings."""
+
     kind: str
     name: str
     searches: tuple[str, ...] = ()
@@ -168,6 +173,8 @@ class TimelineSubject:
 
 @dataclass(frozen=True)
 class TimelineEntry:
+    """One listed record; ``day`` is ISO and ``basis`` says how it was read, both None when it states no date."""
+
     virtual_record_id: str
     record_id: str
     name: str
@@ -178,6 +185,8 @@ class TimelineEntry:
 
 @dataclass(frozen=True)
 class Timeline:
+    """A subject's records in the search's order."""
+
     subject: TimelineSubject
     entries: tuple[TimelineEntry, ...]
 
@@ -258,6 +267,7 @@ def _stored_text(stored: Mapping[str, Any] | None) -> str:
 def date_entry(
     virtual_record_id: str, graph_record: Mapping[str, Any], stored: Mapping[str, Any] | None,
 ) -> TimelineEntry | None:
+    """The record dated by its stored dates, else by its text; None for a record with no id."""
     record_id = graph_record.get("_key") or graph_record.get("id")
     if not record_id:
         return None
@@ -320,6 +330,8 @@ async def collect_timeline(state: Mapping[str, Any], subject: TimelineSubject) -
 
 
 def render_timeline(timeline: Timeline, shortener: RecordIdShortener | None = None) -> str:
+    """The list, a call that reads its first records, and the reconcile rule, as the first turn sees them."""
+
     def _id(record_id: str) -> str:
         return shortener.get_or_create_short_id(record_id) if shortener is not None else record_id
 
@@ -374,26 +386,48 @@ def start_project_timeline(context: AgentContext, question: str) -> asyncio.Task
     return cast("asyncio.Task[Timeline | None]", spawn_in_request(_build_or_none(context, question), name="project-timeline"))
 
 
+async def _unless_stopped(context: AgentContext, task: asyncio.Task[Timeline | None]) -> Timeline | None:
+    """The build's timeline, or None once the user stops the run: the agent loop checks for a stop only after
+    it starts, so the wait for the build would otherwise hold a stopped turn for up to ``BUILD_TIMEOUT_S``."""
+    token = getattr(context, "cancellation_token", None)
+    if token is None:
+        return await task
+    stop = cast("asyncio.Task[None]", spawn_in_request(token.wait(), name="project-timeline-stop"))
+    try:
+        _ = await asyncio.wait({task, stop}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        _ = stop.cancel()
+    if task.done():
+        return task.result()
+    _ = task.cancel()
+    logger.info("project_timeline: run stopped, going on without a timeline conversation=%s", context.conversation_id)
+    return None
+
+
 async def finish_project_timeline(
     context: AgentContext, task: asyncio.Task[Timeline | None] | None,
 ) -> str | None:
     """The rendered timeline, its records made readable; None when there is none."""
     if task is None:
         return None
-    timeline = await task
+    timeline = await _unless_stopped(context, task)
     if timeline is None:
         return None
     state = context.tool_state
-    # The search that found them applied the user's access, so the model may read them.
-    remember_record_ids(
-        state, [entry.record_id for entry in timeline.entries],
-        names={entry.record_id: entry.name for entry in timeline.entries},
-    )
-    note_retrieved_by(state, "project_timeline", [
-        (entry.virtual_record_id, entry.record_id, entry.name) for entry in timeline.entries
-    ])
-    await emit_retrieval_context(context, source="tool", tool_name=_TRACE_NAME, tool_call_id=_TRACE_NAME)
-    return render_timeline(timeline, get_record_id_shortener_if_enabled(state))
+    try:
+        # The search that found them applied the user's access, so the model may read them.
+        remember_record_ids(
+            state, [entry.record_id for entry in timeline.entries],
+            names={entry.record_id: entry.name for entry in timeline.entries},
+        )
+        note_retrieved_by(state, "project_timeline", [
+            (entry.virtual_record_id, entry.record_id, entry.name) for entry in timeline.entries
+        ])
+        await emit_retrieval_context(context, source="tool", tool_name=_TRACE_NAME, tool_call_id=_TRACE_NAME)
+        return render_timeline(timeline, get_record_id_shortener_if_enabled(state))
+    except Exception as exc:
+        logger.warning("project_timeline: no timeline, going on without it: %r", exc)
+        return None
 
 
 __all__ = [

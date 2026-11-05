@@ -56,6 +56,8 @@ _LABEL_REACH = 120
 
 @dataclass(frozen=True)
 class StatedDate:
+    """The day a record states for itself and the rule that read it."""
+
     day: date
     basis: Basis
 

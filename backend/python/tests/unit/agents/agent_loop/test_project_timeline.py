@@ -388,6 +388,33 @@ async def test_finish_makes_the_listed_records_readable_and_renders_them() -> No
     assert context.tool_state["known_record_ids"] == {"d", "a"}
 
 
+async def test_a_failure_after_the_build_leaves_the_turn_without_a_timeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _broken(_timeline: Timeline, _shortener: object = None) -> str:
+        raise RuntimeError("render failed")
+
+    monkeypatch.setattr(pt, "render_timeline", _broken)
+    timeline = Timeline(TimelineSubject("project", "Rollout"), (_entry("d", "2025-02-01"),))
+    assert await finish_project_timeline(_context(), await _done(timeline)) is None
+
+
+async def test_a_stopped_run_stops_waiting_for_the_timeline() -> None:
+    from app.agent_loop_lib.core.context import CancellationToken
+
+    async def _slow() -> Timeline | None:
+        await asyncio.sleep(30)
+        return None
+
+    token = CancellationToken()
+    context = _context()
+    context.cancellation_token = token
+    task = asyncio.create_task(_slow())
+    token.cancel()
+
+    assert await asyncio.wait_for(finish_project_timeline(context, task), timeout=2) is None
+    await asyncio.sleep(0)
+    assert task.cancelled()
+
+
 async def test_finish_without_a_task_or_a_timeline_adds_nothing() -> None:
     context = _context()
     assert await finish_project_timeline(context, None) is None
