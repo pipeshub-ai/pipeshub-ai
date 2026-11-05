@@ -32,6 +32,8 @@ from app.modules.retrieval.selection_scope import SelectionTooLargeError
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from app.modules.agents.qna.chat_state import ChatState
 
 # EntityType value -> get_accessible_virtual_record_ids() filter key. Graph
@@ -67,11 +69,15 @@ def limited_scope_note(context: EntityAccessContext) -> str:
     return LIMITED_SCOPE_NOTE if context.row_scopes else ""
 
 
-async def load_entity_access_context(state: "ChatState") -> EntityAccessContext:
+async def load_entity_access_context(
+    state: "ChatState", source_ids: "Sequence[str] | None" = None,
+) -> EntityAccessContext:
     """The entity access context for this run's scope, honouring
     ``strictScope``, the turn's selection or bound, and switched-off demo apps
     as content search does. Every app the turn touches is a source; a
-    selection or bound that covers one only in part limits its records."""
+    selection or bound that covers one only in part limits its records.
+    ``source_ids`` replaces the apps and collections taken from the turn, for
+    a search the model narrowed to some of them."""
     scope = derive_scope(state)
     filters = state.get("filters") or {}
     try:
@@ -80,7 +86,7 @@ async def load_entity_access_context(state: "ChatState") -> EntityAccessContext:
             state.get("graph_provider"),
             org_id=state.get("org_id", ""),
             user_id=state.get("user_id", ""),
-            source_ids=[*scope.app_ids, *scope.kb_ids],
+            source_ids=list(source_ids) if source_ids else [*scope.app_ids, *scope.kb_ids],
             strict=bool(filters.get(STRICT_SCOPE_FILTER_KEY)),
             exclude_app_ids=excluded_app_ids(state),
             filters=filters,

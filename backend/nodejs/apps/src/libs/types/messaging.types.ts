@@ -9,6 +9,7 @@ export enum MessageBrokerType {
  */
 export enum BrokerTopic {
   RECORD_EVENTS = 'record-events',
+  RECORD_TITLE_EVENTS = 'record-title-events',
   CODE_GRAPH_EVENTS = 'code-graph-events',
   ENTITY_EVENTS = 'entity-events',
   AI_CONFIG_EVENTS = 'ai-config-events',
@@ -27,6 +28,7 @@ export enum BrokerTopic {
  */
 export interface BrokerTopicPayloadMap {
   [BrokerTopic.RECORD_EVENTS]: string;
+  [BrokerTopic.RECORD_TITLE_EVENTS]: string;
   [BrokerTopic.CODE_GRAPH_EVENTS]: string;
   [BrokerTopic.ENTITY_EVENTS]: string;
   [BrokerTopic.AI_CONFIG_EVENTS]: string;
