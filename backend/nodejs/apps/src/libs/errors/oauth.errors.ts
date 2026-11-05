@@ -41,6 +41,13 @@ export class AuthorizationError extends OAuthError {
   }
 }
 
+/** RFC 8707 §2: the requested `resource` is not one this server issues tokens for. */
+export class InvalidTargetError extends OAuthError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('INVALID_TARGET', message, 400, metadata);
+  }
+}
+
 export class InvalidClientError extends OAuthError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super('INVALID_CLIENT', message, 401, metadata);

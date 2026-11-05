@@ -379,6 +379,23 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
     });
   }
 
+  async setDynamicGrant(
+    orgId: string,
+    id: string,
+    grant: Pick<OAuthAppDto, 'allowedScopes' | 'allowedGrantTypes'>,
+  ): Promise<void> {
+    const appId = oidOf(id);
+    if (appId === undefined) return;
+    const scopes = stripNul(grant.allowedScopes, 'oauth-app', 'scopes');
+    await inOrgUnit(orgId, undefined, true, async (k) => {
+      await k.query(
+        `/* pipeshub:oauth.app_set_dynamic_grant */ UPDATE oauth.apps SET allowed_scopes = $3, allowed_grant_types = $4, version = version + 1, updated_at = $5
+            WHERE org_id = $1 AND id = $2::text AND is_dynamic AND NOT is_deleted`,
+        [k.orgId, appId, scopes, grant.allowedGrantTypes, new Date()],
+      );
+    });
+  }
+
   async listClientIdsActingAs(userId: string): Promise<string[]> {
     const id = oidOf(userId);
     if (!id) return [];
