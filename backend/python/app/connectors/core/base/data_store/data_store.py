@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import TYPE_CHECKING, Any, AsyncContextManager, Optional
+from typing import Any, AsyncContextManager, Optional
 
 from app.models.entities import (
     AppMetadata,
@@ -18,8 +18,6 @@ from app.models.entities import (
 from app.models.permission import Permission
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
-if TYPE_CHECKING:
-    from app.connectors.core.base.sync_point.sync_point import SyncPoint
 
 class DataStoreProvider(ABC):
     logger: Logger
@@ -391,19 +389,19 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def create_sync_point(self, sync_point: "SyncPoint") -> None:
+    async def create_sync_point(self, sync_point_key: str, sync_point_data: dict) -> None:
         pass
 
     @abstractmethod
-    async def delete_sync_point(self, sync_point: "SyncPoint") -> None:
+    async def delete_sync_point(self, sync_point_key: str) -> None:
         pass
 
     @abstractmethod
-    async def read_sync_point(self, sync_point: "SyncPoint") -> None:
+    async def read_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> dict | None:
         pass
 
     @abstractmethod
-    async def update_sync_point(self, sync_point: "SyncPoint") -> None:
+    async def update_sync_point(self, sync_point_key: str, sync_point_data: dict) -> None:
         pass
 
     @abstractmethod

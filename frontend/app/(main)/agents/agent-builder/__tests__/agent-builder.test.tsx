@@ -57,8 +57,11 @@ vi.mock('../../api', async (importOriginal) => ({
   AgentsApi: agentsApi,
 }));
 
-const fetchAvailableLlms = vi.hoisted(() => vi.fn());
-vi.mock('@/chat/api', () => ({ ChatApi: { fetchAvailableLlms } }));
+const fetchOrgModels = vi.hoisted(() => vi.fn());
+vi.mock('@/chat/utils/fetch-models-for-context', () => ({
+  fetchModelsForContext: fetchOrgModels,
+  invalidateModelsForContext: vi.fn(),
+}));
 
 const toolsetsApi = vi.hoisted(() => ({
   getAllMyToolsets: vi.fn(),
@@ -141,7 +144,7 @@ beforeEach(() => {
   agentsApi.createAgent.mockImplementation(async (payload: AgentFormPayload) => savedAgent('new-agent', payload));
   agentsApi.updateAgent.mockImplementation(async (key: string, payload: AgentFormPayload) => savedAgent(key, payload));
   agentsApi.deleteAgent.mockResolvedValue(undefined);
-  fetchAvailableLlms.mockResolvedValue([model()]);
+  fetchOrgModels.mockResolvedValue([model()]);
   toolsetsApi.getAllMyToolsets.mockResolvedValue({ toolsets: [toolset()] });
   toolsetsApi.getAllAgentToolsets.mockResolvedValue([]);
   getUsersByIds.mockResolvedValue([{ name: 'Priya Owner', email: 'priya@example.com' }]);
@@ -310,7 +313,7 @@ describe('building a new agent', () => {
 
   it('keeps the palette in its loading state until the builder data arrives', async () => {
     let finishLoading: (models: unknown[]) => void = () => {};
-    fetchAvailableLlms.mockReturnValue(new Promise((resolve) => { finishLoading = resolve; }));
+    fetchOrgModels.mockReturnValue(new Promise((resolve) => { finishLoading = resolve; }));
     renderInTheme(<AgentBuilder agentKey={null} />);
 
     expect(screen.queryByText('Sales playbook')).toBeNull();
@@ -322,7 +325,7 @@ describe('building a new agent', () => {
   });
 
   it('tells the person when the builder could not load', async () => {
-    fetchAvailableLlms.mockRejectedValue(apiFailure(503));
+    fetchOrgModels.mockRejectedValue(apiFailure(503));
     renderInTheme(<AgentBuilder agentKey={null} />);
 
     expect(await screen.findByText('Failed to load builder resources')).toBeTruthy();

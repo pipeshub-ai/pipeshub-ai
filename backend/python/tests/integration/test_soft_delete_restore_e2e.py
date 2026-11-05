@@ -639,7 +639,7 @@ class _SweepProducer:
         return True
 
 
-async def _run_stranded_sweep_an_hour_later(monkeypatch: pytest.MonkeyPatch, graph: IGraphDBProvider) -> list:
+async def _run_stranded_sweep_an_hour_later(monkeypatch: pytest.MonkeyPatch, graph: IGraphDBProvider, org_id: str) -> list:
     """The indexing service's own sweep, with its clock moved past the republish threshold."""
     monkeypatch.setenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", "3600")
     later = get_epoch_timestamp_in_ms() + 2 * 3600 * 1000
@@ -651,7 +651,7 @@ async def _run_stranded_sweep_an_hour_later(monkeypatch: pytest.MonkeyPatch, gra
 
     await indexing_main._republish_stranded_records(
         graph_provider=graph, logger=logger, producer=producer,
-        run_coordination=run_coordination, concurrency_manager=None, page_size=500,
+        run_coordination=run_coordination, concurrency_manager=None, page_size=500, org_id=org_id,
     )
     return producer.sent
 
@@ -669,7 +669,7 @@ async def test_the_stranded_sweep_republishes_a_restore_that_failed_after_its_wr
     await world.processor.on_record_deleted(world.ids["drive_file"])
     await _content_update_whose_event_is_not_sent(world, monkeypatch)
 
-    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
+    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph, world.org_id)
 
     assert [(event, payload["virtualRecordId"]) for event, payload in sent
             if payload["recordId"] == world.ids["drive_file"]] == [
@@ -697,7 +697,7 @@ async def test_the_stranded_sweep_republishes_a_restore_whose_index_event_was_lo
     monkeypatch.setattr(world.producer, "send_messages", never_acked)
     await _sync_sees_drive_file_again(world, md5_hash="md5-from-source")
 
-    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
+    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph, world.org_id)
 
     assert [event for event, payload in sent if payload["recordId"] == world.ids["drive_file"]] == [
         EventTypes.REINDEX_RECORD.value
@@ -748,8 +748,8 @@ async def test_the_stranded_sweep_reindexes_a_restored_file_whose_reindex_was_lo
     with the checksum and content id it was indexed with."""
     await _restore_whose_reindex_is_lost(world, monkeypatch)
 
-    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
-    sent_again = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
+    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph, world.org_id)
+    sent_again = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph, world.org_id)
 
     assert [(event, payload["virtualRecordId"]) for event, payload in sent
             if payload["recordId"] == world.ids["solo"]] == [

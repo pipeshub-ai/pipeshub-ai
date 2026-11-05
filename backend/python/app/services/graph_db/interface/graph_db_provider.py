@@ -8,6 +8,7 @@ All methods support optional transaction parameter for atomic operations.
 """
 
 import asyncio
+import unicodedata
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -421,6 +422,7 @@ if TYPE_CHECKING:
         EntityCandidateRows,
         PermittedEntityRows,
     )
+    from app.services.permissions.ports import HierarchyView, StampGraph
 
 
 def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
@@ -524,6 +526,172 @@ class IGraphDBProvider(ABC):
         super().__init_subclass__(**kwargs)
         instrument_org_methods(cls)  # shadow/enforce check of every org_id argument
 
+
+    # ==================== Methods callers use that were once only on the concrete providers ====================
+
+    def _normalize_name(self, name: str | None) -> str | None:
+        """Normalize a file/folder name to NFC and trim whitespace."""
+        if name is None:
+            return None
+        try:
+            return unicodedata.normalize("NFC", str(name)).strip()
+        except Exception:
+            return str(name).strip()
+
+    def _normalized_name_variants_lower(self, name: str) -> list[str]:
+        """Provide lowercase variants for equality comparisons (NFC and NFD)."""
+        nfc = self._normalize_name(name) or ""
+        try:
+            nfd = unicodedata.normalize("NFD", nfc)
+        except Exception:
+            nfd = nfc
+        return [nfc.lower(), nfd.lower()]
+
+    def _generate_upload_message(self, result: dict, upload_type: str) -> str:
+        """Generate success message"""
+        total_created = result["total_created"]
+        folders_created = result["folders_created"]
+        failed_files = len(result.get("failed_files", []))
+        skipped_files = len(result.get("skipped_files", []))
+
+        message = f"Successfully uploaded {total_created} file{'s' if total_created != 1 else ''} to {upload_type}"
+
+        if folders_created > 0:
+            message += f" with {folders_created} new subfolder{'s' if folders_created != 1 else ''} created"
+
+        if failed_files > 0:
+            message += f". {failed_files} file{'s' if failed_files != 1 else ''} failed to upload"
+
+        if skipped_files > 0:
+            message += f". {skipped_files} file{'s' if skipped_files != 1 else ''} skipped (name already exists)"
+
+        return message + "."
+
+    def _analyze_upload_structure(self, files: list[dict], validation_result: dict) -> dict:
+        """
+        Analyze folder structure - creates folder hierarchy map based on file paths
+        """
+        folder_hierarchy = {}  # path -> {name: str, parent_path: str, level: int}
+        file_destinations = {}  # file_index -> {type: "root"|"folder", folder_name: str|None, folder_hierarchy_path: str|None}
+
+        for index, file_data in enumerate(files):
+            file_path = file_data["filePath"]
+
+            if "/" in file_path:
+                # File is in a subfolder - analyze the hierarchy
+                path_parts = file_path.split("/")
+                folder_parts = path_parts[:-1]
+
+                # Build folder hierarchy
+                current_path = ""
+                for i, folder_name in enumerate(folder_parts):
+                    parent_path = current_path if current_path else None
+                    current_path = f"{current_path}/{folder_name}" if current_path else folder_name
+
+                    if current_path not in folder_hierarchy:
+                        folder_hierarchy[current_path] = {
+                            "name": folder_name,
+                            "parent_path": parent_path,
+                            "level": i + 1
+                        }
+
+                # File goes to the deepest folder
+                file_destinations[index] = {
+                    "type": "folder",
+                    "folder_name": folder_parts[-1],
+                    "folder_hierarchy_path": current_path,
+                }
+            else:
+                # File goes to upload target (KB root or parent folder)
+                file_destinations[index] = {
+                    "type": "root",
+                    "folder_name": None,
+                    "folder_hierarchy_path": None,
+                }
+
+        # Sort folders by level (create parents first)
+        sorted_folder_paths = sorted(folder_hierarchy.keys(), key=lambda x: folder_hierarchy[x]["level"])
+
+        # Add parent folder context
+        parent_folder_id = None
+        if validation_result["upload_target"] == "folder":
+            parent_folder_id = validation_result["parent_folder"].get("id") or validation_result["parent_folder"].get("_key")
+
+        return {
+            "folder_hierarchy": folder_hierarchy,
+            "sorted_folder_paths": sorted_folder_paths,
+            "file_destinations": file_destinations,
+            "upload_target": validation_result["upload_target"],
+            "parent_folder_id": parent_folder_id,
+            "summary": {
+                "total_folders": len(folder_hierarchy),
+                "root_files": len([d for d in file_destinations.values() if d["type"] == "root"]),
+                "folder_files": len([d for d in file_destinations.values() if d["type"] == "folder"])
+            }
+        }
+
+    def _populate_file_destinations(self, folder_analysis: dict, folder_map: dict[str, str]) -> None:
+        """Update file destinations with resolved folder IDs"""
+        for destination in folder_analysis["file_destinations"].values():
+            if destination["type"] == "folder":
+                hierarchy_path = destination["folder_hierarchy_path"]
+                if hierarchy_path in folder_map:
+                    destination["folder_id"] = folder_map[hierarchy_path]
+
+    @abstractmethod
+    async def _get_kb_context_for_record(self, record_id: str, transaction: str | None=None) -> dict | None:
+        """Get KB context for a record."""
+        pass
+
+    @abstractmethod
+    async def _fetch_existing_file_names_in_parent(self, kb_id: str, parent_folder_id: str | None, transaction: str | None=None, *, raise_on_error: bool=False) -> set[tuple[str, str]]:
+        """Return (name_lower, mime_type_str) tuples for all non-deleted file"""
+        pass
+
+    @abstractmethod
+    async def _validate_upload_context(self, kb_id: str, user_id: str, org_id: str, parent_folder_id: str | None=None) -> dict:
+        """Unified validation for all upload scenarios"""
+        pass
+
+    @abstractmethod
+    async def get_user_app_ids(self, user_key: str, transaction: str | None=None) -> list[str]:
+        """Get list of app IDs the user has access to."""
+        pass
+
+    @abstractmethod
+    async def get_user_permission_app_ids(self, user_key: str, org_id: str, transaction: str | None=None) -> list[str]:
+        """Get app IDs the user can access via a direct or team-based PERMISSION"""
+        pass
+
+    @abstractmethod
+    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None=None, request: Optional["Request"]=None, record_id: str | None=None) -> dict:
+        """Create reindex event payload"""
+        pass
+
+    @abstractmethod
+    async def delete_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str, transaction: str | None=None) -> None:
+        """Delete INHERIT_PERMISSIONS edge from record to record group."""
+        pass
+
+    @abstractmethod
+    async def get_user_apps(self, user_id: str, transaction: str | None=None) -> list:
+        """The Apps this user (by graph key) passes the connector gate for, in"""
+        pass
+
+    @abstractmethod
+    async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: str | None=None) -> int:
+        """Delete all edges connected to a node (both incoming and outgoing)."""
+        pass
+
+    @abstractmethod
+    async def get_template(self, template_id: str, user_id: str, transaction: str | None=None) -> dict | None:
+        """Get a template by ID with user permissions"""
+        pass
+
+    @abstractmethod
+    async def clone_agent_template(self, template_id: str, transaction: str | None=None) -> str | None:
+        """Clone an agent template"""
+        pass
 
     # ==================== Connection Management ====================
 
@@ -1472,7 +1640,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a specific node.
@@ -2209,7 +2379,9 @@ class IGraphDBProvider(ABC):
         undone. See ``app.modules.indexing.duplicate_reconcile``.
 
         Returns:
-            ``[{"_key", "duplicateReconcileAttempts", "duplicateReconcileDueAt"}]``.
+            ``[{"_key", "orgId", "duplicateReconcileAttempts", "duplicateReconcileDueAt"}]``. The read spans
+            every organisation (the caller runs it under a system context); ``orgId`` is the organisation
+            the follow-up for that row runs under.
 
         Raises:
             Exception: on query failure.
@@ -2554,6 +2726,10 @@ class IGraphDBProvider(ABC):
         Returns:
             list[str]: The ids actually updated. Ids absent from the result held some
                        other status and were left alone - a normal outcome, not an error.
+
+        Raises:
+            Exception: whatever the database raised. A failed write is never answered
+                       as an empty list, which means "no id held `expected`".
         """
         pass
 
@@ -2566,6 +2742,10 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def stage_states_for_revision(self, virtual_record_id: str, rev: str) -> list[dict[str, Any]]:
         """Every stage-state document of one content revision."""
+
+    @abstractmethod
+    async def stage_state_org_for_virtual_record(self, virtual_record_id: str) -> str | None:
+        """The ``orgId`` named by any stage state of this virtual record, or None."""
 
     @abstractmethod
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
@@ -4814,6 +4994,55 @@ class IGraphDBProvider(ABC):
         return AccessibleContainers(
             fallback_reason="provider does not implement container filtering"
         )
+
+    def permission_hierarchy_view(self) -> "HierarchyView":
+        """The organisation's record groups and scopes, for `app.services.permissions.ViewerScopeResolver`.
+
+        Concrete and failing, like ``check_access``: a backend without it must be refused loudly, never read as
+        "no scopes"."""
+        raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
+
+    async def increment_node_field(
+        self, key: str, collection: str, field: str, transaction: str | None = None
+    ) -> int | None:
+        """Add one to a numeric field of a node in one statement, under the node's write lock, and return the new value (None when the
+        node does not exist). Never read-then-write: two transactions that both increment get two different values. The default is a
+        read and a write; the graph providers override it."""
+        node = await self.get_document(key, collection, transaction=transaction, raise_on_error=True)
+        if node is None:
+            return None
+        value = int(node.get(field) or 0) + 1
+        if not await self.update_node(key, collection, {field: value}, transaction):
+            return None  # the node went away between the read and the write
+        return value
+
+    async def get_structure_of_nodes(
+        self, collection: str, node_ids: list[str], transaction: str | None = None, *, raise_on_error: bool = False
+    ) -> dict[str, frozenset]:
+        """For each node of ``collection``, the hierarchy (PARENT_CHILD, ATTACHMENT), group (BELONGS_TO) and inherit edges that decide
+        its access, as hashable tuples, and whether it has any grant (a PERMISSION edge into it; which grants, never). Read inside ``transaction`` when given. This default asks edge by edge; the
+        graph providers override it with one query for all the nodes."""
+        out: dict[str, frozenset] = {}
+        for node_id in node_ids:
+            me = f"{collection}/{node_id}"
+            edges: set[tuple] = set()
+            for edge_collection in (CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value):
+                for e in await self.get_edges_from_node(me, edge_collection, transaction=transaction, raise_on_error=raise_on_error) or []:
+                    edges.add((edge_collection, e.get("_from"), e.get("_to")))
+            for e in await self.get_edges_to_node(me, CollectionNames.NODE_RELATIONS.value, transaction=transaction, raise_on_error=raise_on_error) or []:
+                if e.get("relationshipType") in ("PARENT_CHILD", "ATTACHMENT"):
+                    edges.add((CollectionNames.NODE_RELATIONS.value, e.get("_from"), e.get("_to"), e.get("relationshipType")))
+            if await self.get_edges_to_node(me, CollectionNames.PERMISSION.value, transaction=transaction, raise_on_error=raise_on_error):
+                edges.add(("granted", node_id))
+            out[node_id] = frozenset(edges)
+        return out
+
+    def permission_stamp_graph(self) -> "StampGraph":
+        """What a scope-field stamper reads about records and record groups, for `app.services.permissions.ScopeProjector`.
+
+        Concrete and failing, like ``permission_hierarchy_view``: a backend without it must be refused loudly, never read
+        as "every record is its container"."""
+        raise NotImplementedError(f"{type(self).__name__} has no permission stamp graph")
 
     @abstractmethod
     async def get_entity_access_context(
@@ -8350,8 +8579,9 @@ class IGraphDBProvider(ABC):
         when none does, users whose full name, a word of it, or email local
         part starts with it (only for 3+ characters). Every user sharing the
         email of a match is returned too, so one person's several nodes come
-        back together. No permission check: org members' names and emails are
-        visible to members.
+        back together. No permission check, so a caller must not show a user
+        until a record linking them is readable
+        (``entity_permissions.readable_person_offsets``).
 
         Returns:
             ``{"id", "fullName", "email"}`` ordered by name: the first ``limit``

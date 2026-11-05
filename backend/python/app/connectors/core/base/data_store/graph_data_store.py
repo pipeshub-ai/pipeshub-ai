@@ -1,10 +1,12 @@
 import asyncio
 import contextvars
 import functools
+import inspect
 import logging
+import os
 import random
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from contextlib import asynccontextmanager, suppress
 from logging import Logger
 from typing import Any, AsyncContextManager, Optional, TypeVar
@@ -39,6 +41,11 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
+from app.services.permissions.mode import scope_fields_enabled
+from app.services.permissions.structure_generation import (
+    UNSAFE_KEY,
+    ScopeGenerationConflict,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _T = TypeVar("_T")
@@ -208,13 +215,67 @@ write_collections = [
     collection.value for collection in CollectionNames
 ]
 
+# ---- the only handle the store has on the provider --------------------------------------------------------------------------
+# `GraphTransactionStore.graph_provider` is this proxy. A read goes through. Anything else must happen inside a store method that
+# is classified (structural, with how to find its connector, or harmless): those are wrapped at the bottom of this module and set
+# `_CLASSIFIED_SCOPE`. A provider write reached from anywhere else (an unlisted method, a helper given the provider, an alias, a
+# bound method, `getattr`, the raw client) finds no scope: under pytest it raises `UnclassifiedProviderWrite`; in production it is
+# logged once per name and let through, so a missed classification never takes a sync down. The scope is read when the attribute is fetched:
+# a bound method fetched inside a classified method and called after it returned is not seen (a limit; the guard test over the store's source
+# and review keep that shape out).
+_CLASSIFIED_SCOPE: contextvars.ContextVar[str | None] = contextvars.ContextVar("graph_store_classified_scope", default=None)
+_READ_PREFIXES = ("get_", "find_", "read_", "is_", "opens_", "has_", "count_", "list_", "filter_")
+_WRITE_WORDS = ("or_create", "or_insert", "or_update", "and_create", "and_delete", "and_update", "and_set", "upsert", "ensure",
+                "create", "delete", "remove", "insert", "replace")
+_RAW_ACCESS = frozenset({"client", "http_client", "execute_query", "execute_aql", "execute"})
+_warned: set[str] = set()
+
+
+class UnclassifiedProviderWrite(RuntimeError):
+    """A graph write reached the provider from a store method nobody classified as structural or harmless."""
+
+
+def _is_read(name: str) -> bool:
+    return name.startswith(_READ_PREFIXES) and not any(w in name for w in _WRITE_WORDS)
+
+
+class _GuardedProvider:
+    __slots__ = ("_provider", "_on_unclassified")
+
+    def __init__(self, provider: IGraphDBProvider, on_unclassified: Callable[[], None] | None = None) -> None:
+        object.__setattr__(self, "_provider", provider)
+        object.__setattr__(self, "_on_unclassified", on_unclassified)
+
+    def __getattr__(self, name: str):  # noqa: ANN204
+        attr = getattr(self._provider, name)
+        if name in ("logger",) or (not callable(attr) and name not in _RAW_ACCESS) or (_is_read(name) and name not in _RAW_ACCESS):
+            return attr
+        if name not in _RAW_ACCESS and _CLASSIFIED_SCOPE.get() is not None:
+            return attr
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            raise UnclassifiedProviderWrite(f"graph_provider.{name} is reached outside a classified store method")
+        if self._on_unclassified is not None:
+            self._on_unclassified()  # fail closed: the connectors this transaction saw are marked unsafe when it ends
+        if name not in _warned:
+            _warned.add(name)
+            logging.getLogger(__name__).error("graph_provider.%s reached outside a classified store method", name)
+        return attr
+
+    def __setattr__(self, name: str, value: object) -> None:
+        setattr(self._provider, name, value)
+
+
 class GraphTransactionStore(TransactionStore):
     """
     Graph database transaction-aware data store using IGraphDBProvider.
     """
 
     def __init__(self, graph_provider: IGraphDBProvider, txn: str, *, explicit: bool = False) -> None:
-        self.graph_provider = graph_provider
+        self.unclassified_write = False
+        # The structure bookkeeping (the guarded provider, the reads before and after a structural write, the bump) exists only while the
+        # scope fields are on: with them off the store reaches the provider directly and makes no query it did not make before.
+        self.tracked = scope_fields_enabled()
+        self.graph_provider = _GuardedProvider(graph_provider, self._note_unclassified) if self.tracked else graph_provider
         self.txn = txn  # Transaction ID (string) for HTTP provider
         self.explicit = explicit  # the block runs in one real transaction
         self.logger = graph_provider.logger
@@ -225,6 +286,73 @@ class GraphTransactionStore(TransactionStore):
         # repeats. The transaction is exactly how long the answers are stable,
         # which makes it the right scope.
         self._memo: dict[tuple, object] = {}
+        # Connectors whose structure or permissions this transaction changes (see `_STRUCTURAL_WRITERS`); each gets one bump of
+        # its scope generation, in this transaction, at the end of the block.
+        self.structural_connectors: set[str] = set()
+        self._connector_of: dict[tuple[str, str], str | None] = {}
+        # nodes this transaction created: no stamp can be stale for them, whatever edges it then gives them
+        self.new_nodes: set[tuple[str, str]] = set()
+
+    def _note_unclassified(self) -> None:
+        self.unclassified_write = True
+
+    async def _connector_of_node(self, collection: str, node_id: str) -> str | None:
+        return (await self._connectors_of([(collection, node_id)])).get((collection, node_id))
+
+    async def _connectors_of(self, targets: list[tuple[str, str | None]]) -> dict[tuple[str, str], str]:
+        """The connector of each node (collection, id) that has one: one query per collection for the nodes not read yet in this
+        transaction. A failed read fails the block (it must not read as "no connector")."""
+        want: dict[str, list[str]] = {}
+        for collection, node_id in targets:
+            if node_id and (collection, node_id) not in self._connector_of:
+                want.setdefault(collection, []).append(node_id)
+        for collection, ids in want.items():
+            found = await self.graph_provider.get_nodes_by_field_in(
+                collection, "_key", sorted(set(ids)), ["_key", "connectorId"], transaction=self.txn, raise_on_error=True)
+            by_id = {str(d.get("_key")): d.get("connectorId") for d in found or [] if isinstance(d, dict)}
+            for node_id in set(ids):
+                self._connector_of[(collection, node_id)] = by_id.get(node_id)
+        return {t: str(c) for t in targets if t[1] and (c := self._connector_of.get((t[0], t[1])))}
+
+    async def _touch(self, targets: list[tuple[str, str | None]]) -> None:
+        """This transaction is about to change the structure under these nodes (collection, id); remember their connectors.
+        Resolved now, before a delete removes the node."""
+        self.structural_connectors.update((await self._connectors_of(targets)).values())
+
+    async def _stored(self, collection: str, ids: list[str]) -> dict[str, dict]:
+        """The stored documents of these nodes (the ones that exist), one query; a failed read fails the block."""
+        found = await self.graph_provider.get_nodes_by_field_in(
+            collection, "_key", sorted(set(ids)), None, transaction=self.txn, raise_on_error=True) if ids else []
+        stored = {str(d["_key"]): d for d in found or [] if isinstance(d, dict) and d.get("_key") is not None}
+        for node_id, doc in stored.items():
+            self._connector_of[(collection, node_id)] = doc.get("connectorId")
+        return stored
+
+    async def _structures_of(self, targets: list[tuple[str, str]]) -> dict[tuple[str, str], frozenset]:
+        """The hierarchy, group and inherit edges that decide each node's access (never its grants), one query per collection: what an
+        idempotent edge writer must have changed for the write to count as structural."""
+        by_collection: dict[str, list[str]] = {}
+        for collection, node_id in targets:
+            by_collection.setdefault(collection, []).append(node_id)
+        out: dict[tuple[str, str], frozenset] = {}
+        for collection, ids in by_collection.items():
+            got = await self.graph_provider.get_structure_of_nodes(collection, sorted(set(ids)), transaction=self.txn, raise_on_error=True)
+            out.update({(collection, i): got.get(i, frozenset()) for i in ids})
+        return out
+
+    async def flush_scope_generation(self) -> None:
+        """Bump the scope generation of every connector touched, once each, inside this transaction (called before the commit,
+        so the change and the bump commit together or neither does). Raises when a bump cannot be written, which rolls the
+        transaction back. The bump is a classified write of its own (it is the bookkeeping itself)."""
+        from app.services.permissions.structure_generation import bump_generation_in
+
+        token = _CLASSIFIED_SCOPE.set("flush_scope_generation")
+        try:
+            for connector_id in sorted(self.structural_connectors):
+                await bump_generation_in(self, connector_id)
+        finally:
+            _CLASSIFIED_SCOPE.reset(token)
+        self.structural_connectors.clear()
 
     def _memo_put(self, key: tuple, value: object) -> None:
         """Cache positives only. A miss usually means "not created yet", and the
@@ -1313,8 +1441,12 @@ class GraphDataStore(DataStoreProvider):
         self.logger = logger
         self.graph_provider = graph_provider
 
-    def is_transient_error(self, error: BaseException) -> bool:
-        return self.graph_provider.is_transient_error(error)
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
+        if isinstance(error, ScopeGenerationConflict):
+            # a conflict on the counter rolled the block back only when it ran in a real transaction; outside one, the block's statements
+            # already committed and running it again would repeat them
+            return self.graph_provider.opens_explicit_transaction(explicit) is True
+        return self.graph_provider.is_transient_error(error, explicit=explicit)
 
     async def compare_and_set_indexing_status(
         self, record_ids: list[str], expected: str, new_status: str
@@ -1359,6 +1491,7 @@ class GraphDataStore(DataStoreProvider):
 
         try:
             yield tx_store
+            await self._flush_scope_generation(tx_store)
         except BaseException as e:
             # BaseException, not Exception: asyncio.CancelledError is a
             # BaseException, so `except Exception` let a cancellation -- the
@@ -1375,6 +1508,7 @@ class GraphDataStore(DataStoreProvider):
                 self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             else:
                 self.logger.warning("Transaction interrupted (%s); rolling back", type(e).__name__)
+            await self._mark_unsafe_after_failed_block(tx_store)
             try:
                 await tx_store.rollback()
             except Exception as rb_err:
@@ -1402,6 +1536,52 @@ class GraphDataStore(DataStoreProvider):
                     self.logger.warning("Abort after a failed commit raised: %s", rb_err)
                 raise
 
+    async def _mark_unsafe(self, tx_store: "GraphTransactionStore", connector_ids: Collection[str]) -> None:
+        """Mark connectors scope-unsafe (their stamps are not current until a pass over the whole connector clears it). In an explicit
+        transaction the mark is written with it (it commits only if the block does, and cannot wait on a lock the block itself holds);
+        without one the statements of the block already committed one by one, so the mark is written on its own and survives the failure."""
+        transaction = tx_store.txn if tx_store.explicit else None
+        for connector_id in sorted(connector_ids):
+            await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, transaction)
+
+    async def _mark_unsafe_after_failed_block(self, tx_store: "GraphTransactionStore") -> None:
+        """A block that failed without an explicit transaction left its earlier statements committed: the connectors a structural (or an
+        unclassified) write touched changed with no bump, so their stamps are marked unsafe. In an explicit transaction the rollback
+        undoes it all. Best effort: a mark that cannot be written is logged at error and never masks the failure."""
+        if not tx_store.tracked or tx_store.explicit:
+            return
+        connectors = set(tx_store.structural_connectors)
+        if tx_store.unclassified_write:
+            connectors |= {c for c in tx_store._connector_of.values() if c}
+        for connector_id in sorted(connectors):
+            try:
+                await self._mark_unsafe(tx_store, [connector_id])
+            except BaseException:
+                self.logger.error("could not mark connector %s scope-unsafe after a failed block", connector_id)
+
+    async def _flush_scope_generation(self, tx_store: "GraphTransactionStore") -> None:
+        if not tx_store.tracked:
+            return
+        if tx_store.unclassified_write:
+            # A write nobody classified reached the provider: whichever connectors this transaction saw may have changed. (A block that
+            # never resolved a connector marks nothing here: that case is the whole-organisation fallback, a later change.)
+            await self._mark_unsafe(tx_store, {c for c in tx_store._connector_of.values() if c} | tx_store.structural_connectors)
+        touched = sorted(tx_store.structural_connectors)
+        if not touched:
+            return
+        try:
+            await tx_store.flush_scope_generation()
+        except Exception:
+            if not tx_store.explicit:
+                # The statements of this block already committed one by one, so rolling back undoes nothing: mark the
+                # connectors unsafe (their stamps are not current) before failing the block.
+                for connector_id in touched:
+                    try:
+                        await self._mark_unsafe(tx_store, [connector_id])
+                    except Exception:
+                        self.logger.error("could not mark connector %s scope-unsafe", connector_id)
+            raise
+
     async def execute_in_transaction(self, func, *args, explicit: bool | None = None, **kwargs) -> None:
         """Execute function within graph database transaction.
 
@@ -1418,7 +1598,7 @@ class GraphDataStore(DataStoreProvider):
                 async with self.transaction(explicit=explicit) as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
-                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e, explicit=explicit):
+                if attempts >= _RETRY_ATTEMPTS or not self.is_transient_error(e, explicit=explicit):
                     raise
                 delay = _retry_delay(attempts - 1)
                 self.logger.warning(
@@ -1450,7 +1630,7 @@ class GraphDataStore(DataStoreProvider):
                 async with self.transaction(explicit=explicit) as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
-                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_write_conflict(e):
+                if attempts >= _RETRY_ATTEMPTS or not (self.graph_provider.is_write_conflict(e) or isinstance(e, ScopeGenerationConflict)):
                     raise
                 delay = _retry_delay(attempts - 1)
                 self.logger.warning(
@@ -1459,3 +1639,322 @@ class GraphDataStore(DataStoreProvider):
                 )
                 await asyncio.sleep(delay)
 
+
+# ---- the one place every structural write passes through -------------------------------------------------------------
+# A write that changes what a vector point's scope fields are made of (a hierarchy, group or inherit edge, a record's or group's
+# access rule or its place) is listed here with the nodes it touches. The wrapper below records their connectors before the call
+# (so a delete is resolved first), and `GraphDataStore.transaction` bumps each connector's scope generation once, inside the same
+# transaction. A new writer on `GraphTransactionStore` that is not listed here is caught by `test_structural_writers.py`.
+_R, _G = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
+_STRUCTURAL_EDGES = frozenset({
+    CollectionNames.NODE_RELATIONS.value, CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value,
+})
+# A grant (a PERMISSION edge into a record or group) is watched too, but only for whether the node has any: the projector reads `granted`,
+# so the first grant added to or the last removed from a node changes what its descendants are stamped with. Further grants change nothing,
+# and a created grant edge is not counted (`_STRUCTURAL_EDGES` is what the providers report), so a sync of grants moves nothing by itself.
+_GRANTS = CollectionNames.PERMISSION.value
+_WATCHED_EDGES = _STRUCTURAL_EDGES | {_GRANTS}
+_CHILD_SIDE = {  # the node whose access the edge changes
+    CollectionNames.NODE_RELATIONS.value: "to", CollectionNames.BELONGS_TO.value: "from",
+    CollectionNames.INHERIT_PERMISSIONS.value: "from", _GRANTS: "to",
+}
+
+
+def _edge_targets(edges: list[dict], collection: str) -> list[tuple[str, str | None]]:
+    if collection not in _WATCHED_EDGES:
+        return []
+    side = _CHILD_SIDE[collection]
+    out: list[tuple[str, str | None]] = []
+    for e in edges:
+        if collection == CollectionNames.NODE_RELATIONS.value and e.get("relationshipType") not in (None, "PARENT_CHILD", "ATTACHMENT"):
+            continue
+        node = e.get(f"{side}_id") or (str(e.get(f"_{side}", "")).split("/", 1)[-1] or None)
+        coll = e.get(f"{side}_collection") or (str(e.get(f"_{side}", "")).split("/", 1)[0] or _R)
+        if not node:
+            raise ValueError(f"an edge written to {collection} names no node at its {side} end: {sorted(e)}")
+        if collection == _GRANTS and coll not in (_R, _G):
+            continue  # a grant on anything but a record or a record group (an agent, a team, a conversation) reaches no stamp
+        out.append((coll, node))
+    return out
+
+
+_STRUCTURAL_WRITERS: dict[str, Callable[[dict], list[tuple[str, str | None]]]] = {
+    "create_record_groups_relation": lambda b: [(_G, b["child_id"])],
+    "delete_record_by_key": lambda b: [(_R, b["key"])],
+    "delete_edge": lambda b: _edge_targets([{"from_id": b["from_id"], "from_collection": b["from_collection"], "to_id": b["to_id"],
+                                              "to_collection": b["to_collection"]}], b["collection"]),
+    "delete_nodes": lambda b: [(b["collection"], k) for k in b["keys"]] if b["collection"] in (_R, _G) else [],
+    "delete_edges_from": lambda b: [(b["from_collection"], b["from_id"])] if b["collection"] in _WATCHED_EDGES else [],
+    "delete_edges_to": lambda b: [(b["to_collection"], b["to_id"])] if b["collection"] in _WATCHED_EDGES else [],
+    "replace_edges_to": lambda b: [(b["to_collection"], b["to_id"])] if b["collection"] in _WATCHED_EDGES else [],
+    "replace_record_permissions": lambda b: [(_R, b["record_id"])],
+    "link_record_to_group": lambda b: [(_R, b["record_id"])],
+    "delete_parent_child_edge_to_record": lambda b: [(_R, b["record_id"])],
+    "delete_edges_to_groups": lambda b: [(b["from_collection"], b["from_id"])],
+    "delete_edges_between_collections": lambda b: [(b["from_collection"], b["from_id"])] if b["edge_collection"] in _WATCHED_EDGES else [],
+    "delete_edges_by_relationship_types": lambda b: [(b["from_collection"], b["from_id"])] if b["collection"] in _WATCHED_EDGES else [],
+    "delete_nodes_and_edges": lambda b: [(b["collection"], k) for k in b["keys"]] if b["collection"] in (_R, _G) else [],
+    "delete_single_record": lambda b: [(_R, b["record_id"])],
+    "upsert_record_under_parent": lambda b: [(_R, getattr(b["record"], "id", None))],
+    "create_record_relation": lambda b: [(_R, b["to_record_id"])] if b["relation_type"] in ("PARENT_CHILD", "ATTACHMENT") else [],
+    "create_record_group_relation": lambda b: [(_R, b["record_id"])],
+    "create_inherit_permissions_relation_record_group": lambda b: [(_R, b["record_id"])],
+    "delete_inherit_permissions_relation_record_group": lambda b: [(_R, b["record_id"])],
+    "create_inherit_permissions_relation_record": lambda b: [(_R, b["child_record_id"])],
+    "delete_inherit_permissions_relation_record": lambda b: [(_R, b["child_record_id"])],
+    "batch_create_edges": lambda b: _edge_targets(b["edges"], b["collection"]),
+    "create_edges_if_absent": lambda b: _edge_targets(b["edges"], b["collection"]),
+    "batch_delete_edges": lambda b: _edge_targets(b["edges"], b["collection"]),
+    "batch_upsert_node_relations": lambda b: _edge_targets(b["edges"], CollectionNames.NODE_RELATIONS.value),
+    "delete_records_and_relations": lambda b: [(_R, b["record_key"])],
+    # grants: the first one added to a node, or the last removed from it, changes what its descendants are stamped with
+    "batch_upsert_record_permissions": lambda b: [(_R, b["record_id"])],
+    "batch_upsert_record_group_permissions": lambda b: [(_G, b["record_group_id"])],
+    # removes the group with every grant it holds (PERMISSION edges), any of which may be the last on its node
+    "delete_user_group_by_id": lambda b: [(CollectionNames.GROUPS.value, b["group_id"])],
+}
+
+
+# Writers that remove the node itself: structural whenever the node existed (the connector is resolved before the call).
+_REMOVES_NODE = frozenset({"delete_record_by_key", "delete_nodes", "delete_nodes_and_edges", "delete_single_record",
+                           "delete_records_and_relations", "delete_user_group_by_id"})
+
+
+# Edge writers that name only one end of the edges they remove: (which end, the argument holding the edge collection). When the named end
+# is not the one whose access the edge changes (`_CHILD_SIDE`) - the parent in nodeRelations, the group in belongsTo, the parent in
+# inheritPermissions - the structure that changes is the other ends' (the children's), which the named node's own structure does not show.
+_NAMED_END = {
+    "delete_edges_from": ("from", "collection"), "delete_edges_by_relationship_types": ("from", "collection"),
+    "delete_edges_between_collections": ("from", "edge_collection"),
+    "delete_edges_to": ("to", "collection"), "replace_edges_to": ("to", "collection"),
+}
+_HIERARCHY_TYPES = ("PARENT_CHILD", "ATTACHMENT")
+
+
+async def _note_removed_at_parent_end(self: GraphTransactionStore, name: str, arguments: dict, nodes: list[tuple[str, str]]) -> None:
+    """Before an edge writer removes the edges at the parent end of a node: if any structural edge is there, the connectors of the named
+    node and of every node at the other ends are structural. Read first, one query for the edges and one per collection for the
+    other ends' connectors."""
+    end, collection_arg = _NAMED_END[name]
+    edge_collection = arguments[collection_arg]
+    (named_collection, named_id), = nodes
+    me = f"{named_collection}/{named_id}"
+    read = self.graph_provider.get_edges_from_node if end == "from" else self.graph_provider.get_edges_to_node
+    edges = await read(me, edge_collection, transaction=self.txn, raise_on_error=True) or []
+    types = arguments.get("relationship_types")
+    other_key = "_to" if end == "from" else "_from"
+    other_collection = arguments.get("to_collection") if name == "delete_edges_between_collections" else None
+    ends: list[tuple[str, str | None]] = []
+    for e in edges:
+        kind = e.get("relationshipType")
+        if edge_collection == CollectionNames.NODE_RELATIONS.value and kind not in _HIERARCHY_TYPES:
+            continue
+        if types is not None and kind not in types:
+            continue
+        endpoint = "to" if end == "from" else "from"
+        key, coll = e.get(f"{endpoint}_id"), e.get(f"{endpoint}_collection")  # the generic shape (Neo4j's edges-to-node)
+        if not key:
+            coll, _, key = str(e.get(other_key, "")).partition("/")  # the document shape
+        if other_collection is not None and coll != other_collection:
+            continue
+        ends.append((coll or _R, key or None))
+    if ends:
+        await self._touch([(named_collection, named_id), *ends])
+
+
+def _wrap_structural(name: str, targets: Callable[[dict], list[tuple[str, str | None]]]) -> None:
+    """Edge writers are idempotent (they re-create what is there), so a call counts only when the node's structure differs
+    after it; a writer that removes the node counts whenever the node existed. A writer that removes the edges at the parent end of
+    a node is read first (`_note_removed_at_parent_end`)."""
+    original = getattr(GraphTransactionStore, name)
+    signature = inspect.signature(original)
+
+    @functools.wraps(original)
+    async def wrapper(self: GraphTransactionStore, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        if not self.tracked:
+            return await original(self, *args, **kwargs)
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        arguments = dict(bound.arguments)
+        nodes = [(c, n) for c, n in targets(arguments) if n]
+        if name in _REMOVES_NODE:
+            await self._touch(nodes)
+            return await original(self, *args, **kwargs)
+        if name in _NAMED_END:
+            end, collection_arg = _NAMED_END[name]
+            edge_collection = arguments[collection_arg]
+            if edge_collection in _WATCHED_EDGES and end != _CHILD_SIDE[edge_collection]:
+                if nodes:
+                    await _note_removed_at_parent_end(self, name, arguments, nodes)
+                # replace_edges_to also writes edges: the nodes at their child ends are compared below
+                nodes = _edge_targets(arguments.get("edges") or [], edge_collection)
+                nodes = [(c, n) for c, n in nodes if n]
+        # a node that does not exist yet has no stamp that could go stale: only existing nodes count
+        candidates = [t for t in nodes if t not in self.new_nodes]
+        existing = await self._connectors_of(candidates)
+        before = await self._structures_of(list(existing))
+        result = await original(self, *args, **kwargs)
+        after = await self._structures_of(list(existing))
+        for t, connector in existing.items():
+            if after[t] != before[t]:
+                self.structural_connectors.add(connector)
+        return result
+
+    setattr(GraphTransactionStore, name, wrapper)
+
+
+for _name, _targets in _STRUCTURAL_WRITERS.items():
+    _wrap_structural(_name, _targets)
+
+
+def _wrap_connector_writer(name: str, connector_of: Callable[[dict], str | None]) -> None:
+    original = getattr(GraphTransactionStore, name)
+    signature = inspect.signature(original)
+
+    @functools.wraps(original)
+    async def wrapper(self: GraphTransactionStore, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        if not self.tracked:
+            return await original(self, *args, **kwargs)
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        connector_id = connector_of(dict(bound.arguments))
+        if connector_id:
+            self.structural_connectors.add(str(connector_id))
+        return await original(self, *args, **kwargs)
+
+    setattr(GraphTransactionStore, name, wrapper)
+
+
+# writers that name their connector
+_CONNECTOR_WRITERS: dict[str, Callable[[dict], str | None]] = {
+    "delete_records_recursive": lambda b: b["connector_id"],
+    "soft_delete_records": lambda b: b["connector_id"],
+    "restore_records": lambda b: b.get("connector_id"),
+    "delete_record_by_external_id": lambda b: b["connector_id"],
+    # a revoked grant may be the last one on its record, and the record is named by its external id: the connector moves on every call
+    "remove_user_access_to_record": lambda b: b["connector_id"],
+    # the same for every grant the user holds on the connector: any of them may be the last on its record or group
+    "remove_user_access_to_connector": lambda b: b["connector_id"],
+}
+for _name, _of in _CONNECTOR_WRITERS.items():
+    _wrap_connector_writer(_name, _of)
+
+
+# stored key -> what a document without it means
+# Every node field the projector reads (`ScopeProjector` / `StampNode`): the rule, the model, deleted, placeholder; the place comes from edges and
+# from the parent id a connector writes.
+_RULE_FIELDS = {"accessRule": "OPEN", "permissionModel": None, "isDeleted": False, "isPlaceholder": False, "externalParentId": None}
+
+
+def _norm(key: str, value: object) -> str:
+    value = getattr(value, "value", value)
+    return str(_RULE_FIELDS[key] if value is None else value)
+
+
+def _differs(stored: dict, key: str, new: object) -> bool:
+    """Old and new after defaulting both: a field missing from the stored node is its default, and a change *to* the default
+    (a group that stops being record-group-level, a parent cleared) counts as much as a change away from it."""
+    return _norm(key, stored.get(key)) != _norm(key, new)
+
+
+def _wrap_upsert(name: str, collection: str, fields: dict[str, str], items_arg: str) -> None:
+    """An upsert that changes the access rule (or model) of an existing node: compare with what is stored, read for the whole batch with
+    one query. ``fields`` maps the stored key to the model attribute."""
+    original = getattr(GraphTransactionStore, name)
+    signature = inspect.signature(original)
+
+    @functools.wraps(original)
+    async def wrapper(self: GraphTransactionStore, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        if not self.tracked:
+            return await original(self, *args, **kwargs)
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        items = [i for i in bound.arguments[items_arg] if getattr(i, "id", None) and getattr(i, "connector_id", None)]
+        stored = await self._stored(collection, [i.id for i in items])
+        for item in items:
+            doc = stored.get(item.id)
+            if doc is None:
+                self.new_nodes.add((collection, item.id))
+            elif str(item.connector_id) not in self.structural_connectors and any(
+                    _differs(doc, key, getattr(item, attr)) for key, attr in fields.items() if hasattr(item, attr)):
+                self.structural_connectors.add(str(item.connector_id))
+        return await original(self, *args, **kwargs)
+
+    setattr(GraphTransactionStore, name, wrapper)
+
+
+def _wrap_patch(name: str) -> None:
+    """A generic node write whose payload carries a field that decides access or place, on records or record groups: detected by
+    the field, not by who calls it. The stored nodes are read with one query for the batch."""
+    original = getattr(GraphTransactionStore, name)
+    signature = inspect.signature(original)
+
+    @functools.wraps(original)
+    async def wrapper(self: GraphTransactionStore, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        if not self.tracked:
+            return await original(self, *args, **kwargs)
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        collection = bound.arguments["collection"]
+        if collection in (_R, _G):
+            nodes = [(n, n.get("_key") or n.get("id")) for n in bound.arguments["nodes"] if any(k in n for k in _RULE_FIELDS)]
+            stored = await self._stored(collection, [i for _, i in nodes if i])
+            for node, node_id in nodes:
+                if not node_id:
+                    continue
+                doc = stored.get(node_id)
+                if doc is None:
+                    self.new_nodes.add((collection, node_id))
+                elif doc.get("connectorId") and any(_differs(doc, k, node[k]) for k in _RULE_FIELDS if k in node):
+                    self.structural_connectors.add(str(doc["connectorId"]))
+        return await original(self, *args, **kwargs)
+
+    setattr(GraphTransactionStore, name, wrapper)
+
+
+# stored key -> the model attribute that writes it: every field of `_RULE_FIELDS`, compared when the model has the attribute
+_MODEL_ATTRIBUTES = {"accessRule": "access_rule", "permissionModel": "permission_model", "isDeleted": "is_deleted",
+                     "isPlaceholder": "is_placeholder", "externalParentId": "parent_external_record_id"}
+assert set(_MODEL_ATTRIBUTES) == set(_RULE_FIELDS), "a field the projector reads must be compared by the upserts too"
+_wrap_upsert("batch_upsert_records", _R, _MODEL_ATTRIBUTES, "records")
+_wrap_upsert("batch_upsert_record_groups", _G, _MODEL_ATTRIBUTES, "record_groups")
+_wrap_patch("batch_update_nodes")
+_wrap_patch("batch_upsert_nodes")
+
+
+# writes that move no structure: grants, memberships, people, sync points, content and indexing state, and the transaction itself
+_HARMLESS_WRITERS = frozenset({
+    "batch_upsert_nodes", "batch_update_nodes", "batch_upsert_people",
+    "upsert_person_by_email", "ensure_app_membership", "reap_stale_external_app_relations", "create_user_group_hierarchy",
+    "create_user_group_membership", "batch_create_user_app_edges", "batch_upsert_user_groups",
+    "batch_upsert_app_roles", "batch_upsert_app_users", "ensure_team_app_edge", "upsert_authenticated_as", "remove_authenticated_as",
+    "batch_upsert_orgs", "commit", "rollback", "create_user_groups", "create_users", "create_orgs", "create_sync_point",
+    "delete_sync_point", "update_sync_point", "batch_create_entity_relations",
+    "remove_nodes_by_field", "create_taxonomy_node_if_absent", "add_taxonomy_aliases", "take_back_kept_record_group",
+    "batch_upsert_records", "batch_upsert_record_groups", "delete_records_recursive", "soft_delete_records", "restore_records",
+    "delete_record_by_external_id", "compare_and_set_indexing_status",
+    # a push claim writes the document id and version of the record, never a field that decides access or place
+    "claim_push_record", "retag_push_record",
+})
+CLASSIFIED_WRITERS = frozenset(_STRUCTURAL_WRITERS) | frozenset(_CONNECTOR_WRITERS) | _HARMLESS_WRITERS
+
+
+def _scoped(name: str) -> None:
+    original = getattr(GraphTransactionStore, name)
+
+    @functools.wraps(original)
+    async def wrapper(self: GraphTransactionStore, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        if not self.tracked:
+            return await original(self, *args, **kwargs)
+        token = _CLASSIFIED_SCOPE.set(name)
+        try:
+            return await original(self, *args, **kwargs)
+        finally:
+            _CLASSIFIED_SCOPE.reset(token)
+
+    setattr(GraphTransactionStore, name, wrapper)
+
+
+for _name in sorted(CLASSIFIED_WRITERS):
+    if hasattr(GraphTransactionStore, _name):
+        _scoped(_name)

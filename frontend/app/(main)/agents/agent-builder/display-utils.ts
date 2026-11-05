@@ -113,11 +113,12 @@ export function resolveNodeConnectorType(data: FlowNodeData): string | null {
 }
 
 /** The server an `mcp-*` node stands for, as `McpServerIcon` takes it to pick the server's logo. */
-export function mcpNodeServer(data: FlowNodeData): { typeId?: string; name: string } {
+export function mcpNodeServer(data: FlowNodeData): { instanceId?: string; typeId?: string; name: string } {
   const cfg = (data.config || {}) as Record<string, unknown>;
+  const instanceId = typeof cfg.instanceId === 'string' ? cfg.instanceId.trim() : '';
   const typeId = typeof cfg.typeId === 'string' ? cfg.typeId.trim() : '';
   const name = String(cfg.name ?? '').trim() || String(cfg.displayName ?? '').trim() || data.label;
-  return { typeId: typeId || undefined, name };
+  return { instanceId: instanceId || undefined, typeId: typeId || undefined, name };
 }
 
 export function normalizeDisplayName(name: string): string {

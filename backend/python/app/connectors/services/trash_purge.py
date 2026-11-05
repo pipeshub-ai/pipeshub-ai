@@ -66,6 +66,7 @@ from app.modules.indexing.vector_membership_backfill import (
 from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 from app.services.graph_db.common.utils import is_storage_document_id
 from app.services.messaging.utils import MessagingUtils
+from app.services.permissions.structure_generation import note_org_structure_change
 from app.telemetry.modules.soft_delete_metrics import (
     record_purge_run,
     record_purged,
@@ -596,6 +597,8 @@ class TrashPurger:
             self.logger.warning("Trash purge: could not remove kept record groups in org %s: %s", org_id, exc)
         if removed:
             self.logger.info("Trash purge: removed %d record group(s) kept for the trash in org %s", removed, org_id)
+            # deleted record groups: a structural write made outside the transaction store, on connectors we cannot name
+            await note_org_structure_change(self.graph, org_id, self.logger)
         return removed, stop
 
     async def _finish(self, state: PurgeState) -> None:

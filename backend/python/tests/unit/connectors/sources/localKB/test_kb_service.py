@@ -1950,7 +1950,7 @@ class TestCreateKbPermissions:
 
         assert result == failure
         assert service.graph_provider.create_kb_permissions.await_args.kwargs["user_ids"] == ["gk_u2"]
-        notified.assert_awaited_once_with("kb1")
+        notified.assert_awaited_once_with("kb1", scope_org=None)  # no org bound in this test: the global bump
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("role", ["ORGANIZER", "COMMENTER", "FILEORGANIZER"])
@@ -3471,6 +3471,21 @@ class TestUploadRecordsPipeline:
         file_rec = {"name": "root.pdf", "mimeType": "application/pdf", "isFile": True}
         built = service._build_kb_file_record("kb1", record, file_rec, None, "http://storage:3001")
         assert built.fetch_signed_url is None
+
+    def test_build_kb_file_record_ignores_client_statuses_and_content_id(self, service) -> None:
+        record = _minimal_upload_record_dict(
+            indexingStatus=ProgressStatus.COMPLETED.value,
+            extractionStatus=ProgressStatus.COMPLETED.value,
+            virtualRecordId="vr-client",
+            isPlaceholder=True,
+            isInternal=True,
+        )
+        file_rec = {"name": "root.pdf", "mimeType": "application/pdf", "isFile": False}
+        built = service._build_kb_file_record("kb1", record, file_rec, None, "http://storage:3001")
+        assert built.indexing_status == ProgressStatus.QUEUED.value
+        assert built.extraction_status == ProgressStatus.NOT_STARTED.value
+        assert built.virtual_record_id is None
+        assert (built.is_placeholder, built.is_internal, built.is_file) == (False, False, True)
 
     def test_build_kb_file_record_stamps_uploader(self, service) -> None:
         record = _minimal_upload_record_dict()

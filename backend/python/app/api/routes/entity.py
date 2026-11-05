@@ -12,8 +12,15 @@ from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes, TokenScopes
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
-from app.core.org_context import current_org_id
-from app.services.cache.invalidation_hooks import notify_connector_sync_completed
+from app.core.org_context import (
+    MissingOrgContext,
+    SystemContextNotAllowed,
+    current_org_id,
+)
+from app.services.cache.invalidation_hooks import (
+    notify_connector_sync_completed,
+    notify_principals_changed,
+)
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
 from app.utils.logger import create_logger
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -234,6 +241,16 @@ async def _validate_and_filter_owner_updates(
     return filtered_updates, total_owner_count
 
 
+async def _principals_changed() -> None:
+    """Move the viewer-scope version after a team write. Runs in `finally`, so it must not raise: with no org bound
+    (`current_org_id` asserts one) the global counter moves, which is wider and therefore safe."""
+    try:
+        org_id: str | None = current_org_id()
+    except (MissingOrgContext, SystemContextNotAllowed, AssertionError):
+        org_id = None
+    await notify_principals_changed(org_id)
+
+
 @router.post("/team", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def create_team(request: Request) -> JSONResponse:
     """Create a team"""
@@ -342,6 +359,9 @@ async def create_team(request: Request) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error in create_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=action_failed("create this team")) from e
+    finally:
+        # Membership edges decide what people can read; the viewer-scope cache version moves with them.
+        await _principals_changed()
     logger.info(f"Team created successfully: {team_body}")
 
     # The team is committed by now. The providers answer None to a failed read, and
@@ -470,6 +490,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
     if body_dict.get("description") is not None:
         updates["description"] = body_dict.get("description")
 
+    members_written = False       # the version moves only when a membership write was attempted
     try:
         # Update team basic info (always update timestamp)
         result = await graph_provider.update_node(team_id, CollectionNames.TEAMS.value, updates)
@@ -514,6 +535,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         if remove_user_mongo_ids:
             remove_graph_keys = [mongo_to_key[mid] for mid in remove_user_mongo_ids]
             await _validate_owner_removal(graph_provider, team_id, remove_graph_keys, logger)
+            members_written = True
             deleted_list = await graph_provider.delete_team_member_edges(
                 team_id=team_id,
                 user_ids=remove_graph_keys
@@ -541,6 +563,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
 
                 if filtered_updates:
                     try:
+                        members_written = True
                         updated_permissions = await graph_provider.batch_update_team_member_roles(
                             team_id=team_id,
                             user_roles=filtered_updates,
@@ -573,6 +596,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                 })
 
             if user_team_edges:
+                members_written = True
                 result = await graph_provider.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
                 if result:
                     logger.info(f"Added {len(user_team_edges)} users to team {team_id}")
@@ -596,6 +620,10 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error in update_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update team")
+    finally:
+        # Members may have been added, removed or re-roled before an error: move the version either way.
+        if members_written:
+            await _principals_changed()
 
 @router.delete("/team/{team_id}", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def delete_team(request: Request, team_id: str) -> JSONResponse:
@@ -650,6 +678,8 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error in delete_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete team")
+    finally:
+        await _principals_changed()
 
 @router.get("/user/teams", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_user_teams(

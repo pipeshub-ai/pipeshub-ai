@@ -19,8 +19,7 @@ def _arango() -> ArangoHTTPProvider:
 
 
 def _neo4j() -> Neo4jProvider:
-    p = Neo4jProvider.__new__(Neo4jProvider)
-    p.logger = MagicMock()
+    p = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
     p.client = MagicMock()
     p.client.execute_query = AsyncMock(return_value=[])
     return p

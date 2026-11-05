@@ -10,6 +10,7 @@ class config_node_constants(Enum):
     QDRANT = "/services/qdrant"
     REDIS = "/services/redis"
     REDIS_VECTOR = "/services/redis-vector"
+    PGVECTOR = "/services/pgvector"
     OPENSEARCH = "/services/opensearch"
     AI_MODELS = "/services/aiModels"
     AI_MODELS_EMBEDDING = "/services/aiModels/embedding"
