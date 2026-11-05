@@ -19,6 +19,7 @@ from app.agent_loop_lib.core.scope import RunScope, TurnScope
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agents.agent_loop.context import AgentContext
+from app.agents.agent_loop.coverage.dispute import DISPUTE_SYSTEM
 from app.agents.agent_loop.coverage.facets import Facet, FacetPlan
 from app.agents.agent_loop.coverage.gate import Gap, GateDecision
 from app.agents.agent_loop.coverage.opening import FramingHit
@@ -359,6 +360,20 @@ class TestDisputeChecker:
         state = coverage_state(context.tool_state)
         assert state.gate_rounds == 1 and state.counters["gate_opening_rewrites"] == 1
         assert state.counters["gate_dispute_checks"] == 1
+
+    async def test_one_call_per_answer_even_over_several_gate_rounds(self, checker_on, monkeypatch) -> None:
+        monkeypatch.setenv("COVERAGE_LOOP_GATE_ROUNDS", "3")
+        monkeypatch.setattr(gate_module, "assess_draft", _decision(Gap("facet", "EU region", "q")))
+        llm = _dispute_reply()
+        llm.ainvoke = AsyncMock(return_value=AIMessage(content=json.dumps({"violations": []})))
+        monkeypatch.setattr(gate_module, "coverage_llm", AsyncMock(return_value=llm))
+        context = self._context()
+        gate = coverage_gate(context)
+        for _ in range(2):
+            await run_post_model(gate, AssistantMessage(content=_PAYROLL_DRAFT), scope=_scope())
+        dispute_calls = [call for call in llm.ainvoke.await_args_list if call.args[0][0].content == DISPUTE_SYSTEM]
+        assert len(dispute_calls) == 1
+        assert coverage_state(context.tool_state).counters["gate_dispute_checks"] == 1
 
     @pytest.mark.parametrize("violation", [("opening_concedes", "x"), ("internal_error", "y"), ("rival_value_mixed", "z")])
     async def test_other_kinds_do_not_fire(self, checker_on, monkeypatch, violation) -> None:

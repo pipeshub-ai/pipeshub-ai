@@ -271,13 +271,16 @@ def _wants_dispute_check(context: "AgentContext", text: str, framing: list[Frami
         not framing
         and answer_dispute_checker_enabled()
         and not coverage_state(context.tool_state).opening_rewrite_sent
+        and not coverage_state(context.tool_state).dispute_checked
         and not framing_exempt(text)
     )
 
 
 async def _dispute_hits(context: "AgentContext", text: str) -> list[FramingHit]:
     """Never raises: on a timeout or an error the draft has no dispute."""
-    coverage_state(context.tool_state).bump("gate_dispute_checks")
+    state = coverage_state(context.tool_state)
+    state.dispute_checked = True
+    state.bump("gate_dispute_checks")
     try:
         llm = await coverage_llm(context.config_service, context.org_id, fallback=context.llm)
         quotes = await disputed_quotes(

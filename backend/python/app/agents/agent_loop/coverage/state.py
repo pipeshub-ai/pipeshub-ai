@@ -24,6 +24,7 @@ class CoverageState:
     planned: bool = False
     gate_rounds: int = 0
     opening_rewrite_sent: bool = False
+    dispute_checked: bool = False
     searched: list[str] = field(default_factory=list[str])
     counters: dict[str, int] = field(default_factory=dict[str, int])
 
