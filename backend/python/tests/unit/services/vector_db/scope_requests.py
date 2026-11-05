@@ -66,11 +66,13 @@ def _opensearch() -> tuple[Any, AsyncMock]:
     return svc, client
 
 
-def _redis(tagvals: list[bytes]) -> tuple[Any, AsyncMock]:
+def _redis(tagvals: list[bytes], info: list | None = None) -> tuple[Any, AsyncMock]:
     svc = RedisVectorService(RedisVectorConfig(host="localhost", port=6379))
     client = AsyncMock()
 
     async def execute(*cmd: Any) -> Any:  # noqa: ANN401
+        if cmd[0] == "FT.INFO":
+            return info if info is not None else [0]
         return tagvals if cmd[0] == "FT.TAGVALS" else [0]
 
     client.execute_command = AsyncMock(side_effect=execute)
@@ -84,7 +86,7 @@ def _bytes(value: object) -> str:
     return f"<{type(value).__name__}:{len(raw)}:{hashlib.sha256(raw).hexdigest()[:16]}>"
 
 
-async def captured(store: str, requests: list[HybridSearchRequest], *, tagvals: list[bytes] | None = None) -> list[Any]:
+async def captured(store: str, requests: list[HybridSearchRequest], *, tagvals: list[bytes] | None = None, info: list | None = None) -> list[Any]:
     """The commands the store's client received for ``requests`` (JSON-able, in order)."""
     if store == "qdrant":
         svc, client = _qdrant()
@@ -94,6 +96,6 @@ async def captured(store: str, requests: list[HybridSearchRequest], *, tagvals: 
         svc, client = _opensearch()
         await svc.query_nearest_points("col", requests)
         return sorted((json.loads(json.dumps({"kwargs": c.kwargs}, default=str)) for c in client.search.await_args_list), key=json.dumps)
-    svc, client = _redis([b"c1", b"c9"] if tagvals is None else tagvals)
+    svc, client = _redis([b"c1", b"c9"] if tagvals is None else tagvals, info)
     await svc.query_nearest_points("col", requests)
     return sorted(([a if isinstance(a, str) else _bytes(a) for a in c.args] for c in client.execute_command.await_args_list), key=json.dumps)

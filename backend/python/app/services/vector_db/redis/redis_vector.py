@@ -48,10 +48,10 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.services.permissions.metrics import SCOPE_PREFILTER_DROPPED
+from app.services.permissions.metrics import SCOPE_PREFILTER_CAPPED, SCOPE_PREFILTER_DROPPED
 from app.services.permissions.scope_fields import PATH_IDS_FIELD
 from app.services.vector_db import scope_expr as sx
-from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD
+from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD, SCOPE_KEYWORD_INDEXES
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
     ScopeFilterTooLarge,
@@ -541,10 +541,13 @@ class RedisVectorService(IVectorDBService):
         redis_alias = field_name.replace(".", "_")
         field_type = {"keyword": "TAG", "integer": "NUMERIC"}.get(field_schema.get("type"), "TEXT")
         try:
+            # The scope fields are new in this release line: tags that tell `X` from `x`, so an exclusion can be carried by the query. (The membership
+            # tags created with the index in older releases cannot be changed and keep matching without case.)
+            case = ["CASESENSITIVE"] if field_type == "TAG" and field_name in {name for name, _ in SCOPE_KEYWORD_INDEXES} else []
             await self.client.execute_command(  # type: ignore
                 "FT.ALTER", idx,
                 "SCHEMA", "ADD",
-                redis_alias, field_type,
+                redis_alias, field_type, *case,
             )
         except Exception as e:
             err = str(e).lower()
@@ -1136,6 +1139,10 @@ class RedisVectorService(IVectorDBService):
             if len(kept) >= req.limit or len(found) < asked or asked >= MAX_SCOPE_CANDIDATES:
                 if len(kept) != len(found):      # counted once, on the answer that is returned, not on every widening
                     SCOPE_PREFILTER_DROPPED.inc("redis", value=len(found) - len(kept))
+                if len(kept) < req.limit and len(found) >= asked:      # the candidates ran into the cap, not out: an answer that may be short
+                    SCOPE_PREFILTER_CAPPED.inc("redis")
+                    logger.warning("scoped Redis search asked for %d candidates, %d passed the exact rule, %d wanted: the answer may be short",
+                                   asked, len(kept), req.limit)
                 return kept[: req.limit]
             asked = min(asked * 2, MAX_SCOPE_CANDIDATES)
 
@@ -1259,9 +1266,10 @@ class RedisVectorService(IVectorDBService):
         sx.check_size(flt, "Redis")
         refuse_unsafe_ids(flt)
         node = sx.admits(flt)
-        # Excluded scopes are left out of the query and enforced by the exact check on the points it returns: a tag query would drop a point
-        # that stores ``X`` for an excluded ``x``, which the exact rule treats as another id.
-        node = sx.relax(node, [sx.Has(PATH_IDS_FIELD, tuple(sorted(flt.excluded)))])
+        # With a case-sensitive ``pathIds`` the query carries the excluded scopes. Without it they are left out and enforced by the exact check on
+        # the points the query returns: a case-insensitive tag query would drop a point that stores ``X`` for an excluded ``x``.
+        if PATH_IDS_FIELD not in await self._case_sensitive_fields(idx):      # an index from before the scope tags were case-sensitive
+            node = sx.relax(node, [sx.Has(PATH_IDS_FIELD, tuple(sorted(flt.excluded)))])
         outside: dict[str, tuple[str, ...]] = {}
         if node != sx.FALSE:
             held = await self.client.execute_command("FT.TAGVALS", idx, CONNECTOR_IDS_FIELD)  # type: ignore
@@ -1270,6 +1278,25 @@ class RedisVectorService(IVectorDBService):
                 raise ScopeFilterTooLarge(f"Redis: the index holds more than {sx.MAX_IDS['Redis']} connectors outside the filter")
             outside[CONNECTOR_IDS_FIELD] = stale
         return scope_query(node, outside)
+
+    async def _case_sensitive_fields(self, idx: str) -> frozenset[str]:
+        """The TAG fields of the index declared ``CASESENSITIVE`` (read from ``FT.INFO``, kept for a minute; unreadable means none)."""
+        cache: dict[str, tuple[float, frozenset[str]]] = self.__dict__.setdefault("_case_fields", {})
+        hit = cache.get(idx)
+        now = time.monotonic()
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        found: set[str] = set()
+        try:
+            attributes = _parse_ft_info(await self.client.execute_command("FT.INFO", idx)).get("attributes") or []  # type: ignore
+            for attribute in attributes:
+                tokens = [t.decode() if isinstance(t, bytes) else str(t) for t in attribute]
+                if "CASESENSITIVE" in tokens and "identifier" in tokens:
+                    found.add(tokens[tokens.index("identifier") + 1])
+        except Exception:
+            found = set()
+        cache[idx] = (now + 60.0, frozenset(found))
+        return cache[idx][1]
 
     async def _text_only_search(
         self, idx: str, query: str, limit: int

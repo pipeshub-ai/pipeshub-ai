@@ -30,3 +30,9 @@ SCOPE_PREFILTER_DROPPED = METRICS_BACKEND.counter(
     "just before searching), dropped before the answer is returned, by store",
     ["store"],
 )
+SCOPE_PREFILTER_CAPPED = METRICS_BACKEND.counter(
+    "pipeshub_scope_prefilter_capped_total",
+    "Scoped searches that asked for the most candidates a store allows and still found fewer valid points than the limit (the candidates the query "
+    "let through were refused by the exact rule), by store",
+    ["store"],
+)

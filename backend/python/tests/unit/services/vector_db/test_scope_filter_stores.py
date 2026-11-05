@@ -345,3 +345,66 @@ async def test_redis_keeps_a_point_that_stores_a_capital_where_the_filter_exclud
     svc._search_once = once  # type: ignore[method-assign]
     req = dataclasses.replace(sr.plain_requests()["dense_only"], limit=5, scope_filter=flt(readable_scopes=frozenset({"s1"}), excluded=frozenset({"x1"})))
     assert [r.id for r in await svc._run_single_hybrid_query("idx", "c", req)] == ["cap"]
+
+
+def ft_info(*case_sensitive: str) -> list:
+    """An FT.INFO reply whose attributes list the given fields as CASESENSITIVE tags (and connectorIds as a plain one)."""
+    attrs = [[b"identifier", name.encode(), b"attribute", name.encode(), b"type", b"TAG", b"SEPARATOR", b",", b"CASESENSITIVE"] for name in case_sensitive]
+    attrs.append([b"identifier", b"connectorIds", b"attribute", b"connectorIds", b"type", b"TAG", b"SEPARATOR", b","])
+    return [b"index_name", b"idx", b"attributes", attrs]
+
+
+async def test_redis_carries_the_excluded_scopes_in_its_query_when_the_path_tag_tells_case_apart() -> None:
+    f = flt(readable_scopes=frozenset({"s1"}), excluded=frozenset({"x1"}))
+    sensitive = redis_filters(await sr.captured("redis", [scoped("dense_only", f)], tagvals=[b"c1"], info=ft_info("pathIds")))[1]
+    relaxed = redis_filters(await sr.captured("redis", [scoped("dense_only", f)], tagvals=[b"c1"], info=ft_info()))[1]
+    assert "-(@pathIds:{x1})" in sensitive and "x1" not in relaxed                  # an older index (case-insensitive tags) leaves it to the exact check
+    unreadable = redis_filters(await sr.captured("redis", [scoped("dense_only", f)], tagvals=[b"c1"]))[1]
+    assert "x1" not in unreadable                                                    # and so does an index whose FT.INFO cannot be read
+
+
+async def test_the_scope_tags_are_created_case_sensitive_and_the_others_are_not() -> None:
+    from unittest.mock import AsyncMock
+
+    from app.services.vector_db.redis.config import RedisVectorConfig
+    from app.services.vector_db.redis.redis_vector import RedisVectorService
+
+    svc = RedisVectorService(RedisVectorConfig(host="localhost", port=6379))
+    svc.client = AsyncMock()
+    for name, kind in (("pathIds", "keyword"), ("aclScope", "keyword"), ("scopeStamp", "keyword"), ("connectorIds", "keyword"),
+                       ("scopeFieldsVersion", "integer"), ("metadata.orgId", "keyword")):
+        await svc.create_index("col", name, {"type": kind})
+    altered = {c.args[4]: c.args[5:] for c in svc.client.execute_command.await_args_list}
+    assert altered == {"pathIds": ("TAG", "CASESENSITIVE"), "aclScope": ("TAG", "CASESENSITIVE"), "scopeStamp": ("TAG", "CASESENSITIVE"),
+                       "connectorIds": ("TAG",), "scopeFieldsVersion": ("NUMERIC",), "metadata_orgId": ("TAG",)}
+
+
+async def test_a_search_that_runs_into_the_candidate_cap_with_too_few_valid_points_is_counted_and_warned(monkeypatch, caplog) -> None:
+    import dataclasses
+
+    from app.services.vector_db.models import SearchResult
+    from app.services.vector_db.redis import redis_vector
+
+    class Rec:
+        capped = 0
+
+        def inc(self, *labels: str, value: float = 1.0) -> None:
+            Rec.capped += 1
+
+    monkeypatch.setattr(redis_vector, "SCOPE_PREFILTER_CAPPED", Rec())
+    monkeypatch.setattr(redis_vector, "MAX_SCOPE_CANDIDATES", 4)
+    bad = {"connectorIds": ["C1"], "scopeStamp": "container", "scopeFieldsVersion": VERSION, "scopeGeneration": GENERATION, "recordGroupIds": ["g1"]}
+    ranked = [SearchResult(f"p{i}", 1.0 - i / 100, bad) for i in range(10)]            # all refused by the exact rule
+    svc = redis_vector.RedisVectorService.__new__(redis_vector.RedisVectorService)
+
+    async def once(idx: str, coll: str, req: object, limit: int) -> list:
+        return ranked[:limit]
+
+    svc._search_once = once  # type: ignore[method-assign]
+    req = dataclasses.replace(sr.plain_requests()["dense_only"], limit=1, scope_filter=flt(open_apps=frozenset()))
+    with caplog.at_level("WARNING"):
+        assert await svc._run_single_hybrid_query("idx", "c", req) == []
+    assert Rec.capped == 1 and "the answer may be short" in caplog.text
+    ranked[:] = ranked[:2]                                                               # the candidates run out before the cap: not a cap
+    Rec.capped = 0
+    assert await svc._run_single_hybrid_query("idx", "c", req) == [] and Rec.capped == 0
