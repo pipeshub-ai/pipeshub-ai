@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from app.services.graph_db.postgres.kg import drainer, legacy
 from app.services.graph_db.postgres.kg import worker as worker_mod
 from app.services.graph_db.postgres.kg.worker import KgWorker
 
@@ -88,3 +89,45 @@ async def test_stop_does_not_wait_out_the_backoff(monkeypatch: pytest.MonkeyPatc
     await asyncio.sleep(0.1)                            # it is in the backoff now: the pass is over and `_more` said rows wait
     await asyncio.wait_for(w.stop(), 5.0)
     assert w._task.done()
+
+
+async def test_stop_does_not_wait_for_a_drain_that_a_steady_writer_keeps_going(monkeypatch: pytest.MonkeyPatch) -> None:
+    """While writes keep the log non-empty a pass would take page after page for ever: stop is looked at between pages, and a page already started is finished."""
+    pages = {"started": 0, "finished": 0}
+
+    async def one_page(_db: object, _org: str, *, limit: int) -> int:
+        pages["started"] += 1
+        await asyncio.sleep(0.01)                       # a page is a unit of its own: it runs to its end
+        pages["finished"] += 1
+        return 1                                        # and the log is never empty
+
+    async def orgs() -> list[str]:
+        return ["org-a"]
+
+    async def no_publish(_tx: object, _org: str) -> None:
+        return None
+    monkeypatch.setattr(drainer, "drain", one_page)
+    monkeypatch.setattr(legacy, "publish", no_publish)
+    w = KgWorker(_NoUow(), orgs, dsn=None, poll_s=0.05)  # type: ignore[arg-type]
+    w.start()
+    try:
+        assert await until(lambda: pages["finished"] >= 3), "the drain never started"
+        await asyncio.wait_for(w.stop(), 5.0)
+        assert w._task.done()
+        assert pages["started"] == pages["finished"]    # no page was cut in the middle
+    finally:
+        if w._task is not None and not w._task.done():
+            w._task.cancel()
+
+
+class _NoUow:
+    """The gauges are not under test: a unit of work that opens and does nothing."""
+
+    def uow(self) -> object:
+        class Unit:
+            async def __aenter__(self) -> object:
+                return object()
+
+            async def __aexit__(self, *_a: object) -> None:
+                return None
+        return Unit()

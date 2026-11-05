@@ -56,7 +56,9 @@ class KgWorker:
         its own error handling: a log that cannot be drained (``drain_or_retry`` counts it and leaves the rows) must not keep records hidden, and jobs that fail must not stop the projection."""
         rows = 0
         for org in await self._orgs():
-            rows += await drain_or_retry(self._db, org, page=self._page)
+            if self._stop.is_set():
+                break                                      # what is left stays in the log for the next start
+            rows += await drain_or_retry(self._db, org, page=self._page, stop=self._stop)
             try:
                 rows += await restamp.run_jobs(self._db, org, self.id, stale_ms=self._stale, batch=self._batch)
             except Exception:
