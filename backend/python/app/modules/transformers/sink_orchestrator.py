@@ -315,8 +315,11 @@ class SinkOrchestrator(Transformer):
             record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
             self.logger.debug(f"Saving reconciliation metadata for record {record_id}")
             with stage("graph.status"):
-                await self._update_indexing_status(ctx)
-            # await self.graphdb.apply(ctx)
+                if not await self._update_indexing_status(ctx):
+                    # Deleted while its vectors were written: nothing more is saved for it
+                    # (a reconciliation save would bring back a mapping the delete removed),
+                    # and the event ends as an expected outcome, without enrichment.
+                    raise RecordDeletedError(record_id)
             with stage("blob.metadata"):
                 await self._save_reconciliation_metadata(ctx)
             with stage("entities.identity"):

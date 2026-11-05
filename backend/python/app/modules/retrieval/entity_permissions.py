@@ -99,6 +99,8 @@ PREVIEW_RECORD_COUNT = 3
 SEARCH_SCOPE_MAX_ENTITIES = 5
 SEARCH_SCOPE_MAX_RECORDS = 500
 SEARCH_SCOPE_MAX_SCAN = 2000
+# Readable records one count reaches before it reports "at least" instead of a total.
+COUNT_MAX_RECORDS = 1000
 
 _ACCESS_CONTEXT_CACHE_KEY = "_kg_entity_access_context"
 
@@ -598,7 +600,11 @@ async def search_entities_for_user(
     readable record spells yet, all within ``SEARCH_DEADLINE_SECONDS``, extended
     so the probes get at least ``PROBE_MIN_SECONDS`` after the vector request.
     Raises ``EntitySearchTimedOut`` when time ran out before any match was
-    confirmed and named.
+    named and a match the user can reach was left undecided or unnamed: the
+    access check of the record groups the user reaches did not finish, or an
+    entity a readable record was found for was not named in time. Probe rounds
+    that ran out answer as no match, since only hits not yet found readable keep
+    them running.
     """
     started = time.monotonic()
     deadline = started + SEARCH_DEADLINE_SECONDS
@@ -673,8 +679,12 @@ async def search_entities_for_user(
         context.org_id, "; ".join(stats), len(probes), rounds, len(kept), timed_out,
         int((time.monotonic() - started) * 1000),
     )
-    if (timed_out or naming_timed_out) and not kept:
-        raise EntitySearchTimedOut("Entity search timed out before confirming access to any match")
+    # No round ran: the check of the record groups the user reaches stopped first.
+    reachable_group_undecided = timed_out and rounds == 0 and any(
+        p.entity_type == RECORD_GROUP_ENTITY_TYPE and p.entity_id in context.record_group_ids for p in probes
+    )
+    if not kept and ((naming_timed_out and kept_probes) or reachable_group_undecided):
+        raise EntitySearchTimedOut("Entity search timed out before naming a match the user can reach")
     return kept[:top_k]
 
 
@@ -906,7 +916,8 @@ async def list_accessible_entity_records(
     """Records connected to one entity that the user can access, newest
     first. ``next_cursor`` is an offset into the org- and connector-scoped
     candidate list; every row is decided by the access check, so a forged
-    cursor exposes nothing. No totals are returned. ``capped`` is set when the
+    cursor exposes nothing. The page carries no total (see
+    ``count_accessible_entity_records``). ``capped`` is set when the
     provider's scan of the entity hit its cap (see ``EntityRecordPage``)."""
     if entity_type not in SEARCHABLE_ENTITY_TYPES:
         raise ValueError(f"Unsupported entity type {entity_type!r}")
@@ -914,6 +925,50 @@ async def list_accessible_entity_records(
         graph_provider, context, {"id": entity_id, "type": entity_type},
         record_types=record_types, limit=limit, cursor=cursor, max_scan=max_scan,
     )
+
+
+@dataclass(frozen=True)
+class RecordCount:
+    """``exact`` is False when the count stopped before the entity's last
+    record (its own cap, the provider's scan cap or the deadline), so
+    ``count`` is then a minimum. The ids let counts of several entities be
+    joined without counting a record twice."""
+
+    record_ids: frozenset[str]
+    exact: bool
+
+    @property
+    def count(self) -> int:
+        return len(self.record_ids)
+
+    def __or__(self, other: "RecordCount") -> "RecordCount":
+        return RecordCount(self.record_ids | other.record_ids, self.exact and other.exact)
+
+
+async def count_accessible_entity_records(
+    graph_provider: "IGraphDBProvider",
+    context: EntityAccessContext,
+    *,
+    entity_id: str,
+    entity_type: str,
+    record_types: list[str] | None = None,
+    cursor: str | None = None,
+) -> RecordCount:
+    """How many records connected to one entity the user can access from
+    ``cursor`` on, by the same access-checked scan as the listing, so no
+    unreadable record counts."""
+    if entity_type not in SEARCHABLE_ENTITY_TYPES:
+        raise ValueError(f"Unsupported entity type {entity_type!r}")
+    page = await _list_ref_records(
+        graph_provider, context, {"id": entity_id, "type": entity_type},
+        record_types=record_types, limit=COUNT_MAX_RECORDS, cursor=cursor,
+        max_scan=SEARCH_SCOPE_MAX_SCAN, deadline_seconds=SEARCH_DEADLINE_SECONDS,
+    )
+    return RecordCount(_ids(page.records), exact=page.next_cursor is None and not page.capped)
+
+
+def _ids(records: Iterable[dict[str, Any]]) -> frozenset[str]:
+    return frozenset(str(r["_key"]) for r in records if r.get("_key"))
 
 
 async def list_accessible_person_records(
@@ -930,19 +985,102 @@ async def list_accessible_person_records(
     ``edge_types`` that the user can access, paged and decided exactly as
     :func:`list_accessible_entity_records`. Edge types outside the
     person allow-list are dropped."""
+    return await _list_ref_records(
+        graph_provider, context, _person_ref(user_ids, edge_types),
+        record_types=record_types, limit=limit, cursor=cursor,
+    )
+
+
+def _person_ref(user_ids: Iterable[str], edge_types: Iterable[str]) -> dict[str, Any]:
     wanted = set(edge_types)
     out_types = [t for t in PERSON_EDGES_TO_USER if t in wanted]
     in_types = [t for t in PERSON_EDGES_FROM_USER if t in wanted]
     ids = list(dict.fromkeys(i for i in user_ids if i))
     if not ids or not (out_types or in_types):
         raise ValueError("A person listing needs a user and at least one relation")
-    ref = {
+    return {
         "id": ids[0], "type": PERSON_ENTITY_TYPE, "userIds": ids,
         "outTypes": out_types, "inTypes": in_types,
     }
-    return await _list_ref_records(
-        graph_provider, context, ref, record_types=record_types, limit=limit, cursor=cursor,
-    )
+
+
+async def first_readable_offsets(
+    graph_provider: "IGraphDBProvider",
+    context: EntityAccessContext,
+    refs: list[dict[str, Any]],
+    *,
+    record_types: list[str] | None = None,
+    offset: int = 0,
+    deadline_seconds: float | None = None,
+) -> dict[tuple[str, str], int]:
+    """``{(type, id): candidate offset}`` of each ref's newest record the user
+    can read at or past ``offset``, for refs shaped as the listings build them.
+
+    All undecided refs share each round (one candidate query and one access
+    check), in windows that widen like the probes' and then stay at the
+    widest, until each ref has a readable record or runs out of candidates
+    (the provider's scan cap included), or the deadline passes. A ref left
+    out has no readable record, or the deadline stopped it first: callers
+    must treat the two alike, since telling them apart says the ref has
+    records the user cannot read.
+    """
+    budget = LISTING_DEADLINE_SECONDS if deadline_seconds is None else deadline_seconds
+    deadline = time.monotonic() + max(0.0, budget)
+    pending: dict[tuple[str, str], dict[str, Any]] = {}
+    for ref in refs:
+        connector_ids = context.connector_scope(ref["type"], ref["id"])
+        if connector_ids:
+            pending.setdefault((ref["type"], ref["id"]), {**ref, "connectorIds": connector_ids})
+    found: dict[tuple[str, str], int] = {}
+    walked = max(0, offset)
+    round_index = 0
+    while pending:
+        if round_index and time.monotonic() >= deadline:
+            break
+        planned_window = PROBE_WINDOWS[min(round_index, len(PROBE_WINDOWS) - 1)]
+        window = max(1, min(planned_window, PROBE_ROUND_BUDGET // len(pending)))
+        try:
+            by_entity = await _within(deadline, _fetch_permitted(
+                graph_provider, context, list(pending.values()), record_types=record_types,
+                limit_per_entity=1, offset=walked, window=window, deadline=deadline,
+            ))
+        except TimeoutError:
+            break
+        for key in list(pending):
+            rows = _rows_for(by_entity, *key)
+            if rows:
+                found[key] = walked + rows.examined - 1
+                del pending[key]
+            elif rows.window_size < window:
+                del pending[key]
+        # Every ref still pending found nothing, so it walked the whole window.
+        walked += window
+        round_index += 1
+    if pending:
+        logger.info(
+            "readable-record probe stopped at its deadline org=%s undecided=%d rounds=%d",
+            context.org_id, len(pending), round_index,
+        )
+    return found
+
+
+async def readable_person_offsets(
+    graph_provider: "IGraphDBProvider",
+    context: EntityAccessContext,
+    people: list[list[str]],
+    *,
+    edge_types: Iterable[str],
+    record_types: list[str] | None = None,
+) -> list[int | None]:
+    """For each person (the user ids of one email), the candidate offset of
+    their newest record linked by ``edge_types`` that the user can read, or
+    None: none readable, or the probe ran out of time first (see
+    :func:`first_readable_offsets`). A person decided None must not be
+    shown, counted or hinted at."""
+    edges = list(edge_types)
+    refs = [_person_ref(ids, edges) for ids in people]
+    found = await first_readable_offsets(graph_provider, context, refs, record_types=record_types)
+    return [found.get((PERSON_ENTITY_TYPE, ref["id"])) for ref in refs]
 
 
 async def _list_ref_records(
@@ -954,6 +1092,7 @@ async def _list_ref_records(
     limit: int,
     cursor: str | None,
     max_scan: int = MAX_SCAN_PER_CALL,
+    deadline_seconds: float | None = None,
 ) -> EntityRecordPage:
     entity_id, entity_type = ref["id"], ref["type"]
     offset = parse_cursor(cursor)
@@ -965,7 +1104,8 @@ async def _list_ref_records(
     records: list[dict[str, Any]] = []
     scanned = 0
     capped = False
-    deadline = time.monotonic() + LISTING_DEADLINE_SECONDS
+    budget = LISTING_DEADLINE_SECONDS if deadline_seconds is None else deadline_seconds
+    deadline = time.monotonic() + max(0.0, budget)
     planned_window = min(max(limit * 4, LISTING_WINDOW_MIN), LISTING_WINDOW_MAX)
     while scanned < max_scan:
         if scanned and time.monotonic() >= deadline:
@@ -1030,6 +1170,9 @@ async def _list_ref_records(
 
 
 __all__ = [
+    "COUNT_MAX_RECORDS",
+    "RecordCount",
+    "count_accessible_entity_records",
     "EntityAccessContext",
     "EntityAccessError",
     "EntityHit",
@@ -1045,8 +1188,10 @@ __all__ = [
     "SEARCH_SCOPE_MAX_SCAN",
     "TAXONOMY_ENTITY_TYPES",
     "admitted_node_ids",
+    "first_readable_offsets",
     "get_entity_access_context",
     "list_accessible_entity_records",
     "list_accessible_person_records",
+    "readable_person_offsets",
     "search_entities_for_user",
 ]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from decimal import Decimal
 from typing import Any, Callable, Collection, Dict, List, Optional, TYPE_CHECKING
 
 from langchain_core.tools import tool
@@ -555,6 +556,59 @@ async def _execute_mariadb_query(
             "error": f"MariaDB query failed: {friendly_sql_error(str(e))}"
         }
 
+
+# An empty result on a filter against a literal copied from the question was
+# answered as a confident "none" when the stored spelling or case differed.
+_IDENTIFIER_PART = r'(?:"(?:[^"]|"")+"|`[^`]+`|[A-Za-z_]\w*)'
+_TEXT_LITERAL_FILTER = re.compile(
+    rf"((?<![\w\"`]){_IDENTIFIER_PART}(?:\.{_IDENTIFIER_PART})*)\s*(?:=|\bI?LIKE\b)\s*'((?:[^']|'')+)'",
+    re.IGNORECASE,
+)
+_PREDICATE_START = re.compile(r"\b(?:WHERE|HAVING|ON)\b", re.IGNORECASE)
+_NUMBER = re.compile(r"\s*[-+]?\d+(?:\.\d+)?\s*")
+
+
+def _empty_result(rows: list[Any]) -> bool:
+    """No rows, or one row of only zeros and NULLs (a COUNT or SUM over nothing)."""
+    if not rows:
+        return True
+    if len(rows) > 1:
+        return False
+    values = rows[0].values() if isinstance(rows[0], dict) else rows[0]
+    return all(
+        value is None or (isinstance(value, (int, float, Decimal)) and not isinstance(value, bool) and value == 0)
+        for value in values
+    )
+
+
+def _zero_row_note(query: str, source_type: str, rows: list[Any]) -> str | None:
+    """A note when an empty result filtered on a text literal; ``None`` otherwise."""
+    # Escapes, dollar quoting and comments make a regex misread where literals and
+    # filters are; the note is optional, so skip those queries.
+    if not _empty_result(rows) or any(mark in query for mark in ("\\", "$", "--", "/*")):
+        return None
+    if source_type == "postgres":  # only the last statement runs there
+        query = query.rstrip().rstrip(";").rsplit(";", 1)[-1]
+    predicates = _PREDICATE_START.search(query)
+    if not predicates:
+        return None
+    for match in _TEXT_LITERAL_FILTER.finditer(query, predicates.start()):
+        column, literal = match.group(1), match.group(2).replace("''", "'").strip("%")
+        if column.upper() != "NOT" and not _NUMBER.fullmatch(literal):
+            break
+    else:
+        return None
+    # LOWER on both sides, in the database, is case-insensitive in every dialect and collation.
+    pattern = literal[:20].replace("'", "''")
+    return (
+        f"The result has no rows, or only zeros and NULLs. If rows were expected, the filter "
+        f"{column} = '{literal}' may not match the stored value, which can differ in spelling, "
+        f"case or abbreviation: look it up first (e.g. SELECT {column}, COUNT(*) ... WHERE "
+        f"LOWER({column}) LIKE LOWER('%{pattern}%') GROUP BY {column}) and rerun with the stored "
+        "value before reporting the result."
+    )
+
+
 async def _execute_query_impl(
     query: str,
     source_name: str,
@@ -653,6 +707,9 @@ async def _execute_query_impl(
         if rows_cut:
             final_result["rows_cut_at"] = SQL_MAX_ROWS
             final_result["markdown_result"] += f"\n\n_{truncation_note()}_"
+        zero_rows = _zero_row_note(query, source_type, rows)
+        if zero_rows:
+            final_result["markdown_result"] += f"\n\n_{zero_rows}_"
         logger.info(f"🔍 [_execute_query_impl] Final result: ok=True, row_count={len(rows)}, column_count={len(columns)}")
         return final_result
     else:

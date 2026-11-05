@@ -65,6 +65,7 @@ from app.modules.transformers.transformer import (
     TransformContext,
 )
 from app.services.artifact_registry.access import is_direct_share, reader_edge
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.model_identity.boundary import (
@@ -167,7 +168,10 @@ class ChatQuery(BaseModel):
     strictScope: bool = False
     # Set by Node for a project-scoped chat whose turn selects below app level:
     # the project's own sources (`{"apps": [...]}`), which the selected record
-    # groups, folders and records must lie in. Never taken from a client.
+    # groups, folders and records must lie in. Node builds it from the project and
+    # never copies it from the client's request. It only narrows the turn: a body
+    # that names other sources, or leaves it out, reaches no record beyond the
+    # caller's own access, as in a chat outside any project.
     allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
@@ -1137,6 +1141,7 @@ async def _grant_reader_permissions(
     ]
     if edges:
         await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
+        await notify_principals_changed(org_id)  # a new READER grant
     return len(edges)
 
 
@@ -1193,6 +1198,8 @@ async def _revoke_reader_permissions(
     ]
     if edges:
         await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
+    if edges or direct_kept:
+        await notify_principals_changed(org_id)  # a narrowing PERMISSION write
     return len(edges) + len(direct_kept)
 
 

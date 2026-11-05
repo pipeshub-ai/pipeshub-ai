@@ -62,6 +62,7 @@ describe('OAuthProviderController', () => {
     mockOAuthTokenService = {
       generateTokens: sinon.stub(),
       revokeToken: sinon.stub(),
+      revokeAgentToken: sinon.stub().resolves(false),
       introspectToken: sinon.stub(),
       refreshTokens: sinon.stub(),
     }
@@ -682,6 +683,25 @@ describe('OAuthProviderController', () => {
 
       await controller.revoke(req, mockRes, mockNext)
       expect(mockRes.status.calledWith(200)).to.be.true
+    })
+
+    it('revokes an agent credential without a client_id, and stops there', async () => {
+      mockOAuthTokenService.revokeAgentToken.resolves(true)
+      const req = { body: { token: 'agent-token' } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthTokenService.revokeAgentToken.calledOnceWith('agent-token')).to.be.true
+      expect(mockOAuthAppService.getAppByClientId.called).to.be.false
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
+      expect(mockRes.status.calledWith(200)).to.be.true
+    })
+
+    it('refuses a token that is no agent credential and names no client', async () => {
+      const req = { body: { token: 'tok' } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
     })
 
     it('should return 401 for invalid client credentials', async () => {

@@ -23,7 +23,15 @@ import math
 import re
 from typing import Any
 
-from app.services.vector_db.filters import build_filter_expression, canonical_filter_key
+from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.filters import (
+    build_filter_expression,
+    canonical_filter_key,
+    forbid_org_in_payload,
+    is_missing,
+    keep_org_in_overwrite,
+    require_filter_org,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -235,10 +243,13 @@ class InMemoryVectorDBService(IVectorDBService):
             VectorPoint(id=i, payload=copy.deepcopy(points[i].payload)) for i in ids if i in points
         ]
 
-    async def update_payload_by_ids(self, collection_name: str, point_ids: list[str], payload: dict) -> None:
+    async def update_payload_by_ids(self, collection_name: str, point_ids: list[str], payload: dict, *, org_id: str) -> None:
+        if is_missing(org_id):
+            raise OrgRequired("update_payload_by_ids needs the org of the points")
+        forbid_org_in_payload(payload)
         points = self._points(collection_name)
         for point_id in point_ids:
-            if point_id in points:
+            if point_id in points and points[point_id].payload.get("metadata", {}).get("orgId") == org_id:
                 points[point_id].payload.update(copy.deepcopy(payload))
 
     async def query_nearest_points(
@@ -312,6 +323,7 @@ class InMemoryVectorDBService(IVectorDBService):
         if not filter.has_positive_match():
             # A length bound alone also matches every point without the field.
             raise ValueError("refusing to delete with a filter that matches no value")
+        require_filter_org(filter)
         stored = self._points(collection_name)
         for point_id in [i for i, p in stored.items() if _passes(p.payload, filter)]:
             del stored[point_id]
@@ -319,6 +331,8 @@ class InMemoryVectorDBService(IVectorDBService):
     async def overwrite_payload(self, collection_name: str, payload: dict, points: FilterExpression) -> None:
         if points.is_empty():
             raise ValueError("refusing to overwrite payload with an empty filter")
+        require_filter_org(points)
+        keep_org_in_overwrite(payload, points)
         for point in self._points(collection_name).values():
             if _passes(point.payload, points):
                 point.payload = copy.deepcopy(payload)
@@ -328,6 +342,8 @@ class InMemoryVectorDBService(IVectorDBService):
     ) -> None:
         if filter.is_empty():
             raise ValueError("refusing to set payload with an empty filter")
+        require_filter_org(filter)
+        forbid_org_in_payload(payload)
         for point in self._points(collection_name).values():
             if _passes(point.payload, filter):
                 point.payload.update(copy.deepcopy(payload))

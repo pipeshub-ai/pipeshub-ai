@@ -166,6 +166,79 @@ describe('OIDCProviderController', () => {
     })
   })
 
+  // /auth.md: an agent's instructions for getting a credential, built from the same settings as discovery.
+  describe('authMd', () => {
+    const md = async (extra: (origin: string) => string[] = () => []) => {
+      const res = { type: sinon.stub().returnsThis(), send: sinon.stub() }
+      await controller.authMd({} as any, res as any, mockNext, extra)
+      expect(res.type.firstCall.args[0]).to.include('text/markdown')
+      return res.send.firstCall.args[0] as string
+    }
+
+    it('gives the device sign-in with this instance\'s client id and endpoints, and the MCP endpoint', async () => {
+      const out = await md()
+      expect(out).to.include('client_id=pipeshub-agent')
+      expect(out).to.include('http://localhost:3000/api/v1/oauth2/device_authorization')
+      expect(out).to.include('pipeshub login --url http://localhost:3000 --no-wait')
+      expect(out).to.include('`http://localhost:3000/mcp`')
+      expect(out).to.include('resource_metadata="http://localhost:3000/.well-known/oauth-protected-resource/mcp"')
+    })
+
+    // The scope is spelled out: the listed scopes, plus offline_access only where it is offered, so the token can refresh.
+    it('gives a raw device sign-in the exact scope, with offline_access only where it is offered', async () => {
+      mockAppConfig.mcpScopes = ['offline_access', 'kb:read', 'semantic:write']
+      let out = await md()
+      expect(out).to.include('`scope=semantic:write kb:read offline_access`')
+      expect(out).to.include('plus `offline_access` so it can refresh')
+      expect(out).to.include('comes with a refresh token')
+      expect(out).to.include('grant_type=refresh_token')
+      // Refresh tokens rotate; reusing a spent one revokes the sign-in.
+      expect(out).to.include('keep the `refresh_token` from the device-code response')
+      expect(out).to.include('store it in place of the old one')
+      // A pending poll is HTTP 400; a client that stops on 400 never finishes.
+      expect(out).to.include('authorization_pending`: keep polling')
+      expect(out).to.include('slow_down')
+      mockAppConfig.mcpScopes = ['kb:read']
+      out = await md()
+      expect(out).to.include('`scope=kb:read`')
+      expect(out).to.not.include('offline_access')
+      expect(out).to.not.include('refresh token')
+      expect(out).to.not.include('and refreshes it')
+    })
+
+    it('lists only the agent scopes this instance offers', async () => {
+      mockAppConfig.mcpScopes = ['openid', 'kb:read', 'semantic:write', 'org:admin']
+      const out = await md()
+      expect(out).to.include('`semantic:write`, `kb:read`')
+      expect(out).to.not.include('org:admin')
+    })
+
+    it('leaves out the device sign-in when it is off, and offers registration only with DCR on', async () => {
+      process.env.PIPESHUB_ENABLE_DEVICE_GRANT = 'false'
+      let out = await md()
+      expect(out).to.not.include('device_authorization')
+      expect(out).to.not.include('/register')
+      expect(out).to.include('Personal access tokens')
+      process.env.PIPESHUB_ENABLE_DCR = 'true'
+      out = await md()
+      expect(out).to.include('http://localhost:3000/api/v1/oauth2/register')
+    })
+
+    it('adds the edition\'s sections after the built-in ways in', async () => {
+      const out = await md((origin) => [`### Extra way in for ${origin}`])
+      expect(out).to.include('### Extra way in for http://localhost:3000')
+      expect(out.indexOf('### Extra way in')).to.be.greaterThan(out.indexOf('### A personal access token'))
+    })
+
+    it('passes a failure to next instead of answering', async () => {
+      mockFirstPartyDeviceAppService.getOrCreate.rejects(new Error('db down'))
+      const res = { type: sinon.stub().returnsThis(), send: sinon.stub() }
+      await controller.authMd({} as any, res as any, mockNext, () => [])
+      expect(mockNext.calledOnce).to.be.true
+      expect(res.send.called).to.be.false
+    })
+  })
+
   describe('jwks', () => {
     it('should return empty keys for HS256', async () => {
       await controller.jwks({} as any, mockRes, mockNext)

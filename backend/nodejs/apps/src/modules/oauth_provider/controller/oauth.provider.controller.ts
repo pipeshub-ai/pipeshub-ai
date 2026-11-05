@@ -43,6 +43,11 @@ import {
 } from '../types/knowledge_limit';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
 import { OAuthDeviceService } from '../services/oauth.device.service';
+import { AgentRegistrationService } from '../services/agent-registration.service';
+import {
+  AGENT_CLAIM_GRANT,
+  JWT_BEARER_GRANT,
+} from '../constants/agent-auth.constants';
 import { TokenExchangeService } from '../services/token-exchange.service';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import { clientTags } from '../../../libs/services/telemetry/identity';
@@ -72,6 +77,8 @@ export class OAuthProviderController {
     private oauthDeviceService: OAuthDeviceService,
     @inject('TokenExchangeService')
     private tokenExchangeService: TokenExchangeService,
+    @inject('AgentRegistrationService')
+    private agentRegistrationService: AgentRegistrationService,
   ) {}
 
   /**
@@ -361,6 +368,25 @@ export class OAuthProviderController {
         return;
       }
 
+      // The agent grants, like token exchange, authenticate with the credential they present (claim_token, assertion): no client_id.
+      if (
+        tokenRequest.grant_type === AGENT_CLAIM_GRANT ||
+        tokenRequest.grant_type === JWT_BEARER_GRANT
+      ) {
+        const issued =
+          tokenRequest.grant_type === AGENT_CLAIM_GRANT
+            ? await this.agentRegistrationService.claimGrant(
+                tokenRequest.claim_token ?? '',
+              )
+            : await this.agentRegistrationService.jwtBearerGrant(
+                tokenRequest.assertion ?? '',
+              );
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Pragma', 'no-cache');
+        res.json(issued);
+        return;
+      }
+
       if (!clientId) {
         throw new InvalidClientError('client_id is required');
       }
@@ -396,6 +422,8 @@ export class OAuthProviderController {
             );
 
           case 'urn:ietf:params:oauth:grant-type:token-exchange': // answered above
+          case AGENT_CLAIM_GRANT: // answered above
+          case JWT_BEARER_GRANT: // answered above
           default:
             throw new UnsupportedGrantTypeError(
               `Unsupported grant_type: ${tokenRequest.grant_type}`,
@@ -470,10 +498,19 @@ export class OAuthProviderController {
       const { token, token_type_hint, client_id, client_secret } = req.body as {
         token: string;
         token_type_hint?: 'refresh_token' | 'access_token';
-        client_id: string;
+        client_id?: string;
         // A JSON body can carry any type here, null included.
         client_secret?: unknown;
       };
+
+      // An agent's assertion or access token is its own credential: it has no client_id to authenticate.
+      if (await this.oauthTokenService.revokeAgentToken(token)) {
+        res.status(200).send();
+        return;
+      }
+      if (!client_id) {
+        throw new InvalidClientError('client_id is required');
+      }
 
       // RFC 7009: authenticate the client. A public client (the first-party
       // device app) has no secret and is identified by client_id alone, as the

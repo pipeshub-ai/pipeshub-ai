@@ -5,6 +5,7 @@
  * connected via StreamableHTTP transport.
  */
 
+import { createHash } from 'crypto';
 import { Response, NextFunction } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
@@ -221,7 +222,8 @@ export const handleMCPRequest =
         mayReadCode(req.user) &&
         (await callerHasCodeRepos(
           codeDeps,
-          `${req.user?.orgId}:${req.user?.userId}`,
+          // Per token too: an app's knowledge limit narrows which repos it reads.
+          `${req.user?.orgId}:${req.user?.userId}:${createHash('sha256').update(codeDeps.authorization).digest('hex')}`,
         ))
       ) {
         // A client asking for code only (`/mcp?tools=code`) is not sent the
