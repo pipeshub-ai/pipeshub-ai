@@ -5,6 +5,7 @@ request is answered by an in-memory stub and our databases are in-memory fakes.
 Retry waits are recorded rather than slept (see conftest ``backoff_sleeps``).
 """
 
+import contextlib
 import json
 import logging
 from collections.abc import Callable, Iterator
@@ -37,7 +38,7 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
-from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.sources.atlassian.jira_cloud.connector import IncompleteSyncError, JiraConnector
 from app.connectors.utils.record_ids import new_record_id
 from app.models.entities import (
     FileRecord,
@@ -1690,7 +1691,11 @@ class TestUnfinishedUserRead:
 
         checkpoints.sync_points.clear()
         search.add("ENG", None, json_response({"errorMessages": ["no"]}, status=status))
-        await run_full_sync(connector, site_db)
+        if status == 500:
+            with pytest.raises(IncompleteSyncError):
+                await run_full_sync(connector, site_db)
+        else:
+            await run_full_sync(connector, site_db)
 
         assert connector.full_sync_coverage().complete is complete
         assert site_db.kept_records == [], "only a refusal keeps the records"
@@ -2156,7 +2161,8 @@ class TestWhatASyncKeptAsStored:
         assert connector.full_sync_coverage().complete is True, "a clean run read everything"
 
         break_jira(api, search)
-        await connector.run_sync()
+        with contextlib.suppress(IncompleteSyncError):  # an unread issue search fails the run as well
+            await connector.run_sync()
 
         assert connector.full_sync_coverage().complete is False, "so nothing it did not see is unlinked"
 
