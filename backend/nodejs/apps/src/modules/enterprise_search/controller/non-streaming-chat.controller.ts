@@ -35,6 +35,7 @@ import {
 } from '../utils/project-context';
 import {
   buildUserQueryMessage,
+  conversationTitleFromQuery,
   extractModelInfo,
   searchDegradedMeta,
 } from '../utils/utils';
@@ -64,7 +65,7 @@ const sessionFields = (
   orgId,
   userId,
   initiator: userId,
-  title: String(body.query).slice(0, 100),
+  title: conversationTitleFromQuery(String(body.query)),
   lastActivityAt: Date.now(),
   status: CONVERSATION_STATUS.INPROGRESS,
   modelInfo: extractModelInfo(body),

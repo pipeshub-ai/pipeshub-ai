@@ -2,9 +2,16 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
+import fs from 'fs'
+import path from 'path'
+import {
+  QUOTED_SELECTION_FOOTER,
+  QUOTED_SELECTION_HEADER,
+} from '../../../../src/modules/enterprise_search/utils/quoted-selection'
 import {
   extractModelInfo,
   buildUserQueryMessage,
+  conversationTitleFromQuery,
   buildAIFailureResponseMessage,
   buildAIResponseMessage,
   formatPreviousConversations,
@@ -288,6 +295,33 @@ describe('Enterprise Search Utils', () => {
   // -----------------------------------------------------------------------
   // buildUserQueryMessage
   // -----------------------------------------------------------------------
+  describe('conversationTitleFromQuery', () => {
+    it('uses the follow-up when the query wraps a quoted excerpt', () => {
+      const query = 'Quoted excerpt:\n"""\nthe SLA is 99.9%\n"""\n\nWhat does this cover?'
+      expect(conversationTitleFromQuery(query)).to.equal('What does this cover?')
+    })
+
+    it('falls back to the excerpt when there is no follow-up', () => {
+      const query = 'Quoted excerpt:\n"""\nonly this\n"""\n\n'
+      expect(conversationTitleFromQuery(query)).to.equal('only this')
+    })
+
+    it('leaves a normal query unchanged aside from trimming', () => {
+      expect(conversationTitleFromQuery('  Plain question  ')).to.equal('Plain question')
+    })
+
+    it('uses the same quote markers as the frontend helper', () => {
+      const frontend = fs.readFileSync(
+        path.resolve(process.cwd(), '../../../frontend/app/(main)/chat/utils/quoted-selection.ts'),
+        'utf8',
+      )
+      expect(QUOTED_SELECTION_HEADER).to.equal('Quoted excerpt:\n"""\n')
+      expect(QUOTED_SELECTION_FOOTER).to.equal('\n"""\n\n')
+      expect(frontend).to.include("QUOTED_SELECTION_HEADER = 'Quoted excerpt:\\n\"\"\"\\n'")
+      expect(frontend).to.include("QUOTED_SELECTION_FOOTER = '\\n\"\"\"\\n\\n'")
+    })
+  })
+
   describe('buildUserQueryMessage', () => {
     it('should build a user query message with correct structure', () => {
       const result = buildUserQueryMessage('What is AI?')

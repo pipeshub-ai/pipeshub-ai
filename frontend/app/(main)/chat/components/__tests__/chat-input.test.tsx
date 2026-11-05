@@ -138,6 +138,7 @@ import { DRAFT_SAVE_DEBOUNCE_MS } from '@/chat/hooks/use-composer-draft';
 import { loadDraft, saveDraft } from '@/chat/utils/composer-draft';
 import { allowChatDraftWrites, discardAllChatDrafts } from '@/lib/storage/chat-drafts';
 import type { AttachmentRef } from '@/chat/types';
+import { formatQuotedSelection } from '@/chat/utils/quoted-selection';
 
 const initialChatState = useChatStore.getState();
 
@@ -1568,6 +1569,21 @@ describe('ChatInput — keeping an unsent message', () => {
     expect(loadDraft(KEY_NEW)).toBe('A question for a new chat');
   });
 
+  it('puts the quote chip back with the typed follow-up', () => {
+    openConversation('conv-1');
+    const first = renderInput({ persistDraft: true });
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    type('What does this cover?');
+    pause();
+    first.unmount();
+
+    renderInput({ persistDraft: true });
+    expect(composer().value).toBe('What does this cover?');
+    expect(screen.getByTestId('quoted-excerpt-chip').textContent).toContain('the SLA is 99.9%');
+  });
+
   it('forgets the draft once the message is sent', () => {
     const { onSend } = renderInput({ persistDraft: true });
     type('Which vendors renew in Q4?');
@@ -1982,5 +1998,89 @@ describe('ChatInput — a sent message is not kept as a draft', () => {
     await settleHost();
 
     expect(loadDraft(KEY_NEW)).toBe('the next question, typed during the answer');
+  });
+});
+
+describe('ChatInput — quote selected text', () => {
+  it('puts the excerpt on a chip and sends it with the follow-up', () => {
+    const { onSend } = renderInput();
+
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', {
+        text: 'the SLA is 99.9%',
+      });
+    });
+
+    expect(screen.getByTestId('quoted-excerpt-chip').textContent).toContain('the SLA is 99.9%');
+    expect(sendButton().getAttribute('aria-disabled')).toBe('false');
+
+    type('What does this cover?');
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith(
+      formatQuotedSelection('the SLA is 99.9%', 'What does this cover?'),
+      undefined,
+      undefined,
+    );
+    expect(screen.queryByTestId('quoted-excerpt-chip')).toBeNull();
+  });
+
+  it('sends the excerpt alone when the box is empty', () => {
+    const { onSend } = renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'only this' });
+    });
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith(formatQuotedSelection('only this', ''), undefined, undefined);
+  });
+
+  it('dismisses the quote chip without clearing the typed question', () => {
+    const { onSend } = renderInput();
+    type('Keep this');
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'quoted bit' });
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove quote' }));
+    expect(screen.queryByTestId('quoted-excerpt-chip')).toBeNull();
+    expect(composer().value).toBe('Keep this');
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith('Keep this', undefined, undefined);
+  });
+
+  it('clears the quote when regenerate starts', () => {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'quoted bit' });
+    });
+    expect(screen.getByTestId('quoted-excerpt-chip')).toBeTruthy();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', {
+        messageId: 'msg-7',
+        text: 'Which vendors renewed?',
+      });
+    });
+    expect(screen.queryByTestId('quoted-excerpt-chip')).toBeNull();
+    expect(screen.getByText('Regenerate response')).toBeTruthy();
+  });
+
+  it('restores a stored quote when editing that question', () => {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    renderInput();
+    const stored = formatQuotedSelection('the SLA is 99.9%', 'What does this cover?');
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: stored,
+      });
+    });
+    expect(screen.getByTestId('quoted-excerpt-chip').textContent).toContain('the SLA is 99.9%');
+    expect(composer().value).toBe('What does this cover?');
   });
 });
