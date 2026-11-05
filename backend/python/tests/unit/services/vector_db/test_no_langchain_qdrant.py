@@ -47,7 +47,11 @@ def test_no_langchain_qdrant_imports_in_vector_modules():
             else:
                 sys.modules[name] = entry
             if parent is None:
-                sys.modules.pop(parent_name, None)  # the package was loaded by the guard
+                package = sys.modules.pop(parent_name, None)  # the package was loaded by the guard
+                grandparent = sys.modules.get(parent_name.rpartition(".")[0])
+                package_name = parent_name.rpartition(".")[2]
+                if grandparent is not None and getattr(grandparent, package_name, None) is package:
+                    delattr(grandparent, package_name)  # the import bound it on its own parent too
             elif attribute is _MISSING:
                 if hasattr(parent, child):
                     delattr(parent, child)
@@ -70,6 +74,11 @@ _FRESH = textwrap.dedent(
     guard()
     left = sorted({{*_RELOADED, *parents}} & sys.modules.keys())
     assert not left, f"the guard left {{left}} in sys.modules"
+    bound = sorted(
+        name for name in {{*_RELOADED, *parents}}
+        if name.rpartition(".")[0] in sys.modules and hasattr(sys.modules[name.rpartition(".")[0]], name.rpartition(".")[2])
+    )
+    assert not bound, f"the guard left {{bound}} as attributes of their packages"
     """
 )
 
