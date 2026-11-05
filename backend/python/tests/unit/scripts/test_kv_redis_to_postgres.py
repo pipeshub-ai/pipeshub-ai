@@ -52,7 +52,7 @@ async def test_copies_raw_values_ttl_and_only_the_kv_namespace(redis) -> None:
     assert dst.rows == {"/services/a": b"enc-a", "/services/b": b"enc-b"}
     assert dst.ttls["/services/a"] is None
     assert 90 < dst.ttls["/services/b"] <= 100
-    assert out["copied"] == 2
+    assert out["written"] == 2 and out["changed"] == 2
     assert out["different_after"] == 0
 
 
@@ -65,9 +65,29 @@ async def test_namespace_is_honoured(redis) -> None:
 async def test_rerun_is_a_noop(redis) -> None:
     dst = FakePg()
     await copy_kv(_src(redis), dst)
+    before = (dict(dst.rows), dict(dst.ttls))
     out = await copy_kv(_src(redis), dst)
-    assert out["copied"] == 0
-    assert out["already_equal"] == 2
+    assert out["changed"] == 0 and out["unchanged"] == 2
+    assert dst.rows == before[0] and dst.ttls["/services/a"] is None
+
+
+async def test_an_equal_value_takes_the_expiry_redis_has(redis) -> None:
+    dst = FakePg({"/services/a": b"enc-a"})
+    dst.ttls["/services/a"] = 5  # same bytes, but would expire in PostgreSQL while Redis keeps it
+    await copy_kv(_src(redis), dst)
+    assert dst.ttls["/services/a"] is None
+
+
+async def test_a_key_that_expires_after_the_scan_is_not_written(redis) -> None:
+    class ExpiresDuringPreflight(FakePg):
+        async def get_key(self, key) -> bytes | None:
+            await redis.delete("pipeshub:kv:/services/b")
+            return await super().get_key(key)
+
+    dst = ExpiresDuringPreflight()
+    out = await copy_kv(_src(redis), dst)
+    assert "/services/b" not in dst.rows
+    assert out["expired_during_copy"] == 1
 
 
 async def test_a_different_value_refuses_before_any_write_unless_overwrite(redis) -> None:

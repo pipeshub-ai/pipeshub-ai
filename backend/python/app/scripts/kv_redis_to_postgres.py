@@ -13,7 +13,8 @@ state and are left alone. Values are copied as stored (already encrypted); they 
 printed. A key's remaining TTL becomes its expiry; a key already expired is not copied.
 
 A key PostgreSQL already holds with a different value stops the run before any write (exit 1, key
-names listed) unless ``--overwrite`` is given; equal values are left alone, so a re-run after a
+names listed) unless ``--overwrite`` is given. Every live key is written with the value and TTL Redis
+holds at that moment (equal values too, so PostgreSQL's expiry matches Redis's), so a re-run after a
 successful copy changes nothing. Stop the services first for a clean cutover: after the copy every
 copied key is compared with Redis again and re-copied if a service changed it meanwhile, but a key
 changed after that check needs another run. ``--dry-run`` reads only key names and prints counts per
@@ -70,11 +71,16 @@ async def copy_kv(
     summary |= {"skipped_expired": len(keys) - len(live), "conflicts": conflicts}
     if conflicts and not overwrite:  # refuse before any write
         return summary
-    copied = 0
-    for k, (value, ttl) in live.items():
-        if existing[k] != value:
-            await dst.create_key(k, value, overwrite=True, ttl=ttl)
-            copied += 1
+    written = changed = expired_late = 0
+    for k in live:
+        now = await _read(src, k)  # the value and TTL as of this write; a key that expired since the scan is skipped
+        if now is None:
+            expired_late += 1
+            continue
+        # written even when PostgreSQL holds the same value, so its expiry ends up the same as Redis's
+        await dst.create_key(k, now[0], overwrite=True, ttl=now[1])
+        written += 1
+        changed += existing[k] != now[0]
     recopied = 0
     for k in live:  # a key a service changed during the copy
         now = await _read(src, k)
@@ -86,7 +92,8 @@ async def copy_kv(
         now = await _read(src, k)
         if now and await dst.get_key(k) != now[0]:
             different += 1
-    return summary | {"copied": copied, "recopied": recopied, "already_equal": len(live) - copied, "different_after": different}
+    return summary | {"written": written, "changed": changed, "unchanged": written - changed, "expired_during_copy": expired_late,
+                      "recopied": recopied, "different_after": different}
 
 
 def _redis_store() -> RedisDistributedKeyValueStore[bytes]:
