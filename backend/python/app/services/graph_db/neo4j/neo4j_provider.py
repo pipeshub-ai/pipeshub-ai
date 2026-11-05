@@ -12821,9 +12821,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 ) if connector_id in user_apps_ids else []
                 access = {**gate, "by_connector": {},
                           "probe": {"connector_id": connector_id, "grantees": grantees}}
-            if record_id not in (await self.check_access(
+            checked = await self.check_access(
                 user_key, org_id, node_ids=[record_id], access=access, transaction=transaction,
-            )).node_ids:
+            )
+            # A placeholder is reachable for browsing, but it is not a readable record: it is refused here
+            # exactly like a record the user cannot read.
+            if record_id not in checked.node_ids or record_id in checked.placeholder_ids:
                 return None
 
             # Build comprehensive access query

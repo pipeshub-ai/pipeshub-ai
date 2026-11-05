@@ -1915,10 +1915,17 @@ async def accessible_node_ids(
     node_ids: set[str],
     user_id: str,
     org_id: str,
+    *,
+    with_placeholders: bool = False,
 ) -> set[str]:
     """The subset of ``node_ids`` (records, record groups, apps) the user may
     access. No identity means nothing is accessible; a user lookup that fails
-    raises PermissionVerificationUnavailableError, as the check itself does."""
+    raises PermissionVerificationUnavailableError, as the check itself does.
+
+    A placeholder record is left out: it is shown in listings, but it is not a
+    record to read, so a caller that serves a record's content or metadata gets
+    the same answer as for one the user cannot read. ``with_placeholders`` keeps
+    placeholders in, for a caller that only names related records."""
     if not node_ids or not user_id or not org_id:
         return set()
     try:
@@ -1928,9 +1935,8 @@ async def accessible_node_ids(
     user_key = (user or {}).get("id") or (user or {}).get("_key")
     if not user_key:
         return set()
-    return set((await graph_provider.check_access(
-        user_key, org_id, node_ids=node_ids,
-    )).node_ids)
+    result = await graph_provider.check_access(user_key, org_id, node_ids=node_ids)
+    return set(result.node_ids if with_placeholders else result.node_ids - result.placeholder_ids)
 
 
 async def accessible_node_ids_for_enrichment(
@@ -1942,7 +1948,7 @@ async def accessible_node_ids_for_enrichment(
     """``accessible_node_ids`` for context enrichment, which is optional: when the
     check cannot answer, no neighbour is named and the turn goes on."""
     try:
-        return await accessible_node_ids(graph_provider, node_ids, user_id, org_id)
+        return await accessible_node_ids(graph_provider, node_ids, user_id, org_id, with_placeholders=True)
     except PermissionVerificationUnavailableError as exc:
         logger.warning("Enrichment access check unavailable; naming no neighbours: %s", exc)
         return set()

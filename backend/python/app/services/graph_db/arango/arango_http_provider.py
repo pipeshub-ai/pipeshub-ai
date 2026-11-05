@@ -22875,9 +22875,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # access was granted (role, collection, folder) for the details, and
             # finds nothing for access through inheritance or a declaration.
             user_key = user.get("_key") or user.get("id")
-            if not user_key or record_id not in (await self.check_access(
+            if not user_key:
+                return None
+            checked = await self.check_access(
                 user_key, org_id, node_ids=[record_id], transaction=transaction,
-            )).node_ids:
+            )
+            # A placeholder is reachable for browsing, but it is not a readable record: it is refused here
+            # exactly like a record the user cannot read.
+            if record_id not in checked.node_ids or record_id in checked.placeholder_ids:
                 return None
 
             # Build app record filter for connector records

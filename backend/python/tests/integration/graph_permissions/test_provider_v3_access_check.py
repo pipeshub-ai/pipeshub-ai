@@ -205,13 +205,15 @@ async def test_membership_opens_only_a_declared_group(access_graph, provider) ->
 
 async def test_record_details_follow_the_check(access_graph, provider) -> None:
     """Record details and content are gated by the batch check:
-    details come back exactly for the records the check admits."""
+    details come back exactly for the records the check admits, except a
+    placeholder, which is listed but refused like an unreadable record."""
     records = [n["id"] for n in access_graph["nodes"] if n["kind"] == "Record"]
-    admitted = await _check(provider, records)
-    assert admitted and set(records) - admitted
+    check = await provider.check_access(USER_U, ORG, node_ids=records)
+    admitted = set(check.node_ids)
+    assert admitted and set(records) - admitted and check.placeholder_ids & admitted
     for record_id in records:
         details = await provider.check_record_access_with_details(USER_U_ID, ORG, record_id)
-        assert (details is not None) == (record_id in admitted), record_id
+        assert (details is not None) == (record_id in admitted - check.placeholder_ids), record_id
 
 
 async def test_details_of_a_record_admitted_without_a_role_read_as_reader(access_graph, provider) -> None:
