@@ -445,6 +445,21 @@ class TestStream:
         final = next(e for e in events if isinstance(e, StreamCompleteEvent)).response
         assert final.message.tool_calls[0].name == "search"
 
+    async def test_tool_calls_across_chunks_are_all_kept(self) -> None:
+        transport = _transport()
+        lines = self._ndjson(
+            {"message": {"content": "", "tool_calls": [{"function": {"name": "search", "arguments": {"q": "x"}}}]}},
+            {"message": {"content": "", "tool_calls": [{"function": {"name": "fetch", "arguments": {"u": "y"}}}]}},
+            {"message": {"content": ""}, "done": True},
+        )
+        fake_response = _FakeStreamResponse(lines)
+        transport._client.stream = MagicMock(return_value=_FakeStreamCM(fake_response))
+
+        events = [event async for event in transport.stream([UserMessage(content="search")])]
+        final = next(e for e in events if isinstance(e, StreamCompleteEvent)).response
+        assert [tc.name for tc in final.message.tool_calls] == ["search", "fetch"]
+        assert [tc.id for tc in final.message.tool_calls] == ["call_0", "call_1"]
+
     async def test_done_without_prior_message_uses_final_chunk_message(self) -> None:
         transport = _transport()
         lines = [json.dumps({"message": {"content": "solo"}, "done": True, "prompt_eval_count": 1, "eval_count": 1})]

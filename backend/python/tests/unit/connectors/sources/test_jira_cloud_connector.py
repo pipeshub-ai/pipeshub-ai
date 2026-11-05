@@ -33,7 +33,7 @@ Targets the ~607 uncovered lines to achieve 95%+ coverage by testing:
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 from uuid import uuid4
 
 import httpx
@@ -51,6 +51,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     GROUP_PAGE_SIZE,
     ISSUE_SEARCH_FIELDS,
     USER_PAGE_SIZE,
+    IncompleteSyncError,
     JiraConnector,
 )
 from app.models.entities import (
@@ -64,6 +65,7 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import NotificationSeverity, NotificationType
 
 
@@ -620,7 +622,13 @@ class TestRunSync:
         connector._sync_all_project_issues.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_run_sync_notifies_when_any_project_fails(self):
+    @pytest.mark.parametrize(
+        ("status", "raises", "kept"),
+        [(None, True, True), (500, True, True), (429, True, True), (403, False, True), (404, False, False)],
+    )
+    async def test_run_sync_notifies_when_any_project_fails(self, status, raises, kept):
+        # A read that may pass next time fails the run; a lasting answer (403, 404) does not. Either way the
+        # project's stored issues stay (noted as seen) and the full sync's removal is not held back for the others.
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.site_url = "https://company.atlassian.net"
@@ -646,24 +654,50 @@ class TestRunSync:
             "new_count": 1,
             "updated_count": 1,
             "failed_count": 1,
-            "failed_project_keys": ["KAN"],
+            "failed_project_keys": ["PROJ"],
+            "failed_project_statuses": {} if status is None else {"PROJ": status},
         })
         connector._update_issues_sync_checkpoint = AsyncMock()
         connector._handle_issue_deletions = AsyncMock()
+        connector._keep_stored_records = AsyncMock()
 
         with patch(
             "app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
             new_callable=AsyncMock,
             return_value=(None, None),
         ):
-            await connector.run_sync()
+            if raises:
+                with pytest.raises(IncompleteSyncError, match="PROJ"):
+                    await connector.run_sync()
+            else:
+                await connector.run_sync()
 
+        assert connector._keep_stored_records.await_args_list == ([call("proj-id-1")] if kept else [])
+        assert connector.full_sync_coverage().complete is True
         connector.notify.assert_awaited_once()
         notify_kwargs = connector.notify.await_args.kwargs
         assert notify_kwargs["type"] == NotificationType.CONNECTOR_SYNC_ERROR
         assert notify_kwargs["severity"] == NotificationSeverity.ERROR
-        assert "KAN" in notify_kwargs["message"]
+        assert "PROJ" in notify_kwargs["message"]
         connector._handle_issue_deletions.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_keeping_a_projects_records_as_stored_covers_soft_deleted_ones(self) -> None:
+        """A restored issue must come back with its edges, so the removal after a full sync must not take them."""
+        connector = _make_connector()
+        live, deleted = MagicMock(id="r-live"), MagicMock(id="r-deleted")
+        processor = connector.data_entities_processor
+        processor.note_kept_record_group = AsyncMock()
+        processor.note_kept_records = MagicMock()
+
+        async def records_in_group(connector_id, group_id, limit, after_key=None, *, visibility=RecordVisibility.LIVE) -> list[MagicMock]:
+            return [live, deleted] if visibility == RecordVisibility.ALL else [live]
+
+        processor.get_records_in_record_group = records_in_group
+
+        await connector._keep_stored_records("proj-id-1")
+
+        processor.note_kept_records.assert_called_once_with(connector.connector_id, ["r-live", "r-deleted"])
 
     @pytest.mark.asyncio
     async def test_run_sync_error_raises(self):

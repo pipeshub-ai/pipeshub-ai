@@ -14,7 +14,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from app.core.org_context import bind, spawn_detached
-from app.services.graph_db.postgres.kg import legacy
+from app.services.graph_db.postgres.kg import legacy, restamp
 from app.services.graph_db.postgres.kg.drainer import PAGE, _ctx, drain_or_retry, lag
 from app.services.pg_runtime import PgListener
 from app.telemetry.backend import METRICS_BACKEND
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from app.core.db import KernelDB
 
 logger = logging.getLogger(__name__)
-CHANNELS = ("pipeshub_kg_changes",)
+CHANNELS = ("pipeshub_kg_changes", "pipeshub_kg_restamp")
 RECHECK_S = 0.3
 MAX_DOUBLINGS = 8                                  # RECHECK_S * 2**8 is past any sensible poll interval
 LOOP_FAILED = METRICS_BACKEND.counter("pipeshub_kg_worker_loop_failed_total", "Iterations of the projection worker's loop that raised and were continued", ["where"])
@@ -38,8 +38,9 @@ def enabled() -> bool:
 class KgWorker:
     """``orgs()`` names the organisations to serve (one in the open-source edition). ``dsn``: a direct address to LISTEN on; without one the worker only polls."""
 
-    def __init__(self, db: KernelDB, orgs: Callable[[], Awaitable[list[str]]], *, dsn: str | None = None, poll_s: float = 5.0, page: int = PAGE) -> None:
-        self._db, self._orgs, self._dsn, self._poll, self._page = db, orgs, dsn, poll_s, page
+    def __init__(self, db: KernelDB, orgs: Callable[[], Awaitable[list[str]]], *, dsn: str | None = None, poll_s: float = 5.0, page: int = PAGE,
+                 stale_ms: int = restamp.STALE_MS, batch: int | None = None) -> None:
+        self._db, self._orgs, self._dsn, self._poll, self._page, self._stale, self._batch = db, orgs, dsn, poll_s, page, stale_ms, batch
         self.id = f"kg-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         self._wake = asyncio.Event()
         self._listeners: list[PgListener] = []
@@ -51,13 +52,19 @@ class KgWorker:
         self._wake.set()
 
     async def run_once(self) -> int:
-        """One pass over every org: drain the change log and publish the gauges. Returns the log rows projected. Each phase has its own error handling: a log that cannot be
-        drained (``drain_or_retry`` counts it and leaves the rows) must not stop the gauges."""
+        """One pass over every org: drain the change log, finish the claimable restamp jobs and publish the gauges. Returns the log rows projected plus the jobs finished. Each phase has
+        its own error handling: a log that cannot be drained (``drain_or_retry`` counts it and leaves the rows) must not keep records hidden, and jobs that fail must not stop the projection."""
         rows = 0
         for org in await self._orgs():
             if self._stop.is_set():
                 break                                      # what is left stays in the log for the next start
             rows += await drain_or_retry(self._db, org, page=self._page, stop=self._stop)
+            if self._stop.is_set():
+                break                                      # shutting down: no new unit for the gauges
+            try:
+                rows += await restamp.run_jobs(self._db, org, self.id, stale_ms=self._stale, batch=self._batch, stop=self._stop)
+            except Exception:
+                logger.exception("kg restamp jobs failed for an org; retrying")
             if self._stop.is_set():
                 break                                      # shutting down: no new unit for the gauges
             try:
