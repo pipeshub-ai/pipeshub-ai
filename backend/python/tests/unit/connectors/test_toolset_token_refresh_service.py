@@ -336,7 +336,7 @@ class TestNextRefreshIsScheduledAfterARefresh:
         assert CONFIG_PATH not in service._invalid_refresh_failures
 
     @pytest.mark.asyncio
-    async def test_a_new_token_already_at_threshold_is_not_refreshed_in_a_loop(
+    async def test_a_new_token_already_at_threshold_is_rechecked_at_cooldown_end(
         self, service, slack, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(slack_oauth, "ACCESS_TOKEN_LIFETIME", 1)
@@ -344,7 +344,7 @@ class TestNextRefreshIsScheduledAfterARefresh:
         await service._refresh_toolset_token(CONFIG_PATH, "slack")
 
         assert len(slack.requests) == 1
-        assert CONFIG_PATH not in service._refresh_tasks
+        assert REFRESH_COOLDOWN - 1 < _armed_delay(service) <= REFRESH_COOLDOWN
 
     @pytest.mark.asyncio
     async def test_a_rejected_refresh_schedules_nothing(self, service, store: dict, monkeypatch) -> None:
@@ -427,37 +427,81 @@ class _InstantProvider:
         return None
 
 
-class TestShortLivedTokenRefreshRate:
-    """A token whose refresh window is TTL - 1 s is due ~1 s after issue; the cooldown caps the rate."""
+async def _simulate_refreshes(
+    monkeypatch: pytest.MonkeyPatch, *, ttl: int, horizon: float, save_seconds: float = 0.0
+) -> list[float]:
+    """Run the scan once, then the timer chain for `horizon` simulated seconds; return refresh times."""
+    clock = _SimulatedClock()
+    provider = _InstantProvider(clock, ttl)
+    monkeypatch.setattr(toolset_token_refresh_service, "time", SimpleNamespace(time=clock.time))
+    monkeypatch.setattr(toolset_token_refresh_service, "datetime", SimpleNamespace(now=clock.now))
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    monkeypatch.setattr(oauth_service, "OAuthProvider", provider)
+    store = _due_store(expires_in=ttl, created_at=clock.now().isoformat())
+    service = _service_over(store, SLACK_OAUTH_CONFIG, monkeypatch, stub_scheduling=False)
+    service._running = True
+    write = service.configuration_service.set_config.side_effect
 
-    TTL = 30
+    async def slow_write(path: str, value: dict) -> bool:
+        await clock.sleep(save_seconds)
+        return await write(path, value)
+
+    service.configuration_service.set_config.side_effect = slow_write
+
+    try:
+        await service._refresh_toolset_token(CONFIG_PATH, "slack")
+        for _ in range(10_000):
+            if clock.elapsed >= horizon:
+                break
+            await _REAL_SLEEP(0)
+    finally:
+        await service.stop()
+    return [t for t in provider.refreshed_at if t < horizon]
+
+
+def _gaps(times: list[float]) -> list[float]:
+    return [later - earlier for earlier, later in zip(times, times[1:])]
+
+
+class TestShortLivedTokenRefreshRate:
+    """Short-lived tokens are due soon after issue; the cooldown caps the rate without dropping a refresh."""
+
     HORIZON = 60.0
+    MAX_REFRESHES = int(HORIZON / REFRESH_COOLDOWN)
 
     @pytest.mark.asyncio
     async def test_a_30s_token_refreshes_once_per_cooldown_and_never_lapses(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        clock = _SimulatedClock()
-        provider = _InstantProvider(clock, self.TTL)
-        monkeypatch.setattr(toolset_token_refresh_service, "time", SimpleNamespace(time=clock.time))
-        monkeypatch.setattr(toolset_token_refresh_service, "datetime", SimpleNamespace(now=clock.now))
-        monkeypatch.setattr(asyncio, "sleep", clock.sleep)
-        monkeypatch.setattr(oauth_service, "OAuthProvider", provider)
-        store = _due_store(expires_in=self.TTL, created_at=clock.now().isoformat())
-        service = _service_over(store, SLACK_OAUTH_CONFIG, monkeypatch, stub_scheduling=False)
-        service._running = True
+        refreshes = await _simulate_refreshes(monkeypatch, ttl=30, horizon=self.HORIZON)
 
-        try:
-            await service._refresh_toolset_token(CONFIG_PATH, "slack")  # the scan arms a timer for t=1 s
-            for _ in range(10_000):
-                if clock.elapsed >= self.HORIZON:
-                    break
-                await _REAL_SLEEP(0)
-        finally:
-            await service.stop()
-
-        refreshes = [t for t in provider.refreshed_at if t < self.HORIZON]
-        gaps = [later - earlier for earlier, later in zip(refreshes, refreshes[1:])]
-        assert len(refreshes) >= self.HORIZON / REFRESH_COOLDOWN - 1, f"refresh chain stopped: {refreshes}"
+        gaps = _gaps(refreshes)
+        assert len(refreshes) >= self.MAX_REFRESHES - 1, f"refresh chain stopped: {refreshes}"
         assert all(gap >= REFRESH_COOLDOWN for gap in gaps), f"refreshed faster than the cooldown: {gaps}"
-        assert all(gap < self.TTL for gap in gaps), f"token lapsed between refreshes: {gaps}"
+        assert all(gap < 30 for gap in gaps), f"token lapsed between refreshes: {gaps}"
+
+    @pytest.mark.asyncio
+    async def test_a_save_slower_than_the_window_refreshes_at_cooldown_end_not_on_the_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The 30 s token's 1 s window has passed when the 2 s save ends; it must not wait 5 min for the scan."""
+        save_seconds = 2.0
+        refreshes = await _simulate_refreshes(
+            monkeypatch, ttl=30, horizon=self.HORIZON, save_seconds=save_seconds
+        )
+
+        gaps = _gaps(refreshes)
+        assert len(refreshes) >= self.MAX_REFRESHES - 2, f"refresh chain stopped: {refreshes}"
+        assert all(gap <= save_seconds + REFRESH_COOLDOWN + 0.1 for gap in gaps), f"refresh came late: {gaps}"
+        assert all(gap < 30 for gap in gaps), f"token lapsed between refreshes: {gaps}"
+
+    @pytest.mark.asyncio
+    async def test_an_always_due_token_refreshes_at_most_once_per_cooldown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """expires_in=1 is inside its own refresh window from issue: one refresh per cooldown, no 1 s loop."""
+        refreshes = await _simulate_refreshes(monkeypatch, ttl=1, horizon=self.HORIZON)
+
+        gaps = _gaps(refreshes)
+        assert self.MAX_REFRESHES - 1 <= len(refreshes) <= self.MAX_REFRESHES, f"refreshes: {refreshes}"
+        assert all(gap >= REFRESH_COOLDOWN for gap in gaps), f"refreshed faster than the cooldown: {gaps}"

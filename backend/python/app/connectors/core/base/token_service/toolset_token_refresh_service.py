@@ -1291,34 +1291,21 @@ class ToolsetTokenRefreshService:
                     )
                     del self._refresh_tasks[config_path]
 
+            self.logger.info(f"🔄 Scheduling token refresh for toolset {config_path} (type: {toolset_type})")
+
             # Calculate refresh delay
             delay, _ = self._calculate_refresh_delay(token)
             since_last_refresh = max(0.0, time.time() - self._last_refresh_time.get(config_path, 0))
             cooldown_left = REFRESH_COOLDOWN - since_last_refresh
 
-            # At most one refresh per cooldown, without dropping the reschedule that follows every
-            # refresh: a short delay waits out the cooldown; an already-due token waits for the scan.
-            if delay <= 0 and cooldown_left > 0:
+            is_due = delay <= 0
+            # At most one refresh per cooldown, and never dropped: an earlier delay, due or not, waits
+            # out the cooldown, so a slow save cannot leave a due token to the 5-minute scan.
+            delay = max(delay, MIN_IMMEDIATE_RECHECK_DELAY, cooldown_left)
+            if is_due:
                 self.logger.info(
-                    f"Skipping immediate re-check for {config_path}: refreshed "
-                    f"{since_last_refresh:.1f}s ago (cooldown {REFRESH_COOLDOWN}s); "
-                    f"next attempt on the periodic scan"
-                )
-                return
-
-            self.logger.info(f"🔄 Scheduling token refresh for toolset {config_path} (type: {toolset_type})")
-
-            # If token is at/past threshold, schedule immediate re-check.
-            if delay <= 0:
-                delay = MIN_IMMEDIATE_RECHECK_DELAY
-                self.logger.info(
-                    f"⏱️ Token for toolset {config_path} reached refresh threshold. "
-                    f"Scheduling immediate re-check in {delay:.0f}s."
-                )
-            elif delay < cooldown_left:
-                delay = cooldown_left
-                self.logger.debug(
-                    f"Raised refresh delay for {config_path} to {delay:.1f}s (cooldown {REFRESH_COOLDOWN}s)"
+                    f"Token for toolset {config_path} reached refresh threshold; "
+                    f"re-checking in {delay:.1f}s (cooldown {REFRESH_COOLDOWN}s)"
                 )
             refresh_time = datetime.now() + timedelta(seconds=delay)
 

@@ -2043,19 +2043,18 @@ class TestScheduleTokenRefresh:
 
         svc._create_refresh_task.assert_called_once()
 
-    async def test_cooldown_skips_immediate_recheck(self) -> None:
-        """Right after a refresh, a token already at its threshold is left to the scan."""
+    async def test_a_due_token_inside_the_cooldown_is_scheduled_at_cooldown_end(self) -> None:
+        """Right after a refresh, a token already at its threshold waits out the cooldown, not the scan."""
         svc = _make_service()
         svc._running = True
-        svc._last_refresh_time["/path"] = time.time()
-        svc._create_refresh_task = MagicMock()
-        svc.logger = MagicMock()
+        svc._last_refresh_time["/path"] = time.time() - 3
+        svc._create_refresh_task = MagicMock(return_value=True)
 
         await svc.schedule_token_refresh("/path", "googledrive", _make_expired_token())
-        svc._create_refresh_task.assert_not_called()
-        logged = [c.args[0] for c in svc.logger.info.call_args_list]
-        assert any("Skipping immediate re-check" in m for m in logged)
-        assert not any("Scheduling token refresh" in m for m in logged)
+
+        svc._create_refresh_task.assert_called_once()
+        delay = svc._create_refresh_task.call_args.args[2]
+        assert REFRESH_COOLDOWN - 3 - 1 < delay <= REFRESH_COOLDOWN - 3
 
     async def test_oauth_callback_token_is_scheduled_right_after_a_background_refresh(self) -> None:
         """A recent refresh must not swallow scheduling a fresh token (post-refresh or OAuth callback)."""
