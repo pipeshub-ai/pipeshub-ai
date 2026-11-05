@@ -78,7 +78,8 @@ _COLUMN_KEYS = {"metadata.virtualRecordId": "vrid", "metadata.blockId": "block_i
 def to_point(row: asyncpg.Record, with_payload: list[str] | None, org: str) -> VectorPoint:
     """The payload as the other backends return it: stored payload, ``page_content`` and the membership arrays as siblings."""
     if row["payload"] is not None:
-        stored = json.loads(row["payload"])
+        # points written before the scope fields moved to the group may still carry them in the payload: the group's own values (or none) win
+        stored = {k: v for k, v in json.loads(row["payload"]).items() if k not in SCOPE_KEYS}
     else:      # only column paths were asked for: rebuild them from the columns
         stored = {"metadata": {"orgId": org}}
         for path, col in _COLUMN_KEYS.items():

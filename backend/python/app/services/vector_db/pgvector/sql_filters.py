@@ -8,7 +8,8 @@ this module compiles everything else, and reports which joins the fragment needs
 | metadata.orgId                                   | ``p.org_id`` (the caller already pins it; ANDed again)       |
 | metadata.virtualRecordId / blockId               | ``p.vrid`` / ``p.block_id``                                  |
 | metadata.entityType / entityId / kind / level    | ``p.ent_type`` / ``ent_id`` / ``ent_kind`` / ``ent_level``   |
-| connectorIds / recordGroupIds / rootRecordGroupIds | an EXISTS on ``group_members`` (PK-prefix probe)           |
+| connectorIds / recordGroupIds / rootRecordGroupIds / pathIds / aclScope | an EXISTS on ``group_members`` (PK-prefix probe) |
+| scopeStamp / scopeFieldsVersion / scopeGeneration | an EXISTS on ``point_groups`` (PK probe)                    |
 | values_count_lte on a membership array           | ``cardinality(coalesce(g.<array>, '{}')) <= n`` (absent = holds) |
 | any other payload key                            | ``pt.payload #>> '{a,b}'`` on ``point_text``                 |
 """
@@ -37,7 +38,12 @@ MEMBERSHIP = {
     "connectorIds": (1, "connector_ids"),
     "recordGroupIds": (2, "record_group_ids"),
     "rootRecordGroupIds": (3, "root_record_group_ids"),
+    # the permission scope lists of a group (7a): members of kinds 4 (path) and 5 (override scope)
+    "pathIds": (4, "path_ids"),
+    "aclScope": (5, "acl_scope"),
 }
+# the scalar scope fields of a group: point_groups column. They are stored on the group, not in the payload, so a payload lookup would never find them.
+SCOPE_COLUMNS = {"scopeStamp": "scope_stamp", "scopeFieldsVersion": "scope_version", "scopeGeneration": "scope_generation"}
 
 
 @dataclass
@@ -102,6 +108,13 @@ class _Builder:
                 "EXISTS (SELECT 1 FROM retrieval.group_members m "
                 f"WHERE m.org_id = ${self.org} AND m.collection_id = ${self.coll} AND m.group_key = p.group_key "
                 f"AND m.kind = {kind} AND m.member_id = ANY({self.bind(vals, 'text[]')}))"
+            )
+        if key in SCOPE_COLUMNS:
+            # a probe of the group's row by primary key (no join, so it holds in every statement); NULL (never stamped) matches nothing
+            return (
+                "EXISTS (SELECT 1 FROM retrieval.point_groups sg "
+                f"WHERE sg.org_id = ${self.org} AND sg.collection_id = ${self.coll} AND sg.group_key = p.group_key "
+                f"AND sg.{SCOPE_COLUMNS[key]}::text = ANY({self.bind(vals, 'text[]')}))"
             )
         self.needs_text = True
         path = self.bind(key.split("."), "text[]")

@@ -1562,6 +1562,8 @@
     },
     "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。",
     "noResultsFor": "找不到「{{query}}」的結果",
+    "matchedByName": "依名稱符合",
+    "contentNotIndexedYet": "內容尚未索引",
     "removeSelectedSource": "移除 {{name}}",
     "diagramSourceCopied": "已複製圖表原始碼",
     "diagramImageCopied": "已複製圖表圖片",
