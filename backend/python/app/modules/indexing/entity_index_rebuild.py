@@ -150,7 +150,7 @@ _SWEPT_COLLECTIONS: dict[str, str] = {
     EntityType.PERSON.value: _USERS,
     EntityType.ORGANIZATION.value: _ORGS,
 }
-# The field naming a swept node's tenant, where it is not orgId.
+# The field naming a swept node's org, where it is not orgId.
 _SWEPT_OWNER_FIELDS: dict[str, str] = {_ORGS: "parentOrgId"}
 _SUBCATEGORY_COLLECTIONS: dict[str, str] = {
     kind.level: collection for collection, kind in KINDS_BY_COLLECTION.items() if kind.level

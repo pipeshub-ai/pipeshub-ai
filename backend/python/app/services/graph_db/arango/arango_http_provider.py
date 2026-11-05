@@ -21555,7 +21555,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         A traversal streams, so a caller's LIMIT stops it early; the node
         lookup is a loop rather than a ternary, which AQL would hoist and
-        evaluate for another tenant's node too."""
+        evaluate for another org's node too."""
         collection, scope, _ = self._LINKED_ENTITY_NODES[entity_type]
         return f"""FOR n IN {collection}
                         FILTER n._key == {key} AND {scope}

@@ -1,7 +1,7 @@
 """Against real servers (KG-13 slice 3a): Salesforce accounts as organisation
 entities. A record in an account's record group links to the account's
 organisation (INFERRED); the organisation is found only through records the
-user can read, and only within its tenant. On Neo4j 5.26 and ArangoDB 3.12.
+user can read, and only within its org. On Neo4j 5.26 and ArangoDB 3.12.
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait neo4j-graph-it arango-graph-it
@@ -104,10 +104,10 @@ async def _seed(provider: Any, org: str) -> None:  # noqa: ANN401
     )
     await provider.batch_upsert_nodes([
         _account(org, "acme", "Acme", parent=org),
-        # Written before accounts carried their tenant: stamped by the backfill
-        # from the tenant's prospect edge.
+        # Written before accounts carried their org: stamped by the backfill
+        # from the org's prospect edge.
         _account(org, "legacy", "Legacy Co", parent=None),
-        # Another tenant's account, wrongly reachable from this org's group.
+        # Another org's account, wrongly reachable from this org's group.
         _account(org, "other", "Other Inc", parent=f"{org}-x"),
     ], ORGS)
     await provider.batch_upsert_nodes([
@@ -174,17 +174,17 @@ async def test_records_link_to_their_account_and_people_links_survive(backend) -
             (f"{org}-acme", "FOR_ACCOUNT", "INFERRED"), (f"{org}-bob", "ASSIGNED_TO", "INFERRED"),
         ])
         assert await _edges_from(provider, f"{org}-deal") == [(f"{org}-acme", "FOR_ACCOUNT", "INFERRED")]
-        # Stamped from the tenant's prospect edge, then linked.
+        # Stamped from the org's prospect edge, then linked.
         assert await _edges_from(provider, f"{org}-deal-legacy") == [(f"{org}-legacy", "FOR_ACCOUNT", "INFERRED")]
         assert await _edges_from(provider, f"{org}-deal-other") == []
 
 
-async def test_an_account_is_an_entity_of_its_tenant_only(backend) -> None:
+async def test_an_account_is_an_entity_of_its_org_only(backend) -> None:
     provider, org = backend
     await provider.ensure_schema()
     await _seed(provider, org)
     await backfill(provider, GraphDataStore(logger, provider), org, apply=True, logger=logger, out=io.StringIO())
-    # Even a link written by mistake does not reach another tenant's account.
+    # Even a link written by mistake does not reach another org's account.
     await provider.batch_create_entity_relations([{
         "_from": f"records/{org}-deal-other", "_to": f"organizations/{org}-other",
         "edgeType": "FOR_ACCOUNT", "createdAtTimestamp": 1,

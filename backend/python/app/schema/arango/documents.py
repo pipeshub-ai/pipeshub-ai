@@ -28,7 +28,7 @@ orgs_schema = {
             "phone": {"type": ["string", "null"]},
             "dunsId": {"type": ["string", "null"]},
             "isExternal": {"type": "boolean", "default": False},
-            # The tenant an external organisation (a CRM account) belongs to.
+            # The org an external organisation (a CRM account) belongs to.
             "parentOrgId": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
