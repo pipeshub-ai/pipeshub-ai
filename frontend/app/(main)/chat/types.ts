@@ -910,6 +910,8 @@ export interface SSECompleteEvent {
     timestamp: string;
     duration: number;
     searchDegraded?: boolean;
+    /** Name-only hits for records whose content is not indexed yet. */
+    unindexedMatches?: UnindexedMatch[];
   };
 }
 
@@ -1308,6 +1310,13 @@ export interface SearchResultItem {
   virtual_record_id?: string;
   block_index?: number;
   block_group_index?: number;
+}
+
+export interface UnindexedMatch {
+  recordId: string;
+  recordName: string;
+  connector?: string | null;
+  note?: string;
 }
 
 export interface SearchResponse {

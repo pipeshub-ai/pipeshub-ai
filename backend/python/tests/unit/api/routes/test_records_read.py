@@ -44,7 +44,7 @@ def _request(*, access: bool = True) -> tuple[SimpleNamespace, MagicMock, MagicM
     graph.get_user_by_user_id = AsyncMock(return_value={"id": "k-1"})
     graph.check_access = AsyncMock(
         side_effect=lambda _user, _org, node_ids, **_kw: SimpleNamespace(
-            node_ids=set(node_ids) if access else set()
+            node_ids=set(node_ids) if access else set(), placeholder_ids=frozenset()
         )
     )
     graph.get_document = AsyncMock(return_value={"connectorId": "c-1"})

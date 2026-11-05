@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -184,6 +185,17 @@ async def test_a_writer_classified_projected_through_a_helper_leaves_kg_equal_to
     assert not await differences(p, org)
 
 
+async def quiet_world2(p, org: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shared world, written with no sweep of the org's change log running. With the projection off, a write unit of the world spawns a sweep
+    after its commit, and the units that follow take their own rows back while it holds the org's lock: a unit that finds the lock held leaves its rows, and the
+    tests below count rows. The org counts as just swept and the gap between sweeps is made very long for the whole setup, however long it takes; both are
+    put back after it, so a test that wants a sweep sets its own gap and clears ``_last_sweep`` as before."""
+    with monkeypatch.context() as quiet:
+        quiet.setattr(flush, "SWEEP_GAP_S", 1e9)
+        quiet.setattr(flush, "_last_sweep", {org: time.monotonic()})
+        await world2(p, org)
+
+
 async def log_rows(p, org: str) -> int:
     async def go(tx) -> int:
         return await tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org)
@@ -203,9 +215,10 @@ async def other_roles_rows(p, org: str, monkeypatch: pytest.MonkeyPatch, n: int 
 
 async def test_with_the_projection_off_the_connectors_service_leaves_no_row_in_the_log(pg_db, monkeypatch) -> None:
     monkeypatch.delenv("PG_KG_PROJECT", raising=False)
-    monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
     p, org = prov(pg_db), new_org()
-    await world2(p, org)
+    await quiet_world2(p, org, monkeypatch)
+    monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
+    monkeypatch.setattr(flush, "_last_sweep", {})
     assert await log_rows(p, org) == 0                                   # its own rows are taken back at commit
     await other_roles_rows(p, org, monkeypatch)
     assert await log_rows(p, org) == 20
@@ -219,7 +232,7 @@ async def test_the_log_is_swept_by_any_write_unit_of_the_connectors_service_not_
     """Rows of the indexing and query roles pile up when only they write the graph: the connectors service's next write of anything takes them."""
     monkeypatch.delenv("PG_KG_PROJECT", raising=False)
     p, org = prov(pg_db), new_org()
-    await world2(p, org)
+    await quiet_world2(p, org, monkeypatch)
     await other_roles_rows(p, org, monkeypatch, n=30)
     monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
     assert await log_rows(p, org) == 30
@@ -259,7 +272,7 @@ async def test_an_ack_that_fails_does_not_fail_the_business_write_and_the_sweep_
 async def test_a_sweep_that_fails_does_not_fail_the_business_write(pg_db, monkeypatch, caplog) -> None:
     monkeypatch.delenv("PG_KG_PROJECT", raising=False)
     p, org = prov(pg_db), new_org()
-    await world2(p, org)
+    await quiet_world2(p, org, monkeypatch)
     await other_roles_rows(p, org, monkeypatch, n=20)
     monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
     monkeypatch.setattr(flush, "_last_sweep", {})
