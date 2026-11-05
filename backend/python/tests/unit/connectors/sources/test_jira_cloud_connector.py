@@ -33,7 +33,7 @@ Targets the ~607 uncovered lines to achieve 95%+ coverage by testing:
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 from uuid import uuid4
 
 import httpx
@@ -622,11 +622,12 @@ class TestRunSync:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("status", "raises"),
-        [(None, True), (500, True), (429, True), (403, False), (404, False)],
+        ("status", "raises", "kept"),
+        [(None, True, True), (500, True, True), (429, True, True), (403, False, True), (404, False, False)],
     )
-    async def test_run_sync_notifies_when_any_project_fails(self, status, raises):
-        # A read that may pass next time fails the run; a lasting answer (403, 404) is kept as stored.
+    async def test_run_sync_notifies_when_any_project_fails(self, status, raises, kept):
+        # A read that may pass next time fails the run; a lasting answer (403, 404) does not. Either way the
+        # project's stored issues stay (noted as seen) and the full sync's removal is not held back for the others.
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.site_url = "https://company.atlassian.net"
@@ -652,11 +653,12 @@ class TestRunSync:
             "new_count": 1,
             "updated_count": 1,
             "failed_count": 1,
-            "failed_project_keys": ["KAN"],
-            "failed_project_statuses": {} if status is None else {"KAN": status},
+            "failed_project_keys": ["PROJ"],
+            "failed_project_statuses": {} if status is None else {"PROJ": status},
         })
         connector._update_issues_sync_checkpoint = AsyncMock()
         connector._handle_issue_deletions = AsyncMock()
+        connector._keep_stored_records = AsyncMock()
 
         with patch(
             "app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
@@ -664,16 +666,18 @@ class TestRunSync:
             return_value=(None, None),
         ):
             if raises:
-                with pytest.raises(IncompleteSyncError, match="KAN"):
+                with pytest.raises(IncompleteSyncError, match="PROJ"):
                     await connector.run_sync()
             else:
                 await connector.run_sync()
 
+        assert connector._keep_stored_records.await_args_list == ([call("proj-id-1")] if kept else [])
+        assert connector.full_sync_coverage().complete is True
         connector.notify.assert_awaited_once()
         notify_kwargs = connector.notify.await_args.kwargs
         assert notify_kwargs["type"] == NotificationType.CONNECTOR_SYNC_ERROR
         assert notify_kwargs["severity"] == NotificationSeverity.ERROR
-        assert "KAN" in notify_kwargs["message"]
+        assert "PROJ" in notify_kwargs["message"]
         connector._handle_issue_deletions.assert_awaited_once()
 
     @pytest.mark.asyncio

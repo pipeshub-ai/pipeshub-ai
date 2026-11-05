@@ -34,7 +34,11 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+    IncompleteSyncError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -334,10 +338,6 @@ def _may_parent_a_story(fields: dict[str, Any]) -> bool:
     issue_type = _issue_type_of(fields)
     level = issue_type.get("hierarchyLevel")
     return not issue_type.get("subtask") and not (isinstance(level, int) and level <= 0)
-
-
-class IncompleteSyncError(RuntimeError):
-    """A sync that finished without writing every project it read: the caller must not treat it as a success."""
 
 
 @ConnectorBuilder("Jira")\
@@ -1023,9 +1023,17 @@ class JiraConnector(BaseConnector):
             # 9. Outcome: notify when any project failed issue sync (include keys)
             failed_keys = sync_stats.get("failed_project_keys") or []
             failed_statuses = sync_stats.get("failed_project_statuses") or {}
+            # A read that may pass next time fails the run below, but must not hold back the whole full sync's unlink: the
+            # project's stored issues are noted as seen, so only what a read in full shows gone is unlinked.
+            transient = [k for k in failed_keys
+                         if failed_statuses.get(k) is None or (failed_statuses[k] != HttpStatusCode.FORBIDDEN.value
+                                                               and is_inconclusive_status(failed_statuses[k]))]
             for key in failed_keys:
-                # Issues not read would look gone to a full sync's unlink.
-                self._note_unread(failed_statuses.get(key), ("project_issues", key))
+                if key in transient:
+                    self._kept_after_refusal.append(("project_issues", key))
+                else:
+                    # Issues not read would look gone to a full sync's unlink.
+                    self._note_unread(failed_statuses.get(key), ("project_issues", key))
             await self._note_kept_after_refusal(projects)
             if failed_keys:
                 preview = ", ".join(failed_keys[:10])
@@ -1048,9 +1056,6 @@ class JiraConnector(BaseConnector):
             # A refusal (403) or a missing project (400, 404) is the account's lasting answer, already notified and kept
             # as stored: failing every run for it would hide the others. A read that may pass next time leaves the graph
             # without that project's newest issues, so this run must not look like a success.
-            transient = [k for k in failed_keys
-                         if failed_statuses.get(k) is None or (failed_statuses[k] != HttpStatusCode.FORBIDDEN.value
-                                                               and is_inconclusive_status(failed_statuses[k]))]
             if transient:
                 incomplete = IncompleteSyncError(
                     f"Jira sync incomplete: {len(transient)} project(s) failed to sync issues: "

@@ -22,6 +22,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.sync import sync_runner
+from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.core.sync.sync_runner import run_sync_task
@@ -491,3 +492,45 @@ async def test_memberships_are_replaced_before_the_unlink() -> None:
     await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
 
     assert order == ["memberships", "unlink"]
+
+
+@pytest.mark.asyncio
+async def test_a_full_sync_that_kept_failed_projects_as_stored_still_unlinks_what_it_saw_gone() -> None:
+    """IncompleteSyncError fails the run, but the removal still runs: the parts it read in full lose what is gone,
+    and no further full sync is owed."""
+    gp = _graph_provider()
+    connector = _connector(None)
+
+    async def run_sync() -> None:
+        connector.data_entities_processor._note_full_sync_seen("c1", RECORDS, "r1")
+        raise IncompleteSyncError("1 project failed")
+
+    connector.run_sync = run_sync
+    with pytest.raises(IncompleteSyncError):
+        await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+    gp.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+    assert gp.unlink_nodes_missed_by_full_sync.await_args.args[1][RECORDS] == {"r1"}
+    assert not _owed(gp)
+
+
+@pytest.mark.asyncio
+async def test_repeated_incomplete_full_syncs_stop_owing_a_full_sync() -> None:
+    """When the connector reports an incomplete read as well, nothing is unlinked, and one retry is owed, not a chain."""
+    sync_runner._INCOMPLETE_FULL_SYNC_RETRYING.discard("c1")
+    owed = []
+    for _ in range(3):
+        gp = _graph_provider()
+        connector = _connector(None, FullSyncCoverage(complete=False))
+
+        async def run_sync(connector: MagicMock = connector) -> None:
+            connector.data_entities_processor._note_full_sync_seen("c1", RECORDS, "r1")
+            raise IncompleteSyncError("1 project failed")
+
+        connector.run_sync = run_sync
+        with pytest.raises(IncompleteSyncError):
+            await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+        gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        owed.append(_owed(gp))
+
+    assert owed == [True, False, True], "one retry is owed, then the count starts again"
