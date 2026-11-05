@@ -46,6 +46,7 @@ WORLD: dict[str, tuple[list[str], list[str], list[str], dict | None]] = {
     "union": (["c1"], ["g2"], [], _stamp("union", ["s1", "p1"], ["own_u"])),
     "union_hidden": (["c1"], ["g2"], [], _stamp("union", ["s1", "x1"], ["own_h"])),
     "intersection": (["c1"], ["g2"], [], _stamp("intersection", ["s2"], ["own_i"])),
+    "intersection_hidden": (["c1"], ["g2"], [], _stamp("intersection", ["s2", "x1"], ["own_ih"])),
     "override": (["c1"], ["g2"], [], _stamp("override", [], ["own_o", "seed"])),
     "unstamped": (["c1"], ["g1"], [], None),
     "legacy": (["c1"], ["g1"], [], _stamp("legacy", ["s1"], ["own_l"])),
@@ -59,7 +60,7 @@ WORLD: dict[str, tuple[list[str], list[str], list[str], dict | None]] = {
     # stamped by a process that could not read the scope generation (-2): no reader may trust it, not even one in the same state
     "unavailable_stamp": (["c1"], ["g1"], [], _stamp("container", [], [], generation=-2)),
 }
-EVERYTHING = frozenset({"g1", "g2", "r2", "s1", "s2", "p1", "own_u", "own_h", "own_i", "own_o", "seed", "own_l", "own_x", "c1", "c9"})
+EVERYTHING = frozenset({"g1", "g2", "r2", "s1", "s2", "p1", "own_u", "own_h", "own_i", "own_ih", "own_o", "seed", "own_l", "own_x", "c1", "c9"})
 
 
 def pid(org: str, name: str) -> str:
@@ -120,12 +121,14 @@ async def test_without_a_filter_every_group_is_returned_as_before(store) -> None
     ({"open_apps": frozenset({"c9"})}, set()),
     ({"readable_scopes": frozenset({"p1"})}, {"union"}),
     ({"readable_scopes": frozenset({"s1"}), "excluded": frozenset({"x1"})}, {"union"}),
-    ({"readable_scopes": frozenset({"s2"})}, {"intersection"}),
+    ({"readable_scopes": frozenset({"s2"})}, {"intersection", "intersection_hidden"}),
+    ({"readable_scopes": frozenset({"s2"}), "excluded": frozenset({"x1"})}, {"intersection"}),
+    ({"readable_scopes": frozenset({"own_ih"}), "excluded": frozenset({"x1"})}, {"intersection_hidden"}),
     ({"readable_scopes": frozenset({"own_u"})}, {"union"}),
     ({"readable_scopes": frozenset({"seed"})}, {"override"}),
     ({"readable_groups": frozenset({"g2"})}, {"container_other"}),
     ({}, set()),
-], ids=['record_group', 'other_group', 'root_group', 'open_app', 'open_app_not_current', 'path', 'path_excluded', 'intersection', 'own_id', 'override_seed', 'group_not_union', 'nothing'])
+], ids=['record_group', 'other_group', 'root_group', 'open_app', 'open_app_not_current', 'path', 'path_excluded', 'intersection', 'intersection_excluded', 'intersection_own_id', 'own_id', 'override_seed', 'group_not_union', 'nothing'])
 async def test_each_admit_rule_admits_exactly_its_groups(store, leg, kw, admitted) -> None:
     assert await search(store, f(**kw), leg=leg) == admitted
 
@@ -137,7 +140,7 @@ async def test_what_cannot_be_trusted_is_never_admitted_even_when_the_viewer_rea
     for never in ("unstamped", "legacy", "unknown_stamp", "old_version", "old_generation", "new_generation", "other_connector",
                   "mixed_connectors", "no_connector", "unavailable_stamp"):
         assert never not in got, never
-    assert {"container", "container_other", "union", "union_hidden", "intersection", "override"} == got
+    assert {"container", "container_other", "union", "union_hidden", "intersection", "intersection_hidden", "override"} == got
 
 
 @LEGS
@@ -163,11 +166,11 @@ async def test_a_null_list_of_a_stamped_group_fails_closed(store, leg) -> None:
     for column in ("path_ids", "acl_scope"):
         conn = await store.env.admin()
         try:
-            await conn.execute(f"UPDATE retrieval.point_groups SET {column} = NULL WHERE org_id = $1 AND group_key IN ('union', 'union_hidden', 'override', 'intersection')", A)
+            await conn.execute(f"UPDATE retrieval.point_groups SET {column} = NULL WHERE org_id = $1 AND group_key IN ('union', 'union_hidden', 'override', 'intersection', 'intersection_hidden')", A)
         finally:
             await conn.close()
     got = await search(store, f(readable_scopes=EVERYTHING), leg=leg)
-    assert got.isdisjoint({"union", "override", "intersection", "union_hidden"})
+    assert got.isdisjoint({"union", "override", "intersection", "union_hidden", "intersection_hidden"})
     for col in ("scope_stamp", "scope_version", "scope_generation"):
         conn = await store.env.admin()
         try:
@@ -199,3 +202,37 @@ async def test_another_organisation_never_appears_under_a_filter(store, leg) -> 
     finally:
         await conn.close()
     assert await search(store, everything, leg=leg, org=B) == set() and await search(store, everything, leg=leg) == mine
+
+
+class _NoBitIndex(dict):
+    """A recall verdict of "the bit index failed" for every space."""
+
+    def get(self, key: object, default: object = None) -> bool:
+        return False
+
+
+FILTERS = {
+    "groups": {"readable_groups": frozenset({"g1", "g2"}), "open_apps": frozenset({"c1"})},
+    "paths": {"readable_scopes": frozenset({"s1", "s2"}), "excluded": frozenset({"x1"})},
+    "everything": {"open_apps": frozenset({"c1"}), "readable_groups": EVERYTHING, "readable_scopes": EVERYTHING, "excluded": frozenset({"x1"})},
+    "nothing": {},
+}
+
+
+@pytest.mark.parametrize("tier", ["index", "bounded_exact", "bounded_index"])
+async def test_the_filter_admits_the_same_groups_on_every_dense_tier_as_on_the_exact_one(store, monkeypatch, tier) -> None:
+    from app.services.vector_db.pgvector import dense
+    expected = {name: await search(store, f(**kw)) for name, kw in FILTERS.items()}               # the exact tier: the world is far below n_e0
+    assert expected["groups"] == {"container", "container_other"} and expected["nothing"] == set() and "intersection_hidden" not in expected["paths"]
+    seen: list[str] = []
+    real = dense.choose
+    monkeypatch.setattr(dense, "choose", lambda *a, **k: (lambda plan: (seen.append(plan.tier.name), plan)[1])(real(*a, **k)))
+    n_e0 = {"index": 0, "bounded_exact": 3, "bounded_index": 1}[tier]       # the chooser counts what the filter admits: "everything" admits 7 groups, so 7 > 4 x 1 and 3 < 7 <= 4 x 3
+    search_cfg = dataclasses.replace(store._cfg.search, n_e0=n_e0, n_own=1)
+    store._cfg = dataclasses.replace(store._cfg, search=search_cfg)
+    store._sizer = dense.Sizer(store._db, search_cfg)
+    if tier != "index":
+        store._bq = _NoBitIndex()
+    for name, kw in FILTERS.items():
+        assert await search(store, f(**kw)) == expected[name], (tier, name)
+    assert {"index": "H", "bounded_exact": "E0X", "bounded_index": "H_DEEP"}[tier] in seen and (tier == "index" or "H" not in seen), seen   # a bounded space never takes the plain index tier

@@ -22,6 +22,7 @@ Typical provider usage::
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Union
 
 from app.services.vector_db.const.const import (
@@ -346,11 +347,15 @@ class ScopeFilter:
         return self.generation < 0 or not self.current
 
     def lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
-        """``(current, open_apps, readable_groups, reach, excluded)``, sorted, for a store that binds arrays."""
-        out = (sorted(self.current), sorted(self.open_apps), sorted(self.readable_groups), sorted(self.reach), sorted(self.excluded))
-        if any(len(x) > MAX_SCOPE_IDS for x in out):
+        """``(current, open_apps, readable_groups, reach, excluded)``, sorted, for a store that binds arrays. Computed once per filter: callers must not mutate it."""
+        return self._lists
+
+    @cached_property
+    def _lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+        sets = (self.current, self.open_apps, self.readable_groups, self.reach, self.excluded)
+        if any(len(x) > MAX_SCOPE_IDS for x in sets):                                                     # refuse before paying for the sort
             raise ScopeFilterTooLarge(f"a scope list holds more than {MAX_SCOPE_IDS} ids")
-        return out
+        return tuple(sorted(x) for x in sets)  # type: ignore[return-value]
 
 
 def reject_scope_filter(requests: Iterable[object], store: str) -> None:
