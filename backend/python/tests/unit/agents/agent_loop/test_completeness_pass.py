@@ -128,3 +128,5 @@ def test_scope_guard_keeps_other_scopes_to_one_line(monkeypatch: pytest.MonkeyPa
     assert on.startswith(off) and "another scope gives at most one attributed sentence" in on
     # A same-scope record that corrects the cited one may still change the answer.
     assert "says it corrects, updates or replaces the record the answer cites" in on
+    # Same-scope records that disagree without a revision are both given, not classified.
+    assert "neither revises the other, give both values, each with its source, and say they disagree" in on

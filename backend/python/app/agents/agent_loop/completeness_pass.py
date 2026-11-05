@@ -47,8 +47,10 @@ _SCOPE_GUARD_CLAUSE = (
     "do not merge its steps, approvals, thresholds or schedules into the answer. Where a record gives a different "
     "value for an item the answer already states, keep the answer's value unless that record covers the same scope "
     "and says it corrects, updates or replaces the record the answer cites; then give its value and name the cited "
-    "one as the earlier value. Otherwise name the other in one line as what it is (another name for it, drift in an "
-    "implementation, an earlier value, or one that applies only in a narrower case), not as a second requirement."
+    "one as the earlier value. If records of the same scope differ and neither revises the other, give both values, "
+    "each with its source, and say they disagree. Otherwise, where the records show what the other value is "
+    "(another name for it, drift in an implementation, or one that applies only in a narrower case), name it in one "
+    "line as that, not as a second requirement."
 )
 
 
