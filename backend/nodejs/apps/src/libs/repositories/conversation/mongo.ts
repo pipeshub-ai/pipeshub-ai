@@ -1074,10 +1074,7 @@ export class MongoConversationRepository implements ConversationRepository {
       { sessionId: id, orgId: actor.orgId },
       opts(tx),
     );
-    await ChatSession.deleteOne(
-      { _id: id, orgId: actor.orgId },
-      opts(tx),
-    );
+    await ChatSession.deleteOne({ _id: id, orgId: actor.orgId }, opts(tx));
     return { session: dto, citationIds };
   }
 
