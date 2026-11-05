@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 
 # Characters that need escaping inside a Redis tag value
-_TAG_ESCAPE_CHARS = set(r",.<>{}[]\"':;!@#$%^&*()\- +=/\\|~`")
+_TAG_ESCAPE_CHARS = set(r",.<>{}[]\"':;!@#$%^&*()\- +=/\\|~`") | set("\t\n\r\x0b\x0c")      # whitespace ends a token unless escaped
 
 # Characters that must be escaped in a RediSearch full-text (TEXT field) query.
 # See https://redis.io/docs/latest/develop/interact/search-and-query/advanced-concepts/query_syntax/
@@ -115,7 +115,7 @@ def scope_query(node: "sx.Node", outside: dict[str, tuple[str, ...]], *, top: bo
     """A scope tree (:mod:`~app.services.vector_db.scope_expr`) as an FT query. Every group is parenthesised (the union binds loosely).
     ``outside[field]``: the values of a list field that are NOT in a :class:`~app.services.vector_db.scope_expr.Within` (the tag values the index
     holds minus the allowed ones): RediSearch has no "all values are in the set", only "has none of these". Tag values compare without case,
-    so an id with capitals is refused (:func:`refuse_capitals`)."""
+    so an id with capitals is refused (:func:`refuse_unsafe_ids`)."""
     if isinstance(node, sx.Has):
         return f"@{node.field}:{{{'|'.join(escape_tag_value(v) for v in node.values)}}}" if node.values else _NOTHING
     if isinstance(node, sx.Is):
@@ -131,14 +131,18 @@ def scope_query(node: "sx.Node", outside: dict[str, tuple[str, ...]], *, top: bo
     return f"-({scope_query(node.part, outside, top=False)})" if not top else f"(* -({scope_query(node.part, outside, top=False)}))"
 
 
-def refuse_capitals(flt: "ScopeFilter") -> None:
-    """Redis tags are matched without case: ``c1`` would meet ``C1``. Ids are lowercase (UUIDs, ObjectIds); a filter that names one with a capital
-    is refused rather than allowed to meet a different id."""
+def refuse_unsafe_ids(flt: "ScopeFilter") -> None:
+    """Redis tags are matched without case (``c1`` would meet ``C1``), and a control character other than the whitespace ones cannot be written into a
+    tag query at all, even escaped. Ids are lowercase (UUIDs, ObjectIds): a filter that names one with a capital or such a character is refused
+    rather than allowed to meet a different id or to fail inside the server."""
     from app.services.vector_db.filters import ScopeFilterUnsupported
 
     for name in ("current", "open_apps", "readable_groups", "readable_scopes", "excluded"):
-        if any(v != v.lower() for v in getattr(flt, name)):
-            raise ScopeFilterUnsupported(f"Redis: the filter's {name} list holds an id with capital letters, which a tag query cannot tell from a lowercase one")
+        for v in getattr(flt, name):
+            if v != v.lower():
+                raise ScopeFilterUnsupported(f"Redis: the filter's {name} list holds an id with capital letters, which a tag query cannot tell from a lowercase one")
+            if any((ord(c) < 32 and c not in "\t\n\r\x0b\x0c" and c != "\x00") or ord(c) == 127 for c in v):
+                raise ScopeFilterUnsupported(f"Redis: the filter's {name} list holds an id with a control character that a tag query cannot carry")
 
 
 def filter_expression_to_redis_query(expr: FilterExpression) -> str:

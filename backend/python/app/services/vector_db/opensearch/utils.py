@@ -31,6 +31,11 @@ PAGE_CONTENT_MAPPING: Dict[str, Any] = {
 LEXICAL_QUERY_FIELDS = (PAGE_CONTENT_FIELD, STEMMED_PAGE_CONTENT_FIELD)
 
 
+#: Clauses of a scoped query other than the connector list (the request's filter, the rest of the scope tree): measured at 4 to 14 on a real
+#: cluster, kept generously.
+CLAUSE_RESERVE = 64
+
+
 class OpenSearchUtils:
     @staticmethod
     def nest_dotted_keys(payload: dict) -> dict:
@@ -131,11 +136,21 @@ class OpenSearchUtils:
         return {"bool": {"must_not": [OpenSearchUtils.scope_query(node.part)]}}
 
     @staticmethod
-    def with_scope(filter_query: dict[str, Any], request: HybridSearchRequest) -> dict[str, Any]:
-        """``filter_query`` ANDed with the request's scope filter (if any), the request's own filter kept whole inside a ``must``."""
+    def with_scope(filter_query: dict[str, Any], request: HybridSearchRequest, clause_limit: int = 1024) -> dict[str, Any]:
+        """``filter_query`` ANDed with the request's scope filter (if any), the request's own filter kept whole inside a ``must``.
+        ``clause_limit``: the cluster's ``indices.query.bool.max_clause_count``. "Every connector is current" is a ``terms_set`` with one clause per
+        current connector, and the cluster counts the clauses of the whole query against the limit, so ``CLAUSE_RESERVE`` of them are kept for
+        everything else in it; a longer list is refused here instead of making the cluster fail the search."""
         if request.scope_filter is None:
             return filter_query
         sx.check_size(request.scope_filter, "OpenSearch")
+        room = max(0, clause_limit - CLAUSE_RESERVE)
+        if len(request.scope_filter.current) > room and not request.scope_filter.trusts_nothing:
+            from app.services.vector_db.filters import ScopeFilterTooLarge
+
+            raise ScopeFilterTooLarge(
+                f"OpenSearch: the filter names {len(request.scope_filter.current)} current connectors; at most {room} fit under the cluster's "
+                f"indices.query.bool.max_clause_count ({clause_limit}) once {CLAUSE_RESERVE} clauses are kept for the rest of the query")
         scope = OpenSearchUtils.scope_query(sx.admits(request.scope_filter))
         base = [] if not filter_query or filter_query == {"match_all": {}} else [filter_query]
         return {"bool": {"must": base, "filter": [scope]}} if base else {"bool": {"filter": [scope]}}
@@ -160,7 +175,7 @@ class OpenSearchUtils:
         return base_query
 
     @staticmethod
-    def build_hybrid_query(request: HybridSearchRequest) -> Dict[str, Any]:
+    def build_hybrid_query(request: HybridSearchRequest, clause_limit: int = 1024) -> Dict[str, Any]:
         """Build an OpenSearch hybrid query body using the RRF pipeline.
 
         Filters are placed **inside** each sub-query:
@@ -175,7 +190,7 @@ class OpenSearchUtils:
         filter_query: Dict[str, Any] = {}
         if request.filter is not None and not request.filter.is_empty():
             filter_query = OpenSearchUtils.filter_expression_to_bool_query(request.filter)
-        filter_query = OpenSearchUtils.with_scope(filter_query, request)
+        filter_query = OpenSearchUtils.with_scope(filter_query, request, clause_limit)
 
         # Give the RRF merger enough candidates from each leg to produce
         # ``limit`` high-quality final results.  limit*2 with a floor of 20

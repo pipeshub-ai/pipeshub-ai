@@ -169,6 +169,21 @@ class TestOpenSearchScopeFilter(_ScopeFilterContract):
     async def vector_service(self, opensearch_service):  # noqa: ANN201
         return opensearch_service
 
+    async def test_the_longest_current_list_that_fits_the_clause_limit_works_and_one_more_is_refused(self, loaded) -> None:
+        from app.services.vector_db.filters import ScopeFilterTooLarge
+
+        svc, _ = loaded
+        limit = await svc._clause_limit()
+        assert limit == 1024
+        room = limit - 64                                                       # 64 clauses are kept for the rest of the query
+        at = frozenset({"c1"} | {f"x{i}" for i in range(room - 1)})
+        assert len(at) == room
+        assert await self._search(loaded, f(current=at, open_apps=frozenset({"c1"}))) == {"container", "container_other"}        # sent, and answered
+        with pytest.raises(ScopeFilterTooLarge, match="max_clause_count"):
+            await self._search(loaded, f(current=at | {"one-more"}, open_apps=frozenset({"c1"})))
+        big = frozenset(f"z{i}" for i in range(5000))                                           # other lists are not clauses: terms lists of thousands work
+        assert await self._search(loaded, f(readable_groups=big | {"g1"})) == {"container"}
+
 
 class TestRedisScopeFilter(_ScopeFilterContract):
     @pytest.fixture
@@ -218,6 +233,13 @@ class TestRedisPreFilterIsExact(TestRedisScopeFilter):
         for name in ("cap_connector", "cap_group", "cap_path"):
             assert name not in got, name
         assert dropped.dropped >= 3                                               # the query let them through (no case); the exact rule did not
+
+    async def test_ids_with_whitespace_in_them_are_matched_exactly(self, loaded, dropped) -> None:
+        await self._put(loaded, "tabbed", recordGroupIds=["g\ttab"])
+        await self._put(loaded, "lined", recordGroupIds=["g\nline"])
+        assert await self._search(loaded, f(readable_groups=frozenset({"g\ttab"}))) == {"tabbed"}
+        assert await self._search(loaded, f(readable_groups=frozenset({"g\nline", "g1"}))) == {"lined", "container"}
+        assert await self._search(loaded, f(readable_groups=frozenset({"g tab"}))) == set()
 
     async def test_a_connector_that_appears_between_the_read_and_the_search_is_dropped(self, loaded, dropped) -> None:
         svc, col = loaded

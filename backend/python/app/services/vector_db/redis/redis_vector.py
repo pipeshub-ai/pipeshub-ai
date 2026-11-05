@@ -94,7 +94,7 @@ from app.services.vector_db.redis.utils import (
     parse_ft_search_reply,
     parse_search_rows,
     redisearch_any_term_query,
-    refuse_capitals,
+    refuse_unsafe_ids,
     scope_query,
     vector_point_to_hash_fields,
     vector_to_bytes,
@@ -1228,7 +1228,7 @@ class RedisVectorService(IVectorDBService):
         exclude values): they are read with ``FT.TAGVALS`` just before the search. A connector that first appears in between could be missed; the
         post-check still applies."""
         sx.check_size(flt, "Redis")
-        refuse_capitals(flt)
+        refuse_unsafe_ids(flt)
         node = sx.admits(flt)
         outside: dict[str, tuple[str, ...]] = {}
         if node != sx.FALSE:

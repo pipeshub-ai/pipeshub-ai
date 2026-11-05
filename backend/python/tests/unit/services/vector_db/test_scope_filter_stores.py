@@ -216,3 +216,52 @@ def test_redis_drops_and_counts_what_the_exact_rule_refuses_and_keeps_the_rest(m
     assert [r.id for r in got] == ["ok"] and Rec.dropped == 3
     assert [r.id for r in redis_vector.RedisVectorService._exact_scope(sr.plain_requests()["dense_only"], results)] == [r.id for r in results]   # no filter: untouched
     assert redis_vector.RedisVectorService._exact_scope(dataclasses.replace(req, with_payload=False), results)[0].payload == {}
+
+
+@pytest.mark.parametrize("char", ["\t", "\n", "\r", "\x0b", "\x0c"])
+async def test_redis_escapes_whitespace_so_it_does_not_end_the_tag(char) -> None:
+    cmds = await sr.captured("redis", [scoped("dense_only", flt(readable_groups=frozenset({f"a{char}b"})))], tagvals=[b"c1"])
+    knn = redis_filters(cmds)[1]
+    assert f"a\\{char}b" in knn and f"{{a{char}b" not in knn and f"|a{char}b" not in knn
+
+
+@pytest.mark.parametrize("char", ["\x07", "\x7f", "\x1b"])
+async def test_redis_refuses_an_id_with_a_control_character_it_cannot_carry(char) -> None:
+    with pytest.raises(ScopeFilterUnsupported):
+        await sr.captured("redis", [scoped("dense_only", flt(readable_groups=frozenset({f"a{char}b"})))])
+
+
+async def test_opensearch_refuses_more_current_connectors_than_the_clause_limit_instead_of_sending_a_failing_search() -> None:
+    from app.services.vector_db.opensearch.utils import OpenSearchUtils
+
+    many = frozenset(f"c{i}" for i in range(961))                                                                  # 1024 less 64 kept for the rest of the query
+    req = scoped("dense_only", flt(current=many))
+    OpenSearchUtils.build_hybrid_query(scoped("dense_only", flt(current=frozenset(list(many)[:960]))))             # the most that fits is sent
+    with pytest.raises(ScopeFilterTooLarge, match="max_clause_count"):
+        OpenSearchUtils.build_hybrid_query(req)
+    OpenSearchUtils.build_hybrid_query(req, 2048)                                                               # a cluster that allows more
+    OpenSearchUtils.build_hybrid_query(scoped("dense_only", flt(current=frozenset(), generation=-2)), 10)       # a filter that trusts nothing sends match_none
+
+
+@pytest.mark.parametrize(("got", "expected"), [
+    ({"defaults": {"indices.query.bool.max_clause_count": "1024"}}, 1024),
+    ({"defaults": {"indices.query.bool.max_clause_count": "1024"}, "persistent": {"indices.query.bool.max_clause_count": "4096"}}, 4096),
+    ({"defaults": {"indices.query.bool.max_clause_count": "1024"}, "persistent": {"indices.query.bool.max_clause_count": "4096"},
+      "transient": {"indices.query.bool.max_clause_count": "2048"}}, 2048),
+    ({}, 1024),
+])
+async def test_opensearch_reads_the_clause_limit_once_and_assumes_the_default_if_it_cannot(got, expected) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.services.vector_db.opensearch.config import OpenSearchConfig
+    from app.services.vector_db.opensearch.opensearch import OpenSearchService
+
+    svc = OpenSearchService(OpenSearchConfig(host="h", port=9200, username="a", password="b", use_ssl=False, verify_certs=False, ssl_show_warn=False, timeout=3))
+    svc.client = AsyncMock()
+    svc.client.cluster.get_settings = AsyncMock(return_value=got)
+    assert await svc._clause_limit() == expected and await svc._clause_limit() == expected
+    assert svc.client.cluster.get_settings.await_count == 1
+    broken = OpenSearchService(OpenSearchConfig(host="h", port=9200, username="a", password="b", use_ssl=False, verify_certs=False, ssl_show_warn=False, timeout=3))
+    broken.client = AsyncMock()
+    broken.client.cluster.get_settings = AsyncMock(side_effect=RuntimeError("no"))
+    assert await broken._clause_limit() == 1024
