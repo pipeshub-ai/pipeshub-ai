@@ -56,7 +56,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { getUserIdFromToken } from '@/lib/utils/jwt';
 import { useComposerDraft } from '@/chat/hooks/use-composer-draft';
-import { buildDraftKey, loadDraft } from '@/chat/utils/composer-draft';
+import { buildDraftKey } from '@/chat/utils/composer-draft';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
 import { PastedTextChip } from '@/chat/components/pasted-text-chip';
 import { TextPreviewDialog } from '@/chat/components/text-preview-dialog';
@@ -899,6 +899,8 @@ export function ChatInput({
   // Regenerate: closes all panels, sets activeMessageAction, and pre-fills the
   // textarea with the original question text (dispatched from message-actions.tsx
   // as { messageId, text: question }).
+  const textBeforeActionRef = useRef('');
+
   const applyQuotedPayload = useCallback((text: string | undefined | null, quotedFromPayload?: string) => {
     const parsed = parseQuotedSelection(text ?? '');
     const excerpt = quotedFromPayload ?? parsed.excerpt;
@@ -915,9 +917,10 @@ export function ChatInput({
     setRegenModelOverride(null);
     leaveEditFiles(false);
     useChatStore.getState().setRegenAnswers(null);
+    textBeforeActionRef.current = message;
     setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
     setMessage(applyQuotedPayload(text));
-  }, [applyQuotedPayload, dismissExpansionPanels, leaveEditFiles]);
+  }, [applyQuotedPayload, dismissExpansionPanels, leaveEditFiles, message]);
 
   // Edit query: same as regenerate but the textarea is editable so the user can
   // amend the question before resending. Also focuses the textarea immediately.
@@ -937,10 +940,11 @@ export function ChatInput({
     setRegenModelOverride(null);
     useChatStore.getState().setRegenAnswers(null);
     enterEditFiles(attachments ?? []);
+    textBeforeActionRef.current = message;
     setActiveMessageAction({ type: 'editQuery', messageId, text, appliedFilters, attachments });
     setMessage(applyQuotedPayload(text));
     setTimeout(() => textareaRef.current?.focus(), 0);
-  }, [applyQuotedPayload, dismissExpansionPanels, enterEditFiles]);
+  }, [applyQuotedPayload, dismissExpansionPanels, enterEditFiles, message]);
 
   const handleShowQuoteBar = useCallback((payload?: unknown) => {
     if (typeof payload !== 'object' || payload === null) return;
@@ -955,24 +959,13 @@ export function ChatInput({
     setRegenModelOverride(null);
     useChatStore.getState().setRegenAnswers(null);
     if (leavingAction) {
-      const key = persistDraft
-        ? buildDraftKey({ userId: draftUserId, convId: draftConvId, agentId })
-        : null;
-      setMessage(key ? loadDraft(key) : '');
+      setMessage(textBeforeActionRef.current);
+      textBeforeActionRef.current = '';
     }
     setQuotedExcerpt(excerpt);
     setQuotedExcerptTruncated(Boolean(truncated));
     setTimeout(() => textareaRef.current?.focus(), 0);
-  }, [
-    activeMessageAction,
-    agentId,
-    dismissExpansionPanels,
-    draftConvId,
-    draftUserId,
-    expandable,
-    leaveEditFiles,
-    persistDraft,
-  ]);
+  }, [activeMessageAction, dismissExpansionPanels, expandable, leaveEditFiles]);
 
   const handleDismissQuote = useCallback(() => {
     setQuotedExcerpt(null);
@@ -987,6 +980,7 @@ export function ChatInput({
     setQuotedExcerpt(null);
     setQuotedExcerptTruncated(false);
     useChatStore.getState().setRegenAnswers(null);
+    textBeforeActionRef.current = '';
     setMessage('');
   }, [leaveEditFiles]);
 

@@ -112,6 +112,24 @@ describe('QuoteSelectionLayer', () => {
     expect(screen.queryByTestId('quote-selection-toolbar')).toBeNull();
   });
 
+  it('keeps Quote when Tab moves focus onto the button and the selection collapses', () => {
+    render(
+      <Theme>
+        <QuoteSelectionLayer enabled>
+          <p>The SLA is 99.9 percent.</p>
+        </QuoteSelectionLayer>
+      </Theme>,
+    );
+    const root = screen.getByTestId('answer-quotable');
+    mockSelection('The SLA is 99.9 percent.', root);
+    fireEvent.pointerUp(root.firstChild as Element);
+    const button = screen.getByTestId('quote-selection-button');
+    button.focus();
+    mockSelection('', root);
+    fireEvent.keyUp(button, { key: 'Tab' });
+    expect(screen.getByTestId('quote-selection-toolbar')).toBeTruthy();
+  });
+
   it('shows Quote after a keyboard selection inside a finished answer', () => {
     render(
       <Theme>

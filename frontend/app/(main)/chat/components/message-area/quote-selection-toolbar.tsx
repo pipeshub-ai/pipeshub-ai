@@ -45,6 +45,7 @@ function selectionInRoot(root: HTMLElement): ToolbarState | null {
 export function QuoteSelectionLayer({ enabled, children }: QuoteSelectionLayerProps) {
   const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
   const [toolbar, setToolbar] = useState<ToolbarState | null>(null);
 
   const hide = useCallback(() => setToolbar(null), []);
@@ -55,7 +56,20 @@ export function QuoteSelectionLayer({ enabled, children }: QuoteSelectionLayerPr
       setToolbar(null);
       return;
     }
-    setToolbar(selectionInRoot(root));
+    const next = selectionInRoot(root);
+    setToolbar((current) => {
+      if (next) return next;
+      const active = document.activeElement;
+      if (
+        current &&
+        toolbarRef.current &&
+        active instanceof Node &&
+        toolbarRef.current.contains(active)
+      ) {
+        return current;
+      }
+      return null;
+    });
   }, [enabled]);
 
   useEffect(() => {
@@ -109,6 +123,7 @@ export function QuoteSelectionLayer({ enabled, children }: QuoteSelectionLayerPr
       {children}
       {toolbar && (
         <Flex
+          ref={toolbarRef}
           data-testid="quote-selection-toolbar"
           align="center"
           gap="1"

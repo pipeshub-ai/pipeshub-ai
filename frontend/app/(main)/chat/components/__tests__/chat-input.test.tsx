@@ -2086,6 +2086,28 @@ describe('ChatInput — quote selected text', () => {
     expect(screen.getByText('Regenerate response')).toBeTruthy();
   });
 
+  it('keeps a just-typed follow-up when Quote leaves edit before the draft saves', () => {
+    const { onSend } = renderInput();
+    type('typed follow-up');
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+      });
+    });
+    expect(composer().value).toBe('Original question');
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    expect(composer().value).toBe('typed follow-up');
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith(
+      formatQuotedSelection('the SLA is 99.9%', 'typed follow-up'),
+      undefined,
+      undefined,
+    );
+  });
+
   it('does not keep the edited question as the quote follow-up', () => {
     const { onSend } = renderInput();
     act(() => {
