@@ -102,6 +102,43 @@ def now() -> float:
     return time.clock_gettime(time.CLOCK_MONOTONIC)
 
 
+def start_together(
+    role: str, args: dict, count: int, *, lead: float = 0.3, blip: dict | None = None
+) -> tuple[list[subprocess.Popen], subprocess.Popen | None]:
+    """Start *count* children of *role* that begin their work at the same instant.
+
+    A fixed start time chosen before the children exist fails when a busy host
+    takes longer than that to start an interpreter. Instead each child prints
+    ``{"ready": true}`` once it is set up and waits for the ``go`` file, which holds
+    the start time, written here only after every child has reported ready. A child
+    reads the start time with ``barrier(args)``. The optional *blip* role gets the
+    same file and starts ``blip["before"]`` seconds ahead of the others.
+    """
+    go = f"{args['dir']}.go"
+    shared = {**args, "go": go}
+    procs = [start_role(role, shared) for _ in range(count)]
+    side = None
+    if blip is not None:
+        side = start_role("lock_blip", {**blip, "go": go})
+        first_line(side)
+    for proc in procs:
+        first_line(proc)
+    tmp = f"{go}.tmp"
+    with open(tmp, "w") as handle:
+        handle.write(repr(now() + lead))
+    os.replace(tmp, go)
+    return procs, side
+
+
+def barrier(args: dict) -> float:
+    """The start time for a child, once the parent says go (see ``start_together``)."""
+    print(json.dumps({"ready": True}), flush=True)
+    while not os.path.exists(args["go"]):
+        time.sleep(0.005)
+    with open(args["go"]) as handle:
+        return float(handle.read()) - args.get("before", 0.0)
+
+
 def gauge_job(path: str | Path, seconds: float, pid: int | None = None) -> None:
     """A job body: record the interval it ran for."""
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
@@ -194,7 +231,8 @@ def role_run(args: dict) -> dict:
             sampled["samples"] += 1
             time.sleep(0.005)
 
-    wait_until(args["start_at"])
+    start = barrier(args)
+    wait_until(start)
     deadline = now() + args["seconds"]
     threading.Thread(target=sampler, daemon=True).start()
     done = 0
@@ -225,7 +263,8 @@ def role_run(args: dict) -> dict:
 def role_admit(args: dict) -> dict:
     """Call ``admit_spawn`` at the barrier, then keep any ticket until told to stop."""
     budget = _budget(args)
-    wait_until(args["start_at"])
+    start = barrier(args)
+    wait_until(start)
     tickets = []
     results = []
     for _ in range(args.get("calls", 1)):
@@ -236,7 +275,7 @@ def role_admit(args: dict) -> dict:
         if ticket is not None:
             tickets.append(ticket)
     print(json.dumps({"admitted": results}), flush=True)
-    wait_until(args["stop_at"])
+    wait_until(start + args["stop_after"])
     for t in tickets:
         t.release(started=True)
         t.worker_exited()
@@ -270,7 +309,7 @@ def role_lock_blip(args: dict) -> dict:
     import fcntl
 
     fd = os.open(os.path.join(args["dir"], "ledger.lock"), os.O_RDWR | os.O_CREAT, 0o600)
-    wait_until(args["start_at"])
+    wait_until(barrier(args))
     fcntl.flock(fd, fcntl.LOCK_EX)
     time.sleep(args["seconds"])
     fcntl.flock(fd, fcntl.LOCK_UN)

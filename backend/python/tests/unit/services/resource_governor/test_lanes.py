@@ -39,9 +39,9 @@ from tests.unit.lane_gauge import (
     first_line,
     gauge_job,
     max_overlap,
-    now,
     reap,
     start_role,
+    start_together,
 )
 
 if TYPE_CHECKING:
@@ -176,12 +176,11 @@ class TestOneBudget:
 class TestAcrossProcesses:
     def test_processes_in_one_domain_share_the_limit(self, lane_dir: Path, tmp_path: Path) -> None:
         gauge = tmp_path / "gauge"
-        start_at = now() + 1.0
         args = {
             "dir": str(lane_dir), "lanes": 2, "gauge": str(gauge), "seconds": 3.0,
-            "job_seconds": 0.05, "threads": 4, "start_at": start_at,
+            "job_seconds": 0.05, "threads": 4,
         }
-        procs = [start_role("run", args) for _ in range(3)]
+        procs, _ = start_together("run", args, 3)
         try:
             results = []
             for proc in procs:
@@ -200,13 +199,14 @@ class TestAcrossProcesses:
         for round_no in range(3):
             directory = lane_dir / f"r{round_no}"
             directory.mkdir(parents=True, mode=0o700)
-            start_at = now() + 1.2
             args = {
                 "dir": str(directory), "lanes": 8, "mem_limit": 10 * GIB, "mem_raw": int(9.5 * GIB),
-                "ws": int(0.75 * GIB), "start_at": start_at, "stop_at": start_at + 1.0, "calls": 40,
+                "ws": int(0.75 * GIB), "stop_after": 1.0, "calls": 40,
             }
-            blip = start_role("lock_blip", {"dir": str(directory), "start_at": start_at - 0.05, "seconds": 0.15})
-            procs = [start_role("admit", args) for _ in range(6)]
+            procs, blip = start_together(
+                "admit", args, 6, blip={"dir": str(directory), "before": 0.05, "seconds": 0.15}
+            )
+            assert blip is not None
             try:
                 admitted = sum(sum(first_line(p)["admitted"]) for p in procs)
                 for p in procs:
@@ -245,12 +245,11 @@ class TestAcrossProcesses:
         )
         try:
             assert first_line(holder)["admitted"] is True  # a resident exists: nobody is exempt
-            start_at = now() + 1.2
             args = {
                 "dir": str(lane_dir), "lanes": 16, "mem_limit": 10 * GIB, "mem_raw": GIB,
-                "ws": int(0.01 * GIB), "start_at": start_at, "stop_at": start_at + 0.6,
+                "ws": int(0.01 * GIB), "stop_after": 0.6,
             }
-            procs = [start_role("admit", args) for _ in range(8)]
+            procs, _ = start_together("admit", args, 8)
             try:
                 admitted = sum(first_line(p)["admitted"][0] for p in procs)
                 for p in procs:

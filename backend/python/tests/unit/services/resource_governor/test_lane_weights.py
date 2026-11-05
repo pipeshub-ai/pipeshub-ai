@@ -22,7 +22,7 @@ from app.services.resource_governor.lane_ledger import (
     LedgerRecord,
     active_waiter,
 )
-from app.services.resource_governor.lanes import LaneBudget, LaneWaitTimeout
+from app.services.resource_governor.lanes import LaneBudget, LaneLease, LaneWaitTimeout
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,6 +34,16 @@ if TYPE_CHECKING:
 
 def real(make_budget: Callable[..., LaneBudget], lanes: int, pid: int) -> LaneBudget:
     return make_budget(lanes, clock=time.monotonic, pid=pid, view_ttl=0.05)
+
+
+def take_soon(budget: LaneBudget, seconds: float = 5.0) -> LaneLease | None:
+    """``try_acquire`` until it succeeds: one call may find the slot mutex busy."""
+    end = time.monotonic() + seconds
+    while True:
+        lease = budget.try_acquire()
+        if lease is not None or time.monotonic() >= end:
+            return lease
+        time.sleep(0.005)
 
 
 def flag(budget: LaneBudget) -> LedgerRecord:
@@ -259,7 +269,9 @@ def test_weight1_leaves_room_for_the_waiter(make_budget: Callable[..., LaneBudge
         held.pop().release()
         assert light.try_acquire() is None  # 2 held: 2 + 1 > 2
         held.pop().release()
-        mine = light.try_acquire()  # 1 held: 1 + 1 <= 2
+        # 1 held: 1 + 1 <= 2. A call also returns None while the waiter's polling holds
+        # the slot mutex for an instant ("the caller polls"), so poll for the answer.
+        mine = take_soon(light)
         assert mine is not None
         mine.release()
     finally:
