@@ -52,6 +52,19 @@
 
 Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
 
+### How PipesHub works
+
+PipesHub builds a **unified context layer** across documents, conversations, structured data, wikis, tickets and code. Connectors sync each source along with its permissions. The indexing pipeline parses, chunks and embeds the content, and links records, people and entities in a knowledge graph.
+
+Questions are answered by an **agent loop**, not a single retrieve-then-generate pass. The agent plans, calls tools, reads the results and keeps going until it has the evidence:
+
+- **Hybrid search** — semantic and keyword retrieval, so it matches both meaning and exact terms.
+- **Grep / pattern matching** — exact identifiers, error strings, ticket keys and code symbols.
+- **Knowledge-graph navigation** — follows links between documents, people, tickets, pull requests and threads.
+- **Document reading** — opens the full source instead of trusting a single matched chunk.
+
+Every tool call is filtered by the asking user's permissions, and every answer cites the blocks it came from.
+
 > [!TIP]
 > Deploy with a single command:
 > ```bash
@@ -249,14 +262,14 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 
 > Need an SDK in another language? Reach out to us at developer@pipeshub.com
 
-## RoadMap
+## Roadmap
 
 <p>We ship in the open. Here's what's done and what's next:</p>
 
 <ul>
 <li>✅ 🤖 <strong>Workplace AI agents</strong>: first-class no-code agent builder</li>
 <li>✅ 🔗 <strong>MCP (Model Context Protocol)</strong> support, both server and client</li>
-<li>✅ 🧰 <strong>Developers SDKs</strong></li>
+<li>✅ 🧰 <strong>Developer SDKs</strong></li>
 <li>✅ 🔍 <strong>Code search</strong> across GitHub and GitLab</li>
 <li>⬜ 👤 <strong>Personalized search</strong> based on team, role, and history</li>
 <li>✅ ☸️ <strong>Production Kubernetes</strong> deployment with HA defaults</li>
@@ -269,10 +282,13 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 ## 👥 Contributing
 
 Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
+
+Contributing with a coding agent (Claude Code, Cursor, Codex, Copilot, Gemini CLI)? [AGENTS.md](AGENTS.md) gives it the repo layout, test commands and the conventions reviewers check.
+
 <h3>Where to go for what</h3>
 
 <table>
-
+<tbody>
 <tr><td>Ask a question or get help</td><td><a href="https://discord.com/invite/K5RskzJBm2">Discord</a></td></tr>
 <tr><td>Report a bug or request a feature</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
 <tr><td>Report a security issue</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">Report Security Issue</a></td></tr>
@@ -292,6 +308,8 @@ It connects systems such as Slack, Google Drive, GitHub, Microsoft 365 and Notio
 ### How is PipesHub different from other workplace AI tools?
 
 PipesHub is fully open-source (Apache 2.0) and self-hostable — your data never leaves your infrastructure. It features permission-aware search that enforces source-level access controls, and delivers explainable answers with precise block citations to original documents.
+
+Answers come from an agent loop that combines hybrid search, grep, knowledge-graph navigation and full-document reading, instead of a single retrieve-then-generate pass. See [How PipesHub works](#how-pipeshub-works).
 
 ### What connectors does PipesHub support?
 
@@ -329,7 +347,7 @@ Data sits in a knowledge graph (Neo4j by default, or ArangoDB), a vector store (
 
 ### What is the Knowledge Graph Retrieval feature?
 
-PipesHub uses graph-backed retrieval that captures relationships across enterprise data. It uses Neo4j or ArangoDB as graph databases, combined with Qdrant for vector similarity search.
+PipesHub uses graph-backed retrieval that captures relationships across enterprise data. It uses Neo4j or ArangoDB as the graph database, combined with a vector store (Qdrant by default) for semantic search. The agent can follow graph links between documents, people, tickets and code during a question, not only at indexing time.
 
 ### Does PipesHub have an MCP server?
 
