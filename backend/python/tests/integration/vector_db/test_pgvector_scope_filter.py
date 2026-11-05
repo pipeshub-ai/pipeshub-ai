@@ -207,7 +207,7 @@ async def test_another_organisation_never_appears_under_a_filter(store, leg) -> 
 class _NoBitIndex(dict):
     """A recall verdict of "the bit index failed" for every space."""
 
-    def get(self, key: object, default: object = None) -> bool:  # noqa: ARG002
+    def get(self, key: object, default: object = None) -> bool:
         return False
 
 
