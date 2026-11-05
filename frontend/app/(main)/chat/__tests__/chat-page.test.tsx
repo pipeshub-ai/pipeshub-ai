@@ -809,23 +809,25 @@ describe('Chat page — keyboard shortcuts and the address bar', () => {
 });
 
 describe('Chat page — agent chats', () => {
+  const CREATOR_ID = '507f1f77bcf86cd799439011';
+
   it("shows the agent's name and who built it, and warns about tools that no longer exist", async () => {
     getAgent.mockResolvedValue({
       agent: {
         _key: 'agent-7',
         name: 'Support Bot',
-        createdBy: 'creator-1',
+        createdBy: CREATOR_ID,
         toolsets: [{ name: 'jira', tools: [{ name: 'jira.search', fullName: 'jira.search', deprecated: true }] }],
       },
       toolFullNames: ['jira.search'],
     });
-    getUsersByIds.mockResolvedValue([{ name: 'Priya Shah', email: 'priya@acme.test' }]);
+    getUsersByIds.mockResolvedValue([{ userId: CREATOR_ID, name: 'Priya Shah', email: 'priya@acme.test' }]);
 
     renderPage('agentId=agent-7');
 
     expect(await screen.findByText('Support Bot')).toBeTruthy();
     expect(await screen.findByText('Priya Shah')).toBeTruthy();
-    expect(getUsersByIds).toHaveBeenCalledWith(['creator-1']);
+    expect(getUsersByIds).toHaveBeenCalledWith([CREATOR_ID], { suppressErrorToast: true });
     expect(toastError).toHaveBeenCalledWith(
       'This agent has tools that are no longer available. Open the Agent Builder to remove them.',
       expect.objectContaining({ action: expect.objectContaining({ label: 'Open Agent Builder' }) }),

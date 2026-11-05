@@ -76,6 +76,8 @@ class _RecordingProducer:
         self.refuse: set[str] = set()
 
     async def send_messages(self, topic: str, messages: list) -> list[bool]:
+        if topic == "record-title-events":
+            return [True] * len(messages)
         acked = []
         for key, message in messages:
             ok = key not in self.refuse

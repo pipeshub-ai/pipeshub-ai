@@ -279,16 +279,19 @@ class TestGetEntityCandidateRecords:
         assert _bind_vars(provider)[0]["scan_cap"] == ENTITY_CANDIDATE_SCAN_CAP
 
     @pytest.mark.asyncio
-    async def test_only_indexed_records_are_candidates(self, provider) -> None:
-        """Search only returns indexed records; listing others offers records
-        whose content cannot be read."""
+    async def test_only_indexed_records_are_listed_for_an_entity(self, provider) -> None:
+        """Listing the records of a topic offers only records whose content
+        can be read; a record named directly is returned either way."""
         await provider.get_entity_candidate_records(
             [{"id": "t1", "type": "topic", "connectorIds": ["c1"]},
              {"id": "r1", "type": "record", "connectorIds": ["c1"]}], "org1"
         )
-        for query, bind_vars in zip(_queries(provider), _bind_vars(provider)):
-            assert "rec.indexingStatus == @completed" in query
-            assert bind_vars["completed"] == "COMPLETED"
+        topic_query, record_query = _queries(provider)
+        topic_vars, record_vars = _bind_vars(provider)
+        assert "rec.indexingStatus == @completed" in topic_query
+        assert topic_vars["completed"] == "COMPLETED"
+        assert "@completed" not in record_query
+        assert "completed" not in record_vars
 
     @pytest.mark.asyncio
     async def test_duplicate_refs_keep_the_first_refs_connectors(self, provider) -> None:

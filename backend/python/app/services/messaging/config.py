@@ -30,6 +30,9 @@ class Topic(str, Enum):
     """Well-known messaging topics."""
 
     RECORD_EVENTS = "record-events"
+    # Record names, published by connectors so a record is findable by name before it is indexed.
+    RECORD_TITLE_EVENTS = "record-title-events"
+    RECORD_EVENTS_PRIORITY = "record-events-priority"
     CODE_GRAPH_EVENTS = "code-graph-events"
     ENTITY_EVENTS = "entity-events"
     AI_CONFIG_EVENTS = "ai-config-events"
@@ -301,6 +304,18 @@ class MessagingEnvConfig:
         same ceiling faster.
         """
         return int(os.getenv("MESSAGE_BATCH_SIZE_INDEXING", "10"))
+
+    @property
+    def record_title_batch_size(self) -> int:
+        """Record names written per entity-index write by the title consumer."""
+        size = _env_int("RECORD_TITLE_BATCH_SIZE", 100)
+        return size if size >= 1 else 100
+
+    @property
+    def record_title_flush_seconds(self) -> float:
+        """How long a partial batch of record names waits for more before it is written."""
+        seconds = _env_seconds("RECORD_TITLE_FLUSH_SECONDS", 2.0)
+        return seconds if seconds >= 0.1 else 2.0
 
     @property
     def message_timeout_ms(self) -> int:
@@ -683,6 +698,18 @@ class MessagingEnvConfig:
         turned off less than this long ago has its events skipped by the
         handler one by one, as before. ``0`` turns read-time settling off."""
         return _env_seconds("INDEXING_CONNECTOR_STATE_REFRESH_SECONDS", 15.0)
+
+    @property
+    def priority_lane_heavy_limit(self) -> int:
+        """Heavy-tier records the priority consumer (``record-events-priority``) runs at once,
+        per worker process. Small next to the normal pools: the lane exists to read a record
+        now, not to index faster. It also bounds the lane's heavy parses."""
+        return max(1, _env_int("PRIORITY_LANE_HEAVY_LIMIT", 1))
+
+    @property
+    def priority_lane_light_limit(self) -> int:
+        """Light-tier records the priority consumer runs at once, per worker process."""
+        return max(1, _env_int("PRIORITY_LANE_LIGHT_LIMIT", 3))
 
 
 messaging_env = MessagingEnvConfig()

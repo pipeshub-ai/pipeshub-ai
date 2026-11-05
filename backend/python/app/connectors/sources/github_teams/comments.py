@@ -24,7 +24,12 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import (
     not_downloadable,
@@ -572,6 +577,7 @@ class CommentsHelper:
         processor = c.data_entities_processor
         kept: list[Record] = []
         legacy: list[Record] = []
+        untitled: list[dict[str, str]] = []
         by_external_id: dict[str, Record] = {}
         after: str | None = None
         while True:
@@ -581,12 +587,15 @@ class CommentsHelper:
             for r in page:
                 key = str(r.external_record_id or "")
                 by_external_id[key] = r
+                if self._carries_another_repos_title(r, external_group_id):
+                    untitled.append({"id": r.id, "recordName": key})
                 if r.record_type == RecordType.FILE.value and _is_github_attachment_url(key.split("#", 1)[0]):
                     (kept if "#" in key else legacy).append(r)
             if len(page) < _STORED_PAGE:
                 break
             after = page[-1].id
         processor.note_kept_records(c.connector_id, [r.id for r in kept])
+        await self._clear_foreign_titles(untitled, external_group_id)
         if not legacy:
             return
         # Their parents are streamed once more, which writes the keyed records (the ones
@@ -598,6 +607,32 @@ class CommentsHelper:
         await c.record_remover.remove_records(legacy)
         self.logger.info("Replaced %s attachment record(s) keyed by URL alone in %s; re-reading %s parent(s)",
                          len(legacy), external_group_id, len(parents))
+
+    def _carries_another_repos_title(self, record: Record, external_group_id: str) -> bool:
+        """A placeholder of this connector, in a repository's group, named for something other than its own id
+        and not an issue or pull request of that repository: a stub stored before a link to another repository
+        stopped carrying the linked title. An id that names no repository counts as another one."""
+        key = str(record.external_record_id or "")
+        return bool(
+            record.is_placeholder
+            and record.connector_id == self.c.connector_id
+            and record.record_name
+            and record.record_name != key
+            and key.split("/", 1)[0] != external_group_id.split("-", 1)[0]
+        )
+
+    async def _clear_foreign_titles(self, patches: list[dict[str, str]], external_group_id: str) -> None:
+        """Name those stubs by their ids. A partial update that names one key, so nothing else on the record
+        changes, and a second run finds nothing to do. A failed write is logged and tried again next time."""
+        if not patches:
+            return
+        try:
+            await self.c.data_entities_processor.batch_update_nodes(patches, CollectionNames.RECORDS.value)
+        except Exception as e:
+            self.logger.warning("Could not rename %s stub record(s) in %s: %s", len(patches), external_group_id, e)
+            return
+        self.logger.info("A link to an issue in another repository no longer shows that issue's title: "
+                         "renamed %s stub record(s) in %s", len(patches), external_group_id)
 
     async def remove_unlinked_attachments(self, record: Record, linked_keys: set[str]) -> None:
         """Remove the attachment records of ``record`` that nothing links any more.

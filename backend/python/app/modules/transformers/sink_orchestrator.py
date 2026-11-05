@@ -20,6 +20,11 @@ from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
+from app.modules.indexing.parse_now_marker import (
+    ParseNowStatus,
+    current_run,
+    marker_fields,
+)
 from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.record_metadata.projection import (
     NOT_PROVIDED,
@@ -54,6 +59,8 @@ from app.modules.transformers.transformer import (
     ENRICHMENT_FOLLOWS,
     EXTRACTION_DEFERRED_FIELD,
     IMAGE_DESCRIPTION_BUDGET_S,
+    PARSE_NOW,
+    STORE_ONLY,
     TransformContext,
     Transformer,
 )
@@ -241,8 +248,13 @@ class SinkOrchestrator(Transformer):
         After this method returns, the document is queryable via the vector
         store and ``indexingStatus`` is set to ``COMPLETED``.  The graph
         enrichment (``extractionStatus``) is left unchanged here.
+
+        A parse-now run marks the record once its content is stored. With ``STORE_ONLY`` the run
+        ends there: no vectors, no status on the record, no reconciliation metadata (a later index
+        embeds every block) and no entity points.
         """
         record = ctx.record
+        store_only = bool(ctx.settings.get(STORE_ONLY))
         skip_blob = bool(ctx.settings.get("skip_blob"))
         skip_vector_store = bool(ctx.settings.get("skip_vector_store")) or bool(
             ctx.settings.get("sink_only")
@@ -266,12 +278,18 @@ class SinkOrchestrator(Transformer):
                 await self.write_blob(ctx)
 
         written: WrittenRevision | None = None
-        if not skip_blob and not skip_vector_store:
+        if not skip_blob and (store_only or not skip_vector_store):
             with stage("artifacts.write"):
                 written = await self._write_artifacts(ctx, record_doc)
             if written is not None:
                 # Right after the set, before vectors and COMPLETED: the pointer must not wait on them.
                 await self._flip_revision_pointer(ctx.record, written, ctx.settings[STORED_WRITE].run)
+
+        if not skip_blob and ctx.settings.get(PARSE_NOW):
+            await self._mark_parse_now_stored(ctx, record_doc, required=store_only)
+        if store_only:
+            self.logger.info("Stored the content of record %s; not embedded", record_id)
+            return
 
         if skip_vector_store:
             await self._project_properties(ctx, record_doc)
@@ -351,6 +369,39 @@ class SinkOrchestrator(Transformer):
                 "Properties of record %s not projected; indexing goes on: %s", ctx.record.id, type(exc).__name__,
             )
             record_property_projection("error")
+
+    async def _mark_parse_now_stored(
+        self, ctx: TransformContext, record_doc: dict[str, Any], *, required: bool
+    ) -> None:
+        """Mark the record's stored content readable, for the revision it was written under.
+
+        Not when a newer write replaced this one (the run that wrote that one marks it). ``required``
+        is a store-only run, whose whole result is this marker: a write that did not take fails the
+        attempt so it is retried. In a run that goes on to index, the record becomes readable
+        anyway, so a failure is only logged.
+        """
+        rev = record_doc.get("contentRev")
+        if not rev or ctx.settings.get(RUN_SUPERSEDED):
+            return
+        try:
+            stored = await self.graph_provider.update_node(
+                ctx.record.id, CollectionNames.RECORDS.value, marker_fields(ParseNowStatus.STORED, str(rev)),
+            )
+        except Exception:
+            if required:
+                raise
+            self.logger.warning("Parse-now marker of record %s not written", ctx.record.id, exc_info=True)
+            return
+        if not stored:
+            if required:
+                raise IndexingError(
+                    message=f"Could not mark the stored content of record {ctx.record.id}",
+                    record_id=ctx.record.id,
+                )
+            self.logger.warning("Parse-now marker of record %s not written: no such record", ctx.record.id)
+            return
+        if run := current_run():
+            run.stored = True
 
     async def _sync_record_identity_entities(self, ctx: TransformContext) -> None:
         """Write the record's own entity points, its title and its record group
