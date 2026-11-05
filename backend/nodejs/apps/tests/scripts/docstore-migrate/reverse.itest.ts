@@ -70,6 +70,10 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       const u = (await sql('SELECT org_id, id FROM identity.users ORDER BY id LIMIT 1'))[0];
       await sql("UPDATE identity.users SET full_name = 'Renamed Afterwards' WHERE id = $1", [u.id]);
       await sql('DELETE FROM conversation.chat_sessions WHERE id = (SELECT id FROM conversation.chat_sessions ORDER BY id LIMIT 1)');
+      // and a person revokes an agent sign-in that MongoDB still holds as consumed
+      const reg = (await sql("SELECT id FROM oauth.agent_registrations WHERE status = 'consumed' ORDER BY id LIMIT 1"))[0];
+      expect(reg, 'the fixture has a consumed registration').to.exist;
+      await sql("UPDATE oauth.agent_registrations SET status = 'revoked' WHERE id = $1", [reg.id]);
       const refused = await run(['rollback']);
       expect(refused.code).to.equal(1);
       expect(refused.out.mode).to.equal('refused');
@@ -80,6 +84,23 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(r.code).to.equal(0);
       expect(await fence()).to.equal('active');
       expect(await w.mongo.client.db(DB).collection('users').countDocuments({ fullName: 'Renamed Afterwards' })).to.equal(1);
+      // a sign-in revoked after the move must not come back live
+      const back = await w.mongo.client.db(DB).collection<any>('oauthAgentRegistrations').findOne({ _id: new ObjectId(reg.id) });
+      expect(back?.status).to.equal('revoked');
+    });
+
+    it('a revoked agent sign-in is a PostgreSQL write: plain rollback refuses, and --reverse brings the revocation back', async () => {
+      expect((await run(['migrate', '--offline'])).code).to.equal(0);
+      const reg = (await sql("SELECT id FROM oauth.agent_registrations WHERE status = 'consumed' ORDER BY id LIMIT 1"))[0];
+      expect(reg, 'the fixture has a consumed registration').to.exist;
+      await sql("UPDATE oauth.agent_registrations SET status = 'revoked' WHERE id = $1", [reg.id]);
+      const refused = await run(['rollback']);
+      expect(refused.code).to.equal(1);
+      expect(refused.out.mode).to.equal('refused');
+      const r = await run(['rollback', '--reverse']);
+      expect(r.code, r.out.message).to.equal(0);
+      const back = await w.mongo.client.db(DB).collection<any>('oauthAgentRegistrations').findOne({ _id: new ObjectId(reg.id) });
+      expect(back?.status).to.equal('revoked');
     });
 
     it('after the cut, the reverse follower writes application changes back and rollback --online makes MongoDB the store again', async () => {
@@ -103,8 +124,13 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect((await m.collection<any>('users').findOne({ _id: new ObjectId(person.id) })).fullName).to.equal('Back On Mongo');
       expect((await m.collection<any>('org').findOne({ _id: new ObjectId(person.org_id) })).registeredName).to.equal('Renamed In PostgreSQL');
       expect((await sql('SELECT count(*)::int AS n FROM platform.docstore_changes'))[0].n, 'the log is trimmed as it is applied').to.equal(0);
+      // a person revokes an agent sign-in on PostgreSQL; MongoDB still holds it as consumed
+      const reg = (await sql("SELECT id FROM oauth.agent_registrations WHERE status = 'consumed' ORDER BY id LIMIT 1"))[0];
+      expect(reg, 'the fixture has a consumed registration').to.exist;
+      await sql("UPDATE oauth.agent_registrations SET status = 'revoked' WHERE id = $1", [reg.id]);
       const back = await run(['rollback', '--online'], ONLINE);
       expect(back.code, JSON.stringify({ stage: back.out.stage, msg: back.out.message })).to.equal(0);
+      expect((await m.collection<any>('oauthAgentRegistrations').findOne({ _id: new ObjectId(reg.id) }))?.status, 'a revoked sign-in stays revoked').to.equal('revoked');
       expect(await fence()).to.equal('active');
       expect(await storeEpoch()).to.include({ backend: 'mongo', readonly: true });
       // the move is over: the job ended, the follower's markers are gone, and status says so

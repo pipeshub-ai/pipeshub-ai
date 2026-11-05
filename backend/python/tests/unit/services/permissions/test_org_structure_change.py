@@ -35,3 +35,19 @@ async def test_every_connector_of_every_organisation_is_marked_with_the_context_
     graph = _Graph()
     await note_org_structure_change(graph, None)
     assert sorted(graph.marked) == ["app-o1", "app-o2"]
+
+
+async def test_a_listing_that_fails_is_reported_so_a_migration_stays_pending(monkeypatch) -> None:
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
+    graph = _Graph()
+    graph.get_all_orgs = AsyncMock(side_effect=RuntimeError("graph down"))
+    assert await note_org_structure_change(graph, None) is False
+    graph = _Graph()
+    graph.get_org_apps = AsyncMock(side_effect=RuntimeError("graph down"))
+    assert await note_org_structure_change(graph, None) is False  # the connectors of an organisation cannot be listed
+    assert await note_org_structure_change(_Graph(), None) is True
+
+
+async def test_nothing_to_record_while_the_scope_fields_are_off_is_success(monkeypatch) -> None:
+    monkeypatch.delenv(ENV_SCOPE_FIELDS, raising=False)
+    assert await note_org_structure_change(_Graph(), None) is True
