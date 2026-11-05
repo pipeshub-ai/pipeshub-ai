@@ -47,6 +47,7 @@ from app.agents.agent_loop.answer_selection import (
     DraftEventSink,
     ProgressGate,
     answer_draft_runs,
+    discard_draft_tasks,
     fork_chat_state,
     pool_usage,
     select_among_drafts,
@@ -818,6 +819,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             elif chosen.goal is not None:
                 await _clarify(chosen.context, chosen.agent, chosen.goal, chosen.clarifying_questions)
         finally:
+            # Before any await, as in `_produce`: a disconnect can cancel the awaits below.
+            discard_draft_tasks(drafts)
             for draft in drafts:
                 await _release(draft.context, draft.agent)
 

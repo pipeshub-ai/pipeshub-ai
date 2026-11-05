@@ -13,6 +13,7 @@ chosen run once, through the normal finalizer, with that run's citation refs.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import copy
 import hashlib
 import json
@@ -30,7 +31,6 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -50,7 +50,7 @@ from app.core.org_context import spawn_in_request
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.chat_helpers import CitationRefMapper, is_base64_image
 from app.utils.citations import cited_record_ids, normalize_malformed_citations
-from app.utils.conversation_tasks import pop_tasks, register_task
+from app.utils.conversation_tasks import begin_run, discard_tasks
 from app.utils.env_utils import env_bool, env_int
 from app.utils.streaming import (
     cleanup_content,
@@ -254,6 +254,8 @@ class Draft:
     streamer: TerminalAnswerStreamer | None = None
     result: AgentResult | None = None
     error: Exception | None = None
+    # The run's context once `begin_run` has scoped its conversation tasks, to discard them by.
+    task_scope: contextvars.Context | None = None
 
     @property
     def answer(self) -> str:
@@ -297,20 +299,13 @@ class RecordText:
     text: str
 
 
-# The run a task belongs to. Tasks a run starts inherit it, which is how the conversation tasks of each run are told
-# apart once one run is chosen.
-_RUN_INDEX: ContextVar[int | None] = ContextVar("answer_draft_run", default=None)
-# Conversation tasks of runs that were not chosen (a query's CSV export, a file upload) finish unattached; held here
-# so they are not collected before they do.
-_unattached_tasks: set[asyncio.Task[Any]] = set()
-
-
 async def run_drafts(drafts: Sequence[Draft], run: Callable[[Draft], Awaitable[None]]) -> None:
     """Runs every draft at once. A run that raises keeps its error and the others go on; cancelling the caller
     cancels every run."""
 
     async def _one(draft: Draft) -> None:
-        _ = _RUN_INDEX.set(draft.index)
+        begin_run()
+        draft.task_scope = contextvars.copy_context()
         try:
             await run(draft)
         except Exception as exc:
@@ -362,9 +357,7 @@ async def select_among_drafts(
     else:
         choice = await _choose(drafts, question=question, llm=llm, cancellation_token=cancellation_token)
     _log_choice(choice, drafts, runs_ms=runs_ms, select_ms=_ms_since(choosing))
-    conversation_id = drafts[0].context.conversation_id if drafts else None
-    if conversation_id:
-        _keep_conversation_tasks(conversation_id, choice.draft)
+    discard_draft_tasks(drafts, keep=choice.draft)
     if choice.draft is not None:
         await _hand_over(choice.draft, drafts, client_sink, choice.usage)
     return choice
@@ -602,17 +595,12 @@ def pool_usage(into: AgentContext, drafts: Iterable[Draft]) -> None:
             into.usage_ledger.add(f"{ANSWER_DRAFT_SOURCE_PREFIX}:{source}", usage)
 
 
-def _keep_conversation_tasks(conversation_id: str, chosen: Draft | None) -> None:
-    """Leaves registered for the conversation only the tasks the chosen run started, so its answer carries its own
-    files and none of another run's."""
-    chosen_index = chosen.index if chosen is not None else None
-    for task in pop_tasks(conversation_id):
-        owner = task.get_context().get(_RUN_INDEX)
-        if owner is None or owner == chosen_index:
-            register_task(conversation_id, task)
-        else:
-            _unattached_tasks.add(task)
-            task.add_done_callback(_unattached_tasks.discard)
+def discard_draft_tasks(drafts: Iterable[Draft], *, keep: Draft | None = None) -> None:
+    """Cancels and unregisters the conversation tasks (a query's CSV export, a file upload) of every run but
+    ``keep``: an answer carries its own run's files only, and no run leaves tasks nobody will collect."""
+    for draft in drafts:
+        if draft is not keep and draft.task_scope is not None:
+            _ = draft.task_scope.run(discard_tasks, draft.context.conversation_id)
 
 
 async def _hand_over(
@@ -667,6 +655,7 @@ __all__ = [
     "build_user_prompt",
     "candidate_text",
     "cited_record_order",
+    "discard_draft_tasks",
     "fork_chat_state",
     "frame_use",
     "label_order",

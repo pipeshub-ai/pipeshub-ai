@@ -27,9 +27,11 @@ from app.agents.agent_loop.answer_selection import (
     assemble_records,
     candidate_text,
     cited_record_order,
+    discard_draft_tasks,
     fork_chat_state,
     label_order,
     pick_label,
+    run_drafts,
     select_among_drafts,
 )
 from app.agents.agent_loop.context import AgentContext
@@ -530,14 +532,11 @@ async def test_usage_is_not_pooled_when_the_request_did_not_ask_for_it() -> None
 async def test_only_the_chosen_runs_conversation_tasks_stay_registered() -> None:
     client, gate = _Sink(), ProgressGate()
     drafts = [_draft(i, client, gate, _record(f"rec-{i}", f"Notes {i}", f"text {i}")) for i in range(2)]
-    started: dict[int, asyncio.Task[int]] = {}
-
-    async def _export(index: int) -> int:
-        return index
+    started: dict[int, asyncio.Task[None]] = {}
 
     async def _run(draft: Draft) -> None:
         # As a query tool does: its export runs on, registered for the conversation.
-        started[draft.index] = asyncio.create_task(_export(draft.index))
+        started[draft.index] = asyncio.create_task(asyncio.sleep(3600))
         register_task(_CONVERSATION, started[draft.index])
         draft.result = AgentResult(goal=Goal(description=_QUESTION), output=f"answer {draft.index} [s](ref1)")
 
@@ -545,11 +544,38 @@ async def test_only_the_chosen_runs_conversation_tasks_stay_registered() -> None
         choice = await _select(drafts, _run, _Selector(_picks("answer 1")), client)
         kept = pop_tasks(_CONVERSATION)
     finally:
-        _ = pop_tasks(_CONVERSATION)
+        for task in [*pop_tasks(_CONVERSATION), *started.values()]:
+            _ = task.cancel()
 
     assert choice.draft is drafts[1]
     assert kept == [started[1]]
-    assert await started[0] == 0
+    with pytest.raises(asyncio.CancelledError):
+        await started[0]
+
+
+async def test_a_request_that_ends_without_a_choice_cancels_every_runs_conversation_tasks() -> None:
+    client, gate = _Sink(), ProgressGate()
+    drafts = [_draft(i, client, gate) for i in range(2)]
+    started: list[asyncio.Task[None]] = []
+
+    async def _run(draft: Draft) -> None:
+        started.append(asyncio.create_task(asyncio.sleep(3600)))
+        register_task(_CONVERSATION, started[-1])
+        raise RuntimeError("the search failed after the export started")
+
+    try:
+        await run_drafts(drafts, _run)
+        discard_draft_tasks(drafts)
+        left = pop_tasks(_CONVERSATION)
+    finally:
+        for task in started:
+            _ = task.cancel()
+
+    assert left == []
+    assert len(started) == 2
+    for task in started:
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 def _searching(
