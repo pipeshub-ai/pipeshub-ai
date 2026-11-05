@@ -476,7 +476,7 @@ class OpenAITransport(LLMTransport):
         relocated = relocated_tool_images(messages)
         if relocated is not None:
             formatted.append(self._format_message(relocated))
-        if plan.last_message and messages:
+        if plan.last_message and messages and formatted:
             _mark_last(formatted[-1], "text")
         return formatted
 

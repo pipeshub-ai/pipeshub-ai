@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall, UserMessage
 from app.agent_loop_lib.transport.openai import OpenAITransport
+from app.agent_loop_lib.transport.prompt_cache import OpenAICachePlan
 
 
 def _roles(messages: list) -> list[str]:
@@ -28,3 +29,8 @@ def test_assistant_turn_with_text_or_tool_calls_is_kept() -> None:
         AssistantMessage(content=[], tool_calls=[call]),
     ]
     assert _roles(messages) == ["user", "assistant", "assistant"]
+
+
+def test_only_empty_assistant_turns_with_cache_marker_does_not_raise() -> None:
+    transport = OpenAITransport(api_key="x", cache_plan=OpenAICachePlan(last_message=True))
+    assert transport._format_messages([AssistantMessage(content=[])], None) == []
