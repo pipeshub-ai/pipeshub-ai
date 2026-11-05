@@ -40,6 +40,12 @@ COMPROMISED_RELEASES = {
     "litellm": (Version("1.82.7"), Version("1.82.8"), Version("1.107.0")),
 }
 
+# package -> releases above the floor that an advisory still covers (it was fixed on several release lines at once).
+VULNERABLE_RELEASES = {
+    # GHSA-7hp6-4w63-5g45
+    "litellm": tuple(Version(v) for v in ("1.101.0", "1.101.1", "1.101.2", "1.102.0", "1.102.1", "1.103.0", "1.104.0rc1")),
+}
+
 # Files those releases drop into site-packages; a .pth runs before any test does.
 COMPROMISED_FILES = ("cook.pth", "cook.py", "litellm_init.pth")
 # 1.107.0 also dropped a sitecustomize.py (it runs at every interpreter start too). Legitimate environments can hold
@@ -78,6 +84,18 @@ def test_installed_release_is_not_a_compromised_one(package: str) -> None:
 def test_manifest_excludes_compromised_releases(package: str) -> None:
     specifier = Requirement(f"{package}{_specifiers(BACKEND_MANIFEST)[package]}").specifier
     for release in COMPROMISED_RELEASES[package]:
+        assert not specifier.contains(release, prereleases=True), f"{BACKEND_MANIFEST} admits {package} {release}"
+
+
+@pytest.mark.parametrize("package", sorted(VULNERABLE_RELEASES))
+def test_installed_release_is_not_a_vulnerable_one(package: str) -> None:
+    assert Version(importlib.metadata.version(package)) not in VULNERABLE_RELEASES[package]
+
+
+@pytest.mark.parametrize("package", sorted(VULNERABLE_RELEASES))
+def test_manifest_excludes_vulnerable_releases(package: str) -> None:
+    specifier = Requirement(f"{package}{_specifiers(BACKEND_MANIFEST)[package]}").specifier
+    for release in VULNERABLE_RELEASES[package]:
         assert not specifier.contains(release, prereleases=True), f"{BACKEND_MANIFEST} admits {package} {release}"
 
 
