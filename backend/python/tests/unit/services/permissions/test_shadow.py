@@ -119,6 +119,22 @@ async def test_a_record_the_filter_returns_that_the_post_check_refuses_is_an_ale
     assert not any("vrid" in str(labels) for labels, _ in _generation_and_metrics.compared.calls)           # labels are outcomes, never ids
 
 
+async def test_a_record_the_real_path_admits_and_the_filter_hides_is_recall_loss_not_an_alert(caplog, _generation_and_metrics) -> None:
+    caplog.set_level(logging.DEBUG)
+    counts = await run(comparator(), {"a", "b", "refused"}, {"a", "b"}, ["a"])          # b is missed; "refused" was never admitted, so missing it is right
+    assert counts == {"agree": 1, "over_admit": 0, "recall_loss": 1}
+    m = _generation_and_metrics.compared
+    assert (m.total("over_admit"), m.total("recall_loss")) == (0, 1) and not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+async def test_a_record_the_filter_admits_that_the_real_path_refuses_is_an_alert_not_recall_loss(caplog, _generation_and_metrics) -> None:
+    caplog.set_level(logging.DEBUG)
+    counts = await run(comparator(), {"a", "refused"}, {"a"}, ["a", "refused"])         # the filter returns everything the real path admits, and one more
+    assert counts == {"agree": 1, "over_admit": 1, "recall_loss": 0}
+    m = _generation_and_metrics.compared
+    assert (m.total("over_admit"), m.total("recall_loss")) == (1, 0) and len([r for r in caplog.records if r.levelno >= logging.ERROR]) == 1
+
+
 async def test_a_clean_comparison_raises_no_alert(caplog) -> None:
     caplog.set_level(logging.DEBUG)
     counts = await run(comparator(), {"a", "b"}, {"a"}, ["a"])
