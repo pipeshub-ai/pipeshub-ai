@@ -2359,7 +2359,9 @@ class IGraphDBProvider(ABC):
         undone. See ``app.modules.indexing.duplicate_reconcile``.
 
         Returns:
-            ``[{"_key", "duplicateReconcileAttempts", "duplicateReconcileDueAt"}]``.
+            ``[{"_key", "orgId", "duplicateReconcileAttempts", "duplicateReconcileDueAt"}]``. The read spans
+            every organisation (the caller runs it under a system context); ``orgId`` is the organisation
+            the follow-up for that row runs under.
 
         Raises:
             Exception: on query failure.
@@ -4951,6 +4953,20 @@ class IGraphDBProvider(ABC):
         Concrete and failing, like ``check_access``: a backend without it must be refused loudly, never read as
         "no scopes"."""
         raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
+
+    async def increment_node_field(
+        self, key: str, collection: str, field: str, transaction: str | None = None
+    ) -> int | None:
+        """Add one to a numeric field of a node in one statement, under the node's write lock, and return the new value (None when the
+        node does not exist). Never read-then-write: two transactions that both increment get two different values. The default is a
+        read and a write; the graph providers override it."""
+        node = await self.get_document(key, collection, transaction=transaction, raise_on_error=True)
+        if node is None:
+            return None
+        value = int(node.get(field) or 0) + 1
+        if not await self.update_node(key, collection, {field: value}, transaction):
+            return None  # the node went away between the read and the write
+        return value
 
     async def get_structure_of_nodes(
         self, collection: str, node_ids: list[str], transaction: str | None = None, *, raise_on_error: bool = False

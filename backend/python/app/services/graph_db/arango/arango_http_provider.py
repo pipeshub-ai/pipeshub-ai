@@ -6512,6 +6512,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 LIMIT @limit
                 RETURN {{
                     _key: r._key,
+                    orgId: r.orgId,
                     duplicateReconcileAttempts: r.duplicateReconcileAttempts,
                     duplicateReconcileDueAt: r.duplicateReconcileDueAt,
                 }}
@@ -25057,6 +25058,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def permission_hierarchy_view(self) -> ArangoHierarchyView:
         return ArangoHierarchyView(lambda: self.http_client)
+
+    @override
+    async def increment_node_field(
+        self, key: str, collection: str, field: str, transaction: str | None = None
+    ) -> int | None:
+        # one statement; a concurrent writer of the same document is a write-write conflict, which the caller retries
+        rows = await self.http_client.execute_aql(
+            f"""
+            LET d = DOCUMENT(@@collection, @key)
+            FILTER d != null
+            UPDATE d WITH {{ {field}: (d.{field} || 0) + 1 }} IN @@collection
+            RETURN NEW.{field}
+            """,
+            {"@collection": collection, "key": key},
+            txn_id=transaction,
+        )
+        return int(rows[0]) if rows else None
 
     @override
     async def get_structure_of_nodes(

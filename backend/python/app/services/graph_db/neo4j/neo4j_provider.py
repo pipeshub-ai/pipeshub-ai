@@ -4898,6 +4898,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND coalesce(r.duplicateReconcileDueAt, 0) < $due_before_ms
               AND {cypher_live_record("r")}
             RETURN r.id AS _key,
+                   r.orgId AS orgId,
                    r.duplicateReconcileAttempts AS duplicateReconcileAttempts,
                    r.duplicateReconcileDueAt AS duplicateReconcileDueAt
             LIMIT $limit
@@ -8650,6 +8651,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def permission_hierarchy_view(self) -> Neo4jHierarchyView:
         return Neo4jHierarchyView(lambda: self.client)
+
+    @override
+    async def increment_node_field(
+        self, key: str, collection: str, field: str, transaction: str | None = None
+    ) -> int | None:
+        label = collection_to_label(collection)
+        # The write lock is taken first (the same trick as the other match locks), so the value read next is the latest committed one
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            SET n.{field} = coalesce(n.{field}, 0) + 1
+            RETURN n.{field} AS value
+            """,
+            parameters={"key": key},
+            txn_id=transaction,
+        )
+        return int(rows[0]["value"]) if rows else None
 
     @override
     async def get_structure_of_nodes(

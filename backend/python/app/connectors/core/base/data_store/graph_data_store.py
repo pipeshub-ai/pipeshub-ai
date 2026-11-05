@@ -6,7 +6,7 @@ import logging
 import os
 import random
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from contextlib import asynccontextmanager, suppress
 from logging import Logger
 from typing import Any, AsyncContextManager, Optional, TypeVar
@@ -42,6 +42,10 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.services.permissions.mode import scope_fields_enabled
+from app.services.permissions.structure_generation import (
+    UNSAFE_KEY,
+    ScopeGenerationConflict,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _T = TypeVar("_T")
@@ -251,7 +255,7 @@ class _GuardedProvider:
         if os.environ.get("PYTEST_CURRENT_TEST"):
             raise UnclassifiedProviderWrite(f"graph_provider.{name} is reached outside a classified store method")
         if self._on_unclassified is not None:
-            self._on_unclassified()  # record that this transaction holds an unclassified write (nothing acts on it yet)
+            self._on_unclassified()  # fail closed: the connectors this transaction saw are marked unsafe when it ends
         if name not in _warned:
             _warned.add(name)
             logging.getLogger(__name__).error("graph_provider.%s reached outside a classified store method", name)
@@ -268,7 +272,7 @@ class GraphTransactionStore(TransactionStore):
 
     def __init__(self, graph_provider: IGraphDBProvider, txn: str, *, explicit: bool = False) -> None:
         self.unclassified_write = False
-        # The structure bookkeeping (the guarded provider and the reads before and after a structural write) exists only while the
+        # The structure bookkeeping (the guarded provider, the reads before and after a structural write, the bump) exists only while the
         # scope fields are on: with them off the store reaches the provider directly and makes no query it did not make before.
         self.tracked = scope_fields_enabled()
         self.graph_provider = _GuardedProvider(graph_provider, self._note_unclassified) if self.tracked else graph_provider
@@ -282,8 +286,8 @@ class GraphTransactionStore(TransactionStore):
         # repeats. The transaction is exactly how long the answers are stable,
         # which makes it the right scope.
         self._memo: dict[tuple, object] = {}
-        # Connectors whose structure or permissions this transaction changes (see `_STRUCTURAL_WRITERS`). Recorded here; nothing moves a
-        # connector's generation from it yet.
+        # Connectors whose structure or permissions this transaction changes (see `_STRUCTURAL_WRITERS`); each gets one bump of
+        # its scope generation, in this transaction, at the end of the block.
         self.structural_connectors: set[str] = set()
         self._connector_of: dict[tuple[str, str], str | None] = {}
         # nodes this transaction created: no stamp can be stale for them, whatever edges it then gives them
@@ -335,6 +339,20 @@ class GraphTransactionStore(TransactionStore):
             got = await self.graph_provider.get_structure_of_nodes(collection, sorted(set(ids)), transaction=self.txn, raise_on_error=True)
             out.update({(collection, i): got.get(i, frozenset()) for i in ids})
         return out
+
+    async def flush_scope_generation(self) -> None:
+        """Bump the scope generation of every connector touched, once each, inside this transaction (called before the commit,
+        so the change and the bump commit together or neither does). Raises when a bump cannot be written, which rolls the
+        transaction back. The bump is a classified write of its own (it is the bookkeeping itself)."""
+        from app.services.permissions.structure_generation import bump_generation_in
+
+        token = _CLASSIFIED_SCOPE.set("flush_scope_generation")
+        try:
+            for connector_id in sorted(self.structural_connectors):
+                await bump_generation_in(self, connector_id)
+        finally:
+            _CLASSIFIED_SCOPE.reset(token)
+        self.structural_connectors.clear()
 
     def _memo_put(self, key: tuple, value: object) -> None:
         """Cache positives only. A miss usually means "not created yet", and the
@@ -1401,8 +1419,12 @@ class GraphDataStore(DataStoreProvider):
         self.logger = logger
         self.graph_provider = graph_provider
 
-    def is_transient_error(self, error: BaseException) -> bool:
-        return self.graph_provider.is_transient_error(error)
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
+        if isinstance(error, ScopeGenerationConflict):
+            # a conflict on the counter rolled the block back only when it ran in a real transaction; outside one, the block's statements
+            # already committed and running it again would repeat them
+            return self.graph_provider.opens_explicit_transaction(explicit) is True
+        return self.graph_provider.is_transient_error(error, explicit=explicit)
 
     async def compare_and_set_indexing_status(
         self, record_ids: list[str], expected: str, new_status: str
@@ -1447,6 +1469,7 @@ class GraphDataStore(DataStoreProvider):
 
         try:
             yield tx_store
+            await self._flush_scope_generation(tx_store)
         except BaseException as e:
             # BaseException, not Exception: asyncio.CancelledError is a
             # BaseException, so `except Exception` let a cancellation -- the
@@ -1463,6 +1486,7 @@ class GraphDataStore(DataStoreProvider):
                 self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             else:
                 self.logger.warning("Transaction interrupted (%s); rolling back", type(e).__name__)
+            await self._mark_unsafe_after_failed_block(tx_store)
             try:
                 await tx_store.rollback()
             except Exception as rb_err:
@@ -1490,6 +1514,52 @@ class GraphDataStore(DataStoreProvider):
                     self.logger.warning("Abort after a failed commit raised: %s", rb_err)
                 raise
 
+    async def _mark_unsafe(self, tx_store: "GraphTransactionStore", connector_ids: Collection[str]) -> None:
+        """Mark connectors scope-unsafe (their stamps are not current until a pass over the whole connector clears it). In an explicit
+        transaction the mark is written with it (it commits only if the block does, and cannot wait on a lock the block itself holds);
+        without one the statements of the block already committed one by one, so the mark is written on its own and survives the failure."""
+        transaction = tx_store.txn if tx_store.explicit else None
+        for connector_id in sorted(connector_ids):
+            await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, transaction)
+
+    async def _mark_unsafe_after_failed_block(self, tx_store: "GraphTransactionStore") -> None:
+        """A block that failed without an explicit transaction left its earlier statements committed: the connectors a structural (or an
+        unclassified) write touched changed with no bump, so their stamps are marked unsafe. In an explicit transaction the rollback
+        undoes it all. Best effort: a mark that cannot be written is logged at error and never masks the failure."""
+        if not tx_store.tracked or tx_store.explicit:
+            return
+        connectors = set(tx_store.structural_connectors)
+        if tx_store.unclassified_write:
+            connectors |= {c for c in tx_store._connector_of.values() if c}
+        for connector_id in sorted(connectors):
+            try:
+                await self._mark_unsafe(tx_store, [connector_id])
+            except BaseException:
+                self.logger.error("could not mark connector %s scope-unsafe after a failed block", connector_id)
+
+    async def _flush_scope_generation(self, tx_store: "GraphTransactionStore") -> None:
+        if not tx_store.tracked:
+            return
+        if tx_store.unclassified_write:
+            # A write nobody classified reached the provider: whichever connectors this transaction saw may have changed. (A block that
+            # never resolved a connector marks nothing here: that case is the whole-organisation fallback, a later change.)
+            await self._mark_unsafe(tx_store, {c for c in tx_store._connector_of.values() if c} | tx_store.structural_connectors)
+        touched = sorted(tx_store.structural_connectors)
+        if not touched:
+            return
+        try:
+            await tx_store.flush_scope_generation()
+        except Exception:
+            if not tx_store.explicit:
+                # The statements of this block already committed one by one, so rolling back undoes nothing: mark the
+                # connectors unsafe (their stamps are not current) before failing the block.
+                for connector_id in touched:
+                    try:
+                        await self._mark_unsafe(tx_store, [connector_id])
+                    except Exception:
+                        self.logger.error("could not mark connector %s scope-unsafe", connector_id)
+            raise
+
     async def execute_in_transaction(self, func, *args, explicit: bool | None = None, **kwargs) -> None:
         """Execute function within graph database transaction.
 
@@ -1506,7 +1576,7 @@ class GraphDataStore(DataStoreProvider):
                 async with self.transaction(explicit=explicit) as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
-                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e, explicit=explicit):
+                if attempts >= _RETRY_ATTEMPTS or not self.is_transient_error(e, explicit=explicit):
                     raise
                 delay = _retry_delay(attempts - 1)
                 self.logger.warning(
@@ -1538,7 +1608,7 @@ class GraphDataStore(DataStoreProvider):
                 async with self.transaction(explicit=explicit) as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
-                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_write_conflict(e):
+                if attempts >= _RETRY_ATTEMPTS or not (self.graph_provider.is_write_conflict(e) or isinstance(e, ScopeGenerationConflict)):
                     raise
                 delay = _retry_delay(attempts - 1)
                 self.logger.warning(
@@ -1551,8 +1621,8 @@ class GraphDataStore(DataStoreProvider):
 # ---- the one place every structural write passes through -------------------------------------------------------------
 # A write that changes what a vector point's scope fields are made of (a hierarchy, group or inherit edge, a record's or group's
 # access rule or its place) is listed here with the nodes it touches. The wrapper below records their connectors before the call
-# (so a delete is resolved first) in `structural_connectors`. A new writer on `GraphTransactionStore` that is not listed here is caught
-# by `test_structural_writers.py`.
+# (so a delete is resolved first), and `GraphDataStore.transaction` bumps each connector's scope generation once, inside the same
+# transaction. A new writer on `GraphTransactionStore` that is not listed here is caught by `test_structural_writers.py`.
 _R, _G = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
 _STRUCTURAL_EDGES = frozenset({
     CollectionNames.NODE_RELATIONS.value, CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value,
@@ -1659,7 +1729,10 @@ async def _note_removed_at_parent_end(self: GraphTransactionStore, name: str, ar
             continue
         if types is not None and kind not in types:
             continue
-        coll, _, key = str(e.get(other_key, "")).partition("/")
+        endpoint = "to" if end == "from" else "from"
+        key, coll = e.get(f"{endpoint}_id"), e.get(f"{endpoint}_collection")  # the generic shape (Neo4j's edges-to-node)
+        if not key:
+            coll, _, key = str(e.get(other_key, "")).partition("/")  # the document shape
         if other_collection is not None and coll != other_collection:
             continue
         ends.append((coll or _R, key or None))
