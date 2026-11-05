@@ -17,12 +17,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import AppStatus, CollectionNames
+from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.sync import sync_runner
-from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.core.sync.sync_runner import run_sync_task
