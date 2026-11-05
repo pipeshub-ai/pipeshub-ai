@@ -69,6 +69,7 @@ _FIND_BRANCHING = frozenset({"-o", "-or", "-not", "!", ","})
 
 @functools.cache
 def _rg_on_path() -> str | None:
+    """The ``rg`` on PATH, looked up (and its absence logged) once per process."""
     rg = shutil.which("rg")
     if rg is None:
         logger.warning("%s=ripgrep, but rg is not on PATH: grep stages run on GNU grep", PATTERN_MATCH_ENGINE_ENV_VAR)
@@ -77,6 +78,7 @@ def _rg_on_path() -> str | None:
 
 @functools.cache
 def _rg_confinable(rg: str) -> bool:
+    """Whether Landlock lets a confined stage run *rg*: only from the system directories."""
     from app.agents.actions.storage_search.landlock_exec import SYSTEM_DIRS
 
     real = os.path.realpath(rg)
@@ -91,6 +93,7 @@ def _rg_confinable(rg: str) -> bool:
 
 @functools.cache
 def _utf8_locale(locale: str) -> bool:
+    """Whether GNU grep matches characters, as rg does, under *locale*."""
     if "utf-8" in locale.lower() or "utf8" in locale.lower():
         return True
     logger.warning(
@@ -391,5 +394,5 @@ def _bracket(pattern: str, start: int) -> tuple[str, int] | None:
 
 
 def _class_char(ch: str) -> str:
-    # Literal inside POSIX brackets; special inside Rust classes (nesting, set operations).
+    """*ch* inside a Rust class: literal in POSIX brackets, but nesting or a set operation in Rust."""
     return "\\" + ch if ch in _CLASS_META else ch
