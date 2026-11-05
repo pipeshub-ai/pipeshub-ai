@@ -224,7 +224,7 @@ class TestRedisPreFilterIsExact(TestRedisScopeFilter):
         real = svc.client.execute_command
         planted = {"done": False}
 
-        async def racing(*cmd, **kw):
+        async def racing(*cmd, **kw) -> object:
             out = await real(*cmd, **kw)
             if cmd[0] == "FT.TAGVALS" and not planted["done"]:
                 planted["done"] = True                                           # a point with a connector the index has not shown yet
