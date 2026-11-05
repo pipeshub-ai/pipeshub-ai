@@ -21684,6 +21684,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self.http_client.execute_aql(
             f"""
             LET rec = CONCAT("{CollectionNames.RECORDS.value}/", @record_id)
+            LET record_org = DOCUMENT(rec).orgId
             FOR user_id IN UNION_DISTINCT(
                 (FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
                     FILTER e._from == rec AND STARTS_WITH(e._to, "{CollectionNames.USERS.value}/")
@@ -21693,7 +21694,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN e._from)
             )
                 LET u = DOCUMENT(user_id)
-                FILTER u != null AND u.orgId == @org_id
+                FILTER record_org == @org_id AND u != null AND u.orgId == @org_id
                 SORT u._key
                 RETURN {{id: u._key, name: u.fullName, email: u.email}}
             """,

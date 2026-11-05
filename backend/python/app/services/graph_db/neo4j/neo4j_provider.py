@@ -22798,8 +22798,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         relationship = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
         rows = await self.client.execute_query(
             f"""
-            MATCH (:Record {{id: $record_id}})-[:{relationship}]-(u:User)
-            WHERE u.orgId = $org_id
+            MATCH (rec:Record {{id: $record_id}})-[:{relationship}]-(u:User)
+            WHERE rec.orgId = $org_id AND u.orgId = $org_id
             WITH DISTINCT u
             RETURN u.id AS id, u.fullName AS name, u.email AS email
             ORDER BY id

@@ -70,8 +70,9 @@ if TYPE_CHECKING:
 # separate, so a change to one pass does not re-scan every connector.
 # 2: records that are not indexed yet get a point too, and trashed ones lose theirs.
 ENTITY_INDEX_VERSION = 2
-# 2: people.
-ORG_PASS_VERSION = 2
+# Orgs carried ENTITY_INDEX_VERSION's marker before the passes split, so 2 is
+# taken. 3: people.
+ORG_PASS_VERSION = 3
 
 LEADER_KEY = "entity_index_rebuild:leader"
 PAGE_SIZE = 200
