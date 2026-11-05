@@ -2542,9 +2542,9 @@ class StoragePatternMatch:
 
         # Resolve connector directory
         connector_dir, path_err = await self._resolve_connector_path(connector_id)
-        if path_err:
+        if path_err or connector_dir is None:
             logger.info("[find_records] path error for %s: %s", connector_id, path_err)
-            return False, path_err
+            return False, path_err or f"Error: no records directory found for connector '{connector_id}'."
         logger.info("[find_records] connector_dir=%s", connector_dir)
 
         # Same rule as run_command: this command reads every record of the

@@ -9,7 +9,7 @@ import shlex
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from cachetools import TTLCache
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -876,7 +876,9 @@ _grep_llm_cache: TTLCache = TTLCache(maxsize=256, ttl=_GREP_LLM_TTL_SECS)
 # The agent often repeats a search query within a turn (retries, other sources).
 _grep_commands_cache: TTLCache = TTLCache(maxsize=512, ttl=600)
 # Keyed by org and scope; storage outside the scope worth grepping for it.
-_content_owner_cache: TTLCache = TTLCache(maxsize=256, ttl=_CONTENT_OWNER_TTL_SECS)
+_content_owner_cache = TTLCache[tuple[str, tuple[str, ...]], list[str], float](
+    maxsize=256, ttl=_CONTENT_OWNER_TTL_SECS,
+)
 
 
 async def _grep_generation_llm(
@@ -1412,9 +1414,9 @@ async def _run_pattern_match_with_llm_grep(
     owners_task: asyncio.Task[list[str]] | None = None
     if env_bool(_GREP_SHARED_CONTENT_ENV_VAR, False):
         # Looked up while the commands are written, so it adds no time of its own.
-        owners_task = spawn_in_request(content_owner_connector_ids(
+        owners_task = cast("asyncio.Task[list[str]]", spawn_in_request(content_owner_connector_ids(
             graph_provider, org_id, _scoped_connector_ids(filters), logger_instance,
-        ), name="pattern-match-shared-content")
+        ), name="pattern-match-shared-content"))
     try:
         llm_grep_cmds: list[str] | None = list(commands) if commands else None
         if llm is not None and not commands:
@@ -1886,7 +1888,7 @@ async def run_pattern_match(
     async def _run_grep(
         connector_id: str, cmd: str, *, allowed_vrids: frozenset[str] | None = None,
         content_owner: bool = False,
-    ) -> list[dict] | None:
+    ) -> list[dict[str, Any]] | None:
         """Run one grep against a connector; None when the command itself failed
         (as opposed to matching nothing), so callers can fall back."""
         try:
@@ -2038,7 +2040,7 @@ async def run_pattern_match(
         )
         return records
 
-    async def _search_content_owner(connector_id: str) -> list[dict]:
+    async def _search_content_owner(connector_id: str) -> list[dict[str, Any]]:
         records = await _run_grep(connector_id, command, content_owner=True) or []
         logger_instance.info(
             "pattern_match _search_connector: cid=%s shared content, records=%d",
@@ -2048,9 +2050,10 @@ async def run_pattern_match(
 
     # Per connector, so one slow connector cannot discard everyone else's results.
     async def _search_connector_bounded(connector_id: str, *, content_owner: bool = False) -> list[dict]:
-        search = _search_content_owner if content_owner else _search_connector
         try:
-            return await asyncio.wait_for(search(connector_id), timeout=timeout)
+            return await asyncio.wait_for(
+                (_search_content_owner if content_owner else _search_connector)(connector_id), timeout=timeout,
+            )
         except asyncio.TimeoutError:
             logger_instance.warning(
                 "Pattern match timed out after %ds for cid=%s", timeout, connector_id,
