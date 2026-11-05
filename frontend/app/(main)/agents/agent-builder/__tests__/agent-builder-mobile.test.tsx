@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import { agentDetail, installBrowserShims, knowledgeBase, model, renderInTheme, toolset } from './agent-builder-harness';
 
 vi.setConfig({ testTimeout: 20_000 });
@@ -89,6 +90,7 @@ import { AgentBuilder } from '../agent-builder';
 
 beforeEach(() => {
   installBrowserShims();
+  clearSessionCache();
   useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false, ENABLE_SKILLS: false } });
   agentsApi.getAllKnowledgeBasesForBuilder.mockResolvedValue({ knowledgeBases: [knowledgeBase()] });
   agentsApi.getAllKnowledgeHubAppNodes.mockResolvedValue([]);

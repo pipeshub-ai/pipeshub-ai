@@ -13,6 +13,8 @@ export const SWR_NS = {
   aiModelRegistry: 'ai-models/registry',
   profile: 'profile',
   myToolCatalog: 'tools/my-catalog',
+  userDirectory: 'users/directory',
+  connectorConfigs: 'connectors/configs',
 } as const;
 
 export type SwrNamespace = (typeof SWR_NS)[keyof typeof SWR_NS];

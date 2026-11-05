@@ -24,8 +24,10 @@
 #   fetch-crawl4ai — Crawl4AI page reader for JavaScript-heavy sites (then add Crawl4AI at
 #                    http://crawl4ai:11235 with CRAWL4AI_API_TOKEN as its token)
 #
-# Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=etcd, MESSAGE_BROKER=kafka and
-# COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka,sandbox
+# Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=redis, MESSAGE_BROKER=redis (Redis
+# Streams) and COMPOSE_PROFILES=graph-neo4j,sandbox (optionally search-searxng,
+# fetch-crawl4ai). kv-etcd and broker-kafka are optional, for installs that
+# already use etcd or Kafka.
 #
 # Always-on: pipeshub-ai, redis, mongodb, qdrant.
 # Eval omits the sandbox profile (run_code is unavailable).
@@ -286,6 +288,8 @@ services:
       - INDEXING_SPLIT_LEASE_POOLS=${INDEXING_SPLIT_LEASE_POOLS:-}
       - GOVERNOR_LIGHT_PARSE_MAX=${GOVERNOR_LIGHT_PARSE_MAX:-}
       - PARSE_MAX_ORG_SHARE=${PARSE_MAX_ORG_SHARE:-}
+      - PRIORITY_LANE_HEAVY_LIMIT=${PRIORITY_LANE_HEAVY_LIMIT:-}
+      - PRIORITY_LANE_LIGHT_LIMIT=${PRIORITY_LANE_LIGHT_LIMIT:-}
       - GOVERNOR_INDEX_HEADROOM=${GOVERNOR_INDEX_HEADROOM:-}
       - GOVERNOR_INDEX_MAX=${GOVERNOR_INDEX_MAX:-}
       - GOVERNOR_INDEX_HEAVY_WORKING_SET_GB=${GOVERNOR_INDEX_HEAVY_WORKING_SET_GB:-}
