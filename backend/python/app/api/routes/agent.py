@@ -2510,7 +2510,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
             "systemPrompt": body["systemPrompt"].strip(),
             "tools": body.get("tools", []),
             "models": body.get("models", []),
-            "memory": body.get("memory") or {"type": []},
+            "memory": body["memory"] if body.get("memory") is not None else {"type": []},
             "tags": body.get("tags", []),
             "orgId": user_context["orgId"],
             "isActive": True,
@@ -2714,8 +2714,8 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
 
         body = _parse_request_body(await request.body())
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        if "memory" in body:
-            body["memory"] = body["memory"] or {"type": []}
+        if "memory" in body and body["memory"] is None:
+            body["memory"] = {"type": []}
 
         result = await services["graph_provider"].update_agent_template(template_id, body, user_doc["_key"])
         if not result:
