@@ -126,6 +126,7 @@ def _make_tx_store():
     tx_store.get_record_by_key = AsyncMock(return_value=None)
     tx_store.batch_upsert_nodes = AsyncMock()
     tx_store.get_user_by_email = AsyncMock(return_value=None)
+    tx_store.get_users_by_emails = AsyncMock(return_value={})
     tx_store.get_user_group_by_external_id = AsyncMock(return_value=None)
     tx_store.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1", "id": "org-1"}])
     tx_store.delete_edges_to = AsyncMock(return_value=0)
@@ -5908,8 +5909,8 @@ class TestProcessRecordRevisionMatch:
 
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.get_user_by_email = AsyncMock(
-            side_effect=lambda email, **_: SimpleNamespace(id=f"u-{email.split('@')[0]}"),
+        tx_store.get_users_by_emails = AsyncMock(
+            side_effect=lambda emails, **_: {e: SimpleNamespace(id=f"u-{e.split('@')[0]}") for e in emails},
         )
         tx_store.batch_create_entity_relations = AsyncMock()
         mail = MailRecord(
@@ -9135,7 +9136,7 @@ class TestAConflictInsideARecordSliceIsNotSwallowed:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("failing_call", [
-        "delete_edges_by_relationship_types", "delete_edges_from", "delete_edges_to", "get_user_by_email",
+        "delete_edges_by_relationship_types", "delete_edges_from", "delete_edges_to", "get_users_by_emails",
     ])
     async def test_a_deadlock_in_an_optional_edge_write_reaches_the_caller(self, failing_call: str) -> None:
         proc, tx_store = _make_processor(), _make_tx_store()
@@ -9155,7 +9156,7 @@ class TestAConflictInsideARecordSliceIsNotSwallowed:
             "delete_edges_by_relationship_types": lambda: proc._handle_related_external_records(record, [], tx_store),
             "delete_edges_from": lambda: proc._handle_record_people(project, tx_store),
             "delete_edges_to": lambda: proc._handle_message_entity_edges(record, tx_store),
-            "get_user_by_email": lambda: proc._handle_record_people(ticket, tx_store),
+            "get_users_by_emails": lambda: proc._handle_record_people(ticket, tx_store),
         }
 
         with pytest.raises(TransientError):

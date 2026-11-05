@@ -64,9 +64,9 @@ class PersonLink:
 
 
 class PeopleStore(Protocol):
-    async def get_user_by_email(
-        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
-    ) -> User | None: ...
+    async def get_users_by_emails(
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, User]: ...
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
     ) -> User | None: ...
@@ -184,7 +184,20 @@ async def link_record_people(
     edges: list[dict] = []
     now = get_epoch_timestamp_in_ms()
     failed = 0
-    for link in person_links(record):
+    links = person_links(record)
+    # One lookup for all of the record's addresses, not one per address.
+    addresses = list(dict.fromkeys(a for link in links if link.email is not None and (a := _address(link.email))))
+    members: dict[str, User] = {}
+    if addresses[:MAX_PERSON_LOOKUPS]:
+        try:
+            members = await store.get_users_by_emails(
+                addresses[:MAX_PERSON_LOOKUPS], raise_on_error=True, org_id=record.org_id,
+            )
+        except Exception as exc:  # see the docstring: the existing edges stay
+            if propagate(exc) or _is_bug(exc):
+                raise
+            failed += 1
+    for link in links:
         if len(edges) >= MAX_LINKED_PEOPLE:
             logger.info("Record %s names more than %d people; linking the first", record.id, MAX_LINKED_PEOPLE)
             break
@@ -197,7 +210,7 @@ async def link_record_people(
                 break
             try:
                 users_by_identity[identity] = (
-                    await store.get_user_by_email(identity[1], raise_on_error=True, org_id=record.org_id)
+                    members.get(identity[1])
                     if identity[0] == "email"
                     else await store.get_user_by_source_id(identity[1], record.connector_id, raise_on_error=True)
                 )
