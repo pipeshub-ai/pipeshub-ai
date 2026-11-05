@@ -132,7 +132,8 @@ def setup_problem_message(problem: AccessProblem | None, *, apis: str, admin_ema
     """
     if problem is AccessProblem.DELEGATION:
         client = f" ({client_id})" if client_id else ""
-        wanted = (f"exactly these scopes: {', '.join(scopes)}" if scopes
+        # The console keeps one scope list per client ID, and another Google connector may share it.
+        wanted = (f"at least these scopes, keeping any already listed: {', '.join(scopes)}" if scopes
                   else "the scopes listed in the PipesHub setup guide")
         return ("Google Workspace refused access for this connector's service account, because domain-wide "
                 "delegation is not set up for it with every scope the connector needs. In the Google Admin "

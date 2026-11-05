@@ -236,6 +236,8 @@ class TestRunReport:
         message = sent[0]["message"]
         assert "1234" in message and all(scope in message for scope in scopes)
         assert "Domain-wide delegation" in message
+        # Replacing the client ID's list with only these would drop another connector's scopes.
+        assert "at least these scopes, keeping any already listed" in message
         lines = [r for r in caplog.records if r.name == LOGGER.name]
         assert [r.levelno for r in lines] == [logging.WARNING, logging.WARNING]
         assert "3 user(s)" in lines[-1].getMessage()
