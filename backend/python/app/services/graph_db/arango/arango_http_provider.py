@@ -1284,8 +1284,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 taxonomy_collection, ["mergedInto"], sparse=True,
             )
 
-        # An organisation a document names is looked up by its tenant and key
-        # once per record (find_organizations); tenant orgs have no key.
+        # An organisation a document names is looked up by its org and key
+        # once per record (find_organizations); the org itself has no key.
         await self.http_client.ensure_persistent_index(
             CollectionNames.ORGS.value, ["parentOrgId", "normalizedName"], sparse=True,
         )
@@ -22380,7 +22380,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See :meth:`IGraphDBProvider.create_organization_if_absent`."""
         key = node.get("id") or node.get("_key")
         if not org_id or not key or not node.get("name"):
-            raise ValueError("an extracted organisation needs a tenant, an id and a name")
+            raise ValueError("an extracted organisation needs an org, an id and a name")
         now = get_epoch_timestamp_in_ms()
         doc = {
             "_key": key, "name": node["name"], "normalizedName": node.get("normalizedName"),

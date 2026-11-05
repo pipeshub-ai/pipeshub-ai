@@ -187,7 +187,7 @@ async def backfill(
 
 
 async def stamp_organization_keys(graph: IGraphDBProvider, org_id: str, *, page_size: int = PAGE_SIZE) -> int:
-    """Write ``normalizedName`` on the tenant's external organisations, so a
+    """Write ``normalizedName`` on the org's external organisations, so a
     name a document extracts finds an account synced before it was keyed.
     Returns how many were written."""
     written, after = 0, None

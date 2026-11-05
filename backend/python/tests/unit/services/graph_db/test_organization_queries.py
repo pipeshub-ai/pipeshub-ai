@@ -27,14 +27,14 @@ def _arango(rows: list | None = None) -> ArangoHTTPProvider:
 
 
 class TestFindOrganizations:
-    async def test_arango_looks_within_the_tenant_by_key(self) -> None:
+    async def test_arango_looks_within_the_org_by_key(self) -> None:
         p = _arango([{"id": "a", "name": "Acme", "normalizedName": "acme"}])
         assert await p.find_organizations("t", ["acme", "acme", ""]) == [{"id": "a", "name": "Acme", "normalizedName": "acme"}]
         query = p.http_client.execute_aql.await_args.args[0]
         assert "o.parentOrgId == @org_id AND o.normalizedName IN @keys AND o.isExternal == true" in query
         assert p.http_client.execute_aql.await_args.kwargs["bind_vars"]["keys"] == ["acme"]
 
-    async def test_neo4j_looks_within_the_tenant_by_key(self) -> None:
+    async def test_neo4j_looks_within_the_org_by_key(self) -> None:
         p = _neo4j()
         await p.find_organizations("t", ["acme"])
         query = p.client.execute_query.await_args.args[0]
@@ -65,7 +65,7 @@ class TestCreateOrganization:
         assert "MERGE (o:Organization {id: $id})" in query and "ON CREATE SET o += $props" in query
 
     @pytest.mark.parametrize("make", [_neo4j, _arango], ids=["neo4j", "arango"])
-    async def test_a_node_needs_a_tenant_id_and_name(self, make) -> None:
+    async def test_a_node_needs_an_org_id_and_name(self, make) -> None:
         with pytest.raises(ValueError):
             await make().create_organization_if_absent("", {"id": "k", "name": "n"})
         with pytest.raises(ValueError):
@@ -111,7 +111,7 @@ class TestReach:
 
 
 class TestIndexes:
-    async def test_arango_indexes_the_tenant_and_key_sparsely(self) -> None:
+    async def test_arango_indexes_the_org_and_key_sparsely(self) -> None:
         p = _arango()
         p.http_client.ensure_persistent_index = AsyncMock()
         await p._ensure_indexes()
@@ -119,6 +119,6 @@ class TestIndexes:
                  if c.args[:2] == ("organizations", ["parentOrgId", "normalizedName"])]
         assert len(calls) == 1 and calls[0].kwargs.get("sparse") is True
 
-    def test_neo4j_indexes_the_tenant_and_key(self) -> None:
+    def test_neo4j_indexes_the_org_and_key(self) -> None:
         statements = _neo4j()._generate_performance_indexes()
         assert any("FOR (n:Organization) ON (n.parentOrgId, n.normalizedName)" in s for s in statements)

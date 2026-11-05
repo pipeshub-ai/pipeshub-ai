@@ -39,8 +39,8 @@ class FakeGraph:
         self.fail_edge_reads: list[Exception] = []
         # entityRelations edges: dicts with _from, _to, edgeType, origin.
         self.entity_relations: list[dict[str, Any]] = []
-        self.tenant_names: dict[str, str] = {}
-        self.fail_tenant_lookup = False
+        self.org_names: dict[str, str] = {}
+        self.fail_org_lookup = False
         self.fail_organization_writes = False
 
     # ---- setup helpers ----
@@ -55,7 +55,7 @@ class FakeGraph:
         self.departments[name] = key or f"dept-{normalize_name(name)}"
 
     def add_account(self, org_id: str, key: str, name: str, normalized: str | None = None) -> None:
-        """A CRM account of tenant ``org_id`` (KG-13 slice 3a)."""
+        """A CRM account of org ``org_id`` (KG-13 slice 3a)."""
         from app.modules.entity_resolution.organizations import organization_key
 
         self.nodes[(ORGS, key)] = {
@@ -206,11 +206,11 @@ class FakeGraph:
         return rows
 
     async def get_document(self, key, collection, transaction=None) -> dict[str, Any] | None:
-        if collection == ORGS and key in self.tenant_names:
-            if self.fail_tenant_lookup:
+        if collection == ORGS and key in self.org_names:
+            if self.fail_org_lookup:
                 raise RuntimeError("graph down")
-            return {"_key": key, "name": self.tenant_names[key]}
-        if self.fail_tenant_lookup:
+            return {"_key": key, "name": self.org_names[key]}
+        if self.fail_org_lookup:
             raise RuntimeError("graph down")
         return None
 

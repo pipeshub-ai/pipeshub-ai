@@ -1182,7 +1182,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"FOR (n:{taxonomy_label}) ON (n.mergedInto)"
             )
 
-        # An organisation a document names is looked up by its tenant and key
+        # An organisation a document names is looked up by its org and key
         # once per record (find_organizations).
         indexes.append(
             "CREATE INDEX organization_parent_normalized_name IF NOT EXISTS "
@@ -23334,7 +23334,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See :meth:`IGraphDBProvider.create_organization_if_absent`."""
         key = node.get("id") or node.get("_key")
         if not org_id or not key or not node.get("name"):
-            raise ValueError("an extracted organisation needs a tenant, an id and a name")
+            raise ValueError("an extracted organisation needs an org, an id and a name")
         now = get_epoch_timestamp_in_ms()
         label = collection_to_label(CollectionNames.ORGS.value)
         await self.client.execute_query(
