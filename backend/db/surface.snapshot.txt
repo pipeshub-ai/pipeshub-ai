@@ -517,6 +517,24 @@ column oauth.access_tokens.token_hash type=text notnull=true identity= generated
 column oauth.access_tokens.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
 column oauth.access_tokens.user_id type=oauth.oid24 notnull=false identity= generated= default=-
 column oauth.access_tokens.version type=integer notnull=true identity= generated= default=0
+column oauth.agent_registrations.approved_scopes type=text[] notnull=false identity= generated= default=-
+column oauth.agent_registrations.attempt_expires_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.agent_registrations.attempt_token_hash type=text notnull=true identity= generated= default=-
+column oauth.agent_registrations.claim_email type=text notnull=true identity= generated= default=-
+column oauth.agent_registrations.claim_token_hash type=text notnull=true identity= generated= default=-
+column oauth.agent_registrations.claimed_org_id type=text notnull=false identity= generated= default=-
+column oauth.agent_registrations.claimed_user_id type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.agent_registrations.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.agent_registrations.expires_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.agent_registrations.failed_attempts type=integer notnull=true identity= generated= default=0
+column oauth.agent_registrations.id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.agent_registrations.last_polled_at type=timestamp with time zone notnull=false identity= generated= default=-
+column oauth.agent_registrations.org_id type=text notnull=true identity= generated= default=-
+column oauth.agent_registrations.purge_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.agent_registrations.status type=text notnull=true identity= generated= default='pending'::text
+column oauth.agent_registrations.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.agent_registrations.user_code_hash type=text notnull=true identity= generated= default=-
+column oauth.agent_registrations.version type=integer notnull=true identity= generated= default=0
 column oauth.apps.access_token_lifetime type=integer notnull=true identity= generated= default=3600
 column oauth.apps.allowed_grant_types type=text[] notnull=true identity= generated= default='{authorization_code,refresh_token}'::text[]
 column oauth.apps.allowed_scopes type=text[] notnull=true identity= generated= default=-
@@ -1012,6 +1030,12 @@ constraint oauth.access_tokens access_tokens_org_id_token_hash_key u def=a683321
 constraint oauth.access_tokens access_tokens_pkey p def=655795516b9ce4f89b9340bd560bea63
 constraint oauth.access_tokens org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint oauth.access_tokens org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint oauth.agent_registrations agent_registrations_org_id_attempt_token_hash_key u def=af031c41a3e3100cd82b25e9688adb10
+constraint oauth.agent_registrations agent_registrations_org_id_claim_token_hash_key u def=9aa41a9cf912f50e45b642e280db0544
+constraint oauth.agent_registrations agent_registrations_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint oauth.agent_registrations agent_registrations_status_check c def=967e47d7f53338d5b2e9c4866feea978
+constraint oauth.agent_registrations org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint oauth.agent_registrations org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint oauth.apps apps_org_id_client_id_key u def=2a3e8a4d2af75c8c6e537fc14abcbec2
 constraint oauth.apps apps_org_id_slug_key u def=604326b322daba494e39338ca6eeb282
 constraint oauth.apps apps_pkey p def=655795516b9ce4f89b9340bd560bea63
@@ -1428,6 +1452,11 @@ index oauth.access_tokens_by_user on oauth.access_tokens unique=false exclusion=
 index oauth.access_tokens_live_by_client on oauth.access_tokens unique=false exclusion=false valid=true def=2170d734051fe9766e3b38aa5cbb0580
 index oauth.access_tokens_org_id_token_hash_key on oauth.access_tokens unique=true exclusion=false valid=true def=ca972d18ab56fc408e20946a9ab50171
 index oauth.access_tokens_pkey on oauth.access_tokens unique=true exclusion=false valid=true def=b5ea82b7c419f8ffad63620bfbe53086
+index oauth.agent_registrations_by_purge on oauth.agent_registrations unique=false exclusion=false valid=true def=29c425b9b391c77572067eb458d97318
+index oauth.agent_registrations_by_user on oauth.agent_registrations unique=false exclusion=false valid=true def=bb0c41c65c2132f797b54471ebebec13
+index oauth.agent_registrations_org_id_attempt_token_hash_key on oauth.agent_registrations unique=true exclusion=false valid=true def=e9083f31f3ec03b4bae11fe8ebc47a54
+index oauth.agent_registrations_org_id_claim_token_hash_key on oauth.agent_registrations unique=true exclusion=false valid=true def=897fb27b88927e03406957e812562ab6
+index oauth.agent_registrations_pkey on oauth.agent_registrations unique=true exclusion=false valid=true def=5e717ef8829ff791c547a8da5b102349
 index oauth.apps_by_creator on oauth.apps unique=false exclusion=false valid=true def=00e73de6f5edf673eb0548f855f8897f
 index oauth.apps_by_identity on oauth.apps unique=false exclusion=false valid=true def=d6056f467ccd02e7a0635b9a4203b3a4
 index oauth.apps_org_id_client_id_key on oauth.apps unique=true exclusion=false valid=true def=a19a1164edcd2f66aef126d951578bbd
@@ -1763,6 +1792,11 @@ policy oauth.access_tokens import_all cmd=* permissive=true roles=pipeshub_impor
 policy oauth.access_tokens jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy oauth.access_tokens org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.access_tokens restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy oauth.agent_registrations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.agent_registrations import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy oauth.agent_registrations jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.agent_registrations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy oauth.agent_registrations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.apps backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy oauth.apps import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.apps org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
@@ -1945,6 +1979,7 @@ rel kg.restamp_queue kind=r owner=pipeshub_owner rls=true force=true options=aut
 rel kg.scope_classes kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05,autovacuum_vacuum_insert_scale_factor=0.02 ext=-
 rel kg.scope_members kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05,autovacuum_vacuum_insert_scale_factor=0.02 ext=-
 rel oauth.access_tokens kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel oauth.agent_registrations kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel oauth.apps kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel oauth.authorization_codes kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel oauth.delegation_events kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
@@ -2409,6 +2444,18 @@ relacl oauth.access_tokens pipeshub_node INSERT grantable=false
 relacl oauth.access_tokens pipeshub_node SELECT grantable=false
 relacl oauth.access_tokens pipeshub_node UPDATE grantable=false
 relacl oauth.access_tokens pipeshub_restore INSERT grantable=false
+relacl oauth.agent_registrations pipeshub_backup SELECT grantable=false
+relacl oauth.agent_registrations pipeshub_import DELETE grantable=false
+relacl oauth.agent_registrations pipeshub_import INSERT grantable=false
+relacl oauth.agent_registrations pipeshub_import SELECT grantable=false
+relacl oauth.agent_registrations pipeshub_import UPDATE grantable=false
+relacl oauth.agent_registrations pipeshub_jobs DELETE grantable=false
+relacl oauth.agent_registrations pipeshub_jobs SELECT grantable=false
+relacl oauth.agent_registrations pipeshub_node DELETE grantable=false
+relacl oauth.agent_registrations pipeshub_node INSERT grantable=false
+relacl oauth.agent_registrations pipeshub_node SELECT grantable=false
+relacl oauth.agent_registrations pipeshub_node UPDATE grantable=false
+relacl oauth.agent_registrations pipeshub_restore INSERT grantable=false
 relacl oauth.apps pipeshub_backup SELECT grantable=false
 relacl oauth.apps pipeshub_import DELETE grantable=false
 relacl oauth.apps pipeshub_import INSERT grantable=false
@@ -2953,6 +3000,7 @@ trigger identity.users docstore_change_log enabled=O function=platform.docstore_
 trigger integrations.slack_threads docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger kg.graph_changes kg_changes_stamp enabled=A function=kg.stamp_change()
 trigger oauth.access_tokens docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger oauth.agent_registrations docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger oauth.apps docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger oauth.authorization_codes docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger oauth.delegation_events docstore_change_log enabled=O function=platform.docstore_log_change()

@@ -18,6 +18,7 @@ FENCE_AGE = METRICS_BACKEND.gauge("pipeshub_kg_fence_oldest_seconds", "Age of th
 QUEUE = METRICS_BACKEND.gauge("pipeshub_kg_restamp_queue", "Queued restamp jobs, by whether a worker holds them", ["org", "state"])
 QUARANTINED = METRICS_BACKEND.gauge("pipeshub_kg_quarantined_rows", "Change-log rows the drain cannot read (alert on > 0)", ["org"])
 LAG = METRICS_BACKEND.gauge("pipeshub_kg_change_log_rows", "Committed change-log rows not yet projected", ["org"])
+_published: dict[str, set[tuple[str, str]]] = {}      # per org, the LEGACY series it has published: a series is set to 0 when its records are gone, never cleared for every org
 
 
 async def legacy_counts(tx: Tx, org: str) -> dict[tuple[int, str], int]:
@@ -30,12 +31,15 @@ async def legacy_counts(tx: Tx, org: str) -> dict[tuple[int, str], int]:
 async def publish(tx: Tx, org: str) -> None:
     """Set the gauges for one org (the worker calls it after a pass)."""
     names = {r["sk"]: r["id"] for r in await tx.fetch("/* pipeshub:kg.app_names */ SELECT sk, id FROM kg.node_keys WHERE org_id = $1 AND coll = 1", org)}
-    LEGACY.clear()
-    for (app_sk, reason), n in (await legacy_counts(tx, org)).items():
-        LEGACY.set(org, names.get(app_sk, str(app_sk)), reason, value=n)
+    counts = {(names.get(app_sk, str(app_sk)), reason): n for (app_sk, reason), n in (await legacy_counts(tx, org)).items()}
+    for app, reason in _published.get(org, set()) - counts.keys():
+        LEGACY.set(org, app, reason, value=0)
+    for (app, reason), n in counts.items():
+        LEGACY.set(org, app, reason, value=n)
+    _published[org] = set(counts)
     FENCE_AGE.set(org, value=await restamp.oldest_seconds(tx, org))
     held = {r["held"]: r["n"] for r in await tx.fetch("/* pipeshub:kg.queue_state */ SELECT claimed_by IS NOT NULL AS held, count(*) AS n FROM kg.restamp_queue WHERE org_id = $1 GROUP BY 1", org)}
     QUEUE.set(org, "held", value=held.get(True, 0))
     QUEUE.set(org, "waiting", value=held.get(False, 0))
     QUARANTINED.set(org, value=len(await drainer.quarantined(tx, org)))
-    LAG.set(org, value=await tx.fetchval("/* pipeshub:kg.lag_gauge */ SELECT COALESCE(sum(cardinality(ends)), 0) FROM kg.graph_changes WHERE org_id = $1", org))
+    LAG.set(org, value=await drainer.lag_in(tx, org))

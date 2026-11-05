@@ -79,6 +79,11 @@ class KgWorker:
         """Seconds to wait after ``stuck`` passes in a row that found rows and took none: doubling from RECHECK_S, never past ``poll_s`` (the exponent is capped, so it cannot overflow)."""
         return min(RECHECK_S * 2 ** min(stuck, MAX_DOUBLINGS), self._poll)
 
+    async def _pause(self, seconds: float) -> None:
+        """Sleep, unless the worker is stopped meanwhile (a wake-up from the listener does not end it)."""
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._stop.wait(), seconds)
+
     async def _once(self, stuck: int) -> int:
         """One iteration of the loop; returns the new ``stuck``."""
         self._wake.clear()
@@ -86,11 +91,11 @@ class KgWorker:
         self.passes += 1
         if rows:
             return 0                                   # more may have arrived while this pass ran
-        await asyncio.sleep(RECHECK_S)                 # a wake-up the writers coalesced away (flush.wake) is covered by one more look
+        await self._pause(RECHECK_S)                   # a wake-up the writers coalesced away (flush.wake) is covered by one more look
         if self._wake.is_set():
             return stuck
         if await self._more():                         # rows are waiting and the pass took none: it gave up (or failed); try again, further apart each time
-            await asyncio.sleep(self._backoff(stuck + 1))
+            await self._pause(self._backoff(stuck + 1))
             return stuck + 1
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(self._wake.wait(), self._poll)

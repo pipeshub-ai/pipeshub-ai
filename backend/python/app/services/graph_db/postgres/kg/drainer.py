@@ -95,11 +95,16 @@ async def drain_org(db: KernelDB, org: str, *, page: int = PAGE, max_rows: int |
     return st
 
 
+async def lag_in(tx: Tx, org: str) -> int:
+    """Committed change-log keys not yet projected for the org, in the caller's unit (rows the drain cannot read are counted by ``quarantined``, not here)."""
+    return int(await tx.fetchval(r"/* pipeshub:kg.lag */ SELECT COALESCE(sum(cardinality(ends)), 0) FROM kg.graph_changes WHERE org_id = $1 AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)", org))
+
+
 async def lag(db: KernelDB, org: str) -> int:
     """Committed change-log keys not yet projected for the org (rows the drain cannot read are counted by ``quarantined``, not here)."""
     with bind(_ctx(org)):
         async with db.uow() as tx:
-            return int(await tx.fetchval(r"/* pipeshub:kg.lag */ SELECT COALESCE(sum(cardinality(ends)), 0) FROM kg.graph_changes WHERE org_id = $1 AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)", org))
+            return await lag_in(tx, org)
 
 
 async def quarantined(tx: Tx, org: str) -> list[int]:
