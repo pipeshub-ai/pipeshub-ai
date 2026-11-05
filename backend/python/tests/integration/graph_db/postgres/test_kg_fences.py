@@ -385,7 +385,7 @@ async def test_a_connector_job_whose_pages_reach_another_connector_takes_its_loc
     seen: list = []
     real = stamp_mod.stamp_app
 
-    async def spy(tx, o, app_id, after, limit, st=None, *, dry=False, locked=None):
+    async def spy(tx: object, o: str, app_id: str, after: str | None, limit: int, st: object = None, *, dry: bool = False, locked: set[str] | None = None) -> str | None:
         try:
             return await real(tx, o, app_id, after, limit, st, dry=dry, locked=locked)
         except NeedLocks as e:
