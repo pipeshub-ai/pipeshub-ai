@@ -11,7 +11,10 @@ import {
   TEMPORARY_CHAT_TTL_MS,
 } from '../../../../src/modules/enterprise_search/utils/temporary-chat'
 import { getConversationRepository } from '../../../../src/libs/repositories/conversation'
-import { sweepExpiredTemporaryChats } from '../../../../src/libs/services/ttl-sweeper.service'
+import {
+  sweepExpiredTemporaryChats,
+  TtlSweeper,
+} from '../../../../src/libs/services/ttl-sweeper.service'
 import { buildSessionFilter } from '../../../../src/libs/repositories/conversation/mongo'
 import { FakeAIBackend } from './chat-test-harness'
 import { flows, startStream } from './streaming-flows'
@@ -301,8 +304,11 @@ describe('es_controller temporary chat', () => {
     expect(due.map((r) => r.id)).to.deep.equal([String(expired._id)])
     expect(due[0]?.userId).to.equal(String(OWNER))
 
-    sinon.stub(repo, 'isConnected').returns(true)
-    expect(await sweepExpiredTemporaryChats(new Date())).to.equal(1)
+    const deleted = await repo.hardDeleteTemporary(String(expired._id), {
+      orgId: String(ORG),
+      userId: String(OWNER),
+    })
+    expect(deleted?.session._id).to.equal(String(expired._id))
     expect(store.session(expired._id)).to.equal(undefined)
     expect(store.session(live._id)?.title).to.equal('live')
     expect(store.session(normal._id)?.title).to.equal('normal')
@@ -312,6 +318,29 @@ describe('es_controller temporary chat', () => {
     const repo = getConversationRepository()
     sinon.stub(repo, 'isConnected').returns(false)
     expect(await sweepExpiredTemporaryChats(new Date())).to.equal(0)
+  })
+
+  it('TtlSweeper start and stop run without a document store', async () => {
+    const sweeper = new TtlSweeper(
+      { info() {}, error() {} } as never,
+      60 * 60 * 1000,
+    )
+    sweeper.start()
+    sweeper.start()
+    await sweeper.stop()
+  })
+
+  it('sweepExpiredTemporaryChats deletes expired rows when the store is connected', async () => {
+    const repo = getConversationRepository()
+    sinon.stub(repo, 'isConnected').returns(true)
+    sinon.stub(repo, 'listExpiredTemporary').resolves([
+      { id: 's1', orgId: String(ORG), userId: String(OWNER) },
+    ])
+    const del = sinon
+      .stub(repo, 'hardDeleteTemporary')
+      .resolves({ session: { _id: 's1' } } as never)
+    expect(await sweepExpiredTemporaryChats(new Date())).to.equal(1)
+    expect(del.calledOnce).to.equal(true)
   })
 
   it('streamChat with temporary: true flags the session and does not use the query as the title', async () => {
