@@ -113,7 +113,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def upsert_person_by_email(self, person, *, raise_on_error=False):
         return None
 
-    async def upsert_person_by_source_key(self, person) -> None:
+    async def upsert_person_by_source_key(self, person, *, raise_on_error: bool = False) -> None:
         return None
 
     async def get_person_by_source_key(self, source_key, org_id) -> None:
