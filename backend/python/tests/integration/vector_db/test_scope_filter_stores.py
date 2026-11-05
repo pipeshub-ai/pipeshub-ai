@@ -57,7 +57,7 @@ def _point(org: str, vrid: str, i: int) -> VectorPoint:
 
 class _ScopeFilterContract:
     @pytest.fixture
-    async def loaded(self, vector_service, monkeypatch):  # noqa: ANN201
+    async def loaded(self, vector_service, monkeypatch):  # noqa: ANN202
         monkeypatch.setenv("ACL_SCOPE_FIELDS", "true")                 # indexes and mappings of the scope fields are created while the fields are on
         svc, col = vector_service, make_collection(vector_service.get_service_name())
         await svc.create_collection(col, make_collection_config())
@@ -224,7 +224,7 @@ class TestRedisPreFilterIsExact(TestRedisScopeFilter):
         real = svc.client.execute_command
         planted = {"done": False}
 
-        async def racing(*cmd, **kw):  # noqa: ANN002, ANN003, ANN202
+        async def racing(*cmd, **kw):
             out = await real(*cmd, **kw)
             if cmd[0] == "FT.TAGVALS" and not planted["done"]:
                 planted["done"] = True                                           # a point with a connector the index has not shown yet

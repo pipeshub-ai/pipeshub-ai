@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -16,8 +17,10 @@ from app.services.vector_db.filters import (
     ScopeFilterTooLarge,
     ScopeFilterUnsupported,
 )
-from app.services.vector_db.models import HybridSearchRequest
 from tests.unit.services.vector_db import scope_requests as sr
+
+if TYPE_CHECKING:
+    from app.services.vector_db.models import HybridSearchRequest
 
 GOLDEN = json.loads((Path(__file__).parent / "scope_requests.golden.json").read_text())
 STORES = ("qdrant", "opensearch", "redis")
