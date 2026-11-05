@@ -40,7 +40,11 @@ from app.services.permissions.scope_fields import (
     ScopeFields,
     current_scope_generation,
 )
-from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY, structure_generation_of
+from app.services.permissions.structure_generation import (
+    GENERATION_KEY,
+    UNSAFE_KEY,
+    structure_generation_of,
+)
 from app.services.vector_db.membership import (
     STALE_SCOPE,
     resolve_virtual_record_state,

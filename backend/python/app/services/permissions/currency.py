@@ -20,8 +20,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import CollectionNames
-from app.services.permissions.scope_fields import SCOPE_FIELDS_VERSION, current_scope_generation
-from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY, structure_generation_of, whole_number as _int
+from app.services.permissions.scope_fields import (
+    SCOPE_FIELDS_VERSION,
+    current_scope_generation,
+)
+from app.services.permissions.structure_generation import (
+    UNSAFE_KEY,
+    structure_generation_of,
+)
+from app.services.permissions.structure_generation import whole_number as _int
 from app.services.vector_db.scope_backfill import BACKFILL_KEYS, DONE
 
 if TYPE_CHECKING:

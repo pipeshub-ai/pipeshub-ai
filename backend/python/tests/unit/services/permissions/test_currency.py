@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from app.services.permissions.currency import StampCurrency, app_is_current
-from app.services.permissions.scope_fields import SCOPE_FIELDS_VERSION, set_resolved_generation
+from app.services.permissions.scope_fields import (
+    SCOPE_FIELDS_VERSION,
+    set_resolved_generation,
+)
 from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY
 from app.services.vector_db.scope_backfill import BACKFILL_KEYS as K
 from app.services.vector_db.scope_backfill import DONE

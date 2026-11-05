@@ -12,7 +12,10 @@ from app.config.constants.arangodb import CollectionNames, DeleteSource
 from app.models.entities import AccessRule
 from app.services.permissions import structure_generation as sg
 from app.services.permissions.currency import StampCurrency, app_is_current
-from app.services.permissions.scope_fields import SCOPE_FIELDS_VERSION, current_scope_generation
+from app.services.permissions.scope_fields import (
+    SCOPE_FIELDS_VERSION,
+    current_scope_generation,
+)
 from app.services.vector_db.scope_backfill import BACKFILL_KEYS as K
 from app.services.vector_db.scope_backfill import DONE
 from tests.integration.graph_permissions.test_write_path import _record
@@ -40,7 +43,7 @@ async def current(provider, conn: str) -> bool:
     return app_is_current(app)
 
 
-async def test_a_connector_with_a_finished_pass_is_current_and_a_restriction_makes_it_not_current(backend) -> None:
+async def test_a_connector_with_a_finished_pass_is_current_and_a_restriction_makes_it_not_current(backend) -> None:  # noqa: F811
     processor, conn, space, page, *_ = await _world(backend)
     await finish_pass(backend.provider, conn)
     assert await current(backend.provider, conn)
@@ -52,7 +55,7 @@ async def test_a_connector_with_a_finished_pass_is_current_and_a_restriction_mak
     assert await current(backend.provider, conn)
 
 
-async def test_a_move_a_delete_and_a_permission_update_each_make_a_current_connector_not_current(backend) -> None:
+async def test_a_move_a_delete_and_a_permission_update_each_make_a_current_connector_not_current(backend) -> None:  # noqa: F811
     processor, conn, space, page, other, child = await _world(backend)
     moved = _record(child.external_record_id, connector_id=conn, parent_external=other.external_record_id, group_external=space)
     moved.virtual_record_id = child.virtual_record_id
@@ -67,7 +70,7 @@ async def test_a_move_a_delete_and_a_permission_update_each_make_a_current_conne
         assert not await current(backend.provider, conn)
 
 
-async def test_a_new_record_and_an_unchanged_resend_leave_the_connector_current(backend) -> None:
+async def test_a_new_record_and_an_unchanged_resend_leave_the_connector_current(backend) -> None:  # noqa: F811
     processor, conn, space, page, *_ = await _world(backend)
     await finish_pass(backend.provider, conn)
     fresh = _record(f"fresh-{page.external_record_id}", connector_id=conn, group_external=space)
@@ -78,7 +81,7 @@ async def test_a_new_record_and_an_unchanged_resend_leave_the_connector_current(
     assert await current(backend.provider, conn)
 
 
-async def test_a_change_that_could_not_move_the_generation_marks_the_connector_unsafe_and_not_current(backend, monkeypatch) -> None:
+async def test_a_change_that_could_not_move_the_generation_marks_the_connector_unsafe_and_not_current(backend, monkeypatch) -> None:  # noqa: F811
     processor, conn, *_ = await _world(backend)
     await finish_pass(backend.provider, conn)
 
