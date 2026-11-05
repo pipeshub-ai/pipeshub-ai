@@ -1239,12 +1239,13 @@ class TestKeywordSearchBudget:
 
         state = _entity_search_state(_empty_retrieval())
         search_mod = "app.agents.actions.knowledge_graph.ops.search"
-        try:
-            with patch(f"{search_mod}.run_pattern_match_with_llm_grep", new=_slow_to_stop):
-                await asyncio.wait_for(execute_search(state, "roadmap", keyword_wait_s=0.05), timeout=3)
-        finally:
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", new=_slow_to_stop):
+            search = asyncio.ensure_future(execute_search(state, "roadmap", keyword_wait_s=0.05))
+            # Not `wait_for`: cancelling a search stuck on that cleanup would hang the test too.
+            done, _ = await asyncio.wait({search}, timeout=3)
             cleanup_may_finish.set()
-            await asyncio.sleep(0)
+            await search
+        assert search in done
 
 
 class TestUnknownEntityIds:
