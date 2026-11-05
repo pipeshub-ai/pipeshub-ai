@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from app.services.graph_db.postgres.kg.model import Key, derive
 from app.services.graph_db.postgres.kg.reader import load_sks, snapshot
+from app.services.graph_db.postgres.kg.stamp import StampStats, stamp_app
 
 if TYPE_CHECKING:
     from app.core.db import Tx
@@ -146,6 +147,13 @@ async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
         marked = {r["app_sk"] for r in await tx.fetch("""/* pipeshub:kg.verify_cross */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND cross_app AND app_sk = ANY($2::bigint[])""",
                                                       org, sorted(cross))}
         res.missing += [f"x|{sk} (shares a parent or group with another connector, not marked)" for sk in sorted(cross - marked)]
+    st = StampStats()                                      # every record's stamps against a fresh compile (a dry run of the stamper, which reads the graph)
+    after_id: str | None = None
+    while True:
+        after_id = await stamp_app(tx, org, app_id, after_id, PAGE, st, dry=True)
+        if after_id is None:
+            break
+    res.changed += st.diffs[:LIMIT]
     res.digest = h.hexdigest()
     return res
 
