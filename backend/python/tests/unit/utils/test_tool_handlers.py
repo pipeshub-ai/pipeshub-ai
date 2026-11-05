@@ -75,6 +75,18 @@ class TestRecordsHandler:
         )
         assert any("id1" in m.get("text", "") for m in result)
 
+    def test_format_message_names_records_being_prepared_apart_from_missing_ones(self) -> None:
+        handler = RecordsHandler()
+        tool_result = {
+            "not_available_ids": ["gone", "slow"],
+            "unavailable_reasons": {"gone": "not_available", "slow": "content_being_prepared"},
+        }
+        result = asyncio.run(handler.format_message(tool_result, {"message_contents": []}))
+
+        texts = [m["text"] for m in result]
+        assert any("not available: 'gone'" in t and "slow" not in t for t in texts)
+        assert any("being prepared" in t and "'slow'" in t and "gone" not in t for t in texts)
+
     def test_format_message_empty_not_available(self) -> None:
         handler = RecordsHandler()
         context = {"message_contents": [[{"type": "text", "text": "hello"}]]}

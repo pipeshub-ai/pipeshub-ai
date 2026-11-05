@@ -35,6 +35,28 @@ describe('connector writes refresh the cached team connector lists (and the demo
     expect(revalidate).toHaveBeenCalledWith(SWR_NS.teamConnectorLists);
   });
 
+  it('saving auth refreshes the instance configs shown on the cards', async () => {
+    await ConnectorsApi.saveAuthConfig('c1', { auth: {}, baseUrl: 'https://app.test' });
+
+    expect(revalidate).toHaveBeenCalledWith(SWR_NS.connectorConfigs);
+  });
+
+  it('completing OAuth (desktop app) refreshes the instance configs', async () => {
+    api.get.mockResolvedValue({ data: {} });
+
+    await ConnectorsApi.completeConnectorOAuthCallback({ code: 'c', state: 's', oauthError: null, baseUrl: '' });
+
+    expect(revalidate).toHaveBeenCalledWith(SWR_NS.connectorConfigs);
+  });
+
+  it('a failed auth save refreshes nothing', async () => {
+    api.put.mockRejectedValue(new Error('500'));
+
+    await expect(ConnectorsApi.saveAuthConfig('c1', { auth: {}, baseUrl: 'https://app.test' })).rejects.toThrow('500');
+
+    expect(revalidate).not.toHaveBeenCalled();
+  });
+
   it('not after a failed write, since nothing changed', async () => {
     api.post.mockRejectedValue(new Error('500'));
 

@@ -1,0 +1,1004 @@
+{
+ "apps_only/anti/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "apps_only/anti/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "apps_only/anti/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) LIMIT $10) c"
+ },
+ "apps_only/anti/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "apps_only/anti/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "apps_only/hashed/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "apps_only/hashed/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "apps_only/hashed/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) LIMIT $10) c"
+ },
+ "apps_only/hashed/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT (p.point_sk = ANY (SELECT t.point_sk FROM retrieval.point_tombstones t WHERE t.org_id = $1))\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "apps_only/hashed/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "apps_only/lexical": {
+  "args": [],
+  "asked": 20,
+  "sql": "/* pipeshub:pgvector.lexical */\n    SELECT p.point_sk, p.point_id, (true) AS ok\n      FROM retrieval.search_sparse($2::smallint, $3::bigint[], $4::real[], $5::text[], $6::text[], $7::text[],\n                                   $8::text[], $9::text[], $10::int) s\n      JOIN retrieval.points p ON p.org_id = $1 AND p.point_sk = s.point_sk\n     ORDER BY s.score DESC, s.point_sk"
+ },
+ "arms/anti/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "['r1']",
+   "['v1']",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "arms/anti/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "['r1']",
+   "['v1']",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "arms/anti/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "['r1']",
+   "['v1']",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) LIMIT $10) c"
+ },
+ "arms/anti/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "['r1']",
+   "['v1']",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "arms/anti/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "['r1']",
+   "['v1']",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "arms/hashed/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "['r1']",
+   "['v1']",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "arms/hashed/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "['r1']",
+   "['v1']",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "arms/hashed/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "['r1']",
+   "['v1']",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) LIMIT $10) c"
+ },
+ "arms/hashed/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "['r1']",
+   "['v1']",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT (p.point_sk = ANY (SELECT t.point_sk FROM retrieval.point_tombstones t WHERE t.org_id = $1))\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "arms/hashed/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "['r1']",
+   "['v1']",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "arms/lexical": {
+  "args": [],
+  "asked": 20,
+  "sql": "/* pipeshub:pgvector.lexical */\n    SELECT p.point_sk, p.point_id, (true) AS ok\n      FROM retrieval.search_sparse($2::smallint, $3::bigint[], $4::real[], $5::text[], $6::text[], $7::text[],\n                                   $8::text[], $9::text[], $10::int) s\n      JOIN retrieval.points p ON p.org_id = $1 AND p.point_sk = s.point_sk\n     ORDER BY s.score DESC, s.point_sk"
+ },
+ "empty_arm/anti/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "empty_arm/anti/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "empty_arm/anti/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) LIMIT $10) c"
+ },
+ "empty_arm/anti/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "empty_arm/anti/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "empty_arm/hashed/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "empty_arm/hashed/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "empty_arm/hashed/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) LIMIT $10) c"
+ },
+ "empty_arm/hashed/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND NOT (p.point_sk = ANY (SELECT t.point_sk FROM retrieval.point_tombstones t WHERE t.org_id = $1))\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "empty_arm/hashed/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "[]",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "empty_arm/lexical": {
+  "args": [],
+  "asked": 20,
+  "sql": "/* pipeshub:pgvector.lexical */\n    SELECT p.point_sk, p.point_id, (true) AS ok\n      FROM retrieval.search_sparse($2::smallint, $3::bigint[], $4::real[], $5::text[], $6::text[], $7::text[],\n                                   $8::text[], $9::text[], $10::int) s\n      JOIN retrieval.points p ON p.org_id = $1 AND p.point_sk = s.point_sk\n     ORDER BY s.score DESC, s.point_sk"
+ },
+ "extra/anti/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10",
+   "['k']"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND ((p.ent_kind = ANY($12::text[]))) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "extra/anti/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10",
+   "['k']"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND ((p.ent_kind = ANY($12::text[]))) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "extra/anti/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10",
+   "['k']"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND ((p.ent_kind = ANY($12::text[]))) LIMIT $10) c"
+ },
+ "extra/anti/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10",
+   "['k']"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND ((p.ent_kind = ANY($12::text[]))) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "extra/anti/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10",
+   "['k']"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND ((p.ent_kind = ANY($12::text[]))) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "extra/hashed/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10",
+   "['k']"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND ((p.ent_kind = ANY($12::text[]))) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "extra/hashed/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10",
+   "['k']"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND ((p.ent_kind = ANY($12::text[]))) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "extra/hashed/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10",
+   "['k']"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND ((p.ent_kind = ANY($12::text[]))) LIMIT $10) c"
+ },
+ "extra/hashed/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10",
+   "['k']"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND ((p.ent_kind = ANY($12::text[]))) AND NOT (p.point_sk = ANY (SELECT t.point_sk FROM retrieval.point_tombstones t WHERE t.org_id = $1))\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "extra/hashed/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "['c1', 'c2']",
+   "['g1']",
+   "[]",
+   "[]",
+   "None",
+   "20",
+   "10",
+   "['k']"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND ((p.ent_kind = ANY($12::text[]))) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "extra/lexical": {
+  "args": [
+   "['k']"
+  ],
+  "asked": 80,
+  "sql": "/* pipeshub:pgvector.lexical */\n    SELECT p.point_sk, p.point_id, (true AND ((p.ent_kind = ANY($11::text[])))) AS ok\n      FROM retrieval.search_sparse($2::smallint, $3::bigint[], $4::real[], $5::text[], $6::text[], $7::text[],\n                                   $8::text[], $9::text[], $10::int) s\n      JOIN retrieval.points p ON p.org_id = $1 AND p.point_sk = s.point_sk\n     ORDER BY s.score DESC, s.point_sk"
+ },
+ "narrowed/anti/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "['g1']",
+   "['r1']",
+   "[]",
+   "['v1', 'v2']",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND p.group_key = ANY($9::text[]) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "narrowed/anti/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "['g1']",
+   "['r1']",
+   "[]",
+   "['v1', 'v2']",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND p.group_key = ANY($9::text[]) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "narrowed/anti/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "['g1']",
+   "['r1']",
+   "[]",
+   "['v1', 'v2']",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND p.group_key = ANY($9::text[]) LIMIT $10) c"
+ },
+ "narrowed/anti/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "['g1']",
+   "['r1']",
+   "[]",
+   "['v1', 'v2']",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND p.group_key = ANY($9::text[]) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "narrowed/anti/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "['g1']",
+   "['r1']",
+   "[]",
+   "['v1', 'v2']",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND p.group_key = ANY($9::text[]) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "narrowed/hashed/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "['g1']",
+   "['r1']",
+   "[]",
+   "['v1', 'v2']",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND p.group_key = ANY($9::text[]) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "narrowed/hashed/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "['g1']",
+   "['r1']",
+   "[]",
+   "['v1', 'v2']",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND p.group_key = ANY($9::text[]) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "narrowed/hashed/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "['g1']",
+   "['r1']",
+   "[]",
+   "['v1', 'v2']",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND p.group_key = ANY($9::text[]) LIMIT $10) c"
+ },
+ "narrowed/hashed/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "['g1']",
+   "['r1']",
+   "[]",
+   "['v1', 'v2']",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.group_key IN (SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 1 AND m.member_id = ANY($5::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 2 AND m.member_id = ANY($6::text[]) UNION SELECT m.group_key FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.kind = 3 AND m.member_id = ANY($7::text[]) UNION SELECT unnest($8::text[])) AND p.group_key = ANY($9::text[]) AND NOT (p.point_sk = ANY (SELECT t.point_sk FROM retrieval.point_tombstones t WHERE t.org_id = $1))\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "narrowed/hashed/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "[]",
+   "['g1']",
+   "['r1']",
+   "[]",
+   "['v1', 'v2']",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = p.group_key AND ((m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) OR (m.kind = 3 AND m.member_id = ANY($7::text[]))) OFFSET 0)) AND p.group_key = ANY($9::text[]) AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "narrowed/lexical": {
+  "args": [],
+  "asked": 20,
+  "sql": "/* pipeshub:pgvector.lexical */\n    SELECT p.point_sk, p.point_id, (true) AS ok\n      FROM retrieval.search_sparse($2::smallint, $3::bigint[], $4::real[], $5::text[], $6::text[], $7::text[],\n                                   $8::text[], $9::text[], $10::int) s\n      JOIN retrieval.points p ON p.org_id = $1 AND p.point_sk = s.point_sk\n     ORDER BY s.score DESC, s.point_sk"
+ },
+ "whole_org/anti/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "None",
+   "None",
+   "None",
+   "None",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "whole_org/anti/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "None",
+   "None",
+   "None",
+   "None",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "whole_org/anti/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "None",
+   "None",
+   "None",
+   "None",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 LIMIT $10) c"
+ },
+ "whole_org/anti/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "None",
+   "None",
+   "None",
+   "None",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "whole_org/anti/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "None",
+   "None",
+   "None",
+   "None",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "whole_org/hashed/bounded_narrow": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "None",
+   "None",
+   "None",
+   "None",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "whole_org/hashed/bounded_probe": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "None",
+   "None",
+   "None",
+   "None",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_bounded */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk) ORDER BY p.point_sk DESC LIMIT $11) x\n        ORDER BY (x.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, x.point_sk LIMIT $10"
+ },
+ "whole_org/hashed/count": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "None",
+   "None",
+   "None",
+   "None",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_count */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 LIMIT $10) c"
+ },
+ "whole_org/hashed/exact": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "None",
+   "None",
+   "None",
+   "None",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_exact */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT p.point_sk, p.point_id FROM retrieval.points p\n         WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND NOT (p.point_sk = ANY (SELECT t.point_sk FROM retrieval.point_tombstones t WHERE t.org_id = $1))\n         ORDER BY (p.embedding OPERATOR(ext.<=>) $4::ext.halfvec) + 0, p.point_sk LIMIT $10"
+ },
+ "whole_org/hashed/index": {
+  "args": [
+   "'aaaaaaaaaaaaaaaaaaaaaaaa'",
+   "3",
+   "5",
+   "'[0.5,-0.25]'",
+   "None",
+   "None",
+   "None",
+   "None",
+   "None",
+   "20",
+   "10"
+  ],
+  "sql": "/* pipeshub:pgvector.dense_index */\n        WITH _s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)\n        SELECT x.point_sk, x.point_id FROM (\n          SELECT p.point_sk, p.point_id, p.embedding FROM retrieval.points p\n           WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk OFFSET 0)\n           ORDER BY p.bq::bit(8) OPERATOR(ext.<~>) ext.binary_quantize($4::ext.halfvec)::bit(8) LIMIT $11) x\n        CROSS JOIN LATERAL (SELECT x.embedding OPERATOR(ext.<=>) $4::ext.halfvec AS d) z\n        ORDER BY z.d, x.point_sk LIMIT $10"
+ },
+ "whole_org/lexical": {
+  "args": [],
+  "asked": 20,
+  "sql": "/* pipeshub:pgvector.lexical */\n    SELECT p.point_sk, p.point_id, (true) AS ok\n      FROM retrieval.search_sparse($2::smallint, $3::bigint[], $4::real[], $5::text[], $6::text[], $7::text[],\n                                   $8::text[], $9::text[], $10::int) s\n      JOIN retrieval.points p ON p.org_id = $1 AND p.point_sk = s.point_sk\n     ORDER BY s.score DESC, s.point_sk"
+ }
+}

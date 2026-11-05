@@ -985,6 +985,8 @@ def processor(data_store_provider):
     proc = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
     proc.org_id = ORG_ID
     proc.messaging_producer = AsyncMock()
+    # Title events have their own tests (tests/unit/connectors/core/test_dsp_record_title_events.py).
+    proc._publish_record_titles = AsyncMock()
     return proc
 
 

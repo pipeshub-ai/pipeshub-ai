@@ -83,14 +83,37 @@ export async function startCluster(bin: string, work: string): Promise<Cluster> 
   const port = await withFreePort(async (p) => {
     execFileSync(
       join(bin, 'pg_ctl'),
-      ['-D', join(root, 'data'), '-w', '-l', join(root, 'log'), '-o', `-p ${p} -k ${root} -c listen_addresses=127.0.0.1 -c max_connections=100 -c track_commit_timestamp=on -c fsync=off -c synchronous_commit=off -c full_page_writes=off`, 'start'],
+      ['-D', join(root, 'data'), '-w', '-l', join(root, 'log'), '-o', `-p ${p} -k ${root} -c listen_addresses=127.0.0.1 -c max_connections=100 -c track_commit_timestamp=on -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c jit=off`, 'start'],
       { stdio: 'ignore' },
     )
     return p
   }, PORT_BASE, PORT_SPAN)
   const probe = new Cluster(bin, root, port, 0)
-  const major = await probe.admin(async (c) => Math.floor(Number((await c.query("SHOW server_version_num")).rows[0].server_version_num) / 10000))
-  return new Cluster(bin, root, port, major)
+  try {
+    // PGOPTIONS could set a session value and hide the server's. pg reads it when the client is constructed (ConnectionParameters),
+    // so it is out of the environment only for that statement and is back before anything awaits.
+    const pgoptions = process.env.PGOPTIONS
+    let c: Client
+    try {
+      delete process.env.PGOPTIONS
+      c = new Client({ host: '127.0.0.1', port, user: 'postgres', database: 'postgres' })
+    } finally {
+      if (pgoptions !== undefined) process.env.PGOPTIONS = pgoptions
+    }
+    await c.connect()
+    let major: number
+    try {
+      // JIT compiles the catalog queries of every migration and made each test of the reverse shard about six times slower, so a cluster with it on is a harness fault.
+      if ((await c.query('SHOW jit')).rows[0].jit !== 'off') throw new Error('the test cluster started with jit on')
+      major = Math.floor(Number((await c.query('SHOW server_version_num')).rows[0].server_version_num) / 10000)
+    } finally {
+      await c.end()
+    }
+    return new Cluster(bin, root, port, major)
+  } catch (e) {
+    probe.stop() // the caller never gets the cluster, so nothing else would stop this server or free its port
+    throw e
+  }
 }
 
 export interface Bouncer {
@@ -181,7 +204,7 @@ const py = (module: string, env: Record<string, string>, ...args: string[]) =>
 export async function createKernelDb(cluster: Cluster, name: string): Promise<void> {
   await cluster.admin((c) => c.query(`CREATE DATABASE ${name}`))
   // the roles and the baseline extension (an extension needs a superuser: the administrator installs it)
-  py('db.bootstrap_roles', { PG_ADMIN_URL: `postgresql://postgres@127.0.0.1:${cluster.port}/${name}`, PG_BOOTSTRAP_EXTENSIONS: 'vector,pg_trgm' })
+  py('db.bootstrap_roles', { PG_ADMIN_URL: `postgresql://postgres@127.0.0.1:${cluster.port}/${name}`, PG_BOOTSTRAP_EXTENSIONS: 'vector,pg_trgm', PG_BOOTSTRAP_ALLOW_NO_PASSWORD: '1' })
   py('db.migrate', { PG_MIGRATE_URL: `postgresql+psycopg://pipeshub_migrate@127.0.0.1:${cluster.port}/${name}` })
   await cluster.admin((c) => c.query(fixtureSql(name)), name)
 }

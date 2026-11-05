@@ -17,6 +17,7 @@ describe('OIDCProviderController', () => {
     delete process.env.PIPESHUB_ENABLE_DCR
     delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT
     mockOAuthTokenService = {
+      mcpResource: 'http://localhost:3000/mcp',
       getAlgorithm: sinon.stub().returns('HS256'),
       getPublicKey: sinon.stub().returns(undefined),
       getKeyId: sinon.stub().returns(undefined),
@@ -115,6 +116,21 @@ describe('OIDCProviderController', () => {
       await controller.openidConfiguration({} as any, mockRes, mockNext)
       const config = mockRes.json.firstCall.args[0]
       expect(config.registration_endpoint).to.include('/register')
+    })
+
+    it('advertises client ID metadata documents unless PIPESHUB_ENABLE_CIMD is false', async () => {
+      const saved = process.env.PIPESHUB_ENABLE_CIMD
+      try {
+        delete process.env.PIPESHUB_ENABLE_CIMD
+        await controller.openidConfiguration({} as any, mockRes, mockNext)
+        expect(mockRes.json.lastCall.args[0].client_id_metadata_document_supported).to.equal(true)
+        process.env.PIPESHUB_ENABLE_CIMD = 'false'
+        await controller.openidConfiguration({} as any, mockRes, mockNext)
+        expect(mockRes.json.lastCall.args[0].client_id_metadata_document_supported).to.equal(undefined)
+      } finally {
+        if (saved === undefined) delete process.env.PIPESHUB_ENABLE_CIMD
+        else process.env.PIPESHUB_ENABLE_CIMD = saved
+      }
     })
 
     it('should omit device grant metadata when the device grant is disabled', async () => {
