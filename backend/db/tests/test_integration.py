@@ -520,9 +520,14 @@ def test_the_jobs_role_keeps_only_what_the_organisation_gauges_read_and_the_revi
         assert c.execute("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'").fetchone()[0] == 11 * 4
         assert c.execute(policies).fetchone()[0] == 11
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
-    r = run_migrate(url)
+    with connect(cluster, name) as c:      # PGOPTIONS does not reach the migration session (env.py sets its own options), a role setting does
+        c.execute("ALTER ROLE pipeshub_migrate SET search_path = identity, public")
+    r = run_migrate(url, PG_MIGRATE_SURFACE_CHECK="skip")      # the surface lists the role setting; the asserts below check what the run left
     assert r.returncode == 0, r.stdout
     assert epochs(cluster, name) == HEADS
+    with connect(cluster, name) as c:      # the tables are found whatever the session's search_path is
+        assert c.execute(policies).fetchone()[0] == 3
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
 
 
 def test_the_one_running_job_index_comes_and_goes_with_the_platform_job_functions(db):

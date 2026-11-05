@@ -5,7 +5,8 @@ GRANT SELECT ON identity.users, identity.orgs, identity.org_auth_config TO pipes
 
 -- the jobs_all policy (FOR ALL, bounded by the grants above) stays on those three tables only
 DO $$ DECLARE r kernel.rls_registry; BEGIN
-  FOR r IN SELECT * FROM kernel.rls_registry WHERE rel::text LIKE 'identity.%' AND jobs_access
-           AND rel::text NOT IN ('identity.users', 'identity.orgs', 'identity.org_auth_config')
+  FOR r IN SELECT * FROM kernel.rls_registry WHERE jobs_access AND rel = ANY (ARRAY['identity.user_groups'::regclass, 'identity.user_group_members'::regclass,
+           'identity.user_activities'::regclass, 'identity.used_reset_links'::regclass, 'identity.org_logos'::regclass, 'identity.user_pictures'::regclass,
+           'identity.slug_counters'::regclass, 'identity.user_credentials'::regclass])
   LOOP PERFORM kernel.apply_rls(r.rel, r.class, false, r.vetted_read, '5s', r.vetted_write); END LOOP;
 END $$;
