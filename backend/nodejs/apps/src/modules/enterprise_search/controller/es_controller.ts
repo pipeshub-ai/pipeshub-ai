@@ -508,7 +508,10 @@ export const resolveChatAttachmentMimeType = (
   if (dot < 0) return null;
   const extension = name.slice(dot + 1).toLowerCase();
   // Own keys only: a file named "x.constructor" would otherwise resolve to Object.
-  return Object.prototype.hasOwnProperty.call(CHAT_ATTACHMENT_MIME_BY_EXTENSION, extension)
+  return Object.prototype.hasOwnProperty.call(
+    CHAT_ATTACHMENT_MIME_BY_EXTENSION,
+    extension,
+  )
     ? (CHAT_ATTACHMENT_MIME_BY_EXTENSION[extension] ?? null)
     : null;
 };
@@ -704,21 +707,17 @@ export const streamChat =
     const session: Tx | null = null;
     let savedConversation: ChatSessionDto | null = null;
 
+    const body = req.body as Record<string, unknown>;
     const modelInfo = extractModelInfo(req.body);
-    const protocol = resolveProtocol(
-      req.body as Record<string, unknown>,
-      req.query,
-    );
+    const protocol = resolveProtocol(body, req.query);
 
-    if (!req.body.query) {
+    if (!body.query) {
       throw new BadRequestError('Query is required');
     }
 
-    const isTemporary = req.body.temporary === true;
-    if (isTemporary && req.body.projectId) {
-      throw new BadRequestError(
-        'Temporary chats cannot be added to a project',
-      );
+    const isTemporary = body.temporary === true;
+    if (isTemporary && body.projectId) {
+      throw new BadRequestError('Temporary chats cannot be added to a project');
     }
 
     let projectLink: ResolvedProjectLink;
@@ -2777,11 +2776,7 @@ export const purgeTemporaryConversation =
       if (!isTemporarySession(existing)) {
         throw new BadRequestError('Not a temporary chat');
       }
-      await deleteConversationArtifacts(
-        appConfig,
-        String(conversationId),
-        req,
-      );
+      await deleteConversationArtifacts(appConfig, String(conversationId), req);
       const result = await unitOfWork.run((tx) =>
         convRepo().hardDeleteTemporary(conversationId as string, actor, tx),
       );

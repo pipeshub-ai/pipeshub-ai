@@ -11,6 +11,7 @@ import {
   TEMPORARY_CHAT_TTL_MS,
 } from '../../../../src/modules/enterprise_search/utils/temporary-chat'
 import { getConversationRepository } from '../../../../src/libs/repositories/conversation'
+import { sweepExpiredTemporaryChats } from '../../../../src/libs/services/ttl-sweeper.service'
 import { buildSessionFilter } from '../../../../src/libs/repositories/conversation/mongo'
 import { FakeAIBackend } from './chat-test-harness'
 import { flows, startStream } from './streaming-flows'
@@ -300,14 +301,17 @@ describe('es_controller temporary chat', () => {
     expect(due.map((r) => r.id)).to.deep.equal([String(expired._id)])
     expect(due[0]?.userId).to.equal(String(OWNER))
 
-    const deleted = await repo.hardDeleteTemporary(String(expired._id), {
-      orgId: String(ORG),
-      userId: String(OWNER),
-    })
-    expect(deleted?.session._id).to.equal(String(expired._id))
+    sinon.stub(repo, 'isConnected').returns(true)
+    expect(await sweepExpiredTemporaryChats(new Date())).to.equal(1)
     expect(store.session(expired._id)).to.equal(undefined)
     expect(store.session(live._id)?.title).to.equal('live')
     expect(store.session(normal._id)?.title).to.equal('normal')
+  })
+
+  it('sweepExpiredTemporaryChats no-ops when the conversation store is disconnected', async () => {
+    const repo = getConversationRepository()
+    sinon.stub(repo, 'isConnected').returns(false)
+    expect(await sweepExpiredTemporaryChats(new Date())).to.equal(0)
   })
 
   it('streamChat with temporary: true flags the session and does not use the query as the title', async () => {

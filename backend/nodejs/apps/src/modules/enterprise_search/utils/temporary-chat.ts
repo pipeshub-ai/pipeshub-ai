@@ -11,9 +11,7 @@ export function isTemporarySession(session: {
   return session.isTemporary === true;
 }
 
-export function assertNotTemporary(session: {
-  isTemporary?: boolean;
-}): void {
+export function assertNotTemporary(session: { isTemporary?: boolean }): void {
   if (isTemporarySession(session)) {
     throw new BadRequestError(TEMPORARY_CHAT_ACTION_ERROR);
   }

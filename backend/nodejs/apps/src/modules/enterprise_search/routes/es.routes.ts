@@ -404,6 +404,7 @@ export function createConversationalRouter(container: Container): Router {
    */
   router.delete(
     '/:conversationId/temporary',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- used as a method reference by every route in this file
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),

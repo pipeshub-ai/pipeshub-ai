@@ -14,6 +14,26 @@ const DELEGATION_EVENTS_KEEP_MS = 400 * 24 * HOUR_MS;
 // a row stays an hour past its expiry so that a caller can still say "expired" rather than "unknown"
 const expiredAnHourAgo = (now: Date): Date => new Date(now.getTime() - HOUR_MS);
 
+export async function sweepExpiredTemporaryChats(now: Date): Promise<number> {
+  const repo = getConversationRepository();
+  if (!repo.isConnected()) return 0;
+  const expired = await repo.listExpiredTemporary(now, 200);
+  let n = 0;
+  for (const row of expired) {
+    if (!row.userId) continue;
+    const deleted = await forOrg(
+      row.orgId,
+      'ttl-sweeper',
+      repo.hardDeleteTemporary.bind(repo, row.id, {
+        orgId: row.orgId,
+        userId: row.userId,
+      }),
+    );
+    if (deleted) n += 1;
+  }
+  return n;
+}
+
 interface Target {
   name: string;
   /** Deletes up to `$2` rows past the cutoff `$1`; the count of rows deleted is the row count. */
@@ -124,23 +144,11 @@ export class TtlSweeper {
           return total;
         });
       }
-      await this.guarded('temporary_chats_store', removed, async () => {
-        const repo = getConversationRepository();
-        if (!repo.isConnected()) return 0;
-        const expired = await repo.listExpiredTemporary(now, 200);
-        let n = 0;
-        for (const row of expired) {
-          if (!row.userId) continue;
-          const deleted = await forOrg(row.orgId, 'ttl-sweeper', () =>
-            repo.hardDeleteTemporary(row.id, {
-              orgId: row.orgId,
-              userId: row.userId,
-            }),
-          );
-          if (deleted) n += 1;
-        }
-        return n;
-      });
+      await this.guarded(
+        'temporary_chats_store',
+        removed,
+        sweepExpiredTemporaryChats.bind(null, now),
+      );
       const total = Object.values(removed).reduce((a, b) => a + b, 0);
       if (total > 0) this.logger.info('TTL sweep removed rows', removed);
     } finally {
