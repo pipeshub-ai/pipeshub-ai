@@ -4474,6 +4474,16 @@
       "scopeCount_other": "{{count}} ámbitos",
       "scopeCount_many": "{{count}} de ámbitos"
     },
+    "agentSignIns": {
+      "title": "Inicios de sesión de agentes",
+      "subtitle": "Agentes que aprobó para actuar en su nombre. Revoque uno para que deje de obtener acceso nuevo.",
+      "columnApproved": "Aprobado",
+      "revoke": "Revocar",
+      "revokeAria": "Revocar el inicio de sesión de agente {{id}}",
+      "revokedTitle": "Inicio de sesión de agente revocado",
+      "errorTitle": "No se pudo revocar el inicio de sesión de agente",
+      "loadError": "No se pudieron cargar los inicios de sesión de agentes"
+    },
     "common": {
       "loadingUsers": "Cargando usuarios...",
       "noUsersAvailable": "No hay usuarios disponibles",
@@ -5447,6 +5457,8 @@
     "signedInAs": "Sesión iniciada como {{display}}",
     "requestHeading": "Esta aplicación solicita acceso a:",
     "unreviewedApp": "Esta aplicación se ha registrado por sí misma. Ningún administrador la ha revisado.",
+    "clientIdHost": "Identificada por {{host}}",
+    "redirectTo": "Te devuelve a {{uri}}",
     "notGrantedHeading": "Esta aplicación también solicitó estos permisos. La configuración de la aplicación no los permite, por lo que no los obtendrá:",
     "notGrantedOwnerHint": "La persona que creó esta aplicación puede añadirlos en Configuración del espacio de trabajo → Configuración de desarrollador → Apps de OAuth 2.0.",
     "notGrantedOfflineAccess": "La aplicación no mantendrá la sesión iniciada. Tendrás que volver a iniciar sesión cuando la sesión termine.",
@@ -5763,6 +5775,19 @@
     "description": "Elija qué indexar para \"{{name}}\".",
     "thisItemOnly": "Solo este elemento",
     "withChildren": "Este elemento y todo su contenido"
+  },
+  "agentClaim": {
+    "title": "Conectar un agente",
+    "intro": "Un agente dice que trabaja para ti. Apruébalo solo si se lo pediste y el código coincide con el que te mostró.",
+    "scopesHeading": "Este agente podrá:",
+    "codeLabel": "Introduce el código de 6 dígitos que mostró el agente",
+    "approve": "Aprobar",
+    "loading": "Comprobando la solicitud…",
+    "missingLink": "Este enlace no incluye el token de reclamación. Pide uno nuevo al agente.",
+    "doneTitle": "Agente conectado",
+    "doneLine": "El agente ya puede continuar. Puedes cerrar esta ventana.",
+    "deniedTitle": "Solicitud denegada",
+    "deniedLine": "No se concedió acceso al agente."
   },
   "oauthDevice": {
     "title": "Conectar un dispositivo",

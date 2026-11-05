@@ -7,16 +7,13 @@ import hashlib
 import json
 import random
 import re
+import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
 from app.modules.parsers.markdown import linear_image_search as lis
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
 
 # The Markdown image pattern is checked against a frozen record of what the
 # original exponential regex returned (see ``_oracle``); it is no longer
@@ -165,35 +162,18 @@ def test_one_scan_is_shared_by_searches_over_the_same_text() -> None:
     assert t_large <= max(t_small, 0.004) * 8, (t_small, t_large)
 
 
+# Threads that ran the blocking image extraction. Where it ran is checked, not how long the loop
+# stalled: a stall bound also measures the host's load.
+EXTRACTED_ON: list[int] = []
+
+
 class _SlowMarkdownParser:
     def __init__(self, **_: object) -> None: ...
 
     def extract_and_replace_images(self, text: str) -> tuple[str, list]:
-        time.sleep(0.4)  # stands in for CPU work that holds the GIL
+        EXTRACTED_ON.append(threading.get_ident())
+        time.sleep(0.01)  # stands in for CPU work that holds the GIL
         return text, []
-
-
-async def _worst_loop_gap(coro_factory: Callable[[], Awaitable[None]]) -> float:
-    import asyncio
-
-    worst = 0.0
-    stop = False
-
-    async def heartbeat() -> None:
-        nonlocal worst
-        last = time.monotonic()
-        while not stop:
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            worst = max(worst, now - last)
-            last = now
-
-    task = asyncio.create_task(heartbeat())  # test-local task, awaited below
-    await asyncio.sleep(0.05)
-    await coro_factory()
-    stop = True
-    await task
-    return worst
 
 
 async def test_large_markdown_image_extraction_does_not_block_the_event_loop(monkeypatch) -> None:
@@ -206,8 +186,10 @@ async def test_large_markdown_image_extraction_does_not_block_the_event_loop(mon
     parser = object.__new__(blocks_parser.BlocksParser)
     parser.logger = logging.getLogger("test")
     parser.config_service = None
-    worst = await _worst_loop_gap(lambda: parser._process_blockgroup_images("x" * (300 * 1024), allow_remote_fetch=True))
-    assert worst < 0.2, worst
+    EXTRACTED_ON.clear()
+    await parser._process_blockgroup_images("x" * (300 * 1024), allow_remote_fetch=True)
+    assert EXTRACTED_ON
+    assert threading.get_ident() not in EXTRACTED_ON
 
 
 class _SlowHtmlParser:
@@ -215,7 +197,8 @@ class _SlowHtmlParser:
         return html
 
     def extract_and_replace_images(self, html: str) -> tuple[str, list]:
-        time.sleep(0.4)
+        EXTRACTED_ON.append(threading.get_ident())
+        time.sleep(0.01)
         return html, []
 
     async def parse_to_blocks(self, *_a: object, **_k: object) -> None:
@@ -241,8 +224,10 @@ async def test_large_html_image_extraction_does_not_block_the_event_loop() -> No
         with pytest.raises(_Stop):
             await parser._process_single_blockgroup_html(group, "r", _SlowHtmlParser(), allow_remote_fetch=True)
 
-    worst = await _worst_loop_gap(run)
-    assert worst < 0.2, worst
+    EXTRACTED_ON.clear()
+    await run()
+    assert EXTRACTED_ON
+    assert threading.get_ident() not in EXTRACTED_ON
 
 
 WS_PIECES = [

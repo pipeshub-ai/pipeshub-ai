@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.models import (
     CollectionConfig,
     DistanceMetric,
@@ -532,7 +533,7 @@ class TestRedisSetPayload:
         svc.client.pipeline = MagicMock(return_value=pipeline)
 
         filt = FilterExpression(
-            must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         await svc.set_payload(
             "records",
@@ -562,7 +563,7 @@ class TestRedisDeletePointsPaged:
         from app.services.vector_db.models import FieldCondition, FilterExpression
 
         filt = FilterExpression(
-            must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         # Simulate: page 1 → 2 keys, page 2 → 2 keys, page 3 → 0 keys (stop)
         responses = [
@@ -1211,7 +1212,7 @@ class TestRedisFailuresAreLoud:
         mock_redis_client.delete = AsyncMock()
 
         filter_expr = FilterExpression(
-            must=[FieldCondition(key="virtualRecordId", value="vr-1")]
+            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="virtualRecordId", value="vr-1")]
         )
         with pytest.raises(RuntimeError, match="aborted after"):
             await service.delete_points("records", filter_expr)
@@ -1258,7 +1259,7 @@ class TestRedisFailuresAreLoud:
         pipeline.execute = AsyncMock(return_value=[Exception("OOM")])
 
         filter_expr = FilterExpression(
-            must=[FieldCondition(key="virtualRecordId", value="vr-1")]
+            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="virtualRecordId", value="vr-1")]
         )
         with pytest.raises(RuntimeError, match="failed HSET"):
             await service.set_payload("records", {"connectorIds": ["c1"]}, filter_expr)
@@ -1319,18 +1320,73 @@ class TestRedisUpdatePayloadByIds:
     async def test_hsets_only_the_keys_that_exist(self, service, mock_redis_client) -> None:
         pipeline = mock_redis_client.pipeline.return_value
         pipeline.execute_command = MagicMock()
-        pipeline.execute = AsyncMock(side_effect=[[1, 0], [1]])
+        # p1 is this org's, p2 is another org's, p3 does not exist
+        pipeline.execute = AsyncMock(side_effect=[[b"o1", b"o2", None], [1]])
 
-        await service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1", "c2"]})
+        await service.update_payload_by_ids("entities", ["p1", "p2", "p3"], {"connectorIds": ["c1", "c2"]}, org_id="o1")
 
         issued = [c.args for c in pipeline.execute_command.call_args_list]
-        assert issued[:2] == [("EXISTS", "entities:p1"), ("EXISTS", "entities:p2")]
-        assert issued[2:] == [("HSET", "entities:p1", "connectorIds", "c1,c2")]
+        assert issued[:3] == [("HGET", f"entities:p{i}", "metadata_orgId") for i in (1, 2, 3)]
+        assert issued[3:] == [("HSET", "entities:p1", "connectorIds", "c1,c2")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org", [None, "", "  "])
+    async def test_a_missing_org_raises(self, service, mock_redis_client, org) -> None:
+        with pytest.raises(OrgRequired):
+            await service.update_payload_by_ids("entities", ["p1"], {"x": 1}, org_id=org)
+        mock_redis_client.pipeline.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_ids_makes_no_call(self, service, mock_redis_client) -> None:
-        await service.update_payload_by_ids("entities", [], {"x": 1})
+        await service.update_payload_by_ids("entities", [], {"x": 1}, org_id="o1")
         mock_redis_client.pipeline.assert_not_called()
+
+
+class TestDeletesAndUpdatesNeedAnOrg:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["delete_points", "set_payload", "overwrite_payload"])
+    async def test_a_filter_without_an_org_raises_before_any_call(self, service, method) -> None:
+        from app.services.vector_db.models import FieldCondition, FilterExpression
+
+        no_org = FilterExpression(must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")])
+        blank = FilterExpression(must=[
+            FieldCondition(key="metadata.orgId", value=" "), FieldCondition(key="metadata.virtualRecordId", value="vr-1"),
+        ])
+        for filt in (no_org, blank):
+            call = (
+                service.delete_points("col", filt) if method == "delete_points"
+                else getattr(service, method)("col", {"x": 1}, filt)
+            )
+            with pytest.raises(OrgRequired):
+                await call
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [
+        {"metadata": {"orgId": "o2"}}, {"metadata.orgId": "o2"}, {"metadata_orgId": "o2"},
+    ])
+    async def test_a_payload_that_names_an_org_is_refused(self, service, payload) -> None:
+        """A merge must not move points to another org, in any spelling of the field."""
+        from app.services.vector_db.errors import OrgMismatch
+        from app.services.vector_db.models import FieldCondition, FilterExpression
+
+        flt = FilterExpression(must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")])
+        with pytest.raises(OrgMismatch):
+            await service.set_payload("col", payload, flt)
+        with pytest.raises(OrgMismatch):
+            await service.update_payload_by_ids("col", ["p1"], payload, org_id="o1")
+        with pytest.raises(OrgMismatch):                      # an overwrite may carry the org only if it is the same one
+            await service.overwrite_payload("col", payload, flt)
+
+    @pytest.mark.asyncio
+    async def test_an_overwrite_that_keeps_the_org_is_allowed(self, service) -> None:
+        from app.services.vector_db.models import FieldCondition, FilterExpression
+
+        service._hset_matching = AsyncMock()
+
+        flt = FilterExpression(must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")])
+        await service.overwrite_payload("col", {"page_content": "t", "metadata": {"orgId": "o1", "virtualRecordId": "vr-1"}}, flt)
+
 
 
 class TestRedisRetrievePoints:
@@ -1424,7 +1480,7 @@ class TestRedisFilterOpsSeeEveryMatch:
     """A query timeout must not make a delete or payload write skip points."""
 
     FILT = FilterExpression(
-        must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+        must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
     )
 
     def _svc(self, n: int = 40):  # noqa: ANN202

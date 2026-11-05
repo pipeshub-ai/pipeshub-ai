@@ -23,6 +23,7 @@ describe('OAuthAppService', () => {
   let mockLogger: any
   let mockEncryptionService: any
   let mockScopeValidatorService: any
+  let mockOAuthTokenService: any
 
   const fakeOrgId = new Types.ObjectId().toString()
   const fakeUserId = new Types.ObjectId().toString()
@@ -43,10 +44,12 @@ describe('OAuthAppService', () => {
       validateRequestedScopes: sinon.stub(),
       getAllowedScopeNamesForRole: sinon.stub().returns(['org:read', 'user:read']),
     }
+    mockOAuthTokenService = { revokeAllTokensForApp: sinon.stub().resolves() }
     service = new OAuthAppService(
       mockLogger,
       mockEncryptionService,
       mockScopeValidatorService,
+      mockOAuthTokenService,
     )
   })
 
@@ -216,6 +219,39 @@ describe('OAuthAppService', () => {
 
       const args = createStub.firstCall.args[0] as any
       expect(args.tokenIdentityUserId).to.equal(undefined)
+    })
+  })
+
+  describe('validateDcrRedirectUris', () => {
+    const rejects = (uri: string) =>
+      expect(() => service.validateDcrRedirectUris([uri])).to.throw(InvalidRedirectUriError)
+
+    it('accepts https, loopback http and app schemes as real clients write them', () => {
+      service.validateDcrRedirectUris([
+        'https://claude.ai/api/mcp/auth_callback',
+        'http://127.0.0.1:33418/callback',
+        'http://localhost/callback',
+        'cursor://anysphere.cursor-retrieval/oauth/user-pipeshub/callback',
+        'vscode://vscode.github-authentication/did-authenticate',
+        'com.example.app:/oauth2redirect',
+      ])
+    })
+
+    it('refuses schemes that would hand the code to something other than the client', () => {
+      for (const uri of [
+        'mailto:client@example.com',
+        'tel:+15550100',
+        'sms:+15550100',
+        'javascript:alert(1)',
+        'data:text/html,hi',
+        'blob:https://example.com/x',
+        'about:blank',
+        'wss://example.com/cb',
+        'ftp://example.com/cb',
+        'http://example.com/cb',
+      ]) {
+        rejects(uri)
+      }
     })
   })
 
@@ -839,6 +875,7 @@ describe('OAuthAppService', () => {
     it('should soft-delete the app', async () => {
       const mockApp = {
         _id: new Types.ObjectId(fakeAppId),
+        clientId: 'cid',
         isDeleted: false,
         status: OAuthAppStatus.ACTIVE,
         save: sinon.stub().resolves(),
@@ -846,10 +883,32 @@ describe('OAuthAppService', () => {
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
       await service.deleteApp(fakeAppId, fakeOrgId, fakeUserId)
+      expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('cid')).to.be.true
       expect(mockApp.isDeleted).to.be.true
       expect(mockApp.deletedBy).to.deep.equal(new Types.ObjectId(fakeUserId))
       expect(mockApp.status).to.equal(OAuthAppStatus.REVOKED)
-      expect(mockApp.save.calledOnce).to.be.true
+      expect(mockApp.save.calledTwice).to.be.true
+    })
+
+    it('should leave the app as it was when its tokens cannot be revoked, so the delete can be retried', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(fakeAppId),
+        clientId: 'cid',
+        isDeleted: false,
+        status: OAuthAppStatus.ACTIVE,
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
+      mockOAuthTokenService.revokeAllTokensForApp.rejects(new Error('redis down'))
+
+      try {
+        await service.deleteApp(fakeAppId, fakeOrgId, fakeUserId)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect((error as Error).message).to.equal('redis down')
+      }
+      expect(mockApp.isDeleted).to.be.false
+      expect(mockApp.status).to.equal(OAuthAppStatus.ACTIVE)
     })
 
     it('should throw NotFoundError when app not found', async () => {
@@ -923,6 +982,27 @@ describe('OAuthAppService', () => {
 
       await service.suspendApp(fakeAppId, fakeOrgId, fakeUserId)
       expect(mockApp.status).to.equal(OAuthAppStatus.SUSPENDED)
+      // Suspending stops the tokens it already issued, not only new sign-ins.
+      expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('cid')).to.be.true
+    })
+
+    it('should put the status back when its tokens cannot be revoked, so the suspend can be retried', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(fakeAppId),
+        clientId: 'cid',
+        status: OAuthAppStatus.ACTIVE,
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
+      mockOAuthTokenService.revokeAllTokensForApp.rejects(new Error('redis down'))
+
+      try {
+        await service.suspendApp(fakeAppId, fakeOrgId, fakeUserId)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect((error as Error).message).to.equal('redis down')
+      }
+      expect(mockApp.status).to.equal(OAuthAppStatus.ACTIVE)
     })
 
     it('should throw BadRequestError when already suspended', async () => {
@@ -1038,6 +1118,27 @@ describe('OAuthAppService', () => {
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(InvalidRedirectUriError)
+      }
+    })
+  })
+
+  describe('validateRedirectUriForApp loopback ports (RFC 8252)', () => {
+    const app = { redirectUris: ['http://localhost/callback', 'http://127.0.0.1:8080/cb', 'https://example.com/cb'] } as any
+
+    it('accepts any port for a loopback URI registered without one', () => {
+      expect(() => service.validateRedirectUriForApp(app, 'http://localhost:53682/callback')).to.not.throw()
+    })
+
+    it('keeps exact matching for everything else', () => {
+      for (const uri of [
+        'http://localhost:53682/other',
+        'http://localhost:53682/callback?x=1',
+        'http://127.0.0.1:9090/cb',
+        'https://example.com:8443/cb',
+        'http://evil.example/callback',
+        'https://localhost:53682/callback',
+      ]) {
+        expect(() => service.validateRedirectUriForApp(app, uri), uri).to.throw(InvalidRedirectUriError)
       }
     })
   })

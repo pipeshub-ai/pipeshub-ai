@@ -28,6 +28,11 @@ from app.connectors.core.base.connector.connector_service import (
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
 from app.connectors.core.sync.run_context import reset_run_sync_id, set_run_sync_id
+from app.connectors.core.sync.sync_coordinator import (
+    SyncCoordinator,
+    SyncLease,
+    _now_ms,
+)
 from app.connectors.core.sync.sync_errors import SyncErrorCode, classify_sync_error
 from app.connectors.core.sync.sync_progress import (
     SyncPhase,
@@ -38,9 +43,9 @@ from app.connectors.core.sync.sync_progress import (
     reset_current_sync_progress,
     set_current_sync_progress,
 )
-from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease, _now_ms
 from app.core.org_context import spawn_in_request
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.permissions.structure_generation import note_structure_change
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -711,7 +716,11 @@ async def _unlink_what_full_sync_missed(
         )
     except Exception as e:
         logger.error(f"Could not unlink what the full sync of {connector_id} missed: {e}")
+        await note_structure_change(graph_provider, connector_id, logger)  # part of it may have run
         return False
+    if deleted or not ok:
+        # a structural write made outside the transaction store (it removes hierarchy, group, inherit and grant edges)
+        await note_structure_change(graph_provider, connector_id, logger)
     if ok:
         logger.info(f"Full sync of {connector_id}: removed {deleted} edge(s) of nodes it did not see")
     return bool(ok)

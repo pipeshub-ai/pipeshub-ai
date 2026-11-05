@@ -201,8 +201,11 @@ class RevisionRetentionSweep:
         report.scanned = len(pointers)
         cutoff_ms = self._now_ms() - self.grace_ms
         # Every read and delete below runs bound to its pointer's org; one with none is skipped, never run unscoped.
-        org_of = {p["virtualRecordId"]: org for p in pointers if p.get("virtualRecordId") and (org := p.get("orgId"))}
-        no_org = [p for p in pointers if p.get("virtualRecordId") not in org_of]
+        # A virtual record id can repeat across organisations, so each pointer is told by (org, virtual record id).
+        key_of: list[tuple[str, str] | None] = [
+            (str(org), str(p["virtualRecordId"])) if p.get("virtualRecordId") and (org := p.get("orgId")) else None for p in pointers
+        ]
+        no_org = [p for p, k in zip(pointers, key_of, strict=True) if k is None]
         if no_org:
             report.skipped_no_org = len(no_org)
             record_retention("virtual_record", "skipped_no_org", len(no_org))
@@ -211,14 +214,14 @@ class RevisionRetentionSweep:
                 len(no_org), [p.get("virtualRecordId") for p in no_org],
             )
         by_org: dict[str, list[str]] = {}
-        for vrid, org in org_of.items():
-            by_org.setdefault(str(org), []).append(str(vrid))
-        trashed: set[str] = set()
+        for key in dict.fromkeys(k for k in key_of if k is not None):
+            by_org.setdefault(key[0], []).append(key[1])
+        trashed: set[tuple[str, str]] = set()
         for org_id, org_vrids in by_org.items():
             with for_org(org_id, job="revision_retention"):
-                trashed |= set(await self.graph_provider.get_virtual_record_ids_in_use(
+                trashed |= {(org_id, v) for v in await self.graph_provider.get_virtual_record_ids_in_use(
                     org_vrids, visibility=RecordVisibility.DELETED
-                ))
+                )}
         report.skipped_trashed = len(trashed)
         record_retention("virtual_record", "skipped_trashed", len(trashed))
 
@@ -228,24 +231,29 @@ class RevisionRetentionSweep:
             report.interrupted = True
             return False
 
-        unheld: dict[str, list[str]] = {}
+        unheld: dict[tuple[str, str], list[str]] = {}
         for org_id, org_vrids in by_org.items():
             with for_org(org_id, job="revision_retention"):
-                unheld |= await self._unheld_stage_revisions([v for v in org_vrids if v not in trashed], cutoff_ms, report)
+                found = await self._unheld_stage_revisions([v for v in org_vrids if (org_id, v) not in trashed], cutoff_ms, report)
+                unheld |= {(org_id, v): revs for v, revs in found.items()}
         gate = asyncio.Semaphore(self.concurrency)
         # Per pointer: whether it was tried. A failure counts (the next walk
         # retries it), even one of the run that ended the page: resuming at it
         # could hold the walk on a few vrids that keep failing.
-        finished = [
-            p.get("virtualRecordId") not in org_of or p["virtualRecordId"] in trashed for p in pointers
-        ]
+        finished = [k is None or k in trashed for k in key_of]
         failing_run: list[int] = []
         tried = 0
 
-        def stop_starting() -> bool:
+        started: set[str] = set()
+
+        def stop_starting(vrid: str) -> bool:
             # The deadline never stops the first vrid of a page: when the page's own
             # graph reads used up the budget, the walk would otherwise re-read the
-            # same page every tick and never move.
+            # same page every tick and never move. Nor does it stop in the middle of
+            # the organisations that share a vrid: the cursor is a vrid, so a walk cut
+            # inside the group could only resume before it and would start it again.
+            if vrid in started:
+                return False
             if len(failing_run) >= self.max_consecutive_failures or (
                 deadline is not None and tried > 0 and time.monotonic() >= deadline
             ):
@@ -255,14 +263,21 @@ class RevisionRetentionSweep:
         async def one(index: int, pointer: dict[str, Any]) -> None:
             nonlocal tried
             vrid = str(pointer["virtualRecordId"])
+            key = key_of[index]
+            if key is None:      # a pointer without an organisation starts out finished
+                return
             async with gate:
-                if not leader() or stop_starting():
+                if not leader() or stop_starting(vrid):
                     return
                 tried += 1
+                # An organisation that joins a group already started is finished whatever the deadline says: the cursor moves past
+                # the whole group, so what is left of it here would wait for the next lap.
+                joined = vrid in started
+                started.add(vrid)
                 try:
-                    with for_org(str(org_of[vrid]), job="revision_retention"):
+                    with for_org(key[0], job="revision_retention"):
                         ok = await self._retire_virtual_record(
-                            pointer, unheld.get(vrid, []), cutoff_ms, report, leader, deadline
+                            pointer, unheld.get(key, []), cutoff_ms, report, leader, None if joined else deadline
                         )
                 except Exception as exc:
                     ok = False
