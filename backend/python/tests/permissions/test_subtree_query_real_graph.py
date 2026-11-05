@@ -1,3 +1,4 @@
+# ruff: noqa: F811
 """The real subtree query on Neo4j and ArangoDB. Needs the stores of the graph-permissions harness (`KH_PERM_*`).
 
 * a child that a link edge (SIBLING, OTHERS, BLOCKS, ...) from its parent met before or after its hierarchy edge is in the subtree, and a record
@@ -72,7 +73,7 @@ async def test_the_subtree_follows_hierarchy_edges_whatever_edge_met_the_child_f
     assert sorted(got) == want, (order, "missing", sorted(set(want) - set(got)), "extra", sorted(set(got) - set(want)))
 
 
-def reference(edges, starts):
+def reference(edges, starts) -> set[str]:
     out, seen, todo = set(starts), set(starts), [(s, 0) for s in starts]
     while todo:
         cur, depth = todo.pop(0)
