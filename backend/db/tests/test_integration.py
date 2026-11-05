@@ -491,23 +491,34 @@ def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrade
     assert epochs(cluster, name) == HEADS
 
 
-def test_the_jobs_role_has_nothing_on_the_identity_tables_and_the_revision_round_trips(db):
+def test_the_jobs_role_keeps_only_what_the_organisation_gauges_read_and_the_revision_round_trips(db):
     cluster, name = db
     url = cluster.url(name, MIGRATE)
     assert run_migrate(url).returncode == 0
-    grants = "SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'"
     policies = "SELECT count(*) FROM pg_policies WHERE schemaname = 'identity' AND policyname = 'jobs_all'"
     with connect(cluster, name) as c:
-        assert c.execute(grants).fetchone()[0] == 0 and c.execute(policies).fetchone()[0] == 0
-        assert not c.execute("SELECT has_schema_privilege('pipeshub_jobs', 'identity', 'USAGE')").fetchone()[0]
+        for org in ("a" * 24, "b" * 24):
+            c.execute("INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, created_at, updated_at) VALUES (%s, 'x.test', 'a@x.test', 'business', now(), now())", (org,))
+            c.execute("INSERT INTO identity.users (org_id, id, slug, email, created_at, updated_at) VALUES (%s, %s, 'user-1', 'a@x.test', now(), now())", (org, "a" * 24))
+            c.execute("INSERT INTO identity.org_auth_config (org_id, id, auth_steps, created_at, updated_at) VALUES (%s, %s, '[1]', now(), now())", (org, "a" * 24))
+        assert c.execute(policies).fetchone()[0] == 3
         c.execute("SET ROLE pipeshub_jobs")
-        for sql in ("SELECT 1 FROM identity.user_credentials", "UPDATE identity.user_credentials SET wrong_count = 0"):
+        for sql in ("SELECT u.org_id, count(*) FROM identity.users u WHERE NOT u.is_deleted GROUP BY u.org_id",
+                    "SELECT o.org_id, o.account_type, o.domain FROM identity.orgs o WHERE NOT o.is_deleted",
+                    "SELECT c.org_id, c.auth_steps FROM identity.org_auth_config c WHERE NOT c.is_deleted"):
+            assert len(c.execute(sql).fetchall()) == 2
+        for sql in ("SELECT 1 FROM identity.user_credentials", "UPDATE identity.user_credentials SET wrong_count = 0",
+                    "SELECT 1 FROM identity.user_groups", "UPDATE identity.users SET is_deleted = true",
+                    "INSERT INTO identity.users (org_id, id, slug, email, created_at, updated_at) VALUES ('" + "a" * 24 + "', '" + "b" * 24 + "', 'user-2', 'b@x.test', now(), now())"):
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 c.execute(sql)
+        c.execute("RESET ROLE")
+        c.execute("DELETE FROM identity.org_auth_config; DELETE FROM identity.users; DELETE FROM identity.orgs")
     r = run_migrate(url, "downgrade", "identity_0003", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
-        assert c.execute(grants).fetchone()[0] == 11 * 4 and c.execute(policies).fetchone()[0] == 11
+        assert c.execute("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'").fetchone()[0] == 11 * 4
+        assert c.execute(policies).fetchone()[0] == 11
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout

@@ -1,4 +1,4 @@
-"""identity: the jobs role keeps only what upkeep uses (nothing on these tables)"""
+"""identity: the jobs role keeps only what the organisation gauges read"""
 from alembic import op
 from db.lib.run_sql import run_sql
 
@@ -6,7 +6,7 @@ revision = "identity_0004"
 down_revision = "identity_0003"
 branch_labels = None
 depends_on = None
-older_code_compatible = "only the jobs role loses privileges on tables upkeep never reads, and no service uses that role here"
+older_code_compatible = "only the jobs role loses privileges it never used, and the organisation gauges still read what they need"
 
 TABLES = ("identity.orgs, identity.users, identity.user_groups, identity.user_group_members, identity.org_auth_config, identity.user_activities, "
           "identity.used_reset_links, identity.org_logos, identity.user_pictures, identity.slug_counters, identity.user_credentials")
