@@ -9,6 +9,7 @@ switch off, or when the reranker fails, a search is exactly what it was.
 
 from __future__ import annotations
 
+import os
 import random
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -70,11 +71,10 @@ class _Scripted(RecordReranker):
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    for name in (
-        "HIGH_ACCURACY_MODE", "RECORD_RERANK", "RECORD_RERANK_STRATEGY", "RELEVANCE_ORDERED_CONTEXT",
-        "SEARCH_NARROW_ACCESS_FALLBACK",
-    ):
+    for name in ("HIGH_ACCURACY_MODE", "RELEVANCE_ORDERED_CONTEXT", "SEARCH_NARROW_ACCESS_FALLBACK"):
         monkeypatch.delenv(name, raising=False)
+    for name in [name for name in os.environ if name.startswith("RECORD_RERANK")]:
+        monkeypatch.delenv(name)
     monkeypatch.setenv(FUSION_RECORD_CUT_ENV_VAR, "true")
     register_record_reranker(_STRATEGY)(_Scripted)
     _Scripted.ranking, _Scripted.error, _Scripted.requests = [], None, []

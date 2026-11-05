@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import replace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -50,18 +51,14 @@ from app.modules.retrieval.record_rerank.pipeline import (
 from app.services.vector_db.models import SearchResult
 from app.utils.llm import LLMNotConfiguredError
 
-_ENV = (
-    "RECORD_RERANK", "HIGH_ACCURACY_MODE", "RECORD_RERANK_STRATEGY", "RECORD_RERANK_POOL", "RECORD_RERANK_TOP",
-    "RECORD_RERANK_TIMEOUT_S", "RECORD_RERANK_LOOKUP_TIMEOUT_S", "RECORD_RERANK_KEEP_TOP",
-    "RECORD_RERANK_TEXT_CHARS", "RECORD_RERANK_MODEL",
-)
 _LISTWISE = "app.modules.retrieval.record_rerank.llm_listwise"
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in _ENV:
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+    for name in [name for name in os.environ if name.startswith("RECORD_RERANK")]:
+        monkeypatch.delenv(name)
 
 
 def _point(vrid: str | None, block: int, score: float, *, summary: bool = False, text: str = "") -> SearchResult:
