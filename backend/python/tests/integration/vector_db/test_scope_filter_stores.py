@@ -249,7 +249,8 @@ class TestRedisPreFilterIsExact(TestRedisScopeFilter):
         assert {"container", "union", "union_hidden"} <= got
         for name in ("cap_connector", "cap_group", "cap_path"):
             assert name not in got, name
-        assert dropped.dropped >= 3                                               # the query let them through (no case); the exact rule did not
+        assert dropped.dropped >= 2             # the connector and the group tags match without case: the query let those through and the exact rule did not
+                                                # (the path tag is case-sensitive, so the query never returned cap_path)
 
     async def test_a_search_with_a_small_limit_is_not_emptied_by_capitalised_ids_that_rank_above_the_valid_ones(self, loaded, dropped) -> None:
         """Several capitalised-connector points that match the query best: with limit 1 the answer is a valid point, not nothing (the hybrid
@@ -262,6 +263,8 @@ class TestRedisPreFilterIsExact(TestRedisScopeFilter):
             assert got == {"container"}, limit
 
     async def test_a_stored_capital_is_not_the_excluded_lowercase_id(self, loaded, dropped) -> None:
+        svc, col = loaded
+        assert {"pathIds", "aclScope", "scopeStamp"} <= await svc._case_sensitive_fields(svc._index_name(col))        # created that way: the query carries the exclusion
         await self._put(loaded, "cap_path", scopeStamp="union", pathIds=["s1", "X1"], aclScope=[], recordGroupIds=["g9"])
         got = await self._search(loaded, f(readable_scopes=frozenset({"s1"}), excluded=frozenset({"x1"})))
         assert "cap_path" in got and "union_hidden" not in got and "union" in got      # X1 is not x1; the real x1 is still excluded
