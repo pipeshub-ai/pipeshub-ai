@@ -151,6 +151,18 @@ describe('OAuthTokenService', () => {
       expect(result.refreshToken).to.be.undefined
     })
 
+    it('stamps the agent registration on the access token only when asked', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      const org = new Types.ObjectId().toString()
+      const withReg = await service.generateTokens(
+        mockApp, null, org, ['org:read'], false, undefined, undefined,
+        { agentRegistrationId: 'reg_' + 'a'.repeat(24) },
+      )
+      expect((jwt.decode(withReg.accessToken) as any).agent_registration_id).to.equal('reg_' + 'a'.repeat(24))
+      const without = await service.generateTokens(mockApp, null, org, ['org:read'], false)
+      expect(jwt.decode(without.accessToken)).to.not.have.property('agent_registration_id')
+    })
+
     it('should generate access and refresh tokens when offline_access scope present', async () => {
       sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
       sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)

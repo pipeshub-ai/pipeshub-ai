@@ -2128,6 +2128,16 @@
       },
       "scopeCount_other": "{{count}} 个权限范围"
     },
+    "agentSignIns": {
+      "title": "代理登录",
+      "subtitle": "您已批准代表您操作的代理。撤销后，该代理将无法获得新的访问权限。",
+      "columnApproved": "批准时间",
+      "revoke": "撤销",
+      "revokeAria": "撤销代理登录 {{id}}",
+      "revokedTitle": "代理登录已撤销",
+      "errorTitle": "无法撤销代理登录",
+      "loadError": "无法加载代理登录"
+    },
     "aiModels": {
       "title": "AI 模型",
       "subtitle": "配置和管理来自不同提供商的 AI 模型",
@@ -5511,6 +5521,19 @@
     "skipAll": "全部跳过",
     "expired": "此问题已过期。请在聊天中回复以继续。",
     "repliedInChat": "你已在聊天中回复。"
+  },
+  "agentClaim": {
+    "title": "连接智能体",
+    "intro": "一个智能体声称其为您工作。仅当是您让它这样做，且代码与它向您展示的一致时，才批准。",
+    "scopesHeading": "此智能体将可以：",
+    "codeLabel": "输入智能体显示的 6 位代码",
+    "approve": "批准",
+    "loading": "正在检查此请求…",
+    "missingLink": "此链接缺少认领令牌。请向智能体重新获取。",
+    "doneTitle": "智能体已连接",
+    "doneLine": "智能体现在可以继续。可以关闭此窗口。",
+    "deniedTitle": "请求已拒绝",
+    "deniedLine": "智能体未获得访问权限。"
   },
   "oauthDevice": {
     "title": "连接设备",

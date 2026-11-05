@@ -16,6 +16,7 @@ import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '../../components/sett
 import { PatApi } from './api';
 import type { PatListItem } from './types';
 import { CreatePatPanel } from './components/create-pat-panel';
+import { AgentSignIns } from './components/agent-sign-ins';
 
 function formatDate(value: string, locale?: string): string {
   const date = new Date(value);
@@ -339,6 +340,8 @@ function PersonalAccessTokensPageContent() {
           </Flex>
         )}
       </Flex>
+
+      <AgentSignIns />
 
       <CreatePatPanel
         open={createPanelOpen}

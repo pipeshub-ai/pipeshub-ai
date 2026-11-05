@@ -351,3 +351,21 @@ async def test_an_unavailable_scope_generation_writes_nothing_and_leaves_no_chec
     finally:
         set_resolved_generation(None)
     assert not any(keys_of(vdb)) and not loaded.graph.app_docs  # no point written, no DONE (or any) checkpoint
+
+
+async def test_a_checkpoint_that_cannot_be_read_fails_the_run_and_leaves_the_saved_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    vdb, loaded, job, app = await setup(page_size=3)
+    first = await job.run_connector(ORG, app, max_pages=1)
+    assert first.state != DONE and first.after
+    saved = dict(loaded.graph.app_docs[app])
+    real = loaded.graph.get_document
+
+    async def flaky(key, collection, *args, raise_on_error=False, **kwargs) -> None:  # what the providers do on a failed read
+        if raise_on_error:
+            raise RuntimeError("graph timeout")
+
+    monkeypatch.setattr(loaded.graph, "get_document", flaky)
+    with pytest.raises(RuntimeError):
+        await job.run_connector(ORG, app)
+    monkeypatch.setattr(loaded.graph, "get_document", real)
+    assert loaded.graph.app_docs[app] == saved  # the saved cursor was not overwritten by a fresh start

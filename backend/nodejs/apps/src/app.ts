@@ -113,6 +113,7 @@ import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
+import { createAgentRegistrationRouter } from './modules/oauth_provider/routes/agent-registration.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
 import { createServiceTokenRouter } from './modules/oauth_provider/routes/service-token.routes';
@@ -845,6 +846,12 @@ export class Application {
     this.app.use(
       '/api/v1/oauth2',
       createOAuthProviderRouter(this.oauthProviderContainer),
+    );
+
+    // auth.md agent registration (service_auth)
+    this.app.use(
+      '/api/v1/agent',
+      createAgentRegistrationRouter(this.oauthProviderContainer),
     );
 
     // OAuth Clients routes (OAuth app management)

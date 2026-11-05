@@ -525,6 +525,19 @@ async def test_a_lookup_cut_short_with_no_readable_entity_reads_as_no_such_entit
     graph.get_records_for_named_entities.assert_not_called()
 
 
+async def test_an_accepted_name_reads_the_same_whether_or_not_its_access_checks_were_cut_short(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only candidates not yet found readable keep a check running, so a "cut short"
+    # caveat would say an unreadable entity by this name exists.
+    replies = []
+    for timed_out in (False, True):
+        _linker(monkeypatch, "matched", accepted=[_candidate("e-2", "Pinecrest")], timed_out=timed_out)
+        replies.append(await values.execute_find_records_by_value(_state(_graph(_rows(1))), name="Pinecrest", amount_min=1))
+    assert replies[0] == replies[1]
+    assert "cut short" not in replies[1][1]
+
+
 async def test_a_name_and_entity_ids_are_a_union(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
     _linker(monkeypatch, "matched", accepted=[_candidate("e-2", "Pinecrest")])
     graph = _graph(_rows(1))

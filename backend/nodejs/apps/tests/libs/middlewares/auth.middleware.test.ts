@@ -587,6 +587,18 @@ describe('AuthMiddleware', () => {
         expect(error).to.be.undefined
       })
 
+      it('is accepted on the role lookup a Python service makes for it', async () => {
+        const error = await run(
+          createMockRequest({
+            method: 'GET',
+            headers: { authorization: 'Bearer oauth-token' },
+            baseUrl: '/api/v1/users',
+            path: '/me/role',
+          }),
+        )
+        expect(error).to.be.undefined
+      })
+
       it('is accepted on an API call relayed by an /mcp tool call', async () => {
         tokenService.isMcpRelay.returns(true)
         const error = await run(
