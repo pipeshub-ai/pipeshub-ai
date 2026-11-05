@@ -15,10 +15,11 @@ from app.services.graph_db.postgres.kg import project as project_mod
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import NeedLocks
 from app.services.graph_db.postgres.kg.stamp import StampStats, stamp, stamp_app
+from app.services.graph_db.postgres.kg.writers import KgWriter
 
 from .kg_fresh import fresh_with_stamps
 from .pg_support import new_org
-from .test_kg_derivation import ctx, prov
+from .test_kg_derivation import ctx, edge, prov
 from .test_kg_projection import add_edge, delete_edge, delete_node, update_node
 from .test_kg_projection_races import OPS, world2
 
@@ -196,3 +197,128 @@ async def test_the_affected_set_also_follows_the_rows_kg_held_because_a_removed_
         return (await affected(tx, org, {("records", "fold")}, {}))[0]
     with ctx(org):
         assert ("records", "f1") in await pg_db.run(reach)
+
+
+async def by_key(p, org: str) -> dict:
+    """(collection, id) -> (class clauses as ids or None, own_grant, legacy_reason, leaf) of every row, so two nodes of one id stay two."""
+    async def go(tx) -> dict:
+        ids = {r["sk"]: r["id"] for r in await tx.fetch("SELECT sk, id FROM kg.node_keys WHERE org_id = $1", org)}
+        out = {}
+        for r in await tx.fetch("""SELECT k.coll, k.id, r.sk, r.own_grant, r.legacy_reason, r.leaf, r.class_id, c.clauses FROM kg.records r JOIN kg.node_keys k ON k.org_id = r.org_id AND k.sk = r.sk
+                LEFT JOIN kg.scope_classes c ON c.org_id = r.org_id AND c.id = r.class_id WHERE r.org_id = $1""", org):
+            clauses = None if r["clauses"] is None else sorted(sorted("@self" if x == "@self" else ids[x] for x in c) for c in json.loads(r["clauses"]))
+            out[(r["coll"], r["id"])] = (clauses, r["own_grant"], r["legacy_reason"], r["leaf"])
+        return out
+    with ctx(org):
+        return await p._q(go, None)
+
+
+async def twins(p, org: str, gid: str, *, group_first: bool) -> None:
+    """A record X without a grant and a record group of id ``gid`` with one, in one connector (``gid`` = "X": the same id)."""
+    async def nodes() -> None:
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_upsert_nodes([{"_key": "X", "recordName": "private", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+    async def group() -> None:
+        await p.batch_upsert_nodes([{"_key": gid, "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+    with ctx(org):
+        if group_first:
+            await group()
+        await nodes()
+        if not group_first:
+            await group()
+        await p.batch_create_edges([edge("u1", "users", gid, "recordGroups", type="USER", role="READER")], "permission")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        await p.batch_create_edges([edge("X", "records", "app1", "apps"), edge(gid, "recordGroups", "app1", "apps")], "belongsTo")
+
+
+@pytest.mark.parametrize("group_first", [True, False])
+async def test_a_record_and_a_record_group_of_one_id_are_two_nodes_with_their_own_stamps(pg_db, group_first: bool) -> None:
+    from app.services.graph_db.postgres.kg.model import COLL_CODE
+    p, a, b = prov(pg_db), new_org(), new_org()
+    await twins(p, a, "X", group_first=group_first)         # the record and the group are both "X"
+    await twins(p, b, "Xg", group_first=group_first)        # the same world with the group renamed
+    await drain_org(pg_db, a)
+    await drain_org(pg_db, b)
+    rec, grp = COLL_CODE["records"], COLL_CODE["recordGroups"]
+    ha, hb = await by_key(p, a), await by_key(p, b)
+    assert ha[(rec, "X")] == hb[(rec, "X")] and ha[(grp, "X")][1:] == hb[(grp, "Xg")][1:]
+    assert ha[(rec, "X")][1] is False and ha[(grp, "X")][1] is True        # only the group is granted on
+    assert await dry_diffs(p, a, "app1") == [] and await dry_diffs(p, b, "app1") == []
+
+
+async def test_the_verify_flags_a_stamp_that_took_the_facts_of_a_node_of_the_same_id(pg_db) -> None:
+    from app.services.graph_db.postgres.kg.model import COLL_CODE
+    p, org = prov(pg_db), new_org()
+    await twins(p, org, "X", group_first=True)
+    await drain_org(pg_db, org)
+    assert await dry_diffs(p, org, "app1") == []
+    async def swap(tx) -> None:       # the record takes the group's flags and class, what a reader keyed by id alone would have written
+        r = await tx.fetchrow("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = $2 AND id = 'X'", org, COLL_CODE["records"])
+        g = await tx.fetchrow("SELECT r.* FROM kg.records r JOIN kg.node_keys k ON k.org_id = r.org_id AND k.sk = r.sk WHERE r.org_id = $1 AND k.coll = $2 AND k.id = 'X'", org, COLL_CODE["recordGroups"])
+        await KgWriter(tx).stamps_set([{"sk": r["sk"], "coll": COLL_CODE["records"], "id": "X", "kind": 3, "path": g["path"], "class_id": g["class_id"], "self_lit": g["self_lit"], "seed": g["seed"],
+                                        "own_grant": g["own_grant"], "under_deleted": g["under_deleted"], "legacy_reason": g["legacy_reason"], "leaf": g["leaf"]}])
+    with ctx(org):
+        await pg_db.run(swap, write=True)
+    assert any(d.startswith("s|X") for d in await dry_diffs(p, org, "app1"))
+
+
+async def test_a_page_boundary_between_two_nodes_of_one_id_skips_neither(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await twins(p, org, "X", group_first=False)
+    await drain_org(pg_db, org)
+    async def pages(tx) -> set:
+        st, after = StampStats(), None
+        while True:
+            after = await stamp_app(tx, org, "app1", after, 1, st, dry=True)       # one node a page
+            if after is None:
+                return st.keys
+    with ctx(org):
+        assert await pg_db.run(pages) == {("records", "X"), ("recordGroups", "X")}
+
+
+async def test_a_record_counts_as_a_member_of_its_app_only_through_a_membership_of_its_own_app(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "kb1", "name": "Docs", "type": "KB", "orgId": org, "createdBy": "me", "createdAtTimestamp": 1, "updatedAtTimestamp": 2},
+                                    {"_key": "app2", "name": "Other", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, "connectorId": "kb1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for k in ("own", "other")], "records")
+        await p.batch_create_edges([edge("own", "records", "kb1", "apps"), edge("other", "records", "app2", "apps")], "belongsTo")      # "other" belongs to another app, not to its own
+    await drain_org(pg_db, org)
+    got = await held_stamps(p, org)
+    assert got["own"][1] is not None and got["own"][1][2] == [[]]            # R12: open to the members of its own app
+    assert got["other"][1] is None or got["other"][1][2] != [[]]
+    assert await dry_diffs(p, org, "kb1") == []
+
+
+async def test_a_record_deleted_from_the_graph_asks_for_the_lock_of_its_former_connector(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    await delete_node(p, org, "records", "f1")           # a leaf of app1 whose row kg still holds
+
+    async def asks(tx) -> set:
+        try:
+            await stamp(tx, org, {("records", "f1")}, locked=set())
+        except NeedLocks as e:
+            return e.apps
+        return set()
+    with ctx(org):
+        assert await pg_db.run(asks, write=True) == {"app1"}
+
+
+async def test_a_parent_whose_id_kg_cannot_name_never_widens_the_class_of_its_child(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    long_id = "P" * 300                                  # over 256 characters: kg holds no key for it
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_upsert_nodes([{"_key": long_id, "recordName": "long", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", "accessRule": "RESTRICTED"},
+                                    {"_key": "c", "recordName": "child", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+        await p.batch_create_edges([edge(long_id, "records", "c", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        await p.batch_create_edges([edge("u1", "users", long_id, "records", type="USER", role="READER")], "permission")
+        await p.batch_create_edges([edge("c", "records", "app1", "apps")], "belongsTo")
+    await drain_org(pg_db, org)
+    got = (await held_stamps(p, org))["c"]
+    print("L3", got)
+    assert got[1] is None or got[1][2] == []              # no class wider than "nobody"; a record without one is read by the walk

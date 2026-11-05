@@ -57,7 +57,17 @@ class StampStats:
 
 
 def _ids(keys: set[Key]) -> list[str]:
+    """The ids of ``keys`` for a query that filters on ``id``: the rows it returns are checked against the (collection, id) pairs, so equal ids of two collections never mix."""
     return sorted({k[1] for k in keys})
+
+
+def _nks(keys: set[Key]) -> list[str]:
+    return sorted(stampgraph.nk(c, i) for c, i in keys)
+
+
+def aid(connector_nk: str) -> str:
+    """The app id of a node's ``connector_id`` (a compiler id), or "" for none."""
+    return stampgraph.split(connector_nk)[1]
 
 
 async def _keys_of(tx: Tx, org: str, sks: set[int]) -> set[Key]:
@@ -88,18 +98,18 @@ async def _kg_neighbours(tx: Tx, org: str, keys: set[Key], *, down: bool) -> set
 
 async def _graph_down(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
     ids = _ids(keys)
-    kids = await tx.fetch("""/* pipeshub:kg.stamp_g_kids */ SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id = ANY($2::text[])
+    kids = await tx.fetch("""/* pipeshub:kg.stamp_g_kids */ SELECT e.to_coll, e.to_id, e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id = ANY($2::text[])
         AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.to_coll = ANY($4::text[])""", org, ids, list(HIERARCHY), list(RECORD_COLLS))
-    members = await tx.fetch("""/* pipeshub:kg.stamp_g_members */ SELECT e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
+    members = await tx.fetch("""/* pipeshub:kg.stamp_g_members */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
         AND e.to_id = ANY($2::text[]) AND e.from_coll = ANY($3::text[])""", org, ids, list(RECORD_COLLS))
-    return {(r[0], r[1]) for r in [*kids, *members]}
+    return {(r["to_coll"], r["to_id"]) for r in kids if (r["from_coll"], r["from_id"]) in keys} | {(r["from_coll"], r["from_id"]) for r in members if (r["to_coll"], r["to_id"]) in keys}
 
 
 async def _graph_up(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
     ids = _ids(keys)
-    ups = await tx.fetch("""/* pipeshub:kg.stamp_g_ups */ SELECT e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = ANY($2::text[])
+    ups = await tx.fetch("""/* pipeshub:kg.stamp_g_ups */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = ANY($2::text[])
         AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.from_coll = ANY($4::text[])""", org, ids, list(HIERARCHY), list(RECORD_COLLS))
-    return {(r[0], r[1]) for r in ups}
+    return {(r["from_coll"], r["from_id"]) for r in ups if (r["to_coll"], r["to_id"]) in keys}
 
 
 async def app_nodes(tx: Tx, org: str, app_id: str) -> set[Key]:
@@ -204,9 +214,9 @@ async def stamp(tx: Tx, org: str, seeds: set[Key], *, also: set[Key] | None = No
         return st
     w = KgWriter(tx)
     every = recs | {k for k in (also or set()) if k[0] in RECORD_COLLS}
-    seed_nodes = await stampgraph.nodes(tx, org, _ids(every))
-    gone = {k for k in every if k[1] not in seed_nodes}
-    app_ids = {n.connector_id for n in seed_nodes.values() if n.connector_id} | {k[1] for k in every if k[0] == "apps"} | await _former_apps(tx, org, gone)
+    seed_nodes = await stampgraph.nodes(tx, org, _nks(every))
+    gone = {k for k in every if stampgraph.nk(*k) not in seed_nodes}
+    app_ids = {aid(n.connector_id) for n in seed_nodes.values() if n.connector_id} | {k[1] for k in every if k[0] == "apps"} | await _former_apps(tx, org, gone)
     _need(app_ids, locked, org_wide=org_wide)
     app_sks, facts = await _facts(tx, org, w, app_ids)
     a_set, whole = await affected(tx, org, recs, {a: (app_sks[a], f.opens, f.has_group_level) for a, f in facts.items()})
@@ -239,19 +249,19 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
     w = KgWriter(tx)
     app_sks = dict(app_sks or {})
     facts = dict(facts or {})
-    ids = _ids(keys)
+    ids = _nks(keys)
     nodes = await stampgraph.closure(tx, org, ids, known=known)
     if not dry:
-        _need({n.connector_id for n in nodes.values() if n.connector_id}, locked, org_wide=org_wide)
+        _need({aid(n.connector_id) for n in nodes.values() if n.connector_id}, locked, org_wide=org_wide)
     present = sorted(i for i in ids if i in nodes and nodes[i].kind in ("record", "group"))
     st.affected += len(present)
-    st.keys |= {(KIND_COLL[nodes[i].kind], i) for i in present}
+    st.keys |= {stampgraph.split(i) for i in present}
     if not present:
         return st
     by_app: dict[str, list[str]] = {}
     for i in present:
         by_app.setdefault(nodes[i].connector_id, []).append(i)
-    more = {a for a in by_app if a and a not in facts}
+    more = {aid(a) for a in by_app if a and aid(a) not in facts}
     if more:
         extra_sks, extra_facts = await _facts(tx, org, w, more)
         app_sks |= extra_sks
@@ -259,13 +269,13 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
     shallow = classes.check_shallow(nodes) is None
     result: dict[str, classes.Klass | classes.Refusal] = {}
     for a, members in by_app.items():
-        f = facts.get(a)
+        f = facts.get(aid(a))
         comp = classes.Compiler(nodes, a, opens=f.opens, group_level=f.has_group_level, shallow=shallow) if f else None
         for i in members:
             result[i] = comp.compile(i) if comp else classes.Refusal("no_app")
     literals = {x for k in result.values() if isinstance(k, classes.Klass) for c in k.clauses for x in c if x != SELF}
-    sk = await _sks(tx, org, w, {(KIND_COLL[nodes[i].kind], i) for i in {*present, *literals} if i in nodes}, create=not dry)
-    sk_of = {i: sk[(KIND_COLL[nodes[i].kind], i)] for i in {*present, *literals} if i in nodes and (KIND_COLL[nodes[i].kind], i) in sk}
+    sk = await _sks(tx, org, w, {stampgraph.split(i) for i in {*present, *literals} if i in nodes}, create=not dry)
+    sk_of = {i: sk[stampgraph.split(i)] for i in {*present, *literals} if i in nodes and stampgraph.split(i) in sk}
     paths = await _paths(tx, org, [sk_of[i] for i in present if i in sk_of])
     group_of = await _group_sks(tx, org, [sk_of[i] for i in present if i in sk_of])
     cur = await _current(tx, org, [sk_of[i] for i in present if i in sk_of])
@@ -277,7 +287,7 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
         k = result[i]
         if not isinstance(k, classes.Klass):
             continue
-        a_sk = app_sks.get(nodes[i].connector_id)
+        a_sk = app_sks.get(aid(nodes[i].connector_id))
         if i not in sk_of or a_sk is None or any(x != SELF and x not in sk_of for c in k.clauses for x in c):
             result[i] = classes.Refusal("missing_node")           # a literal that kg cannot name yet: fail closed
             continue
@@ -291,7 +301,7 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
     for i in present:
         if i not in sk_of:
             if dry:
-                st.diffs.append(f"s|{i} (no key)")
+                st.diffs.append(f"s|{stampgraph.split(i)[1]} (no key)")
             continue
         n, k = nodes[i], result[i]
         legacy: int | None = None
@@ -305,7 +315,7 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
             self_lit = any(SELF in c for c in k.clauses)
             seed = frozenset({SELF}) in k.clauses
         coll = KIND_COLL[n.kind]
-        rows.append({"sk": sk_of[i], "coll": COLL_CODE[coll], "id": i, "kind": KIND[coll], "path": paths.get(sk_of[i]), "class_id": class_id, "self_lit": self_lit, "seed": seed,
+        rows.append({"sk": sk_of[i], "coll": COLL_CODE[coll], "id": stampgraph.split(i)[1], "kind": KIND[coll], "path": paths.get(sk_of[i]), "class_id": class_id, "self_lit": self_lit, "seed": seed,
                      "own_grant": _own_grant(n), "under_deleted": _under_deleted(i, nodes), "legacy_reason": legacy, "leaf": n.kind == "record" and i not in has_children})
     changed = [r for r in rows if cur.get(r["sk"]) != _stamp_tuple(r)]
     if dry:
@@ -315,8 +325,12 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
     return st
 
 
+def _after(cursor: str | None) -> tuple[str | None, str | None]:
+    return (None, None) if cursor is None else stampgraph.split(cursor)
+
+
 async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int, st: StampStats | None = None, *, dry: bool = False) -> str | None:
-    """One page of the whole-connector restamp (the backfill's last step): the next ``limit`` records and groups after the id ``after``; returns the last id or None when done.
+    """One page of the whole-connector restamp (the backfill's last step): the next ``limit`` records and groups after the cursor ``after`` (ordered by collection and id); returns the new cursor or None when done.
     The first page also stores what the stamps are compiled with."""
     w = KgWriter(tx)
     app_sks, facts = await _facts(tx, org, w, {app_id})
@@ -325,14 +339,14 @@ async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int
     if after is None and not dry:
         await w.app_facts_set(app_sks[app_id], opens=facts[app_id].opens, group_level=facts[app_id].has_group_level)
     rows = await tx.fetch("""/* pipeshub:kg.stamp_app_page */ SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($2::text[]) AND n.doc->>'connectorId' = $3
-        AND ($4::text IS NULL OR n.id > $4) ORDER BY n.id LIMIT $5""", org, ["records", "recordGroups"], app_id, after, limit)
+        AND ($4::text IS NULL OR (n.coll, n.id) > ($4::text, $5::text)) ORDER BY n.coll, n.id LIMIT $6""", org, ["records", "recordGroups"], app_id, *_after(after), limit)
     if not rows:
         return None
     keys = {(r["coll"], r["id"]) for r in rows}
     if not dry:      # a record kg holds no row for is not given one of nothing but stamps: its own projection writes the row
         keys = await held_keys(tx, org, keys)
     await stamp_keys(tx, org, keys, st, app_sks=app_sks, facts=facts, dry=dry)
-    return rows[-1]["id"]
+    return stampgraph.nk(rows[-1]["coll"], rows[-1]["id"])
 
 
 KIND_COLL = {"app": "apps", "group": "recordGroups", "record": "records"}

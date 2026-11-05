@@ -44,48 +44,68 @@ async def app(tx: Tx, org: str, app_id: str) -> StampApp:
     return StampApp(base.connector_type, base.opens, bool(rgl))
 
 
-async def nodes(tx: Tx, org: str, ids: Iterable[str]) -> dict[str, StampNode]:
-    """The records, record groups and apps among ``ids`` (ids that do not exist are absent)."""
-    want = sorted(set(ids))
-    if not want:
+def nk(coll: str, ident: str) -> str:
+    """The compiler's id of a node: its collection and id, so a record and a record group of one id are two nodes. The first ``/`` ends the collection (no collection name holds one)."""
+    return f"{coll}/{ident}"
+
+
+def split(key: str) -> tuple[str, str]:
+    c, _, i = key.partition("/")
+    return c, i
+
+
+def _app_nk(connector: str | None) -> str:
+    return nk("apps", connector) if connector else ""
+
+
+async def nodes(tx: Tx, org: str, keys: Iterable[str]) -> dict[str, StampNode]:
+    """The records, record groups and apps among ``keys`` (``nk`` strings; ones that do not exist are absent). Every fact is read for the node of that collection and id only."""
+    pairs = {split(k) for k in keys if split(k)[0] in KIND}
+    if not pairs:
         return {}
+    want = sorted({i for _, i in pairs})
     docs = await tx.fetch("""/* pipeshub:kg.stamp_nodes */ SELECT n.coll, n.id, n.doc->>'connectorId' AS connector, n.doc->>'accessRule' AS rule,
             n.doc->'isDeleted' AS deleted, n.doc->'isPlaceholder' AS placeholder,
             n.doc->>'permissionModel' AS model, n.doc->>'virtualRecordId' AS vrid
         FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($2::text[]) AND n.id = ANY($3::text[])""", org, _NODE_COLLS, want)
-    found = {r["id"]: r for r in docs}
-    ids_found = sorted(found)
+    found = {nk(r["coll"], r["id"]): r for r in docs if (r["coll"], r["id"]) in pairs}
+    ids_found = sorted({split(k)[1] for k in found})
     parents: dict[str, list[str]] = {}
-    for r in await tx.fetch("""/* pipeshub:kg.stamp_parents */ SELECT e.to_id AS child, e.from_id AS parent FROM graph.edges e
+    for r in await tx.fetch("""/* pipeshub:kg.stamp_parents */ SELECT e.to_coll AS child_coll, e.to_id AS child, e.from_coll AS parent_coll, e.from_id AS parent FROM graph.edges e
             WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[])
-              AND EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = e.org_id AND p.id = e.from_id AND p.coll = ANY($4::text[]))""", org, ids_found, list(HIERARCHY), _NODE_COLLS):
-        parents.setdefault(r["child"], []).append(r["parent"])
+              AND EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = e.org_id AND p.coll = e.from_coll AND p.id = e.from_id AND p.coll = ANY($4::text[]))""", org, ids_found, list(HIERARCHY), _NODE_COLLS):
+        if nk(r["child_coll"], r["child"]) in found:
+            parents.setdefault(nk(r["child_coll"], r["child"]), []).append(nk(r["parent_coll"], r["parent"]))
     inherits: dict[str, set[str]] = {}
-    for r in await tx.fetch("""/* pipeshub:kg.stamp_inherits */ SELECT e.from_id AS child, e.to_id AS parent FROM graph.edges e
+    for r in await tx.fetch("""/* pipeshub:kg.stamp_inherits */ SELECT e.from_coll AS child_coll, e.from_id AS child, e.to_coll AS parent_coll, e.to_id AS parent FROM graph.edges e
             WHERE e.org_id = $1 AND e.coll = 'inheritPermissions' AND e.from_id = ANY($2::text[])""", org, ids_found):
-        inherits.setdefault(r["child"], set()).add(r["parent"])
+        if nk(r["child_coll"], r["child"]) in found:
+            inherits.setdefault(nk(r["child_coll"], r["child"]), set()).add(nk(r["parent_coll"], r["parent"]))
     groups: dict[str, list[str]] = {}
     belongs_app: set[str] = set()
-    for r in await tx.fetch("""/* pipeshub:kg.stamp_belongs */ SELECT e.from_id AS member, e.to_id AS target, t.coll AS coll FROM graph.edges e
-            JOIN graph.nodes t ON t.org_id = e.org_id AND t.id = e.to_id AND t.coll = ANY($3::text[])
+    for r in await tx.fetch("""/* pipeshub:kg.stamp_belongs */ SELECT e.from_coll AS member_coll, e.from_id AS member, e.to_id AS target, t.coll AS coll FROM graph.edges e
+            JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id AND t.coll = ANY($3::text[])
             WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_id = ANY($2::text[])""", org, ids_found, ["recordGroups", "apps"]):
-        if r["coll"] == "apps":
-            if r["target"] == found[r["member"]]["connector"]:
-                belongs_app.add(r["member"])                    # membership of the record's own connector only (R12), not of any app
-        else:
-            groups.setdefault(r["member"], []).append(r["target"])
-    granted = {r["node"] for r in await tx.fetch("""/* pipeshub:kg.stamp_granted */ SELECT DISTINCT e.to_id AS node FROM graph.edges e
-            WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_id = ANY($2::text[])
-              AND EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = e.org_id AND p.id = e.from_id AND p.coll = ANY($3::text[]))""", org, ids_found, list(PRINCIPAL_COLLS))}
-    out: dict[str, StampNode] = {}
-    for i, r in found.items():
-        kind = KIND[r["coll"]]
-        connector = i if kind == "app" else (r["connector"] or "")
-        if kind == "app":
-            out[i] = StampNode(i, "app", i)
+        member = nk(r["member_coll"], r["member"])
+        if member not in found:
             continue
-        out[i] = StampNode(i, kind, connector, tuple(sorted(parents.get(i, ()))), frozenset(inherits.get(i, ())), r["rule"], flag(_json(r["deleted"])), flag(_json(r["placeholder"])), i in granted,
-                           kind == "group" and r["model"] == "RECORD_GROUP_LEVEL", tuple(sorted(groups.get(i, ()))), r["vrid"], i in belongs_app)
+        if r["coll"] == "apps":
+            if r["target"] == found[member]["connector"]:
+                belongs_app.add(member)                    # membership of the record's own connector only (R12), not of any app
+        else:
+            groups.setdefault(member, []).append(nk("recordGroups", r["target"]))
+    granted = {nk(r["coll"], r["node"]) for r in await tx.fetch("""/* pipeshub:kg.stamp_granted */ SELECT DISTINCT e.to_coll AS coll, e.to_id AS node FROM graph.edges e
+            WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_id = ANY($2::text[])
+              AND EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = e.org_id AND p.coll = e.from_coll AND p.id = e.from_id AND p.coll = ANY($3::text[]))""", org, ids_found, list(PRINCIPAL_COLLS))}
+    out: dict[str, StampNode] = {}
+    for key, r in found.items():
+        kind = KIND[r["coll"]]
+        if kind == "app":
+            out[key] = StampNode(key, "app", key)
+            continue
+        out[key] = StampNode(key, kind, _app_nk(r["connector"]), tuple(sorted(parents.get(key, ()))), frozenset(inherits.get(key, ())), r["rule"], flag(_json(r["deleted"])),
+                             flag(_json(r["placeholder"])), key in granted, kind == "group" and r["model"] == "RECORD_GROUP_LEVEL", tuple(sorted(groups.get(key, ()))), r["vrid"],
+                             key in belongs_app)
     return out
 
 
