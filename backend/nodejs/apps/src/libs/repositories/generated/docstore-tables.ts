@@ -142,12 +142,12 @@ export interface ConversationChatSessions {
   project_id: string | null;
   project_visibility: string | null;
   is_pinned: Generated<boolean>;
-  is_temporary: Generated<boolean>;
-  expires_at: Date | null;
   version: Generated<number>;
   nulls: Generated<string[]>;
   created_at: Date;
   updated_at: Date;
+  is_temporary: Generated<boolean>;
+  expires_at: Date | null;
 }
 
 export interface ConversationCitations {
