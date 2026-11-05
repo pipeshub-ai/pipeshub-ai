@@ -39,6 +39,8 @@ export interface OAuthTokenPayload {
   aud?: string;
   /** Refresh tokens: the resource the access tokens it mints are for. */
   resource?: string;
+  /** The agent registration this token was issued under; revoking the token revokes the registration. */
+  agent_registration_id?: string;
 }
 
 // Generated Tokens Response
@@ -65,6 +67,8 @@ export interface GenerateTokensOptions {
   // User grants only: PAT and service pseudo-apps store allowedScopes once
   // and validate against MCP_SCOPES instead.
   recheckAppScopes?: boolean;
+  /** Stamps the token with the agent registration (`reg_…`) it was issued under. */
+  agentRegistrationId?: string;
   /**
    * Mint this as a delegated token: `userId` keeps speaking as the person,
    * while this names the service account acting as them. See the `act` claim
@@ -116,7 +120,9 @@ export interface TokenRequest {
     | 'client_credentials'
     | 'refresh_token'
     | 'urn:ietf:params:oauth:grant-type:device_code'
-    | 'urn:ietf:params:oauth:grant-type:token-exchange';
+    | 'urn:ietf:params:oauth:grant-type:token-exchange'
+    | 'urn:workos:agent-auth:grant-type:claim'
+    | 'urn:ietf:params:oauth:grant-type:jwt-bearer';
   code?: string;
   redirect_uri?: string;
   client_id: string;
@@ -125,6 +131,10 @@ export interface TokenRequest {
   scope?: string;
   code_verifier?: string;
   device_code?: string;
+  /** auth.md claim grant: the agent's claim_token. */
+  claim_token?: string;
+  /** RFC 7523: the identity assertion a claim grant returned. */
+  assertion?: string;
   /** RFC 8693: the credential being exchanged — here, a service token. */
   subject_token?: string;
   subject_token_type?: string;
@@ -332,6 +342,13 @@ export interface OpenIDConfiguration {
   device_authorization_endpoint?: string;
   /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
   pipeshub_device_client_id?: string;
+  /** auth.md agent registration. Present only where it is enabled. */
+  agent_auth?: {
+    skill: string;
+    identity_endpoint: string;
+    claim_endpoint: string;
+    identity_types_supported: string[];
+  };
   scopes_supported: string[];
   response_types_supported: string[];
   grant_types_supported: string[];

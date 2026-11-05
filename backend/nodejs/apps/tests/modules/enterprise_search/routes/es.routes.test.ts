@@ -481,7 +481,7 @@ describe('Enterprise Search Routes', () => {
         (layer: any) => layer.route?.path === path && layer.route.methods.post,
       )
 
-    for (const path of ['/entities', '/entities/neighbors']) {
+    for (const path of ['/grep', '/entities', '/entities/neighbors']) {
       it('POST ' + path + ' authenticates, checks the semantic scopes, then validates, in that order', () => {
         const layer = find(path)
         expect(layer, path).to.not.equal(undefined)

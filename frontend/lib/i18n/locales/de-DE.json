@@ -4279,6 +4279,16 @@
       "scopeCount_one": "{{count}} Berechtigungsbereich",
       "scopeCount_other": "{{count}} Berechtigungsbereiche"
     },
+    "agentSignIns": {
+      "title": "Agent-Anmeldungen",
+      "subtitle": "Agenten, die Sie genehmigt haben, in Ihrem Namen zu handeln. Widerrufen Sie eine, damit sie keinen neuen Zugriff mehr erhält.",
+      "columnApproved": "Genehmigt",
+      "revoke": "Widerrufen",
+      "revokeAria": "Agent-Anmeldung {{id}} widerrufen",
+      "revokedTitle": "Agent-Anmeldung widerrufen",
+      "errorTitle": "Die Agent-Anmeldung konnte nicht widerrufen werden",
+      "loadError": "Die Agent-Anmeldungen konnten nicht geladen werden"
+    },
     "skills": {
       "title": "Skills",
       "subtitle": "Erstellen Sie eigene Skills für Ihre Agenten: Markdown-Anweisungen, optionale Skripte und Referenzdateien — versioniert und verwaltet wie alle anderen Inhalte im Agent Builder.",
@@ -5452,6 +5462,19 @@
     "skipAll": "Alle überspringen",
     "expired": "Diese Frage ist abgelaufen. Antworten Sie im Chat, um fortzufahren.",
     "repliedInChat": "Sie haben im Chat geantwortet."
+  },
+  "agentClaim": {
+    "title": "Agent verbinden",
+    "intro": "Ein Agent gibt an, in Ihrem Auftrag zu arbeiten. Genehmigen Sie ihn nur, wenn Sie ihn beauftragt haben und der Code mit dem übereinstimmt, den er Ihnen gezeigt hat.",
+    "scopesHeading": "Dieser Agent darf:",
+    "codeLabel": "Geben Sie den 6-stelligen Code ein, den der Agent angezeigt hat",
+    "approve": "Genehmigen",
+    "loading": "Anfrage wird geprüft…",
+    "missingLink": "Diesem Link fehlt das Claim-Token. Bitten Sie den Agenten um einen neuen.",
+    "doneTitle": "Agent verbunden",
+    "doneLine": "Der Agent kann nun fortfahren. Sie können dieses Fenster schließen.",
+    "deniedTitle": "Anfrage abgelehnt",
+    "deniedLine": "Der Agent hat keinen Zugriff erhalten."
   },
   "oauthDevice": {
     "title": "Gerät verbinden",

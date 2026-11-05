@@ -178,8 +178,8 @@ jobs:
               python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 40 \
                 --expect-suite 'docstore-migrate: CLI end to end=40' ;;
             reverse)
-              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 25 \
-                --expect-suite 'docstore-migrate: rollback and the reverse copy=25' ;;
+              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 26 \
+                --expect-suite 'docstore-migrate: rollback and the reverse copy=26' ;;
             switchover)
               python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 35 \
                 --expect-suite 'docstore-migrate: offline and online switch-over=20' \
@@ -191,7 +191,7 @@ jobs:
                 --expect-suite 'docstore-migrate: bulk copy=3' \
                 --expect-suite 'docstore-migrate: conversation collections=4' \
                 --expect-suite 'docstore-migrate: content mappings=2' \
-                --expect-suite 'docstore-migrate: content, OAuth and platform data=12' \
+                --expect-suite 'docstore-migrate: content, OAuth and platform data=13' \
                 --expect-suite 'docstore-migrate: collection coverage=7' \
                 --expect-suite 'docstore-migrate: table coverage=3' \
                 --expect-suite 'fence cutover waits for fenced writes=3' \
