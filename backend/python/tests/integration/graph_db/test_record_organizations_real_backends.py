@@ -49,6 +49,13 @@ async def backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatc
 
 
 async def _cleanup(provider: Any, org: str) -> None:  # noqa: ANN401
+    try:
+        await _remove_org_data(provider, org)
+    finally:
+        await provider.disconnect()
+
+
+async def _remove_org_data(provider: Any, org: str) -> None:  # noqa: ANN401
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
     if isinstance(provider, Neo4jProvider):
@@ -56,7 +63,6 @@ async def _cleanup(provider: Any, org: str) -> None:  # noqa: ANN401
             "MATCH (n) WHERE n.orgId STARTS WITH $org OR n.id STARTS WITH $org DETACH DELETE n",
             parameters={"org": org},
         )
-        await provider.disconnect()
         return
     aql = provider.http_client.execute_aql
     for edges in (

@@ -110,14 +110,17 @@ def _check_candidate_collection(collection: str) -> None:
 
 def build_entity_index_candidate_aql(collection: str, *, with_sweep: bool) -> str:
     _check_candidate_collection(collection)
-    deleting = f'FILTER doc.status != "{APP_STATUS_DELETING}"' if collection == _APPS else ""
+    # A CRM account lives among the orgs (isExternal) but is a document of its org, not an org to index.
+    excluded = (
+        f'FILTER doc.status != "{APP_STATUS_DELETING}"' if collection == _APPS else "FILTER doc.isExternal != true"
+    )
     due = f"doc.{ENTITY_INDEX_STATE_FIELD} != @marker"
     if with_sweep:
         swept = f"doc.{ENTITY_INDEX_SWEPT_AT_FIELD}"
         due = f"{due} OR {swept} == null OR {swept} < @sweep_before"
     return f"""
     FOR doc IN {collection}
-        {deleting}
+        {excluded}
         FILTER {due}
         LIMIT 1
         RETURN doc
@@ -127,8 +130,9 @@ def build_entity_index_candidate_aql(collection: str, *, with_sweep: bool) -> st
 def build_entity_index_candidate_cypher(collection: str, *, with_sweep: bool) -> str:
     _check_candidate_collection(collection)
     label = collection_to_label(collection)
-    deleting = (
-        f"AND coalesce(n.status, '') <> '{APP_STATUS_DELETING}'" if collection == _APPS else ""
+    excluded = (
+        f"AND coalesce(n.status, '') <> '{APP_STATUS_DELETING}'" if collection == _APPS
+        else "AND coalesce(n.isExternal, false) <> true"
     )
     due = f"coalesce(n.{ENTITY_INDEX_STATE_FIELD}, '') <> $marker"
     if with_sweep:
@@ -137,7 +141,7 @@ def build_entity_index_candidate_cypher(collection: str, *, with_sweep: bool) ->
     return f"""
     MATCH (n:{label})
     WHERE ({due})
-      {deleting}
+      {excluded}
     RETURN n
     LIMIT 1
     """
