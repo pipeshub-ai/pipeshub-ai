@@ -8,7 +8,8 @@ import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-b
 import { toast } from '@/lib/store/toast-store';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { apiClient, isProcessedError } from '@/lib/api';
+import { isProcessedError } from '@/lib/api';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { isMcpInstanceReadOnly, McpInheritedCallout } from '@/config';
 import { useWorkspaceDrawerNestedModalHost, WorkspaceRightPanel } from '../../../components/workspace-right-panel';
 import { ConfirmationDialog, FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
@@ -129,7 +130,6 @@ export function McpInstanceConfigPanel({
   const [toolsLoad, setToolsLoad] = useState<McpToolsLoad>({ status: 'idle' });
   const [disconnectTarget, setDisconnectTarget] = useState<McpMyServerEntry | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const [creatorName, setCreatorName] = useState<string | null>(null);
   const { copy } = useCopyText();
 
   const liveInstance = useMemo(
@@ -603,28 +603,8 @@ export function McpInstanceConfigPanel({
 
   const createdBy = liveInstance?.createdBy;
   const creatorHidden = isMcpInstanceReadOnly(liveInstance);
-  useEffect(() => {
-    if (!open || !createdBy || creatorHidden) {
-      setCreatorName(null);
-      return;
-    }
-    let cancelled = false;
-    apiClient
-      .post('/api/v1/users/by-ids', { userIds: [createdBy] })
-      .then(({ data }) => {
-        if (cancelled) return;
-        const users = Array.isArray(data) ? data : data?.users ?? [];
-        const user = (users[0] ?? {}) as Record<string, unknown>;
-        const fullName = String(user.name ?? user.fullName ?? '').trim();
-        setCreatorName(fullName || createdBy);
-      })
-      .catch(() => {
-        if (!cancelled) setCreatorName(createdBy);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, createdBy, creatorHidden]);
+  const creator = useUserDirectoryEntry(open && !creatorHidden ? createdBy : null);
+  const creatorName = creator ? creator.name?.trim() || createdBy : null;
 
   const menuEntries: McpMenuEntry[] = [];
   if (mode === 'edit' && liveInstance) {
