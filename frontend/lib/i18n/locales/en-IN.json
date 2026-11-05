@@ -4270,6 +4270,16 @@
       "scopeCount_one": "{{count}} scope",
       "scopeCount_other": "{{count}} scopes"
     },
+    "agentSignIns": {
+      "title": "Agent sign-ins",
+      "subtitle": "Agents you approved to act as you. Revoke one to stop it getting new access.",
+      "columnApproved": "Approved",
+      "revoke": "Revoke",
+      "revokeAria": "Revoke agent sign-in {{id}}",
+      "revokedTitle": "Agent sign-in revoked",
+      "errorTitle": "Could not revoke the agent sign-in",
+      "loadError": "Could not load your agent sign-ins"
+    },
     "common": {
       "loadingUsers": "Loading users...",
       "noUsersAvailable": "No users available",
@@ -5579,6 +5589,19 @@
     "description": "Choose what to index for \"{{name}}\".",
     "thisItemOnly": "This item only",
     "withChildren": "This item and all children"
+  },
+  "agentClaim": {
+    "title": "Connect an agent",
+    "intro": "An agent says it works for you. Approve it only if you asked it to, and the code below matches the one it showed you.",
+    "scopesHeading": "This agent will be able to:",
+    "codeLabel": "Enter the 6-digit code the agent showed",
+    "approve": "Approve",
+    "loading": "Checking this request…",
+    "missingLink": "This link is missing its claim token. Ask the agent for a new one.",
+    "doneTitle": "Agent connected",
+    "doneLine": "The agent can now continue. This window can be closed.",
+    "deniedTitle": "Request denied",
+    "deniedLine": "The agent was not given access."
   },
   "oauthDevice": {
     "title": "Connect a device",
