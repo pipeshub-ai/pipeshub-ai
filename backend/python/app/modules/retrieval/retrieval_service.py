@@ -30,6 +30,7 @@ from app.models.blocks import BlockType, GroupType
 from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.pipeline.first_use import classify_on_first_use_later
+from app.modules.retrieval import degraded_notice
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
@@ -302,6 +303,8 @@ class _QueryPlan:
     # the page because the access check denied too much of it: the caller
     # searches again with the record-id filter.
     narrow_shortfall: bool = False
+    # A provider answered some search of this request with less than its full search (``SearchResult.degraded``).
+    degraded: bool = False
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -881,6 +884,8 @@ class RetrievalService:
                     # as nothing matching.
                     response["message"] = f"{incomplete} {message}"
                     response["searchIncomplete"] = incomplete
+                if plan.degraded:
+                    response["searchDegraded"] = True
                 return response
 
             # Graph key for KH permission_role checks (Location trails).
@@ -1523,6 +1528,8 @@ class RetrievalService:
                 incomplete = plan.incomplete_notice()
                 if incomplete:
                     response_data["searchIncomplete"] = incomplete
+                if plan.degraded:
+                    response_data["searchDegraded"] = True
 
                 # Add KB filtering info to response if KB filtering was applied
                 if kb_ids:
@@ -1618,6 +1625,8 @@ class RetrievalService:
         except Exception as exc:
             self.logger.warning("source diversity: deeper read failed, keeping the plain result: %s", exc)
             return [], {}
+        # These hits can join the response, so a partial search behind them is the response's too.
+        plan.degraded = plan.degraded or candidate_plan.degraded
         kept = [
             hit for hit in hits
             if isinstance(hit, dict) and hit_record_id(hit) in accessible
@@ -2342,9 +2351,10 @@ class RetrievalService:
         batches: list[list] = [[] for _ in queries]
         capped = [False] * len(queries)
         failed_collections = searched_collections = 0
+        degraded: list[bool] = []
         if requests:
             per_collection, failed_collections = await self._lexical_fan_out(
-                await self._resolve_search_collections(org_id, user_id), requests, limit,
+                await self._resolve_search_collections(org_id, user_id), requests, limit, degraded=degraded,
             )
             searched_collections = len(per_collection) + failed_collections
             for j, i in enumerate(sent):
@@ -2413,10 +2423,12 @@ class RetrievalService:
             empty_query=[sparse is None and text is None for sparse, text in requests_legs],
             failed_collections=failed_collections,
             searched_collections=searched_collections,
+            degraded=bool(degraded),
         )
 
     async def _lexical_fan_out(
         self, collections: list[str], requests: list[HybridSearchRequest], limit: int,
+        *, degraded: list[bool] | None = None,
     ) -> tuple[list[tuple[str, list[list]]], int]:
         """Each collection's own per-request results, and how many collections
         could not be searched. Raises when none could."""
@@ -2424,8 +2436,9 @@ class RetrievalService:
 
         async def _one(name: str) -> list[list]:
             async with semaphore:
-                return await self._fan_out_searches([name], requests, limit)
+                return await self._fan_out_searches([name], requests, limit, degraded=degraded)
 
+        degraded_notice.track()
         outcomes = await asyncio.gather(*(_one(name) for name in collections), return_exceptions=True)
         answered = [(name, out) for name, out in zip(collections, outcomes) if not isinstance(out, BaseException)]
         failures = [out for out in outcomes if isinstance(out, BaseException)]
@@ -2776,20 +2789,26 @@ class RetrievalService:
             if plan is not None:
                 plan.collections = collections
         failed_collections: list[str] = []
-        fan_out = self._fan_out_searches(collections, requests, fused_limit, failed=failed_collections)
+        degraded: list[bool] = []
+        fan_out = self._fan_out_searches(
+            collections, requests, fused_limit, failed=failed_collections, degraded=degraded,
+        )
         rerank = record_rerank.rerank if record_rerank is not None else None
         dense_pool = rerank.settings.dense_pool if rerank is not None else 0
         dense_results: list[list[SearchResult]] | None = None
         anchor_results: list[SearchResult] | None = None
         if rerank is not None and dense_pool:
+            # A picked dense record joins the response, so a partial dense search marks it too.
             search_results, (dense_results, anchor_results) = await asyncio.gather(
-                fan_out, self._dense_pool_legs(collections, dense_query_embeddings, filter, rerank),
+                fan_out, self._dense_pool_legs(collections, dense_query_embeddings, filter, rerank, degraded),
             )
         else:
             search_results = await fan_out
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
+        if degraded and plan is not None:
+            plan.degraded = True
         added: set[str] = set()
         if dense_pool:
             pooled = [
@@ -2861,15 +2880,17 @@ class RetrievalService:
         dense_query_embeddings: list[list[float]],
         vector_filter: Any,  # noqa: ANN401 - a provider's filter expression
         rerank: RecordRerank,
+        degraded: list[bool] | None = None,
     ) -> tuple[list[list[SearchResult]] | None, list[SearchResult] | None]:
         """Per query the dense leg's points, and the points of the rerank's
-        anchor (None when it has none); a leg that fails is None."""
+        anchor (None when it has none); a leg that fails is None. A leg
+        answered from a partial search appends to ``degraded``."""
         size = rerank.settings.dense_pool
         if not rerank.anchor:
-            return await self._dense_pool_leg(collections, dense_query_embeddings, vector_filter, size), None
+            return await self._dense_pool_leg(collections, dense_query_embeddings, vector_filter, size, degraded), None
         return await asyncio.gather(
-            self._dense_pool_leg(collections, dense_query_embeddings, vector_filter, size),
-            self._anchor_dense_leg(collections, rerank.anchor, vector_filter, anchor_pool_records(size)),
+            self._dense_pool_leg(collections, dense_query_embeddings, vector_filter, size, degraded),
+            self._anchor_dense_leg(collections, rerank.anchor, vector_filter, anchor_pool_records(size), degraded),
         )
 
     async def _anchor_dense_leg(
@@ -2878,6 +2899,7 @@ class RetrievalService:
         anchor: str,
         vector_filter: Any,  # noqa: ANN401 - a provider's filter expression
         pool_records: int,
+        degraded: list[bool] | None = None,
     ) -> list[SearchResult] | None:
         """A dense-only request for the user's question behind an agent's
         search, under the same permission filter, deep enough for its share of
@@ -2892,7 +2914,7 @@ class RetrievalService:
         except Exception as exc:
             self.logger.warning("record_rerank: embedding the user's question failed; reranking the search's pool: %s", exc)
             return None
-        results = await self._dense_pool_leg(collections, [vector], vector_filter, pool_records)
+        results = await self._dense_pool_leg(collections, [vector], vector_filter, pool_records, degraded)
         return results[0] if results else None
 
     async def _dense_pool_leg(
@@ -2901,6 +2923,7 @@ class RetrievalService:
         dense_query_embeddings: list[list[float]],
         vector_filter: Any,  # noqa: ANN401 - a provider's filter expression
         pool_records: int,
+        degraded: list[bool] | None = None,
     ) -> list[list[SearchResult]] | None:
         """Per query, a dense-only request under the same permission filter,
         deep enough to fill the rerank pool. None when it fails: the pool is
@@ -2911,7 +2934,7 @@ class RetrievalService:
             for embedding in dense_query_embeddings
         ]
         try:
-            return await self._fan_out_searches(collections, requests, limit, failed=[])
+            return await self._fan_out_searches(collections, requests, limit, failed=[], degraded=degraded)
         except Exception as exc:
             self.logger.warning("record_rerank: dense pool search failed; reranking the fused list alone: %s", exc)
             return None
@@ -2935,7 +2958,10 @@ class RetrievalService:
         the check fail."""
         if plan.dense is None or not plan.collections:
             return admitted, accessible, set()
-        dense, anchor = await self._dense_pool_legs(plan.collections, plan.dense, vector_filter, rerank)
+        degraded: list[bool] = []
+        dense, anchor = await self._dense_pool_legs(plan.collections, plan.dense, vector_filter, rerank, degraded)
+        # A picked dense record joins the response, so a partial dense search marks it too.
+        plan.degraded = plan.degraded or bool(degraded)
         known = {hit_record_id(hit) for hit in admitted}
 
         def new_hits(batches: list[list[SearchResult]]) -> list[dict[str, Any]]:
@@ -3089,6 +3115,7 @@ class RetrievalService:
         limit: int,
         *,
         failed: list[str] | None = None,
+        degraded: list[bool] | None = None,
     ) -> list[list]:
         """Query every collection in parallel and reduce each query to one top-K.
 
@@ -3101,11 +3128,15 @@ class RetrievalService:
         A collection that fails degrades the result set instead of failing the
         search — a search over three collections should not error because one
         is briefly unreachable. Each one it could not search is appended to
-        ``failed``, so the caller can say the results are incomplete.
+        ``failed``, so the caller can say the results are incomplete. A store that
+        answered from a partial search (``degraded_notice``, by a note or by a marked hit)
+        appends to ``degraded``.
         """
         if not collections:
             return [[] for _ in requests]
 
+        degraded_notice.track()
+        noted_before = degraded_notice.count()
         semaphore = asyncio.Semaphore(SEARCH_FANOUT_CONCURRENCY)
 
         async def _search(collection_name: str) -> list[list]:
@@ -3135,11 +3166,20 @@ class RetrievalService:
                     outcome,
                 )
                 continue
+            for batch in outcome:
+                for hit in batch:
+                    if isinstance(reason := getattr(hit, "degraded", None), str):
+                        degraded_notice.note(reason)
+                        break
             for i, batch in enumerate(outcome):
                 if i < len(per_query):
                     per_query[i].append(
                         CollectionResults(collection_name=collection_name, results=batch)
                     )
+
+        # Read before the merge trims: a store that found nothing, or whose hits fall below the cut, still counts.
+        if degraded is not None and degraded_notice.count() > noted_before:
+            degraded.append(True)
 
         # Degrading when one collection is unreachable is the point of
         # return_exceptions; degrading when *every* one failed is not — that is

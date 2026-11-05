@@ -19,6 +19,7 @@ import {
   UnsupportedGrantTypeError,
   TokenExchangeError,
   InvalidScopeError,
+  InvalidTargetError,
   AccessDeniedError,
   InvalidRedirectUriError,
   DeviceGrantError,
@@ -42,7 +43,13 @@ import {
   toKnowledgeLimit,
 } from '../types/knowledge_limit';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
+import { isClientIdMetadataUrl } from '../services/client_metadata_document';
 import { OAuthDeviceService } from '../services/oauth.device.service';
+import { AgentRegistrationService } from '../services/agent-registration.service';
+import {
+  AGENT_CLAIM_GRANT,
+  JWT_BEARER_GRANT,
+} from '../constants/agent-auth.constants';
 import { TokenExchangeService } from '../services/token-exchange.service';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import { clientTags } from '../../../libs/services/telemetry/identity';
@@ -72,6 +79,8 @@ export class OAuthProviderController {
     private oauthDeviceService: OAuthDeviceService,
     @inject('TokenExchangeService')
     private tokenExchangeService: TokenExchangeService,
+    @inject('AgentRegistrationService')
+    private agentRegistrationService: AgentRegistrationService,
   ) {}
 
   /**
@@ -93,7 +102,9 @@ export class OAuthProviderController {
 
     try {
       // Validate client first
-      app = await this.oauthAppService.getAppByClientId(query.client_id);
+      ({ app } = await this.oauthDcrService.resolveAuthorizeClient(
+        query.client_id,
+      ));
 
       // Validate redirect URI - MUST be done before any error redirect
       this.oauthAppService.validateRedirectUriForApp(app, query.redirect_uri);
@@ -129,6 +140,8 @@ export class OAuthProviderController {
     }
 
     try {
+      this.oauthTokenService.audienceFor(query.resource);
+
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(
         query.scope,
@@ -173,6 +186,9 @@ export class OAuthProviderController {
           homepageUrl: app.homepageUrl,
           privacyPolicyUrl: app.privacyPolicyUrl,
           isDynamic: app.isDynamic === true,
+          ...(isClientIdMetadataUrl(app.clientId)
+            ? { clientIdHost: new URL(app.clientId).host }
+            : {}),
           knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
         },
         scopes: toScopeInfo(granted),
@@ -236,7 +252,9 @@ export class OAuthProviderController {
       } = req.body;
 
       // Validate client
-      const app = await this.oauthAppService.getAppByClientId(client_id);
+      const client =
+        await this.oauthDcrService.resolveAuthorizeClient(client_id);
+      const { app } = client;
 
       // Validate redirect URI
       this.oauthAppService.validateRedirectUriForApp(app, redirect_uri);
@@ -284,6 +302,9 @@ export class OAuthProviderController {
         requestedScopes,
         app.allowedScopes,
       );
+
+      // A metadata document client is stored only now, once the person has consented.
+      await client.store();
 
       // Generate authorization code
       const code = await this.authorizationCodeService.generateCode(
@@ -361,6 +382,25 @@ export class OAuthProviderController {
         return;
       }
 
+      // The agent grants, like token exchange, authenticate with the credential they present (claim_token, assertion): no client_id.
+      if (
+        tokenRequest.grant_type === AGENT_CLAIM_GRANT ||
+        tokenRequest.grant_type === JWT_BEARER_GRANT
+      ) {
+        const issued =
+          tokenRequest.grant_type === AGENT_CLAIM_GRANT
+            ? await this.agentRegistrationService.claimGrant(
+                tokenRequest.claim_token ?? '',
+              )
+            : await this.agentRegistrationService.jwtBearerGrant(
+                tokenRequest.assertion ?? '',
+              );
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Pragma', 'no-cache');
+        res.json(issued);
+        return;
+      }
+
       if (!clientId) {
         throw new InvalidClientError('client_id is required');
       }
@@ -396,6 +436,8 @@ export class OAuthProviderController {
             );
 
           case 'urn:ietf:params:oauth:grant-type:token-exchange': // answered above
+          case AGENT_CLAIM_GRANT: // answered above
+          case JWT_BEARER_GRANT: // answered above
           default:
             throw new UnsupportedGrantTypeError(
               `Unsupported grant_type: ${tokenRequest.grant_type}`,
@@ -470,10 +512,19 @@ export class OAuthProviderController {
       const { token, token_type_hint, client_id, client_secret } = req.body as {
         token: string;
         token_type_hint?: 'refresh_token' | 'access_token';
-        client_id: string;
+        client_id?: string;
         // A JSON body can carry any type here, null included.
         client_secret?: unknown;
       };
+
+      // An agent's assertion or access token is its own credential: it has no client_id to authenticate.
+      if (await this.oauthTokenService.revokeAgentToken(token)) {
+        res.status(200).send();
+        return;
+      }
+      if (!client_id) {
+        throw new InvalidClientError('client_id is required');
+      }
 
       // RFC 7009: authenticate the client. A public client (the first-party
       // device app) has no secret and is identified by client_id alone, as the
@@ -691,6 +742,8 @@ export class OAuthProviderController {
     if (!request.redirect_uri) {
       throw new InvalidGrantError('redirect_uri is required');
     }
+    // Checked before the code is spent, so a bad resource does not cost the client its code.
+    const audience = this.oauthTokenService.audienceFor(request.resource);
 
     // Get app
     const app = await this.oauthAppService.getAppByClientId(clientId);
@@ -774,6 +827,7 @@ export class OAuthProviderController {
       {
         recheckAppScopes: true,
         grantedKnowledgeLimit: codeResult.knowledgeLimit ?? null,
+        audience,
       },
     );
 
@@ -958,6 +1012,7 @@ export class OAuthProviderController {
       app,
       request.refresh_token,
       requestedScopes,
+      this.oauthTokenService.audienceFor(request.resource),
     );
 
     this.logger.info('Refresh token grant completed', { clientId });
@@ -987,6 +1042,8 @@ export class OAuthProviderController {
       errorCode = 'unsupported_grant_type';
     } else if (error instanceof InvalidScopeError) {
       errorCode = 'invalid_scope';
+    } else if (error instanceof InvalidTargetError) {
+      errorCode = 'invalid_target';
     } else if (error instanceof AccessDeniedError) {
       errorCode = 'access_denied';
     }

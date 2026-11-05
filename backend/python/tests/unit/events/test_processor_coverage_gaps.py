@@ -814,7 +814,7 @@ class TestBlockGroupHtmlAndImages:
             ExtensionTypes.PNG.value: image_parser,
         }
 
-        modified, caption_map = await proc._process_blockgroup_images("# hi", 0)
+        modified, caption_map = await proc._process_blockgroup_images("# hi", 0, allow_remote_fetch=True)
         assert modified == "md"
         assert caption_map == {}
 
@@ -823,7 +823,7 @@ class TestBlockGroupHtmlAndImages:
         proc = _make_processor()
         bg = BlockGroup(index=0, type=GroupType.TEXT_SECTION, data=None, format=DataFormat.HTML)
         with pytest.raises(ValueError, match="no valid HTML data"):
-            await proc._process_single_blockgroup_html(bg, "rec")
+            await proc._process_single_blockgroup_html(bg, "rec", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_process_single_blockgroup_html_missing_parser(self):
@@ -833,7 +833,7 @@ class TestBlockGroupHtmlAndImages:
             index=0, type=GroupType.TEXT_SECTION, data="<p>x</p>", format=DataFormat.HTML
         )
         with pytest.raises(ValueError, match="HTML parser is not configured"):
-            await proc._process_single_blockgroup_html(bg, "rec")
+            await proc._process_single_blockgroup_html(bg, "rec", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_process_single_blockgroup_html_images_and_parse(self):
@@ -873,7 +873,7 @@ class TestBlockGroupHtmlAndImages:
             name="bg",
         )
 
-        new_bgs, new_blocks = await proc._process_single_blockgroup_html(bg, "rec")
+        new_bgs, new_blocks = await proc._process_single_blockgroup_html(bg, "rec", allow_remote_fetch=True)
         assert len(new_blocks) == 1
         html_parser.parse_to_blocks.assert_awaited_once()
         call_kwargs = html_parser.parse_to_blocks.await_args.kwargs
@@ -901,7 +901,7 @@ class TestBlockGroupHtmlAndImages:
         ) as mock_html, patch.object(
             proc, "_process_single_blockgroup", new_callable=AsyncMock
         ) as mock_md:
-            result = await proc._process_blockgroups(container, "rec")
+            result = await proc._process_blockgroups(container, "rec", allow_remote_fetch=True)
 
         mock_html.assert_awaited_once()
         mock_md.assert_not_awaited()

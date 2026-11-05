@@ -7,6 +7,7 @@ import {
   PROJECTS_DISABLED_MESSAGE,
   ProjectsFeature,
   requireProjectsEnabled,
+  setProjectsSettingsSource,
 } from '../../../../src/modules/projects/utils/projects-feature';
 
 function stubStore(connected: boolean): void {
@@ -23,6 +24,7 @@ describe('projects/utils/projects-feature', () => {
   beforeEach(() => ProjectsFeature.resetCache());
   afterEach(() => {
     sinon.restore();
+    setProjectsSettingsSource();
     ProjectsFeature.resetCache();
   });
 
@@ -91,5 +93,74 @@ describe('projects/utils/projects-feature', () => {
     await requireProjectsEnabled({} as any, {} as any, next);
 
     expect(next.calledOnceWithExactly()).to.equal(true);
+  });
+
+  describe('a supplied settings source', () => {
+    // One store per workspace, told apart by the object the reader is handed.
+    const workspaceStores = { on: { name: 'on' }, off: { name: 'off' } } as const;
+    let current: keyof typeof workspaceStores;
+    let lookups: number;
+
+    beforeEach(() => {
+      lookups = 0;
+      setProjectsSettingsSource(() => ({
+        cacheKey: current,
+        store: async () => {
+          lookups += 1;
+          return workspaceStores[current] as any;
+        },
+      }));
+      sinon.stub(platformSettings, 'getPlatformSettingsFromStore').callsFake(async (store: any) => ({
+        fileUploadMaxSizeBytes: 1,
+        featureFlags: { ENABLE_PROJECTS: store.name === 'on' },
+      }));
+    });
+
+    it('answers for each cache key from its own store', async () => {
+      current = 'on';
+      expect(await ProjectsFeature.isEnabled()).to.equal(true);
+      current = 'off';
+      expect(await ProjectsFeature.isEnabled()).to.equal(false);
+      current = 'on';
+      expect(await ProjectsFeature.isEnabled()).to.equal(true);
+    });
+
+    it('looks the store up only when the key has no fresh answer', async () => {
+      current = 'on';
+      await ProjectsFeature.isEnabled();
+      await ProjectsFeature.isEnabled();
+
+      expect(lookups).to.equal(1);
+    });
+
+    it('holds at most 10,000 answers, dropping the oldest first', async () => {
+      let key = '';
+      setProjectsSettingsSource(() => ({
+        cacheKey: key,
+        store: async () => {
+          lookups += 1;
+          return workspaceStores.on as any;
+        },
+      }));
+      for (let i = 0; i <= 10_000; i += 1) {
+        key = `workspace-${i}`;
+        await ProjectsFeature.isEnabled();
+      }
+      lookups = 0;
+
+      key = 'workspace-10000';
+      await ProjectsFeature.isEnabled();
+      expect(lookups).to.equal(0);
+      key = 'workspace-0';
+      await ProjectsFeature.isEnabled();
+      expect(lookups).to.equal(1);
+    });
+
+    it('leaves Projects on, without reading, while the source has no store', async () => {
+      setProjectsSettingsSource(() => null);
+
+      expect(await ProjectsFeature.isEnabled()).to.equal(true);
+      expect(lookups).to.equal(0);
+    });
   });
 });

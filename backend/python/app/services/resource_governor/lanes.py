@@ -54,13 +54,20 @@ logger = logging.getLogger(__name__)
 # Upper bound on lanes in one container (the legacy pool capped itself at 4).
 MAX_LANES = 64
 LANE_SLOT_CAPACITY = MAX_LANES
-DEFAULT_WORKING_SET_GB = 0.75
-DEFAULT_WARMUP_SECONDS = 30.0
+# 0.85 GiB for the parse worker plus 0.40 GiB for its persistent raster child.
+DEFAULT_WORKING_SET_GB = 1.25
+DEFAULT_WARMUP_SECONDS = 20.0
+# A worker idle this long may be stopped on a request or a brake step, never
+# sooner, so a worker that has just returned is not killed for a stale request.
+REAP_MIN_IDLE_SECONDS = 5.0
+REAP_TICK_SECONDS = 1.0
+# A request older than this is ignored; a requester still denied rewrites it on every poll.
+REAP_REQUEST_FRESH_SECONDS = 2.0
 REPLAN_SECONDS = 60.0
 CPUS_PER_LANE = 2
 MAX_THREADS_PER_LANE = 4
 
-# Nothing consumes the plan yet, so the mode is always "off".
+# The ``lanes`` block of ``/health`` reports this when the budget is not on.
 LANES_MODE = "off"
 
 
@@ -74,10 +81,29 @@ class LanePlan:
     source: str
 
 
+# (cpus, lanes) -> threads, measured by pinning the parse benchmark to that many CPUs.
+THREADS_RULE: dict[tuple[int, int], int] = {
+    (1, 1): 1,
+    (2, 1): 1,
+    (2, 2): 1,
+    (4, 1): 2,
+    (4, 2): 1,
+    (4, 4): 1,
+    (8, 4): 2,
+}
+
+
 def threads_rule(cpus: int, lanes: int) -> int:
-    """Placeholder until the measured table replaces it: keeps
-    ``lanes x threads <= cpus`` with 1..4 threads per lane."""
-    return max(1, min(MAX_THREADS_PER_LANE, cpus // max(1, lanes)))
+    """Threads per lane: the measured table, else ``clamp(cpus // lanes, 1, 4)``.
+
+    ``lanes x threads <= cpus`` holds for every row and for the fallback. The
+    16-CPU and 7-lane row is not measured; the tier run decides it.
+    """
+    lanes = max(1, lanes)
+    measured = THREADS_RULE.get((cpus, lanes))
+    if measured is not None:
+        return measured
+    return max(1, min(MAX_THREADS_PER_LANE, cpus // lanes))
 
 
 def plan_lanes(
@@ -101,15 +127,43 @@ def plan_lanes(
     return LanePlan(cpus, heavy, lanes, threads_rule(cpus, lanes), cpus_per_lane, "rule")
 
 
-def lanes_health(governor: ResourceGovernor | None, cpus: int) -> dict[str, Any]:
-    """The ``lanes`` block of ``/health``: mode and plan, nothing opened."""
-    if governor is None:
-        return {"mode": LANES_MODE, "plan": None, "in_use_domain": None}
+def plan_for_governor(governor: ResourceGovernor, cpus: int) -> LanePlan:
+    """The plan a governor's process computes: its fleet's heavy ceiling over the CPUs."""
     try:
         explicit = int(os.environ.get("PDF_TABLE_MODEL_THREADS", ""))
     except ValueError:
         explicit = None
-    plan = plan_lanes(cpus=cpus, heavy=governor.fleet_ceilings.heavy, explicit_threads=explicit)
+    try:
+        per_lane = int(os.environ.get("PARSE_LANE_CPUS", ""))
+    except ValueError:
+        per_lane = CPUS_PER_LANE
+    return plan_lanes(
+        cpus=cpus,
+        heavy=governor.fleet_ceilings.heavy,
+        cpus_per_lane=per_lane if per_lane >= 1 else CPUS_PER_LANE,
+        explicit_threads=explicit,
+    )
+
+
+def lanes_health(governor: ResourceGovernor | None, cpus: int) -> dict[str, Any]:
+    """The ``lanes`` block of ``/health``.
+
+    Off: the mode and the plan, nothing opened. On: the budget's numbers plus the
+    pool gauges.
+    """
+    if governor is None:
+        return {"mode": LANES_MODE, "plan": None, "in_use_domain": None}
+    budget = getattr(governor, "lanes", None)
+    if isinstance(budget, LaneBudget):
+        from app.modules.parsers.parse_pool import pool_stats
+
+        block = budget.stats()
+        gauges = pool_stats()
+        block["pool"] = gauges.get("pool")
+        block["interactive_pool"] = gauges.get("interactive")
+        block["explicit_private"]["parse_pool"] = gauges.get("explicit_private")
+        return block
+    plan = plan_for_governor(governor, cpus)
     return {"mode": LANES_MODE, "plan": asdict(plan), "in_use_domain": None}
 
 
@@ -357,6 +411,28 @@ class _LocalLedger:
         return None
 
 
+class _PresenceView(Presence):
+    """Counts live processes without registering this one.
+
+    Only a process that owns a budgeted pool is a standby holder, so presence
+    is taken by ``register()`` when that pool is built, not when the budget is
+    opened (a process with only a private pool must not raise the resident
+    limit for the others).
+    """
+
+    def __init__(self, directory: Path, pid: int | None = None) -> None:
+        self._base = directory
+        self._pid = pid
+        self._fd = None
+        self._directory = directory / "presence"
+        self._registered = False
+
+    def register(self) -> None:
+        if not self._registered:
+            Presence.__init__(self, self._base, self._pid)
+            self._registered = True
+
+
 MemoryReader = Callable[[], "tuple[int | None, int | None]"]
 
 
@@ -459,6 +535,7 @@ class LaneBudget:
         self._degrade_logged = False
         self._mismatch_logged = False
         self._live_cache: tuple[float, int] | None = None
+        self._presence_registered = False
 
     # -- construction ----------------------------------------------------------
 
@@ -477,7 +554,7 @@ class LaneBudget:
             opened.append(resident)
             ledger = DomainLedger(directory, clock=clock, **ledger_options)
             opened.append(ledger)
-            presence = Presence(directory, rest.get("pid"))
+            presence = _PresenceView(directory, rest.get("pid"))
             opened.append(presence)
         except BaseException:
             for item in opened:
@@ -543,6 +620,26 @@ class LaneBudget:
         count = self._presence.live_count() if self._presence is not None else 1
         self._live_cache = (now, count)
         return count
+
+    def register_presence(self) -> None:
+        """Count this process among the pool owners. Called once by the first budgeted pool."""
+        presence = self._presence
+        if isinstance(presence, _PresenceView) and not self._presence_registered:
+            presence.register()
+            self._presence_registered = True
+            self._live_cache = None
+
+    def now(self) -> float:
+        """The budget's clock, so a pool judging idle time uses the same one."""
+        return self._clock()
+
+    def live_processes(self) -> int:
+        """Processes in the domain that own a budgeted pool (1 in local mode)."""
+        return self._live_processes()
+
+    def resident_limit(self) -> int:
+        """Worker processes alive at once: the lanes plus one standby per extra pool owner."""
+        return min(MAX_LANES, self.plan.lanes + max(0, self._live_processes() - 1))
 
     def _overlay_cap(self, now: float) -> int | None:
         overlay = self._overlay
@@ -792,7 +889,7 @@ class LaneBudget:
         record = self._drain_returns(self._apply_overlay(stored, now))
         if record != stored:
             txn.write(with_plan(record, plan.lanes))
-        token = self._resident.try_acquire(plan.lanes)
+        token = self._resident.try_acquire(self.resident_limit())
         if token is None:
             self._maybe_request_reap(txn, record, plan, now)
             return None
@@ -830,7 +927,7 @@ class LaneBudget:
 
     def _maybe_request_reap(self, txn: LedgerTxn | _LocalTxn, record: LedgerRecord, plan: LanePlan, now: float) -> None:
         try:
-            full = self._resident.held_count(0.0) >= plan.lanes
+            full = self._resident.held_count(0.0) >= self.resident_limit()
         except TimeoutError:
             return
         if full:
@@ -839,7 +936,7 @@ class LaneBudget:
     def _admit_local(
         self, plan: LanePlan, now: float, ws: int, mem_limit: int | None, raw: int | None
     ) -> SpawnTicket | None:
-        token = self._resident.try_acquire(plan.lanes)
+        token = self._resident.try_acquire(self.resident_limit())
         if token is None:
             return None
         start, spawns = self._local_window
@@ -908,6 +1005,9 @@ class LaneBudget:
             "plan": asdict(plan),
             "limit": self.limit(),
             "cap": self.cap(),
+            "resident_limit": self.resident_limit(),
+            "standby": self.resident_limit() - plan.lanes,
+            "live_processes": self._live_processes(),
             "run_in_use_domain": run,
             "resident_domain": resident,
             "spawns_in_window": record.spawns_in_window,

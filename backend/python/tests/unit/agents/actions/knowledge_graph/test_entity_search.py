@@ -306,7 +306,7 @@ async def test_missing_and_unreadable_read_the_same(wired: dict[str, Any]) -> No
 
 
 @pytest.mark.asyncio
-async def test_unchecked_ambiguous_and_timed_out_are_explained(wired: dict[str, Any]) -> None:
+async def test_unchecked_and_ambiguous_are_explained_and_a_cut_short_check_is_not(wired: dict[str, Any]) -> None:
     wired["linking"] = _linking(
         _result("Globex", LinkStatus.UNVERIFIED, unchecked=[_candidate("e-n", "Globex Systems Inc")]),
         _result("Sam", LinkStatus.AMBIGUOUS, kind="person"),
@@ -319,7 +319,8 @@ async def test_unchecked_ambiguous_and_timed_out_are_explained(wired: dict[str, 
     assert ok
     assert "could not be checked and were not used: Globex Systems Inc (organization)" in text
     assert '"Sam" (person): too many readable entities start with this name; give the full name.' in text
-    assert "access checks were cut short" in text
+    # Only candidates not yet found readable keep a check running.
+    assert "cut short" not in text
 
 
 @pytest.mark.asyncio
@@ -443,6 +444,7 @@ class TestPermissions:
             side_effect=lambda org, ids: [nodes[i] for i in ids if i in nodes and org == self.ORG],
         )
         graph.find_named_entities_by_key_prefix = AsyncMock(return_value=[])
+        graph.find_named_entities_by_alias = AsyncMock(return_value=[])
         graph.get_named_entity_mentions_in_records = AsyncMock(side_effect=lambda org, entity_ids, record_ids: [
             {"recordId": r, "entityId": e, "extractedNames": ["Contoso"], "blockIndexes": [0], "mentionCount": 1}
             for e in entity_ids for r in record_ids if e in nodes and r == self.RECORD["_key"]

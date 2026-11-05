@@ -1127,6 +1127,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                     citationMaps={pair.citationMaps}
                     citationCallbacks={citationCallbacks}
                     confidence={pair.confidence}
+                    searchDegraded={pair.searchDegraded}
                     isStreaming={pair.isStreaming}
                     modelInfo={pair.modelInfo}
                     collections={pair.collections}

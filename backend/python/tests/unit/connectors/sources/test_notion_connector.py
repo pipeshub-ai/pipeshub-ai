@@ -1,57 +1,52 @@
 """Tests for the Notion connector and block parser."""
 
 import asyncio
-
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.connectors.sources.notion.block_parser import NotionBlockParser
-from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.notion.connector import (
     NotionConnector,
     UnconvertibleImageError,
     _DatabaseGone,
 )
-from app.sources.client.notion.notion import NotionRESTClientViaOAuth
-from app.utils.public_http import PublicFetchResponse
 from app.models.blocks import (
     Block,
+    BlockComment,
     BlockGroup,
     BlockSubType,
     BlockType,
-    DataFormat,
-)
-from app.models.entities import FileRecord, RecordType, WebpageRecord
-from fastapi import HTTPException
-from app.models.blocks import (
-    BlockComment,
     ChildRecord,
     ChildType,
     CommentAttachment,
+    DataFormat,
     GroupSubType,
     TableRowMetadata,
 )
 from app.models.entities import (
+    FileRecord,
     RecordGroupType,
+    RecordType,
+    WebpageRecord,
 )
-
+from app.sources.client.notion.notion import NotionRESTClientViaOAuth
+from app.utils.public_http import PublicFetchResponse
+from tests.support.data_store import runs_in_its_transaction
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _runs_in_its_transaction(provider: MagicMock) -> MagicMock:
-    """execute_in_transaction runs the block in the mock's own transaction()."""
-    async def execute_in_transaction(func, *args, **kwargs) -> object:
-        async with provider.transaction() as tx_store:
-            return await func(tx_store, *args, **kwargs)
-    provider.execute_in_transaction = execute_in_transaction
-    return provider
 
 
 def _make_connector():
@@ -67,7 +62,8 @@ def _make_connector():
     data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
     data_entities_processor.get_records_by_record_type = AsyncMock(return_value=[])
-    data_store_provider = _runs_in_its_transaction(MagicMock())
+    runs_in_its_transaction(data_entities_processor.data_store_provider)
+    data_store_provider = runs_in_its_transaction(MagicMock())
     config_service = AsyncMock()
     connector_id = "notion-conn-1"
     connector = NotionConnector(
@@ -2438,7 +2434,8 @@ def _make_connector_fullcov():
     dep.get_record_group_by_external_id = AsyncMock(return_value=None)
     dep.get_user_by_source_id = AsyncMock(return_value=None)
     dep.get_records_by_record_type = AsyncMock(return_value=[])
-    dsp = _runs_in_its_transaction(MagicMock())
+    runs_in_its_transaction(dep.data_store_provider)
+    dsp = runs_in_its_transaction(MagicMock())
     mock_tx = MagicMock()
     mock_tx.get_record_group_by_external_id = AsyncMock(return_value=None)
     tx_cm = AsyncMock()
@@ -7390,7 +7387,6 @@ class TestDatabaseParentLookupFailures:
 
 
 import re  # noqa: E402
-
 
 # ===================================================================
 # Delta checkpoint boundary: Notion truncates last_edited_time to the

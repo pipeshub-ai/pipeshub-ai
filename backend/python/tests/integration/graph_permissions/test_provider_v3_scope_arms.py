@@ -488,12 +488,14 @@ async def test_deleted_nodes_are_excluded_from_every_arm(
 
 async def test_placeholders_are_browsed_but_never_results(v3_graph, neo4j_provider) -> None:
     """The global flatten and a filtered browse drop placeholders on the node;
-    browsing into a group lists them (``test_provider_v3_placeholders.py``)."""
+    browsing into a group lists those with something readable below them
+    (``test_provider_v3_placeholders.py``)."""
     assert "v3-dec-placeholder" not in await _visible(neo4j_provider)
     browsed = await _visible(
         neo4j_provider, start_id="v3-dec", start_type="recordGroup", flatten=False,
     )
-    assert {"v3-dec-folder", "v3-dec-placeholder"} <= browsed
+    assert "v3-dec-folder" in browsed
+    assert "v3-dec-placeholder" not in browsed  # nothing readable below it
     searched = await _visible(
         neo4j_provider, start_id="v3-dec", start_type="recordGroup", flatten=False,
         filters={"search_query": "placeholder"},
@@ -595,8 +597,9 @@ async def test_granted_nodes_in_the_declared_scope_do_not_seed_their_children(
 
 async def test_the_walk_stops_at_a_declared_group(v3_graph, neo4j_provider) -> None:
     """What only the walk reached below v3-dec leaves the global flatten; a
-    granted node there still comes back as a seed; folder browse, which walks
-    hop by hop, still shows all of it."""
+    granted node there still comes back as a seed; folder browse lists the
+    same, since the access check does not walk on from a member of a declared
+    group either."""
     visible = await _visible(neo4j_provider)
     assert PRUNE_GAP.isdisjoint(visible)
     assert "v3-dec-attach-granted" in visible
@@ -604,7 +607,7 @@ async def test_the_walk_stops_at_a_declared_group(v3_graph, neo4j_provider) -> N
         neo4j_provider, start_id="v3-dec-folder", start_type="record",
         flatten=False,
     )
-    assert browsed == PRUNE_GAP | {"v3-dec-attach-granted"}
+    assert browsed == {"v3-dec-attach-granted"}
 
 
 async def test_browsing_into_a_declared_group_still_walks_it(
@@ -711,12 +714,14 @@ async def test_the_flatten_query_shape(v3_graph, neo4j_provider, monkeypatch) ->
     assert not re.search(
         r"\.id IN (regionA|declared|declaredScope|belowDeclared|seeds)\b", flatten,
     )
+    # A browse stops inheritance at a declared group (a flatten stops its walk there once, above), so its
+    # query carries the same test, once for each place the browse rule is written.
     for overrides in (
         {"flatten": False},
         {"start_id": "v3-dec", "start_type": "recordGroup"},
     ):
         query = await _page_query(neo4j_provider, monkeypatch, **overrides)
-        assert DECLARED_STOP not in query, overrides
+        assert "= 'RECORD_GROUP_LEVEL'" in query, overrides
     # Browse walks up from its start: bound in the pattern, the App becomes the
     # planner's starting point and the walk covers the whole connector.
     browse = await _page_query(neo4j_provider, monkeypatch, start_id="v3-dec-folder", start_type="record")

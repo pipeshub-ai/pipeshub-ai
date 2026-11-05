@@ -244,7 +244,7 @@ class OneTopicProducer:
         )
 
 
-async def run_stranded_sweep(graph, producer, consumer, topic: str, *, hours_later: float) -> int:
+async def run_stranded_sweep(graph, producer, consumer, topic: str, *, hours_later: float, org_id: str = "org-1") -> int:
     """The real stranded-record sweep, asking ``consumer`` what is still
     waiting on ``topic``, run as if ``hours_later`` hours had gone by since."""
     from app import indexing_main
@@ -264,5 +264,6 @@ async def run_stranded_sweep(graph, producer, consumer, topic: str, *, hours_lat
             run_coordination=run_coordination,
             concurrency_manager=None,
             page_size=100,
+            org_id=org_id,
             read_backlog=lambda: consumer.lane_backlog(topic),
         )

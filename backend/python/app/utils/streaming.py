@@ -35,6 +35,7 @@ from app.connectors.core.base.error.stream_errors import (
 )
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.excel.prompt_template import RowDescriptions
+from app.modules.retrieval import degraded_notice
 from app.services.llm_gateway.gateway import Invocable, get_llm_gateway, provider_key
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.citations import (
@@ -678,12 +679,12 @@ async def handle_simple_mode(
 
                 yield {
                     "event": "complete",
-                    "data": {
+                    "data": degraded_notice.flag({
                         "answer": normalized,
                         "citations": cites,
                         "reason": None,
                         "confidence": confidence,
-                    },
+                    }),
                 }
                 return
         except Exception as e:
@@ -1030,12 +1031,12 @@ async def call_aiter_llm_stream_simple(
         )
         yield {
             "event": "complete",
-            "data": {
+            "data": degraded_notice.flag({
                 "answer": normalized,
                 "citations": cites,
                 "reason": None,
                 "confidence": confidence,
-            },
+            }),
         }
     except Exception as exc:
         logger.error("Error in call_aiter_llm_stream_simple", exc_info=True)

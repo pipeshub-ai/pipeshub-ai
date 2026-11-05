@@ -29,6 +29,7 @@ from app.connectors.services.trash_purge import (
     TrashPurger,
     stored_document_ids,
 )
+from app.core import org_context
 from app.exceptions.graph_db_exceptions import GraphLockUnavailableError
 from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 from app.services.graph_db.common.utils import trash_purge_row
@@ -63,6 +64,7 @@ class _Graph:
         self.refuse_counting = False
         self.groups_removed: list[str] = []
         self.calls: list[str] = []
+        self.org_keys = [ORG]
 
     def trash(self, key: str, *, days_ago: float, connector: str = "kb-1", **extra: object) -> None:
         self.records[key] = {
@@ -169,7 +171,7 @@ class _Graph:
             if raise_on_error:
                 raise RuntimeError("graph down")
             return []
-        return [] if is_external else [{"_key": ORG}]
+        return [] if is_external else [{"_key": key} for key in self.org_keys]
 
 
 class _KV:
@@ -191,6 +193,19 @@ class _KV:
 
     def outbox(self) -> dict:
         return {k: v for k, v in self.values.items() if k.startswith(OUTBOX_DIRECTORY)}
+
+
+class _OrgKV(_KV):
+    """Platform settings per org, answered for the org bound when they are read; unbound raises."""
+
+    def __init__(self, settings_by_org: dict[str, dict]) -> None:
+        super().__init__()
+        self.settings_by_org = settings_by_org
+
+    async def get_config(self, key, default=None, use_cache=False, *, raise_on_error=False) -> object:
+        if key == PLATFORM_SETTINGS_KEY:
+            return {"softDeletePurge": copy.deepcopy(self.settings_by_org.get(org_context.current_org_id(), {}))}
+        return await super().get_config(key, default, use_cache, raise_on_error=raise_on_error)
 
 
 class _SharedLease:
@@ -233,6 +248,7 @@ class _Broker:
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SOFT_DELETE_PURGE_INTERVAL_SECONDS", raising=False)
     monkeypatch.delenv("SOFT_DELETE_PURGE_MIN_AGE_SECONDS", raising=False)
+    monkeypatch.delenv("SOFT_DELETE_PURGE_MAX_RUN_SECONDS", raising=False)
 
 
 def _purger(
@@ -349,7 +365,7 @@ class TestTick:
     async def test_the_time_budget_pauses_the_run(self, clean_env) -> None:
         graph, kv = _Graph(), _KV({"maxRunMinutes": 1})
         graph.trash("a", days_ago=20)
-        clock = iter([0.0, 61.0])
+        clock = iter([0.0, 0.0, 61.0])
         assert await _purger(graph, kv, monotonic=lambda: next(clock)).tick() == Outcome.PAUSED
         assert "a" in graph.records
 
@@ -383,6 +399,92 @@ class TestTick:
         assert await _purger(graph, kv).tick() == Outcome.FINISHED
 
         assert set(graph.records) == {"young"}, "the retention still holds"
+
+
+class TestPerOrgSettings:
+    async def test_an_org_switched_off_is_passed_over_and_the_others_purge(self, clean_env) -> None:
+        graph, kv = _Graph(), _OrgKV({ORG: {"enabled": False}})
+        graph.org_keys = [ORG, "org-2"]
+        graph.trash("a", days_ago=20)
+        graph.trash("b", days_ago=20, orgId="org-2")
+
+        assert await _purger(graph, kv).tick() == Outcome.FINISHED
+        assert set(graph.records) == {"a"}
+
+    async def test_each_org_keeps_its_own_retention(self, clean_env) -> None:
+        graph, kv = _Graph(), _OrgKV({ORG: {"minAgeDays": 30}})
+        graph.org_keys = [ORG, "org-2"]
+        graph.trash("a", days_ago=20)
+        graph.trash("b", days_ago=20, orgId="org-2")
+
+        assert await _purger(graph, kv).tick() == Outcome.FINISHED
+        assert set(graph.records) == {"a"}
+
+    async def test_an_unreadable_org_setting_stops_the_tick_instead_of_using_the_defaults(self, clean_env) -> None:
+        graph, kv = _Graph(), _OrgKV({"org-2": {"minAgeDays": 30}})
+        graph.org_keys = [ORG, "org-2"]
+        graph.trash("b", days_ago=20, orgId="org-2")
+        read = kv.get_config
+
+        async def org_2_unreadable(key, default=None, use_cache=False, *, raise_on_error=False) -> object:
+            if key == PLATFORM_SETTINGS_KEY and org_context.current_org_id() == "org-2":
+                if raise_on_error:
+                    raise ConnectionError("store did not answer")
+                return default
+            return await read(key, default, use_cache, raise_on_error=raise_on_error)
+
+        kv.get_config = org_2_unreadable
+        # The default 14-day retention would remove "b"; its org keeps it for 30 days.
+        with pytest.raises(ConnectionError):
+            await _purger(graph, kv).tick()
+        assert "b" in graph.records
+
+        kv.get_config = read
+        assert await _purger(graph, kv).tick() == Outcome.FINISHED
+        assert "b" in graph.records
+
+    async def test_with_every_org_off_it_is_disabled(self, clean_env) -> None:
+        graph, kv = _Graph(), _OrgKV({ORG: {"enabled": False}, "org-2": {"enabled": False}})
+        graph.org_keys = [ORG, "org-2"]
+        graph.trash("a", days_ago=20)
+
+        assert await _purger(graph, kv).tick() == Outcome.DISABLED
+        assert graph.calls == []
+
+    async def test_the_service_wide_cap_stops_the_run_and_the_next_tick_resumes(
+        self, clean_env, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        graph, kv = _Graph(), _OrgKV({ORG: {"pageSize": 1}, "org-2": {"pageSize": 1}})
+        graph.org_keys = [ORG, "org-2"]
+        graph.trash("a", days_ago=20)
+        graph.trash("b", days_ago=20, orgId="org-2")
+        clock = {"now": 0.0}
+        listing = graph.get_purgeable_trashed_records
+
+        async def a_page_takes_a_minute(*args, **kwargs) -> dict:
+            clock["now"] += 61
+            return await listing(*args, **kwargs)
+
+        graph.get_purgeable_trashed_records = a_page_takes_a_minute
+        monkeypatch.setenv("SOFT_DELETE_PURGE_MAX_RUN_SECONDS", "60")
+
+        # Each org's own budget (maxRunMinutes, 120) is far off; the cap across orgs is not.
+        assert await _purger(graph, kv, monotonic=lambda: clock["now"]).tick() == Outcome.PAUSED
+        assert set(graph.records) == {"b"}
+        assert kv.values[STATE_KEY]["status"] == "running"
+
+        monkeypatch.delenv("SOFT_DELETE_PURGE_MAX_RUN_SECONDS")
+        assert await _purger(graph, kv, monotonic=lambda: clock["now"]).tick() == Outcome.FINISHED
+        assert graph.records == {}
+
+    async def test_a_run_starts_on_any_enabled_orgs_schedule(self, clean_env) -> None:
+        graph, kv = _Graph(), _OrgKV({ORG: {"runHourUtc": 9}})
+        graph.org_keys = [ORG, "org-2"]
+        graph.trash("a", days_ago=20)
+        graph.trash("b", days_ago=20, orgId="org-2")
+
+        assert await _purger(graph, kv, now=_ms(2026, 10, 4, 9)).tick() == Outcome.FINISHED
+        assert graph.records == {}
 
 
 class TestTrees:

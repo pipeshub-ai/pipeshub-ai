@@ -1363,6 +1363,62 @@ export const enterpriseSearchRetrieveSchema = z.object({
   }),
 });
 
+/**
+ * Exact-text search. The pattern is literal text unless `regex` is true; the
+ * AI service refuses what it cannot run (back-references, an invalid
+ * expression) and answers 400 with the reason.
+ */
+export const enterpriseSearchGrepSchema = z.object({
+  body: z.object({
+    pattern: z
+      .string()
+      .min(1, { message: 'A pattern is required' })
+      .max(500, { message: 'A pattern must be at most 500 characters' })
+      .refine((value) => !/[\r\n\0]/.test(value), {
+        message: 'A pattern must be one line',
+      }),
+    regex: z.boolean().optional(),
+    caseSensitive: z.boolean().optional(),
+    filters: filtersSchema,
+    paths: z.array(z.string().min(1).max(256)).max(20).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    contextLines: z.number().int().min(0).max(10).optional(),
+    maxMatchesPerRecord: z.number().int().min(1).max(50).optional(),
+    timeBudgetMs: z.number().int().min(500).max(30000).optional(),
+  }),
+});
+
+const ENTITY_TYPES = [
+  'department',
+  'category',
+  'subcategory',
+  'topic',
+  'language',
+  'record_group',
+  'record',
+  'named_entity',
+] as const;
+
+export const enterpriseSearchEntitiesSchema = z.object({
+  body: z.object({
+    query: z.string().min(1, { message: 'A query is required' }).max(500),
+    entityTypes: z.array(z.enum(ENTITY_TYPES)).max(10).optional(),
+    namedEntityKinds: z.array(z.string().min(1).max(64)).max(10).optional(),
+    limit: z.number().int().min(1).max(25).optional(),
+  }),
+});
+
+export const enterpriseSearchEntityNeighborsSchema = z.object({
+  body: z.object({
+    entityId: z.string().min(1).max(256),
+    entityType: z.enum(ENTITY_TYPES),
+    recordTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    recordLimit: z.number().int().min(1).max(50).optional(),
+    relatedLimit: z.number().int().min(1).max(50).optional(),
+    cursor: z.string().max(64).optional(),
+  }),
+});
+
 export const enterpriseSearchSearchHistorySchema = z.object({
   params: z.object({
     limit: limitSchema.optional(),

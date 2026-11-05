@@ -1,0 +1,28 @@
+- id: REGR-05
+  title: 'Below a seed: OPEN descendants admitted, STRICT not; the seed becomes RESTRICTED and everything below hides'
+  source: independent review of the conformance harness
+  rule: union
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: D, kind: app}
+      - {id: top, kind: group, connector: D, rule: OPEN, parents: [D], belongs: [D]}
+      - {id: f, kind: record, connector: D, rule: OPEN, parents: [top], belongs: [top]}
+      - {id: c1, kind: record, connector: D, rule: OPEN, parents: [f], inherits: [f], belongs: [top]}
+      - {id: c2, kind: record, connector: D, rule: STRICT, parents: [f], inherits: [f], belongs: [top]}
+      - {id: gc, kind: record, connector: D, rule: OPEN, parents: [c1], inherits: [c1], belongs: [top]}
+      - {id: gc2, kind: record, connector: D, parents: [c1], inherits: [c1], belongs: [top]}
+    grants:
+      - [u, f]
+    gates:
+      - [u, D]
+  mutations:
+    - {kind: rule_set, node: f, value: RESTRICTED}
+  expect:
+    before:
+      u: {f: admit, c1: admit, c2: deny, gc: admit, gc2: admit, top: deny}
+    verdicts:
+      u: {f: deny, c1: deny, gc: deny, gc2: deny}
+  tags: [regression, qa, seed, narrowing]
+  comment: The viewer cannot walk from the app (top neither inherits nor is granted), so only the seed arms decide. gc2 has no accessRule, which reads OPEN.

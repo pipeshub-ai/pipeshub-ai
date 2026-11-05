@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.modules.indexing import lane_upkeep
+from tests.support.bound_org import bind_test_org
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -17,3 +18,8 @@ def _no_lane_report_left_behind() -> Iterator[None]:
     same process."""
     yield
     lane_upkeep._last_reports.clear()
+
+
+@pytest.fixture
+def bound_org() -> Iterator[str]:
+    yield from bind_test_org()

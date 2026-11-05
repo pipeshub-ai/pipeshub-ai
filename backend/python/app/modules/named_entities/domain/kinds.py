@@ -209,6 +209,11 @@ def default_enabled_kinds() -> frozenset[EntityKind]:
     return frozenset(kind for kind, spec in ENTITY_TYPE_REGISTRY.items() if spec.default_enabled)
 
 
+# Kinds whose short forms name one thing across records ("Pinecrest" for "Pinecrest
+# Hospitality"). A person's first name is shared by every person with it, so it is not one.
+ALIAS_KINDS = frozenset({EntityKind.ORGANIZATION, EntityKind.PRODUCT})
+
+
 def semantic_kinds(enabled: frozenset[EntityKind]) -> frozenset[EntityKind]:
     return frozenset(
         kind for kind in enabled if ENTITY_TYPE_REGISTRY[kind].source is EntitySource.SEMANTIC
