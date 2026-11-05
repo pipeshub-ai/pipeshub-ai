@@ -184,6 +184,16 @@ async def test_a_page_of_the_whole_connector_restamp_that_reaches_another_connec
     assert (await held_stamps(p, org))["x1"][0] == ("g1", "f2")
 
 
+async def test_a_child_that_comes_in_another_connector_takes_its_parent_out_of_leaf_in_the_drain(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    assert (await held_stamps(p, org))["f2"][7] is True
+    await add_edge(p, org, ("records", "f2"), ("records", "x1"), "nodeRelations", relationshipType="PARENT_CHILD")      # x1 is in the second connector
+    await drain_org(pg_db, org)
+    assert (await held_stamps(p, org))["f2"][7] is False and await dry_diffs(p, org, "app1") == []
+
+
 async def test_the_records_of_a_deleted_connector_are_refused_as_without_an_app_and_come_back_with_it(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await world2(p, org)
