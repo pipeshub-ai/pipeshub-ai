@@ -26,7 +26,7 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthToken,
     RefreshTokenInvalidError,
 )
-from app.sources.client.resilience import ResiliencePolicy
+from app.sources.client.resilience import ResiliencePolicy, report_source_throttled
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 
@@ -138,6 +138,7 @@ class RenewingSlackDataSource:
                 if policy is None or not _rate_limited(response) or attempt >= policy.max_retries:
                     return response
                 delay = policy.backoff(attempt, _retry_after_seconds(response))
+                report_source_throttled(_HTTP_TOO_MANY_REQUESTS, delay)
                 if self._logger:
                     self._logger.warning(
                         "Slack rate-limited %s (Retry-After: %s); retrying in %.1fs (attempt %d of %d)",

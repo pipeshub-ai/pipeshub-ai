@@ -10,6 +10,7 @@ import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
 import { findNodeInCategorized } from '../utils/find-node';
 import { ConnectorItemComponent } from './section-element';
+import { useSyncingConnectorIds } from './use-syncing-connector-ids';
 import type {
   Connector,
   ConnectorItem as ConnectorItemType,
@@ -116,6 +117,7 @@ export function AllRecordsMode({
   isLoadingRootAppListMore,
 }: AllRecordsModeProps) {
   const { t } = useTranslation();
+  const syncingConnectorIds = useSyncingConnectorIds();
 
   return (
     <>
@@ -183,6 +185,7 @@ export function AllRecordsMode({
               }
             }}
             onAppSelect={() => onAppSelect?.(app.id)}
+            isSyncing={!isKbApp && syncingConnectorIds.has(app.id)}
             isLoading={loadingAppIds.has(app.id)}
             onFolderSelect={(nodeType, nodeId) => {
               // For KB root-level collections, also update the selection state

@@ -97,6 +97,8 @@ interface AppSectionProps {
   isExpanded?: boolean;
   onChevronClick?: () => void;
   onAppSelect?: () => void;
+  /** The connector is syncing now; a pulsing dot says so beside its name. */
+  isSyncing?: boolean;
 }
 
 /**
@@ -127,7 +129,9 @@ export function AppSection({
   isExpanded = true,
   onChevronClick,
   onAppSelect,
+  isSyncing = false,
 }: AppSectionProps) {
+  const { t } = useTranslation();
   const isKbApp = isKbCollectionsHubApp(app);
   const connectorType = mapConnectorType(app.connector || app.name);
   const hierarchicalTree = categorizedTree ?? connectorTree;
@@ -279,6 +283,23 @@ export function AppSection({
               </Text>
             </Tooltip>
           </Box>
+          {isSyncing ? (
+            <Tooltip content={t('workspace.connectors.instanceStatus.sync.syncing')} delayDuration={200}>
+              <Box
+                role="img"
+                aria-label={t('workspace.connectors.instanceStatus.sync.syncing')}
+                style={{
+                  width: 6,
+                  height: 6,
+                  marginRight: 'var(--space-1)',
+                  borderRadius: 'var(--radius-full)',
+                  backgroundColor: 'var(--accent-9)',
+                  flexShrink: 0,
+                  animation: 'shimmer-pulse 1.6s ease-in-out infinite',
+                }}
+              />
+            </Tooltip>
+          ) : null}
         </Flex>
       </Flex>
 

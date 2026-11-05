@@ -133,6 +133,10 @@ async def call_with_retry(
                     # Cap backoff at 60 seconds
                     backoff = min(backoff, 60.0)
 
+                    # Imported here: the resilience module imports this one.
+                    from app.sources.client.resilience import report_source_throttled
+
+                    report_source_throttled(result.status, backoff)
                     await asyncio.sleep(backoff)
                     continue
 

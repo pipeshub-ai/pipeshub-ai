@@ -921,10 +921,12 @@ class OneDriveConnector(BaseConnector):
 
             if not self._pass_date_filters(item):
                 self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to date filters.")
+                self.progress.note_filtered("date")
                 return None
 
             if not self._pass_extension_filter(item):
                 self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to extention filters.")
+                self.progress.note_filtered("extension")
                 return None
 
             # Get existing record if any
@@ -2585,6 +2587,7 @@ class OneDriveConnector(BaseConnector):
                 )
 
             # Process users in concurrent batches
+            self.progress.set_units("user", 0, len(users_to_sync))
             for i in range(0, len(users_to_sync), self.max_concurrent_batches):
                 batch = users_to_sync[i:i + self.max_concurrent_batches]
 
@@ -2594,6 +2597,7 @@ class OneDriveConnector(BaseConnector):
                 ]
 
                 await asyncio.gather(*sync_tasks, return_exceptions=True)
+                self.progress.advance_units("user", len(batch))
                 await asyncio.sleep(1)
 
             self.logger.info("Completed processing all user batches")

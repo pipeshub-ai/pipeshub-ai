@@ -83,16 +83,23 @@ async def test_changed_completed_record_is_reindexed_from_scratch() -> None:
     assert processed.md5_hash is None
 
 
-@pytest.mark.parametrize(
-    "status",
-    [ProgressStatus.FAILED.value, ProgressStatus.QUEUED.value, ProgressStatus.IN_PROGRESS.value],
-)
-async def test_unchanged_record_not_completed_starts_clean(status: str) -> None:
-    processed, _ = await _processor()._process_record(_incoming(), [], _store(_stored(status)))
+async def test_unchanged_failed_record_retried_by_a_sync_starts_clean() -> None:
+    processed, _ = await _processor()._process_record(_incoming(), [], _store(_stored(ProgressStatus.FAILED.value)))
 
+    assert processed.indexing_status == ProgressStatus.NOT_STARTED.value
     assert processed.parsing_status == ProgressStatus.NOT_STARTED.value
     assert processed.extraction_status == ProgressStatus.NOT_STARTED.value
     assert processed.md5_hash is None
+
+
+@pytest.mark.parametrize("status", [ProgressStatus.QUEUED.value, ProgressStatus.IN_PROGRESS.value])
+async def test_unchanged_record_already_on_its_way_keeps_what_indexing_stored(status: str) -> None:
+    processed, _ = await _processor()._process_record(_incoming(), [], _store(_stored(status)))
+
+    assert processed.indexing_status == status
+    assert processed.keeps_indexing_state
+    assert processed.parsing_status == ProgressStatus.COMPLETED.value
+    assert processed.md5_hash == "stored-md5"
 
 
 async def test_unchanged_record_restored_for_reindexing_starts_clean() -> None:

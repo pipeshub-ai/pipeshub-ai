@@ -1736,6 +1736,7 @@ class LocalFsConnector(BaseConnector):
                     rel_path,
                 )
                 skipped += 1
+                self.progress.note_filtered("extension")
                 retire.extend(e for e in (new_ext_id, moved_from_ext_id) if e)
             elif not self._pass_date_filters(event, sync_filters):
                 self.logger.debug(
@@ -1743,6 +1744,7 @@ class LocalFsConnector(BaseConnector):
                     rel_path,
                 )
                 skipped += 1
+                self.progress.note_filtered("date")
                 retire.extend(e for e in (new_ext_id, moved_from_ext_id) if e)
             else:
                 skip = False

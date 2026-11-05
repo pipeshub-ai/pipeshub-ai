@@ -881,6 +881,8 @@ class ConnectorRegistry:
                 'lastSyncOutcome': instance_data.get('lastSyncOutcome'),
                 'lastSyncSummary': _parsed_summary(instance_data.get('lastSyncSummary')),
                 'actionItems': _parsed_action_items(instance_data.get('actionItems')),
+                # A first sync whose content is not all searchable yet; search and chat say so.
+                'awaitingFirstSync': bool(instance_data.get('awaitingFirstSync')),
                 '_key': instance_data.get('_key') or instance_data.get('id'),
                 'name': instance_data.get('name'),
                 'scope': instance_data.get('scope', ConnectorScope.PERSONAL.value),

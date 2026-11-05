@@ -2799,6 +2799,7 @@ class ConfluenceConnector(BaseConnector):
         for that type have succeeded, so a failed read or delete is repeated by the
         next sync. A space that fails is reported and the rest still sync.
         """
+        self.progress.set_units("space", 0, len(spaces))
         for space in spaces:
             try:
                 await self._sync_space_content(space)
@@ -2807,6 +2808,7 @@ class ConfluenceConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"Could not sync space {space.short_name}: {e}", exc_info=True)
                 self._note_problem(f"Space {space.short_name}: sync failed ({str(e)[:200]}); the next sync tries again")
+            self.progress.advance_units("space")
 
     async def _sync_space_content(self, space: RecordGroup) -> None:
         """One space's folders, pages and blog posts, then what left it."""

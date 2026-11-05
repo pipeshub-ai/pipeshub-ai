@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import extract_source_status
+from app.connectors.core.sync.sync_progress import report_throttled
 from app.sources.client.github.github import GitHubResponse
 
 from .constants import (
@@ -368,6 +369,7 @@ class RuntimeHelper:
                     "GitHub rate limit on %s (%s); waiting %.0fs, resets at %s (attempt %s/%s).",
                     label, reason, wait, resets_at, attempt, _GITHUB_MAX_RETRIES,
                 )
+                report_throttled(wait)
                 await asyncio.sleep(wait)
             elif self._is_retryable_error(response):
                 if attempt == _GITHUB_MAX_RETRIES:

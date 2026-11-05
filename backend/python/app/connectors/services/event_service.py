@@ -35,6 +35,7 @@ from app.connectors.core.sync.sync_coordinator import (
     get_coordinator,
     stop_wait_sec,
 )
+from app.connectors.core.sync.sync_progress import SyncTrigger
 from app.connectors.core.sync.sync_runner import (
     drain_queued_syncs,
     resumes_interrupted_full_sync,
@@ -399,11 +400,14 @@ class EventService:
         """Config service for an event's org"""
         return self.app_container.config_service()
 
-    async def _ensure_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
+    async def _ensure_connector(
+        self, connector_name: str, connector_id: str, *, sync_trigger: str | None = None
+    ) -> BaseConnector | None:
         """
         Get connector from memory, or auto-initialize it if missing.
         Handles the case where the init event was missed or the service restarted.
         Checks that the connector is active in the database before initializing.
+        ``sync_trigger`` is set when a sync needs it, so an init failure is recorded as that sync failing.
         """
         # Cacheable only where the cache can be invalidated. This process pops
         # the entry when credentials or filters change (see router); a process
@@ -427,7 +431,7 @@ class EventService:
             self.logger.warning(
                 f"{connector_name} connector {connector_id} not in memory — attempting auto-initialization"
             )
-            return await self._auto_initialize_connector(connector_name, connector_id)
+            return await self._auto_initialize_connector(connector_name, connector_id, sync_trigger=sync_trigger)
 
     async def get_or_init_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
         """Live connector instance for HTTP callers, built from its app doc if missing."""
@@ -453,7 +457,7 @@ class EventService:
         return stored
 
     async def _auto_initialize_connector(
-        self, connector_name: str, connector_id: str
+        self, connector_name: str, connector_id: str, *, sync_trigger: str | None = None
     ) -> BaseConnector | None:
         """Build and store a connector. Caller must hold ``connector_init_lock``."""
         cacheable = not sync_executor_enabled()
@@ -494,6 +498,7 @@ class EventService:
                 notification_service=self.app_container.connector_notification_service(),
                 connector_instance_name=connector_doc.get("name"),
                 last_synced_by=last_synced_by,
+                sync_trigger=sync_trigger,
             )
 
             if not connector:
@@ -842,12 +847,17 @@ class EventService:
             # Re-enabling publishes a fresh event.
             return True, False
 
-        connector = await self._ensure_connector(connector_name, connector_id)
+        trigger = payload.get("trigger")
+        connector = await self._ensure_connector(
+            connector_name, connector_id, sync_trigger=SyncTrigger.parse(trigger).value
+        )
         if not connector:
             self.logger.error(f"{connector_name.capitalize()} {connector_id} connector could not be initialized")
             return False, False
 
         synced_by = payload.get("syncedBy", "")
+        # A schedule carries the id of whoever set it up; only a click is "started by" someone.
+        started_by = synced_by if trigger == "manual" and synced_by else None
         if synced_by:
             await self.graph_provider.update_node(
                 connector_id, CollectionNames.APPS.value,
@@ -967,6 +977,8 @@ class EventService:
                             connector_name=connector_name,
                             org_id=org_id,
                         ),
+                        trigger=trigger,
+                        started_by=started_by,
                     ),
                 )
 
@@ -1029,6 +1041,8 @@ class EventService:
                         connector_name=connector_name,
                         org_id=org_id,
                     ),
+                    trigger=trigger,
+                    started_by=started_by,
                 ),
             )
             if task is None:
@@ -1553,10 +1567,25 @@ class EventService:
                     ProgressStatus.COMPLETED.value if _is_folder(record)
                     else ProgressStatus.NOT_STARTED.value
                 )
+                record.auto_retry_count = 0
             for status in (ProgressStatus.NOT_STARTED.value, ProgressStatus.COMPLETED.value):
                 ids = [r.id for r in records if r.id and r.indexing_status == status]
                 if ids:
                     await self.graph_provider.update_indexing_status_for_record_ids(ids, status)
+
+            # Someone asked for these, so syncs may retry them again if they fail again.
+            # Every id, not just those with a count in memory: most typed loaders don't read it.
+            # Best effort: the statuses above are stored already, and the records must
+            # still reach the connector.
+            record_ids_to_update = [r.id for r in records if r.id]
+            if record_ids_to_update:
+                try:
+                    await self.graph_provider.batch_update_nodes(
+                        [{"id": rid, "autoRetryCount": 0} for rid in record_ids_to_update],
+                        CollectionNames.RECORDS.value,
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Could not reset sync retries for {len(record_ids_to_update)} record(s): {e}")
 
             await connector.reindex_records(records)
 

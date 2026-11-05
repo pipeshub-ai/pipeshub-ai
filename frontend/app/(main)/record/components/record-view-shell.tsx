@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertDialog, Box, Flex, Text, IconButton, Button, Tooltip } from '@radix-ui/themes';
 import { useThemeAppearance } from '@/app/components/theme-provider';
@@ -36,6 +36,9 @@ import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { canGoBackInApp } from '@/lib/electron';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
+
+const STILL_INDEXING = new Set(['NOT_STARTED', 'QUEUED', 'IN_PROGRESS', 'PAUSED']);
+const RECORD_STATUS_POLL_MS = 10_000;
 
 const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 3;
@@ -370,6 +373,27 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   };
 
   const indexingStatus = recordDetails?.record?.indexingStatus;
+
+  const [statusPollRetries, retryStatusPoll] = useReducer((n: number) => n + 1, 0);
+
+  // Until the record is searchable, keep its status current without re-streaming the file.
+  useEffect(() => {
+    if (!recordId || !indexingStatus || !STILL_INDEXING.has(indexingStatus)) return;
+    let cancelled = false;
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const updated = await KnowledgeBaseApi.getRecordDetails(recordId);
+        if (!cancelled) setRecordDetails(updated);
+      } catch {
+        // Not worth an error; try again on the next tick.
+        if (!cancelled) retryStatusPoll();
+      }
+    }, RECORD_STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [recordId, indexingStatus, recordDetails, statusPollRetries]);
 
   const getReindexButtonLabel = (status: string | undefined): string => {
     switch (status) {

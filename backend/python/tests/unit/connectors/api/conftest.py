@@ -23,6 +23,7 @@ import importlib
 import inspect
 
 import pytest
+from dependency_injector.wiring import unwire
 
 # Imported for its side effect (see above), so through importlib rather than
 # as an unused name.
@@ -37,3 +38,11 @@ def _base_connector_resolvers(monkeypatch: pytest.MonkeyPatch) -> None:
     for name, fn in inspect.getmembers(base_resolvers, inspect.isfunction):
         if fn.__module__ == base_resolvers.__name__ and hasattr(router_module, name):
             monkeypatch.setattr(router_module, name, fn)
+
+
+@pytest.fixture(autouse=True)
+def _unwired_router() -> None:
+    # Building a ConnectorAppContainer (importing app.connectors_main does) wires
+    # the router, and a wired route then injects its Provide[...] arguments on top
+    # of the ones these tests pass. Keep it plain whatever ran before in this worker.
+    unwire(modules=[router_module])

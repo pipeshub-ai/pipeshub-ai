@@ -608,6 +608,7 @@ class GCSConnector(BaseConnector):
             await self._create_record_groups_for_buckets(buckets_to_sync, bucket_ts_map)
 
             # Sync each bucket
+            self.progress.set_units("bucket", 0, sum(1 for b in buckets_to_sync if b))
             for bucket_name in buckets_to_sync:
                 if not bucket_name:
                     continue
@@ -619,6 +620,8 @@ class GCSConnector(BaseConnector):
                         f"Error syncing bucket {bucket_name}: {e}", exc_info=True
                     )
                     continue
+                finally:
+                    self.progress.advance_units("bucket")
 
             self.logger.info("GCS full sync completed.")
         except Exception as ex:
@@ -1000,13 +1003,17 @@ class GCSConnector(BaseConnector):
                             is_folder = key.endswith("/")
 
                             if not (scope.includes_folder(key) if is_folder else scope.includes_file(key)):
+                                if not is_folder:
+                                    self.progress.note_filtered("folder")
                                 continue
 
                             if not is_folder and not extension_passes_filter(sync_filters, get_file_extension(key)):
                                 self.logger.debug(f"Skipping {key}: excluded by the file extensions filter")
+                                self.progress.note_filtered("extension")
                                 continue
 
                             if not self._pass_date_filters(obj, *user_date_filters):
+                                self.progress.note_filtered("date")
                                 continue
 
                             # Kept before processing: an object that fails to process still exists.
@@ -1779,6 +1786,7 @@ class GCSConnector(BaseConnector):
                 self.logger.warning("No buckets to sync")
                 return
 
+            self.progress.set_units("bucket", 0, sum(1 for b in buckets_to_sync if b))
             for bucket_name in buckets_to_sync:
                 if not bucket_name:
                     continue
@@ -1790,6 +1798,8 @@ class GCSConnector(BaseConnector):
                         f"Error in incremental sync for bucket {bucket_name}: {e}", exc_info=True
                     )
                     continue
+                finally:
+                    self.progress.advance_units("bucket")
 
             self.logger.info("GCS incremental sync completed.")
         except Exception as ex:

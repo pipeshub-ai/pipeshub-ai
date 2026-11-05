@@ -4407,6 +4407,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info(f"Processing {len(users_to_sync)} active users out of {len(users)} total users")
 
             # Process users in concurrent batches
+            self.progress.set_units("user", 0, len(users_to_sync))
             for i in range(0, len(users_to_sync), self.max_concurrent_batches):
                 batch = users_to_sync[i:i + self.max_concurrent_batches]
 
@@ -4426,6 +4427,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     # cleanup must not treat their files as deleted.
                     self._sync_ledger.note_incomplete()
                     self.logger.warning(f"{failed} user sync(s) in this batch failed")
+                self.progress.advance_units("user", len(batch))
 
                 # Small delay between batches to prevent overwhelming the API
                 await asyncio.sleep(1)

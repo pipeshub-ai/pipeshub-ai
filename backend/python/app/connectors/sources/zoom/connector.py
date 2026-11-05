@@ -364,6 +364,7 @@ class ZoomConnector(BaseConnector):
                 await self.data_entities_processor.on_new_app_users(app_users)
                 self.logger.info("👥 Zoom: synced %d app users", len(app_users))
 
+            self.progress.set_units("user", 0, len(users))
             for zoom_user in users:
                 try:
                     await self._sync_meetings_for_user(zoom_user, today)
@@ -372,6 +373,8 @@ class ZoomConnector(BaseConnector):
                         "❌ Zoom: error syncing user %s: %s", zoom_user.id or "unknown", exc, exc_info=True
                     )
                     continue
+                finally:
+                    self.progress.advance_units("user")
 
             self.logger.info("✅ Zoom: sync complete.")
 

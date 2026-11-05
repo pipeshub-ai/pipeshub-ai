@@ -774,6 +774,7 @@ class SlackIndividualConnector(BaseConnector):
             channels = await self._sync_channels()
 
             # Phase 3 — Messages per channel (per-RecordGroup sync point)
+            self.progress.set_units("channel", 0, sum(1 for rg in channels if rg.external_group_id))
             for rg in channels:
                 if rg.external_group_id:
                     try:
@@ -785,6 +786,7 @@ class SlackIndividualConnector(BaseConnector):
                             f"{rg.external_group_id}: {exc}",
                             exc_info=True,
                         )
+                    self.progress.advance_units("channel")
 
             # Phase 4 — Thread-growth detection (edit detection bypassed for now)
             await self._sync_thread_growth()

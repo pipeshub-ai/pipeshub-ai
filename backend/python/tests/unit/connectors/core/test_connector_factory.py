@@ -470,6 +470,41 @@ class TestInitializeConnector:
         assert str(error) == "init boom", "the connector hears why it could not start"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("sync_trigger", [None, "schedule"])
+    async def test_an_init_failure_is_recorded_only_when_a_sync_asked_for_it(self, sync_trigger: str | None) -> None:
+        """A sync that cannot start shows its reason on the card; building one for an API call does not."""
+        data_store = MagicMock()
+        mock_connector = AsyncMock()
+        mock_connector.init.side_effect = RuntimeError("401 Unauthorized")
+        mock_cls = MagicMock()
+        mock_cls.create_connector = AsyncMock(return_value=mock_connector)
+        ConnectorFactory.register_connector("test_init_record", mock_cls)
+        mock_processor = MagicMock()
+        mock_processor.initialize = AsyncMock()
+
+        with patch(
+            "app.connectors.core.factory.connector_factory.record_failed_start", new_callable=AsyncMock
+        ) as record:
+            await ConnectorFactory.initialize_connector(
+                name="test_init_record",
+                logger=MagicMock(),
+                data_store_provider=data_store,
+                config_service=MagicMock(),
+                connector_id="conn-8",
+                scope="team",
+                created_by="user-123",
+                data_entities_processor_cls=MagicMock(return_value=mock_processor),
+                sync_trigger=sync_trigger,
+            )
+
+        if sync_trigger is None:
+            record.assert_not_awaited()
+        else:
+            (gp, _, connector_id, error), kwargs = record.await_args
+            assert gp is data_store.graph_provider and connector_id == "conn-8"
+            assert str(error) == "401 Unauthorized" and kwargs == {"trigger": "schedule"}
+
+    @pytest.mark.asyncio
     async def test_create_returns_none_skips_init(self):
         """If create_connector returns None, init is not called."""
         logger = MagicMock()

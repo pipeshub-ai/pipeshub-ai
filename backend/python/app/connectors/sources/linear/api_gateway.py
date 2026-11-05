@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from logging import Logger
 from typing import Any
 
+from app.connectors.core.sync.sync_progress import report_throttled
 from app.sources.client.graphql.response import GraphQLResponse
 from app.sources.external.linear.linear import LinearDataSource
 
@@ -112,6 +113,7 @@ class LinearGateway:
             if isinstance(error, LinearRateLimited) and rate_waits:
                 wait = rate_waits.pop(0)
                 self._logger.warning("Linear rate limit on %s; retrying in %ss", name, wait)
+                report_throttled(wait)
             elif isinstance(error, LinearTransientError) and transient_waits:
                 wait = transient_waits.pop(0)
                 self._logger.warning("Linear %s failed (%s); retrying in %ss", name, error, wait)
