@@ -1186,7 +1186,10 @@ func kernel.waive_sequence(regclass,regclass,name,text,text) owner=pipeshub_owne
 func kg.coll_code(text) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=bff17b2e559aaf658f7f0db3bedc067d ext=-
 func kg.edge_ends(text,text,text,text,text,jsonb) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=e671570d28e072cd101915e10014ed37 ext=-
 func kg.edge_sem(text,jsonb) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=4ee117750a97059370f78e27a2b20ea6 ext=-
+func kg.log_graph_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;enable_nestloop=off;jit=off body=228db794b639e0d34e78454f91e856b9 ext=-
 func kg.proj_doc(text,jsonb) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=e4d226f14291993cd491a2d70f1c2146 ext=-
+func kg.refuse_truncate() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, pg_temp body=7e7bdc290cfd80fba9d7f003e6e3314f ext=-
+func kg.stamp_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, pg_temp body=9b8e44a765c404cfd58a435604150d46 ext=-
 func kg.w_app_cross_set(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=d39fe554581dafffacce0dee83a7b721 ext=-
 func kg.w_app_facts_set(bigint,boolean,boolean) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=e81274fd2cfe9af69cd104b6ffe729dd ext=-
 func kg.w_changes_ack() owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=67c0169b30ad4cd4f591b50a2a49e7b7 ext=-
@@ -1257,7 +1260,10 @@ funcacl kernel.restore_allows(text) pipeshub_restore EXECUTE
 funcacl kg.coll_code(text) PUBLIC EXECUTE
 funcacl kg.edge_ends(text,text,text,text,text,jsonb) PUBLIC EXECUTE
 funcacl kg.edge_sem(text,jsonb) PUBLIC EXECUTE
+funcacl kg.log_graph_change() PUBLIC EXECUTE
 funcacl kg.proj_doc(text,jsonb) PUBLIC EXECUTE
+funcacl kg.refuse_truncate() PUBLIC EXECUTE
+funcacl kg.stamp_change() PUBLIC EXECUTE
 funcacl kg.w_app_cross_set(bigint[]) pipeshub_connectors EXECUTE
 funcacl kg.w_app_facts_set(bigint,boolean,boolean) pipeshub_connectors EXECUTE
 funcacl kg.w_changes_ack() pipeshub_connectors EXECUTE
@@ -2304,12 +2310,18 @@ relacl kg.class_literals pipeshub_vetted_kg INSERT grantable=false
 relacl kg.class_literals pipeshub_vetted_kg SELECT grantable=false
 relacl kg.class_literals pipeshub_vetted_kg UPDATE grantable=false
 relacl kg.graph_changes pipeshub_backup SELECT grantable=false
+relacl kg.graph_changes pipeshub_connectors INSERT grantable=false
 relacl kg.graph_changes pipeshub_connectors SELECT grantable=false
+relacl kg.graph_changes pipeshub_indexing INSERT grantable=false
 relacl kg.graph_changes pipeshub_indexing SELECT grantable=false
+relacl kg.graph_changes pipeshub_query INSERT grantable=false
 relacl kg.graph_changes pipeshub_query SELECT grantable=false
 relacl kg.graph_changes pipeshub_restore INSERT grantable=false
 relacl kg.graph_changes pipeshub_vetted_kg DELETE grantable=false
 relacl kg.graph_changes pipeshub_vetted_kg SELECT grantable=false
+relacl kg.graph_changes_id_seq pipeshub_connectors USAGE grantable=false
+relacl kg.graph_changes_id_seq pipeshub_indexing USAGE grantable=false
+relacl kg.graph_changes_id_seq pipeshub_query USAGE grantable=false
 relacl kg.links pipeshub_backup SELECT grantable=false
 relacl kg.links pipeshub_connectors SELECT grantable=false
 relacl kg.links pipeshub_indexing SELECT grantable=false
@@ -2918,6 +2930,14 @@ trigger conversation.chat_sessions docstore_change_log enabled=O function=platfo
 trigger conversation.citations docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger conversation.semantic_search_members docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger conversation.semantic_searches docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger graph.edges kg_edges_delete enabled=A function=kg.log_graph_change()
+trigger graph.edges kg_edges_insert enabled=A function=kg.log_graph_change()
+trigger graph.edges kg_edges_truncate enabled=A function=kg.refuse_truncate()
+trigger graph.edges kg_edges_update enabled=A function=kg.log_graph_change()
+trigger graph.nodes kg_nodes_delete enabled=A function=kg.log_graph_change()
+trigger graph.nodes kg_nodes_insert enabled=A function=kg.log_graph_change()
+trigger graph.nodes kg_nodes_truncate enabled=A function=kg.refuse_truncate()
+trigger graph.nodes kg_nodes_update enabled=A function=kg.log_graph_change()
 trigger identity.org_auth_config docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger identity.org_logos docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger identity.slug_counters docstore_change_log enabled=O function=platform.docstore_log_change()
@@ -2929,6 +2949,7 @@ trigger identity.user_groups docstore_change_log enabled=O function=platform.doc
 trigger identity.user_pictures docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger identity.users docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger integrations.slack_threads docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger kg.graph_changes kg_changes_stamp enabled=A function=kg.stamp_change()
 trigger oauth.access_tokens docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger oauth.agent_registrations docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger oauth.apps docstore_change_log enabled=O function=platform.docstore_log_change()

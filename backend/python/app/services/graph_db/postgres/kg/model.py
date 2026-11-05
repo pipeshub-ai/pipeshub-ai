@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 # collection -> the small code kg.graph_changes and kg.node_keys store (kg.coll_code)
+MAX_ID = 256            # the longest node id the vetted writers take (w_nodes_upsert); a node with a longer one is not part of the typed tables (it is as if it were not there)
 COLL_CODE = {"apps": 1, "recordGroups": 2, "records": 3, "users": 4, "groups": 5, "roles": 6, "teams": 7, "organizations": 8}
 CODE_COLL = {v: k for k, v in COLL_CODE.items()}
 RECORD_COLLS = ("apps", "recordGroups", "records")          # the nodes that have a kg.records row; kind = position + 1
