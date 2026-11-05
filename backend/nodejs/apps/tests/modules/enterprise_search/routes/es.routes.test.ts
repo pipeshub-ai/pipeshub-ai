@@ -475,6 +475,34 @@ describe('Enterprise Search Routes', () => {
     })
   })
 
+  describe('entity routes', () => {
+    const find = (path: string): any =>
+      createSemanticSearchRouter(container).stack.find(
+        (layer: any) => layer.route?.path === path && layer.route.methods.post,
+      )
+
+    for (const path of ['/grep', '/entities', '/entities/neighbors']) {
+      it('POST ' + path + ' authenticates, checks the semantic scopes, then validates, in that order', () => {
+        const layer = find(path)
+        expect(layer, path).to.not.equal(undefined)
+        const stack = layer.route.stack
+        expect(stack).to.have.length(4) // authenticate, requireScopes, validate, handler
+        const next = sinon.spy()
+        stack[1].handle({ user: { isOAuth: true, oauthScopes: ['kb:read'] } }, {}, next)
+        expect(next.firstCall.args[0], 'a token without semantic scopes is refused').to.be.an('error')
+        const ok = sinon.spy()
+        stack[1].handle({ user: { isOAuth: true, oauthScopes: ['semantic:read'] } }, {}, ok)
+        expect(ok.firstCall.args[0]).to.be.undefined
+      })
+    }
+
+    it('registers them above /:searchId so a search id cannot be read as one of these paths', () => {
+      const paths = createSemanticSearchRouter(container).stack.filter((l: any) => l.route).map((l: any) => l.route.path)
+      expect(paths.indexOf('/entities/neighbors')).to.be.greaterThan(-1)
+      expect(paths.indexOf('/entities/neighbors')).to.be.lessThan(paths.indexOf('/:searchId'))
+    })
+  })
+
   it('should register search archive/unarchive routes', () => {
     const router = createSemanticSearchRouter(container)
     const routes = router.stack

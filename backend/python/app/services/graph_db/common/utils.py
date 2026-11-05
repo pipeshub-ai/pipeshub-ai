@@ -486,7 +486,8 @@ def restore_items(
     items: list[dict[str, Any]] = []
     reclaims: list[dict[str, str]] = []
     for item in restores:
-        fields = dict(item.get("set") or {})
+        # the trash state is cleared by the restore: a caller's value for it is not written back over the clearing
+        fields = {k: v for k, v in dict(item.get("set") or {}).items() if k != "isDeleted" and k not in TRASH_STATE_FIELDS}
         if external_id := item.get("reclaimExternalRecordId"):
             fields["externalRecordId"] = external_id
             reclaims.append({"id": item["id"], "ext": external_id})

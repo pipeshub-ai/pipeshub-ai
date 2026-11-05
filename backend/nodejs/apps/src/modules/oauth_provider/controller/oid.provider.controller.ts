@@ -16,7 +16,13 @@ import {
   buildWwwAuthenticateHeader,
 } from '../middlewares/oauth.auth.middleware';
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service';
-import { mcpDiscoveryScopes } from '../config/scopes.config';
+import {
+  agentAuthEnabled,
+  AGENT_CLAIM_GRANT,
+  JWT_BEARER_GRANT,
+} from '../constants/agent-auth.constants';
+import { AgentMcpScopes, mcpDiscoveryScopes } from '../config/scopes.config';
+import { renderAuthMd } from '../utils/auth-md';
 
 /**
  * OpenID Connect Provider Controller
@@ -114,6 +120,9 @@ export class OIDCProviderController {
       ? await this.firstPartyDeviceAppService.getOrCreate()
       : null;
 
+    // Registration follows first-party device login, and needs the app it signs in as.
+    const agentAuth = agentAuthEnabled() && deviceClientId !== null;
+
     const config: OpenIDConfiguration = {
       issuer: this.appConfig.oauthIssuer,
       authorization_endpoint: `${baseUrl}/authorize`,
@@ -129,6 +138,16 @@ export class OIDCProviderController {
       ...(deviceClientId
         ? { pipeshub_device_client_id: deviceClientId }
         : {}),
+      ...(agentAuth
+        ? {
+            agent_auth: {
+              skill: `${backendUrl}/auth.md`,
+              identity_endpoint: `${backendUrl}/api/v1/agent/identity`,
+              claim_endpoint: `${backendUrl}/api/v1/agent/identity/claim`,
+              identity_types_supported: ['service_auth'],
+            },
+          }
+        : {}),
       scopes_supported: this.scopeValidatorService
         .getAllScopes()
         .map((s) => s.name),
@@ -140,6 +159,7 @@ export class OIDCProviderController {
         ...(deviceEnabled
           ? ['urn:ietf:params:oauth:grant-type:device_code']
           : []),
+        ...(agentAuth ? [JWT_BEARER_GRANT, AGENT_CLAIM_GRANT] : []),
         // Service-account delegation, advertised only where it exists.
         // Listing a grant the token endpoint will always refuse would send
         // integrators down a road that ends in an error, and discovery is
@@ -174,6 +194,40 @@ export class OIDCProviderController {
     };
 
     res.json(config);
+  }
+
+  /**
+   * GET /auth.md and /.well-known/auth.md: how an agent gets a credential for
+   * this instance and uses it (Markdown). Built from the same settings as
+   * discovery, so the two never disagree.
+   */
+  async authMd(
+    _req: Request,
+    res: Response,
+    next: NextFunction,
+    extraSections: (origin: string) => string[],
+  ): Promise<void> {
+    try {
+      const origin = this.appConfig.oauthIssuer;
+      const deviceEnabled =
+        process.env.PIPESHUB_ENABLE_DEVICE_GRANT !== 'false';
+      const offered = new Set(this.appConfig.mcpScopes);
+      res.type('text/markdown; charset=utf-8').send(
+        renderAuthMd({
+          origin,
+          deviceClientId: deviceEnabled
+            ? await this.firstPartyDeviceAppService.getOrCreate()
+            : null,
+          dcrEnabled: process.env.PIPESHUB_ENABLE_DCR === 'true',
+          agentScopes: AgentMcpScopes.filter((s) => offered.has(s)),
+          // The device app's preset adds offline_access where MCP_SCOPES allows it.
+          deviceRefreshes: deviceEnabled && offered.has('offline_access'),
+          extraSections: extraSections(origin),
+        }),
+      );
+    } catch (error) {
+      next(error);
+    }
   }
 
   /**

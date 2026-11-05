@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import AppStatus, CollectionNames
+from app.services.permissions.structure_generation import note_structure_change
 from app.connectors.core.base.connector.connector_service import (
     ConnectorSyncSkippedError,
     connector_sync_lock,
@@ -692,7 +693,11 @@ async def _unlink_what_full_sync_missed(
         )
     except Exception as e:
         logger.error(f"Could not unlink what the full sync of {connector_id} missed: {e}")
+        await note_structure_change(graph_provider, connector_id, logger)  # part of it may have run
         return False
+    if deleted or not ok:
+        # a structural write made outside the transaction store (it removes hierarchy, group, inherit and grant edges)
+        await note_structure_change(graph_provider, connector_id, logger)
     if ok:
         logger.info(f"Full sync of {connector_id}: removed {deleted} edge(s) of nodes it did not see")
     return bool(ok)

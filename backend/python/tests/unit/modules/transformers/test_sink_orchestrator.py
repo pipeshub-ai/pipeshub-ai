@@ -171,17 +171,27 @@ class TestApply:
         )
 
     @pytest.mark.asyncio
-    async def test_failed_completed_status_write_is_non_fatal(self):
+    async def test_a_record_deleted_while_indexed_saves_nothing_more(self) -> None:
+        """The COMPLETED write finds the record gone: no reconciliation save (it would
+        bring back the content mapping the delete removed, without its org), and the
+        event ends as deleted."""
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "IN_PROGRESS"},
             vector_result=True,
         )
         orch.graph_provider.batch_update_nodes.return_value = False
+        ctx = _make_ctx()
+        ctx.record.virtual_record_id = "vr-1"
+        ctx.record.org_id = "org-1"
+        ctx.reconciliation_context = MagicMock(new_metadata={"hashes": {}})
 
-        await orch.index(_make_ctx())
+        with pytest.raises(RecordDeletedError):
+            await orch.index(ctx)
 
         orch.vector_store.apply.assert_awaited_once()
-        orch.graph_provider.batch_update_nodes.assert_awaited()
+        orch.blob_storage.save_reconciliation_metadata.assert_not_awaited()
+        orch.graph_provider.create_node_if_absent.assert_not_awaited()
+        orch.graph_provider.batch_upsert_nodes.assert_not_awaited()
 
 
 class TestSkipBlob:

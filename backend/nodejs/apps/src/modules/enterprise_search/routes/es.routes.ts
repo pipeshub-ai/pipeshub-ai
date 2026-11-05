@@ -1,5 +1,10 @@
 import { NextFunction, Router, Response } from 'express';
 import { Container } from 'inversify';
+import {
+  grepRecords,
+  searchEntities,
+  entityNeighbors,
+} from '../controller/exact_search.controller';
 import multer from 'multer';
 import { createMulter } from '../../../libs/utils/multer.utils';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
@@ -83,6 +88,9 @@ import {
   enterpriseSearchStreamCreateSchema,
   enterpriseSearchSearchSchema,
   enterpriseSearchRetrieveSchema,
+  enterpriseSearchEntitiesSchema,
+  enterpriseSearchGrepSchema,
+  enterpriseSearchEntityNeighborsSchema,
   enterpriseSearchSearchHistorySchema,
   searchIdParamsSchema,
   addMessageParamsSchema,
@@ -619,6 +627,36 @@ export function createSemanticSearchRouter(container: Container): Router {
     ),
     ValidationMiddleware.validate(enterpriseSearchSearchSchema),
     search(appConfig),
+  );
+
+  // Exact-text search and the entity graph. These sit above `/:searchId` and are POST, so no search id can be read as one of these paths.
+  const entityRoute = (
+    path: string,
+    schema: Parameters<typeof ValidationMiddleware.validate>[0],
+    handler: ReturnType<typeof searchEntities>,
+  ): void => {
+    router.post(
+      path,
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- used as a method reference by every route in this file
+      authMiddleware.authenticate,
+      requireScopes(
+        OAuthScopeNames.SEMANTIC_READ,
+        OAuthScopeNames.SEMANTIC_WRITE,
+      ),
+      ValidationMiddleware.validate(schema),
+      handler,
+    );
+  };
+  entityRoute('/grep', enterpriseSearchGrepSchema, grepRecords(appConfig));
+  entityRoute(
+    '/entities',
+    enterpriseSearchEntitiesSchema,
+    searchEntities(appConfig),
+  );
+  entityRoute(
+    '/entities/neighbors',
+    enterpriseSearchEntityNeighborsSchema,
+    entityNeighbors(appConfig),
   );
 
   router.get(

@@ -8,6 +8,11 @@ export const SWR_NS = {
   teamConnectorLists: 'connectors/team-lists',
   agentDetails: 'agents/detail',
   projectDetails: 'projects/detail',
+  org: 'org',
+  aiModelConfig: 'ai-models/config',
+  aiModelRegistry: 'ai-models/registry',
+  profile: 'profile',
+  myToolCatalog: 'tools/my-catalog',
 } as const;
 
 export type SwrNamespace = (typeof SWR_NS)[keyof typeof SWR_NS];
@@ -25,11 +30,46 @@ export const SWR_POLICY = {
   list30s: { dedupingInterval: 30_000, shouldRetryOnError: false },
   /** Org lists (agents, team connectors): not refetched on focus. */
   list60s: { dedupingInterval: 60_000, shouldRetryOnError: false, revalidateOnFocus: false },
+  /** The caller's own toolsets and MCP servers: reused for 5 min, never refetched on focus or reconnect. */
+  list5m: {
+    dedupingInterval: 300_000,
+    shouldRetryOnError: false,
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+  },
+  /**
+   * Read once per session (org, model config, profile): only this user's own
+   * writes change it, and they update or invalidate the cache.
+   */
+  sessionStable: {
+    // The dedupe marker is the "fresh" flag: invalidation and sign-out delete it, so the
+    // next mount refetches. Largest timer delay; Infinity would fire at once.
+    dedupingInterval: 2_147_483_647,
+    shouldRetryOnError: false,
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+  },
 } as const satisfies Record<string, SWRConfiguration>;
+
+const revalidateListeners = new Map<SwrNamespace, Set<() => void>>();
+
+/**
+ * Lets a cache kept outside SWR (a store) drop its copy whenever `ns` is
+ * invalidated. Returns a function that unsubscribes.
+ */
+export function onSwrNamespaceRevalidate(ns: SwrNamespace, listener: () => void): () => void {
+  const listeners = revalidateListeners.get(ns) ?? new Set<() => void>();
+  listeners.add(listener);
+  revalidateListeners.set(ns, listeners);
+  return () => {
+    listeners.delete(listener);
+  };
+}
 
 /** Refetches mounted keys of `ns` now; keys not mounted refetch on their next mount. */
 export function revalidateSwrNamespace(ns: SwrNamespace): void {
   void mutate((key) => Array.isArray(key) && key[0] === ns);
+  revalidateListeners.get(ns)?.forEach((listener) => listener());
 }
 
 /** Refetches `key` now if it is mounted, otherwise on its next mount, even inside its window. */

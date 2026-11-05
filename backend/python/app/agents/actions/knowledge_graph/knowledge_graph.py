@@ -1071,7 +1071,9 @@ class KnowledgeGraph:
             "Q3 Roadmap', 'what's in this Drive folder', 'Legal's documents'). For content "
             "inside an entity, use search(entity_ids=[...]) instead.\n\n"
             "Pages with cursor: when more records may exist the output ends with the exact "
-            "call for the next page. There are no totals. 'No accessible records found' is the "
+            "call for the next page. The first page's header states how many readable records "
+            "the entity has in all ('N shown of T'), 'at least T' when counting stopped early, or "
+            "that the total is not available: answer 'how many' from it instead of counting pages. 'No accessible records found' is the "
             "same response whether the entity has no records or none you can access; paging "
             "past the last page says so separately."
         ),

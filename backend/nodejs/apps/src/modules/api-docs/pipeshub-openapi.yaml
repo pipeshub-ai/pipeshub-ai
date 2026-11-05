@@ -2657,6 +2657,8 @@ components:
             - refresh_token
             - urn:ietf:params:oauth:grant-type:device_code
             - urn:ietf:params:oauth:grant-type:token-exchange
+            - urn:workos:agent-auth:grant-type:claim
+            - urn:ietf:params:oauth:grant-type:jwt-bearer
           description: |
             OAuth grant type:
             - `authorization_code`: Exchange auth code for tokens
@@ -2669,6 +2671,22 @@ components:
               short-lived token that acts as one named person. Enterprise
               edition; kept in this enum because the request shape is the same
               wherever the grant is offered.
+            - `urn:workos:agent-auth:grant-type:claim`: An agent registered with
+              `POST /agent/identity` polls for the token its user approves. Sends
+              `claim_token` and no `client_id`. Offered when device login is.
+            - `urn:ietf:params:oauth:grant-type:jwt-bearer`: An agent exchanges the
+              `identity_assertion` it was given for a fresh access token (RFC 7523).
+              Sends `assertion` and no `client_id`. Offered when device login is.
+        claim_token:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: The `claim_token` from `POST /agent/identity` (claim grant only)
+        assertion:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: The `identity_assertion` a claim grant returned (jwt-bearer grant only)
         code:
           type: string
           description: Authorization code (required for authorization_code grant)
@@ -2762,6 +2780,16 @@ components:
             the token-exchange grant, where it is always
             `urn:ietf:params:oauth:token-type:access_token`.
           example: "urn:ietf:params:oauth:token-type:access_token"
+        identity_assertion:
+          type: string
+          description: |
+            Returned by the claim grant once, with the first token. A JWT (`typ` `oauth-id-jag+jwt`)
+            signed by this server; exchange it with the jwt-bearer grant for a new access token
+            until `assertion_expires`.
+        assertion_expires:
+          type: string
+          format: date-time
+          description: When `identity_assertion` stops working (30 days after it was issued)
     ServiceAccountDelegation:
       type: object
       description: |
@@ -2861,7 +2889,9 @@ components:
         client_id:
           type: string
           minLength: 1
-          description: Client ID
+          description: |
+            Client ID. Required unless `token` is an agent identity assertion or an access token
+            issued under an agent registration, which are their own credential.
         client_secret:
           type: string
           description: |
@@ -2870,7 +2900,6 @@ components:
             wrong secret is `401 invalid_client`.
       required:
         - token
-        - client_id
     OAuthIntrospectRequest:
       type: object
       description: |
@@ -3086,6 +3115,34 @@ components:
           type: string
           description: Client ID of the built-in first-party public client that CLIs and devices use for the device authorization grant. PipesHub extension; omitted when the device grant is disabled.
           example: pipeshub-agent
+        agent_auth:
+          type: object
+          description: |
+            Agent registration (auth.md). Omitted, together with the two agent grants in
+            `grant_types_supported`, when the device grant is disabled.
+          properties:
+            skill:
+              type: string
+              format: uri
+              description: The agent-readable `auth.md` of this server
+            identity_endpoint:
+              type: string
+              format: uri
+              description: "`POST /agent/identity`"
+            claim_endpoint:
+              type: string
+              format: uri
+              description: "`POST /agent/identity/claim`"
+            identity_types_supported:
+              type: array
+              items:
+                type: string
+              example: ["service_auth"]
+          required:
+            - skill
+            - identity_endpoint
+            - claim_endpoint
+            - identity_types_supported
         scopes_supported:
           type: array
           items:
@@ -3102,7 +3159,7 @@ components:
           type: array
           items:
             type: string
-          description: Supported grant types. The device_code grant is listed unless the device grant is disabled. The token-exchange grant (`urn:ietf:params:oauth:grant-type:token-exchange`) is listed only in the Enterprise edition.
+          description: Supported grant types. The device_code grant is listed unless the device grant is disabled. The token-exchange grant (`urn:ietf:params:oauth:grant-type:token-exchange`) is listed only in the Enterprise edition. The agent grants (`urn:workos:agent-auth:grant-type:claim` and `urn:ietf:params:oauth:grant-type:jwt-bearer`) are listed with `agent_auth`.
           example: ["authorization_code", "client_credentials", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"]
         token_endpoint_auth_methods_supported:
           type: array
@@ -9270,6 +9327,11 @@ components:
             duration:
               type: integer
               minimum: 0
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     CreateConversationResponse:
       type: object
       additionalProperties: false
@@ -9303,6 +9365,11 @@ components:
               type: integer
               minimum: 0
               description: Total handler duration in milliseconds.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     AgentStreamCreateConversationRequest:
       allOf:
         - $ref: '#/components/schemas/AgentCreateConversationRequest'
@@ -9882,6 +9949,11 @@ components:
               description: |
                 Same value as the top-level `recordsUsed`. Duplicated inside
                 `meta` for client convenience.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     AgentAddMessageStreamRequest:
       allOf:
         - $ref: '#/components/schemas/AgentAddMessageRequest'
@@ -12406,6 +12478,11 @@ components:
           $ref: '#/components/schemas/SemanticSearchTimeline'
         outsideDates:
           $ref: '#/components/schemas/SemanticSearchOutsideDates'
+        searchDegraded:
+          type: boolean
+          description: |
+            Present (`true`) only when the search store answered from a partial search.
+            The results are valid but may be incomplete.
         searchIncomplete:
           type: string
           description: |
@@ -15953,6 +16030,7 @@ components:
           `result` is `{ conversation, recordsUsed, meta }` — the updated
           conversation plus request metadata after the regenerated response
           is persisted.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` returns `{ type, message, code? }`. Conversation
           lookup failures, unauthorized conversation access, and regenerate
           rule failures such as "not the last message" are reported here.
@@ -16005,6 +16083,7 @@ components:
         - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
           persisted `conversation` and a `meta` block with `requestId`,
           `timestamp` and `duration`.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — `{ type, message, code? }`. The conversation row is
           marked FAILED before the stream closes.
 
@@ -16062,6 +16141,7 @@ components:
         - `RUN_FINISHED` — fired once after the AI backend finishes.
           The gateway emits `{ type, result }`; `result` carries the full
           persisted `conversation` and a `meta` block.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
           before close.
@@ -16122,6 +16202,7 @@ components:
           `{ conversation, recordsUsed, meta }`.
           `recordsUsed` is the count of citations attached to the new
           assistant message.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
           before close.
@@ -16179,6 +16260,8 @@ components:
         `{ type, result }` and `RUN_ERROR` as `{ type, message, code? }`.
         Clients should ignore unknown event names rather than treating them
         as errors.
+        Optional `result.meta.searchDegraded` (`true`) is present on `RUN_FINISHED` only when a search behind the
+        answer was answered from a partial search.
       properties:
         event:
           type: string
@@ -16228,6 +16311,7 @@ components:
           parsed, citations are saved, and the updated conversation is
           persisted. The gateway emits `{ type, result }`; `result` carries
           `{ conversation, recordsUsed, meta }`.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired for runtime failures after the stream has
           already started, including conversation lookup failures, upstream
           AI startup failures, save failures, and stream transport errors.
@@ -20771,6 +20855,222 @@ components:
       required:
         - error
         - error_description
+    AgentAuthError:
+      type: object
+      additionalProperties: false
+      description: Error body of the agent registration routes. `error` is a string.
+      properties:
+        error:
+          type: string
+          example: invalid_claim_token
+        error_description:
+          type: string
+      required:
+        - error
+        - error_description
+    AgentClaimCeremony:
+      type: object
+      properties:
+        user_code:
+          type: string
+          description: Six digits, valid for `expires_in` seconds. Show it to the person.
+          example: "123456"
+        expires_in:
+          type: integer
+          example: 600
+        verification_uri:
+          type: string
+          format: uri
+          description: The page where the person signs in and types the code
+        interval:
+          type: integer
+          description: Least seconds between polls of the claim grant
+          example: 5
+      required:
+        - user_code
+        - expires_in
+        - verification_uri
+        - interval
+    AgentIdentityRequest:
+      type: object
+      properties:
+        type:
+          type: string
+          maxLength: 64
+          description: Must be `service_auth`
+        login_hint:
+          type: string
+          maxLength: 320
+          description: The email of the person the agent works for
+      required:
+        - type
+        - login_hint
+    AgentIdentityResponse:
+      type: object
+      properties:
+        registration_id:
+          type: string
+          example: reg_66f1c0a2b3c4d5e6f7a8b9c0
+        registration_type:
+          type: string
+          enum:
+            - service_auth
+        claim_url:
+          type: string
+          format: uri
+        claim_token:
+          type: string
+          description: Shown once. Poll the claim grant with it.
+          example: clm_Xw3q
+        claim_token_expires:
+          type: string
+          format: date-time
+        post_claim_scopes:
+          type: array
+          items:
+            type: string
+          description: What the token will carry once the person approves (the scopes of a device sign-in by the agent app, less `offline_access`)
+        claim:
+          $ref: '#/components/schemas/AgentClaimCeremony'
+      required:
+        - registration_id
+        - registration_type
+        - claim_url
+        - claim_token
+        - claim_token_expires
+        - post_claim_scopes
+        - claim
+    AgentClaimRequest:
+      type: object
+      properties:
+        claim_token:
+          type: string
+          minLength: 1
+          maxLength: 256
+        email:
+          type: string
+          format: email
+          maxLength: 320
+      required:
+        - claim_token
+        - email
+    AgentClaimResponse:
+      type: object
+      properties:
+        registration_id:
+          type: string
+        claim_attempt_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - initiated
+        expires_at:
+          type: string
+          format: date-time
+        claim_attempt:
+          $ref: '#/components/schemas/AgentClaimCeremony'
+      required:
+        - registration_id
+        - claim_attempt_id
+        - status
+        - expires_at
+        - claim_attempt
+    AgentClaimVerifyRequest:
+      type: object
+      properties:
+        claim_attempt_token:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: From the `verification_uri`
+      required:
+        - claim_attempt_token
+    AgentClaimVerifyResponse:
+      type: object
+      properties:
+        scopes:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              description:
+                type: string
+              category:
+                type: string
+        user:
+          type: object
+          properties:
+            email:
+              type: string
+          required:
+            - email
+      required:
+        - scopes
+        - user
+    AgentClaimCompleteRequest:
+      type: object
+      properties:
+        claim_attempt_token:
+          type: string
+          minLength: 1
+          maxLength: 256
+        user_code:
+          type: string
+          maxLength: 32
+          description: The code the agent showed. Required to approve.
+        action:
+          type: string
+          enum:
+            - approve
+            - deny
+      required:
+        - claim_attempt_token
+        - action
+    AgentClaimCompleteResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        status:
+          type: string
+          enum:
+            - claimed
+            - revoked
+      required:
+        - ok
+        - status
+    AgentRegistrationList:
+      type: object
+      properties:
+        registrations:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: The registration id (`reg_…`)
+              status:
+                type: string
+                enum:
+                  - claimed
+                  - consumed
+              created_at:
+                type: string
+                format: date-time
+              updated_at:
+                type: string
+                format: date-time
+            required:
+              - id
+              - status
+              - created_at
+              - updated_at
+      required:
+        - registrations
     ProjectAppliedFilterNode:
       type: object
       additionalProperties: false
@@ -23399,6 +23699,11 @@ components:
               type: integer
               minimum: 0
               description: Same value as the top-level `recordsUsed`.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     StoredAIModelsConfig:
       type: object
       additionalProperties: false
@@ -23878,6 +24183,386 @@ components:
         $ref:
           type: string
           example: '#/components/responses/XssRejected'
+    GrepRequest:
+      type: object
+      description: Request body for `POST /search/grep`.
+      required:
+        - pattern
+      properties:
+        pattern:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: One line of text to find. Literal unless `regex` is `true`.
+          example: "compute_invoice_total_v2"
+        regex:
+          type: boolean
+          default: false
+          description: |
+            Read `pattern` as a regular expression (Python syntax, including
+            `\d`, `\w`, `\b`, lookarounds and `(?i)`). Refused with `400`: a
+            back-reference or any reference to an earlier group; a counted
+            repeat above 100; a counted repeat inside another counted repeat or
+            after a group that holds one; groups nested deeper than 20; and any
+            `(?` form other than a plain group, look-around, a named group or
+            `(?i)`. A line matches when the expression matches within it.
+        caseSensitive:
+          type: boolean
+          default: false
+          description: Match case exactly.
+        filters:
+          $ref: '#/components/schemas/Filters'
+        paths:
+          type: array
+          maxItems: 20
+          description: |
+            Shell-style globs (`*.py`, `docs/*`). A record is kept when its name
+            or, for code, its file path matches any. Applied after the access check.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          description: Most records to return.
+        contextLines:
+          type: integer
+          minimum: 0
+          maximum: 10
+          default: 2
+          description: Lines returned before and after each match.
+        maxMatchesPerRecord:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 5
+          description: Most matching lines listed per record. `matchCount` still counts all of them.
+        timeBudgetMs:
+          type: integer
+          minimum: 500
+          maximum: 30000
+          default: 8000
+          description: How long the search may run before it returns what it has found. See `coverage`.
+    GrepMatch:
+      type: object
+      description: One matching line.
+      properties:
+        line:
+          type: integer
+          description: Line number. A source file's own number for code, otherwise a count over the record's indexed text.
+        text:
+          type: string
+          description: The matching line, cut at 400 characters.
+        before:
+          type: array
+          description: Lines before the match, nearest last.
+          items:
+            type: string
+        after:
+          type: array
+          description: Lines after the match, nearest first.
+          items:
+            type: string
+        symbol:
+          type: object
+          description: The smallest function, method or class around the line. Present for code records only.
+          properties:
+            kind:
+              type: string
+              description: "`function`, `method`, `class` and so on."
+            name:
+              type: string
+              description: Qualified name, for example `method:Cart.compute_order_total_v2`.
+            signature:
+              type: string
+            startLine:
+              type: integer
+            endLine:
+              type: integer
+        citation:
+          type: object
+          description: Where to read the line again, for example with `GET /connectors/record/{recordId}/content`.
+          properties:
+            recordId:
+              type: string
+            blockIndex:
+              type: integer
+            line:
+              type: integer
+    GrepRecord:
+      type: object
+      description: One record with matching text.
+      properties:
+        recordId:
+          type: string
+          description: Pass to the record content endpoints.
+        recordName:
+          type: string
+        recordType:
+          type: string
+        app:
+          type: string
+          description: Name of the connector the record came from.
+        webUrl:
+          type: string
+          nullable: true
+          description: Link to the record in its source. Null for a source that has none.
+        language:
+          type: string
+          description: Programming language, for code records.
+        matchCount:
+          type: integer
+          description: Matching lines in the record, including those not listed.
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrepMatch'
+        preview:
+          type: string
+          description: >-
+            Set when the pattern matched the record's title or metadata but no line of its text, so `matches` is empty.
+            It is a fragment of the stored record of a record the caller can read, and may be raw stored text (JSON) rather than prose.
+    GrepResponse:
+      type: object
+      description: Result of `POST /search/grep`.
+      properties:
+        status:
+          type: string
+          example: success
+        pattern:
+          type: string
+        regex:
+          type: boolean
+        totalRecords:
+          type: integer
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrepRecord'
+        coverage:
+          type: object
+          description: Whether the search covered everything it could have.
+          properties:
+            complete:
+              type: boolean
+              description: "`false` when a time limit, a size limit or a failed source cut the search short."
+            note:
+              type: string
+              description: What was missed, in plain words.
+    EntityType:
+      type: string
+      description: Kind of knowledge-graph entity.
+      enum: [department, category, subcategory, topic, language, record_group, record, named_entity]
+    EntityRecordDate:
+      type: object
+      description: >-
+        The one date shown for a record, under the key that says what it is: `modified` (last change in the source),
+        `dated` (the document's own date), `fileModified` (the file's last change) or `uploaded` (when it was added).
+        Absent when the record has no date. The same shape in `POST /search/entities` and `POST /search/entities/neighbors`.
+      properties:
+        modified:
+          type: string
+          example: '2026-04-30'
+        dated:
+          type: string
+          example: '2026-04-30'
+        fileModified:
+          type: string
+          example: '2026-04-30'
+        uploaded:
+          type: string
+          example: '2026-04-30'
+    EntitySearchRequest:
+      type: object
+      description: Request body for `POST /search/entities`.
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: A name or phrase.
+        entityTypes:
+          type: array
+          maxItems: 10
+          description: Only these kinds. Leave out for all.
+          items:
+            $ref: '#/components/schemas/EntityType'
+        namedEntityKinds:
+          type: array
+          maxItems: 10
+          description: For `named_entity`, only these kinds, such as `person` or `organization`.
+          items:
+            type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 25
+          default: 10
+          description: Most entities to return.
+    EntitySearchResponse:
+      type: object
+      description: Result of `POST /search/entities`.
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          description: Set when nothing matched.
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              entityId:
+                type: string
+              entityType:
+                $ref: '#/components/schemas/EntityType'
+              name:
+                type: string
+              kind:
+                type: string
+                description: Named-entity kind, for `named_entity` results.
+              apps:
+                type: array
+                description: Connectors whose records carry the entity.
+                items:
+                  type: string
+              records:
+                type: array
+                description: A few readable records, for the first entities only.
+                items:
+                  allOf:
+                    - $ref: '#/components/schemas/EntityRecordDate'
+                    - type: object
+                      properties:
+                        recordId:
+                          type: string
+                        name:
+                          type: string
+                        type:
+                          type: string
+                        app:
+                          type: string
+              moreRecords:
+                type: boolean
+        scopeNote:
+          type: string
+          description: Set when the caller's access covers only part of some connectors' records, so matches can be missing.
+        ignoredEntityTypes:
+          type: array
+          description: Requested `entityTypes` this search does not cover; they were left out.
+          items:
+            type: string
+        kindNotes:
+          type: array
+          description: Why some requested `namedEntityKinds` were not searched.
+          items:
+            type: string
+    EntityNeighborsRequest:
+      type: object
+      description: Request body for `POST /search/entities/neighbors`.
+      required:
+        - entityId
+        - entityType
+      properties:
+        entityId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: "`entityId` from `POST /search/entities`."
+        entityType:
+          $ref: '#/components/schemas/EntityType'
+        recordTypes:
+          type: array
+          maxItems: 20
+          description: Only records of these types, such as `FILE` or `TICKET`.
+          items:
+            type: string
+        recordLimit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+          description: Most records to list.
+        relatedLimit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+          description: Most related entities to list.
+        cursor:
+          type: string
+          maxLength: 64
+          description: "`nextCursor` from the previous page."
+    EntityNeighborsResponse:
+      type: object
+      description: Result of `POST /search/entities/neighbors`.
+      properties:
+        status:
+          type: string
+          example: success
+        entityId:
+          type: string
+        entityType:
+          $ref: '#/components/schemas/EntityType'
+        records:
+          type: array
+          description: Readable records connected to the entity, newest first.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/EntityRecordDate'
+              - type: object
+                properties:
+                  recordId:
+                    type: string
+                  recordName:
+                    type: string
+                  recordType:
+                    type: string
+                  app:
+                    type: string
+                  webUrl:
+                    type: string
+                    nullable: true
+        relatedEntities:
+          type: array
+          description: Entities those records share with this one, most shared first.
+          items:
+            type: object
+            properties:
+              entityId:
+                type: string
+              entityType:
+                $ref: '#/components/schemas/EntityType'
+              name:
+                type: string
+              kind:
+                type: string
+              relation:
+                type: string
+                description: Edge type joining a record to this entity.
+              sharedRecords:
+                type: integer
+                description: How many of the listed records carry it.
+        relationTypes:
+          type: array
+          items:
+            type: string
+        nextCursor:
+          type: string
+          description: Pass as `cursor` for the next page of records.
+        note:
+          type: string
+          description: Set when the entity has more records than one listing can scan.
+        relatedNote:
+          type: string
+          description: Set when `relatedEntities` covers only the records on this page.
   responses:
     XssRejected:
       description: >-
@@ -25456,6 +26141,16 @@ paths:
         - `client_credentials`: Get tokens for machine-to-machine auth
         - `urn:ietf:params:oauth:grant-type:device_code`: Poll for the tokens of a device authorization
           (RFC 8628); answered `400` with `authorization_pending` until the user approves
+        - `urn:workos:agent-auth:grant-type:claim`: Poll for the token of an agent registration
+          (`POST /agent/identity`). **Sends `claim_token`, no `client_id`.** Answered `400` with
+          `authorization_pending` until the person approves, `slow_down` when polled sooner than
+          `interval`, `expired_token` when the registration is unknown, expired or past its 24 hour
+          window, `access_denied` when the person denied it or it was revoked, and `invalid_grant`
+          once the `claim_token` has been used. On approval: an access token (never a refresh
+          token) plus `identity_assertion` and `assertion_expires`.
+        - `urn:ietf:params:oauth:grant-type:jwt-bearer`: Exchange an `identity_assertion` for a fresh
+          access token (RFC 7523). **Sends `assertion`, no `client_id`.** No refresh token. Anything
+          wrong with the assertion, or with the registration or person behind it, is `400 invalid_grant`.
         - `refresh_token`: Get new access token using refresh token. The refresh token must have been issued to the presenting `client_id`; one issued to another client is rejected with `400 invalid_grant` and is left untouched (not rotated, not revoked).
         - `urn:ietf:params:oauth:grant-type:token-exchange`: Service-account
           delegation (RFC 8693). A service account exchanges its own token for
@@ -25523,7 +26218,8 @@ paths:
               no scope at all ("A token must carry at least one scope"). A `client_credentials` grant
               drops `openid`, `profile`, `email` and `offline_access`, so it needs at least one other
               scope, requested or allowed for the app.
-            - `authorization_pending`, `slow_down`, `expired_token`, `access_denied` - device_code
+            - `authorization_pending`, `slow_down`, `expired_token`, `access_denied` - claim grant
+              polling (see above), and device_code
               polling (RFC 8628 Section 3.5): still pending, polled sooner than `interval`, unknown,
               expired or already redeemed, or denied by the user. `access_denied` is a `400` here,
               not a `403`.
@@ -25577,6 +26273,10 @@ paths:
         - User revokes app access from account settings
         - Security incident response
 
+        An agent identity assertion, or an access token issued by the agent grants, needs no
+        `client_id`: revoking it also revokes the agent registration behind it, so the agent can
+        no longer get new access tokens.
+
         **Note:** Returns 200 OK even if token was already revoked or invalid
         (per RFC 7009, to prevent token enumeration).
       operationId: oauthRevoke
@@ -25611,7 +26311,8 @@ paths:
           description: |
             Client authentication failed (`invalid_client`): an unknown or inactive `client_id`
             (`Invalid client_id`), a confidential client without `client_secret` (`client_secret required
-            for confidential clients`), or a wrong `client_secret`.
+            for confidential clients`), or a wrong `client_secret`. Also returned when `client_id` is
+            missing and `token` is not an agent credential.
           content:
             application/json:
               schema:
@@ -25972,6 +26673,88 @@ paths:
                 scopes_supported: ["offline_access", "semantic:write", "conversation:chat", "kb:read", "connector:read"]
                 bearer_methods_supported: ["header"]
                 resource_documentation: "https://api.pipeshub.com/api/v1/docs"
+
+  /auth.md:
+    get:
+      tags:
+        - OpenID Connect
+      summary: Authentication guide for agents (auth.md)
+      description: |
+        A Markdown guide an AI agent follows to get a credential for this
+        instance and use it: discovery, the device-code sign-in (with this
+        instance's `pipeshub_device_client_id`), client registration when
+        enabled, personal access tokens, the scopes an agent sign-in gets, and
+        what a `401` or `403` means. Built from the same settings as discovery.
+        `/auth.md` and `/.well-known/auth.md` return the same document.
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+      operationId: authMd
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '200':
+          description: The guide
+          content:
+            text/markdown:
+              schema:
+                type: string
+              example: |
+                # PipesHub: authentication for agents
+
+                You are an agent. This is how to get a credential for the PipesHub at https://pipeshub.example.com and use it.
+
+  /.well-known/auth.md:
+    get:
+      tags:
+        - OpenID Connect
+      summary: Authentication guide for agents (auth.md)
+      description: |
+        A Markdown guide an AI agent follows to get a credential for this
+        instance and use it: discovery, the device-code sign-in (with this
+        instance's `pipeshub_device_client_id`), client registration when
+        enabled, personal access tokens, the scopes an agent sign-in gets, and
+        what a `401` or `403` means. Built from the same settings as discovery.
+        `/auth.md` and `/.well-known/auth.md` return the same document.
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+      operationId: wellKnownAuthMd
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '200':
+          description: The guide
+          content:
+            text/markdown:
+              schema:
+                type: string
+              example: |
+                # PipesHub: authentication for agents
+
+                You are an agent. This is how to get a credential for the PipesHub at https://pipeshub.example.com and use it.
 
   # ==================== OAUTH APP MANAGEMENT ENDPOINTS ====================
   /oauth-clients:
@@ -27492,6 +28275,10 @@ paths:
 
         - Multiple OTP requests may be rate-limited
         - Wait for the current OTP to expire before requesting a new one
+        - Requests about **one email address** are also limited across all clients
+          (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute). Over that limit the answer is
+          the same `200` and message but no code is sent, so the limit does not show whether the
+          address has an account. Password sign-in is not affected.
 
         **CAPTCHA:**
 
@@ -27566,6 +28353,10 @@ paths:
         email is registered. If the account exists a reset link is sent;
         otherwise the request is silently ignored. Internal lookup or mail
         delivery failures are logged server-side and do not change the response.
+
+        Requests about **one email address** are also limited across all clients
+        (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute). Over that limit the answer is
+        the same `200` and message but no email is sent.
       operationId: forgotPassword
       security: []
       requestBody:
@@ -27710,6 +28501,10 @@ paths:
 
         **Known defects:** a value that is not an email is stored although the answer is `422`;
         a token without a `newEmail` claim stores the word `undefined` the same way.
+
+        **Rate limit:** confirmations for one new address are limited across all clients
+        (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute); the address is the one in the
+        verified token. Over the limit the answer is `429` with `Retry-After`.
       operationId: validateEmailChangeToken
       security:
         - scopedToken: []
@@ -27759,6 +28554,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many confirmations for this new address in the current minute. Try again after `Retry-After` seconds.
+          headers:
+            Retry-After:
+              description: Seconds until the current minute ends.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: |
             Internal server error. Also returned when the token's `userId` is not a valid
@@ -45418,6 +46224,7 @@ paths:
             `{ type, message, code? }` on failure. Forwarded lifecycle and
             child-run events may contain `runId`, `threadId`, and
             `parentRunId`. Clients should ignore unknown event names.
+            Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
 
             Refusals after validation are not HTTP errors. A missing, deleted
             or inaccessible conversation, a conversation with no messages, a
@@ -50114,6 +50921,7 @@ paths:
             Stable event names:
             - `RUN_FINISHED` — `{ type, result }`, where `result` contains the
               updated conversation and metadata
+              Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
             - `RUN_ERROR` — `{ type, message, code? }`, reporting lookup,
               authorization, or regenerate-rule failures
 
@@ -59148,6 +59956,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/logos:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: List the logos of the MCP servers I can see
+      description: |
+        The logos uploaded for custom MCP servers the caller can see (the organization's servers
+        and the caller's own personal ones), by instance id. A server without a logo is left out.
+        Catalog servers never have one: the app shows their vendor's logo.
+
+        Each logo is a PNG at most 96 pixels on a side, as a base64 data URL.
+      operationId: getMcpLogos
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:read
+      responses:
+        '200':
+          description: Logos by instance id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logos:
+                    type: object
+                    additionalProperties:
+                      type: string
+                      example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAAw...
+                required:
+                  - logos
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:read` scope
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /mcp-servers/instances:
     get:
       tags:
@@ -59503,6 +60365,168 @@ paths:
             Whether agents use the server couldn't be checked, so nothing was deleted
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/instances/{instanceId}/logo:
+    put:
+      tags:
+        - MCP Server Instances
+      summary: Set the logo of a custom MCP server
+      description: |
+        Custom servers only; a catalog server shows its vendor's logo. Organization servers for
+        administrators, a personal server for its owner.
+
+        Send a PNG, JPEG, WebP or GIF image (1 MB at most, under 4096 × 4096 pixels) as a base64
+        data URL. The declared type is ignored: the bytes decide. SVG is refused, since it can
+        carry script; the web app turns an SVG into a PNG before sending it. The image is drawn
+        again as a PNG at most 96 pixels on a side, keeping its shape and transparency (an
+        animated GIF keeps its first frame), and that PNG is stored and returned, never the bytes
+        sent. It replaces any earlier logo.
+
+        The app-wide XSS filter does not check this body: base64 can look like markup to it.
+      operationId: setMcpInstanceLogo
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:write
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                logo:
+                  type: string
+                  maxLength: 1398165
+                  description: The image as a base64 data URL.
+                  example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAABk...
+              required:
+                - logo
+      responses:
+        '200':
+          description: The logo as stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logo:
+                    type: string
+                    description: A PNG at most 96 pixels on a side, as a base64 data URL.
+                    example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAAw...
+                required:
+                  - logo
+        '400':
+          description: |
+            Bad request — one of:
+            - a path id contains characters that are not allowed in an id (for example `/`, `?`, `#`, `%`); this check runs before authentication
+            - the server is a catalog server ("Only custom MCP servers take a logo. ...")
+            - `logo` isn't a base64 data URL, or isn't valid base64, or is empty
+            - the image is not a PNG, JPEG, WebP or GIF, or can't be read
+            - the image is over 1 MB, or over 4096 × 4096 pixels
+            - a JSON body that does not parse ("The request body is not valid JSON.")
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:write` scope
+            - the server is an organization server and the caller isn't an administrator
+            - the server is inherited from another organization and can't be changed here
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such server, or it is another user's personal server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: '`logo` is missing, not a string, or longer than allowed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Unexpected failure in the gateway or in the connectors service, including a failed write of the logo.
+
+            A JSON body larger than 10 MB is answered `413` by the app-wide body parser instead, before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - MCP Server Instances
+      summary: Remove the logo of a custom MCP server
+      description: |
+        The server shows its default icon again. Succeeds when the server has no logo too.
+        Organization servers for administrators, a personal server for its owner. Needs
+        `mcp:write`, not `mcp:delete`: it changes the server and destroys nothing.
+      operationId: removeMcpInstanceLogo
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:write
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: The server has no logo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                required:
+                  - success
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:write` scope
+            - the server is an organization server and the caller isn't an administrator
+            - the server is inherited from another organization and can't be changed here
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such server, or it is another user's personal server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service, including a failed removal.
           content:
             application/json:
               schema:
@@ -71281,6 +72305,320 @@ paths:
               schema:
                 $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
+  /agent/identity:
+    post:
+      tags:
+        - OAuth Provider
+      summary: Register an agent (service_auth)
+      description: |
+        auth.md agent registration, `service_auth` flow. An agent names the email of the person it
+        works for; the response carries a `claim_token` to poll with and a `user_code` and
+        `verification_uri` for that person. Nothing is created here: the registration only binds
+        to an existing user who signs in and approves it (`POST /agent/identity/claim/complete`).
+        The answer is the same whether or not a user has that email.
+
+        Offered exactly when the device grant is (`agent_auth` in the authorization server
+        metadata). `anonymous` and `identity_assertion` registrations are not supported.
+
+        **Errors:** the OAuth body (`error` is a string).
+      operationId: agentIdentity
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentIdentityRequest'
+        required: true
+      responses:
+        '200':
+          description: Registration created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentIdentityResponse'
+        '400':
+          description: |
+            `service_auth_not_enabled` (device login is off), `anonymous_not_enabled`,
+            `issuer_not_enabled` (`identity_assertion`), or `invalid_request` (missing or unknown
+            `type`, or `login_hint` is not an email address).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/identity/claim:
+    post:
+      tags:
+        - OAuth Provider
+      summary: Start a fresh claim attempt
+      description: |
+        Mints a new `user_code` and `verification_uri` for a registration that is still pending
+        and was made for `email`. The previous attempt's link and code stop working.
+      operationId: agentIdentityClaim
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentClaimRequest'
+        required: true
+      responses:
+        '200':
+          description: A new attempt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentClaimResponse'
+        '400':
+          description: |
+            `invalid_claim_token` (unknown, revoked, or made for another email) or
+            `claimed_or_in_flight` (already claimed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '410':
+          description: "`claim_expired`: the registration's 24 hour window has closed"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/identity/claim/verify:
+    post:
+      tags:
+        - OAuth Provider
+      summary: Look up a claim attempt for the claim page
+      description: |
+        What the claim page shows the signed-in user: the account and the scopes the agent would
+        get. Nothing is decided here.
+
+        **Session only.** OAuth access tokens, personal access tokens and service accounts are
+        refused with `403`.
+      operationId: agentIdentityClaimVerify
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentClaimVerifyRequest'
+        required: true
+      responses:
+        '200':
+          description: The attempt can be claimed by this user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentClaimVerifyResponse'
+        '400':
+          description: "`invalid_request` (unknown, used or replaced link) or `service_auth_not_enabled`"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '401':
+          description: Missing, invalid or expired session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: "`access_denied` (the registration was made for another email), or the caller is not a user session"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/AgentAuthError'
+        '410':
+          description: "`claim_expired`: the attempt or the registration window has closed"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/identity/claim/complete:
+    post:
+      tags:
+        - OAuth Provider
+      summary: Approve or deny an agent registration
+      description: |
+        The signed-in user types the `user_code` the agent showed (approve) or refuses (deny). The
+        registration binds to the session's user and organization, never to anything in the body.
+        Five wrong codes expire the registration.
+
+        **Session only.** OAuth access tokens, personal access tokens and service accounts are
+        refused with `403`.
+      operationId: agentIdentityClaimComplete
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentClaimCompleteRequest'
+        required: true
+      responses:
+        '200':
+          description: Decision recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentClaimCompleteResponse'
+        '400':
+          description: |
+            `invalid_user_code` (wrong code), or `invalid_request` (the link is unknown, used,
+            replaced, or the registration expired after too many wrong codes).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '401':
+          description: Missing, invalid or expired session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: "`access_denied` (the registration was made for another email), or the caller is not a user session"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/AgentAuthError'
+        '410':
+          description: "`claim_expired`: the attempt or the registration window has closed"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/registrations:
+    get:
+      tags:
+        - OAuth Provider
+      summary: List the agent registrations you approved
+      description: |
+        The agent registrations the signed-in user has approved and not revoked, newest first.
+
+        **Session only.** OAuth access tokens, personal access tokens and service accounts are
+        refused with `403`.
+      operationId: agentRegistrationsList
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The user's own registrations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRegistrationList'
+        '401':
+          description: Missing, invalid or expired session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not a user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/registrations/{id}:
+    delete:
+      tags:
+        - OAuth Provider
+      summary: Revoke an agent registration you approved
+      description: |
+        Ends the registration: its identity assertion stops working and no new access token is
+        issued. Access tokens already issued run out on their own. A registration that is not the
+        caller's answers `404`.
+
+        **Session only.** OAuth access tokens, personal access tokens and service accounts are
+        refused with `403`.
+      operationId: agentRegistrationsRevoke
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The registration id (`reg_` and 24 hex characters)
+          schema:
+            type: string
+            pattern: '^reg_[0-9a-f]{24}$'
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        '400':
+          description: The id is malformed (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid or expired session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not a user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such registration approved by the caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
   # ==================== OPENID CONNECT DISCOVERY ENDPOINTS ====================
   /users/email/exists:
     get:
@@ -71790,6 +73128,231 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /search/grep:
+    post:
+      tags:
+        - Semantic Search
+      summary: Find an exact string or regular expression
+      description: |
+        Find records whose text contains an exact string or matches a regular
+        expression, and return the matching lines with their line numbers and
+        surrounding lines. Use it for identifiers, error codes, ticket keys and
+        code, where meaning-based search ranks the wrong things.
+
+        The pattern is literal text unless `regex` is `true`, when it is a
+        regular expression (see `regex` on the request for what is refused).
+        Matching ignores case unless `caseSensitive` is `true`. Any characters
+        can be searched, including `<`, `>`, `&`, `;` and `->`. A pattern that
+        is one line, at most 500 characters, and a valid regular expression is
+        accepted.
+
+        **Who can see what:** only records the caller can read are searched and
+        returned, decided by the same access check as `POST /search`. A record
+        the caller cannot read is never counted or named.
+
+        **Scope:** `filters.apps` and `filters.kb` limit the search to
+        connectors and collections, as in `POST /search`. `paths` keeps only
+        records whose name (or, for code, file path) matches a shell-style
+        glob such as `*.py`. `filters.apps` or `filters.kb` ids the caller
+        cannot reach are ignored; if none remain the result is empty.
+
+        **Scopes:** a token with `semantic:read` or `semantic:write` may call
+        this; it only reads.
+
+        **Line numbers:** for source code they are the file's own line numbers,
+        and each match names the enclosing function or class in `symbol` when
+        the record was indexed as code. For other records they count lines of
+        the record's indexed text.
+
+        **Completeness:** searching and reading the records stops at
+        `timeBudgetMs`; the access check that decides which records the caller
+        can read has no deadline of its own. When it stopped early or could not cover every
+        source, `coverage.complete` is `false` and `coverage.note` says what was
+        missed; a record missing from the result is then not evidence that the
+        text is absent. `coverage` describes only records the caller can read. Nothing is saved
+        to search history.
+
+        Needs local file storage; otherwise `501`.
+      operationId: grepRecords
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        description: The pattern and how to scope the search.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrepRequest'
+            examples:
+              literal:
+                summary: Find an identifier
+                value:
+                  pattern: "compute_invoice_total_v2"
+                  limit: 10
+              regex:
+                summary: Regular expression in Python files
+                value:
+                  pattern: "def \\w+_v2\\("
+                  regex: true
+                  paths: ["*.py"]
+      responses:
+        '200':
+          description: Matching records with their matching lines. An empty `records` list means nothing the caller can read matched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrepResponse'
+        '400':
+          description: |
+            The request is invalid, or the pattern cannot be searched. With
+            `regex: true` the pattern is refused when it is an invalid regular
+            expression; has a back-reference or any other reference to an earlier
+            group (`\1`, `\g<name>`, `\k<name>`, `(?P=name)`, recursion); has a
+            counted repeat above 100 (`{101}`, `{1,101}`); has a counted repeat
+            inside another counted repeat, or after a group that holds one
+            (`(a{2}){3}`); nests groups deeper than 20; or uses a `(?` form other
+            than a plain group, look-around, a named group or `(?i)` (so flags
+            other than `(?i)`, comments and scoped flags are refused). The message
+            says which.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '501':
+          description: This deployment does not keep records on local file storage. Use `POST /search`.
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The AI search service is temporarily unavailable or could not be reached.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/entities:
+    post:
+      tags:
+        - Semantic Search
+      summary: Search knowledge-graph entities
+      description: |
+        Find entities in the organisation's knowledge graph by name or meaning:
+        departments, categories, subcategories, topics, languages, record
+        groups (a drive, a space, a project), record titles and, where
+        named-entity extraction is on, people, organisations and other named
+        entities.
+
+        Only entities connected to records the caller can read are returned,
+        decided by the same access check as the assistant's entity tools. Each
+        result carries an `entityId` and `entityType`; pass both to
+        `POST /search/entities/neighbors` to see the records and related
+        entities around it.
+      operationId: searchEntities
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        description: What to look for.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntitySearchRequest'
+            examples:
+              topic:
+                summary: Find a topic
+                value:
+                  query: "payments"
+                  entityTypes: ["topic", "category"]
+      responses:
+        '200':
+          description: Entities the caller can reach, best match first. An empty `results` list means none matched, or none are connected to records the caller can read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntitySearchResponse'
+        '400':
+          description: The request is invalid, for example an unsupported entity type or named-entity lookup turned off.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: Entity search is not available in this deployment, could not reach the AI search service, or timed out before the access check finished. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/entities/neighbors:
+    post:
+      tags:
+        - Semantic Search
+      summary: Get an entity's records, related entities and relation types
+      description: |
+        Walk one step out from an entity: the records connected to it that the
+        caller can read (newest first), the other entities those records are
+        tagged with or mention (most shared first), and the relation types
+        that join them (`belongsToCategory`, `belongsToTopic`,
+        `belongsToLanguage`, `belongsToDepartment`, `mentionsEntity`).
+
+        Related entities are counted over the records listed in the same
+        response, never over records the caller cannot read. An entity the
+        caller cannot reach and an entity with no readable records answer the
+        same way: empty lists. Use `cursor` to page the records.
+      operationId: entityNeighbors
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        description: The entity to expand.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntityNeighborsRequest'
+            examples:
+              topic:
+                summary: Neighbourhood of a topic
+                value:
+                  entityId: "0c9b3e0e-6f4e-4f07-a6d3-2a8c1d7e9b11"
+                  entityType: topic
+      responses:
+        '200':
+          description: Records, related entities and relation types around the entity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityNeighborsResponse'
+        '400':
+          description: The request is invalid, for example an unsupported `entityType`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error.
+        '504':
+          description: The AI search service did not answer in time.
+        '503':
+          description: The AI search service could not be reached, or the lookup failed or timed out. This is not an empty result; try again.
+
   /search/updateAppConfig:
     post:
       tags:
