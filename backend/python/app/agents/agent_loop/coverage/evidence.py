@@ -59,9 +59,6 @@ class Evidence:
         """Records whose own text reached the model (not just a listed name)."""
         return [record for record in self.records if record.passages]
 
-    def virtual_record_ids(self) -> set[str]:
-        return {record.virtual_record_id for record in self.records}
-
     def cited_texts(self, cited: Mapping[str, Collection[int]]) -> list[str]:
         """The passages a draft cites, given cited block indices per record id."""
         return [

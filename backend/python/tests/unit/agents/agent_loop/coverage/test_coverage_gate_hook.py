@@ -583,6 +583,27 @@ class TestCitedValuesStand:
         assert ctx.recovery_message is None
         assert coverage_state(context.tool_state).counters["gate_nothing_new"] == 1
 
+    async def test_a_record_seen_only_by_name_counts_as_new_once_a_search_shows_its_text(
+        self, searches, monkeypatch,
+    ) -> None:
+        searches.side_effect = _shows(
+            ("vr-guide", "rec-guide", "compressor restart guide", "Restart order per bank."),
+            text="Record: compressor restart guide ...",
+        )
+        monkeypatch.setattr(gate_module, "coverage_llm", AsyncMock(return_value=None))
+        monkeypatch.setattr(gate_module, "assess_draft", _decision(Gap("reference", "restart guide", "restart guide")))
+        context = _room_context()
+        # A fetch that ran out of room before rendering any block of it.
+        context.tool_state["fetch_render_outcomes"] = {
+            "rec-guide": [{"virtualRecordId": "vr-guide", "shownBlocks": [], "complete": False}],
+        }
+
+        ctx = await run_post_model(coverage_gate(context), AssistantMessage(content=_ROOM_DRAFT), scope=_scope())
+
+        assert ctx.recovery_message is not None
+        assert "Restart order per bank." not in ctx.recovery_message.content.split("<search_results>")[0]
+        assert coverage_state(context.tool_state).counters["gate_new_records"] == 1
+
     async def test_a_caveat_with_named_unread_documents_still_brings_them_in(self, searches, monkeypatch) -> None:
         searches.side_effect = _shows(
             ("vr-guide", "rec-guide", "compressor restart guide", "Restart order per bank."),
