@@ -8,6 +8,7 @@ so later builds floor up front.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -150,6 +151,34 @@ class TestRuntimeRefusal:
         with patch("app.utils.llm.get_llm_api_mode_store", return_value=store):
             await ToolFreeChatModel(_Rejecting(_REFUSAL), _azure()).ainvoke(["hello"])
         store.record.assert_awaited_once_with("key-north", "gpt-5.2", LLMApiMode.REASONING_MANDATORY.value)
+
+    async def test_calls_in_flight_when_the_first_refusal_is_handled_retry_on_the_floored_model(self) -> None:
+        """Two calls refused together: the second retries on the model the first floored, and is recorded once."""
+        both_sent = asyncio.Event()
+        sent = 0
+
+        class _RefusedTogether(_Rejecting):
+            async def ainvoke(self, messages: Any, config: Any = None, **_: Any) -> str:  # noqa: ANN401
+                nonlocal sent
+                sent += 1
+                if sent == 2:
+                    both_sent.set()
+                await both_sent.wait()
+                return self._answer()
+
+        store = MagicMock(record=AsyncMock())
+        model = ToolFreeChatModel(_RefusedTogether(_REFUSAL), _azure())
+        with patch("app.utils.llm.get_llm_api_mode_store", return_value=store):
+            first, second = await asyncio.gather(model.ainvoke(["one"]), model.ainvoke(["two"]))
+        assert (first, second) == ("answered at low", "answered at low")
+        store.record.assert_awaited_once()
+
+    def test_a_refusal_from_a_model_already_replaced_is_not_floored_again(self) -> None:
+        primary = _Rejecting(_REFUSAL)
+        model = ToolFreeChatModel(primary, _azure())
+        refused_model = model.llm
+        model.llm = primary.model_copy({"reasoning_effort": "low"})
+        assert model._floored(_REFUSAL, refused_model) == (model.llm, False)
 
     def test_sync_invoke_falls_back_too(self) -> None:
         assert ToolFreeChatModel(_Rejecting(_REFUSAL), _azure()).invoke(["hello"]) == "answered at low"

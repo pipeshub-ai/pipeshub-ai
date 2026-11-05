@@ -300,8 +300,15 @@ class ToolFreeChatModel:
         self._model_key = config.get("modelKey")
         self._model_name = model_name or _first_model_name(config)
 
-    def _floor(self, exc: Exception) -> BaseChatModel | None:
-        floored = floor_disabled_reasoning(self.llm) if is_reasoning_off_rejection(exc) else None
+    def _floored(self, exc: Exception, used: BaseChatModel) -> tuple[BaseChatModel, bool] | None:
+        """The model to retry a call ``used`` refused on, and whether this
+        call floored it; None when ``exc`` is not such a refusal."""
+        if not is_reasoning_off_rejection(exc):
+            return None
+        if used is not self.llm:
+            # A call in flight at the same time already floored it.
+            return self.llm, False
+        floored = floor_disabled_reasoning(used)
         if floored is None:
             return None
         logger.warning(
@@ -310,28 +317,31 @@ class ToolFreeChatModel:
         )
         remember_reasoning_off_rejected(self._model_key, self._model_name)
         self.llm = floored
-        return floored
+        return floored, True
 
     async def ainvoke(self, messages: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ANN401
+        used = self.llm
         try:
-            return await self.llm.ainvoke(messages, config, **kwargs)
+            return await used.ainvoke(messages, config, **kwargs)
         except Exception as exc:
-            floored = self._floor(exc)
-            if floored is None:
+            retry = self._floored(exc, used)
+            if retry is None:
                 raise
+            model, floored_now = retry
             store = get_llm_api_mode_store()
-            if store is not None and self._model_key and self._model_name:
+            if floored_now and store is not None and self._model_key and self._model_name:
                 await store.record(self._model_key, self._model_name, LLMApiMode.REASONING_MANDATORY.value)
-            return await floored.ainvoke(messages, config, **kwargs)
+            return await model.ainvoke(messages, config, **kwargs)
 
     def invoke(self, messages: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ANN401
+        used = self.llm
         try:
-            return self.llm.invoke(messages, config, **kwargs)
+            return used.invoke(messages, config, **kwargs)
         except Exception as exc:
-            floored = self._floor(exc)
-            if floored is None:
+            retry = self._floored(exc, used)
+            if retry is None:
                 raise
-            return floored.invoke(messages, config, **kwargs)
+            return retry[0].invoke(messages, config, **kwargs)
 
 
 async def build_tool_free_llm(
