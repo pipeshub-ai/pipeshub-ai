@@ -707,16 +707,19 @@ export const streamChat =
     const session: Tx | null = null;
     let savedConversation: ChatSessionDto | null = null;
 
-    const body = req.body as Record<string, unknown>;
     const modelInfo = extractModelInfo(req.body);
-    const protocol = resolveProtocol(body, req.query);
+    const protocol = resolveProtocol(
+      req.body as Record<string, unknown>,
+      req.query,
+    );
 
-    if (!body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
-    const isTemporary = body.temporary === true;
-    if (isTemporary && body.projectId) {
+    const isTemporary =
+      (req.body as Record<string, unknown>).temporary === true;
+    if (isTemporary && (req.body as Record<string, unknown>).projectId) {
       throw new BadRequestError('Temporary chats cannot be added to a project');
     }
 
