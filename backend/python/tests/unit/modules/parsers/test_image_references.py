@@ -136,6 +136,62 @@ def cpu(fn: Callable[[str], object], text: str, repeat: int = 3) -> float:
     return best
 
 
+class _Counted:
+    """A compiled pattern that adds the text a call examines (up to the end of its match, or of the text when it finds nothing)
+    and the number of calls to ``work``. The scan runs the same code with the same answers; only the examining is counted."""
+
+    def __init__(self, pattern: re.Pattern[str], work: list[int]) -> None:
+        self._pattern, self._work = pattern, work
+
+    def search(self, text: str, pos: int = 0, *rest: int) -> re.Match[str] | None:
+        found = self._pattern.search(text, pos, *rest)
+        self._work[0] += (found.end() if found else len(text)) - pos
+        self._work[1] += 1
+        return found
+
+    def match(self, text: str, pos: int = 0, *rest: int) -> re.Match[str] | None:
+        found = self._pattern.match(text, pos, *rest)
+        self._work[0] += max((found.end() if found else pos + 1) - pos, 1)
+        self._work[1] += 1
+        return found
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._pattern, name)
+
+
+class _CountingRe:
+    """``re`` for the module under test: the patterns it compiles while scanning are counted too."""
+
+    def __init__(self, work: list[int]) -> None:
+        self._work = work
+
+    def compile(self, *args: object, **kwargs: object) -> _Counted:
+        return _Counted(re.compile(*args, **kwargs), self._work)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(re, name)
+
+
+def scan_work(text: str) -> int:
+    """Characters the scan of ``text`` examines in total. Counted, not timed: linear is the same number on a loaded runner and on an idle one,
+    and a scan that rescans from each opener (quadratic) or backtracks (exponential) examines many times more."""
+    from app.modules.parsers.markdown import image_references as module
+
+    work = [0, 0]
+    patterns = {name: value for name, value in vars(module).items() if isinstance(value, re.Pattern)}
+    saved_re = module.re
+    try:
+        for name, value in patterns.items():
+            setattr(module, name, _Counted(value, work))
+        module.re = _CountingRe(work)
+        module.extract_and_replace_images(text)
+    finally:
+        for name, value in patterns.items():
+            setattr(module, name, value)
+        module.re = saved_re
+    return work[0]
+
+
 # --- parity with the previous implementation ------------------------------------
 
 _TOKENS = [
@@ -308,29 +364,23 @@ _ADVERSARIAL = {
 
 
 @pytest.mark.parametrize("name", sorted(_ADVERSARIAL))
-def test_scan_time_is_linear_for_crafted_input(name) -> None:
+def test_scan_work_is_linear_for_crafted_input(name) -> None:
     unit = _ADVERSARIAL[name]
     big = unit * (65536 // len(unit))
     quarter = unit * (16384 // len(unit))
-    benign = _BENIGN * (65536 // len(_BENIGN))
-    t_benign = cpu(extract_and_replace_images, benign)
-    t_big = cpu(extract_and_replace_images, big)
-    t_quarter = cpu(extract_and_replace_images, quarter)
-    # Judged against the same host's time for ordinary text of the same size,
-    # and against the same input at a quarter of the size: linear is 4x and
-    # quadratic 16x. (A 2x step measured 3.3x once on a busy runner for a family
-    # that is 2.0x per doubling from 16 KB to 256 KB.)
-    assert t_big < max(t_benign, 0.05) * 12, (t_big, t_benign)
-    assert t_big < max(t_quarter, 0.02) * 8, (t_big, t_quarter)
+    work_big, work_quarter = scan_work(big), scan_work(quarter)
+    # Examined per character is a small constant (at most about 4 today) and four times the input costs four times the work:
+    # linear is 4x and quadratic 16x.
+    assert work_big <= 8 * len(big), (work_big, len(big))
+    assert work_big <= 5 * work_quarter, (work_big, work_quarter)
 
 
 def test_a_shared_closing_bracket_is_not_rescanned_per_opener() -> None:
     def build(n: int) -> str:
         return "![" * n + "a](" + " " * n + "z"
 
-    t_small = cpu(extract_and_replace_images, build(8000))
-    t_big = cpu(extract_and_replace_images, build(32000))
-    assert t_big < max(t_small, 0.05) * 6.5, (t_big, t_small)
+    work_small, work_big = scan_work(build(8000)), scan_work(build(32000))
+    assert work_big <= 5 * work_small, (work_big, work_small)
 
 
 # A run of openers that all share one closing tail: every opener's lookups land
@@ -341,11 +391,11 @@ _SHARED_TAILS = ["][]", "][x]", "]", "](", "]( ", "][", '](u "', "]: u"]
 
 @pytest.mark.parametrize("tail", _SHARED_TAILS)
 def test_openers_sharing_one_tail_are_scanned_in_linear_time(tail: str) -> None:
-    t_small = cpu(extract_and_replace_images, "![" * 8000 + tail)
-    t_big = cpu(extract_and_replace_images, "![" * 32000 + tail)
+    work_small = scan_work("![" * 8000 + tail)
+    work_big = scan_work("![" * 32000 + tail)
     # Four times the input: linear is 4x, quadratic 16x.
-    assert t_big < max(t_small, 0.02) * 8, (tail, t_small, t_big)
-    assert t_big < 1.0, (tail, t_small, t_big)
+    assert work_big <= 5 * work_small, (tail, work_small, work_big)
+    assert work_big <= 8 * 64000, (tail, work_big)
 
 
 @pytest.mark.parametrize("parser_class", [SelectolaxHtmlParser, DoclingHtmlParser])
