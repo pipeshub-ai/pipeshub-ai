@@ -105,8 +105,8 @@ from app.utils.loop_local import LoopLocal
 
 if TYPE_CHECKING:
     import redis.asyncio as aioredis
-    from app.services.vector_db.filters import ScopeFilter
     from app.services.redis.connection_provider import RedisClient
+    from app.services.vector_db.filters import ScopeFilter
 
 logger = create_logger("redis_vector_service")
 

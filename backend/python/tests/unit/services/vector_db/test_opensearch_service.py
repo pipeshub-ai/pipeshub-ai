@@ -532,7 +532,7 @@ class TestCreateIndex:
         assert call_kwargs["body"]["properties"]["field1"]["type"] == "text"
 
     @pytest.mark.asyncio
-    async def test_create_integer_index_maps_long(self, connected_service):
+    async def test_create_integer_index_maps_long(self, connected_service) -> None:
         connected_service.client.indices.put_mapping = AsyncMock(return_value={"acknowledged": True})
         await connected_service.create_index("my-idx", "field1", {"type": "integer"})
         assert connected_service.client.indices.put_mapping.call_args[1]["body"]["properties"]["field1"]["type"] == "long"

@@ -9,11 +9,32 @@ import uuid
 
 import pytest
 
-from app.services.vector_db.const.const import PAYLOAD_KEYWORD_INDEXES, SCOPE_INTEGER_INDEXES, SCOPE_KEYWORD_INDEXES
-from app.services.vector_db.models import FieldCondition, FilterExpression, HybridSearchRequest, SparseVector, VectorPoint
+from app.services.vector_db.const.const import (
+    PAYLOAD_KEYWORD_INDEXES,
+    SCOPE_INTEGER_INDEXES,
+    SCOPE_KEYWORD_INDEXES,
+)
+from app.services.vector_db.models import (
+    FieldCondition,
+    FilterExpression,
+    HybridSearchRequest,
+    SparseVector,
+    VectorPoint,
+)
 from tests.integration.vector_db.conftest import make_collection
-from tests.integration.vector_db.helpers import make_collection_config, make_dense, wait_for
-from tests.integration.vector_db.scope_world import ADMIT_CASES, EVERYTHING, TERMS, TRUST_CASES, WORLD, f
+from tests.integration.vector_db.helpers import (
+    make_collection_config,
+    make_dense,
+    wait_for,
+)
+from tests.integration.vector_db.scope_world import (
+    ADMIT_CASES,
+    EVERYTHING,
+    TERMS,
+    TRUST_CASES,
+    WORLD,
+    f,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 

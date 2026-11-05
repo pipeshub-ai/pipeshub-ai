@@ -243,7 +243,7 @@ class QdrantUtils:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def scope_node(node: "sx.Node") -> Any:
+    def scope_node(node: "sx.Node") -> FieldCondition | Filter:
         """A scope tree (:mod:`~app.services.vector_db.scope_expr`) as a Qdrant condition. An empty ``should`` matches EVERY point in Qdrant, so
         FALSE is a match on an empty list (which matches none), never an empty ``should``."""
         if isinstance(node, sx.Has):

@@ -24,7 +24,11 @@ from app.services.permissions.scope_fields import (
     SCOPE_STAMP_FIELD,
     SCOPE_VERSION_FIELD,
 )
-from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD, ROOT_RECORD_GROUP_IDS_FIELD
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

@@ -8,7 +8,12 @@ import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from app.services.vector_db.models import FieldCondition, FilterExpression, HybridSearchRequest, SparseVector
+from app.services.vector_db.models import (
+    FieldCondition,
+    FilterExpression,
+    HybridSearchRequest,
+    SparseVector,
+)
 from app.services.vector_db.opensearch.config import OpenSearchConfig
 from app.services.vector_db.opensearch.opensearch import OpenSearchService
 from app.services.vector_db.qdrant.config import QdrantConfig

@@ -11,7 +11,11 @@ from pathlib import Path
 import pytest
 
 from app.services.vector_db import scope_expr as sx
-from app.services.vector_db.filters import ScopeFilter, ScopeFilterTooLarge, ScopeFilterUnsupported
+from app.services.vector_db.filters import (
+    ScopeFilter,
+    ScopeFilterTooLarge,
+    ScopeFilterUnsupported,
+)
 from app.services.vector_db.models import HybridSearchRequest
 from tests.unit.services.vector_db import scope_requests as sr
 

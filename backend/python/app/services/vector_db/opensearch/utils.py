@@ -1,12 +1,12 @@
 from typing import Any, Dict, List
 
 from app.services.permissions.scope_fields import SCOPE_KEYS
+from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
 )
-from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.filters import build_generic_conditions
 from app.services.vector_db.models import (
     FieldCondition,
@@ -112,7 +112,7 @@ class OpenSearchUtils:
         return {"term": {cond.key: cond.value}}
 
     @staticmethod
-    def scope_query(node: "sx.Node") -> Dict[str, Any]:
+    def scope_query(node: "sx.Node") -> dict[str, Any]:
         """A scope tree (:mod:`~app.services.vector_db.scope_expr`) as a query. A ``bool`` with no clause matches everything, so FALSE is
         ``match_none``. "Every connector is current" is a ``terms_set`` that needs as many matches as the point has values."""
         if isinstance(node, sx.Has):
@@ -131,7 +131,7 @@ class OpenSearchUtils:
         return {"bool": {"must_not": [OpenSearchUtils.scope_query(node.part)]}}
 
     @staticmethod
-    def with_scope(filter_query: Dict[str, Any], request: HybridSearchRequest) -> Dict[str, Any]:
+    def with_scope(filter_query: dict[str, Any], request: HybridSearchRequest) -> dict[str, Any]:
         """``filter_query`` ANDed with the request's scope filter (if any), the request's own filter kept whole inside a ``must``."""
         if request.scope_filter is None:
             return filter_query

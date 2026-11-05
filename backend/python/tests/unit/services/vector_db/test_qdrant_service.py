@@ -457,7 +457,7 @@ class TestCreateIndex:
         )
 
     @pytest.mark.asyncio
-    async def test_create_integer_index(self, connected_service):
+    async def test_create_integer_index(self, connected_service) -> None:
         from qdrant_client.http.models import PayloadSchemaType
 
         await connected_service.create_index("col", "field1", {"type": "integer"})

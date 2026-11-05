@@ -111,7 +111,7 @@ def field_conditions_to_redis_query(conditions: List[FieldCondition]) -> str:
 _NOTHING = "(@metadata_orgId:{x} -@metadata_orgId:{x})"      # a tag cannot both be and not be "x": matches nothing
 
 
-def scope_query(node: "sx.Node", outside: Dict[str, Tuple[str, ...]], *, top: bool = True) -> str:
+def scope_query(node: "sx.Node", outside: dict[str, tuple[str, ...]], *, top: bool = True) -> str:
     """A scope tree (:mod:`~app.services.vector_db.scope_expr`) as an FT query. Every group is parenthesised (the union binds loosely).
     ``outside[field]``: the values of a list field that are NOT in a :class:`~app.services.vector_db.scope_expr.Within` (the tag values the index
     holds minus the allowed ones): RediSearch has no "all values are in the set", only "has none of these". Tag values compare without case,
