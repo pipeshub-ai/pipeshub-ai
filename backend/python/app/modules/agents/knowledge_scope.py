@@ -124,6 +124,23 @@ def _narrowed_to(entry: dict[str, Any], source_ids: set[str]) -> dict[str, list[
     return limit if any(limit.values()) else None
 
 
+def source_reach(entries: Iterable[object]) -> dict[str, tuple[tuple[str, ...], ...] | None]:
+    """What each knowledge source lets an agent search, read the way search reads
+    it: ``None`` for a whole source, else its sorted record groups and records.
+    Two spellings of the same reach compare equal, so a save that resends an
+    agent's sources unchanged is not mistaken for a change.
+    """
+    items = [e for e in entries if isinstance(e, dict) and str(e.get("connectorId") or "").strip()]
+    source_ids = {str(e["connectorId"]).strip() for e in items}
+    reach: dict[str, tuple[tuple[str, ...], ...] | None] = {}
+    for entry in items:
+        limit = _narrowed_to(entry, source_ids)
+        reach[str(entry["connectorId"]).strip()] = (
+            None if limit is None else tuple(tuple(sorted(limit[key])) for key in _NARROWING_KEYS)
+        )
+    return reach
+
+
 def _clean_ids(values: Iterable[object]) -> list[str]:
     return list(dict.fromkeys(v.strip() for v in values if isinstance(v, str) and v.strip()))
 

@@ -435,3 +435,35 @@ class TestProjectFilesKnowledge:
 
         entries = await _project_files(_hidden_graph(["proj-kb"]), ["proj-kb"])
         assert _extract_kb_app_ids([*AGENT_KNOWLEDGE, *entries]) == ["kb-1", "kb-2", "proj-kb"]
+
+
+class TestSourceReach:
+    """What a source lets an agent search, compared across the stored and the sent form."""
+
+    @pytest.mark.parametrize("filters", [None, "", {}, [], {"recordGroups": [], "records": []}, '{"recordGroups": []}'])
+    def test_every_spelling_of_a_whole_source_is_the_same(self, filters) -> None:
+        from app.modules.agents.knowledge_scope import source_reach
+
+        assert source_reach([{"connectorId": "c1", "filters": filters}]) == {"c1": None}
+
+    def test_stored_text_and_sent_object_with_ids_in_another_order_are_the_same(self) -> None:
+        from app.modules.agents.knowledge_scope import source_reach
+
+        stored = [{"connectorId": "c1", "filters": '{"recordGroups": ["g2", "g1"]}'}]
+        sent = [{"connectorId": " c1 ", "filters": {"recordGroups": ["g1", "g2"], "records": []}}]
+        assert source_reach(stored) == source_reach(sent)
+
+    def test_a_collection_listed_as_its_own_limit_is_the_whole_collection(self) -> None:
+        from app.modules.agents.knowledge_scope import source_reach
+
+        assert source_reach([{"connectorId": "kb-1", "filters": {"recordGroups": ["kb-1"]}}]) == {"kb-1": None}
+
+    def test_narrowing_a_source_is_a_different_reach(self) -> None:
+        from app.modules.agents.knowledge_scope import source_reach
+
+        assert source_reach([{"connectorId": "c1", "filters": {"records": ["r1"]}}]) != source_reach([{"connectorId": "c1"}])
+
+    def test_an_unreadable_limit_searches_nothing_not_everything(self) -> None:
+        from app.modules.agents.knowledge_scope import source_reach
+
+        assert source_reach([{"connectorId": "c1", "filters": "{not json"}]) == {"c1": ((), ())}

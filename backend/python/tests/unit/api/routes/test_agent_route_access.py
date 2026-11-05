@@ -1458,3 +1458,111 @@ class TestServiceAgentConversionByNonOwner:
 
         assert response.status_code == 200
         assert graph.nodes[AGENTS]["private"]["name"] == "Renamed"
+
+
+class TestUnboundServiceAgentKnowledgeByNonOwner:
+    """An unbound service agent searches as its creator, so what it can reach is
+    searched with the owner's access. Changing that is the owner's or an
+    administrator's call; resending it unchanged is an ordinary save."""
+
+    @pytest.fixture
+    def service_agent(self, graph: InMemoryGraph) -> InMemoryGraph:
+        graph.nodes[AGENTS]["shared"]["isServiceAccount"] = True
+        graph.add_node("agentKnowledge", {"_key": "kn-1", "connectorId": "conn-1", "filters": '{"recordGroups": ["g2", "g1"]}'})
+        graph.add_edge("agentHasKnowledge", {"_from": f"{AGENTS}/shared", "_to": "agentKnowledge/kn-1"})
+        graph.add_edge(PERMISSION, {
+            "_from": f"{USERS_COLL}/{user_key('bob')}", "_to": f"{AGENTS}/shared", "type": "USER", "role": "WRITER",
+        })
+        return graph
+
+    @staticmethod
+    def _role(monkeypatch: pytest.MonkeyPatch, answer: CallerRole) -> list[int]:
+        asked: list[int] = []
+
+        async def lookup(_request: object, _config: object) -> CallerRole:
+            asked.append(1)
+            return answer
+
+        monkeypatch.setattr("app.api.routes.agent.fetch_caller_role", lookup)
+        return asked
+
+    @staticmethod
+    def _connectors(graph: InMemoryGraph) -> set[str]:
+        return {n["connectorId"] for n in graph.nodes.get("agentKnowledge", {}).values()}
+
+    ADDED = {"knowledge": [
+        {"connectorId": "conn-1", "filters": {"recordGroups": ["g1", "g2"]}},
+        {"connectorId": "conn-owner-only"},
+    ]}
+
+    def test_an_editor_cannot_add_a_source(self, client, service_agent, monkeypatch) -> None:
+        self._role(monkeypatch, CallerRole(CallerRoleStatus.VALID, "member"))
+
+        response = client.put("/api/v1/agent/shared", headers=as_user("bob"), json=self.ADDED)
+
+        assert response.status_code == 403
+        assert "owner or an administrator" in response.json()["detail"]
+        assert self._connectors(service_agent) == {"conn-1"}
+
+    def test_an_editor_cannot_widen_a_source(self, client, service_agent, monkeypatch) -> None:
+        self._role(monkeypatch, CallerRole(CallerRoleStatus.VALID, "member"))
+
+        response = client.put("/api/v1/agent/shared", headers=as_user("bob"), json={"knowledge": [{"connectorId": "conn-1"}]})
+
+        assert response.status_code == 403
+
+    def test_an_unconfirmed_role_saves_nothing(self, client, service_agent, monkeypatch) -> None:
+        self._role(monkeypatch, CallerRole(CallerRoleStatus.UNKNOWN))
+
+        response = client.put("/api/v1/agent/shared", headers=as_user("bob"), json=self.ADDED)
+
+        assert response.status_code == 503
+        assert self._connectors(service_agent) == {"conn-1"}
+
+    def test_an_editor_resaving_the_same_sources_is_not_refused(self, client, service_agent, monkeypatch) -> None:
+        """The builder resends the sources on every save, as an object and in its own order."""
+        asked = self._role(monkeypatch, CallerRole(CallerRoleStatus.VALID, "member"))
+
+        response = client.put("/api/v1/agent/shared", headers=as_user("bob"), json={
+            "name": "Renamed", "knowledge": [{"connectorId": "conn-1", "filters": {"recordGroups": ["g1", "g2"], "records": []}}],
+        })
+
+        assert response.status_code == 200
+        assert service_agent.nodes[AGENTS]["shared"]["name"] == "Renamed"
+        assert asked == []
+
+    def test_an_administrator_can_change_the_sources(self, client, service_agent, monkeypatch) -> None:
+        self._role(monkeypatch, CallerRole(CallerRoleStatus.VALID, "admin"))
+
+        response = client.put("/api/v1/agent/shared", headers=as_user("bob"), json=self.ADDED)
+
+        assert response.status_code == 200
+        assert self._connectors(service_agent) == {"conn-1", "conn-owner-only"}
+
+    def test_the_owner_changes_the_sources_without_a_role_lookup(self, client, service_agent, monkeypatch) -> None:
+        asked = self._role(monkeypatch, CallerRole(CallerRoleStatus.VALID, "member"))
+
+        response = client.put("/api/v1/agent/shared", headers=as_user("alice"), json=self.ADDED)
+
+        assert response.status_code == 200
+        assert asked == []
+
+    def test_a_bound_service_agent_is_not_limited(self, client, service_agent, monkeypatch) -> None:
+        """A bound agent searches as its service account, not as the owner."""
+        service_agent.nodes[AGENTS]["shared"]["serviceAccountUserId"] = "u-account"
+        asked = self._role(monkeypatch, CallerRole(CallerRoleStatus.VALID, "member"))
+
+        response = client.put("/api/v1/agent/shared", headers=as_user("bob"), json=self.ADDED)
+
+        assert response.status_code == 200
+        assert asked == []
+
+    def test_a_regular_agent_is_not_limited(self, client, service_agent, monkeypatch) -> None:
+        """A regular agent searches as whoever is chatting."""
+        service_agent.nodes[AGENTS]["shared"]["isServiceAccount"] = False
+        asked = self._role(monkeypatch, CallerRole(CallerRoleStatus.VALID, "member"))
+
+        response = client.put("/api/v1/agent/shared", headers=as_user("bob"), json=self.ADDED)
+
+        assert response.status_code == 200
+        assert asked == []
