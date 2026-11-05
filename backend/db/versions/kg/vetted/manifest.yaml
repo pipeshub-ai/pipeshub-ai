@@ -518,13 +518,16 @@ functions:
       - {"name": "p_kind", "type": "text", "enum": ["rows", "app"]}
       - {"name": "p_reason", "type": "text", "length": [1, 64]}
       - {"name": "p_fenced", "type": "boolean"}
-      - {"name": "p_now", "type": "bigint", "range": [0, 9223372036854775807]}
     returns: "boolean"
     no_org: "false"
     body: |
-      INSERT INTO kg.restamp_queue (org_id, id, app_sk, kind, reason, fenced, enqueued_ms) VALUES (v_org, p_id, p_app_sk, p_kind, p_reason, p_fenced, p_now)
+      DECLARE v_now bigint;
+      BEGIN
+        v_now := floor(extract(epoch FROM clock_timestamp()) * 1000);
+        INSERT INTO kg.restamp_queue (org_id, id, app_sk, kind, reason, fenced, enqueued_ms) VALUES (v_org, p_id, p_app_sk, p_kind, p_reason, p_fenced, v_now)
           ON CONFLICT (org_id, id) DO NOTHING;
         RETURN true;
+      END;
 
   - name: kg.w_queue_touch
     class: write
@@ -537,18 +540,21 @@ functions:
       - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
       - {"name": "p_seen", "type": "bigint", "range": [0, 9223372036854775807]}
       - {"name": "p_worker", "type": "text", "length": [1, 128]}
-      - {"name": "p_now", "type": "bigint", "range": [1, 9223372036854775807]}
       - {"name": "p_attempts", "type": "int", "range": [0, 1000000]}
       - {"name": "p_cursor", "type": "text", "nullable": true, "length": [0, 512]}
-    returns: "boolean"
-    no_org: "false"
+    returns: "bigint"
+    no_org: "0"
     reads: ["kg.restamp_queue"]
     body: |
-      DECLARE v_n integer;
+      DECLARE v_beat bigint; v_n integer;
       BEGIN
-        UPDATE kg.restamp_queue t SET claimed_by = p_worker, heartbeat_ms = p_now, attempts = p_attempts, cursor = p_cursor WHERE t.org_id = v_org AND t.id = p_id AND t.heartbeat_ms = p_seen;
+        v_beat := GREATEST(floor(extract(epoch FROM clock_timestamp()) * 1000), p_seen + 1);
+        UPDATE kg.restamp_queue t SET claimed_by = p_worker, heartbeat_ms = v_beat, attempts = p_attempts, cursor = p_cursor WHERE t.org_id = v_org AND t.id = p_id AND t.heartbeat_ms = p_seen;
         GET DIAGNOSTICS v_n = ROW_COUNT;
-        RETURN v_n = 1;
+        IF v_n = 1 THEN
+          RETURN v_beat;
+        END IF;
+        RETURN NULL;
       END;
 
   - name: kg.w_queue_done

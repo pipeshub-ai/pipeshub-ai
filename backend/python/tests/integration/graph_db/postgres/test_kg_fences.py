@@ -6,6 +6,7 @@ so a worker that dies leaves its marks in place; a claim is by compare and set o
 """
 from __future__ import annotations
 
+import asyncio
 import random
 
 import pytest
@@ -19,7 +20,7 @@ from app.services.graph_db.postgres.kg.writers import KgWriter
 from .pg_support import new_org
 from .test_kg_backfill import run_in, shadowed
 from .test_kg_derivation import ctx, edge, prov
-from .test_kg_projection import add_edge, update_node
+from .test_kg_projection import add_edge, delete_node, update_node
 from .test_kg_projection_races import OPS, world2
 from .test_kg_stamps import dry_diffs, held_stamps
 
@@ -211,7 +212,8 @@ async def test_a_batch_that_fails_leaves_the_records_hidden_and_the_job_is_claim
     [job] = await jobs(pg_db, org)
     assert job.attempts == 1
     assert await restamp.claim(pg_db, org, "w2") is None       # w1's claim is fresh
-    taken = await restamp.claim(pg_db, org, "w2", stale_ms=10, now=restamp.now_ms() + 60_000)
+    await asyncio.sleep(0.1)                                    # w1's claim goes stale by the database's clock
+    taken = await restamp.claim(pg_db, org, "w2", stale_ms=10)
     assert taken is not None and taken.attempts == 2 and await restamp.run_job(pg_db, org, taken, "w2", batch=5)
     assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
 
@@ -224,7 +226,8 @@ async def test_a_worker_that_lost_its_claim_changes_nothing(pg_db) -> None:
     await drain_org(pg_db, org)
     first = await restamp.claim(pg_db, org, "w1")
     assert first is not None
-    second = await restamp.claim(pg_db, org, "w2", stale_ms=10, now=restamp.now_ms() + 60_000)      # w1 stopped heartbeating
+    await asyncio.sleep(0.1)
+    second = await restamp.claim(pg_db, org, "w2", stale_ms=10)      # w1 stopped heartbeating
     assert second is not None
     before = await marks(p, org)
     with pytest.raises(restamp.LostClaim):
@@ -283,8 +286,8 @@ async def test_a_job_of_another_organisation_is_neither_claimed_nor_touched(pg_d
     assert took is not None and took.id == seen_a.id                                        # org a's claim is org a's job
 
     async def steal(tx) -> bool:
-        return await KgWriter(tx).queue_touch(job_b.id, job_b.heartbeat_ms, "wa", restamp.now_ms(), 1, None)
-    assert await run_in(pg_db, a, steal, write=True) is False                               # b's job id, from a's session
+        return await KgWriter(tx).queue_touch(job_b.id, job_b.heartbeat_ms, "wa", 1, None)
+    assert await run_in(pg_db, a, steal, write=True) is None                               # b's job id, from a's session
     [after] = await jobs(pg_db, b)
     assert after.attempts == 0 and after.heartbeat_ms == job_b.heartbeat_ms
     assert await restamp.run_job(pg_db, a, took, "wa") and len(await jobs(pg_db, b)) == 1 and await marks(p, b) == 12
@@ -403,7 +406,6 @@ async def test_a_connector_job_whose_pages_reach_another_connector_takes_its_loc
 
 
 async def test_a_stopped_worker_returns_between_batches_while_jobs_keep_coming_and_what_it_left_is_still_hidden(pg_db) -> None:
-    import asyncio
     import time
     p, org = prov(pg_db), new_org()
     await fat(p, org, 30)
@@ -511,3 +513,46 @@ async def test_a_batch_slower_than_the_staleness_keeps_its_claim_by_heartbeat(pg
     assert await restamp.claim(pg_db, org, "w2", stale_ms=300) is None                     # w1's heartbeat has kept the claim fresh while its batch runs
     done, _ = await asyncio.wait_for(task, 30)
     assert done and await marks(p, org) == 0
+
+
+async def test_a_row_whose_node_is_gone_keeps_its_mark_until_the_change_that_removes_it_has_been_projected(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await fat(p, org)
+    await drain_org(pg_db, org)
+    await narrow(p, org)
+    await drain_org(pg_db, org)
+    assert await marks(p, org) == 12
+    await delete_node(p, org, "records", "r05")                                  # deleted in the graph, not projected yet: kg still holds its outdated stamp
+    assert await restamp.run_jobs(pg_db, org, "w1", batch=5) == 0                 # the job cannot finish: one row cannot be restamped
+    assert await marks(p, org) == 1 and "r05" in await hidden_ids(p, org)         # every other row was restamped and unhidden; the one that was not is still hidden
+    assert len(await jobs(pg_db, org)) == 1
+    await drain_org(pg_db, org)                                                   # the delete is projected: the row goes, and its mark with it
+    await asyncio.sleep(0.1)
+    assert await restamp.run_jobs(pg_db, org, "w2", batch=5, stale_ms=10) == 1
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_worker_with_a_skewed_clock_neither_steals_a_live_claim_nor_blocks_recovery(pg_db, monkeypatch) -> None:
+    import time
+    p, org = prov(pg_db), new_org()
+    await fat(p, org)
+    await drain_org(pg_db, org)
+    await narrow(p, org)
+    await drain_org(pg_db, org)
+    real = time.time
+    live = await restamp.claim(pg_db, org, "w1", stale_ms=60_000)
+    assert live is not None
+    monkeypatch.setattr(time, "time", lambda: real() + 10 * 86400)             # a worker whose clock is ten days ahead
+    assert await restamp.claim(pg_db, org, "w2", stale_ms=60_000) is None       # it cannot take a live claim
+    monkeypatch.setattr(time, "time", real)
+    await asyncio.sleep(0.1)
+    skewed = await restamp.claim(pg_db, org, "w1", stale_ms=10)                 # w1 lets go; the next claim is made by the skewed worker
+    monkeypatch.setattr(time, "time", lambda: real() + 10 * 86400)
+    assert skewed is not None
+    [job] = await jobs(pg_db, org)
+    db_now = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint"))
+    assert abs(job.heartbeat_ms - db_now) < 60_000                              # the heartbeat is the database's now, not ten days ahead
+    monkeypatch.setattr(time, "time", real)
+    await asyncio.sleep(0.1)
+    again = await restamp.claim(pg_db, org, "w3", stale_ms=10)                  # so the job can be taken over once it is stale
+    assert again is not None

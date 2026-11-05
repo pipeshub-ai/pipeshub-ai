@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -68,17 +67,16 @@ class _Beat:
     async def _touch(self) -> bool:
         """One touch in a unit of its own. The unit's connection is taken first and the lock only then, for the touch and the commit: the batch holds a connection and needs this
         lock for its last touch, so waiting for a connection with the lock held would make each wait for the other until the pool timed out."""
-        job, held, ok, t = self._job, False, False, 0
+        job, held, beat = self._job, False, None
         try:
             with bind(_ctx(self._org)):
                 async with self._db.uow(write=True) as tx:
                     await self.lock.acquire()
                     held = True
-                    t = max(now_ms(), self.seen + 1)
-                    ok = await KgWriter(tx).queue_touch(job.id, self.seen, self._worker, t, job.attempts, job.cursor)     # False: taken over, the batch finds out at its own touch
-            if ok:
-                self.seen = t                                   # committed, and still under the lock
-            return ok
+                    beat = await KgWriter(tx).queue_touch(job.id, self.seen, self._worker, job.attempts, job.cursor)     # None: taken over, the batch finds out at its own touch
+            if beat:
+                self.seen = beat                                # committed, and still under the lock
+            return beat is not None
         finally:
             if held:
                 self.lock.release()
@@ -110,10 +108,6 @@ class Job:
     enqueued_ms: int = 0
 
 
-def now_ms() -> int:
-    return int(time.time() * 1000)
-
-
 def _ctx(org: str) -> OrgContext:
     return OrgContext(org, None, "job", "job:kg-restamp", "kg-restamp")
 
@@ -125,7 +119,7 @@ async def _notify(tx: Tx) -> None:
 async def enqueue_app(tx: Tx, org: str, app_sk: int, reason: str) -> int:
     """Hide a whole connector and queue its restamp (in the caller's unit)."""
     job = await tx.fetchval("/* pipeshub:kg.job_id */ SELECT nextval('kg.job_id_seq')")
-    await KgWriter(tx).queue_add(job, app_sk, "app", reason, fenced=True, now_ms=now_ms())
+    await KgWriter(tx).queue_add(job, app_sk, "app", reason, fenced=True)
     JOBS.inc("app")
     await _notify(tx)
     return job
@@ -159,7 +153,7 @@ async def enqueue_rows(tx: Tx, org: str, keys: set[Key], reason: str, *, skip_ap
             continue
         job = await tx.fetchval("/* pipeshub:kg.job_id */ SELECT nextval('kg.job_id_seq')")
         await w.fence_rows(rows, job)
-        await w.queue_add(job, app_sk, "rows", reason, fenced=True, now_ms=now_ms())
+        await w.queue_add(job, app_sk, "rows", reason, fenced=True)
         JOBS.inc("rows")
     hid = {a: r for a, r in by_app.items() if a not in skip_apps}
     if hid:
@@ -173,16 +167,16 @@ async def pending(tx: Tx, org: str) -> list[Job]:
     return [Job(r["id"], r["app_sk"], r["kind"], r["reason"], r["fenced"], r["heartbeat_ms"], r["attempts"], r["cursor"], r["enqueued_ms"]) for r in rows]
 
 
-async def claim(db: KernelDB, org: str, worker: str, *, stale_ms: int = STALE_MS, now: int | None = None) -> Job | None:
-    """The oldest job nobody holds (or whose holder stopped touching it), claimed by compare-and-set on its heartbeat."""
-    now = now_ms() if now is None else now
-
+async def claim(db: KernelDB, org: str, worker: str, *, stale_ms: int = STALE_MS) -> Job | None:
+    """The oldest job nobody holds (or whose holder stopped touching it), claimed by compare-and-set on its heartbeat. Staleness is judged and the heartbeat written by the database's
+    clock, never the worker's: a worker with a fast clock can neither take a live claim nor leave a heartbeat in the future that would keep the job from being taken again."""
     async def go(tx: Tx) -> Job | None:
         rows = await tx.fetch("""/* pipeshub:kg.queue_claimable */ SELECT id, app_sk, kind, reason, fenced, heartbeat_ms, attempts, cursor, enqueued_ms FROM kg.restamp_queue
-            WHERE org_id = $1 AND (claimed_by IS NULL OR heartbeat_ms < $2) ORDER BY id LIMIT 8""", org, now - stale_ms)
+            WHERE org_id = $1 AND (claimed_by IS NULL OR heartbeat_ms < floor(extract(epoch FROM clock_timestamp()) * 1000) - $2) ORDER BY id LIMIT 8""", org, stale_ms)
         for r in rows:
-            if await KgWriter(tx).queue_touch(r["id"], r["heartbeat_ms"], worker, now, r["attempts"] + 1, r["cursor"]):
-                return Job(r["id"], r["app_sk"], r["kind"], r["reason"], r["fenced"], now, r["attempts"] + 1, r["cursor"], r["enqueued_ms"])
+            beat = await KgWriter(tx).queue_touch(r["id"], r["heartbeat_ms"], worker, r["attempts"] + 1, r["cursor"])
+            if beat:
+                return Job(r["id"], r["app_sk"], r["kind"], r["reason"], r["fenced"], beat, r["attempts"] + 1, r["cursor"], r["enqueued_ms"])
         return None
     with bind(_ctx(org)):
         return await db.run(go, write=True)
@@ -192,18 +186,18 @@ async def _app_id(tx: Tx, org: str, app_sk: int) -> str | None:
     return await tx.fetchval("/* pipeshub:kg.app_id */ SELECT id FROM kg.node_keys WHERE org_id = $1 AND sk = $2 AND coll = 1", org, app_sk)
 
 
-async def run_batch(db: KernelDB, org: str, job: Job, worker: str, *, batch: int | None = None, now: int | None = None, stale_ms: int = STALE_MS) -> tuple[bool, Job]:
+async def run_batch(db: KernelDB, org: str, job: Job, worker: str, *, batch: int | None = None, stale_ms: int = STALE_MS) -> tuple[bool, Job]:
     """One unit of a claimed job; returns (finished, the job as touched). The unit takes the connector's lock (and, when the stamps reach others, theirs), stamps the next
     rows, clears their marks, heartbeats and, when nothing is left, deletes the queue row: all or nothing. While it runs the claim is kept alive (:class:`_Beat`), so a batch
     slower than ``stale_ms`` is not taken over."""
     beat = _Beat(db, org, job, worker, stale_ms)
     try:
-        return await _run_batch(db, org, job, worker, beat, batch, now)
+        return await _run_batch(db, org, job, worker, beat, batch)
     finally:
         await beat.stop()
 
 
-async def _run_batch(db: KernelDB, org: str, job: Job, worker: str, beat: _Beat, batch: int | None, now: int | None) -> tuple[bool, Job]:
+async def _run_batch(db: KernelDB, org: str, job: Job, worker: str, beat: _Beat, batch: int | None) -> tuple[bool, Job]:
     extra: set[str] = set()
     for _ in range(locks.MAX_ROUNDS):
         async def go(tx: Tx, held: frozenset[str] = frozenset(extra)) -> tuple[bool, Job]:
@@ -213,12 +207,20 @@ async def _run_batch(db: KernelDB, org: str, job: Job, worker: str, beat: _Beat,
             cursor = job.cursor
             if job.kind == "rows":
                 size = batch or BATCH
-                rows = await tx.fetch("""/* pipeshub:kg.job_rows */ SELECT sk, coll, id, kind FROM kg.records WHERE org_id = $1 AND fence_job = $2 ORDER BY sk LIMIT $3""", org, job.id, size)
+                rows = await tx.fetch("""/* pipeshub:kg.job_rows */ SELECT sk, coll, id, kind FROM kg.records WHERE org_id = $1 AND fence_job = $2 AND sk > $3 ORDER BY sk LIMIT $4""",
+                                      org, job.id, int(cursor) if cursor else 0, size)
                 if rows:
-                    await stamp.stamp_keys(tx, org, {(CODE_COLL[r["coll"]], r["id"]) for r in rows}, locked=({app_id} if app_id else set()) | held)
-                    # every row of the batch is over: its stamp is written, or its node is gone (the change that removed it waits in the log, which keeps the connector from being current)
-                    await w.fence_rows([(r["sk"], r["coll"], r["id"], r["kind"]) for r in rows], None)
-                done = not rows or not await tx.fetchval("/* pipeshub:kg.job_more */ SELECT EXISTS (SELECT 1 FROM kg.records WHERE org_id = $1 AND fence_job = $2)", org, job.id)
+                    st = await stamp.stamp_keys(tx, org, {(CODE_COLL[r["coll"]], r["id"]) for r in rows}, locked=({app_id} if app_id else set()) | held)
+                    # only a row that was restamped is unhidden. A row whose node is gone, or that is not a record or a group, keeps its mark: its stamp is as old as the change, and the
+                    # change that removes the row (it waits in the log) takes the mark with it
+                    over = [(r["sk"], r["coll"], r["id"], r["kind"]) for r in rows if (CODE_COLL[r["coll"]], r["id"]) in st.keys]
+                    if over:
+                        await w.fence_rows(over, None)
+                    cursor = str(rows[-1]["sk"])
+                left = await tx.fetchval("/* pipeshub:kg.job_more */ SELECT EXISTS (SELECT 1 FROM kg.records WHERE org_id = $1 AND fence_job = $2)", org, job.id)
+                done = not left
+                if left and not rows:
+                    cursor = None                       # a whole pass is over and some rows could not be restamped: they stay marked; the next claim starts the pass again
             else:
                 if not app_id:
                     done = True
@@ -226,8 +228,8 @@ async def _run_batch(db: KernelDB, org: str, job: Job, worker: str, beat: _Beat,
                     after = await stamp.stamp_app(tx, org, app_id, cursor, batch or APP_PAGE, locked={app_id} | held)
                     done, cursor = after is None, after or cursor
             async with beat.lock:
-                t = max(now_ms() if now is None else now, beat.seen + 1)
-                if not await w.queue_touch(job.id, beat.seen, worker, t, job.attempts, cursor):
+                t = await w.queue_touch(job.id, beat.seen, worker, job.attempts, cursor)
+                if not t:
                     raise LostClaim(job.id)
             if done:
                 await w.queue_done(job.id)
@@ -263,6 +265,8 @@ async def run_job(db: KernelDB, org: str, job: Job, worker: str, *, batch: int |
         n += 1
         if done:
             return True
+        if job.cursor is None:
+            return False                                   # a pass is over and some rows could not be restamped: they stay hidden, and the job is looked at again once its claim is stale
     return False
 
 
@@ -283,7 +287,6 @@ async def run_jobs(db: KernelDB, org: str, worker: str, *, stale_ms: int = STALE
 
 
 async def oldest_seconds(tx: Tx, org: str) -> float:
-    """Age of the oldest fence (queued job), 0 when none: the figure to alert on (a stuck fence only hides, but hides for as long)."""
-    r = await tx.fetchval("/* pipeshub:kg.fence_age */ SELECT min(enqueued_ms) FROM kg.restamp_queue WHERE org_id = $1 AND fenced", org)
-    return 0.0 if r is None else max(0.0, (now_ms() - r) / 1000)
-
+    """Age of the oldest fence (queued job) by the database's clock, 0 when none: the figure to alert on (a stuck fence only hides, but hides for as long)."""
+    r = await tx.fetchval("/* pipeshub:kg.fence_age */ SELECT floor(extract(epoch FROM clock_timestamp()) * 1000) - min(enqueued_ms) FROM kg.restamp_queue WHERE org_id = $1 AND fenced", org)
+    return 0.0 if r is None else max(0.0, float(r) / 1000)

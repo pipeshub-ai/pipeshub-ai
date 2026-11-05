@@ -113,12 +113,13 @@ class KgWriter:
                                         [r[0] for r in part], [r[1] for r in part], [r[2] for r in part], [r[3] for r in part], [job] * len(part))
         return n
 
-    async def queue_add(self, job: int, app_sk: int, kind: str, reason: str, *, fenced: bool, now_ms: int) -> bool:
-        return await self.tx.fetchval("/* pipeshub:kg.w_queue_add */ SELECT kg.w_queue_add($1, $2, $3, $4, $5, $6)", job, app_sk, kind, reason, fenced, now_ms)
+    async def queue_add(self, job: int, app_sk: int, kind: str, reason: str, *, fenced: bool) -> bool:
+        return await self.tx.fetchval("/* pipeshub:kg.w_queue_add */ SELECT kg.w_queue_add($1, $2, $3, $4, $5)", job, app_sk, kind, reason, fenced)
 
-    async def queue_touch(self, job: int, seen: int, worker: str, now_ms: int, attempts: int, cursor: str | None) -> bool:
-        """Claim or heartbeat a job if nobody has touched it since ``seen`` (compare and set on the heartbeat): False means another worker took it."""
-        return await self.tx.fetchval("/* pipeshub:kg.w_queue_touch */ SELECT kg.w_queue_touch($1, $2, $3, $4, $5, $6)", job, seen, worker, now_ms, attempts, cursor)
+    async def queue_touch(self, job: int, seen: int, worker: str, attempts: int, cursor: str | None) -> int | None:
+        """Claim or heartbeat a job if nobody has touched it since ``seen`` (compare and set on the heartbeat): returns the new heartbeat, which is the database's clock, or None when
+        another worker took the job."""
+        return await self.tx.fetchval("/* pipeshub:kg.w_queue_touch */ SELECT kg.w_queue_touch($1, $2, $3, $4, $5)", job, seen, worker, attempts, cursor) or None
 
     async def queue_done(self, job: int) -> bool:
         return await self.tx.fetchval("/* pipeshub:kg.w_queue_done */ SELECT kg.w_queue_done($1)", job)
