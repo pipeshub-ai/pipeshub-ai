@@ -5977,6 +5977,42 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     # ==================== User Operations ====================
 
+    async def get_users_by_emails(
+        self,
+        emails: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        org_id: str | None = None,
+    ) -> dict[str, User]:
+        """See :meth:`IGraphDBProvider.get_users_by_emails`."""
+        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        if not wanted:
+            return {}
+        try:
+            scoped = org_id is not None
+            org_filter = "AND u.orgId = $org_id" if scoped else ""
+            # toLower(u.email) keeps matching case-insensitive, which the
+            # user_email index cannot serve.
+            query = f"""
+            MATCH (u:User)
+            WHERE toLower(u.email) IN $emails {org_filter}
+            RETURN u
+            """
+            results = await self.client.execute_query(
+                query, parameters={"emails": wanted, **({"org_id": org_id} if scoped else {})}, txn_id=transaction,
+            )
+            found: dict[str, User] = {}
+            for row in results or []:
+                user_dict = self._neo4j_to_arango_node(dict(row["u"]), CollectionNames.USERS.value)
+                found.setdefault(user_dict["email"].lower(), User.from_arango_user(user_dict))
+            return found
+        except Exception as e:
+            self.logger.error(f"❌ Get users by emails failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return {}
+
     async def get_user_by_email(
         self,
         email: str,
@@ -22349,8 +22385,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ),
     }
     # How a node ``e`` of each tenant-owned entity type is matched to $org_id.
-    # An external organisation (a CRM account) carries its tenant as
-    # parentOrgId; the tenant org itself is never an entity.
+    # An external organisation (a CRM account) carries the org it belongs to as
+    # parentOrgId; the org itself is never an entity.
     _ENTITY_TENANT_SCOPE = {
         KnowledgeGraphEntityType.RECORD_GROUP.value: "e.orgId = $org_id",
         KnowledgeGraphEntityType.PERSON.value: "e.orgId = $org_id",

@@ -521,6 +521,25 @@ class GraphTransactionStore(TransactionStore):
         self._memo_put(key, value)
         return value
 
+    async def get_users_by_emails(
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, User]:
+        """The members for ``emails`` (lowercased keys), one provider call for the addresses the memo lacks."""
+        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        keys = {e: ("user_email", e, org_id) for e in wanted}
+        found = {e: self._memo[k] for e, k in keys.items() if k in self._memo}
+        missing = [e for e in wanted if e not in found]
+        if missing:
+            scope = {"org_id": org_id} if org_id is not None else {}
+            got = await self.graph_provider.get_users_by_emails(
+                missing, transaction=self.txn, raise_on_error=raise_on_error, **scope
+            )
+            for e in missing:
+                self._memo_put(keys[e], got.get(e))
+                if got.get(e) is not None:
+                    found[e] = got[e]
+        return found
+
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
     ) -> Optional[User]:
