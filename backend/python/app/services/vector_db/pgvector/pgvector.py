@@ -678,12 +678,19 @@ class PgVectorService(IVectorDBService):
         merge_filter = compile_filter(expr, first_param=5) if expr is not None else None
 
         async def run(tx: Tx) -> None:
-            if membership:
-                keys = (await writes.group_keys_of_ids(tx, org, coll.collection_id, ids)) if ids is not None \
-                    else await writes.group_keys_matching(tx, org, coll.collection_id, group_filter)
+            selected, merge_ids = ids, ids
+            if membership and ids is None:
+                # The group write changes what the filter may read (a stamp, a scope list, a membership array): choose the points once,
+                # before it, and use that one selection for the group rows and for the point payloads.
+                merge_ids = await writes.point_ids_matching(tx, org, coll.collection_id, group_filter)
+                selected = merge_ids
+            if membership and selected:
+                keys = await writes.group_keys_of_ids(tx, org, coll.collection_id, selected)
                 if keys:
                     await writes.write_groups(tx, org, coll.collection_id, dict.fromkeys(keys, membership), t, allow_empty=True)
-            await writes.merge_payload(tx, org, coll.collection_id, payload, merge_filter, ids, replace=replace)
+            if merge_ids is not None and not merge_ids:
+                return                                           # the filter matched no point
+            await writes.merge_payload(tx, org, coll.collection_id, payload, None if merge_ids is not None else merge_filter, merge_ids, replace=replace)
 
         with org_scope(org):
             await db.run(run, write=True, idempotent=True, custom_plan=True)
