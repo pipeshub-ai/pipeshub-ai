@@ -27,7 +27,7 @@ Most tools hand an AI model a few retrieved text chunks. PipesHub gives agents t
 
 ## What connectors does PipesHub support?
 
-PipesHub has 40+ connectors across 30+ systems, with real-time and scheduled indexing. See the [connectors overview](https://docs.pipeshub.com/connectors/overview).
+PipesHub has 50+ connectors, with real-time and scheduled indexing. See the [connectors overview](https://docs.pipeshub.com/connectors/overview).
 
 ## What file formats can PipesHub index?
 
