@@ -788,7 +788,7 @@
    "PARAMS",
    "2",
    "vec",
-   "<bytes>"
+   "<bytes:8:51b1b8aea6268264>"
   ]
  ],
  "redis/dense_text_arms": [
@@ -823,7 +823,7 @@
    "PARAMS",
    "2",
    "vec",
-   "<bytes>"
+   "<bytes:8:51b1b8aea6268264>"
   ]
  ],
  "redis/dense_text_org": [
@@ -858,7 +858,7 @@
    "PARAMS",
    "2",
    "vec",
-   "<bytes>"
+   "<bytes:8:51b1b8aea6268264>"
   ]
  ],
  "redis/empty_filter": [
@@ -891,7 +891,7 @@
    "PARAMS",
    "2",
    "vec",
-   "<bytes>"
+   "<bytes:8:51b1b8aea6268264>"
   ]
  ],
  "redis/no_filter": [
@@ -924,7 +924,7 @@
    "PARAMS",
    "2",
    "vec",
-   "<bytes>"
+   "<bytes:8:51b1b8aea6268264>"
   ]
  ],
  "redis/sparse_dense": [
@@ -959,7 +959,7 @@
    "PARAMS",
    "2",
    "vec",
-   "<bytes>"
+   "<bytes:8:51b1b8aea6268264>"
   ]
  ],
  "redis/text_only": [
