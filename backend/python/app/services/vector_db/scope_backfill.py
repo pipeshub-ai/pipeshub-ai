@@ -188,7 +188,11 @@ class ScopeBackfill:
             in_flight = unclosed_writes(app, allow_closed_ahead=close_open_mark)
             if in_flight is None:
                 structure = None
-            elif in_flight != 0:
+            if structure is None:  # a stored generation, mark or counter that is not readable is not read as "never changed" or "none": nothing is written
+                raise UnreadableStructureState(
+                    f"the structure state of {app_id} is not readable: generation {app.get(GENERATION_KEY)!r}, unsafe mark {app.get(UNSAFE_KEY)!r}, "
+                    f"opened {app.get(OPENED_KEY)!r}, closed {app.get(CLOSED_KEY)!r}")
+            if in_flight != 0:
                 if not close_open_mark:
                     raise OpenMarkNotClosed(
                         f"{app_id} has {in_flight} unclassified write(s) that started and never wrote their closing mark, so a pass cannot tell whether "
@@ -197,9 +201,6 @@ class ScopeBackfill:
                 mark = new_unsafe_mark()
                 if not await self._graph.update_node(app_id, CollectionNames.APPS.value, {CLOSED_KEY: app.get(OPENED_KEY) or 0, UNSAFE_KEY: mark}):
                     raise CheckpointRefused(f"the open writes of {app_id} could not be closed")
-            if structure is None:  # a stored generation or mark that is not readable is not read as "never changed" or "none": nothing is written
-                raise UnreadableStructureState(
-                    f"the structure state of {app_id} is not readable: generation {app.get(GENERATION_KEY)!r}, unsafe mark {app.get(UNSAFE_KEY)!r}")
             # A checkpoint of another field version, scope generation, structure generation or unsafe mark says nothing about the points now:
             # start over. Nothing clears the mark: the pass records the value it read, and the connector is current only while it still reads
             # the same (a mark written during the pass is a different value, and nothing the pass does can erase it).

@@ -555,6 +555,18 @@ async def test_the_flag_also_closes_a_connector_whose_closed_counter_got_ahead_o
     assert doc["scopeProjectionOpened"] == 1 and doc["scopeProjectionClosed"] == 1 and p.state == DONE and app_is_current(doc)
 
 
+async def test_an_unreadable_generation_or_mark_stops_the_run_before_the_flag_closes_anything() -> None:
+    from app.services.vector_db.scope_backfill import UnreadableStructureState
+
+    for key in (GENERATION_KEY, UNSAFE_KEY):
+        vdb, loaded, job, app = await setup()
+        loaded.graph.app_docs[app] = {"_key": app, "scopeProjectionOpened": 2, "scopeProjectionClosed": 0, key: "x"}
+        before = dict(loaded.graph.app_docs[app])
+        with pytest.raises(UnreadableStructureState):
+            await job.run_connector(ORG, app, close_open_mark=True)
+        assert loaded.graph.app_docs[app] == before and not any(keys_of(vdb)), key          # not closed, and the unreadable value is still there
+
+
 async def test_counters_that_do_not_read_stop_the_run_before_it_writes_anything_even_with_the_flag() -> None:
     from app.services.vector_db.scope_backfill import UnreadableStructureState
 
