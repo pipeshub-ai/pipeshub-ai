@@ -1721,8 +1721,9 @@ class RecordEventHandler(BaseEventService):
                 )
                 return
 
-            if virtual_record_id is None:
-                virtual_record_id = record.get("virtualRecordId")
+            # A retry repeats the original message, which still holds the id from
+            # before its first attempt; the record holds the one that attempt saved.
+            virtual_record_id = record.get("virtualRecordId") or virtual_record_id
 
             stages = payload.get("stages")
             stage_ingress = self.event_processor.stage_ingress
