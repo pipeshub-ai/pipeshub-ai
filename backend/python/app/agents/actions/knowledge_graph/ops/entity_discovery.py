@@ -62,8 +62,9 @@ MAX_QUERIES = 5
 _ENTITY_KIND_NAMES: frozenset[str] = frozenset(kind.value for kind in EntityKind)
 
 
-def _error(message: str) -> str:
-    return json.dumps({"status": "error", "message": message})
+def _error(message: str, *, retryable: bool = False) -> str:
+    """``retryable``: the search could not run (not a bad request), so an API caller is told to try again, not to fix its request."""
+    return json.dumps({"status": "error", "message": message, **({"retryable": True} if retryable else {})})
 
 
 async def execute_search_entities(
@@ -98,7 +99,7 @@ async def execute_search_entities(
     entity_vector_store = state.get("entity_vector_store")
     graph_provider = state.get("graph_provider")
     if not entity_vector_store or not graph_provider:
-        return False, _error("Entity search is not available in this deployment")
+        return False, _error("Entity search is not available in this deployment", retryable=True)
 
     requested = [str(t).strip().lower() for t in (entity_types or []) if str(t).strip()]
     kinds = [str(k).strip().lower() for k in (named_entity_kinds or []) if str(k).strip()]
@@ -157,11 +158,12 @@ async def execute_search_entities(
         logger.warning("search_entities timed out", exc_info=True)
         return False, _error(
             "Entity search timed out before it could confirm which matches you can access — "
-            "this is not an empty result. Try again, or use knowledgegraph__search."
+            "this is not an empty result. Try again, or use knowledgegraph__search.",
+            retryable=True,
         )
     except EntityAccessError:
         logger.warning("search_entities failed", exc_info=True)
-        return False, _error("Entity search failed — try again.")
+        return False, _error("Entity search failed — try again.", retryable=True)
 
     ignored = sorted(set(requested) - SEARCHABLE_ENTITY_TYPES)
     if not hits:

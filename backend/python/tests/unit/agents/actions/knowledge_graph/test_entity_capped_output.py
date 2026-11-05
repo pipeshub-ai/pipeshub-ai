@@ -1,6 +1,6 @@
 """In the tools: a capped entity's listing and entity-scoped search say
-the result is a bounded sample, never "newest first" over everything, "last
-page", or "no records"."""
+the result is a bounded sample, never "newest first" over everything; one
+with no readable records reads like any other entity without them."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -10,7 +10,6 @@ import pytest
 
 from app.agents.actions.knowledge_graph.ops import entity_records
 from app.agents.actions.knowledge_graph.ops.entity_records import (
-    CAPPED_EMPTY_MSG,
     NO_ACCESSIBLE_RECORDS_MSG,
     NO_FURTHER_RECORDS_MSG,
     execute_find_records_by_entity,
@@ -68,19 +67,14 @@ class TestFindRecordsByEntityWhenCapped:
         assert "more records than" in text
         assert "record_types" in text and "entity_ids" in text
 
-    async def test_capped_entity_with_no_visible_records_is_not_reported_empty(self, patched) -> None:
+    @pytest.mark.parametrize("cursor", [None, "40"])
+    async def test_a_capped_entity_with_no_readable_records_reads_as_an_unknown_one(self, patched, cursor) -> None:
+        """A "more than one listing can scan" reply would say the entity exists and is large."""
         patched(EntityRecordPage(records=[], next_cursor=None, capped=True))
-        ok, text = await execute_find_records_by_entity(_state(), entity_id="t1", entity_type="topic")
-        assert ok
-        assert text == CAPPED_EMPTY_MSG
-        assert text not in (NO_ACCESSIBLE_RECORDS_MSG, NO_FURTHER_RECORDS_MSG)
-
-    async def test_capped_entity_paged_past_its_window_is_not_reported_finished(self, patched) -> None:
-        patched(EntityRecordPage(records=[], next_cursor=None, capped=True))
-        ok, text = await execute_find_records_by_entity(
-            _state(), entity_id="t1", entity_type="topic", cursor="40",
-        )
-        assert text == CAPPED_EMPTY_MSG
+        _, capped = await execute_find_records_by_entity(_state(), entity_id="t1", entity_type="topic", cursor=cursor)
+        patched(EntityRecordPage(records=[], next_cursor=None))
+        _, unknown = await execute_find_records_by_entity(_state(), entity_id="nope", entity_type="topic", cursor=cursor)
+        assert capped == unknown == (NO_FURTHER_RECORDS_MSG if cursor else NO_ACCESSIBLE_RECORDS_MSG)
 
     async def test_uncapped_page_still_reads_newest_first(self, patched) -> None:
         patched(EntityRecordPage(records=_rows(2), next_cursor=None))

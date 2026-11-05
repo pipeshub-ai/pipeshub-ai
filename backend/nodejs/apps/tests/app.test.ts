@@ -57,6 +57,7 @@ import * as openaiModelsRoutes from '../src/modules/configuration_manager/routes
 import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
 import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth.provider.routes';
+import * as agentRegistrationRoutes from '../src/modules/oauth_provider/routes/agent-registration.routes';
 import * as oauthClientsRoutes from '../src/modules/oauth_provider/routes/oauth.clients.routes';
 import * as patRoutes from '../src/modules/oauth_provider/routes/pat.routes';
 import * as mcpRoutes from '../src/modules/mcp/routes/mcp.routes';
@@ -189,10 +190,12 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(crawlingRoutes, 'default').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'createCrawlingManagerRouter').returns(dummyRouter);
   sandbox.stub(oauthProviderRoutes, 'createOAuthProviderRouter').returns(dummyRouter);
+  sandbox.stub(agentRegistrationRoutes, 'createAgentRegistrationRouter').returns(dummyRouter);
   sandbox.stub(oauthClientsRoutes, 'createOAuthClientsRouter').returns(dummyRouter);
   sandbox.stub(patRoutes, 'createPatRouter').returns(dummyRouter);
   sandbox.stub(mcpRoutes, 'createMCPRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createOIDCDiscoveryRouter').returns(dummyRouter);
+  sandbox.stub(oidcRoutes, 'createAuthMdRouter').returns(dummyRouter);
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);
   sandbox.stub(toolsetsRoutes, 'createToolsetsRouter').returns(dummyRouter);
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
@@ -943,6 +946,18 @@ describe('Application', () => {
       '/.well-known',
       '/api/v1/docs',
     ];
+
+    // The catch-all layers (static, SPA, query) match every path, so require a
+    // layer that matches the guide's path and not a neighbour.
+    it('should mount the agent auth guide at /auth.md and /.well-known/auth.md', () => {
+      const stack = (expressApp as any)._router?.stack || [];
+      const mountedOnly = (path: string, neighbour: string) =>
+        stack.some(
+          (layer: any) => layer.regexp?.test(path) && !layer.regexp.test(neighbour),
+        );
+      expect(mountedOnly('/auth.md', '/not-auth.md')).to.be.true;
+      expect(mountedOnly('/.well-known/auth.md', '/.well-known/jwks.json')).to.be.true;
+    });
 
     for (const route of expectedRoutes) {
       it(`should mount route: ${route}`, () => {

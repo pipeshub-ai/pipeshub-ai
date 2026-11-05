@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field  # type: ignore
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
+from app.sources.client.resilience import ResiliencePolicy
 
 
 class ZammadResponse(BaseModel):
@@ -46,7 +47,9 @@ class ZammadRESTClientViaUsernamePassword(HTTPClient):
         username: The username to use for authentication
         password: The password to use for authentication
     """
-    def __init__(self, base_url: str, username: str, password: str) -> None:
+    def __init__(
+        self, base_url: str, username: str, password: str, resilience: Optional[ResiliencePolicy] = None,
+    ) -> None:
         if not base_url:
             raise ValueError("Zammad base_url cannot be empty")
         if not username:
@@ -64,7 +67,7 @@ class ZammadRESTClientViaUsernamePassword(HTTPClient):
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
 
         # Initialize parent with empty token since we're using Basic auth
-        super().__init__("", "Basic")
+        super().__init__("", "Basic", resilience=resilience)
 
         # Override headers with Basic auth
         self.headers = {
@@ -86,7 +89,7 @@ class ZammadRESTClientViaToken(HTTPClient):
         base_url: The base URL of the Zammad instance (FQDN)
         token: The access token to use for authentication
     """
-    def __init__(self, base_url: str, token: str) -> None:
+    def __init__(self, base_url: str, token: str, resilience: Optional[ResiliencePolicy] = None) -> None:
         if not base_url:
             raise ValueError("Zammad base_url cannot be empty")
         if not token:
@@ -97,7 +100,7 @@ class ZammadRESTClientViaToken(HTTPClient):
         self.token = token
 
         # Initialize parent with custom token type for Zammad
-        super().__init__(token, "Token token=")
+        super().__init__(token, "Token token=", resilience=resilience)
 
         # Override headers to use Zammad's token format
         self.headers = {
@@ -118,7 +121,7 @@ class ZammadRESTClientViaOAuth2(HTTPClient):
         base_url: The base URL of the Zammad instance (FQDN)
         bearer_token: The OAuth2 bearer token to use for authentication
     """
-    def __init__(self, base_url: str, bearer_token: str) -> None:
+    def __init__(self, base_url: str, bearer_token: str, resilience: Optional[ResiliencePolicy] = None) -> None:
         if not base_url:
             raise ValueError("Zammad base_url cannot be empty")
         if not bearer_token:
@@ -129,7 +132,7 @@ class ZammadRESTClientViaOAuth2(HTTPClient):
         self.bearer_token = bearer_token
 
         # Initialize parent with Bearer token
-        super().__init__(bearer_token, "Bearer")
+        super().__init__(bearer_token, "Bearer", resilience=resilience)
 
         # Headers are already set correctly by parent class
         self.headers.update({
@@ -254,6 +257,7 @@ class ZammadClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         connector_instance_id: Optional[str] = None,
+        resilience: Optional[ResiliencePolicy] = None,
     ) -> "ZammadClient":
         """Build ZammadClient using configuration service
         This method fetches Zammad configuration from the configuration service
@@ -262,6 +266,7 @@ class ZammadClient(IClient):
             logger: Logger instance
             config_service: Configuration service instance
             connector_instance_id: Optional connector instance ID for multi-instance support
+            resilience: The connector's rate limit and retry policy, applied below every request
         Returns:
             ZammadClient instance
         Raises:
@@ -299,7 +304,7 @@ class ZammadClient(IClient):
                 if not username or not password:
                     raise ValueError("Username and password required for basic auth type")
 
-                client = ZammadRESTClientViaUsernamePassword(base_url, username, password)
+                client = ZammadRESTClientViaUsernamePassword(base_url, username, password, resilience)
                 logger.warning("Using Basic Authentication for Zammad. Consider using Token authentication instead.")
 
             elif auth_type == "TOKEN" or auth_type == "API_TOKEN":
@@ -308,7 +313,7 @@ class ZammadClient(IClient):
                 if not token:
                     raise ValueError("Token required for token auth type")
 
-                client = ZammadRESTClientViaToken(base_url, token)
+                client = ZammadRESTClientViaToken(base_url, token, resilience)
 
             elif auth_type == "OAUTH2" or auth_type == "BEARER" or auth_type == "OAUTH":
                 bearer_token = auth_config.get("bearerToken") or auth_config.get("bearer_token") or auth_config.get("accessToken", "")
@@ -316,7 +321,7 @@ class ZammadClient(IClient):
                 if not bearer_token:
                     raise ValueError("Bearer token required for OAuth2 auth type")
 
-                client = ZammadRESTClientViaOAuth2(base_url, bearer_token)
+                client = ZammadRESTClientViaOAuth2(base_url, bearer_token, resilience)
 
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}. Must be one of: USERNAME_PASSWORD, TOKEN, OAUTH2")
