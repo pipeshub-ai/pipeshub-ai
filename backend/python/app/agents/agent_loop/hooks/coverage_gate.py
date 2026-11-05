@@ -61,7 +61,6 @@ CHECK_TIMEOUT_S = 20.0
 # draft stands.
 _MIN_TURNS_LEFT = 3
 _SEARCH_TOOL_SUFFIX = "search"
-_LOGGED_RULING_CHARS = 200
 
 # The reply to a send-back replaces the draft, so it must be the whole answer.
 RESTATE_THE_ANSWER = (
@@ -117,10 +116,6 @@ def _read_draft(context: "AgentContext", text: str) -> _Draft:
     )
 
 
-def _short(rulings: list[str]) -> list[str]:
-    return [ruling[:_LOGGED_RULING_CHARS] for ruling in rulings]
-
-
 def _agent_queries(ctx: "ModelResponseContext") -> list[str]:
     if ctx.scope is None:
         return []
@@ -171,9 +166,9 @@ def coverage_gate(context: "AgentContext") -> "Middleware[ModelResponseContext]"
         if decision.checked:
             state.bump("gate_checker_calls")
         logger.info(
-            "coverage_loop: gate conversation=%s round=%d signals=%s gaps=%s rulings=%s ms=%d",
+            "coverage_loop: gate conversation=%s round=%d signals=%s gaps=%s rulings=%d ms=%d",
             context.conversation_id, state.gate_rounds, decision.signals,
-            [(gap.kind, gap.query) for gap in decision.gaps], _short(decision.rulings),
+            [gap.kind for gap in decision.gaps], len(decision.rulings),
             int((time.monotonic() - started) * 1000),
         )
         if decision.covered:
@@ -259,8 +254,8 @@ async def _send_back(
                 rulings.append(ruling)
                 state.bump("gate_found_rulings")
     logger.info(
-        "coverage_loop: gate searches conversation=%s results=%d new_records=%d rulings=%s",
-        context.conversation_id, len(found), len(new), _short(rulings),
+        "coverage_loop: gate searches conversation=%s results=%d new_records=%d rulings=%d",
+        context.conversation_id, len(found), len(new), len(rulings),
     )
     if not new and not rulings:
         # Nothing the draft has not seen: another turn would restate it, or

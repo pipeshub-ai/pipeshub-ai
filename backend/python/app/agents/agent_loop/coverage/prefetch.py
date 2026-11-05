@@ -71,7 +71,7 @@ async def finish_facet_plan(
     if plan is not None:
         logger.info(
             "coverage_loop: plan conversation=%s facets=%s",
-            context.conversation_id, [f"{facet.kind}:{facet.text}" for facet in plan.facets],
+            context.conversation_id, [facet.kind for facet in plan.facets],
         )
     return plan
 
