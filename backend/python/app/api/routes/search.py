@@ -51,7 +51,11 @@ from app.modules.retrieval.filter_schema import (
     validate_request_filters,
 )
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.retrieval.selection_scope import limits_rows, resolve_request_scopes, within_connection
+from app.modules.retrieval.selection_scope import (
+    limits_rows,
+    resolve_request_scopes,
+    within_connection,
+)
 from app.modules.retrieval.title_hits import UnindexedMatch, find_unindexed_matches
 from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
