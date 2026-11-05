@@ -437,3 +437,41 @@ async def test_scope_keys_left_in_a_stored_payload_are_not_read_as_the_groups_st
         assert not {"scopeStamp", "pathIds", "aclScope", "scopeFieldsVersion", "scopeGeneration"} & set(got)
         scrolled = (await store.scroll("records", flt(A), 10)).points[0].payload
         assert not {"scopeStamp", "pathIds", "aclScope", "scopeFieldsVersion", "scopeGeneration"} & set(scrolled)
+
+
+def tagged(store: PgVectorService) -> object:
+    return sql(store, "SELECT p.block_id FROM retrieval.point_text pt JOIN retrieval.points p USING (org_id, point_sk) "
+                      "WHERE pt.org_id = $1 AND pt.payload ? 'tag' ORDER BY 1", A)
+
+
+async def test_an_empty_scope_list_is_a_stamped_group_never_an_unstamped_one(store) -> None:
+    stamped = point(A, "p1", conn=["c1"])
+    stamped.payload.update({"scopeStamp": "container", "pathIds": [], "aclScope": [], "scopeFieldsVersion": 5, "scopeGeneration": 3})
+    await store.upsert_points("records", [stamped, point(A, "p2", vrid="r2", conn=["c1"])])        # r2 is never stamped
+    for key in ("pathIds", "aclScope"):
+        none = FilterExpression(must=[FieldCondition(key="metadata.orgId", value=A), FieldCondition(key=key, values_count_lte=0)])
+        assert [p.id for p in (await store.scroll("records", none, 10)).points] == [pid(f"{A}/p1")], key
+    gone = FilterExpression(must=[FieldCondition(key="metadata.orgId", value=A), FieldCondition(key="connectorIds", values=["c1"]),
+                                  FieldCondition(key="pathIds", values_count_lte=0)])
+    await store.delete_points("records", gone)
+    assert [p.id for p in (await store.scroll("records", flt(A), 10)).points] == [pid(f"{A}/p2")]                      # the unstamped group stays
+
+
+async def test_an_update_chooses_its_points_before_it_changes_what_the_filter_reads(store) -> None:
+    now = datetime.now(UTC)
+    first = point(A, "p1", conn=["c1"])
+    first.payload.update(STAMP)
+    await store.upsert_points("records", [first, point(A, "p2")], computed_at=now)         # one record, two points, stamped "union"
+    container = {"scopeStamp": "container", "pathIds": [], "aclScope": [], "scopeFieldsVersion": 5, "scopeGeneration": 3}
+    await store.set_payload("records", {**container, "tag": "x"}, scope_flt(A, "scopeStamp", "union"), computed_at=now + timedelta(seconds=5))
+    assert (await sql(store, SCOPE_ROW, A))[0][2] == "container"
+    assert [r[0] for r in await tagged(store)] == ["p1", "p2"]                             # the payload reached the points the filter named
+    await store.set_payload("records", {"scopeStamp": "union", "pathIds": ["s1"], "aclScope": [], "scopeFieldsVersion": 5, "scopeGeneration": 3},
+                            flt(A, virtualRecordId="r1"), computed_at=now + timedelta(seconds=9))
+    await store.set_payload("records", {**container, "tag": "y"}, scope_flt(A, "pathIds", "s1"), computed_at=now + timedelta(seconds=15))
+    assert list((await sql(store, SCOPE_ROW, A))[0][0]) == []                              # a filter on the list the update empties
+    assert [r[0] for r in await sql(store, "SELECT p.block_id FROM retrieval.point_text pt JOIN retrieval.points p USING (org_id, point_sk) "
+                                           "WHERE pt.org_id = $1 AND pt.payload ->> 'tag' = 'y' ORDER BY 1", A)] == ["p1", "p2"]
+    await store.overwrite_payload("records", {"tag": "z", **container}, scope_flt(A, "scopeStamp", "container"))
+    assert [r[0] for r in await sql(store, "SELECT p.block_id FROM retrieval.point_text pt JOIN retrieval.points p USING (org_id, point_sk) "
+                                           "WHERE pt.org_id = $1 AND pt.payload ->> 'tag' = 'z' ORDER BY 1", A)] == ["p1", "p2"]

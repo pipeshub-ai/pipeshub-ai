@@ -64,10 +64,10 @@ def test_a_payload_merge_cannot_move_a_point() -> None:
     assert writes._merge_args({"a": 1, "connectorIds": ["c"], "page_content": "t"}) == ('{"a":1}', "t")
 
 
-def test_the_only_string_built_statements_are_the_four_that_splice_a_compiled_filter() -> None:
+def test_the_only_string_built_statements_are_the_five_that_splice_a_compiled_filter() -> None:
     """The runtime's static SQL checks over the whole package (no session SQL, every literal statement tagged). A statement built from
-    parts is allowed in exactly four places, where a compiled filter's structure is spliced in (every value in it a ``$n`` bound
-    parameter, which ``test_sql_filters`` pins): three in ``writes.py`` and the scroll in ``reads.py``. Any other built statement fails here
+    parts is allowed in exactly five places, where a compiled filter's structure is spliced in (every value in it a ``$n`` bound
+    parameter, which ``test_sql_filters`` pins): four in ``writes.py`` and the scroll in ``reads.py``. Any other built statement fails here
     and in the shared guard."""
     import ast
 
@@ -83,10 +83,11 @@ def test_the_only_string_built_statements_are_the_four_that_splice_a_compiled_fi
         return next(f.name for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) and f.lineno <= line <= f.end_lineno)
 
     assert sorted((Path(f.path).name, owner(f.path, f.line)) for f in built) == [
-        ("reads.py", "scroll"), ("writes.py", "delete_batch"), ("writes.py", "group_keys_matching"), ("writes.py", "merge_payload")]
+        ("reads.py", "scroll"), ("writes.py", "delete_batch"), ("writes.py", "group_keys_matching"), ("writes.py", "merge_payload"),
+        ("writes.py", "point_ids_matching")]
     for name in ("reads.py", "writes.py"):
         text = (root / name).read_text()
-        assert text.count("/* pipeshub:pgvector.") >= text.count("tx.fetch") + text.count("tx.execute") - 4
+        assert text.count("/* pipeshub:pgvector.") >= text.count("tx.fetch") + text.count("tx.execute") - 5
 
 
 def test_a_point_without_a_payload_is_refused_as_having_no_org_not_crashed_on() -> None:
