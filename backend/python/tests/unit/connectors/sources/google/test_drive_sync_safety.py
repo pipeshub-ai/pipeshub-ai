@@ -329,7 +329,9 @@ class TestRunReport:
     async def test_a_users_sync_leaves_reporting_its_failure_to_the_batch(self) -> None:
         from unittest.mock import AsyncMock, MagicMock
 
-        from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+        from app.connectors.sources.google.drive.team.connector import (
+            GoogleDriveTeamConnector,
+        )
 
         conn = object.__new__(GoogleDriveTeamConnector)
         conn.logger = MagicMock()
@@ -341,7 +343,9 @@ class TestRunReport:
         conn.logger.error.assert_not_called()
 
     def test_a_refused_setup_names_the_client_id_from_the_saved_key(self) -> None:
-        from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+        from app.connectors.sources.google.drive.team.connector import (
+            GoogleDriveTeamConnector,
+        )
 
         conn = object.__new__(GoogleDriveTeamConnector)
         conn.config = {"credentials": {"auth": {"serviceAccountJson": json.dumps({"client_id": "987654321"})}}}
