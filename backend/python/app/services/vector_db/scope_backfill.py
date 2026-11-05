@@ -41,9 +41,14 @@ from app.services.permissions.scope_fields import (
     current_scope_generation,
 )
 from app.services.permissions.structure_generation import (
+    CLOSED_KEY,
     GENERATION_KEY,
+    OPENED_KEY,
     UNSAFE_KEY,
+    new_unsafe_mark,
+    same_mark,
     structure_generation_of,
+    unclosed_writes,
     unsafe_mark,
     whole_number,
 )
@@ -88,6 +93,10 @@ class CheckpointRefused(RuntimeError):
     """The first checkpoint of a run could not be written (typically an app schema without the new key): the run stopped before it wrote anything."""
 
 
+class OpenMarkNotClosed(RuntimeError):
+    """The connector carries an open unsafe mark and the operator did not say the write behind it is over."""
+
+
 class UnknownConnector(ValueError):
     """The connector instance is not an app of this organisation."""
 
@@ -107,7 +116,7 @@ class Progress:
     unsafe: int | bool | None = None
 
     def line(self) -> str:
-        return f"{self.state}  version={self.version} generation={self.generation} records={self.records} stale={self.stale} structure={self.structure_generation} after={self.after or '-'}" + (
+        return f"{self.state}  version={self.version} generation={self.generation} records={self.records} stale={self.stale} structure={self.structure_generation} unsafe={self.unsafe} after={self.after or '-'}" + (
             f" error={self.error}" if self.error else "")
 
 
@@ -155,7 +164,8 @@ class ScopeBackfill:
         self._page_size = page_size
         self._checkpoints = AppDocCheckpoints(graph_provider)
 
-    async def run_connector(self, org_id: str, app_id: str, *, restart: bool = False, max_pages: int = MAX_PAGES) -> Progress:
+    async def run_connector(self, org_id: str, app_id: str, *, restart: bool = False, max_pages: int = MAX_PAGES,
+                            close_open_mark: bool = False) -> Progress:
         if not scope_fields_enabled():
             raise ScopeFieldsOff("turn the scope fields on (ACL_SCOPE_FIELDS) before back-filling")
         if current_scope_generation() < 0:  # UNAVAILABLE_GENERATION: before any read, write or checkpoint
@@ -175,6 +185,18 @@ class ScopeBackfill:
                 mark = unsafe_mark(app.get(UNSAFE_KEY))
             except ValueError:
                 structure = None
+            in_flight = unclosed_writes(app)
+            if in_flight is None:
+                structure = None
+            elif in_flight > 0:
+                if not close_open_mark:
+                    raise OpenMarkNotClosed(
+                        f"{app_id} has {in_flight} unclassified write(s) that started and never wrote their closing mark, so a pass cannot tell whether "
+                        "they finished. If no write of this organisation's connectors is still running, run again with --close-open-mark.")
+                # The operator says the writes are over: close them and write a mark now, which the pass that starts after it covers.
+                mark = new_unsafe_mark()
+                if not await self._graph.update_node(app_id, CollectionNames.APPS.value, {CLOSED_KEY: app.get(OPENED_KEY), UNSAFE_KEY: mark}):
+                    raise CheckpointRefused(f"the open writes of {app_id} could not be closed")
             if structure is None:  # a stored generation or mark that is not readable is not read as "never changed" or "none": nothing is written
                 raise UnreadableStructureState(
                     f"the structure state of {app_id} is not readable: generation {app.get(GENERATION_KEY)!r}, unsafe mark {app.get(UNSAFE_KEY)!r}")
@@ -183,14 +205,14 @@ class ScopeBackfill:
             # the same (a mark written during the pass is a different value, and nothing the pass does can erase it).
             generation = current_scope_generation()
             if (p is None or restart or p.version != SCOPE_FIELDS_VERSION or p.generation != generation or p.structure_generation != structure
-                    or p.unsafe != mark):
+                    or not same_mark(p.unsafe, mark)):
                 p = Progress(generation=generation, structure_generation=structure, unsafe=mark)
                 try:
                     await self._checkpoints.save(app_id, p)
                 except Exception as exc:  # the first write of a run: nothing else has been written
                     raise CheckpointRefused(
                         f"the back-fill checkpoint of {app_id} could not be written ({type(exc).__name__}). If the graph store's app schema is older "
-                        "than this release (it must list scopeBackfillStructureGeneration and scopeBackfillUnsafe), restart a connector or indexing "
+                        "than this release (it must list scopeBackfillStructureGeneration, scopeBackfillUnsafe, scopeProjectionOpened and scopeProjectionClosed), restart a connector or indexing "
                         "service, which applies the schema at start, and run again. Nothing was written."
                     ) from exc
             if p.state == DONE:

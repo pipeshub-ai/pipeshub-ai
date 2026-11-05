@@ -99,3 +99,25 @@ def test_only_an_absent_generation_means_the_structure_never_changed() -> None:
     assert structure_generation_of({GENERATION_KEY: 4}) == 4 and structure_generation_of({GENERATION_KEY: 4.0}) == 4
     for junk in GARBAGE:
         assert structure_generation_of({GENERATION_KEY: junk}) is None, junk
+
+
+OPENED, CLOSED = "scopeProjectionOpened", "scopeProjectionClosed"
+
+
+@pytest.mark.parametrize(("name", "over", "expected"), [
+    ("nothing opened", {}, True), ("opened and closed", {OPENED: 3, CLOSED: 3}, True), ("never closed", {OPENED: 1}, False),
+    ("one still open", {OPENED: 3, CLOSED: 2}, False), ("two still open", {OPENED: 2}, False), ("opened as a float, closed", {OPENED: 2.0, CLOSED: 2}, True),
+    ("closed ahead of opened", {OPENED: 1, CLOSED: 2}, False), ("closed with nothing opened", {CLOSED: 1}, False),
+    ("a counter that is text", {OPENED: "1", CLOSED: "1"}, False), ("a bool counter", {OPENED: True, CLOSED: True}, False),
+    ("a negative counter", {OPENED: -1, CLOSED: -1}, False), ("a list counter", {OPENED: [1], CLOSED: [1]}, False),
+], ids=lambda v: v if isinstance(v, str) else "")
+def test_a_write_that_has_started_and_not_written_its_closing_step_keeps_the_connector_not_current(name: str, over: dict, expected: bool) -> None:
+    assert app_is_current(good(**over)) is expected, name
+
+
+def test_unclosed_writes_counts_what_is_open_and_reads_a_broken_counter_as_unreadable() -> None:
+    from app.services.permissions.structure_generation import unclosed_writes
+
+    assert unclosed_writes(None) == 0 and unclosed_writes({}) == 0 and unclosed_writes({OPENED: 5, CLOSED: 2}) == 3
+    for junk in GARBAGE:
+        assert unclosed_writes({OPENED: junk}) is None and unclosed_writes({OPENED: 5, CLOSED: junk}) is None, junk

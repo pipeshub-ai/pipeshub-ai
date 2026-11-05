@@ -6,6 +6,8 @@ Needs the stores of the graph-permissions harness (`KH_PERM_*`).
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, DeleteSource
@@ -110,3 +112,17 @@ async def test_a_second_mark_after_the_pass_read_the_first_is_told_from_it_on_bo
     await sg.mark_scope_dirty(backend.provider, conn, attempts=1)          # a second mark, while the first is still set
     assert (await backend.provider.get_document(conn, CollectionNames.APPS.value))[sg.UNSAFE_KEY] != first
     assert not await current(backend.provider, conn)
+
+
+async def test_the_opening_and_closing_counters_are_atomic_and_read_on_both_stores(backend) -> None:  # noqa: F811
+    processor, conn, *_ = await _world(backend)
+    await finish_pass(backend.provider, conn)
+    assert await current(backend.provider, conn)
+    opened = await asyncio.gather(*(backend.provider.increment_node_field(conn, CollectionNames.APPS.value, sg.OPENED_KEY) for _ in range(5)))
+    assert sorted(int(x) for x in opened) == [1, 2, 3, 4, 5]                    # five concurrent writers, five different values: none lost
+    assert not await current(backend.provider, conn)                            # five writes in flight
+    for _ in range(4):
+        await backend.provider.increment_node_field(conn, CollectionNames.APPS.value, sg.CLOSED_KEY)
+    assert not await current(backend.provider, conn)                            # one is still open
+    await backend.provider.increment_node_field(conn, CollectionNames.APPS.value, sg.CLOSED_KEY)
+    assert await current(backend.provider, conn)                                # all closed, and no mark was written since the pass

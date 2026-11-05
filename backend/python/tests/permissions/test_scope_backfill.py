@@ -508,3 +508,51 @@ async def test_a_graph_store_that_refuses_the_checkpoint_stops_the_run_before_an
     with pytest.raises(CheckpointRefused, match="restart a connector or indexing service"):
         await job.run_connector(ORG, app)
     assert loaded.graph.app_docs[app] == {"_key": app, UNSAFE_KEY: True} and not any(keys_of(vdb))
+
+
+async def test_true_and_the_token_one_are_different_marks_for_the_pass_as_for_the_currency_check() -> None:
+    from app.services.permissions.structure_generation import same_mark
+
+    assert not same_mark(True, 1) and not same_mark(1, True) and not same_mark(True, 1.0) and same_mark(True, True) and same_mark(7, 7)
+    for first, second in ((1, True), (True, 1)):
+        vdb, loaded, job, app = await setup()
+        loaded.graph.app_docs[app] = {"_key": app, UNSAFE_KEY: first}
+        await job.run_connector(ORG, app)
+        loaded.graph.app_docs[app][UNSAFE_KEY] = second                         # a mark that equals the recorded one in Python, but is another mark
+        assert not app_is_current(loaded.graph.app_docs[app])
+        again = await job.run_connector(ORG, app)                                # so the pass starts over instead of finding "nothing to do"
+        assert again.unsafe is second or (again.unsafe == second and type(again.unsafe) is type(second)), (first, second)
+        assert app_is_current(loaded.graph.app_docs[app])
+
+
+async def test_writes_that_never_closed_stop_the_run_until_the_operator_closes_them() -> None:
+    from app.services.vector_db.scope_backfill import OpenMarkNotClosed
+
+    vdb, loaded, job, app = await setup()
+    loaded.graph.app_docs[app] = {"_key": app, "scopeProjectionOpened": 3, "scopeProjectionClosed": 1}
+    before = dict(loaded.graph.app_docs[app])
+    with pytest.raises(OpenMarkNotClosed, match="--close-open-mark"):
+        await job.run_connector(ORG, app)
+    assert loaded.graph.app_docs[app] == before and not any(keys_of(vdb))        # nothing written, no point stamped
+    assert not app_is_current(loaded.graph.app_docs[app])
+    p = await job.run_connector(ORG, app, close_open_mark=True)
+    doc = loaded.graph.app_docs[app]
+    assert doc["scopeProjectionClosed"] == 3 and isinstance(doc[UNSAFE_KEY], int) and p.state == DONE and p.unsafe == doc[UNSAFE_KEY]
+    assert app_is_current(doc)
+    again = await job.run_connector(ORG, app)                                      # and nothing is left to close
+    assert again.state == DONE
+
+
+async def test_counters_that_do_not_read_stop_the_run_before_it_writes_anything_even_with_the_flag() -> None:
+    from app.services.vector_db.scope_backfill import UnreadableStructureState
+
+    for opened, closed in (("x", 0), (1, "x"), (1, 2), (-1, 0), (True, 0)):
+        vdb, loaded, job, app = await setup()
+        loaded.graph.app_docs[app] = {"_key": app, "scopeProjectionOpened": opened, "scopeProjectionClosed": closed}
+        with pytest.raises(UnreadableStructureState):
+            await job.run_connector(ORG, app, close_open_mark=True)
+        assert not any(keys_of(vdb)), (opened, closed)
+
+
+async def test_the_progress_line_shows_the_mark_it_started_from() -> None:
+    assert "unsafe=1234" in scope_backfill.Progress(unsafe=1234).line() and "unsafe=None" in scope_backfill.Progress().line()

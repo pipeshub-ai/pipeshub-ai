@@ -45,6 +45,28 @@ def new_unsafe_mark() -> int:
     return time.time_ns() // 1000
 
 
+OPENED_KEY = "scopeProjectionOpened"
+CLOSED_KEY = "scopeProjectionClosed"
+
+
+def unclosed_writes(app: Mapping[str, object] | None) -> int | None:
+    """How many writes that could not be undone and whose connector was not known (outside a transaction) have started and not yet written their
+    closing mark on this connector: ``opened - closed``, two counters each incremented atomically (`increment_node_field`), so concurrent writes
+    each count. 0 when neither exists. None when a counter does not read or ``closed`` is ahead of ``opened`` (a closing step with no opening step):
+    unreadable is not 0."""
+    app = app or {}
+    opened = 0 if app.get(OPENED_KEY) is None else whole_number(app.get(OPENED_KEY))
+    closed = 0 if app.get(CLOSED_KEY) is None else whole_number(app.get(CLOSED_KEY))
+    if opened is None or closed is None or closed > opened:
+        return None
+    return opened - closed
+
+
+def same_mark(a: object, b: object) -> bool:
+    """Whether two marks read by `unsafe_mark` are the same mark: True is not the token 1, and 1 is not 1.0's bool cousin."""
+    return type(a) is type(b) and a == b
+
+
 def unsafe_mark(value: object) -> int | bool | None:
     """The mark a stored value stands for: None for none (absent, None, False), True for the mark older code wrote, the positive whole number
     `new_unsafe_mark` wrote. Anything else raises ValueError: a mark that cannot be read is not "no mark"."""

@@ -579,6 +579,7 @@ async def test_outside_a_transaction_every_connector_of_the_organisation_is_mark
 
     provider.batch_create_edges = AsyncMock(side_effect=write)
     provider.update_node = AsyncMock(side_effect=mark)
+    provider.increment_node_field = AsyncMock(side_effect=lambda key, collection, field, *a, **k: (order.append("mark"), 1)[1])
     # the listing works once (before the write) and is down when the failure handler would look again
     provider.get_org_apps = AsyncMock(side_effect=[[{"_key": "c1"}, {"_key": "c2"}, {"id": "c3"}], RuntimeError("graph down")])
     with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError):
@@ -587,8 +588,8 @@ async def test_outside_a_transaction_every_connector_of_the_organisation_is_mark
             await _Scratch.via_local_alias(tx, "r1")
     assert order[:4] == ["mark", "mark", "mark", "write"]  # every connector is marked before the write, which then fails
     assert set(order[4:]) <= {"mark"}
-    marked = {c.args[0] for c in provider.update_node.await_args_list if c.args[2] == {"scopeProjectionUnsafe": ANY}}
-    assert marked == {"c1", "c2", "c3"}  # also the ones the block never looked at
+    opened = {c.args[0] for c in provider.increment_node_field.await_args_list if c.args[2] == "scopeProjectionOpened"}
+    assert opened == {"c1", "c2", "c3"}  # every connector is opened before the write, also the ones the block never looked at
     assert all(c.args[3] is None for c in provider.update_node.await_args_list)  # on their own: they survive the failure
 
 
@@ -965,3 +966,133 @@ async def test_a_full_sync_moves_the_generation_when_it_removed_edges_or_may_hav
     connector = SimpleNamespace(full_sync_coverage=FullSyncCoverage, data_entities_processor=None)
     await sync_runner._unlink_what_full_sync_missed(connector, "c1", provider, logging.getLogger("t"), seen)
     assert provider.increment_node_field.await_count == (1 if marked else 0)
+
+
+class _AppDocs:
+    """The app documents of a fake provider: update_node merges, increment_node_field is atomic (one statement, as on the three providers)."""
+
+    def __init__(self, provider, ids: list[str], fail=lambda kind, key: False) -> None:
+        self.docs: dict[str, dict] = {i: {} for i in ids}
+        self.log: list[tuple[str, str, str]] = []
+        self.fail = fail
+
+        async def update(key, collection, updates, *args, **kwargs):
+            if self.fail("update", key):
+                raise RuntimeError("graph down")
+            self.log.append(("update", key, ",".join(sorted(updates))))
+            self.docs[key].update(updates)
+            return True
+
+        async def increment(key, collection, field, *args, **kwargs):
+            if self.fail("increment:" + field, key):
+                raise RuntimeError("graph down")
+            self.log.append(("increment", key, field))
+            self.docs[key][field] = int(self.docs[key].get(field) or 0) + 1
+            return self.docs[key][field]
+
+        provider.update_node = AsyncMock(side_effect=update)
+        provider.increment_node_field = AsyncMock(side_effect=increment)
+
+
+def _recorded_pass(doc: dict) -> dict:
+    """What a finished pass leaves, from the generation and mark the document holds."""
+    from app.services.permissions.scope_fields import (
+        SCOPE_FIELDS_VERSION,
+        current_scope_generation,
+    )
+    from app.services.vector_db.scope_backfill import BACKFILL_KEYS as K
+
+    return {**doc, K["state"]: "done", K["version"]: SCOPE_FIELDS_VERSION, K["generation"]: current_scope_generation(), K["structure_generation"]: 0,
+            K["unsafe"]: doc.get("scopeProjectionUnsafe")}
+
+
+async def test_an_unclassified_write_outside_a_transaction_opens_before_it_runs_and_closes_after_the_mark_has_landed(monkeypatch) -> None:
+    from app.core import org_context
+    from app.services.permissions.currency import app_is_current
+
+    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}, {"_key": "c2"}], explicit=False)
+    apps = _AppDocs(provider, ["c1", "c2"])
+
+    async def the_write(*args, **kwargs) -> None:
+        apps.log.append(("write", "-", "-"))
+        for doc in apps.docs.values():              # during the write every connector is opened and not closed: nothing is current
+            assert doc["scopeProjectionOpened"] == 1 and not doc.get("scopeProjectionClosed") and not app_is_current(_recorded_pass(doc))
+
+    provider.batch_create_edges = AsyncMock(side_effect=the_write)
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")):
+        async with store_provider.transaction() as tx:
+            await _Scratch.via_local_alias(tx, "r1")
+    kinds = [(k, f) for k, _, f in apps.log]
+    assert kinds.index(("write", "-")) > max(i for i, (k, f) in enumerate(kinds) if f == "scopeProjectionOpened")         # every opening step first
+    for key in ("c1", "c2"):
+        steps = [(k, f) for k, c, f in apps.log if c == key and k != "write"]
+        assert steps == [("increment", "scopeProjectionOpened"), ("update", "scopeProjectionUnsafe"), ("increment", "scopeProjectionClosed")], key
+        assert apps.docs[key]["scopeProjectionOpened"] == apps.docs[key]["scopeProjectionClosed"] == 1 and isinstance(apps.docs[key]["scopeProjectionUnsafe"], int)
+
+
+async def test_a_closing_step_that_never_lands_leaves_the_connector_opened_and_not_current(monkeypatch) -> None:
+    from app.core import org_context
+    from app.services.permissions.currency import app_is_current
+
+    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
+    monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+    apps = _AppDocs(provider, ["c1"], fail=lambda kind, key: kind == "increment:scopeProjectionClosed")
+
+    async def failing_write(*args, **kwargs) -> None:
+        raise RuntimeError("connection reset")
+
+    provider.batch_create_edges = AsyncMock(side_effect=failing_write)
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError, match="connection reset"):
+        async with store_provider.transaction() as tx:
+            await _Scratch.via_local_alias(tx, "r1")
+    doc = apps.docs["c1"]
+    assert doc["scopeProjectionOpened"] == 1 and not doc.get("scopeProjectionClosed")                  # opened, never closed
+    assert not app_is_current(_recorded_pass(doc))
+
+
+async def test_a_connector_is_not_closed_when_its_mark_did_not_land(monkeypatch) -> None:
+    from app.core import org_context
+
+    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}, {"_key": "c2"}], explicit=False)
+    monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+    apps = _AppDocs(provider, ["c1", "c2"], fail=lambda kind, key: kind == "update" and key == "c2")        # c2's mark never lands
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(Exception):
+        async with store_provider.transaction() as tx:
+            await _Scratch.via_local_alias(tx, "r1")
+    assert apps.docs["c1"].get("scopeProjectionClosed") == 1 and not apps.docs["c2"].get("scopeProjectionClosed")       # no closing step for c2
+    assert apps.docs["c2"]["scopeProjectionOpened"] == 1
+
+
+async def test_a_closing_step_that_fails_is_tried_again(monkeypatch) -> None:
+    from app.core import org_context
+
+    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
+    monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+    tries = {"n": 0}
+
+    def fail(kind: str, key: str) -> bool:
+        if kind == "increment:scopeProjectionClosed":
+            tries["n"] += 1
+            return tries["n"] < 3
+        return False
+
+    apps = _AppDocs(provider, ["c1"], fail=fail)
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")):
+        async with store_provider.transaction() as tx:
+            await _Scratch.via_local_alias(tx, "r1")
+    assert tries["n"] == 3 and apps.docs["c1"]["scopeProjectionClosed"] == 1
+
+
+async def test_two_blocks_writing_at_once_each_count_and_the_connector_is_current_only_when_both_have_closed(monkeypatch) -> None:
+    from app.services.permissions.currency import app_is_current
+
+    provider, _ = _production_store(monkeypatch, doc={}, org_apps=[], explicit=False)
+    apps = _AppDocs(provider, ["c1"])
+    for _ in range(2):                                                  # A and B open
+        await provider.increment_node_field("c1", "apps", "scopeProjectionOpened")
+    await provider.update_node("c1", "apps", {"scopeProjectionUnsafe": 7})                # B's mark lands, a pass then records it
+    await provider.increment_node_field("c1", "apps", "scopeProjectionClosed")            # B closes
+    passed = _recorded_pass(apps.docs["c1"])
+    assert not app_is_current(passed)                                                   # A's write is still in flight
+    await provider.increment_node_field("c1", "apps", "scopeProjectionClosed")            # A closes (its own mark would follow)
+    assert app_is_current(_recorded_pass(apps.docs["c1"]))
