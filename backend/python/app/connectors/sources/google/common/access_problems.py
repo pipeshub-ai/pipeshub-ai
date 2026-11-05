@@ -123,16 +123,21 @@ def classify_access_problem(
 
 
 def setup_problem_message(problem: AccessProblem | None, *, apis: str, admin_email: str | None = None,
-                          client_id: str | None = None) -> str | None:
+                          client_id: str | None = None, scopes: list[str] | None = None) -> str | None:
     """What a Workspace admin must change for a service-account setup problem, or None when it is not one.
 
     `apis` names the Google APIs the connector needs, e.g. "Google Drive API and the Admin SDK API".
+    `scopes` are the exact scopes the connector's delegated tokens ask for: Google refuses the whole token
+    request when the grant is missing any of them, so naming them saves the admin a guess.
     """
     if problem is AccessProblem.DELEGATION:
         client = f" ({client_id})" if client_id else ""
-        return ("Google Workspace refused access for this connector's service account. In the Google "
-                f"Admin console, open Security > API controls > Domain-wide delegation, and authorize the "
-                f"service account's client ID{client} with the scopes listed in the PipesHub setup guide. "
+        wanted = (f"exactly these scopes: {', '.join(scopes)}" if scopes
+                  else "the scopes listed in the PipesHub setup guide")
+        return ("Google Workspace refused access for this connector's service account, because domain-wide "
+                "delegation is not set up for it with every scope the connector needs. In the Google Admin "
+                "console, open Security > Access and data control > API controls > Domain-wide delegation, "
+                f"and authorize the service account's client ID{client} with {wanted}. "
                 "Syncing resumes on the next run.")
     if problem is AccessProblem.SERVICE_ACCOUNT_KEY:
         return ("Google rejected this connector's service account key. It may have been deleted or "
