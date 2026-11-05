@@ -16,6 +16,8 @@ from app.services.graph_db.postgres.kg.model import Key, derive
 from app.services.graph_db.postgres.kg.reader import load_sks, snapshot
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from app.core.db import Tx
 
 PAGE = 2000
@@ -25,32 +27,49 @@ LIMIT = 100                        # examples of one kind of difference kept in 
 @dataclass
 class Result:
     expected: int = 0
-    missing: list[str] = field(default_factory=list)     # expected and not in kg
+    missing: list[str] = field(default_factory=list)     # expected and not in kg (at most LIMIT examples)
     extra: list[str] = field(default_factory=list)       # in kg and not expected
     changed: list[str] = field(default_factory=list)     # in both, different
     digest: str = ""
+    counts: dict[str, int] = field(default_factory=dict)  # how many of each kind there are, whatever was kept
 
     @property
     def ok(self) -> bool:
         return not (self.missing or self.extra or self.changed)
 
+    def note(self, kind: str, item: str) -> None:
+        """Count one difference of ``kind`` and keep it as an example while fewer than LIMIT are kept."""
+        self.counts[kind] = self.counts.get(kind, 0) + 1
+        kept = getattr(self, kind)
+        if len(kept) < LIMIT:
+            kept.append(item)
+
+    def note_all(self, kind: str, items: Iterable[str]) -> None:
+        for item in items:
+            self.note(kind, item)
+
     def summary(self) -> str:
-        return f"expected={self.expected} missing={len(self.missing)} extra={len(self.extra)} changed={len(self.changed)}"
+        n = {k: self.counts.get(k, len(getattr(self, k))) for k in ("missing", "extra", "changed")}
+        return f"expected={self.expected} missing={n['missing']} extra={n['extra']} changed={n['changed']}"
 
     def __add__(self, other: Result) -> Result:
-        return Result(self.expected + other.expected, self.missing + other.missing, self.extra + other.extra, self.changed + other.changed,
-                      hashlib.sha256((self.digest + other.digest).encode()).hexdigest())
+        out = Result(self.expected + other.expected, self.missing[:LIMIT], self.extra[:LIMIT], self.changed[:LIMIT],
+                     hashlib.sha256((self.digest + other.digest).encode()).hexdigest(),
+                     {k: self.counts.get(k, len(getattr(self, k))) + other.counts.get(k, len(getattr(other, k))) for k in ("missing", "extra", "changed")})
+        for k in ("missing", "extra", "changed"):
+            getattr(out, k).extend(getattr(other, k)[:max(0, LIMIT - len(getattr(out, k)))])
+        return out
 
 
 def _compare(res: Result, exp: dict[str, str], act: dict[str, str]) -> None:
     for k, v in exp.items():
         if k not in act:
-            res.missing.append(f"{k} {v}")
+            res.note("missing", f"{k} {v}")
         elif act[k] != v:
-            res.changed.append(f"{k} expected {v} got {act[k]}")
+            res.note("changed", f"{k} expected {v} got {act[k]}")
     for k, v in act.items():
         if k not in exp:
-            res.extra.append(f"{k} {v}")
+            res.note("extra", f"{k} {v}")
 
 
 def _line(row: dict, cols: tuple[str, ...]) -> str:
@@ -88,11 +107,11 @@ async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
         focus = set(page)
         snap = await snapshot(tx, org, focus, alloc)
         if lacking := sorted(k for k in snap.nodes if k not in snap.sk):     # a node of the graph that is connected to this connector and kg has no key for: it came after the copy
-            res.missing += [f"k|{k[0]}:{k[1]} (no node key)" for k in lacking[:LIMIT]]
+            res.note_all("missing", [f"k|{k[0]}:{k[1]} (no node key)" for k in lacking[:LIMIT]])
         try:
             d = derive(focus, snap)
         except KeyError as e:               # a node (or a neighbour) kg has no key for: the copy has not reached it
-            res.missing.append(f"k|{e} (no node key)")
+            res.note("missing", f"k|{e} (no node key)")
             continue
         sks = sorted(d.records)
         expected_sks |= set(sks)
@@ -121,7 +140,7 @@ async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
             if not rows:
                 break
             sk_after = rows[-1]["sk"]
-            res.extra += [f"r|{r['sk']} (no node)" for r in rows if r["sk"] not in expected_sks]
+            res.note_all("extra", [f"r|{r['sk']} (no node)" for r in rows if r["sk"] not in expected_sks])
         cur = (0, 0, "")
         while True:
             rows = await tx.fetch("""/* pipeshub:kg.verify_extra_grants */ SELECT principal_sk, node_sk, gtype FROM kg.scope_members WHERE org_id = $1 AND app_sk = $2
@@ -129,23 +148,23 @@ async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
             if not rows:
                 break
             cur = (rows[-1]["node_sk"], rows[-1]["principal_sk"], rows[-1]["gtype"])
-            res.extra += [f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (no node)" for r in rows if r["node_sk"] not in expected_sks]
+            res.note_all("extra", [f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (no node)" for r in rows if r["node_sk"] not in expected_sks])
         # a record row whose sk is not the one node_keys holds for its (coll, id): the writers take any sk
-        res.changed += [f"s|{r['sk']} {r['coll']}:{r['id']} (node_keys holds {r['key_sk']})" for r in await tx.fetch(
+        res.note_all("changed", [f"s|{r['sk']} {r['coll']}:{r['id']} (node_keys holds {r['key_sk']})" for r in await tx.fetch(
             """/* pipeshub:kg.verify_sk */ SELECT r.sk, r.coll, r.id, k.sk AS key_sk FROM kg.records r
                 LEFT JOIN kg.node_keys k ON k.org_id = r.org_id AND k.coll = r.coll AND k.id = r.id
-                WHERE r.org_id = $1 AND r.app_sk = $2 AND k.sk IS DISTINCT FROM r.sk ORDER BY r.sk LIMIT $3""", org, app_sk, LIMIT)]
+                WHERE r.org_id = $1 AND r.app_sk = $2 AND k.sk IS DISTINCT FROM r.sk ORDER BY r.sk LIMIT $3""", org, app_sk, LIMIT)])
     if app_sk is not None:
         for r in await tx.fetch("""/* pipeshub:kg.verify_orphan_links */ SELECT l.parent_sk, l.kind, l.child_sk FROM kg.links l JOIN kg.records p ON p.org_id = l.org_id AND p.sk = l.parent_sk AND p.app_sk = $2
                 WHERE l.org_id = $1 AND NOT EXISTS (SELECT 1 FROM kg.records c WHERE c.org_id = l.org_id AND c.sk = l.child_sk) ORDER BY l.parent_sk, l.child_sk LIMIT $3""", org, app_sk, LIMIT):
-            res.extra.append(f"l|{r['parent_sk']}|{r['kind']}|{r['child_sk']} (child gone)")        # a link under one of this connector's records whose child row is gone
+            res.note("extra", f"l|{r['parent_sk']}|{r['kind']}|{r['child_sk']} (child gone)")        # a link under one of this connector's records whose child row is gone
     for r in await tx.fetch("""/* pipeshub:kg.verify_orphan_grants */ SELECT m.principal_sk, m.node_sk, m.gtype FROM kg.scope_members m
             WHERE m.org_id = $1 AND m.app_sk IS NULL AND NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = m.org_id AND r.sk = m.node_sk) ORDER BY m.node_sk LIMIT $2""", org, LIMIT):
-        res.extra.append(f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (node gone)")      # a grant on a node that is gone leaves its row without a connector: the per-connector scan cannot find it
+        res.note("extra", f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (node gone)")      # a grant on a node that is gone leaves its row without a connector: the per-connector scan cannot find it
     if cross:   # superset: kg may mark a connector the graph no longer needs marked, never miss one
         marked = {r["app_sk"] for r in await tx.fetch("""/* pipeshub:kg.verify_cross */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND cross_app AND app_sk = ANY($2::bigint[])""",
                                                       org, sorted(cross))}
-        res.missing += [f"x|{sk} (shares a parent or group with another connector, not marked)" for sk in sorted(cross - marked)]
+        res.note_all("missing", [f"x|{sk} (shares a parent or group with another connector, not marked)" for sk in sorted(cross - marked)])
     res.digest = h.hexdigest()
     return res
 
@@ -165,11 +184,11 @@ async def verify_principals(tx: Tx, org: str) -> Result:
         focus = {("users", r["id"]) for r in rows}
         snap = await snapshot(tx, org, focus, alloc)
         if lacking := sorted(k for k in snap.nodes if k not in snap.sk):
-            res.missing += [f"k|{k[0]}:{k[1]} (no node key)" for k in lacking[:LIMIT]]
+            res.note_all("missing", [f"k|{k[0]}:{k[1]} (no node key)" for k in lacking[:LIMIT]])
         try:
             d = derive(focus, snap)
         except KeyError as e:
-            res.missing.append(f"k|{e} (no node key)")
+            res.note("missing", f"k|{e} (no node key)")
             continue
         expected_users |= d.closure_users
         exp = {f"c|{u}|{p}|{a}": v for (u, p, a), v in d.closure.items()}
@@ -189,6 +208,6 @@ async def verify_principals(tx: Tx, org: str) -> Result:
         if not rows:
             break
         cur = (rows[-1]["user_sk"], rows[-1]["principal_sk"], rows[-1]["app_sk"])
-        res.extra += [f"c|{r['user_sk']}|{r['principal_sk']}|{r['app_sk']} (no user)" for r in rows if r["user_sk"] not in expected_users]
+        res.note_all("extra", [f"c|{r['user_sk']}|{r['principal_sk']}|{r['app_sk']} (no user)" for r in rows if r["user_sk"] not in expected_users])
     res.digest = h.hexdigest()
     return res
