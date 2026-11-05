@@ -64,6 +64,10 @@ export const knowledgeLimitSchema = z
  */
 const codeChallengePattern = /^[A-Za-z0-9\-_]{43,128}$/;
 
+const resourceParam = z
+  .union([z.string().max(2048), z.array(z.string().max(2048)).max(10)])
+  .optional();
+
 export const authorizeQuerySchema = z.object({
   query: z.object({
     response_type: z.enum(
@@ -87,6 +91,8 @@ export const authorizeQuerySchema = z.object({
       )
       .optional(),
     nonce: z.string().optional(),
+    // RFC 8707: the resource the token will be for. Read at the token endpoint.
+    resource: resourceParam,
   }),
 });
 
@@ -136,6 +142,8 @@ export const tokenSchema = z.object({
       .regex(codeVerifierPattern, 'Invalid code_verifier format')
       .optional(),
     device_code: z.string().min(1).optional(),
+    // RFC 8707: the resource the token is for; repeatable in a form body.
+    resource: resourceParam,
     // auth.md agent registration
     claim_token: z.string().min(1).max(256).optional(),
     assertion: z.string().min(1).max(4096).optional(),

@@ -51,6 +51,15 @@ describe('OAuthProviderController', () => {
   let mockRes: any
   let mockNext: any
 
+  // Client resolution goes through the DCR service; for a registered client id it is the app lookup.
+  const passThroughDcr = (): any => ({
+    register: sinon.stub(),
+    resolveAuthorizeClient: async (id: string) => {
+      const app = await mockOAuthAppService.getAppByClientId(id)
+      return { app, store: async () => app }
+    },
+  })
+
   beforeEach(() => {
     mockLogger = { info: sinon.stub(), warn: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
     mockOAuthAppService = {
@@ -60,6 +69,7 @@ describe('OAuthProviderController', () => {
       isGrantTypeAllowed: sinon.stub(),
     }
     mockOAuthTokenService = {
+      audienceFor: sinon.stub().returns(undefined),
       generateTokens: sinon.stub(),
       revokeToken: sinon.stub(),
       revokeAgentToken: sinon.stub().resolves(false),
@@ -92,7 +102,7 @@ describe('OAuthProviderController', () => {
       mockOAuthTokenService,
       mockAuthCodeService,
       mockScopeValidatorService,
-      { register: sinon.stub() } as any,
+      passThroughDcr(),
       mockOAuthDeviceService,
     )
     mockRes = {
@@ -194,6 +204,7 @@ describe('OAuthProviderController', () => {
         mockOAuthTokenService,
         mockAuthCodeService,
         new ScopeValidatorService(),
+        passThroughDcr(),
       )
       mockOAuthAppService.getAppByClientId.resolves({
         orgId: 'o1', name: 'App', allowedScopes: ['kb:read', 'conversation:chat'],
@@ -224,6 +235,7 @@ describe('OAuthProviderController', () => {
         mockOAuthTokenService,
         mockAuthCodeService,
         new ScopeValidatorService(),
+        passThroughDcr(),
       )
       mockOAuthAppService.getAppByClientId.resolves({
         orgId: 'o1', name: 'App', allowedScopes: ['kb:read'],
@@ -401,6 +413,7 @@ describe('OAuthProviderController', () => {
           mockOAuthTokenService,
           mockAuthCodeService,
           new ScopeValidatorService(),
+          passThroughDcr(),
         )
       })
 
