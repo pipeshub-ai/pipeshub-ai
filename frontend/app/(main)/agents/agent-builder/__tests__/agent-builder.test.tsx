@@ -5,7 +5,9 @@ import '@/lib/__tests__/test-i18n';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import type { AgentFormPayload } from '../types';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import {
+  OWNER_USER_ID,
   agentDetail,
   apiFailure,
   dragPaletteItemToCanvas,
@@ -127,6 +129,7 @@ function toastMessages() {
 
 beforeEach(() => {
   installBrowserShims();
+  clearSessionCache();
   permissions.denied.clear();
   useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false, ENABLE_SKILLS: false } });
   useToastStore.setState({ toasts: [] });
@@ -147,7 +150,7 @@ beforeEach(() => {
   fetchOrgModels.mockResolvedValue([model()]);
   toolsetsApi.getAllMyToolsets.mockResolvedValue({ toolsets: [toolset()] });
   toolsetsApi.getAllAgentToolsets.mockResolvedValue([]);
-  getUsersByIds.mockResolvedValue([{ name: 'Priya Owner', email: 'priya@example.com' }]);
+  getUsersByIds.mockResolvedValue([{ userId: OWNER_USER_ID, name: 'Priya Owner', email: 'priya@example.com' }]);
 });
 
 afterEach(() => {
