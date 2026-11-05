@@ -60,8 +60,8 @@ from app.modules.agents.knowledge_scope import (
     admit_caller_project_collections,
     project_files_knowledge,
     read_source_limit,
-    source_reach,
     resolve_agent_filters,
+    source_reach,
 )
 from app.modules.agents.qna.router import (
     RouteDecision,  # noqa: F401 - re-exported for backward-compat imports (see below)
