@@ -33,7 +33,7 @@ _MD_MODULE = DoclingMarkdownParser.parse_string.__globals__["markdown_lib"]
 def parser():
     with patch.dict("sys.modules", _DOCLING_MOCKS):
         with patch(
-            "app.modules.parsers.markdown.docling_markdown_parser.DocumentConverter"
+            "docling.document_converter.DocumentConverter"
         ):
             return DoclingMarkdownParser()
 
@@ -43,7 +43,7 @@ def parser_with_logger():
     logger = logging.getLogger("test.docling_markdown_parser")
     with patch.dict("sys.modules", _DOCLING_MOCKS):
         with patch(
-            "app.modules.parsers.markdown.docling_markdown_parser.DocumentConverter"
+            "docling.document_converter.DocumentConverter"
         ):
             return DoclingMarkdownParser(logger=logger, config_service={"key": "value"})
 

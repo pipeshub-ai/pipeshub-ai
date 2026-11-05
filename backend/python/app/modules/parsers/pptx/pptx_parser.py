@@ -1,15 +1,34 @@
 from io import BytesIO
+from typing import TYPE_CHECKING
 
-from docling.datamodel.base_models import DocumentStream, InputFormat
-from docling.datamodel.document import DoclingDocument
-from docling.document_converter import DocumentConverter
+from docling_core.types.doc.document import DoclingDocument
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 
+if TYPE_CHECKING:
+    from docling.document_converter import DocumentConverter
+
 
 class PPTXParser:
+    """Parses PPTX with Docling. The library is imported when the converter is first
+    needed, not when the parser is built (see ``app.utils.lazy_heavy``): call the parse
+    methods from a worker thread, or after ``await ensure_docling()``."""
+
     def __init__(self) -> None:
-        self.converter = DocumentConverter(allowed_formats=[InputFormat.PPTX])
+        self._converter: "DocumentConverter | None" = None
+
+    @property
+    def converter(self) -> "DocumentConverter":
+        if self._converter is None:
+            from docling.datamodel.base_models import InputFormat
+            from docling.document_converter import DocumentConverter
+
+            self._converter = DocumentConverter(allowed_formats=[InputFormat.PPTX])
+        return self._converter
+
+    @converter.setter
+    def converter(self, value: "DocumentConverter") -> None:
+        self._converter = value
 
     def parse_binary(self, pptx_binary: bytes) -> DoclingDocument:
         """
@@ -26,6 +45,8 @@ class PPTXParser:
         """
         # Create a BytesIO object from the bytes
         stream = BytesIO(pptx_binary)
+
+        from docling.datamodel.base_models import DocumentStream
 
         # Create a DocumentStream
         source = DocumentStream(name="presentation.pptx", stream=stream)

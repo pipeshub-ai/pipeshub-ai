@@ -14,14 +14,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 import markdown as markdown_lib
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.services.parsing.interface import ParseResult
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.document import DoclingDocument
-from docling.document_converter import DocumentConverter
+from docling_core.types.doc.document import DoclingDocument
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
@@ -30,6 +28,10 @@ from app.modules.parsers.markdown.image_references import (
 )
 from app.modules.parsers.text_decoding import decode_text
 from app.utils.converters.caption_map import apply_caption_map
+
+if TYPE_CHECKING:
+    from docling.document_converter import DocumentConverter
+
 
 class DoclingMarkdownParser:
     """Markdown parser backed by Docling.
@@ -51,9 +53,24 @@ class DoclingMarkdownParser:
         logger: logging.Logger | None = None,
         config_service: object | None = None,
     ) -> None:
-        self.converter = DocumentConverter(allowed_formats=[InputFormat.MD])
+        self._converter: "DocumentConverter | None" = None
         self._logger = logger or logging.getLogger(__name__)
         self._config_service = config_service
+
+    @property
+    def converter(self) -> "DocumentConverter":
+        """The Docling converter, built on first use (this imports ``docling``; see
+        ``app.utils.lazy_heavy``). Call from a worker thread or after ``ensure_docling()``."""
+        if self._converter is None:
+            from docling.datamodel.base_models import InputFormat
+            from docling.document_converter import DocumentConverter
+
+            self._converter = DocumentConverter(allowed_formats=[InputFormat.MD])
+        return self._converter
+
+    @converter.setter
+    def converter(self, value: "DocumentConverter") -> None:
+        self._converter = value
 
     async def parse(
         self,
