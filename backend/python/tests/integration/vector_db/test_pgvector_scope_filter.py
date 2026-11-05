@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.services.vector_db.filters import ScopeFilter
 from app.services.vector_db.models import (
     FieldCondition,
     FilterExpression,
@@ -24,43 +23,23 @@ from app.services.vector_db.models import (
 from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.pgvector import PgVectorService
 from tests.integration.db.conftest import cluster, env  # noqa: F401  (fixtures)
+from tests.integration.vector_db.scope_world import (
+    ADMIT_CASES,
+    EVERYTHING,
+    TERMS,
+    TRUST_CASES,
+    WORLD,
+    f,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from app.services.vector_db.filters import ScopeFilter
+
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
 A, B = "a" * 24, "b" * 24
 Q = [1.0, 0.0, 0.0, 0.0]
-VERSION, GENERATION = 5, 3
-TERMS = (3, 7)
-
-
-def _stamp(kind: str, path: list[str], acl: list[str], *, version: int = VERSION, generation: int = GENERATION) -> dict:
-    return {"scopeStamp": kind, "pathIds": path, "aclScope": acl, "scopeFieldsVersion": version, "scopeGeneration": generation}
-
-
-#: vrid -> (connectors, record groups, root groups, stamp or None)
-WORLD: dict[str, tuple[list[str], list[str], list[str], dict | None]] = {
-    "container": (["c1"], ["g1"], [], _stamp("container", [], [])),
-    "container_other": (["c1"], ["g2"], ["r2"], _stamp("container", [], [])),
-    "union": (["c1"], ["g2"], [], _stamp("union", ["s1", "p1"], ["own_u"])),
-    "union_hidden": (["c1"], ["g2"], [], _stamp("union", ["s1", "x1"], ["own_h"])),
-    "intersection": (["c1"], ["g2"], [], _stamp("intersection", ["s2"], ["own_i"])),
-    "intersection_hidden": (["c1"], ["g2"], [], _stamp("intersection", ["s2", "x1"], ["own_ih"])),
-    "override": (["c1"], ["g2"], [], _stamp("override", [], ["own_o", "seed"])),
-    "unstamped": (["c1"], ["g1"], [], None),
-    "legacy": (["c1"], ["g1"], [], _stamp("legacy", ["s1"], ["own_l"])),
-    "unknown_stamp": (["c1"], ["g1"], [], _stamp("something", ["s1"], ["own_x"])),
-    "old_version": (["c1"], ["g1"], [], _stamp("container", [], [], version=VERSION - 1)),
-    "old_generation": (["c1"], ["g1"], [], _stamp("container", [], [], generation=GENERATION - 1)),
-    "new_generation": (["c1"], ["g1"], [], _stamp("container", [], [], generation=GENERATION + 1)),
-    "other_connector": (["c9"], ["g1"], [], _stamp("container", [], [])),
-    "mixed_connectors": (["c1", "c9"], ["g1"], [], _stamp("container", [], [])),
-    "no_connector": ([], ["g1"], [], _stamp("container", [], [])),
-    # stamped by a process that could not read the scope generation (-2): no reader may trust it, not even one in the same state
-    "unavailable_stamp": (["c1"], ["g1"], [], _stamp("container", [], [], generation=-2)),
-}
-EVERYTHING = frozenset({"g1", "g2", "r2", "s1", "s2", "p1", "own_u", "own_h", "own_i", "own_ih", "own_o", "seed", "own_l", "own_x", "c1", "c9"})
 
 
 def pid(org: str, name: str) -> str:
@@ -72,11 +51,6 @@ def point(org: str, vrid: str, i: int) -> VectorPoint:
     payload: dict = {"page_content": f"text {vrid}", "metadata": {"orgId": org, "virtualRecordId": vrid, "blockId": vrid, "embeddingModel": "p:m:4"},
                      "connectorIds": conn, "recordGroupIds": groups, "rootRecordGroupIds": roots, **(stamp or {})}
     return VectorPoint(id=pid(org, vrid), dense_vector=[1.0, i / 100, 0.0, 0.0], payload=payload, sparse_vector=SparseVector(list(TERMS), [1.0, 1.0]))
-
-
-def f(**kw: object) -> ScopeFilter:
-    base = {"current": frozenset({"c1"}), "version": VERSION, "generation": GENERATION}
-    return ScopeFilter(**{**base, **kw})  # type: ignore[arg-type]
 
 
 @pytest.fixture(params=[False, True], ids=["native", "safe"])
@@ -113,22 +87,7 @@ async def test_without_a_filter_every_group_is_returned_as_before(store) -> None
 
 
 @LEGS
-@pytest.mark.parametrize(("kw", "admitted"), [
-    ({"readable_groups": frozenset({"g1"})}, {"container"}),
-    ({"readable_groups": frozenset({"g2"})}, {"container_other"}),
-    ({"readable_groups": frozenset({"r2"})}, {"container_other"}),
-    ({"open_apps": frozenset({"c1"})}, {"container", "container_other"}),
-    ({"open_apps": frozenset({"c9"})}, set()),
-    ({"readable_scopes": frozenset({"p1"})}, {"union"}),
-    ({"readable_scopes": frozenset({"s1"}), "excluded": frozenset({"x1"})}, {"union"}),
-    ({"readable_scopes": frozenset({"s2"})}, {"intersection", "intersection_hidden"}),
-    ({"readable_scopes": frozenset({"s2"}), "excluded": frozenset({"x1"})}, {"intersection"}),
-    ({"readable_scopes": frozenset({"own_ih"}), "excluded": frozenset({"x1"})}, {"intersection_hidden"}),
-    ({"readable_scopes": frozenset({"own_u"})}, {"union"}),
-    ({"readable_scopes": frozenset({"seed"})}, {"override"}),
-    ({"readable_groups": frozenset({"g2"})}, {"container_other"}),
-    ({}, set()),
-], ids=['record_group', 'other_group', 'root_group', 'open_app', 'open_app_not_current', 'path', 'path_excluded', 'intersection', 'intersection_excluded', 'intersection_own_id', 'own_id', 'override_seed', 'group_not_union', 'nothing'])
+@pytest.mark.parametrize(("kw", "admitted"), ADMIT_CASES)
 async def test_each_admit_rule_admits_exactly_its_groups(store, leg, kw, admitted) -> None:
     assert await search(store, f(**kw), leg=leg) == admitted
 
@@ -152,10 +111,7 @@ async def test_a_path_through_an_excluded_scope_is_hidden_whatever_else_the_view
 
 
 @LEGS
-@pytest.mark.parametrize(("kw", "admitted"), [
-    ({"generation": -2}, set()), ({"generation": -1}, set()), ({"current": frozenset()}, set()),
-    ({"version": VERSION - 1}, {"old_version"}), ({"generation": GENERATION + 1}, {"new_generation"}),
-], ids=["unavailable", "unknown", "no current connector", "another version", "another generation"])
+@pytest.mark.parametrize(("kw", "admitted"), TRUST_CASES)
 async def test_a_filter_trusts_only_the_stamps_of_the_version_and_generation_it_names(store, leg, kw, admitted) -> None:
     flt = f(open_apps=frozenset({"c1"}), readable_groups=EVERYTHING, readable_scopes=EVERYTHING, **kw)
     assert await search(store, flt, leg=leg) == admitted           # the other generation's stamps are as good as nobody's

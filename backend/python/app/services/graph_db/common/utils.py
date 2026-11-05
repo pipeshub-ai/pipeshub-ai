@@ -253,6 +253,8 @@ PERSON_ENTITY_TYPE = "person"
 PERSON_EDGES_TO_USER: tuple[str, ...] = tuple(r.value for r in (
     EntityRelations.ASSIGNED_TO, EntityRelations.REPORTED_BY,
     EntityRelations.CREATED_BY, EntityRelations.LEAD_BY,
+    EntityRelations.AUTHORED_BY, EntityRelations.OWNED_BY,
+    EntityRelations.REVIEWED_BY, EntityRelations.ADDRESSED_TO,
 ))
 PERSON_EDGES_FROM_USER: tuple[str, ...] = tuple(r.value for r in (
     EntityRelations.MENTIONED_IN, EntityRelations.INVOLVED_IN,
