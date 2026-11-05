@@ -685,6 +685,29 @@ def _trash_list_page_query(*, hinted: bool) -> str:
 _PURGE_WALK_INDEX = "record_org_deleted_at"
 _PURGE_WALK_HINT = "USING INDEX r:Record(orgId, deletedAtTimestamp, id)"
 _INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
+# The record-people backfill's paging index, created by ensure_schema. By its
+# statistics the planner can prefer (orgId, recordType) and then sort every page.
+_RECORD_ORG_ID_INDEX = "record_org_id_key"
+_RECORD_ORG_ID_HINT = "USING INDEX record:Record(orgId, id)"
+_RECORD_ORG_ID_HINT_WARNING = (
+    "The record-people backfill's index %s is not ready; paging records without it until it is: %s"
+)
+
+
+def _record_ids_by_type_page(hint: str) -> str:
+    """One page of an org's records of some types, after a key, in (orgId, id)
+    index order: every page, the first too (after ""), seeks an id range, so
+    the index gives the order and the page stops at the limit."""
+    return f"""
+            MATCH (record:Record)
+            {hint}
+            WHERE record.orgId = $org_id AND record.id > $after_key
+              AND record.recordType IN $types
+              AND coalesce(record.isDeleted, false) = false
+            RETURN record.id AS id
+            ORDER BY record.orgId, record.id
+            LIMIT $limit
+            """
 # A write that waited for a node's lock while another transaction deleted it.
 _ENTITY_NOT_FOUND = "Neo.ClientError.Statement.EntityNotFound"
 
@@ -1251,6 +1274,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_connector_id_key IF NOT EXISTS "
             "FOR (n:Record) ON (n.connectorId, n.id)"
+        )
+
+        # COMPOSITE: the record-people backfill pages an org's records by id;
+        # with only orgId indexed every page sorted the whole org.
+        indexes.append(
+            "CREATE INDEX record_org_id_key IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.id)"
         )
 
         # SINGLE: duplicateReconcilePending. The reconcile retry sweep looks for
@@ -5975,25 +6005,65 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     # ==================== User Operations ====================
 
+    async def get_users_by_emails(
+        self,
+        emails: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        org_id: str | None = None,
+    ) -> dict[str, User]:
+        """See :meth:`IGraphDBProvider.get_users_by_emails`."""
+        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        if not wanted:
+            return {}
+        try:
+            scoped = org_id is not None
+            org_filter = "AND u.orgId = $org_id" if scoped else ""
+            # toLower(u.email) keeps matching case-insensitive, which the
+            # user_email index cannot serve.
+            query = f"""
+            MATCH (u:User)
+            WHERE toLower(u.email) IN $emails {org_filter}
+            RETURN u
+            """
+            results = await self.client.execute_query(
+                query, parameters={"emails": wanted, **({"org_id": org_id} if scoped else {})}, txn_id=transaction,
+            )
+            found: dict[str, User] = {}
+            for row in results or []:
+                user_dict = self._neo4j_to_arango_node(dict(row["u"]), CollectionNames.USERS.value)
+                found.setdefault(user_dict["email"].lower(), User.from_arango_user(user_dict))
+            return found
+        except Exception as e:
+            self.logger.error(f"❌ Get users by emails failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return {}
+
     async def get_user_by_email(
         self,
         email: str,
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> User | None:
         """Get user by email"""
         try:
-            query = """
+            scoped = org_id is not None
+            org_filter = "AND u.orgId = $org_id" if scoped else ""
+            parameters = {"email": email, **({"org_id": org_id} if scoped else {})}
+            query = f"""
             MATCH (u:User)
-            WHERE toLower(u.email) = toLower($email)
+            WHERE toLower(u.email) = toLower($email) {org_filter}
             RETURN u
             LIMIT 1
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"email": email},
+                parameters=parameters,
                 txn_id=transaction
             )
 
@@ -12589,6 +12659,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to retrieve record for id {record_id}: {str(e)}")
             return None
+
+    async def page_record_ids_by_type(
+        self,
+        org_id: str,
+        record_types: list[str],
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """See :meth:`IGraphDBProvider.page_record_ids_by_type`."""
+        if limit < 0:
+            raise ValueError("limit must not be negative")
+        if not org_id or not record_types or limit == 0:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        rows = await self._execute_hinted(
+            _record_ids_by_type_page(_RECORD_ORG_ID_HINT),
+            _record_ids_by_type_page(""),
+            {"org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": limit},
+            None,
+            index=_RECORD_ORG_ID_INDEX,
+            warning=_RECORD_ORG_ID_HINT_WARNING,
+        )
+        return [str(row["id"]) for row in rows or [] if row.get("id")]
 
     async def get_typed_records_batch(
         self,
