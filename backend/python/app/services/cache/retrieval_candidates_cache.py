@@ -97,12 +97,7 @@ class RetrievalCandidatesCache(IRetrievalCandidatesCache):
         try:
             redis_config = await config_service.get_redis_config()
             provider = get_redis_provider(
-                RedisConnectionConfig.from_host_port(
-                    host=redis_config.host,
-                    port=redis_config.port,
-                    db=redis_config.db,
-                    tls=redis_config.tls,
-                )
+                RedisConnectionConfig.from_redis_config(redis_config)
             )
             options = ClientOptions(
                 decode_responses=True,

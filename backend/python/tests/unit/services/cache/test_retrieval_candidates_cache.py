@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -347,3 +348,35 @@ class TestNoopRetrievalCandidatesCache:
         cache = await RetrievalCandidatesCache.create(MagicMock(), MagicMock())
 
         assert isinstance(cache, NoopRetrievalCandidatesCache)
+
+    async def test_create_passes_stored_redis_config_to_provider(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.delenv(RetrievalCandidatesCache.ENV_ENABLED, raising=False)
+        redis_config = SimpleNamespace(
+            host="redis.example",
+            port=6380,
+            password="test-password",
+            db=2,
+            tls=True,
+        )
+        config_service = MagicMock()
+        config_service.get_redis_config = AsyncMock(return_value=redis_config)
+        redis_provider = MagicMock()
+        redis_provider.key_namespace = "deployment-a"
+        redis_provider.create_client.return_value = FakeRedis()
+        get_provider = MagicMock(return_value=redis_provider)
+        monkeypatch.setattr(
+            "app.services.cache.retrieval_candidates_cache.get_redis_provider",
+            get_provider,
+        )
+
+        cache = await RetrievalCandidatesCache.create(MagicMock(), config_service)
+
+        connection_config = get_provider.call_args.args[0]
+        assert connection_config.host == redis_config.host
+        assert connection_config.port == redis_config.port
+        assert connection_config.password == redis_config.password
+        assert connection_config.db == redis_config.db
+        assert connection_config.tls is redis_config.tls
+        await cache.close()
