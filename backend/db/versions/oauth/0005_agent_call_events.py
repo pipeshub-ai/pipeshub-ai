@@ -2,8 +2,8 @@
 from alembic import op
 from db.lib.run_sql import run_sql
 
-revision = "oauth_0004"
-down_revision = "oauth_0003"
+revision = "oauth_0005"
+down_revision = "oauth_0004"
 branch_labels = None
 depends_on = None
 older_code_compatible = "adds one new table with its own policy and grants; no existing table, column, privilege or function changes"

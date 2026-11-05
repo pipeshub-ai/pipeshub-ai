@@ -383,6 +383,27 @@ export interface OauthAgentCallEvents {
   created_at: Date;
 }
 
+export interface OauthAgentRegistrations {
+  org_id: string;
+  id: string;
+  claim_email: string;
+  claim_token_hash: string;
+  attempt_token_hash: string;
+  user_code_hash: string;
+  attempt_expires_at: Date;
+  expires_at: Date;
+  purge_at: Date;
+  status: Generated<string>;
+  failed_attempts: Generated<number>;
+  last_polled_at: Date | null;
+  claimed_user_id: string | null;
+  claimed_org_id: string | null;
+  approved_scopes: string[] | null;
+  version: Generated<number>;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface OauthApps {
   org_id: string;
   id: string;
@@ -608,6 +629,7 @@ export interface DB {
   'integrations.slack_threads': IntegrationsSlackThreads;
   'oauth.access_tokens': OauthAccessTokens;
   'oauth.agent_call_events': OauthAgentCallEvents;
+  'oauth.agent_registrations': OauthAgentRegistrations;
   'oauth.apps': OauthApps;
   'oauth.authorization_codes': OauthAuthorizationCodes;
   'oauth.delegation_events': OauthDelegationEvents;

@@ -2657,6 +2657,8 @@ components:
             - refresh_token
             - urn:ietf:params:oauth:grant-type:device_code
             - urn:ietf:params:oauth:grant-type:token-exchange
+            - urn:workos:agent-auth:grant-type:claim
+            - urn:ietf:params:oauth:grant-type:jwt-bearer
           description: |
             OAuth grant type:
             - `authorization_code`: Exchange auth code for tokens
@@ -2669,6 +2671,22 @@ components:
               short-lived token that acts as one named person. Enterprise
               edition; kept in this enum because the request shape is the same
               wherever the grant is offered.
+            - `urn:workos:agent-auth:grant-type:claim`: An agent registered with
+              `POST /agent/identity` polls for the token its user approves. Sends
+              `claim_token` and no `client_id`. Offered when device login is.
+            - `urn:ietf:params:oauth:grant-type:jwt-bearer`: An agent exchanges the
+              `identity_assertion` it was given for a fresh access token (RFC 7523).
+              Sends `assertion` and no `client_id`. Offered when device login is.
+        claim_token:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: The `claim_token` from `POST /agent/identity` (claim grant only)
+        assertion:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: The `identity_assertion` a claim grant returned (jwt-bearer grant only)
         code:
           type: string
           description: Authorization code (required for authorization_code grant)
@@ -2762,6 +2780,16 @@ components:
             the token-exchange grant, where it is always
             `urn:ietf:params:oauth:token-type:access_token`.
           example: "urn:ietf:params:oauth:token-type:access_token"
+        identity_assertion:
+          type: string
+          description: |
+            Returned by the claim grant once, with the first token. A JWT (`typ` `oauth-id-jag+jwt`)
+            signed by this server; exchange it with the jwt-bearer grant for a new access token
+            until `assertion_expires`.
+        assertion_expires:
+          type: string
+          format: date-time
+          description: When `identity_assertion` stops working (30 days after it was issued)
     ServiceAccountDelegation:
       type: object
       description: |
@@ -2908,7 +2936,9 @@ components:
         client_id:
           type: string
           minLength: 1
-          description: Client ID
+          description: |
+            Client ID. Required unless `token` is an agent identity assertion or an access token
+            issued under an agent registration, which are their own credential.
         client_secret:
           type: string
           description: |
@@ -2917,7 +2947,6 @@ components:
             wrong secret is `401 invalid_client`.
       required:
         - token
-        - client_id
     OAuthIntrospectRequest:
       type: object
       description: |
@@ -3133,6 +3162,34 @@ components:
           type: string
           description: Client ID of the built-in first-party public client that CLIs and devices use for the device authorization grant. PipesHub extension; omitted when the device grant is disabled.
           example: pipeshub-agent
+        agent_auth:
+          type: object
+          description: |
+            Agent registration (auth.md). Omitted, together with the two agent grants in
+            `grant_types_supported`, when the device grant is disabled.
+          properties:
+            skill:
+              type: string
+              format: uri
+              description: The agent-readable `auth.md` of this server
+            identity_endpoint:
+              type: string
+              format: uri
+              description: "`POST /agent/identity`"
+            claim_endpoint:
+              type: string
+              format: uri
+              description: "`POST /agent/identity/claim`"
+            identity_types_supported:
+              type: array
+              items:
+                type: string
+              example: ["service_auth"]
+          required:
+            - skill
+            - identity_endpoint
+            - claim_endpoint
+            - identity_types_supported
         scopes_supported:
           type: array
           items:
@@ -3149,7 +3206,7 @@ components:
           type: array
           items:
             type: string
-          description: Supported grant types. The device_code grant is listed unless the device grant is disabled. The token-exchange grant (`urn:ietf:params:oauth:grant-type:token-exchange`) is listed only in the Enterprise edition.
+          description: Supported grant types. The device_code grant is listed unless the device grant is disabled. The token-exchange grant (`urn:ietf:params:oauth:grant-type:token-exchange`) is listed only in the Enterprise edition. The agent grants (`urn:workos:agent-auth:grant-type:claim` and `urn:ietf:params:oauth:grant-type:jwt-bearer`) are listed with `agent_auth`.
           example: ["authorization_code", "client_credentials", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"]
         token_endpoint_auth_methods_supported:
           type: array
@@ -20845,6 +20902,222 @@ components:
       required:
         - error
         - error_description
+    AgentAuthError:
+      type: object
+      additionalProperties: false
+      description: Error body of the agent registration routes. `error` is a string.
+      properties:
+        error:
+          type: string
+          example: invalid_claim_token
+        error_description:
+          type: string
+      required:
+        - error
+        - error_description
+    AgentClaimCeremony:
+      type: object
+      properties:
+        user_code:
+          type: string
+          description: Six digits, valid for `expires_in` seconds. Show it to the person.
+          example: "123456"
+        expires_in:
+          type: integer
+          example: 600
+        verification_uri:
+          type: string
+          format: uri
+          description: The page where the person signs in and types the code
+        interval:
+          type: integer
+          description: Least seconds between polls of the claim grant
+          example: 5
+      required:
+        - user_code
+        - expires_in
+        - verification_uri
+        - interval
+    AgentIdentityRequest:
+      type: object
+      properties:
+        type:
+          type: string
+          maxLength: 64
+          description: Must be `service_auth`
+        login_hint:
+          type: string
+          maxLength: 320
+          description: The email of the person the agent works for
+      required:
+        - type
+        - login_hint
+    AgentIdentityResponse:
+      type: object
+      properties:
+        registration_id:
+          type: string
+          example: reg_66f1c0a2b3c4d5e6f7a8b9c0
+        registration_type:
+          type: string
+          enum:
+            - service_auth
+        claim_url:
+          type: string
+          format: uri
+        claim_token:
+          type: string
+          description: Shown once. Poll the claim grant with it.
+          example: clm_Xw3q
+        claim_token_expires:
+          type: string
+          format: date-time
+        post_claim_scopes:
+          type: array
+          items:
+            type: string
+          description: What the token will carry once the person approves (the scopes of a device sign-in by the agent app, less `offline_access`)
+        claim:
+          $ref: '#/components/schemas/AgentClaimCeremony'
+      required:
+        - registration_id
+        - registration_type
+        - claim_url
+        - claim_token
+        - claim_token_expires
+        - post_claim_scopes
+        - claim
+    AgentClaimRequest:
+      type: object
+      properties:
+        claim_token:
+          type: string
+          minLength: 1
+          maxLength: 256
+        email:
+          type: string
+          format: email
+          maxLength: 320
+      required:
+        - claim_token
+        - email
+    AgentClaimResponse:
+      type: object
+      properties:
+        registration_id:
+          type: string
+        claim_attempt_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - initiated
+        expires_at:
+          type: string
+          format: date-time
+        claim_attempt:
+          $ref: '#/components/schemas/AgentClaimCeremony'
+      required:
+        - registration_id
+        - claim_attempt_id
+        - status
+        - expires_at
+        - claim_attempt
+    AgentClaimVerifyRequest:
+      type: object
+      properties:
+        claim_attempt_token:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: From the `verification_uri`
+      required:
+        - claim_attempt_token
+    AgentClaimVerifyResponse:
+      type: object
+      properties:
+        scopes:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              description:
+                type: string
+              category:
+                type: string
+        user:
+          type: object
+          properties:
+            email:
+              type: string
+          required:
+            - email
+      required:
+        - scopes
+        - user
+    AgentClaimCompleteRequest:
+      type: object
+      properties:
+        claim_attempt_token:
+          type: string
+          minLength: 1
+          maxLength: 256
+        user_code:
+          type: string
+          maxLength: 32
+          description: The code the agent showed. Required to approve.
+        action:
+          type: string
+          enum:
+            - approve
+            - deny
+      required:
+        - claim_attempt_token
+        - action
+    AgentClaimCompleteResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        status:
+          type: string
+          enum:
+            - claimed
+            - revoked
+      required:
+        - ok
+        - status
+    AgentRegistrationList:
+      type: object
+      properties:
+        registrations:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: The registration id (`reg_…`)
+              status:
+                type: string
+                enum:
+                  - claimed
+                  - consumed
+              created_at:
+                type: string
+                format: date-time
+              updated_at:
+                type: string
+                format: date-time
+            required:
+              - id
+              - status
+              - created_at
+              - updated_at
+      required:
+        - registrations
     ProjectAppliedFilterNode:
       type: object
       additionalProperties: false
@@ -26033,6 +26306,16 @@ paths:
         - `client_credentials`: Get tokens for machine-to-machine auth
         - `urn:ietf:params:oauth:grant-type:device_code`: Poll for the tokens of a device authorization
           (RFC 8628); answered `400` with `authorization_pending` until the user approves
+        - `urn:workos:agent-auth:grant-type:claim`: Poll for the token of an agent registration
+          (`POST /agent/identity`). **Sends `claim_token`, no `client_id`.** Answered `400` with
+          `authorization_pending` until the person approves, `slow_down` when polled sooner than
+          `interval`, `expired_token` when the registration is unknown, expired or past its 24 hour
+          window, `access_denied` when the person denied it or it was revoked, and `invalid_grant`
+          once the `claim_token` has been used. On approval: an access token (never a refresh
+          token) plus `identity_assertion` and `assertion_expires`.
+        - `urn:ietf:params:oauth:grant-type:jwt-bearer`: Exchange an `identity_assertion` for a fresh
+          access token (RFC 7523). **Sends `assertion`, no `client_id`.** No refresh token. Anything
+          wrong with the assertion, or with the registration or person behind it, is `400 invalid_grant`.
         - `refresh_token`: Get new access token using refresh token. The refresh token must have been issued to the presenting `client_id`; one issued to another client is rejected with `400 invalid_grant` and is left untouched (not rotated, not revoked).
         - `urn:ietf:params:oauth:grant-type:token-exchange`: Service-account
           delegation (RFC 8693). A service account exchanges its own token for
@@ -26100,7 +26383,8 @@ paths:
               no scope at all ("A token must carry at least one scope"). A `client_credentials` grant
               drops `openid`, `profile`, `email` and `offline_access`, so it needs at least one other
               scope, requested or allowed for the app.
-            - `authorization_pending`, `slow_down`, `expired_token`, `access_denied` - device_code
+            - `authorization_pending`, `slow_down`, `expired_token`, `access_denied` - claim grant
+              polling (see above), and device_code
               polling (RFC 8628 Section 3.5): still pending, polled sooner than `interval`, unknown,
               expired or already redeemed, or denied by the user. `access_denied` is a `400` here,
               not a `403`.
@@ -26154,6 +26438,10 @@ paths:
         - User revokes app access from account settings
         - Security incident response
 
+        An agent identity assertion, or an access token issued by the agent grants, needs no
+        `client_id`: revoking it also revokes the agent registration behind it, so the agent can
+        no longer get new access tokens.
+
         **Note:** Returns 200 OK even if token was already revoked or invalid
         (per RFC 7009, to prevent token enumeration).
       operationId: oauthRevoke
@@ -26188,7 +26476,8 @@ paths:
           description: |
             Client authentication failed (`invalid_client`): an unknown or inactive `client_id`
             (`Invalid client_id`), a confidential client without `client_secret` (`client_secret required
-            for confidential clients`), or a wrong `client_secret`.
+            for confidential clients`), or a wrong `client_secret`. Also returned when `client_id` is
+            missing and `token` is not an agent credential.
           content:
             application/json:
               schema:
@@ -72174,6 +72463,320 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /agent/identity:
+    post:
+      tags:
+        - OAuth Provider
+      summary: Register an agent (service_auth)
+      description: |
+        auth.md agent registration, `service_auth` flow. An agent names the email of the person it
+        works for; the response carries a `claim_token` to poll with and a `user_code` and
+        `verification_uri` for that person. Nothing is created here: the registration only binds
+        to an existing user who signs in and approves it (`POST /agent/identity/claim/complete`).
+        The answer is the same whether or not a user has that email.
+
+        Offered exactly when the device grant is (`agent_auth` in the authorization server
+        metadata). `anonymous` and `identity_assertion` registrations are not supported.
+
+        **Errors:** the OAuth body (`error` is a string).
+      operationId: agentIdentity
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentIdentityRequest'
+        required: true
+      responses:
+        '200':
+          description: Registration created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentIdentityResponse'
+        '400':
+          description: |
+            `service_auth_not_enabled` (device login is off), `anonymous_not_enabled`,
+            `issuer_not_enabled` (`identity_assertion`), or `invalid_request` (missing or unknown
+            `type`, or `login_hint` is not an email address).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/identity/claim:
+    post:
+      tags:
+        - OAuth Provider
+      summary: Start a fresh claim attempt
+      description: |
+        Mints a new `user_code` and `verification_uri` for a registration that is still pending
+        and was made for `email`. The previous attempt's link and code stop working.
+      operationId: agentIdentityClaim
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentClaimRequest'
+        required: true
+      responses:
+        '200':
+          description: A new attempt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentClaimResponse'
+        '400':
+          description: |
+            `invalid_claim_token` (unknown, revoked, or made for another email) or
+            `claimed_or_in_flight` (already claimed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '410':
+          description: "`claim_expired`: the registration's 24 hour window has closed"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/identity/claim/verify:
+    post:
+      tags:
+        - OAuth Provider
+      summary: Look up a claim attempt for the claim page
+      description: |
+        What the claim page shows the signed-in user: the account and the scopes the agent would
+        get. Nothing is decided here.
+
+        **Session only.** OAuth access tokens, personal access tokens and service accounts are
+        refused with `403`.
+      operationId: agentIdentityClaimVerify
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentClaimVerifyRequest'
+        required: true
+      responses:
+        '200':
+          description: The attempt can be claimed by this user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentClaimVerifyResponse'
+        '400':
+          description: "`invalid_request` (unknown, used or replaced link) or `service_auth_not_enabled`"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '401':
+          description: Missing, invalid or expired session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: "`access_denied` (the registration was made for another email), or the caller is not a user session"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/AgentAuthError'
+        '410':
+          description: "`claim_expired`: the attempt or the registration window has closed"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/identity/claim/complete:
+    post:
+      tags:
+        - OAuth Provider
+      summary: Approve or deny an agent registration
+      description: |
+        The signed-in user types the `user_code` the agent showed (approve) or refuses (deny). The
+        registration binds to the session's user and organization, never to anything in the body.
+        Five wrong codes expire the registration.
+
+        **Session only.** OAuth access tokens, personal access tokens and service accounts are
+        refused with `403`.
+      operationId: agentIdentityClaimComplete
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentClaimCompleteRequest'
+        required: true
+      responses:
+        '200':
+          description: Decision recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentClaimCompleteResponse'
+        '400':
+          description: |
+            `invalid_user_code` (wrong code), or `invalid_request` (the link is unknown, used,
+            replaced, or the registration expired after too many wrong codes).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '401':
+          description: Missing, invalid or expired session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: "`access_denied` (the registration was made for another email), or the caller is not a user session"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/AgentAuthError'
+        '410':
+          description: "`claim_expired`: the attempt or the registration window has closed"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAuthError'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/registrations:
+    get:
+      tags:
+        - OAuth Provider
+      summary: List the agent registrations you approved
+      description: |
+        The agent registrations the signed-in user has approved and not revoked, newest first.
+
+        **Session only.** OAuth access tokens, personal access tokens and service accounts are
+        refused with `403`.
+      operationId: agentRegistrationsList
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The user's own registrations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRegistrationList'
+        '401':
+          description: Missing, invalid or expired session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not a user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/registrations/{id}:
+    delete:
+      tags:
+        - OAuth Provider
+      summary: Revoke an agent registration you approved
+      description: |
+        Ends the registration: its identity assertion stops working and no new access token is
+        issued. Access tokens already issued run out on their own. A registration that is not the
+        caller's answers `404`.
+
+        **Session only.** OAuth access tokens, personal access tokens and service accounts are
+        refused with `403`.
+      operationId: agentRegistrationsRevoke
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The registration id (`reg_` and 24 hex characters)
+          schema:
+            type: string
+            pattern: '^reg_[0-9a-f]{24}$'
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        '400':
+          description: The id is malformed (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid or expired session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not a user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such registration approved by the caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Rate limit exceeded
           content:

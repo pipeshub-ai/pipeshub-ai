@@ -62,8 +62,9 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       await stack?.stop();
     });
 
-    // (device authorizations are install-wide: the jobs login cannot read them back, so they have their own test)
-    const mine = (): Record<string, unknown[]> => Object.fromEntries(CONTENT_MAPPINGS.filter((m) => m.collection !== 'oauthDeviceCodes').map((m) => [m.collection, docs[m.collection] ?? []]));
+    // (device authorizations and agent registrations are install-wide: the jobs login cannot read them back, so they have their own tests)
+    const INSTALL_WIDE = ['oauthDeviceCodes', 'oauthAgentRegistrations'];
+    const mine = (): Record<string, unknown[]> => Object.fromEntries(CONTENT_MAPPINGS.filter((m) => !INSTALL_WIDE.includes(m.collection)).map((m) => [m.collection, docs[m.collection] ?? []]));
     const count = async (t: string, where = 'true'): Promise<number> =>
       Number((await stack.admin((c) => c.query(`SELECT count(*)::int AS n FROM ${t} WHERE ${where}`))).rows[0].n);
 
@@ -118,7 +119,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 
     it('copies every other collection and reads back identical documents (zero diffs)', async () => {
       const r = await copyAndCompare(withoutOutbox(), MAPPINGS);
-      for (const m of CONTENT_MAPPINGS.filter((x) => x.collection !== 'outbox_events' && x.collection !== 'oauthDeviceCodes')) expect(r.diffs[m.collection], m.collection).to.deep.equal([]);
+      for (const m of CONTENT_MAPPINGS.filter((x) => x.collection !== 'outbox_events' && !INSTALL_WIDE.includes(x.collection))) expect(r.diffs[m.collection], m.collection).to.deep.equal([]);
       // the listed transforms the report carries
       expect(r.report.skipped.get('mail log entry without an organisation (the table is per organisation)')).to.equal(1);
       expect([...r.report.nul.keys()].some((k) => k.startsWith('documents.documentName'))).to.equal(true);
@@ -140,6 +141,24 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       await jobsUnit((tx) => withUpsert(['oauth.device_authorizations'], () => repo.importBatch(m.collection, changed, tx)));   // as the follower writes a changed document
       expect((await stack.admin((c) => c.query("SELECT status FROM oauth.device_authorizations WHERE user_code = 'ABCD-EFGH'"))).rows[0].status).to.equal('approved');
       expect(await count('oauth.device_authorizations')).to.equal(2);
+    });
+
+    it('agent registrations are copied into the install organisation; one past its retention is not; a later copy brings a revocation over', async () => {
+      const m = CONTENT_MAPPINGS.find((x) => x.collection === 'oauthAgentRegistrations')!;
+      const repo = REPOSITORIES[m.repository]!() as Importable;
+      const neutral = docs.oauthAgentRegistrations!.map((d) => toNeutral(d, new SourceReport(), m.collection));
+      // the install organisation exists from the device test above
+      const st = await jobsUnit((tx) => repo.importBatch(m.collection, neutral, tx));
+      expect(st.skipped, 'the one past its retention').to.have.length(1);
+      const rows = (await stack.admin((c) => c.query('SELECT id, status, org_id, approved_scopes FROM oauth.agent_registrations ORDER BY id'))).rows;
+      expect(rows.map((r: any) => r.status)).to.deep.equal(['consumed', 'pending']);
+      expect(rows.every((r: any) => r.org_id === String(ORG_A))).to.equal(true);
+      expect(rows[0].approved_scopes).to.deep.equal(['org:read', 'kb:read']);
+      // the consumed one was revoked in MongoDB meanwhile
+      const changed = neutral.map((d, i) => (i === 0 ? { ...d, status: 'revoked' } : d));
+      await jobsUnit((tx) => withUpsert(['oauth.agent_registrations'], () => repo.importBatch(m.collection, changed, tx)));
+      expect((await stack.admin((c) => c.query('SELECT status FROM oauth.agent_registrations WHERE id = $1', [rows[0].id]))).rows[0].status).to.equal('revoked');
+      expect(await count('oauth.agent_registrations')).to.equal(2);
     });
 
     it('a second copy writes nothing', async () => {
