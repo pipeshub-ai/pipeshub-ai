@@ -389,6 +389,18 @@ describe('error.middleware.utils: a failed axios call is logged without its requ
     expect(logged.message).to.include('https://app.example/cb')
   })
 
+  it('redacts a quoted JSON credential the message carries', async () => {
+    // No request body, so only the message can leak.
+    const original = await failedCall(() => axios.post(`${base}/token`))
+    const rethrown = new AxiosError(
+      'Token endpoint answered {"access_token":"RT-SECRET-123","error":"invalid_grant"}',
+      original.code, original.config, original.request, original.response,
+    )
+    const logged = loggedError(rethrown)
+    expectNoSecret(logged)
+    expect(logged.message).to.include('"access_token":"[REDACTED]"').and.to.include('"error":"invalid_grant"')
+  })
+
   it('keeps status, code, method and url when the error has no message', async () => {
     const original = await jsonTokenCall()
     const bare = new AxiosError(undefined, original.code, original.config, original.request, original.response)
