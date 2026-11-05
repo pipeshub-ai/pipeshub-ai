@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
+    from .scopes import ViewerScopes
     from .shadow import ShadowComparator
 
 
@@ -52,7 +53,7 @@ class _ScopesAtCompare:
         self._seen: object = None
         self._service: object | None = None
 
-    async def scopes(self, org_id: str, user_key: str):  # noqa: ANN201
+    async def scopes(self, org_id: str, user_key: str) -> ViewerScopes:
         from app.services.cache.invalidation_hooks import get_viewer_scope_cache
 
         from .service import ViewerScopeService
