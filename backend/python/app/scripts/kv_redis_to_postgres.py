@@ -66,16 +66,24 @@ async def copy_kv(
     if dry_run:
         return summary
     live = {k: r for k in keys if (r := await _read(src, k))}
-    existing = {k: await dst.get_key(k) for k in live}
-    conflicts = sorted(k for k in live if existing[k] is not None and existing[k] != live[k][0])
+    existing = {k: await dst.get_key(k) for k in keys}
+    gone = [k for k in keys if k not in live]  # expired in Redis: PostgreSQL must not keep a live copy either
+    conflicts = sorted([k for k in live if existing[k] is not None and existing[k] != live[k][0]]
+                       + [k for k in gone if existing[k] is not None])
     summary |= {"skipped_expired": len(keys) - len(live), "conflicts": conflicts}
     if conflicts and not overwrite:  # refuse before any write
         return summary
+    removed = 0
+    for k in gone:
+        if existing[k] is not None:  # only reached with --overwrite: Redis no longer has the key
+            removed += await dst.delete_key(k)
     written = changed = expired_late = 0
     for k in live:
-        now = await _read(src, k)  # the value and TTL as of this write; a key that expired since the scan is skipped
+        now = await _read(src, k)  # the value and TTL as of this write; a key that expired since the scan is not written
         if now is None:
             expired_late += 1
+            if existing[k] is not None:  # equal to what Redis held (a different value was a conflict)
+                removed += await dst.delete_key(k)
             continue
         # written even when PostgreSQL holds the same value, so its expiry ends up the same as Redis's
         await dst.create_key(k, now[0], overwrite=True, ttl=now[1])
@@ -92,7 +100,9 @@ async def copy_kv(
         now = await _read(src, k)
         if now and await dst.get_key(k) != now[0]:
             different += 1
+    different += sum([await dst.get_key(k) is not None for k in keys if await _read(src, k) is None])  # expired, yet still live in PostgreSQL
     return summary | {"written": written, "changed": changed, "unchanged": written - changed, "expired_during_copy": expired_late,
+                      "removed_expired": removed,
                       "recopied": recopied, "different_after": different}
 
 

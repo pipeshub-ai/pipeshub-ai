@@ -27,6 +27,9 @@ class FakePg:
     async def get_key(self, key) -> bytes | None:
         return self.rows.get(key)
 
+    async def delete_key(self, key) -> bool:
+        return self.rows.pop(key, None) is not None
+
 
 def _src(redis, namespace="") -> RedisDistributedKeyValueStore:
     store = RedisDistributedKeyValueStore(bytes, bytes, host="x", port=1, key_prefix="pipeshub:kv:")
@@ -126,3 +129,32 @@ async def test_dry_run_writes_nothing_and_counts_prefixes(redis) -> None:
     out = await copy_kv(_src(redis), dst, dry_run=True)
     assert dst.rows == {}
     assert out["by_prefix"] == {"services": 2}
+
+
+async def test_a_key_that_expires_during_the_copy_leaves_no_copy_in_postgres(redis) -> None:
+    class ExpiresAfterPreflight(FakePg):
+        async def create_key(self, key, value, overwrite=True, ttl=None) -> bool:
+            await redis.delete("pipeshub:kv:/services/b")  # expires while the first key is written
+            return await super().create_key(key, value, overwrite, ttl)
+
+    dst = ExpiresAfterPreflight({"/services/b": b"enc-b"})  # an earlier run's copy
+    out = await copy_kv(_src(redis), dst)
+    assert "/services/b" not in dst.rows
+    assert out["removed_expired"] == 1 and out["different_after"] == 0
+
+
+async def test_a_copy_of_a_key_redis_no_longer_has_is_a_conflict_until_overwrite(redis) -> None:
+    src = _src(redis)
+    listed = await src.get_all_keys()
+
+    async def with_a_gone_key() -> list[str]:
+        return [*listed, "/services/old"]  # listed by the scan, gone by the read
+
+    src.get_all_keys = with_a_gone_key
+    dst = FakePg({"/services/old": b"stale"})
+    out = await copy_kv(src, dst)
+    assert out["conflicts"] == ["/services/old"]
+    assert dst.rows == {"/services/old": b"stale"}
+    out = await copy_kv(src, dst, overwrite=True)
+    assert "/services/old" not in dst.rows
+    assert out["removed_expired"] == 1 and out["different_after"] == 0
