@@ -87,7 +87,7 @@ def to_point(row: asyncpg.Record, with_payload: list[str] | None, org: str) -> V
     full = {**stored, "page_content": row["page_content"] or "",
             "connectorIds": list(row["connector_ids"] or []), "recordGroupIds": list(row["record_group_ids"] or []),
             "rootRecordGroupIds": list(row["root_record_group_ids"] or [])}
-    if row["scope_version"] is not None:      # a group that was never stamped carries no scope keys, like a point of another store
+    if row.get("scope_version") is not None:      # a group that was never stamped carries no scope keys, like a point of another store
         full.update({PATH_IDS_FIELD: list(row["path_ids"] or []), ACL_SCOPE_FIELD: list(row["acl_scope"] or []),
                      SCOPE_STAMP_FIELD: row["scope_stamp"], SCOPE_VERSION_FIELD: row["scope_version"],
                      SCOPE_GENERATION_FIELD: row["scope_generation"]})
