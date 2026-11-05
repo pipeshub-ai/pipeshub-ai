@@ -15,6 +15,7 @@ from app.modules.retrieval.context.units import unit_children
 from app.utils.chat_helpers import is_base64_image
 
 _TEXT_KEYS = ("row_natural_language_text", "text", "description")
+_MAX_REF_NAME_CHARS = 120
 
 
 @dataclass
@@ -101,6 +102,15 @@ def _content_text(value: object) -> str:
             if isinstance(text, str) and text:
                 return text
     return ""
+
+
+def record_ref(record_id: str | None, name: str) -> str:
+    """How a request to the model names a record: by id, with its name as one
+    quoted line, so a title cannot read as an instruction of the request."""
+    shown = " ".join(name.replace('"', "'").split())[:_MAX_REF_NAME_CHARS]
+    if record_id:
+        return f'record {record_id} ("{shown}")' if shown else f"record {record_id}"
+    return f'"{shown}"' if shown else "a record"
 
 
 def _name(record: Mapping[str, Any] | None) -> str:
@@ -239,4 +249,4 @@ def evidence_digest(
     return "\n\n".join(parts)
 
 
-__all__ = ["Evidence", "EvidenceRecord", "collect_evidence", "evidence_digest"]
+__all__ = ["Evidence", "EvidenceRecord", "collect_evidence", "evidence_digest", "record_ref"]
