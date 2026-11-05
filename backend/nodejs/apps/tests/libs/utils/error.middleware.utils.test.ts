@@ -261,12 +261,13 @@ describe('error.middleware.utils: a failed axios call is logged without its requ
   }
 
   // A fake OAuth token endpoint that refuses every call.
+  const tokenHandler = (res: http.ServerResponse): void => {
+    res.writeHead(400, { 'content-type': 'application/json', 'set-cookie': 'sid=RESP-BODY-333' })
+    res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'Bad', echoed: 'RESP-BODY-333' }))
+  }
   // A Map, so a request path such as `/__proto__` cannot reach Object.prototype.
   const answers = new Map(Object.entries<(res: http.ServerResponse) => void>({
-    '/token': (res) => {
-      res.writeHead(400, { 'content-type': 'application/json', 'set-cookie': 'sid=RESP-BODY-333' })
-      res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'Bad', echoed: 'RESP-BODY-333' }))
-    },
+    '/token': tokenHandler,
     '/token-shaped': (res) => {
       res.writeHead(400, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: TOKEN_IN_ERROR }))
@@ -302,7 +303,8 @@ describe('error.middleware.utils: a failed axios call is logged without its requ
         const path = (req.url ?? '').split('?')[0]
         // A request that never gets an answer, without depending on the host's network.
         if (path === '/hang-up') return req.socket.destroy()
-        ;(answers.get(path) ?? answers.get('/token')!)(res)
+        const handler = answers.get(path)
+        ;(typeof handler === 'function' ? handler : tokenHandler)(res)
       })
     })
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
