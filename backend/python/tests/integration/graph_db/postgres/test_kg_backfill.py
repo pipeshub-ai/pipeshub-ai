@@ -514,14 +514,25 @@ async def test_a_take_back_leaves_the_rows_of_a_connector_whose_first_backfill_b
         sk = (await w.nodes_upsert({("apps", "app1")}))[("apps", "app1")]
         await w.projection_set(sk, epoch=0, mode="legacy", digest=None, cursor="2:x", verified_at=None)
     batch = asyncio.create_task(run_in(pg_db, org, first_batch, write=True))
-    await held.wait()
-    monkeypatch.setenv("PG_KG_PROJECT", "0")
-    await OPS[5](p, org)                                          # a record moves into app2: rows of app1 and app2, taken back at the commit of the unit that wrote them
-    rows = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
-    release.set()
-    await batch
-    assert rows > 0                                                # the lock of app1 was held: the rows were left for the sweep
-    assert (await state(pg_db, org, "app1"))[0] == "2:x"           # the batch committed its cursor
-    await flush._sweep(pg_db, org)
-    left = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
-    assert left == 0 and (await state(pg_db, org, "app1"))[:2] == (None, "legacy")       # the sweep took them and sent the connector back to the walk
+    try:
+        waiter = asyncio.ensure_future(held.wait())
+        await asyncio.wait({waiter, batch}, timeout=30, return_when=asyncio.FIRST_COMPLETED)       # the batch failing before it holds the lock ends the wait with its own error
+        if batch.done():
+            batch.result()
+        assert held.is_set(), "the first batch never took its lock"
+        monkeypatch.setenv("PG_KG_PROJECT", "0")
+        await OPS[5](p, org)                                      # a record moves into app2: rows of app1 and app2, taken back at the commit of the unit that wrote them
+        rows = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
+        release.set()
+        await batch
+        assert rows > 0                                            # the lock of app1 was held: the rows were left for the sweep
+        assert (await state(pg_db, org, "app1"))[0] == "2:x"       # the batch committed its cursor
+        await flush._sweep(pg_db, org)
+        left = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
+        assert left == 0 and (await state(pg_db, org, "app1"))[:2] == (None, "legacy")       # the sweep took them and sent the connector back to the walk
+    finally:
+        release.set()                                              # whatever failed above, the batch is let go and awaited, so it never holds its connection
+        if not batch.done():
+            await asyncio.wait({batch}, timeout=30)
+            batch.cancel()
+        waiter.cancel()
