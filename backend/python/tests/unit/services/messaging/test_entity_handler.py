@@ -798,7 +798,7 @@ class TestAppDisabled:
             mock_stm.request_stop.assert_awaited_once_with("conn-1")
 
     @pytest.mark.asyncio
-    async def test_a_legacy_app_without_type_or_group_is_disabled_without_writing_them(self):
+    async def test_a_legacy_app_without_type_or_group_is_disabled_without_writing_them(self) -> None:
         # Rebuilding the document from the stored one would send None for these fields,
         # which the apps schema rejects: the disable must write only what it changes.
         graph_provider = AsyncMock()

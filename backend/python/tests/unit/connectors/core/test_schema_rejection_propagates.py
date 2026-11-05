@@ -14,6 +14,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.schema.node_validator import SchemaValidationError
 
+
 def _rejection() -> SchemaValidationError:
     """A fresh error per use: ``schema_reported`` is set on the instance once it has been counted."""
     return SchemaValidationError("records", "at 'x': unknown key")
