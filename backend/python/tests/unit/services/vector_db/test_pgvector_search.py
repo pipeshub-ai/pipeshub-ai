@@ -384,9 +384,10 @@ def test_the_statements_the_search_builds_from_parts_are_exactly_these() -> None
         for fn, count in _built_statements(path.read_text()).items():
             found[(path.name, fn)] = count
     # the four statements of the dense path, and the fragments they and the filters are made of (membership probes and the payload
-    # conditions: fixed text, every value a ``$n``)
+    # conditions and the scope filter's one condition: fixed text, every value a ``$n``)
     assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 1,
-                     ("lexical.py", "lexical_sql"): 1, ("sql_filters.py", "_match"): 2, ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
+                     ("lexical.py", "lexical_sql"): 1, ("scope_filter.py", "predicate"): 1, ("sql_filters.py", "_match"): 2,
+                     ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
 
 
 @pytest.mark.asyncio
@@ -584,3 +585,19 @@ def test_a_weight_that_does_not_fit_a_32_bit_float_is_refused() -> None:
     with pytest.raises(ValueError, match="32-bit"):
         lexical.terms_of(SparseVector([1], [1e39]))
     assert lexical.terms_of(SparseVector([1], [3.0e38]))[1] == [3.0e38]
+
+
+async def test_a_lexical_leg_for_a_filter_that_trusts_nothing_asks_nothing_and_is_complete() -> None:
+    from app.services.vector_db.filters import ScopeFilter
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import lexical
+
+    for flt in (ScopeFilter(current=frozenset({"c1"}), version=5, generation=-2), ScopeFilter(current=frozenset(), version=5, generation=3)):
+        tx = _LexTx(5000, lambda i: False)                     # what "AND false" would answer: many rows, none admitted
+        db = _LexDb(tx)
+        rows, degraded = await lexical.search(db, ORG, 7, SparseVector([4], [1.0]), Scope(scope_filter=flt), 20, T)
+        assert (rows, degraded, tx.calls, db.opts) == ([], None, [], [])
+    live = ScopeFilter(current=frozenset({"c1"}), version=5, generation=3)                 # a filter that can trust something still asks
+    tx = _LexTx(5000, lambda i: False)
+    rows, degraded = await lexical.search(_LexDb(tx), ORG, 7, SparseVector([4], [1.0]), Scope(scope_filter=live), 20, T)
+    assert tx.calls and degraded == "partial"

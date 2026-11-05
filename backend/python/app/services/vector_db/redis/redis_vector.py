@@ -53,6 +53,7 @@ from app.services.vector_db.filters import (
     forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
+    reject_scope_filter,
     require_filter_org,
     split_values_count_conditions,
 )
@@ -1088,6 +1089,7 @@ class RedisVectorService(IVectorDBService):
         requests: list[HybridSearchRequest],
     ) -> list[list[SearchResult]]:
         self._assert_connected()
+        reject_scope_filter(requests, "Redis")
         idx = self._index_name(collection_name)
         # Bound the fan-out: one request per agent source means a wide query
         # would otherwise issue unbounded concurrent FT.HYBRID commands.

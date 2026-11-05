@@ -21,6 +21,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from app.services.vector_db.models import FilterExpression
+from app.services.vector_db.pgvector import scope_filter as scope_sql
 from app.services.vector_db.pgvector.errors import PgVectorUnsupportedError
 from app.services.vector_db.pgvector.sql_filters import (
     PROMOTED,
@@ -29,6 +30,7 @@ from app.services.vector_db.pgvector.sql_filters import (
 )
 
 if TYPE_CHECKING:
+    from app.services.vector_db.filters import ScopeFilter
     from app.services.vector_db.models import FieldCondition
 
 # the membership arrays a search arm may name (the scope lists are not arms: a search that took one would drop it and widen)
@@ -48,6 +50,8 @@ class Scope:
     direct: list[str] | None = None
     must_vrids: list[str] | None = None
     extra: FilterExpression | None = None      # conditions on promoted point columns, for the dense leg
+    #: What the viewer may read by the stamps of the groups (see ``scope_filter``): ANDed with everything above, after the extra conditions.
+    scope_filter: ScopeFilter | None = None
 
     @property
     def whole_org(self) -> bool:
@@ -60,15 +64,30 @@ class Scope:
     def key(self) -> str:
         """A cache key: a digest of a canonical encoding, equal for equal scopes (lists and extra conditions) and, unlike ``hash()``, the
         same in every process and without collisions to speak of."""
-        canon = json.dumps([self.args(), repr(self.extra)], separators=(",", ":"))
+        flt = None if self.scope_filter is None else [*self.scope_filter.lists(), self.scope_filter.version, self.scope_filter.generation]
+        canon = json.dumps([self.args(), repr(self.extra), flt], separators=(",", ":"))
         return hashlib.sha256(canon.encode()).hexdigest()
 
+    @property
+    def filtered(self) -> bool:
+        """Whether conditions beyond the membership arms apply to the rows (the lexical function cannot apply them: see ``lexical``)."""
+        return self.extra is not None or self.scope_filter is not None
+
+    @property
+    def matches_nothing(self) -> bool:
+        """Whether the scope filter can trust nothing, so every statement renders ``AND false``: the answer is empty and nothing needs asking."""
+        return self.scope_filter is not None and self.scope_filter.trusts_nothing
+
     def extra_sql(self, first_param: int = 12) -> tuple[str, list]:
-        """``(" AND (...)", parameters from first_param)`` for the extra conditions, or ``("", [])``."""
-        if self.extra is None:
-            return "", []
-        c = compile_filter(self.extra, first_param=first_param)
-        return f" AND ({c.where})", c.params
+        """``(" AND (...)", parameters from first_param)`` for the extra conditions and the scope filter, or ``("", [])``."""
+        sql, params = "", []
+        if self.extra is not None:
+            c = compile_filter(self.extra, first_param=first_param)
+            sql, params = f" AND ({c.where})", c.params
+        if self.scope_filter is not None:
+            more, bound = scope_sql.predicate(self.scope_filter, first_param + len(params))
+            sql, params = sql + more, [*params, *bound]
+        return sql, params
 
     def narrowed_to(self, org_connectors: frozenset[str] | None) -> Scope:
         """The arms are dropped when ``apps`` lists every connector of the org: the arms are alternatives, so the connector arm alone
@@ -111,7 +130,7 @@ class Scope:
                 f"{self.tail()}")
 
 
-def scope_of(expr: FilterExpression) -> Scope:
+def scope_of(expr: FilterExpression, scope_filter: ScopeFilter | None = None) -> Scope:
     """The scope of ``expr``: ``metadata.orgId`` (the caller pins the org), ``virtualRecordId`` in MUST (a narrowing list), in SHOULD the
     arms ``connectorIds``, ``recordGroupIds``, ``rootRecordGroupIds`` and ``virtualRecordId``, and other conditions on promoted point
     columns (``extra``). Anything else cannot be expressed by a search and raises (it would otherwise be dropped and widen the search)."""
@@ -139,6 +158,6 @@ def scope_of(expr: FilterExpression) -> Scope:
         arms.setdefault(cond.key, []).extend(vals)
     extra = FilterExpression(must=extra_must, must_not=list(expr.must_not)) if extra_must or expr.must_not else None
     if not arms:
-        return Scope(must_vrids=must_vrids, extra=extra)
+        return Scope(must_vrids=must_vrids, extra=extra, scope_filter=scope_filter)
     return Scope(arms.get("connectorIds", []), arms.get("recordGroupIds", []), arms.get("rootRecordGroupIds", []),
-                 arms.get(_VRID, []), must_vrids, extra)
+                 arms.get(_VRID, []), must_vrids, extra, scope_filter)
