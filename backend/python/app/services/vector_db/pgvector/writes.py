@@ -401,6 +401,19 @@ async def delete_batch(tx: Tx, org: str, collection_id: int, c: Compiled, *, saf
     return len(sks)
 
 
+async def point_ids_matching(tx: Tx, org: str, collection_id: int, c: Compiled) -> list[uuid.UUID]:
+    """The ids of the live points matching ``c`` (compiled with ``first_param=3``), read once so that a write that changes what the filter
+    reads (a membership or scope write) does not change which points the rest of the same update reaches."""
+    rows = await tx.fetch(
+        f"""/* pipeshub:pgvector.point_ids_matching */
+        SELECT p.point_id FROM retrieval.points p{_from(c)}
+        WHERE p.org_id = $1 AND p.collection_id = $2 AND ({c.where})
+          AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)""",
+        org, collection_id, *c.params,
+    )
+    return [r["point_id"] for r in rows]
+
+
 async def group_keys_matching(tx: Tx, org: str, collection_id: int, c: Compiled) -> list[str]:
     rows = await tx.fetch(
         f"""/* pipeshub:pgvector.group_keys */
