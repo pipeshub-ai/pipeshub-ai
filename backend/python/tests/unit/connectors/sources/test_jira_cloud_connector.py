@@ -682,7 +682,7 @@ class TestRunSync:
         connector._handle_issue_deletions.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_keeping_a_projects_records_as_stored_covers_soft_deleted_ones(self):
+    async def test_keeping_a_projects_records_as_stored_covers_soft_deleted_ones(self) -> None:
         """A restored issue must come back with its edges, so the removal after a full sync must not take them."""
         connector = _make_connector()
         live, deleted = MagicMock(id="r-live"), MagicMock(id="r-deleted")
@@ -690,7 +690,7 @@ class TestRunSync:
         processor.note_kept_record_group = AsyncMock()
         processor.note_kept_records = MagicMock()
 
-        async def records_in_group(connector_id, group_id, limit, after_key=None, *, visibility=RecordVisibility.LIVE):
+        async def records_in_group(connector_id, group_id, limit, after_key=None, *, visibility=RecordVisibility.LIVE) -> list[MagicMock]:
             return [live, deleted] if visibility == RecordVisibility.ALL else [live]
 
         processor.get_records_in_record_group = records_in_group
