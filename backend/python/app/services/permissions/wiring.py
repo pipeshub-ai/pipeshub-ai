@@ -30,3 +30,11 @@ async def register_viewer_scope_version(
         logger.warning("viewer-scope version not registered: %s", type(exc).__name__)
         return None
     return cache
+
+
+async def register_scope_generation(config_service: ConfigurationService, logger: logging.Logger) -> None:
+    """Move the scope generation when the scope fields were switched on after being off (see `generation`). With the fields off and
+    never enabled this reads one config key and writes nothing."""
+    from .generation import init_scope_generation
+
+    await init_scope_generation(config_service, logger)

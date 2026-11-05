@@ -128,6 +128,7 @@ from app.schema.node_schema_registry import (
 )
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.featureflag.platform_settings import is_kh_scope_listing_enabled
+from app.services.graph_db import edge_effects
 from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
 from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
 from app.services.graph_db.common.full_sync_unlink import (
@@ -228,6 +229,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
     is_write_conflict,
 )
 from app.services.graph_db.neo4j.permission_scopes import Neo4jHierarchyView
+from app.services.graph_db.neo4j.permission_stamps import Neo4jStampGraph
 from app.services.graph_db.push_claim import (
     KB_DELETING_STATUS,
     PushClaim,
@@ -320,6 +322,15 @@ NO_REPEATED_PATH_NODES = (
 )
 
 # Search metadata filters: (filter key, relationship, target label, name property, query parameter).
+_LABEL_TO_COLLECTION = {label: collection for collection, label in COLLECTION_TO_LABEL.items()}
+
+
+def collection_of_labels(labels: list[str] | None) -> str:
+    """The collection a node belongs to, from its labels: the known collection label, whatever other labels it carries and in
+    whatever order the store lists them (`labels()` has no order). Several known ones: the smallest, so the answer is stable."""
+    known = sorted(_LABEL_TO_COLLECTION[label] for label in labels or [] if label in _LABEL_TO_COLLECTION)
+    return known[0] if known else ""
+
 # The labels must be the ones the indexing writer stores (see COLLECTION_TO_LABEL).
 _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
     ("departments", "BELONGS_TO_DEPARTMENT", Neo4jLabel.DEPARTMENTS.value, "departmentName", "departmentNames"),
@@ -568,6 +579,14 @@ _EDGE_MOVE_BATCH = 5000
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
 
 
+def _created_ends(rows: list[dict] | None) -> list[str]:
+    """The node ids at both ends of the edges a statement reported as created (`made`: a list of `[from, to]` pairs)."""
+    made = (rows[0].get("made") if rows and isinstance(rows[0], dict) else None) or []
+    return [i for pair in made for i in pair]
+
+
+# Set on an edge by the MERGE that creates it and read in the same statement: tells a created edge from a found one.
+_EDGE_NEW = "edgeNew"
 # Written, then removed or deleted, inside one purge statement to take a node's write lock.
 _PURGE_LOCK = "purgeLock"
 # Written and removed at the start of a move statement to take its new parent's write lock.
@@ -2587,8 +2606,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         edges: list[dict],
         collection: str,
-        transaction: str | None = None
-    ) -> bool:
+        transaction: str | None = None,
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
         Batch create edges/relationships.
 
@@ -2596,13 +2617,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             edges: List of edges with _from and _to fields
             collection: Edge collection name
             transaction: Optional transaction ID
+            count_created: return how many edges this call created (an existing one that was only rewritten is not counted)
+                instead of True. Whatever the flag, `edge_effects.note_created` gets the ids at the ends of the created edges.
 
         Returns:
-            bool: True if successful
+            bool: True if successful (the created count with ``count_created``)
         """
+        created_total = 0
+        report = count_created or edge_effects.tracking()  # only then does the statement say which edges it created
         try:
             if not edges:
-                return True
+                return 0 if count_created else True
 
             relationship_type = edge_collection_to_relationship(collection)
 
@@ -2622,7 +2647,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     grouped_edges.setdefault((from_label, to_label, is_link), []).append(edge)
 
             if not grouped_edges:
-                return True
+                return 0 if count_created else True
             # Process each group separately, in the lock order _edges_by_labels gave it
             for (from_label, to_label, is_link), group_edges in grouped_edges.items():
                 merge = (
@@ -2638,19 +2663,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 // Cypher keeps no row order unless asked; this is the lock order.
                 WITH edge, from, to ORDER BY edge.from_key, edge.to_key
                 {merge}
+                {f"ON CREATE SET r.{_EDGE_NEW} = true" if report else ""}
+                {f"WITH edge, from, to, r, coalesce(r.{_EDGE_NEW}, false) AS isNew" if report else ""}
                 SET r = edge.props
-                {"WITH from, to, r" if refresh else ""}
+                {("WITH edge, from, to, r, isNew" if report else "WITH from, to, r") if refresh else ""}
                 {refresh}
-                RETURN count(r) AS created
+                {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS created"}
                 """
 
-                await self.client.execute_query(
+                rows = await self.client.execute_query(
                     query,
                     parameters={"edges": group_edges},
-                    txn_id=transaction
+                    txn_id=transaction,
                 )
+                if report:
+                    made = _created_ends(rows)
+                    edge_effects.note_created(made, collection)
+                    created_total += len(made) // 2
 
-            return True
+            return created_total if count_created else True
 
         except Exception as e:
             self.logger.error(f"❌ Batch create edges failed: {str(e)}")
@@ -2660,16 +2691,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         edges: list[dict],
         collection: str,
-        transaction: str | None = None
-    ) -> None:
+        transaction: str | None = None,
+        *,
+        count_created: bool = False,
+    ) -> int | None:
         """Create the edges that are not there; an existing edge keeps its properties.
 
         Not batch_create_edges: that does ``SET r = edge.props``, which would reset
         a live edge (a sync state, a role) when a repair re-runs over it.
+        With ``count_created`` it returns how many edges this call created.
         """
+        created_total = 0
+        report = count_created or edge_effects.tracking()
         try:
             if not edges:
-                return
+                return 0 if count_created else None
 
             relationship_type = edge_collection_to_relationship(collection)
 
@@ -2679,14 +2715,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
                 MERGE (from)-[r:{relationship_type}]->(to)
-                ON CREATE SET r = edge.props
-                RETURN count(r) AS matched
+                ON CREATE SET r = edge.props{f", r.{_EDGE_NEW} = true" if report else ""}
+                {f"WITH edge, r, coalesce(r.{_EDGE_NEW}, false) AS isNew" if report else ""}
+                {f"REMOVE r.{_EDGE_NEW}" if report else ""}
+                {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS matched"}
                 """
-                await self.client.execute_query(
+                rows = await self.client.execute_query(
                     query,
                     parameters={"edges": group_edges},
-                    txn_id=transaction
+                    txn_id=transaction,
                 )
+                if report:
+                    made = _created_ends(rows)
+                    edge_effects.note_created(made, collection)
+                    created_total += len(made) // 2
+            return created_total if count_created else None
 
         except Exception as e:
             self.logger.error(f"❌ Create edges if absent failed: {str(e)}")
@@ -4888,6 +4931,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND coalesce(r.duplicateReconcileDueAt, 0) < $due_before_ms
               AND {cypher_live_record("r")}
             RETURN r.id AS _key,
+                   r.orgId AS orgId,
                    r.duplicateReconcileAttempts AS duplicateReconcileAttempts,
                    r.duplicateReconcileDueAt AS duplicateReconcileDueAt
             LIMIT $limit
@@ -8150,9 +8194,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # reaches its own hidden KB — is honoured as-is.
             kb_filter_clause = ""
             if kb_ids:
-                kb_filter_clause = f" WHERE {_kb_edge_role_ok('kbp')} AND kb.id IN $kb_ids"
+                kb_filter_clause = " WHERE kb.id IN $kb_ids"
             else:
-                kb_filter_clause = f" WHERE {_kb_edge_role_ok('kbp')} AND coalesce(kb.isHidden, false) = false"
+                kb_filter_clause = " WHERE coalesce(kb.isHidden, false) = false"
 
             # Prepare parameters (populated further below, and mutated by time-range conditions)
             parameters = {
@@ -8176,6 +8220,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 // Direct user-KB permissions (KB is now an App node with type="KB")
                 OPTIONAL MATCH (userDoc)-[kbp:PERMISSION]->(kb:App {{type: "KB"}})
                 {kb_filter_clause}
+                // The role is read before the next match: Neo4j 5.26 cannot read it from the edge after it.
+                WITH userDoc, kb, {_kb_edge_role_ok('kbp')} AS kb_role_ok
+                WITH userDoc, kb WHERE kb_role_ok = true
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
                 WHERE {cypher_searchable_record("r")}
                   AND {live_record}
@@ -8637,6 +8684,67 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def permission_hierarchy_view(self) -> Neo4jHierarchyView:
         return Neo4jHierarchyView(lambda: self.client)
+
+    @override
+    async def increment_node_field(
+        self, key: str, collection: str, field: str, transaction: str | None = None
+    ) -> int | None:
+        label = collection_to_label(collection)
+        # The write lock is taken first (the same trick as the other match locks), so the value read next is the latest committed one
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            SET n.{field} = coalesce(n.{field}, 0) + 1
+            RETURN n.{field} AS value
+            """,
+            parameters={"key": key},
+            txn_id=transaction,
+        )
+        return int(rows[0]["value"]) if rows else None
+
+    @override
+    async def get_structure_of_nodes(
+        self, collection: str, node_ids: list[str], transaction: str | None = None, *, raise_on_error: bool = False
+    ) -> dict[str, frozenset]:
+        if not node_ids:
+            return {}
+        label = collection_to_label(collection)
+        try:
+            rows = await self.client.execute_query(
+                f"""
+                UNWIND $ids AS id
+                MATCH (n:{label} {{id: id}})
+                RETURN n.id AS id,
+                       [(n)-[:BELONGS_TO]->(g) | [g.id, labels(g)]] AS belongs,
+                       [(n)-[:INHERIT_PERMISSIONS]->(q) | [q.id, labels(q)]] AS inherits,
+                       [(p)-[h:NODE_RELATION]->(n) WHERE h.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] | [p.id, h.relationshipType, labels(p)]] AS parents,
+                       EXISTS {{ ()-[:PERMISSION]->(n) }} AS granted
+                """,
+                parameters={"ids": list(node_ids)},
+                txn_id=transaction,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Get structure of nodes failed: {e}")
+            if raise_on_error:
+                raise
+            return {}
+        out: dict[str, frozenset] = {}
+        for r in rows or []:
+            me = r["id"]
+            # the collection of the other end is part of the edge: an app and a record group may share a key
+            edges = {(CollectionNames.BELONGS_TO.value, me, g, collection_of_labels(c)) for g, c in r["belongs"] or []}
+            edges |= {(CollectionNames.INHERIT_PERMISSIONS.value, me, q, collection_of_labels(c)) for q, c in r["inherits"] or []}
+            edges |= {(CollectionNames.NODE_RELATIONS.value, p, me, t, collection_of_labels(c)) for p, t, c in r["parents"] or []}
+            if r.get("granted"):
+                edges.add(("granted", me))
+            out[me] = frozenset(edges)
+        return out
+
+    def permission_stamp_graph(self) -> Neo4jStampGraph:
+        return Neo4jStampGraph(lambda: self.client)
 
     async def get_accessible_containers(
         self,
@@ -9121,8 +9229,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def batch_upsert_node_relations(
         self,
         edges: list[dict],
-        transaction: Optional[str] = None
-    ) -> bool:
+        transaction: Optional[str] = None,
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
         Batch upsert record relation edges.
 
@@ -9136,11 +9246,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             transaction: Optional transaction ID
 
         Returns:
-            bool: True if successful
+            bool: True if successful (the number of edges it created with ``count_created``)
         """
+        created_total = 0
+        report = count_created or edge_effects.tracking()
         try:
             if not edges:
-                return True
+                return 0 if count_created else True
 
             self.logger.debug("Batch upserting record relation edges")
 
@@ -9211,20 +9323,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     UNWIND $edges AS edge
                     {endpoints}
                     MERGE (from)-[r:{rel_type} {{relationshipType: edge.relationshipType, constraintName: edge.constraintName}}]->(to)
-                    ON CREATE SET r += edge.props
+                    ON CREATE SET r += edge.props{f", r.{_EDGE_NEW} = true" if report else ""}
                     ON MATCH SET r += edge.updateProps
-                    {"WITH from, to, r" if refresh else ""}
+                    {f"WITH edge, from, to, r, coalesce(r.{_EDGE_NEW}, false) AS isNew" if report else ""}
+                    {f"REMOVE r.{_EDGE_NEW}" if report else ""}
+                    {("WITH edge, from, to, r, isNew" if report else "WITH from, to, r") if refresh else ""}
                     {refresh}
-                    RETURN count(r) AS upserted
+                    {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS upserted"}
                     """
-                    await self.client.execute_query(
+                    result = await self.client.execute_query(
                         query,
                         parameters={"edges": rows},
-                        txn_id=transaction
+                        txn_id=transaction,
                     )
+                    if report:
+                        made = _created_ends(result)
+                        edge_effects.note_created(made, CollectionNames.NODE_RELATIONS.value)
+                        created_total += len(made) // 2
 
             self.logger.debug(f"Successfully upserted {len(edge_data)} record relation edges.")
-            return True
+            return created_total if count_created else True
 
         except Exception as e:
             self.logger.error(f"Batch record relation upsert failed: {str(e)}")
@@ -17763,7 +17881,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node.
@@ -17825,6 +17945,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_edges_from_node_with_target_name(

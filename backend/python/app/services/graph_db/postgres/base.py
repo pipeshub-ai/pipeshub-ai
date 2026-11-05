@@ -69,7 +69,9 @@ def _ekey(coll: str, props: dict) -> str:
     if coll == CollectionNames.AUTHENTICATED_AS.value:
         return str(props.get("connectorId") or "")
     rt = props.get("relationshipType")
-    return rt if coll == CollectionNames.NODE_RELATIONS.value and rt not in (None, *_HIER) else ""
+    if coll == CollectionNames.NODE_RELATIONS.value and rt not in (None, *_HIER):
+        return f"{rt}\x1f{props['constraintName']}" if props.get("constraintName") else rt     # two foreign keys of one type between one pair are two edges
+    return ""
 
 
 class TransactionClosed(RuntimeError):
@@ -141,7 +143,16 @@ class _Txn:
             self._q = asyncio.Queue()
             self._task = spawn_in_request(self._main())
         fut = asyncio.get_running_loop().create_future()
-        await self._q.put((fn, fut))
+        from app.services.graph_db.postgres.kg.guard import current_writer
+        writers = current_writer.get()      # the task keeps the context of the call that opened it: each call brings its own writer along
+
+        async def as_this_caller(tx: Tx) -> Any:  # noqa: ANN401
+            token = current_writer.set(writers)
+            try:
+                return await fn(tx)
+            finally:
+                current_writer.reset(token)
+        await self._q.put((as_this_caller, fut))
         try:
             await asyncio.wait({fut, self._task}, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
@@ -177,6 +188,8 @@ class _Rollback(Exception):
 class PgBase:
     def __init__(self, logger: Logger, db: KernelDB, config_service: Any = None) -> None:  # noqa: ANN401
         self.logger, self._db = logger, db
+        from app.services.graph_db.postgres.kg.flush import install as install_kg
+        install_kg(db)        # the projection into kg: the guard before a graph write, the flush before COMMIT of the connectors service's unit
         self.config_service = config_service  # read by callers that build blob storage from the provider, as on Neo4j/Arango
         self._txns: dict[str, _Txn] = {}
 
@@ -243,6 +256,21 @@ class PgBase:
 
 def _field(name: str) -> str:
     return "id" if name == "_key" else name
+
+
+def _match(filters: dict | None, in_filters: dict | None, first: int, n: str = "n") -> tuple[str, list]:
+    """Equality and membership predicates on ``{n}.doc`` as SQL using parameters ``$first``... and their values."""
+    sql, args = "", []
+    if filters:
+        sql += f""" AND NOT EXISTS (SELECT 1 FROM unnest(${first}::text[], ${first + 1}::text[]) f(k, v)
+            WHERE {n}.doc->f.k IS DISTINCT FROM f.v::jsonb)"""
+        args += [[_field(k) for k in filters], [_j(v) for v in filters.values()]]
+        first += 2
+    if in_filters:
+        sql += f""" AND NOT EXISTS (SELECT 1 FROM jsonb_each(${first}::jsonb) f WHERE NOT EXISTS
+            (SELECT 1 FROM jsonb_array_elements(f.value) x WHERE x = {n}.doc->f.key))"""
+        args.append(_j({_field(k): list(v) for k, v in in_filters.items()}))
+    return sql, args
 
 
 # Filter keys with an expression index (graph_0001): a literal predicate on the same expression lets the planner use it. Keys are from this list only.

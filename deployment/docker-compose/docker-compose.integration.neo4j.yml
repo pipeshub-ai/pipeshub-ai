@@ -835,6 +835,10 @@ services:
       ELASTICSEARCH_ENABLED: "true"
       ELASTICSEARCH_HOST: zammad-elasticsearch
       ELASTICSEARCH_PORT: "9200"
+      # As zammad-docker-compose's own .env sets it. Without it the scheduler's database pool is used up from the
+      # start (ConnectionTimeoutError on every job), search indexing stalls, and the suite's wait for searchable
+      # tickets times out (seen on a local 6.4.1 stack).
+      POSTGRESQL_OPTIONS: "?pool=50"
     command: ["zammad-init"]
     volumes:
       - zammad-storage:/opt/zammad/storage

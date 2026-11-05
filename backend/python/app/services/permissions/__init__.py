@@ -5,8 +5,10 @@ reads this package while `AclFilterMode` is legacy (the default).
 """
 
 from .errors import ViewerScopesUnavailable
-from .mode import AclFilterMode, scopes_or_legacy
-from .ports import HierarchyView, Principal, PrincipalView, ScopeNode
+from .mode import AclFilterMode, scope_fields_enabled, scopes_or_legacy
+from .ports import HierarchyView, Principal, PrincipalView, ScopeNode, StampGraph
+from .projector import Projection, ScopeProjector
+from .scope_fields import ScopeFields, Stamp
 from .scopes import UNVERSIONED, ViewerScopes
 from .service import ViewerScopeService
 from .viewer import ViewerScopeResolver
@@ -17,10 +19,16 @@ __all__ = [
     "HierarchyView",
     "Principal",
     "PrincipalView",
+    "Projection",
+    "ScopeFields",
     "ScopeNode",
+    "ScopeProjector",
+    "Stamp",
+    "StampGraph",
     "ViewerScopeResolver",
     "ViewerScopeService",
     "ViewerScopes",
     "ViewerScopesUnavailable",
+    "scope_fields_enabled",
     "scopes_or_legacy",
 ]

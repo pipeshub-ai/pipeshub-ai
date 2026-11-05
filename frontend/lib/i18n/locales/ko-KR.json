@@ -2128,6 +2128,16 @@
       },
       "scopeCount_other": "범위 {{count}}개"
     },
+    "agentSignIns": {
+      "title": "에이전트 로그인",
+      "subtitle": "내 대신 동작하도록 승인한 에이전트입니다. 새 접근을 막으려면 해당 항목을 취소하세요.",
+      "columnApproved": "승인됨",
+      "revoke": "취소",
+      "revokeAria": "에이전트 로그인 {{id}} 취소",
+      "revokedTitle": "에이전트 로그인이 취소되었습니다",
+      "errorTitle": "에이전트 로그인을 취소하지 못했습니다",
+      "loadError": "에이전트 로그인을 불러오지 못했습니다"
+    },
     "aiModels": {
       "title": "AI 모델",
       "subtitle": "다양한 제공업체의 AI 모델을 구성하고 관리합니다",
@@ -3502,6 +3512,7 @@
         "disconnected": "연결이 해제되었습니다",
         "disconnectError": "연결 해제에 실패했습니다",
         "credentialsSaveError": "서버는 저장되었지만 자격 증명을 저장하지 못했습니다. 나중에 관리에서 추가할 수 있습니다.",
+        "logoSaveError": "서버는 저장되었지만 로고를 저장하지 못했습니다. 관리에서 다시 시도할 수 있습니다.",
         "credentialsSaved": "자격 증명이 저장됨",
         "credentialsReset": "MCP 서버가 업데이트되었습니다. 연결이 변경되어 저장된 자격 증명이 삭제되었습니다. 사용하려면 다시 연결하세요.",
         "oauthTimedOut": "로그인 시간이 너무 오래 걸려 중단되었습니다. 다시 시도하세요.",
@@ -3516,6 +3527,16 @@
       "form": {
         "name": "이름",
         "description": "설명",
+        "logo": "로고",
+        "logoHint": "PNG, JPEG, WebP, GIF 또는 SVG, 최대 2MB. 정사각형 이미지가 가장 잘 보입니다.",
+        "logoUpload": "로고 업로드",
+        "logoChange": "로고 변경",
+        "logoRemove": "제거",
+        "logoErrors": {
+          "type": "PNG, JPEG, WebP, GIF 또는 SVG 이미지를 사용하세요.",
+          "size": "2MB 이하의 이미지를 사용하세요.",
+          "unreadable": "이 이미지를 읽을 수 없습니다. 다른 파일을 사용해 보세요."
+        },
         "transport": "전송 방식",
         "command": "명령어",
         "args": "인수",
@@ -5287,6 +5308,8 @@
     "notGrantedOwnerHint": "이 애플리케이션을 만든 사람이 워크스페이스 설정 → 개발자 설정 → OAuth 2.0 앱에서 이 권한을 추가할 수 있습니다.",
     "notGrantedOfflineAccess": "애플리케이션이 로그인 상태를 유지하지 않습니다. 세션이 끝나면 다시 로그인해야 합니다.",
     "unreviewedApp": "이 애플리케이션은 스스로 등록했습니다. 검토한 관리자가 없습니다.",
+    "clientIdHost": "{{host}}에서 식별됨",
+    "redirectTo": "{{uri}}(으)로 돌아갑니다",
     "legalNotice": "“허용”을 클릭하면 위에 설명된 대로 {{appName}}이(가) 사용자의 데이터에 액세스하는 것을 승인하게 됩니다.",
     "privacyPolicy": "개인정보 처리방침",
     "deny": "거부",
@@ -5498,6 +5521,19 @@
     "skipAll": "모두 건너뛰기",
     "expired": "이 질문은 만료되었습니다. 계속하려면 채팅에서 답장하세요.",
     "repliedInChat": "채팅에서 답장했습니다."
+  },
+  "agentClaim": {
+    "title": "에이전트 연결",
+    "intro": "에이전트가 당신을 위해 일한다고 합니다. 당신이 직접 요청했고 에이전트가 보여 준 코드와 일치할 때만 승인하세요.",
+    "scopesHeading": "이 에이전트는 다음을 할 수 있습니다:",
+    "codeLabel": "에이전트가 보여 준 6자리 코드를 입력하세요",
+    "approve": "승인",
+    "loading": "요청을 확인하는 중…",
+    "missingLink": "이 링크에 클레임 토큰이 없습니다. 에이전트에게 새 링크를 요청하세요.",
+    "doneTitle": "에이전트 연결됨",
+    "doneLine": "이제 에이전트가 계속할 수 있습니다. 이 창을 닫아도 됩니다.",
+    "deniedTitle": "요청 거부됨",
+    "deniedLine": "에이전트에게 액세스를 부여하지 않았습니다."
   },
   "oauthDevice": {
     "title": "기기 연결",

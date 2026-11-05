@@ -5,6 +5,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import TYPE_CHECKING
 
@@ -98,10 +99,11 @@ async def test_edges_are_written_read_and_deleted_and_a_node_delete_takes_its_ed
         assert await p.delete_edges_to("t", "things", "belongsTo") == 1
 
 
-async def test_a_record_delete_waits_for_the_records_module_instead_of_leaving_its_documents_behind(pg_provider, orgs, org_ctx) -> None:
-    from app.services.graph_db.postgres.base import NotImplementedInPostgres
-    with org_ctx(orgs[0]), pytest.raises(NotImplementedInPostgres):
+async def test_deleting_a_record_through_the_generic_delete_removes_its_edges_and_documents(pg_provider, orgs, org_ctx) -> None:
+    with org_ctx(orgs[0]):
+        await pg_provider.batch_upsert_nodes([{"_key": "r1"}], "records")
         await pg_provider.delete_nodes_and_edges(["r1"], "records")
+        assert await pg_provider.get_document("r1", "records") is None
 
 
 async def test_every_call_stays_in_the_ambient_org(pg_provider, orgs, org_ctx) -> None:
@@ -144,6 +146,7 @@ CALLS = [
     ("batch_upsert_nodes", ([{"_key": "k"}], "things"), {}),
     ("create_node_if_absent", ("k", "things", {}), {}),
     ("update_node", ("k", "things", {"v": 1}), {}),
+    ("increment_node_field", ("k", "things", "v"), {}),
     ("batch_update_nodes", ([{"_key": "k", "v": 1}], "things"), {}),
     ("update_node_fields_if_match", ("k", "things", {"v": 1}, {"v": 0}), {}),
     ("delete_nodes", (["k"], "things"), {}),
@@ -292,14 +295,13 @@ async def test_a_collection_prefix_must_name_the_collection_asked(pg_provider, o
         assert await p.get_nodes_by_field_in("things", "_key", ["users/x"]) == []            # a key has no collection prefix
 
 
-async def test_deleting_records_by_key_waits_for_the_records_module_too(pg_provider, orgs, org_ctx) -> None:
-    from app.services.graph_db.postgres.base import NotImplementedInPostgres
+async def test_deleting_records_by_key_reports_whether_every_key_went(pg_provider, orgs, org_ctx) -> None:
     a, _ = orgs
     with org_ctx(a):
         await pg_provider.batch_upsert_nodes([{"_key": "r1"}], "records")
-        with pytest.raises(NotImplementedInPostgres):
-            await pg_provider.delete_nodes(["r1"], "records")
-        assert await pg_provider.get_document("r1", "records") is not None                   # nothing was deleted
+        assert await pg_provider.delete_nodes(["r1"], "records") is True
+        assert await pg_provider.get_document("r1", "records") is None
+
 
 
 async def test_all_edges_of_a_node_go_in_both_directions_within_one_collection_and_one_org(pg_provider, orgs, org_ctx) -> None:
@@ -404,6 +406,16 @@ async def test_hierarchy_edges_are_never_links_for_any_reader_or_deleter_of_reco
         assert len(await p.get_edges_from_node("records/x", "nodeRelations")) == 3
 
 
+async def test_only_top_level_nulls_are_removed_on_write_and_update(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    with org_ctx(a):
+        await pg_provider.batch_upsert_nodes([{"_key": "n1", "v": None, "w": {"x": None, "y": 1}}], "things")
+        got = await pg_provider.get_document("n1", "things")
+        assert "v" not in got and got["w"] == {"x": None, "y": 1}                                  # the nested null stays, the top-level one goes
+        await pg_provider.update_node("n1", "things", {"w": {"z": None}, "gone": None})
+        assert (await pg_provider.get_document("n1", "things"))["w"] == {"z": None}
+
+
 async def test_deleting_all_edges_of_a_node_follows_the_relationship_type_of_the_collection(pg_provider, orgs, org_ctx) -> None:
     """As the Neo4j provider: ``nodeRelations`` is the hierarchy edge, ``recordLinks`` the links; neither touches the other."""
     a, _ = orgs
@@ -420,3 +432,17 @@ async def test_deleting_all_edges_of_a_node_follows_the_relationship_type_of_the
         await seed()
         assert await p.delete_all_edges_for_node("records/x", "recordLinks") == 1
         assert len(await p.get_edges_from_node("records/x", "nodeRelations")) == 1                                   # the hierarchy edge stayed
+
+
+async def test_increment_node_field_is_atomic_stays_in_the_org_and_answers_none_for_a_missing_node(pg_provider, orgs, org_ctx) -> None:
+    a, b = orgs
+    p = pg_provider
+    with org_ctx(a):
+        await p.batch_upsert_nodes([{"_key": "app", "name": "x"}], "things")
+        assert await p.increment_node_field("app", "things", "gen") == 1  # an absent field counts as 0
+        got = await asyncio.gather(*(p.increment_node_field("app", "things", "gen") for _ in range(12)))
+        assert sorted(got) == list(range(2, 14)), got  # no two callers get the same value
+        assert (await p.get_document("app", "things"))["gen"] == 13
+        assert await p.increment_node_field("missing", "things", "gen") is None
+    with org_ctx(b):
+        assert await p.increment_node_field("app", "things", "gen") is None  # another org's node is not found

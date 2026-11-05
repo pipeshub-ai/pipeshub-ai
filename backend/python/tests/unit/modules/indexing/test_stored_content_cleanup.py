@@ -35,6 +35,9 @@ MAPPING = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 DOC_ID = "65f1c0ffee0123456789abcd"
 
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _cleanup(*, records_by_vrid=None, mapping_org="org-1", purge=None):
     graph = AsyncMock()
     records_by_vrid = records_by_vrid or {}
@@ -226,7 +229,7 @@ class TestPipelineUsesTheStorageStep:
         registry = MagicMock()
         registry.strategy = MagicMock()
         registry.manifest_store = MagicMock()
-        return IndexingPipeline(
+        pipeline = IndexingPipeline(
             logger=MagicMock(),
             config_service=MagicMock(),
             graph_provider=AsyncMock(),
@@ -234,6 +237,10 @@ class TestPipelineUsesTheStorageStep:
             vector_db_service=AsyncMock(),
             stored_content=stored_content,
         )
+        pipeline.vector_db_service.scroll = AsyncMock(return_value=MagicMock(points=[]))  # no other org holds points
+        pipeline.collection_locator = MagicMock()
+        pipeline.collection_locator.all_collections = AsyncMock(return_value=["records"])
+        return pipeline
 
     @pytest.mark.asyncio
     async def test_forgetting_a_mapping_goes_through_the_storage_step(self):
@@ -302,7 +309,7 @@ class TestPipelineUsesTheStorageStep:
         assert result["success"] is True
         assert result["virtual_record_ids_deleted"] == 1
         assert result["stored_content_pending"] == 1
-        stored.release_virtual_records.assert_awaited_once_with(["vr-1"], org_id=None)
+        stored.release_virtual_records.assert_awaited_once_with(["vr-1"], org_id="org-1")
 
 
 def _session_answering(status: int, body: dict):

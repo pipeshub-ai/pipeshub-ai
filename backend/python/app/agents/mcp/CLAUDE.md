@@ -124,7 +124,7 @@ sequenceDiagram
 
 1. **Discovery** (`dcr.discover_oauth_metadata`). PipesHub probes the server without a token and reads the 401's `WWW-Authenticate` header. It then reads the server's RFC 9728 protected-resource metadata, which names the authorization server, and that server's RFC 8414 (or OpenID) metadata. Discovery is best effort: when it finds nothing, the endpoints stored on the instance are used (for a catalog instance, the template's `authorization_url` and `token_url`). For a catalog instance, discovered endpoints win over the template's. For a custom instance, the endpoints the admin typed win (`_resolve_oauth_endpoints` in the routes).
 2. **Which OAuth client signs in** (`_resolve_oauth_client` in `api/routes/mcp_servers.py`). The first of these that applies:
-   1. **A static OAuth app** the admin entered on the instance (client ID and secret, `PUT /instances/{id}/oauth-config`). Providers without DCR or CIMD need one; in the catalog today, that is the Google, Slack, Box and GitHub entries. The admin registers the app at the provider with the redirect URI the form shows, `{frontend public URL}/mcp-servers/oauth/callback/`.
+   1. **A static OAuth app** the admin entered on the instance (client ID and secret, `PUT /instances/{id}/oauth-config`). Providers without DCR or CIMD need one; in the catalog today, that is the Google, Slack, Box, GitHub and Zoom entries. The admin registers the app at the provider with the redirect URI the form shows, `{frontend public URL}/mcp-servers/oauth/callback/`.
    2. **A client registered earlier by DCR.** First, the owner's own registration from before registrations were shared (`get_mcp_dcr_client_path`), which is still used as it is. Then the instance's shared registration (`get_mcp_shared_dcr_client_path`). Every new registration goes there, and everyone who signs in uses it. The shared one is replaced when the redirect URI changes, its secret expires, or the provider rejects it.
    3. **A Client ID Metadata Document** (`cimd.py`). The client ID is a URL on PipesHub (`/mcp-servers/oauth/client-metadata.json`, served by Node), and the provider reads the client's details from it. PipesHub uses it only when the provider advertises `client_id_metadata_document_supported`, the deployment's public address is https and serves the document, and `MCP_OAUTH_CLIENT_METADATA_DOCUMENT` isn't `false`. When a provider refuses the document, PipesHub uses DCR with that provider for the next 7 days.
    4. **Dynamic Client Registration** (RFC 7591, `dcr.register_dynamic_client`) at the provider's `registration_endpoint`.
@@ -277,7 +277,7 @@ The UI finds logos in two ways, so there are two places to update:
 
 ## Re-enabling a disabled entry
 
-Thirteen modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `dropbox`, `gitlab`, `greenhouse`, `hubspot`, `outreach`, `pagerduty`, `posthog`, `redshift`, `sentry`, `servicenow` and `zoom`.
+Twelve modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `dropbox`, `gitlab`, `greenhouse`, `hubspot`, `outreach`, `pagerduty`, `posthog`, `redshift`, `sentry` and `servicenow`.
 
 To bring one back, uncomment it and run the discovery from step 1 again. Vendors change their servers, and the "Confirmed live" comments are only as current as the day they were written. Fix whatever changed, then do steps 3 and 4. Two things to watch for:
 
