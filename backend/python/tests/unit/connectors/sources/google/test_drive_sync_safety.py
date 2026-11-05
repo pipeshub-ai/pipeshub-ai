@@ -289,6 +289,67 @@ class TestRunReport:
         assert errors[0].kwargs.get("exc_info") is True
         assert len(sent) == 1 and "s1" in sent[0]["message"]
 
+    async def test_syncing_users_reports_refused_users_once_and_keeps_the_others_errors(self, monkeypatch) -> None:
+        """unauthorized_client during each user's file sync: no traceback for those users, the run is still
+        incomplete (so cleanup does not read their files as deleted), and only other failures are counted."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.connectors.sources.google.drive.team import connector as team_connector
+
+        monkeypatch.setattr(team_connector.asyncio, "sleep", AsyncMock())
+        conn = object.__new__(team_connector.GoogleDriveTeamConnector)
+        conn.logger = MagicMock()
+        conn.max_concurrent_batches = 10
+        conn._sync_ledger = MagicMock()
+        users = [_user("refused1@acme.example"), _user("ok@acme.example"), _user("refused2@acme.example"),
+                 _user("broken@acme.example")]
+        conn._get_users_to_sync = AsyncMock(return_value=users)
+        refused = _refresh("unauthorized_client", "Client is unauthorized")
+        outcomes = {"refused1@acme.example": refused, "refused2@acme.example": refused,
+                    "broken@acme.example": RuntimeError("drive answered nonsense")}
+
+        async def sync(user: AppUser) -> None:
+            if user.email in outcomes:
+                raise outcomes[user.email]
+
+        conn._run_sync_with_yield = AsyncMock(side_effect=sync)
+        conn._run_report = DriveRunReport(personal=False, notify=AsyncMock(), title=str, sync_point=_SyncPoint(),
+                                          logger=conn.logger, client_id="1234", scopes=["s1"])
+
+        await conn._process_users_in_batches(users)
+
+        errors = conn.logger.error.call_args_list
+        assert len(errors) == 1 and "broken@acme.example" in errors[0].args[0]
+        conn._sync_ledger.note_incomplete.assert_called()
+        assert [c.args[0] for c in conn.logger.warning.call_args_list if "batch failed" in c.args[0]] == [
+            "1 user sync(s) in this batch failed"
+        ]
+        assert conn._run_report.refused_users == {"refused1@acme.example", "refused2@acme.example"}
+
+    async def test_a_users_sync_leaves_reporting_its_failure_to_the_batch(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+
+        conn = object.__new__(GoogleDriveTeamConnector)
+        conn.logger = MagicMock()
+        refused = _refresh("unauthorized_client", "Client is unauthorized")
+        conn._build_user_drive_data_source = AsyncMock(side_effect=refused)
+
+        with pytest.raises(RefreshError):
+            await conn._run_sync_with_yield(_user("refused@acme.example"))
+        conn.logger.error.assert_not_called()
+
+    def test_a_refused_setup_names_the_client_id_from_the_saved_key(self) -> None:
+        from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+
+        conn = object.__new__(GoogleDriveTeamConnector)
+        conn.config = {"credentials": {"auth": {"serviceAccountJson": json.dumps({"client_id": "987654321"})}}}
+        with pytest.raises(ConnectorInitError) as refused:
+            conn._raise_setup_problem(_refresh("unauthorized_client", "Client is unauthorized"), "admin@acme.example")
+        assert "987654321" in str(refused.value)
+        assert "https://www.googleapis.com/auth/drive.readonly" in str(refused.value)
+
     async def test_a_passing_gap_is_reported_only_when_it_lasts(self) -> None:
         sent: list = []
         sync_point = _SyncPoint()

@@ -120,10 +120,11 @@ class DriveRunReport:
         if problem is None or problem is AccessProblem.USER_UNAVAILABLE:
             return False
         if not self.refused_users:
+            # Google's answer names the OAuth error, never the key or a token, so it is safe to log.
             self._logger.warning(
-                "Google refused to let the service account act as %s (%s); users refused the same way this "
+                "Google refused to let the service account act as %s (%s: %s); users refused the same way this "
                 "run are skipped without a further log line, and the connector's owners are told what to fix",
-                user_email, problem.value,
+                user_email, problem.value, str(error)[:300],
             )
         self.refused_users.add(user_email)
         return True
