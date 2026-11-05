@@ -15,6 +15,7 @@ from app.models.blocks import (
 from app.modules.transformers.vectorstore import (
     VectorStore,
     _build_chunked_text_documents,
+    _chunk_sizes,
     _pack_windows,
     _process_text_blocks,
     _Window,
@@ -161,6 +162,12 @@ def test_a_line_longer_than_the_target_is_split_into_sentences() -> None:
     windows = _pack_windows(line, "en", 10)
     assert len(windows) >= 3
     assert all(len(w.split()) <= 15 for w in windows)
+
+
+def test_the_maximum_is_never_below_the_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EMBED_CHUNK_TARGET_WORDS", "500")
+    monkeypatch.delenv("EMBED_CHUNK_MAX_WORDS")
+    assert _chunk_sizes() == (500, 500)
 
 
 def test_without_chunks_every_block_keeps_its_own_point() -> None:

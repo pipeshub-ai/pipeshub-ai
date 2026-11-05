@@ -519,8 +519,9 @@ def _chunk_sizes() -> tuple[int, int]:
     """Target and maximum words per chunk: ``EMBED_CHUNK_TARGET_WORDS``
     (default 150) and ``EMBED_CHUNK_MAX_WORDS`` (default 350, never below the
     target)."""
-    target = env_int("EMBED_CHUNK_TARGET_WORDS", _DEFAULT_CHUNK_TARGET_WORDS, lo=1)
-    return target, env_int("EMBED_CHUNK_MAX_WORDS", _DEFAULT_CHUNK_MAX_WORDS, lo=target)
+    target = env_int("EMBED_CHUNK_TARGET_WORDS", _DEFAULT_CHUNK_TARGET_WORDS, lo=1) or _DEFAULT_CHUNK_TARGET_WORDS
+    maximum = env_int("EMBED_CHUNK_MAX_WORDS", _DEFAULT_CHUNK_MAX_WORDS, lo=target) or _DEFAULT_CHUNK_MAX_WORDS
+    return target, max(target, maximum)
 
 
 def _min_words_for_sentence_embeddings() -> int:
@@ -1101,7 +1102,7 @@ def _block_sort_index(block: object) -> int:
 
 
 def _build_chunked_text_documents(
-    text_blocks: list,
+    text_blocks: list[Block],
     virtual_record_id: str,
     org_id: str,
     language: str,
@@ -1128,8 +1129,8 @@ def _build_chunked_text_documents(
     """
     target, maximum = _chunk_sizes()
     # (first block, text, every block when more than one, whole + windows of one long block)
-    chunks: list[tuple[object, str, list[object], list[str] | None]] = []
-    pending: list[tuple[object, str]] = []
+    chunks: list[tuple[Block, str, list[Block], list[str] | None]] = []
+    pending: list[tuple[Block, str]] = []
     pending_words = 0
     # Headings of the chunk's blocks other than a heading that opened it.
     section: list[str] | None = None
@@ -1173,7 +1174,7 @@ def _build_chunked_text_documents(
     documents: list[Document] = []
     contexts: dict[str, str] = {}
     for first, text, blocks, windows in chunks:
-        metadata = {
+        metadata: dict[str, Any] = {
             "virtualRecordId": virtual_record_id,
             "blockId": first.id,
             "blockIndex": first.index,
@@ -2067,7 +2068,7 @@ class VectorStore(Transformer):
     async def _replace_text_points(
         self,
         documents: list[Document],
-        text_block_ids: set,
+        text_block_ids: set[str],
         virtual_record_id: str,
         record_id: str,
         collection_name: str,

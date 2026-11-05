@@ -3439,7 +3439,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             )
             continue
 
-        if span := _span_block_indices(meta, functools.partial(_record_block_positions, virtual_record_id)):
+        if span := _span_block_indices(meta or {}, functools.partial(_record_block_positions, virtual_record_id)):
             result[SPAN_BLOCK_INDICES_KEY] = span
 
         if is_block_group:
