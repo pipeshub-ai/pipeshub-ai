@@ -116,3 +116,12 @@ async def test_the_record_routes_refuse_the_stub_like_an_unreadable_record(graph
         stub_refusal = await _refusal(route("ph-u-ext", STUB))
         unreadable_refusal = await _refusal(route("ph-w-ext", REAL))
         assert stub_refusal == unreadable_refusal
+
+
+async def test_the_node_card_says_which_node_is_a_placeholder(graph, provider) -> None:
+    """Navigation keeps naming a placeholder; a caller that hands a node out to open tells it by this flag."""
+    stub = await provider.get_knowledge_hub_node_access(STUB, U, ORG, [])
+    real = await provider.get_knowledge_hub_node_access(REAL, U, ORG, [])
+    assert stub and stub["isPlaceholder"] is True and stub["name"] == "A placeholder"
+    assert real and real["isPlaceholder"] is False
+    assert await provider.get_knowledge_hub_node_access(STUB, W, ORG, []) is None
