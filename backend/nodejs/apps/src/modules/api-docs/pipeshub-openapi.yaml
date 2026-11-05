@@ -49236,11 +49236,10 @@ paths:
         - Semantic Search
       summary: Clear all search history
       description: |
-        Permanently delete every persisted search row owned by, or shared
-        with, the authenticated user, along with the citation rows those
-        searches reference. The action cannot be undone. Searches other
-        users shared with the caller are deleted for their owners too, even
-        when the caller only has `read` access.
+        Permanently delete every persisted search row the authenticated
+        user owns, along with the citation rows those searches reference.
+        The action cannot be undone. Searches other users shared with the
+        caller are left alone.
 
         Scoped to the caller's org and limited to rows where
         `isArchived: false`. The optional `shared`, `startDate` and
@@ -49327,7 +49326,7 @@ paths:
         '404':
           description: |
             No matching rows (`HTTP_NOT_FOUND`, "Search history not found"). Returned when the
-            caller has no owned or shared, unarchived searches that satisfy the filters.
+            caller has no owned, unarchived searches that satisfy the filters.
           content:
             application/json:
               schema:
@@ -49453,10 +49452,8 @@ paths:
       summary: Delete search by ID
       description: |
         Permanently delete a single persisted search row, plus every
-        citation row referenced by its `citationIds`. The caller must
-        either own the row or have it shared with them: a user the search
-        was shared with, even with `read` access only, deletes the owner's
-        search for everyone.
+        citation row referenced by its `citationIds`. Only the owner can
+        delete it; a user the search was shared with gets `404`.
 
         Scoped to the caller's org and limited to rows where
         `isArchived: false`; an archived or already-deleted row is `404`.
@@ -49553,8 +49550,8 @@ paths:
         '404':
           description: |
             No search matched (`HTTP_NOT_FOUND`, "Search Id not found"). Returned when the id
-            does not exist for this caller, the caller neither owns it nor has it shared with
-            them, the row is archived or already deleted, or a query filter does not match it.
+            does not exist for this caller, the caller does not own it, the row is archived or
+            already deleted, or a query filter does not match it.
           content:
             application/json:
               schema:
@@ -49578,9 +49575,8 @@ paths:
         from the search history and from `GET /search/{searchId}`, and
         cannot be shared, unshared or deleted until they are unarchived.
 
-        The caller must own the search or have it shared with them: a user
-        the search was shared with, even with `read` access only, can
-        archive the owner's search for everyone.
+        Only the owner can archive it; a user the search was shared with
+        gets `404`.
       operationId: archiveSearch
       x-pipeshub-sdk: true
       security:
@@ -49716,8 +49712,8 @@ paths:
         '404':
           description: |
             No active search matched (`HTTP_NOT_FOUND`, "Search Id not found or no archive
-            permission"): the id does not exist in the caller's org, the caller neither owns
-            the search nor has it shared with them, it is already archived, or a `shared`,
+            permission"): the id does not exist in the caller's org, the caller does not own
+            the search, it is already archived, or a `shared`,
             `startDate` or `endDate` query filter does not match it.
           content:
             application/json:
@@ -49739,7 +49735,7 @@ paths:
       summary: Unarchive a search
       description: |
         Restore a previously archived search result back to the active search history.
-        The owner or any user the search was shared with can unarchive it.
+        Only the owner can unarchive it.
       operationId: unarchiveSearch
       x-pipeshub-sdk: true
       security:
@@ -49875,8 +49871,8 @@ paths:
         '404':
           description: |
             No archived search matched (`HTTP_NOT_FOUND`, "Search Id not found or no unarchive
-            permission"): the id does not exist in the caller's org, the caller neither owns
-            the search nor has it shared with them, it is not archived, it was deleted, or a
+            permission"): the id does not exist in the caller's org, the caller does not own
+            the search, it is not archived, it was deleted, or a
             `shared`, `startDate` or `endDate` query filter does not match it.
           content:
             application/json:
@@ -72972,9 +72968,8 @@ paths:
         - Semantic Search
       summary: Share a search with users
       description: |
-        Give other users access to a persisted search. The caller must own
-        the search or already have it shared with them; archived and
-        deleted searches cannot be shared.
+        Give other users access to a persisted search. Only the owner can
+        share it; archived and deleted searches cannot be shared.
 
         - `accessLevel` defaults to `read` when omitted and is applied to
           every user in `userIds`.
@@ -73093,8 +73088,8 @@ paths:
         '404':
           description: |
             No search matched. Returned when the id does not exist in the
-            caller's org, when the caller neither owns the search nor has
-            it shared with them, when the search is archived or deleted, or
+            caller's org, when the caller does not own the search, when the
+            search is archived or deleted, or
             when a `shared`, `startDate` or `endDate` query filter does not
             match it.
           content:
@@ -73117,16 +73112,13 @@ paths:
         - Semantic Search
       summary: Revoke share access for users
       description: |
-        Remove users from a shared search. The caller must own the search
-        or have it shared with them; archived and deleted searches cannot
-        be changed.
+        Remove users from a shared search. Only the owner can change who
+        it is shared with; archived and deleted searches cannot be changed.
 
         - Ids in `userIds` that the search was never shared with are
           ignored; they are still echoed back in `unsharedUsers`.
         - When the last user is removed the search stops being shared
           (`isShared: false`), but its `shareLink` is kept.
-        - Any user the search is shared with can unshare, including
-          removing themselves.
         - `accessLevel` is accepted in the body because both share routes
           use one validator, but it has no effect here.
         - Every id in `userIds` is looked up before anything is written;
@@ -73240,8 +73232,8 @@ paths:
         '404':
           description: |
             No search matched. Returned when the id does not exist in the
-            caller's org, when the caller neither owns the search nor has
-            it shared with them, when the search is archived or deleted, or
+            caller's org, when the caller does not own the search, when the
+            search is archived or deleted, or
             when a `shared`, `startDate` or `endDate` query filter does not
             match it.
           content:
