@@ -65,6 +65,8 @@ class KgWorker:
                 rows += await restamp.run_jobs(self._db, org, self.id, stale_ms=self._stale, batch=self._batch, stop=self._stop)
             except Exception:
                 logger.exception("kg restamp jobs failed for an org; retrying")
+            if self._stop.is_set():
+                break                                      # shutting down: no new unit for the gauges
             try:
                 with bind(_ctx(org)):
                     async with self._db.uow() as tx:
