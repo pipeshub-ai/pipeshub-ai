@@ -207,21 +207,21 @@ async def test_another_organisation_never_appears_under_a_filter(store, leg) -> 
 class _NoBitIndex(dict):
     """A recall verdict of "the bit index failed" for every space."""
 
-    def get(self, key, default=None):  # noqa: ANN001, ANN201
+    def get(self, key: object, default: object = None) -> bool:  # noqa: ARG002
         return False
 
 
 FILTERS = {
-    "groups": dict(readable_groups=frozenset({"g1", "g2"}), open_apps=frozenset({"c1"})),
-    "paths": dict(readable_scopes=frozenset({"s1", "s2"}), excluded=frozenset({"x1"})),
-    "everything": dict(open_apps=frozenset({"c1"}), readable_groups=EVERYTHING, readable_scopes=EVERYTHING, excluded=frozenset({"x1"})),
+    "groups": {"readable_groups": frozenset({"g1", "g2"}), "open_apps": frozenset({"c1"})},
+    "paths": {"readable_scopes": frozenset({"s1", "s2"}), "excluded": frozenset({"x1"})},
+    "everything": {"open_apps": frozenset({"c1"}), "readable_groups": EVERYTHING, "readable_scopes": EVERYTHING, "excluded": frozenset({"x1"})},
     "nothing": {},
 }
 
 
 @pytest.mark.parametrize("tier", ["index", "bounded_exact", "bounded_index"])
 async def test_the_filter_admits_the_same_groups_on_every_dense_tier_as_on_the_exact_one(store, monkeypatch, tier) -> None:
-    from app.services.vector_db.pgvector import dense  # noqa: PLC0415
+    from app.services.vector_db.pgvector import dense
     expected = {name: await search(store, f(**kw)) for name, kw in FILTERS.items()}               # the exact tier: the world is far below n_e0
     assert expected["groups"] == {"container", "container_other"} and expected["nothing"] == set() and "intersection_hidden" not in expected["paths"]
     seen: list[str] = []
