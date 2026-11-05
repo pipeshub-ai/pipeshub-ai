@@ -130,6 +130,7 @@ def _record_blocks(record: Mapping[str, Any] | None) -> dict[int, Mapping[str, A
 
 
 def collect_evidence(tool_state: Mapping[str, Any]) -> Evidence:
+    """Every record the request has shown the model, with the passages it saw."""
     records_map: Mapping[str, Any] = tool_state.get("virtual_record_id_to_result") or {}
     by_vrid: dict[str, EvidenceRecord] = {}
 

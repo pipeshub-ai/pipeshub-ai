@@ -127,6 +127,7 @@ async def plan_facets(
     timeout: float,
     on_usage: "Callable[[BaseMessage], None] | None" = None,
 ) -> FacetPlan | None:
+    """The question's parts, from one bounded model call; None when it fails or finds none."""
     if not question.strip():
         return None
     payload = await complete_json(

@@ -153,6 +153,7 @@ def render_ruling(
     facet_text: str,
     name_of: "Callable[[str | None, str], str]",
 ) -> str:
+    """One ruling as a line of the send-back request: which record to lead with, and why the others are set aside."""
     preferred = ", ".join(_record_name(evidence, label, name_of) for label in ruling.preferred)
     lines = [f"For {facet_text or 'this part'}: lead with the value from {preferred}."]
     for label, why in ruling.set_aside:
@@ -205,6 +206,8 @@ async def assess_draft(
     name_of: "Callable[[str | None, str], str]" = _default_name,
     on_usage: "Callable[[BaseMessage], None] | None" = None,
 ) -> GateDecision:
+    """The gaps and rulings for one draft. The deterministic signals run first;
+    the checker model is called only when one of them fires."""
     admissions = find_admissions(draft)
     references = unread_references(plan, evidence)
     uncovered = uncovered_facets(plan, evidence.texts())
