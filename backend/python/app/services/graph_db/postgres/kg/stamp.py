@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from app.services.graph_db.postgres.kg import stampgraph
 from app.services.graph_db.postgres.kg.dependents import (
+    children_of,
     held_apps,
     held_keys,
     parents_of,
@@ -385,6 +386,13 @@ async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int
         keys = await held_keys(tx, org, keys)
         # A parent in another connector gained this page's child, which kg may not have held when that connector was stamped: its ``leaf`` is restamped now, under its lock (NeedLocks asks for it).
         keys |= {k for k, a in (await held_apps(tx, org, await parents_of(tx, org, keys))).items() if a != app_id}
+        # And the mirror: what hangs below this page in another connector, stamped before its parent had a row, has no path (the whole subtree below it, down to a fixpoint).
+        below = {k for k, a in (await held_apps(tx, org, await children_of(tx, org, keys))).items() if a != app_id}
+        frontier = below
+        while frontier:
+            frontier = set(await held_apps(tx, org, await children_of(tx, org, frontier))) - below - keys
+            below |= frontier
+        keys |= below
     await stamp_keys(tx, org, keys, st, app_sks=app_sks, facts=facts, dry=dry, locked=locked)
     return stampgraph.nk(rows[-1]["coll"], rows[-1]["id"])
 
