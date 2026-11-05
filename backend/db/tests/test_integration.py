@@ -69,7 +69,7 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-HEADS = {"kernel": (17, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 5), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
+HEADS = {"kernel": (17, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
          "graph": (2, 0), "kg": (4, 0), "retrieval": (1, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
 REVISION_HEADS = {"platform_0004", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0004", "retrieval_0001"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
@@ -491,7 +491,7 @@ def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrade
     assert epochs(cluster, name) == HEADS
 
 
-def test_the_jobs_role_reads_the_organisation_gauges_through_functions_and_the_revision_round_trips(db):
+def test_the_jobs_role_can_read_the_organisation_gauges_through_functions_and_the_revision_round_trips(db):
     cluster, name = db
     url = cluster.url(name, MIGRATE)
     assert run_migrate(url).returncode == 0
@@ -502,16 +502,20 @@ def test_the_jobs_role_reads_the_organisation_gauges_through_functions_and_the_r
             c.execute("INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, created_at, updated_at) VALUES (%s, 'x.test', 'a@x.test', 'business', now(), now())", (org,))
             c.execute("INSERT INTO identity.users (org_id, id, slug, email, created_at, updated_at) VALUES (%s, %s, 'user-1', 'a@x.test', now(), now())", (org, "a" * 24))
             c.execute("INSERT INTO identity.org_auth_config (org_id, id, auth_steps, created_at, updated_at) VALUES (%s, %s, '[1]', now(), now())", (org, "a" * 24))
-        assert c.execute(policies).fetchone()[0] == 0
+        assert c.execute(policies).fetchone()[0] == 3      # this revision only adds the functions: the jobs role keeps its three tables
         tables = [r[0] for r in c.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'").fetchall()]
         assert len(tables) == 11
         c.execute("SET ROLE pipeshub_jobs")      # no app.org_id: the system context of the gauges
         for fn, cols in gauges.items():
             cur = c.execute(f"SELECT * FROM identity.{fn}()")
             assert [d.name for d in cur.description] == cols and len(cur.fetchall()) == 2
+        readable = ("users", "orgs", "org_auth_config")
         for t in tables:
-            with pytest.raises(psycopg.errors.InsufficientPrivilege):
-                c.execute(f"SELECT 1 FROM identity.{t}")
+            if t in readable:
+                assert len(c.execute(f"SELECT 1 FROM identity.{t}").fetchall()) == 2
+            else:
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    c.execute(f"SELECT 1 FROM identity.{t}")
         c.execute("RESET ROLE")
         for fn in gauges:
             who = [r[0] for r in c.execute("SELECT r.rolname FROM pg_roles r WHERE has_function_privilege(r.oid, %s::regprocedure, 'EXECUTE') AND NOT r.rolsuper ORDER BY 1", (f"identity.{fn}()",))]
@@ -531,8 +535,9 @@ def test_the_jobs_role_reads_the_organisation_gauges_through_functions_and_the_r
     assert r.returncode == 0, r.stdout
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:      # the tables are found whatever the session's search_path is
-        assert c.execute(policies).fetchone()[0] == 0
-        assert c.execute("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'").fetchone()[0] == 0
+        assert c.execute(policies).fetchone()[0] == 3
+        assert c.execute("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'").fetchone()[0] == 3
+        assert c.execute("SELECT count(*) FROM information_schema.routine_privileges WHERE grantee = 'pipeshub_jobs' AND routine_schema = 'identity'").fetchone()[0] == 3
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
 
 
