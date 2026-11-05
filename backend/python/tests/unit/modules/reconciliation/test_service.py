@@ -262,3 +262,19 @@ def test_a_new_record_title_marks_text_and_rows_for_reindexing_and_nothing_else(
 
     assert service.compute_diff(untitled, titled)[0] == {"p", "r"}
     assert service.compute_diff(titled, again)[0] == set()
+
+
+def test_a_chunking_marker_marks_text_for_reindexing_and_nothing_else() -> None:
+    def container() -> BlocksContainer:
+        return BlocksContainer(blocks=[
+            Block(id="p", index=0, type=BlockType.TEXT, data="Water at dawn."),
+            Block(id="r", index=1, type=BlockType.TABLE_ROW, data={"row_natural_language_text": "Bay 2"}),
+        ])
+
+    service = ReconciliationService()
+    plain = service.build_metadata(container())
+    chunked = service.build_metadata(container(), text_chunks="150:350")
+
+    assert service.compute_diff(plain, chunked)[0] == {"p"}
+    assert service.compute_diff(chunked, service.build_metadata(container(), text_chunks="150:350"))[0] == set()
+    assert service.compute_diff(chunked, service.build_metadata(container(), text_chunks="200:350"))[0] == {"p"}

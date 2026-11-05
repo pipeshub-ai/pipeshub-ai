@@ -515,6 +515,12 @@ def text_chunks_enabled() -> bool:
     return env_bool("INDEXING_TEXT_CHUNKS", False)
 
 
+def text_chunk_marker() -> str | None:
+    """What chunks text is embedded in, ``"<target>:<max>"``, for the
+    reconciliation hash; ``None`` with chunk embeddings off."""
+    return "{}:{}".format(*_chunk_sizes()) if text_chunks_enabled() else None
+
+
 def _chunk_sizes() -> tuple[int, int]:
     """Target and maximum words per chunk: ``EMBED_CHUNK_TARGET_WORDS``
     (default 150) and ``EMBED_CHUNK_MAX_WORDS`` (default 350, never below the

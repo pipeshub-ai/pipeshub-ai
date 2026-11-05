@@ -17,15 +17,18 @@ def _content_hash(
     title: str | None,
     headings: list[str] | None = None,
     record_title: str | None = None,
+    text_chunks: str | None = None,
 ) -> str:
-    """A block's data hash; with a title, headings or record title, of them and the data together."""
+    """A block's data hash; with a title, headings, record title or chunking, of them and the data together."""
     hashed = data
-    if title is not None or headings or record_title is not None:
+    if title is not None or headings or record_title is not None or text_chunks is not None:
         hashed = {"data": data, "title": title}
         if headings:
             hashed["headings"] = headings
         if record_title is not None:
             hashed["record_title"] = record_title
+        if text_chunks is not None:
+            hashed["text_chunks"] = text_chunks
     payload = json.dumps(hashed, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest() + ":" + hashlib.md5(payload).hexdigest()
 
@@ -74,7 +77,10 @@ class ReconciliationService:
         self.logger = service_logger or logger
 
     def build_metadata(
-        self, block_containers: BlocksContainer, record_title: str | None = None
+        self,
+        block_containers: BlocksContainer,
+        record_title: str | None = None,
+        text_chunks: str | None = None,
     ) -> ReconciliationMetadata:
         """
         Build reconciliation metadata from a BlocksContainer.
@@ -82,6 +88,9 @@ class ReconciliationService:
         ``record_title`` is the title text and table rows are embedded under
         (section paths on): a block's hash covers it, so a reindex after the
         title changes, or after the switch is turned on, embeds them again.
+        ``text_chunks`` (chunk embeddings on) names the chunk sizes text is
+        embedded in, so a reindex after turning chunks on or resizing them
+        chunks the record's text again.
 
         Block groups are processed first, then blocks. Within each group the
         iteration order matches the container's list order, so the per-hash
@@ -111,8 +120,9 @@ class ReconciliationService:
             # Blocks are embedded under their headings too, so a renamed heading re-embeds them.
             headings = block_heading_path(block)
             under = record_title if block.type in (BlockType.TEXT, BlockType.TABLE_ROW) else None
-            if title is not None or headings or under is not None or block.content_hash is None:
-                block.content_hash = _content_hash(block.data, title, headings, under)
+            chunks = text_chunks if block.type == BlockType.TEXT else None
+            if title is not None or headings or under is not None or chunks is not None or block.content_hash is None:
+                block.content_hash = _content_hash(block.data, title, headings, under, chunks)
             if block.content_hash:
                 hash_to_block_ids.setdefault(block.content_hash, []).append(block.id)
                 block_id_to_index[block.id] = i

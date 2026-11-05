@@ -14,7 +14,7 @@ from app.modules.transformers.transformer import (
     ReconciliationContext,
     TransformContext,
 )
-from app.modules.transformers.vectorstore import embedding_title
+from app.modules.transformers.vectorstore import embedding_title, text_chunk_marker
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.utils.indexing_timing import stage
 from app.utils.logger import create_logger
@@ -48,7 +48,8 @@ class IndexingPipeline:
             return None
         reconciliation_service = ReconciliationService(logger)
         record_title = embedding_title(record, block_containers) if section_paths_enabled() else None
-        new_metadata = reconciliation_service.build_metadata(block_containers, record_title)
+        text_chunks = text_chunk_marker()
+        new_metadata = reconciliation_service.build_metadata(block_containers, record_title, text_chunks)
 
         if ctx.event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value) and record.virtual_record_id and record.org_id:
             prev_vrid = ctx.prev_virtual_record_id
@@ -68,7 +69,9 @@ class IndexingPipeline:
                         reconciliation_service.apply_preserved_ids(
                             block_containers, unchanged_id_map
                         )
-                        new_metadata = reconciliation_service.build_metadata(block_containers, record_title)
+                        new_metadata = reconciliation_service.build_metadata(
+                            block_containers, record_title, text_chunks
+                        )
 
                     logger.info(
                         f"📊 Reconciliation (1:1): {len(blocks_to_index_ids)} to index, "
