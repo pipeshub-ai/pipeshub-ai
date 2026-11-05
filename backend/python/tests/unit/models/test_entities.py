@@ -619,6 +619,24 @@ class TestTicketRecord:
         ctx = rec.to_llm_context()
         assert "* Labels: bug, backend" in ctx
 
+    def test_to_llm_context_includes_milestone(self) -> None:
+        """The milestone is often the release an issue is aimed at; without it
+        an agent asked "which release?" guessed from comments."""
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.GITHUB,
+            milestone="Airflow 3.5.0",
+        ))
+        assert "* Milestone: Airflow 3.5.0" in rec.to_llm_context()
+
+    def test_to_llm_context_without_milestone_has_no_line(self) -> None:
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.GITHUB,
+            labels=["bug"],
+        ))
+        assert "Milestone" not in rec.to_llm_context()
+
     @pytest.mark.asyncio
     async def test_to_llm_context_with_live_fields_delegates_to_enrichment(self):
         rec = TicketRecord(**_record_kwargs(
@@ -1379,6 +1397,14 @@ class TestTicketRecordFromArango:
         assert rec.reporter_email == "jane@test.com"
         assert rec.labels == ["critical"]
 
+    def test_milestone_survives_the_round_trip(self) -> None:
+        rec = TicketRecord.from_arango_record(
+            self._ticket_doc(milestone="Airflow 3.5.0"), self._record_doc()
+        )
+        assert rec.milestone == "Airflow 3.5.0"
+        back = TicketRecord.from_arango_record(rec.to_arango_record(), self._record_doc())
+        assert back.milestone == "Airflow 3.5.0"
+
     def test_from_arango_record_unknown_connector(self):
         rec = TicketRecord.from_arango_record(
             self._ticket_doc(),
@@ -1624,6 +1650,18 @@ class TestPullRequestRecordToLlmContext:
         ctx = self._pr(status=stored).to_llm_context()
         assert "Pull Request Information:" in ctx
         assert f"* Status: {shown}" in ctx
+
+    def test_milestone_is_shown(self) -> None:
+        ctx = self._pr(status="DONE", milestone="Airflow 3.5.0").to_llm_context()
+        assert "* Milestone: Airflow 3.5.0" in ctx
+
+    def test_milestone_survives_the_graph_document(self) -> None:
+        from app.models.entities import PullRequestRecord
+        rec = self._pr(status="OPEN", milestone="Airflow 3.5.0")
+        doc = rec.to_arango_record()
+        assert doc["milestone"] == "Airflow 3.5.0"
+        back = PullRequestRecord.from_arango_record(doc, rec.to_arango_base_record())
+        assert back.milestone == "Airflow 3.5.0"
 
     def test_unknown_status_is_shown_as_stored(self):
         """GitLab stores its own state words; they pass through unchanged."""

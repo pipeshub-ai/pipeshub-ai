@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.sources.client.resilience import ResiliencePolicy
 from app.sources.client.zammad.zammad import (
     ZammadClient,
     ZammadOAuth2Config,
@@ -489,3 +490,48 @@ class TestZammadClient:
             logger, mock_config_service, "inst-1"
         )
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Resilience: the connector's rate limit and retry policy reaches every request
+# ---------------------------------------------------------------------------
+
+
+class TestZammadClientResilience:
+    @pytest.mark.parametrize("auth", [
+        {"authType": "USERNAME_PASSWORD", "username": "user", "password": "pass"},
+        {"authType": "API_TOKEN", "token": "tok"},
+        {"authType": "OAUTH2", "bearerToken": "bt"},
+    ], ids=["basic", "token", "oauth2"])
+    @pytest.mark.asyncio
+    async def test_build_from_services_hands_the_policy_to_the_http_client(
+        self, logger: logging.Logger, mock_config_service: AsyncMock, auth: dict,
+    ) -> None:
+        policy = ResiliencePolicy(rate_limit=20, max_retries=3, max_delay=30.0)
+        mock_config_service.get_config = AsyncMock(return_value={"auth": {**auth, "baseUrl": BASE_URL}})
+
+        client = await ZammadClient.build_from_services(logger, mock_config_service, "inst-1", resilience=policy)
+
+        assert client.get_client().resilience is policy
+
+    @pytest.mark.asyncio
+    async def test_without_a_policy_the_http_client_has_none(
+        self, logger: logging.Logger, mock_config_service: AsyncMock,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "API_TOKEN", "baseUrl": BASE_URL, "token": "tok"}}
+        )
+
+        client = await ZammadClient.build_from_services(logger, mock_config_service, "inst-1")
+
+        assert client.get_client().resilience is None
+
+    @pytest.mark.parametrize("make", [
+        lambda p: ZammadRESTClientViaUsernamePassword(BASE_URL, "u", "p", p),
+        lambda p: ZammadRESTClientViaToken(BASE_URL, "tok", p),
+        lambda p: ZammadRESTClientViaOAuth2(BASE_URL, "bt", p),
+    ], ids=["basic", "token", "oauth2"])
+    def test_each_rest_client_keeps_the_policy(self, make: object) -> None:
+        policy = ResiliencePolicy(rate_limit=5)
+
+        assert make(policy).resilience is policy  # type: ignore[operator]

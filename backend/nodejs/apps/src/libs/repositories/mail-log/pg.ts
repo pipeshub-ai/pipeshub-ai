@@ -5,8 +5,20 @@
 import { stripNul } from '../nul';
 import { assertOrg, inUnit, newObjectId } from '../pg-util';
 import type { MailLogEntry, MailLogRepository } from './types';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importMailDocs } from './pg-import';
+import { kernelTx } from '../pg';
+import type { Tx } from '../uow';
 
-export class PgMailLogRepository implements MailLogRepository {
+export class PgMailLogRepository implements MailLogRepository, Importable {
+  /** The migration copy: documents as they were stored (see ./pg-import.ts). */
+  importBatch(
+    _collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importMailDocs(kernelTx(tx), docs);
+  }
   async record(entry: MailLogEntry): Promise<void> {
     const e = stripNul(entry, 'mail-log', 'entry');
     await inUnit(undefined, { write: true }, async (k) => {

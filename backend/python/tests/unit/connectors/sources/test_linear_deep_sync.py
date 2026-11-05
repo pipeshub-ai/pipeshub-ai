@@ -213,6 +213,7 @@ class TestLinearRunSync:
         user = MagicMock()
         user.email = "u@x.com"
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[user])
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
         with patch(
             "app.connectors.sources.linear.connector.load_connector_filters",

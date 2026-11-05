@@ -84,15 +84,18 @@ async def test_only_records_the_graph_still_returns_are_citable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_listing_a_record_again_keeps_one_copy_with_the_newest_facts() -> None:
+async def test_listing_a_record_again_keeps_one_copy_that_quotes_every_listing() -> None:
+    # The Citation ID is the same, so it must back what the answer cites from either listing.
     state = _state(tool_records=[{"id": "search-hit"}])
     graph = _graph(_doc("r1", "Page"))
-    first = await cite_listed_records(state, graph, "org", {"r1": "Created 2026-10-26"})
-    again = await cite_listed_records(state, graph, "org", {"r1": "Status: Done"})
+    first = await cite_listed_records(state, graph, "org", {"r1": "matched (extracted values): USD 1,686,400 · Created 2026-10-26"})
+    again = await cite_listed_records(state, graph, "org", {"r1": 'connected to topic "Forecasts" · Created 2026-10-26'})
 
     assert first == again
     listed = [r for r in state["tool_records"] if r.get("id") == "r1"]
-    assert [r["_listed_facts"] for r in listed] == ["Status: Done"]
+    assert [r["_listed_facts"] for r in listed] == [
+        'matched (extracted values): USD 1,686,400 · Created 2026-10-26 · connected to topic "Forecasts"',
+    ]
     assert {"id": "search-hit"} in state["tool_records"]
 
 

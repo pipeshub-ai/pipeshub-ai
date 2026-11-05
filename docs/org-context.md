@@ -12,7 +12,7 @@ Only from a verified source, never from a body, query string or header other tha
 | Node `AuthMiddleware.authenticate` and `scopedTokenValidator` | the verified token's `orgId` and `userId`. Pre-org scoped tokens (no `orgId`) stay unbound. |
 | Broker consumers (Python Kafka/Redis Streams, Node Kafka/Redis Streams) | the org from the signed envelope (below). |
 | Crawling worker | `forOrg(job.orgId, "crawl")` per job, after checking the org id is a valid id and the org exists and is active (otherwise the job is dropped, not failed). |
-| Periodic loops (trash purge, storage release, named-entity sweep, sync resume, Node metrics refresh) | enumeration under `system(reason)`, each org's work under `for_org` / `forOrg` so nothing leaks between iterations. |
+| Periodic loops and start-up migrations (trash purge, storage release, flat storage migration, record label repair, code edge build reconcile, named-entity sweep, sync resume, connector config migrations, Node metrics refresh) | enumeration under `system(reason)`, each org's work under `for_org` / `forOrg` so nothing leaks between iterations. Per-org settings (for example the trash purge's `softDeletePurge`) are read inside the org they apply to. |
 
 Outside these, no context is bound and `current()` raises `MissingOrgContext`. It is a bug in the caller, not a user error.
 

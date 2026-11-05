@@ -11,7 +11,11 @@ import re
 from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.mentions import RawMention
 from app.modules.named_entities.normalizers.dates import ORDINAL as _ORDINAL
-from app.modules.named_entities.normalizers.money import ISO_4217, SCALE_WORDS
+from app.modules.named_entities.normalizers.money import (
+    ISO_4217,
+    LOWER_CODES,
+    SCALE_WORDS,
+)
 from app.modules.named_entities.text import TextUnit
 
 _MONTH = (
@@ -35,11 +39,31 @@ _DATE_RANGE = (
     rf"|{_RANGE_MONTH}\s+\d{{1,2}}{_ORDINAL}(?:{_RANGE_YEAR})?{_TO}(?:{_RANGE_MONTH}\s+)?{_LAST_DAY}(?:{_RANGE_YEAR})?"
     rf"|\d{{1,2}}{_ORDINAL}(?:\s+(?:of\s+)?{_RANGE_MONTH}(?:{_RANGE_YEAR})?)?{_TO}\d{{1,2}}{_ORDINAL}\s+(?:of\s+)?{_RANGE_MONTH}(?:{_RANGE_YEAR})?"
     rf"|{_RANGE_MONTH}(?:\s+\d{{4}})?{_TO}{_RANGE_MONTH}\s+\d{{4}}"
+    # "between … and …" with the year stated: months ("between March and May 2026"), days
+    # ("between March 5 and May 10, 2026", "between Jan 5 and 10, 2026", "between 5 March
+    # and 10 May 2026") or ISO dates. The normalizer reads each end the way a range's ends read.
+    rf"|between\s+{_RANGE_MONTH}(?:\s+\d{{4}})?\s+and\s+{_RANGE_MONTH}\s+\d{{4}}"
+    rf"|between\s+{_RANGE_MONTH}\s+\d{{1,2}}{_ORDINAL}(?:{_RANGE_YEAR})?\s+and\s+(?:{_RANGE_MONTH}\s+)?{_LAST_DAY}{_RANGE_YEAR}"
+    rf"|between\s+\d{{1,2}}{_ORDINAL}\s+(?:of\s+)?{_RANGE_MONTH}(?:{_RANGE_YEAR})?\s+and\s+\d{{1,2}}{_ORDINAL}\s+(?:of\s+)?{_RANGE_MONTH}{_RANGE_YEAR}"
+    rf"|between\s+{_ISO}\s+and\s+{_ISO}(?![:.]\d)"
 )
+# Numeric dates whose digits carry the year: year first (2026/09/10, 2026.09.10) and
+# dotted day first (10.09.2026). The guards keep version strings ("2024.1.3",
+# "1.2.2026.4") and addresses out; a dotted year-first date needs two-digit parts.
+_NUMERIC_DATE = (
+    r"(?<![\d.])\d{4}\.\d{2}\.\d{2}(?!\.?\d)"
+    r"|(?<![\d/])\d{4}/\d{1,2}/\d{1,2}(?![/\d])"
+    r"|(?<![\d.])\d{1,2}\.\d{1,2}\.\d{4}(?!\.?\d)"
+)
+# Half-years: "H1 2026", "H2 FY26", "H1'26", "1H26". The H is a capital so "1h 30 min"
+# is a duration. After "H1" a year needs a space, an apostrophe or FY: "H100" and
+# "H200" are GPUs, and "H2 20 units" is no year. "1H00" is a time.
+_HALF = r"(?-i:H)[12](?:[ ]?FY[ ]?(?:\d{4}|\d{2})|['’]\d{2}|[ ]\d{4})|(?-i:[12]H)(?:(?!00)\d{2}|[ ]?\d{4})"
 _ONE_DATE = (
     rf"Q[1-4]\s*(?:FY\s*)?\d{{2,4}}|FY\s?(?:\d{{4}}|\d{{2}})|(?:{_MONTH})\.?\s+\d{{1,2}}{_ORDINAL}(?:(?:,\s*|\s+)\d{{4}})?|"
     rf"\d{{1,2}}{_ORDINAL}\s+(?:of\s+)?(?:{_MONTH})\b(?:(?:,\s*|\s+)\d{{4}})?|"
     rf"(?:{_MONTH})\.?\s+\d{{4}}|{_ISO}|"
+    rf"{_NUMERIC_DATE}|{_HALF}|\d{{1,2}}-(?:{_MONTH})-(?:\d{{4}}|\d{{2}})|"
     rf"\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}}|(?:next|last|this)\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|week|month|quarter|year)|"
     rf"\d+\s+(?:days?|weeks?|months?|years?|hours?|minutes?)|"
     # Short time units; bare "s" and "h" stay out ("1990s", "10s of thousands").
@@ -59,27 +83,49 @@ _CODES = "|".join(sorted(ISO_4217 - _WORD_CODES))
 # alternative stops at ",50," and the plain one then reads "2,50" as 2.50. Each
 # repeat ends in its comma so it cannot eat the last group.
 _INDIAN_NUMBER = r"\d{1,2},(?:\d{2},)++\d{3}(?!,\d)(?:\.\d{1,2})?+"
-_NUMBER = rf"(?>{_INDIAN_NUMBER}|\d{{1,3}}(?:[,.\u00a0\u202f]\d{{3}})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
-_SPACED_NUMBER = rf"(?>{_INDIAN_NUMBER}|\d{{1,3}}(?:[,.\u00a0\u202f ]\d{{3}})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
+# Swiss amounts group with an apostrophe ("CHF 1'250.50").
+_NUMBER = rf"(?>{_INDIAN_NUMBER}|\d{{1,3}}(?:[,.\u00a0\u202f'’]\d{{3}})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
+_SPACED_NUMBER = rf"(?>{_INDIAN_NUMBER}|\d{{1,3}}(?:[,.\u00a0\u202f'’ ]\d{{3}})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
 _SCALE = rf"(?:\s?(?i:{SCALE_WORDS})\b)?"
 # "CAD 3D" and "$5MM" are not an amount followed by more letters, and a number
 # cut short of its next group ("₹2,50" of "₹2,50,000,000") is no amount at all.
 _END = r"(?![A-Za-z\d]|[.,]\d)"
+_SYMBOL = r"(?:US\$|R\$|C\$|A\$|HK\$|NZ\$|S\$|CN¥|RMB|Rs\.?|[$€£¥₹₩₽₺₪₫₱])"
+_TRAILING = rf"(?:(?:{_CODES}|{LOWER_CODES})\b|[€£₹](?!\d)|(?i:dollar|euro|yen|rupee)s?\b)"
+_RANGE_TO = r"(?:\s?[–—-]\s?|\sto\s)"
+# A range whose scale or currency is written once ("$5-10M", "500-1000 EUR"), tried
+# first so "$5" of "$5-10M" is not read alone. With the currency in front the high
+# end must carry the scale, so "USD 555-1234" stays a plain amount.
+_MONEY_RANGE = (
+    # The same symbol may be written again on the high end: "€2M-€3M", "$5M - $10M".
+    # "$5M - €10M" is two amounts, so the second symbol must match the first.
+    rf"(?:(?P<range_symbol>{_SYMBOL})|(?:{_CODES})\s)\s?{_NUMBER}{_SCALE}{_RANGE_TO}"
+    rf"(?:(?P=range_symbol)\s?)?{_NUMBER}\s?(?i:{SCALE_WORDS})\b{_END}"
+    rf"|(?<![\d,][\s\u00a0])(?<!,){_SPACED_NUMBER}{_SCALE}{_RANGE_TO}{_SPACED_NUMBER}{_SCALE}\.?\s?{_TRAILING}"
+)
+# A currency named in a header or label, as a table row reads: "Price (USD): 1,250.00",
+# a range or an accounting negative after it. Outside the leading lookbehind, so "Price(USD): 500" reads too.
+_HEADER_MONEY = (
+    rf"\((?:{_CODES}|{LOWER_CODES}|{_SYMBOL})\)\s?:\s?"
+    rf"(?:[-−]?\s?{_NUMBER}{_SCALE}(?:{_RANGE_TO}{_NUMBER}{_SCALE})?{_END}|\({_NUMBER}{_SCALE}\))"
+)
+# The apostrophe lookbehind keeps a long "1'000'000'..." run linear: no match starts
+# inside a grouped number.
 _MONEY = re.compile(
-    rf"(?<![A-Za-z0-9.])(?:"
-    rf"(?:US\$|R\$|C\$|A\$|HK\$|NZ\$|S\$|CN¥|RMB|Rs\.?|[$€£¥₹₩₽₺₪₫₱])\s?{_NUMBER}{_SCALE}{_END}"
+    rf"{_HEADER_MONEY}|(?<![A-Za-z0-9.])(?<!\d['’])(?:{_MONEY_RANGE}"
+    rf"|{_SYMBOL}\s?{_NUMBER}{_SCALE}{_END}"
     rf"|(?:{_CODES})\s?{_NUMBER}{_SCALE}{_END}"
-    rf"|(?<![\d,][\s\u00a0])(?<!,){_SPACED_NUMBER}{_SCALE}\s?(?:(?:{_CODES})\b|[€£₹](?!\d)|(?i:dollar|euro|yen|rupee)s?\b))",
+    rf"|(?<![\d,][\s\u00a0])(?<!,){_SPACED_NUMBER}{_SCALE}\.?\s?{_TRAILING})",
 )
 # A grouped number is read whole, so "1,000%" is never "000%".
 _GROUPED = r"(?>\d{1,3}(?:,\d{3})++|\d++)(?:\.\d++)?+"
 # No \b after "%": it is not a word character, so "12.5% " has no boundary there.
-_PERCENT = re.compile(rf"(?<![\d.,]){_GROUPED}\s?(?:%|(?:bps|percent|per\s?cent|pct)\b)", re.IGNORECASE)
+_PERCENT = re.compile(rf"(?<![\d.,])(?<!\d['’]){_GROUPED}\s?(?:%|(?:bps|percent|per\s?cent|pct)\b)", re.IGNORECASE)
 # Bare "m" and "g" are lowercase only: "100M users" and "5G" are counts and networks.
 _QUANTITY = re.compile(
-    rf"(?<![\d.,]){_GROUPED}\s?(?:km/h|km|cm|mm|kg|lb|lbs|mi|ft|mph|kph|°C|°F|celsius|fahrenheit"
-    r"|[kmgtp]i?b|(?-i:m|g))\b(?!/)"
-    rf"|(?<![\d.,]){_GROUPED}\s?[kKmM]?\s?tokens?\b",
+    rf"(?<![\d.,])(?<!\d['’]){_GROUPED}\s?(?:km/h|km|cm|mm|kg|lb|lbs|mi|ft|mph|kph|°C|°F|celsius|fahrenheit"
+    r"|[kmgt]?wh|[kmgtp]i?b|(?-i:m|g))\b(?!/)"
+    rf"|(?<![\d.,])(?<!\d['’]){_GROUPED}\s?[kKmM]?\s?tokens?\b",
     re.IGNORECASE,
 )
 _AGE = re.compile(r"\b\d{1,3}[\-\s]?years?[\-\s]?old\b", re.IGNORECASE)
@@ -194,7 +240,9 @@ def _date_kind(surface: str) -> EntityKind:
         r"\d+(?:\.\d+)?\s?(?:ms|msecs?|milliseconds?|secs?|seconds?|mins?|hrs?)", lowered,
     ):
         return EntityKind.DURATION
-    if lowered.startswith(("q", "fy")) or " to " in lowered or "/" in lowered and "fy" in lowered:
+    if lowered.startswith(("q", "fy", "between")) or " to " in lowered or "/" in lowered and "fy" in lowered:
+        return EntityKind.DATE_RANGE
+    if re.fullmatch(r"h[12].*|[12]h.*", lowered):
         return EntityKind.DATE_RANGE
     if re.fullmatch(r"(?:next|last|this)\s+(?:week|month|quarter|year)", lowered):
         return EntityKind.DATE_RANGE

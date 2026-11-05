@@ -13,7 +13,9 @@
     "s3": "Includes test_tc_life_001_disable_keeps_data_and_re_enable_resumes at 15.5 min on Neo4j. It hit its settle deadline on 2026-10-30, but it took 14.8 and 11.8 min when it passed on 2026-10-25, so that is its usual cost and is counted.",
     "connectors_1": "Taken from the 2026-10-25 run. The 2026-10-28 run is not used: its connector tests ran on both xdist workers at once (291 min of test time in 150 min of wall clock), so its times measure two suites contending for one stack. Its postgres and mariadb scenario matrices also waited out 300 s timeouts. minio adds the lifecycle and visibility tests added since, measured on 2026-10-28 (5.5 min across both legs).",
     "local_fs": "0: every local_fs test skips (the suite still assumes the connector walks a mounted folder, but Local FS now pulls events from the desktop). It needs new minutes once the suite is rewritten.",
-    "gitlab": "1.1 min measured, because every test failed at setup: the GitLab test instance answered HTTP 502. When it works the suite takes about 33 min (2026-09-19), and the shards are balanced on that figure, so this file counts 32.9 rather than the 1.1 measured."
+    "gitlab": "1.1 min measured, because every test failed at setup: the GitLab test instance answered HTTP 502. When it works the suite takes about 33 min (2026-09-19), and the shards are balanced on that figure, so this file counts 32.9 rather than the 1.1 measured.",
+    "servicenow_sim": "Measured locally on one leg, not in CI: 9.5 min of pytest time on Neo4j (12 tests) against the ServiceNow simulator on a dev stack, 2026-10-30, plus about 4 min to make the probed people's accounts on a fresh stack; the ArangoDB leg is assumed similar. Replace with the minutes from the first nightly that runs it.",
+    "zammad_sim": "Estimated, not measured: the suite is new (24 tests against the Zammad simulator, two or three syncs of a small installation each, one permission query per probed person after each). Sized from bookstack_sim (27 tests, 18.5 min across both legs) plus about 2 min per leg to make the 14 probed people's accounts; on a local stack one Neo4j leg took 3.7 min of pytest time. Replace with the minutes from the first nightly that runs it."
   },
   "minutes": {
     "notion": 71.0,
@@ -47,6 +49,9 @@
     "local_fs_sim": 23.0,
     "bookstack_sim": 18.5,
     "gmail_workspace": 21.8,
-    "gmail_individual": 3.3
+    "gmail_individual": 3.3,
+    "salesforce": 30.0,
+    "servicenow_sim": 25.0,
+    "zammad_sim": 30.0
   }
 }

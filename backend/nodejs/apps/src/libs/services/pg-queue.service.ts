@@ -17,6 +17,7 @@ import {
   runWithEnvelope,
   signMessage,
 } from '../context/envelope';
+import { redactSecretsInText } from '../utils/log-redaction.utils';
 import { spawnDetached } from '../context/orgContext';
 import { ensurePgRuntime } from '../db/runtime-boot';
 import { PgListener, listenUrl } from '../db/listen';
@@ -104,6 +105,10 @@ interface ClaimedRow {
   msg_key: string | null;
   headers: string | null;
 }
+
+/** The text kept in `last_error`: redacted first, then cut, so the cut cannot leave half a secret. */
+export const storedError = (text: string): string =>
+  redactSecretsInText(text).slice(0, 500);
 
 function unit<R>(write: boolean, fn: (tx: Tx) => Promise<R>): Promise<R> {
   return ensurePgRuntime().withUow({ preOrg: true, write }, fn);
@@ -532,10 +537,10 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
         error: text,
       });
       try {
-        if (r.attempts >= max) await finish(SQL.dead, [text.slice(0, 500)]);
+        if (r.attempts >= max) await finish(SQL.dead, [storedError(text)]);
         else
           await finish(SQL.nack, [
-            text.slice(0, 500),
+            storedError(text),
             Math.min(RETRY_BASE_S() * r.attempts, 30),
           ]);
       } catch (e) {

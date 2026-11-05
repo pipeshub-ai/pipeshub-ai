@@ -22,20 +22,20 @@ import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
-from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.agents.agent_loop.entity_search_tool import (
     entity_search_offered_in,
     named_entities_enabled_in,
 )
+from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
-from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
 )
+from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
 from app.modules.retrieval.exact_terms import exact_text_search_gated
 from app.modules.retrieval.selection_scope import connection_sources_of
@@ -1071,7 +1071,9 @@ class KnowledgeGraph:
             "Q3 Roadmap', 'what's in this Drive folder', 'Legal's documents'). For content "
             "inside an entity, use search(entity_ids=[...]) instead.\n\n"
             "Pages with cursor: when more records may exist the output ends with the exact "
-            "call for the next page. There are no totals. 'No accessible records found' is the "
+            "call for the next page. The first page's header states how many readable records "
+            "the entity has in all ('N shown of T'), 'at least T' when counting stopped early, or "
+            "that the total is not available: answer 'how many' from it instead of counting pages. 'No accessible records found' is the "
             "same response whether the entity has no records or none you can access; paging "
             "past the last page says so separately."
         ),
@@ -1149,24 +1151,62 @@ class KnowledgeGraph:
         short_description="Find accessible records that mention a typed value",
         description=(
             "Find records the user can access that mention a typed value: a date range, "
-            "an amount in a currency, a quantity, or a percentage. Requires named-entity "
+            "an amount in a currency, a quantity, or a percentage. Use it when the question "
+            "is about a value rather than words (\"deals over $50k\", \"incidents in March "
+            "2026\", \"latency above 200 ms\"): it finds a record however the value is "
+            "written there. Requires named-entity "
             "extraction to be enabled. Lists readable records most recently modified first, "
             "each with the values that matched, in pages: continue with the call it prints. "
             "To look in one knowledge base or app (the Invoices knowledge base for \"invoices over "
-            "$50k\"), pass its id in source_ids. record_types is the storage type (FILE, MAIL, "
-            "TICKET, ...), not a document kind."
+            "$50k\"), pass its id in source_ids. To keep records about a company, person or product "
+            "(\"Acme invoices over $50k\"), pass its name, which is linked to its entities as an "
+            "entity search links it, or entity_ids an entity search returned. record_types is the storage type (FILE, MAIL, TICKET, ...), not a document kind."
         ),
         parameters=[
             ToolParameter(name="kinds", type=ParameterType.ARRAY, description="Optional entity kinds.", required=False, items={"type": "string"}),
-            ToolParameter(name="name", type=ParameterType.STRING, description="Optional name prefix.", required=False),
-            ToolParameter(name="date_from", type=ParameterType.INTEGER, description="Range start, epoch milliseconds.", required=False),
-            ToolParameter(name="date_to", type=ParameterType.INTEGER, description="Range end, epoch milliseconds.", required=False),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Optional name of a company, person or product the records must mention; linked to its entities, not a prefix.", required=False),
+            ToolParameter(name="entity_ids", type=ParameterType.ARRAY, description="Optional entity ids an entity search returned; records must mention one of them.", required=False, items={"type": "string"}),
+            ToolParameter(
+                name="date_from", type=ParameterType.STRING,
+                description=(
+                    "Dates on or after this. ISO 8601: 'YYYY-MM-DD' (start of that day in UTC) or a "
+                    "full datetime with timezone (e.g. '2026-01-15T00:00:00Z'), not epoch milliseconds."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="date_to", type=ParameterType.STRING,
+                description=(
+                    "Dates on or before this, inclusive of the whole day for a date-only value. ISO 8601 "
+                    "like date_from. One day is date_from='2026-03-10', date_to='2026-03-10'; Q1 2026 is "
+                    "date_from='2026-01-01', date_to='2026-03-31'."
+                ),
+                required=False,
+            ),
             ToolParameter(name="amount_min", type=ParameterType.FLOAT, description="Minimum amount.", required=False),
             ToolParameter(name="amount_max", type=ParameterType.FLOAT, description="Maximum amount.", required=False),
-            ToolParameter(name="currency", type=ParameterType.STRING, description="ISO-4217 currency code.", required=False),
-            ToolParameter(name="quantity_min", type=ParameterType.FLOAT, description="Minimum quantity in SI units.", required=False),
-            ToolParameter(name="quantity_max", type=ParameterType.FLOAT, description="Maximum quantity in SI units.", required=False),
-            ToolParameter(name="dimension", type=ParameterType.STRING, description="Quantity dimension.", required=False),
+            ToolParameter(
+                name="currency", type=ParameterType.STRING,
+                description=(
+                    "ISO-4217 currency code; pass it whenever the question names one ('$' is USD unless the "
+                    "question says otherwise). Without it amounts in every currency are compared unconverted."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="quantity_min", type=ParameterType.FLOAT,
+                description="Minimum quantity in SI units: metres, kilograms, bytes, kelvin; seconds for time (0.2 for 200 ms). Pass dimension so units compare.",
+                required=False,
+            ),
+            ToolParameter(name="quantity_max", type=ParameterType.FLOAT, description="Maximum quantity in the same SI units.", required=False),
+            ToolParameter(
+                name="dimension", type=ParameterType.STRING,
+                description=(
+                    "Quantity dimension: length, weight, speed, temperature, data_size, tokens, or time "
+                    "(a duration such as '200 ms' or '4 hours'; months and years are not matched)."
+                ),
+                required=False,
+            ),
             ToolParameter(name="percent_min", type=ParameterType.FLOAT, description="Minimum percentage as a fraction: 0.2 for 20%.", required=False),
             ToolParameter(name="percent_max", type=ParameterType.FLOAT, description="Maximum percentage as a fraction: 0.2 for 20%.", required=False),
             ToolParameter(name="record_types", type=ParameterType.ARRAY, description="Optional record types to keep, e.g. FILE, MAIL, TICKET.", required=False, items={"type": "string"}),
@@ -1181,8 +1221,9 @@ class KnowledgeGraph:
         self,
         kinds: list[str] | None = None,
         name: str | None = None,
-        date_from: int | None = None,
-        date_to: int | None = None,
+        entity_ids: list[str] | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
         amount_min: float | None = None,
         amount_max: float | None = None,
         currency: str | None = None,
@@ -1201,6 +1242,7 @@ class KnowledgeGraph:
             self.state,
             kinds=kinds,
             name=name,
+            entity_ids=entity_ids,
             date_from=date_from,
             date_to=date_to,
             amount_min=amount_min,
@@ -1216,6 +1258,38 @@ class KnowledgeGraph:
             limit=limit,
             cursor=cursor,
         )
+
+    @tool(
+        path="/tools/knowledgegraph/find_co_mentioned_entities",
+        short_description="List the people, companies or products mentioned together with an entity",
+        description=(
+            "List the named entities (people, organizations, products, places, events, ...) mentioned in "
+            "the records that mention one entity, with how many of those records mention each, most "
+            "first, counted only over records you can read. Use it for \"who worked with Acme\", "
+            "\"which products come up with Pinecrest\", \"people in the Tidewater contracts\". Pass the "
+            "entity_ids search_entities returned for that one entity (all of its ids, aliases included). Each entity comes with its id and example records to cite; list "
+            "every record of one with find_records_by_entity. Contact details (emails, phones) are "
+            "listed only when named in kinds."
+        ),
+        parameters=[
+            ToolParameter(
+                name="entity_ids", type=ParameterType.ARRAY, required=True, items={"type": "string"},
+                description="Ids of one entity (up to 5) that search_entities returned.",
+            ),
+            ToolParameter(
+                name="kinds", type=ParameterType.ARRAY, required=False, items={"type": "string"},
+                description="Optional kinds to list: person, organization, product, location, event, ...",
+            ),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Entities to list (default 20, max 50).", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        display_name="Found entities mentioned together",
+    )
+    async def find_co_mentioned_entities(
+        self, entity_ids: list[str], kinds: list[str] | None = None, limit: int = 20,
+    ) -> tuple[bool, str]:
+        from .ops.co_mentions import execute_find_co_mentioned_entities
+        return await execute_find_co_mentioned_entities(self.state, entity_ids=entity_ids, kinds=kinds, limit=limit)
 
     @tool(
         path="/tools/knowledgegraph/find_records_by_person",
