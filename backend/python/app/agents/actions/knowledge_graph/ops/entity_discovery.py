@@ -38,6 +38,7 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+from app.utils.not_indexed import not_indexed_note
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -312,6 +313,9 @@ def _render_hits(
             item["apps"] = apps
         if hit.entity_type == RECORD_ENTITY_TYPE:
             item["entityId"] = _short(hit.entity_id, shortener)
+            if not hit.indexed:
+                item["indexingStatus"] = hit.indexing_status
+                item["note"] = not_indexed_note(hit.indexing_status)
             shown_record_ids.append(hit.entity_id)
         elif previews_left > 0 and hit.records:
             previews_left -= 1

@@ -1632,6 +1632,8 @@
     },
     "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také.",
     "noResultsFor": "Pro „{{query}}“ nebyly nalezeny žádné výsledky",
+    "matchedByName": "Shoda podle názvu",
+    "contentNotIndexedYet": "Obsah zatím není indexován",
     "removeSelectedSource": "Odebrat {{name}}",
     "diagramSourceCopied": "Zdroj diagramu zkopírován",
     "diagramImageCopied": "Obrázek diagramu zkopírován",

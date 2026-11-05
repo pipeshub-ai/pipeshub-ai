@@ -33,7 +33,7 @@ jobs:
             suites: ''
           - shard: integration
             files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py
-            min_tests: 55
+            min_tests: 56
             suites: ''
           - shard: graph
             files: tests/test_graph.py tests/test_retrieval.py
