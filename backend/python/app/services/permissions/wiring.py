@@ -11,6 +11,9 @@ if TYPE_CHECKING:
     import logging
 
     from app.config.configuration_service import ConfigurationService
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+    from .shadow import ShadowComparator
 
 
 async def register_viewer_scope_version(
@@ -38,3 +41,20 @@ async def register_scope_generation(config_service: ConfigurationService, logger
     from .generation import init_scope_generation
 
     await init_scope_generation(config_service, logger)
+
+
+def build_shadow_comparator(graph_provider: IGraphDBProvider) -> ShadowComparator | None:
+    """The shadow comparator when ``ACL_FILTER_MODE=shadow``, else None (no object, no task, no query in any other mode). It reads viewer
+    scopes through the cache that ``register_viewer_scope_version`` created (without one every comparison is skipped as
+    ``scopes_unavailable``)."""
+    if AclFilterMode.from_env() is not AclFilterMode.SHADOW:
+        return None
+    from app.services.cache.invalidation_hooks import get_viewer_scope_cache
+
+    from .adapters import GraphPrincipalView
+    from .service import ViewerScopeService
+    from .shadow import ShadowComparator
+    from .viewer import ViewerScopeResolver
+
+    resolver = ViewerScopeResolver(graph_provider.permission_hierarchy_view(), GraphPrincipalView(graph_provider))
+    return ShadowComparator(ViewerScopeService(resolver, get_viewer_scope_cache()), graph_provider)
