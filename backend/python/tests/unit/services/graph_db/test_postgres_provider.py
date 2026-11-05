@@ -188,3 +188,24 @@ async def test_ping_runs_one_constant_select_through_the_service_role() -> None:
     db.runtime_uow.return_value.__aexit__ = AsyncMock(return_value=False)
     await PgBase(logging.getLogger("t"), db).ping()
     tx.fetchval.assert_awaited_once_with("/* pipeshub:graph.ping */ SELECT 1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("org_id", "found"), [(None, True), ("o1", True), ("o2", False)])
+async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, found: bool) -> None:
+    """An ``org_id`` is checked against the bound org, never put into the query: a different org reads as no user."""
+    from app.core.org_context import for_org
+    from app.services.graph_db.postgres import identity
+
+    p = object.__new__(IdentityMixin)
+    p.logger = logging.getLogger("t")
+    p._one = AsyncMock(return_value={"email": "a@x.io"})
+    user = object()
+    with for_org("o1", job="t"), patch.object(identity, "_arango", lambda d, _c: d), \
+            patch.object(identity.User, "from_arango_user", return_value=user):
+        got = await p.get_user_by_email("A@x.io", org_id=org_id)
+    assert got is (user if found else None)
+    if found:
+        assert p._one.await_args.args[1:] == ("o1", "A@x.io")
+    else:
+        p._one.assert_not_awaited()
