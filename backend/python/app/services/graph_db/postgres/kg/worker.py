@@ -58,6 +58,8 @@ class KgWorker:
             if self._stop.is_set():
                 break                                      # what is left stays in the log for the next start
             rows += await drain_or_retry(self._db, org, page=self._page, stop=self._stop)
+            if self._stop.is_set():
+                break                                      # shutting down: no new unit for the gauges
             try:
                 with bind(_ctx(org)):
                     async with self._db.uow() as tx:

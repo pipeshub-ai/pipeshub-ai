@@ -179,7 +179,9 @@ async def run(db: KernelDB, orgs: Callable[[], Awaitable[list[str]]], *, page: i
     while not stop.is_set():
         took = 0
         for org in await orgs():
-            took += await drain_or_retry(db, org, page=page)
+            if stop.is_set():
+                break
+            took += await drain_or_retry(db, org, page=page, stop=stop)
         if not took:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(stop.wait(), idle_s)
