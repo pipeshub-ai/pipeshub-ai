@@ -2870,10 +2870,16 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             # The related tables are extra context: name none, and the turn goes on.
             logger.warning("FK enrichment: limit check unavailable, naming no related table: %s", exc)
             allowed = set()
-    related_record_ids &= allowed
     for relations in record_id_to_fk_relations.values():
         for key in ("children", "parents"):
             relations[key] = [rel for rel in relations[key] if rel.get("record_id") in allowed]
+    # A placeholder table is named in the relation lists above, but it is not a record to read: its blob, metadata, DDL and
+    # sample rows are not added to the context. A check that cannot answer adds no related content.
+    try:
+        related_record_ids &= await accessible_node_ids(graph_provider, allowed, user_id, org_id)
+    except PermissionVerificationUnavailableError:
+        logger.warning("FK enrichment: the content access check is unavailable, adding no related table content", exc_info=True)
+        related_record_ids = set()
 
     logger.debug("FK enrichment: total %d related records to fetch", len(related_record_ids))
 
