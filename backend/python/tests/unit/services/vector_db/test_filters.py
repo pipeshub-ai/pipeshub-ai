@@ -98,7 +98,10 @@ class TestBuildFilterExpression:
 
 def test_the_scope_keys_are_top_level_fields_like_the_membership_arrays() -> None:
     from app.services.permissions.scope_fields import SCOPE_KEYS
-    from app.services.vector_db.filters import build_generic_conditions, canonical_filter_key
+    from app.services.vector_db.filters import (
+        build_generic_conditions,
+        canonical_filter_key,
+    )
 
     for key in SCOPE_KEYS:
         assert canonical_filter_key(key) == key
