@@ -386,7 +386,7 @@ def test_the_statements_the_search_builds_from_parts_are_exactly_these() -> None
     # the four statements of the dense path, and the fragments they and the filters are made of (membership probes and the payload
     # conditions: fixed text, every value a ``$n``)
     assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 1,
-                     ("lexical.py", "lexical_sql"): 1, ("sql_filters.py", "_match"): 1, ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
+                     ("lexical.py", "lexical_sql"): 1, ("sql_filters.py", "_match"): 2, ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
 
 
 @pytest.mark.asyncio

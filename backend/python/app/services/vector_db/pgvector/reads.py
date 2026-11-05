@@ -10,6 +10,14 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
+from app.services.permissions.scope_fields import (
+    ACL_SCOPE_FIELD,
+    PATH_IDS_FIELD,
+    SCOPE_GENERATION_FIELD,
+    SCOPE_KEYS,
+    SCOPE_STAMP_FIELD,
+    SCOPE_VERSION_FIELD,
+)
 from app.services.vector_db.models import VectorPoint
 from app.services.vector_db.pgvector.errors import OrgMismatch
 from app.services.vector_db.pgvector.sql_filters import PROMOTED, Compiled
@@ -23,7 +31,8 @@ if TYPE_CHECKING:
 
 _ALIVE = "NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)"
 # paths that come from columns, so a scan asking for nothing else reads no payload
-_COLUMN_PATHS = {**PROMOTED, "connectorIds": None, "recordGroupIds": None, "rootRecordGroupIds": None}
+_COLUMN_PATHS = {**PROMOTED, "connectorIds": None, "recordGroupIds": None, "rootRecordGroupIds": None, **dict.fromkeys(SCOPE_KEYS)}
+_SCOPE_COLUMNS = "g.path_ids, g.acl_scope, g.scope_stamp, g.scope_version, g.scope_generation"
 
 
 def encode_offset(org: str, point_sk: int) -> str:
@@ -69,7 +78,8 @@ _COLUMN_KEYS = {"metadata.virtualRecordId": "vrid", "metadata.blockId": "block_i
 def to_point(row: asyncpg.Record, with_payload: list[str] | None, org: str) -> VectorPoint:
     """The payload as the other backends return it: stored payload, ``page_content`` and the membership arrays as siblings."""
     if row["payload"] is not None:
-        stored = json.loads(row["payload"])
+        # points written before the scope fields moved to the group may still carry them in the payload: the group's own values (or none) win
+        stored = {k: v for k, v in json.loads(row["payload"]).items() if k not in SCOPE_KEYS}
     else:      # only column paths were asked for: rebuild them from the columns
         stored = {"metadata": {"orgId": org}}
         for path, col in _COLUMN_KEYS.items():
@@ -78,6 +88,10 @@ def to_point(row: asyncpg.Record, with_payload: list[str] | None, org: str) -> V
     full = {**stored, "page_content": row["page_content"] or "",
             "connectorIds": list(row["connector_ids"] or []), "recordGroupIds": list(row["record_group_ids"] or []),
             "rootRecordGroupIds": list(row["root_record_group_ids"] or [])}
+    if row.get("scope_version") is not None:      # a group that was never stamped carries no scope keys, like a point of another store
+        full.update({PATH_IDS_FIELD: list(row["path_ids"] or []), ACL_SCOPE_FIELD: list(row["acl_scope"] or []),
+                     SCOPE_STAMP_FIELD: row["scope_stamp"], SCOPE_VERSION_FIELD: row["scope_version"],
+                     SCOPE_GENERATION_FIELD: row["scope_generation"]})
     if with_payload is None:
         return VectorPoint(id=str(row["point_id"]), payload=full)
     out: dict[str, Any] = {}
@@ -107,7 +121,7 @@ async def scroll(tx: Tx, org: str, collection_id: int, space_id: int, c: Compile
         SELECT p.point_sk, p.point_id, p.vrid, p.block_id, p.ent_type, p.ent_id, p.ent_kind, p.ent_level,
                {'pt.payload' if need_json else 'NULL::jsonb'} AS payload, {'pt.page_content' if need_text else 'NULL::text'} AS page_content,
                coalesce(g.connector_ids, '{{}}') AS connector_ids, coalesce(g.record_group_ids, '{{}}') AS record_group_ids,
-               coalesce(g.root_record_group_ids, '{{}}') AS root_record_group_ids
+               coalesce(g.root_record_group_ids, '{{}}') AS root_record_group_ids, {_SCOPE_COLUMNS}
         FROM retrieval.points p
         {'JOIN retrieval.point_text pt ON pt.org_id = $1 AND pt.point_sk = p.point_sk' if join_text else ''}
         LEFT JOIN retrieval.point_groups g ON g.org_id = $1 AND g.collection_id = p.collection_id AND g.group_key = p.group_key
@@ -123,7 +137,8 @@ async def retrieve(tx: Tx, org: str, collection_id: int, space_id: int, ids: lis
     rows = await tx.fetch(
         """/* pipeshub:pgvector.retrieve */
         SELECT p.point_id, p.vrid, p.block_id, p.ent_type, p.ent_id, p.ent_kind, p.ent_level, pt.payload, pt.page_content, coalesce(g.connector_ids, '{}') AS connector_ids,
-               coalesce(g.record_group_ids, '{}') AS record_group_ids, coalesce(g.root_record_group_ids, '{}') AS root_record_group_ids
+               coalesce(g.record_group_ids, '{}') AS record_group_ids, coalesce(g.root_record_group_ids, '{}') AS root_record_group_ids,
+               g.path_ids, g.acl_scope, g.scope_stamp, g.scope_version, g.scope_generation
         FROM retrieval.points p
         JOIN retrieval.point_text pt ON pt.org_id = $1 AND pt.point_sk = p.point_sk
         LEFT JOIN retrieval.point_groups g ON g.org_id = $1 AND g.collection_id = p.collection_id AND g.group_key = p.group_key
