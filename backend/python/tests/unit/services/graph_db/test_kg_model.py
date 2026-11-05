@@ -214,3 +214,16 @@ def test_an_app_a_group_of_records_or_a_record_is_no_grant_source(source: tuple)
     snap = world(nodes, [edge("permission", *source, *REC, type="USER", role="OWNER")])
     d = derive({REC, source}, snap)
     assert d.grants == {} and d.records[snap.sk[REC]]["granted"] is False
+
+
+def test_records_that_share_a_parent_or_a_group_with_another_connector_name_both_connectors() -> None:
+    other = ("apps", "b")
+    foreign_parent, foreign_group = ("records", "fp"), ("recordGroups", "fg")
+    nodes = {APP: {}, other: {}, foreign_parent: {"connectorId": "b"}, foreign_group: {"connectorId": "b"}, CHILD: {"connectorId": "a"}, REC: {"connectorId": "a"}}
+    snap = world(nodes, [edge("nodeRelations", *foreign_parent, *CHILD, relationshipType="PARENT_CHILD"), edge("belongsTo", *REC, *foreign_group),
+                         edge("nodeRelations", *REC, *CHILD, relationshipType="PARENT_CHILD")])
+    both = {snap.sk[APP], snap.sk[other]}
+    assert derive({CHILD}, snap).cross_apps == both and derive({REC}, snap).cross_apps == both
+    assert derive({foreign_parent}, snap).cross_apps == set()                         # a parent that has no parent of its own across connectors names none
+    inside = world({APP: {}, REC: {"connectorId": "a"}, CHILD: {"connectorId": "a"}}, [edge("nodeRelations", *REC, *CHILD, relationshipType="PARENT_CHILD")])
+    assert derive({CHILD}, inside).cross_apps == set()

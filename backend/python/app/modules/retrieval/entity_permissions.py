@@ -32,6 +32,7 @@ from app.modules.retrieval.selection_scope import (
     row_limit_key,
 )
 from app.modules.transformers.entity_vectorstore import EntitySearchPass
+from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.common.utils import (
     PERSON_EDGES_FROM_USER,
     PERSON_EDGES_TO_USER,
@@ -162,6 +163,11 @@ class EntityHit:
     filter_name: str = ""
     kind: str = ""
     """A named entity's kind (person, organization, ...); empty for other types."""
+    indexing_status: str | None = None
+    """A record hit's ``indexingStatus`` as the graph row has it; None for other types."""
+    indexed: bool = True
+    """False for a record hit whose content search cannot read yet. A graph row
+    without the status key (an older provider) counts as indexed."""
 
     @property
     def graph_filter_name(self) -> str:
@@ -666,6 +672,7 @@ async def search_entities_for_user(
             ),
             filter_name=_stored_name(probe),
             kind=str(probe.hit.get("kind") or ""),
+            **_record_indexing(probe),
         )
         for probe in kept_probes
         if (probe.entity_type, probe.entity_id) in shown_names
@@ -711,6 +718,16 @@ def spellings_on(rows: Iterable[dict[str, Any]]) -> dict[str, str]:
         entity_id: min(spellings.items(), key=lambda item: (-item[1], -len(item[0]), item[0]))[0]
         for entity_id, spellings in counts.items()
     }
+
+
+def _record_indexing(probe: _Probe) -> dict[str, Any]:
+    """``EntityHit``'s indexing fields from the graph row of a record hit."""
+    if probe.entity_type != RECORD_ENTITY_TYPE or not probe.permitted:
+        return {}
+    row = probe.permitted[0]
+    if "indexingStatus" not in row:
+        return {}
+    return {"indexing_status": row.get("indexingStatus"), "indexed": is_searchable_record(row)}
 
 
 def _stored_name(probe: _Probe) -> str:

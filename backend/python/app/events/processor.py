@@ -42,6 +42,11 @@ from app.modules.code_graph.block_projection import (
     drop_code_file_blocks,
     write_code_file_blocks_to_graph,
 )
+from app.modules.indexing.parse_now_marker import (
+    run_settings,
+    shape_status_write,
+    store_only_active,
+)
 from app.modules.parsers import parse_pool
 from app.modules.parsers.code_parser import engine as code_parser_engine
 from app.modules.parsers.code_parser.lang_config import detect_language
@@ -201,10 +206,13 @@ class Processor:
         prev_virtual_record_id: Optional[str] = None,
     ) -> TransformContext:
         """Create TransformContext with per-invocation reconciliation context."""
+        # The parse-now run, if any, rides in the settings (see parse_now_marker).
+        extra = {"settings": settings} if (settings := run_settings()) else {}
         return TransformContext(
             record=record,
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
+            **extra,
         )
 
     async def process_image(self, record_id, content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
@@ -236,7 +244,7 @@ class Processor:
                     success = await self.graph_provider.update_node(
                         record_id,
                         CollectionNames.RECORDS.value,
-                        status_fields,
+                        shape_status_write(status_fields),
                     )
                     if not success:
                         self.logger.warning(
@@ -1599,7 +1607,7 @@ class Processor:
         success = await self.graph_provider.update_node(
             record_id,
             CollectionNames.RECORDS.value,
-            status_update,
+            shape_status_write(status_update),
         )
         if not success:
             self.logger.warning(
@@ -1883,8 +1891,10 @@ class Processor:
         self.logger.info(
             f"Not indexing {record_name} ({size_bytes} bytes): {cause}; marking as not supported"
         )
-        await self._drop_code_blocks(record_id)
-        await self._release_skipped_content(org_id, record_id, virtual_record_id)
+        # A store-only run never touched the code graph or what is stored, so it has nothing to take back.
+        if not store_only_active():
+            await self._drop_code_blocks(record_id)
+            await self._release_skipped_content(org_id, record_id, virtual_record_id)
         await self._mark_record(record_id, ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason=reason)
         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1919,6 +1929,8 @@ class Processor:
         longer exists. Raises, like the projection: the status written next
         would otherwise claim a state the graph does not have.
         """
+        if store_only_active():
+            return
         await drop_code_file_blocks(self.graph_provider, record_id, self.logger)
 
     async def project_code_blocks_to_graph(
@@ -1953,7 +1965,7 @@ class Processor:
         table the file is missing from, which yields wrong edges rather than
         absent ones.
         """
-        if not code_graph_switch.CODE_GRAPH_ENABLED:
+        if not code_graph_switch.CODE_GRAPH_ENABLED or store_only_active():
             return
         try:
             if not file_path:

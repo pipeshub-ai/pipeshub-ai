@@ -18,6 +18,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { PatApi } from '../api';
 import type { PatExpiryOption, PatScopeItem } from '../types';
+import { defaultPatScopes } from '../default-scopes';
 
 // ========================================
 // Constants
@@ -113,9 +114,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
     try {
       const data = await PatApi.getScopes();
       setScopes(data.scopes ?? []);
-      // Default to the full MCP scope set, matching the backend default
-      // when no scopes are supplied.
-      setSelectedScopes(new Set((data.scopes ?? []).map((s) => s.name)));
+      setSelectedScopes(defaultPatScopes((data.scopes ?? []).map((s) => s.name)));
     } catch {
       setScopesErrorKey('workspace.personalAccessTokens.create.scopesLoadError');
     } finally {

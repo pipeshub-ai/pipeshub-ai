@@ -5,7 +5,8 @@ indexing, so an upgraded deployment starts with an empty or partial index,
 and a changed embedding model leaves vectors from the old one. This loop
 projects what the graph already holds, with no extraction or LLM call:
 
-- per connector (app document): its record groups, then its indexed records;
+- per connector (app document): its record groups, then its records, indexed or not,
+  removing the points of trashed ones;
 - per org (org document): its canonical taxonomy nodes, departments and
   people, with membership read from the graph, deleting points no record
   reaches;
@@ -34,7 +35,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames
 from app.connectors.services.entity_cleanup_intents import (
     clear_pending_entity_cleanup,
     list_pending_entity_cleanups,
@@ -48,8 +49,8 @@ from app.modules.indexing.vector_membership_backfill import (
     LeaderLock,
     VectorMembershipBackfillLeaderLock,
 )
-from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
+from app.services.messaging.record_titles import clean_record_title
 from app.services.messaging.utils import MessagingUtils
 from app.utils.loop_share import LoopShare
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -67,7 +68,8 @@ if TYPE_CHECKING:
 
 # Bump when what a pass writes changes, so its documents are re-projected;
 # separate, so a change to one pass does not re-scan every connector.
-ENTITY_INDEX_VERSION = 1
+# 2: records that are not indexed yet get a point too, and trashed ones lose theirs.
+ENTITY_INDEX_VERSION = 2
 # 2: people.
 ORG_PASS_VERSION = 2
 
@@ -587,23 +589,47 @@ class EntityIndexRebuilder:
 
     async def _project_connector_rows(self, run: _Pass, phase: str, rows: list[dict]) -> int:
         entities = []
+        trashed: dict[str, list[str]] = {}
         for row in rows:
             key, name, org_id = _key_of(row), _name(row.get("name")), _text(row.get("orgId"))
-            if not key or not name or not org_id:
+            if not key or not org_id:
+                continue
+            if phase == _RECORDS and row.get("isDeleted"):
+                # Its point, written while it was live, would keep it findable by name.
+                trashed.setdefault(org_id, []).append(key)
+                continue
+            if phase == _RECORDS:
+                # Same cut as the live title path, so both write identical text.
+                name = clean_record_title(row.get("name")) or ""
+            if not name:
+                continue
+            # The live path gives these no point.
+            if phase == _RECORDS and (
+                row.get("isInternal") or row.get("isPlaceholder") or row.get("mimeType") in FOLDER_MIME_TYPES
+            ):
                 continue
             if phase == _RECORD_GROUPS:
                 entities.append(EntityRecord.for_record_group(key, name, org_id, run.key))
                 continue
-            if not is_searchable_record(row) or row.get("isDeleted"):
-                continue
+            # Every live record, indexed or not: a record is findable by name before its content is indexed.
             entities.append(EntityRecord.for_record(
                 key, name, org_id, run.key, _text(row.get("recordGroupId")) or None,
             ))
+        failed = 0
+        for org_id, ids in trashed.items():
+            try:
+                await self.store.delete_entities(org_id, EntityType.RECORD.value, ids)
+            except Exception:
+                self.logger.warning(
+                    "entity_index_rebuild: could not remove the points of %d trashed record(s) | connector=%s",
+                    len(ids), run.key, exc_info=True,
+                )
+                failed += len(ids)
         if not entities:
-            return 0
+            return failed
         # Replace mode: a record's and a group's membership is exactly their
         # own connector and group, as on the index path.
-        return (await self.store.upsert_entities_batch(entities, merge_membership=False)).failed
+        return failed + (await self.store.upsert_entities_batch(entities, merge_membership=False)).failed
 
     async def _project_taxonomy_rows(self, run: _Pass, phase: str, rows: list[dict]) -> int:
         async def _still_leader() -> None:

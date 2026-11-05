@@ -14,6 +14,7 @@ from app.services.graph_db.postgres.kg.model import (
     COLL_CODE,
     HIERARCHY,
     LINK_HIERARCHY,
+    MAX_ID,
     RECORD_COLLS,
     GEdge,
     Key,
@@ -43,7 +44,7 @@ def _split(keys: set[Key]) -> tuple[list[str], list[str]]:
 
 
 async def load_nodes(tx: Tx, org: str, keys: set[Key]) -> dict[Key, dict]:
-    keys = {k for k in keys if k[0] in COLL_CODE}
+    keys = {k for k in keys if k[0] in COLL_CODE and len(k[1]) <= MAX_ID}
     if not keys:
         return {}
     colls, ids = _split(keys)
@@ -100,7 +101,8 @@ async def load_has_children(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
         return set()
     rows = await tx.fetch("""/* pipeshub:kg.read_has_children */ SELECT DISTINCT e.from_coll, e.from_id FROM graph.edges e
         WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[])
-          AND EXISTS (SELECT 1 FROM graph.nodes c WHERE c.org_id = e.org_id AND c.id = e.to_id AND c.coll = ANY($4::text[]))""", org, ids, list(HIERARCHY), list(RECORD_COLLS))
+          AND e.to_coll = ANY($4::text[])
+          AND EXISTS (SELECT 1 FROM graph.nodes c WHERE c.org_id = e.org_id AND c.coll = e.to_coll AND c.id = e.to_id)""", org, ids, list(HIERARCHY), list(RECORD_COLLS))
     return {(r["from_coll"], r["from_id"]) for r in rows} & keys
 
 

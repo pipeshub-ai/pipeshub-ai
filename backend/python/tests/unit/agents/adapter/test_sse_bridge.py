@@ -1256,14 +1256,17 @@ class TestHeartbeat:
     async def test_heartbeat_puts_heartbeat_frames_on_queue(self) -> None:
         queue: asyncio.Queue = asyncio.Queue()
         task = asyncio.create_task(_heartbeat(queue, interval=0.01))
-        await asyncio.sleep(0.05)  # enough for ~4 heartbeats
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        try:
+            # Wait for the frames, not for a fixed time: a loaded host delays them but does not stop them. A heartbeat
+            # that never fires fails here after the bound instead of passing or failing by luck of the clock.
+            items = [await asyncio.wait_for(queue.get(), timeout=10) for _ in range(2)]  # at least a couple fired
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
-        assert queue.qsize() >= 2  # at least a couple fired
-        item = await queue.get()
-        assert item["event"] == "HEARTBEAT"
-        assert item["data"]["type"] == "HEARTBEAT"
+        for item in items:
+            assert item["event"] == "HEARTBEAT"
+            assert item["data"]["type"] == "HEARTBEAT"
 
     async def test_no_heartbeat_events_for_legacy_protocol(self) -> None:
         """Default `protocol="legacy"` must not start the heartbeat task at

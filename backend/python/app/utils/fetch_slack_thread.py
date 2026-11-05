@@ -152,7 +152,8 @@ async def user_can_access_node(
     except Exception as e:
         logger.warning("Access check failed for node %s: %s", node_id, e)
         return False
-    return node is not None
+    # A placeholder is listed for browsing but is not a record to open: it is refused like one the user cannot read.
+    return node is not None and node.get("isPlaceholder") is not True
 
 
 class FetchSlackThreadArgs(BaseModel):
