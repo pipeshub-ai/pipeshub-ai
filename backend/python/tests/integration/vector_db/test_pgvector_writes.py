@@ -329,3 +329,42 @@ async def test_an_index_run_that_read_the_graph_before_the_sync_loses_to_it(stor
     await store.set_payload("records", {"connectorIds": ["synced"]}, flt(A, virtualRecordId="r1"), computed_at=now + timedelta(seconds=30))
     await store.upsert_points("records", [point(A, "p1", conn=["stale"])], computed_at=now + timedelta(seconds=10))     # read before the sync wrote
     assert [tuple(r) for r in await sql(store, MEMBERS, A, "r1")] == [(1, "synced")]
+
+
+STAMP = {"scopeStamp": "union", "pathIds": ["s1", "p1"], "aclScope": ["s1"], "scopeFieldsVersion": 5, "scopeGeneration": 3}
+SCOPE_ROW = ("SELECT path_ids, acl_scope, scope_stamp, scope_version, scope_generation FROM retrieval.point_groups "
+             "WHERE org_id = $1 AND group_key = 'r1'")
+MEMBERS_OF_R1 = "SELECT kind, member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = 'r1' ORDER BY 1, 2"
+
+
+async def test_the_scope_fields_ride_with_the_group_and_are_read_back_only_when_it_was_stamped(store) -> None:
+    stamped = point(A, "p1", conn=["c1"])
+    stamped.payload.update(STAMP)
+    await store.upsert_points("records", [stamped, point(A, "p2")])                       # one record, two points, one carries the stamp
+    row = (await sql(store, SCOPE_ROW, A))[0]
+    assert (list(row[0]), list(row[1]), row[2], row[3], row[4]) == (["s1", "p1"], ["s1"], "union", 5, 3)
+    assert [tuple(r) for r in await sql(store, MEMBERS_OF_R1, A)] == [(1, "c1"), (4, "p1"), (4, "s1"), (5, "s1")]
+    assert "scopeStamp" not in (await sql(store, "SELECT payload FROM retrieval.point_text WHERE org_id = $1 LIMIT 1", A))[0][0]
+    await store.upsert_points("records", [point(B, "q1", vrid="r9")])                     # a group nobody stamped
+    with org_context.bind(org_context.OrgContext(A, None, "service", "t", "-")):
+        got = await store.retrieve_points("records", [pid(f"{A}/p2")])                    # the other point of the stamped group reads it too
+        assert got[0].payload["scopeStamp"] == "union" and got[0].payload["pathIds"] == ["s1", "p1"] and got[0].payload["scopeGeneration"] == 3
+    with org_context.bind(org_context.OrgContext(B, None, "service", "t", "-")):
+        plain = (await store.retrieve_points("records", [pid(f"{B}/q1")]))[0].payload
+        assert not {"scopeStamp", "pathIds", "aclScope", "scopeFieldsVersion", "scopeGeneration"} & set(plain)    # never stamped: no keys, not "container"
+
+
+async def test_a_payload_merge_replaces_the_stamp_whole_behind_the_fence_and_a_membership_write_leaves_it(store) -> None:
+    now = datetime.now(UTC)
+    first = point(A, "p1", conn=["c1"])
+    first.payload.update(STAMP)
+    await store.upsert_points("records", [first], computed_at=now)
+    newer = {"scopeStamp": "container", "pathIds": [], "aclScope": [], "scopeFieldsVersion": 5, "scopeGeneration": 4}
+    await store.set_payload("records", newer, flt(A, virtualRecordId="r1"), computed_at=now - timedelta(seconds=5))     # an earlier read loses
+    assert (await sql(store, SCOPE_ROW, A))[0][2] == "union"
+    await store.set_payload("records", newer, flt(A, virtualRecordId="r1"), computed_at=now + timedelta(seconds=5))
+    row = (await sql(store, SCOPE_ROW, A))[0]
+    assert (list(row[0]), list(row[1]), row[2], row[4]) == ([], [], "container", 4)
+    assert [tuple(r) for r in await sql(store, MEMBERS_OF_R1, A)] == [(1, "c1")]          # the old path and scope members are gone with the lists
+    await store.set_payload("records", {"connectorIds": ["c2"]}, flt(A, virtualRecordId="r1"), computed_at=now + timedelta(seconds=9))
+    assert (await sql(store, SCOPE_ROW, A))[0][2] == "container"                           # a write that carries no stamp leaves it

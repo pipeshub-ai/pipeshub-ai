@@ -169,6 +169,53 @@ async def test_a_group_write_replaces_only_the_arrays_it_carries() -> None:
     import json
 
     rows = json.loads(seen[0][2])
-    assert rows == [{"k": "g", "c": ["c9"], "r": None, "x": None}]                        # the other two arrays are absent, not empty
+    assert rows == [{"k": "g", "c": ["c9"], "r": None, "x": None, "p": None, "a": None, "s": None, "v": None, "n": None}]   # absent, not empty
     members = json.loads(seen[1][2])
     assert members == [{"k": "g", "kind": 1, "members": ["c9"]}]                             # and only connector members are diffed
+
+
+STAMP = {"scopeStamp": "union", "pathIds": ["s1", "p1"], "aclScope": ["s1"], "scopeFieldsVersion": 5, "scopeGeneration": 3}
+
+
+def test_a_stamped_point_stores_the_scope_fields_with_its_group_and_not_in_its_payload() -> None:
+    b = writes.prepare([pt(1, connectorIds=["c1"], **STAMP)])
+    assert b.groups == {"r1": {"connectorIds": ["c1"], "pathIds": ["s1", "p1"], "aclScope": ["s1"], "scopeStamp": "union",
+                               "scopeFieldsVersion": 5, "scopeGeneration": 3}}
+    assert not any(k in b.payloads[0] for k in STAMP)                  # group-level only: one row per record, not per chunk
+
+
+def test_a_stamp_is_all_the_scope_fields_or_none_of_them() -> None:
+    assert writes.membership_of({"pathIds": ["x"]}) == {}                # a lone list would pair with an older stamp: it is not a stamp
+    assert writes.membership_of({"scopeStamp": "container"}) == {"pathIds": [], "aclScope": [], "scopeStamp": "container",
+                                                                 "scopeFieldsVersion": 0, "scopeGeneration": -1}
+    with pytest.raises(ValueError):                                      # a malformed stamp is refused, not stored
+        writes.membership_of({**STAMP, "scopeFieldsVersion": "five"})
+    with pytest.raises(ValueError):
+        writes.membership_of({**STAMP, "scopeGeneration": "x"})
+
+
+@pytest.mark.asyncio
+async def test_a_group_write_mirrors_the_stamp_lists_as_member_kinds_four_and_five() -> None:
+    import json
+    from datetime import UTC, datetime
+
+    won = [{"group_key": "g", "connector_ids": [], "record_group_ids": [], "root_record_group_ids": [], "path_ids": ["s1", "p1"], "acl_scope": None}]
+    seen: list[tuple] = []
+
+    class Tx(RecordingTx):
+        async def fetch(self, sql: str, *args: object) -> list[dict]:
+            seen.append(args)
+            return won
+
+        async def execute(self, sql: str, *args: object) -> str:
+            seen.append(args)
+            return "INSERT 0 0"
+
+    group = writes.membership_of(STAMP)
+    assert await writes.write_groups(Tx(), A, 1, {"g": group}, datetime.now(UTC), allow_empty=True) == 1
+    assert json.loads(seen[0][2])[0]["s"] == "union" and json.loads(seen[0][2])[0]["n"] == 3
+    members = {(m["kind"], tuple(m["members"])) for m in json.loads(seen[1][2])}
+    assert members == {(4, ("s1", "p1")), (5, ())}                       # a NULL list of the row is an empty member set, not a crash
+    seen.clear()
+    await writes.write_groups(Tx(), A, 1, {"g": {"connectorIds": ["c"]}}, datetime.now(UTC), allow_empty=True)
+    assert {m["kind"] for m in json.loads(seen[1][2])} == {1}              # a write without a stamp leaves kinds 4 and 5 alone
