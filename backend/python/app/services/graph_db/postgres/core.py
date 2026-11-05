@@ -240,7 +240,11 @@ class CoreMixin(PgBase):
         return bool(r)
 
     # ---- generic edges -----------------------------------------------------------------------------------------
-    async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
+    async def batch_create_edges(
+        self, edges: list[dict], collection: str, transaction: str | None = None, *, count_created: bool = False
+    ) -> bool:
+        if count_created:  # this store does not report which edges a write created; the store's before/after comparison covers it
+            raise NotImplementedError("batch_create_edges(count_created=True) is not supported on the PostgreSQL graph store")
         if not edges:
             return True
         org = current_org_id()

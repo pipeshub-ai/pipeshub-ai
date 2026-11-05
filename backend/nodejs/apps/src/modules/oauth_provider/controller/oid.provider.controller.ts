@@ -16,6 +16,11 @@ import {
   buildWwwAuthenticateHeader,
 } from '../middlewares/oauth.auth.middleware';
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service';
+import {
+  agentAuthEnabled,
+  AGENT_CLAIM_GRANT,
+  JWT_BEARER_GRANT,
+} from '../constants/agent-auth.constants';
 import { AgentMcpScopes, mcpDiscoveryScopes } from '../config/scopes.config';
 import { renderAuthMd } from '../utils/auth-md';
 
@@ -115,6 +120,9 @@ export class OIDCProviderController {
       ? await this.firstPartyDeviceAppService.getOrCreate()
       : null;
 
+    // Registration follows first-party device login, and needs the app it signs in as.
+    const agentAuth = agentAuthEnabled() && deviceClientId !== null;
+
     const config: OpenIDConfiguration = {
       issuer: this.appConfig.oauthIssuer,
       authorization_endpoint: `${baseUrl}/authorize`,
@@ -130,6 +138,16 @@ export class OIDCProviderController {
       ...(deviceClientId
         ? { pipeshub_device_client_id: deviceClientId }
         : {}),
+      ...(agentAuth
+        ? {
+            agent_auth: {
+              skill: `${backendUrl}/auth.md`,
+              identity_endpoint: `${backendUrl}/api/v1/agent/identity`,
+              claim_endpoint: `${backendUrl}/api/v1/agent/identity/claim`,
+              identity_types_supported: ['service_auth'],
+            },
+          }
+        : {}),
       scopes_supported: this.scopeValidatorService
         .getAllScopes()
         .map((s) => s.name),
@@ -141,6 +159,7 @@ export class OIDCProviderController {
         ...(deviceEnabled
           ? ['urn:ietf:params:oauth:grant-type:device_code']
           : []),
+        ...(agentAuth ? [JWT_BEARER_GRANT, AGENT_CLAIM_GRANT] : []),
         // Service-account delegation, advertised only where it exists.
         // Listing a grant the token endpoint will always refuse would send
         // integrators down a road that ends in an error, and discovery is

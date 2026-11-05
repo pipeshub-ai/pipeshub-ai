@@ -24,15 +24,20 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         # token_endpoint_auth_methods_supported=["client_secret_basic"] only.
         # No registration_endpoint. Sign-in in PipesHub with a Marketplace
         # General App (user-managed) listed tools.
+        # Scopes match this host's tools/list (9 tools). Zoom does not expose
+        # create/update/delete meeting on this server; those REST scopes are omitted.
         authorization_url="https://zoom.us/oauth/authorize",
         token_url="https://zoom.us/oauth/token",
         default_scopes=[
             "meeting:read:search",
-            "meeting:write:meeting",
             "meeting:read:assets",
-            "meeting:update:meeting",
-            "meeting:delete:meeting",
-            "meeting:update:in_meeting_controls",
+            "agentic_search:read:search",
+            "cloud_recording:read:list_user_recordings",
+            "cloud_recording:read:content",
+            "docs:read:export",
+            "docs:write:import",
+            "hub:read:content",
+            "hub:write:content",
         ],
         supports_dcr=False,
         documentation_url="https://developers.zoom.us/docs/mcp/servers/connect-to-zoom-mcp-servers/",
@@ -41,9 +46,10 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text=(
                 "Create a User-managed General App in the Zoom App Marketplace, add "
                 "this deployment's redirect URI (HTTPS; Zoom rejects localhost), add "
-                "the meeting scopes listed above, and paste that app's client ID and "
-                "secret — Zoom does not support dynamic client registration. Use the "
-                "Production credentials when this PipesHub URL is the live one."
+                "the scopes listed above, and paste that app's client ID and secret — "
+                "Zoom does not support dynamic client registration. Use the Production "
+                "credentials when this PipesHub URL is the live one. Recordings, Docs "
+                "and Hub also need those products on the Zoom account."
             ),
         ),
         tags=["meetings", "collaboration"],

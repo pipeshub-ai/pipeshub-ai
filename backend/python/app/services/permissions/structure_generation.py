@@ -74,22 +74,26 @@ async def mark_scope_dirty(graph_provider: Any, connector_id: str | None, *, att
         raise ScopeGenerationError(f"could neither bump nor mark unsafe the structure generation of {connector_id}") from last
 
 
-async def note_structure_change(graph_provider: Any, connector_id: str | None, logger: logging.Logger | None = None) -> None:  # noqa: ANN401
+async def note_structure_change(graph_provider: Any, connector_id: str | None, logger: logging.Logger | None = None) -> bool:  # noqa: ANN401
     """`mark_scope_dirty` for a caller that must not fail on it (its structural write is done): only while the scope fields are on, and a
-    connector it cannot record is logged at error (`mark_scope_dirty` has already tried the unsafe mark)."""
+    connector it cannot record is logged at error (`mark_scope_dirty` has already tried the unsafe mark). Returns False when the change
+    could not be recorded, so a caller that must not finish without it (a migration) can stay pending."""
     if not scope_fields_enabled():
-        return
+        return True
     try:
         await mark_scope_dirty(graph_provider, connector_id)
     except Exception:
         (logger or logging.getLogger(__name__)).exception("could not record the structure change of connector %s", connector_id)
+        return False
+    return True
 
 
-async def note_org_structure_change(graph_provider: Any, org_id: str | None, logger: logging.Logger | None = None) -> None:  # noqa: ANN401
+async def note_org_structure_change(graph_provider: Any, org_id: str | None, logger: logging.Logger | None = None) -> bool:  # noqa: ANN401
     """The same for a write that touched an unknown set of the organisation's connectors (a node purge, a migration): every connector of
-    the organisation, or of every organisation when ``org_id`` is None. A failed read of the apps is logged and leaves them as they were."""
+    the organisation, or of every organisation when ``org_id`` is None. Returns False when the organisations or their connectors could not
+    be listed, or a connector could not be recorded: the change is then not recorded everywhere (logged), and a migration stays pending."""
     if not scope_fields_enabled():
-        return
+        return True
     log = logger or logging.getLogger(__name__)
     try:
         try:
@@ -101,11 +105,14 @@ async def note_org_structure_change(graph_provider: Any, org_id: str | None, log
             orgs = [org_id] if org_id else [str(o.get("_key") or o.get("id")) for o in await graph_provider.get_all_orgs(active=False, raise_on_error=True)]
     except Exception:
         log.exception("could not list the organisations whose structure changed (organisation %s)", org_id or "all")
-        return
+        return False
+    recorded = True
     for org in orgs:
         try:
             with for_org(org, job="scope_structure_change"):  # the apps of one organisation are read, and marked, inside it
                 for app in await graph_provider.get_org_apps(org, active_only=False, raise_on_error=True) or []:
-                    await note_structure_change(graph_provider, str(app.get("_key") or app.get("id")), log)
+                    recorded &= await note_structure_change(graph_provider, str(app.get("_key") or app.get("id")), log)
         except Exception:
             log.exception("could not list the connectors whose structure changed (organisation %s)", org)
+            recorded = False
+    return recorded
