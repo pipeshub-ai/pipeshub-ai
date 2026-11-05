@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.messages import AssistantMessage, UserMessage
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
-from app.agents.agent_loop.coverage.evidence import Evidence, collect_evidence
+from app.agents.agent_loop.coverage.evidence import (
+    Evidence,
+    collect_evidence,
+    record_ref,
+)
 from app.agents.agent_loop.coverage.gate import (
     Gap,
     GateDecision,
@@ -78,7 +82,7 @@ _GAP_LINES = {
 
 def render_gap_request(decision: GateDecision, results_text: str) -> str:
     lines = ["Before you finalise, check your draft against these points:"]
-    lines += [f"- {_GAP_LINES[gap.kind].format(label=gap.label)}" for gap in decision.gaps]
+    lines += [f"- {_GAP_LINES[gap.kind].format(label=' '.join(gap.label.split()))}" for gap in decision.gaps]
     lines += [f"- {ruling}" for ruling in decision.rulings]
     if decision.gaps:
         lines.append(
@@ -186,7 +190,7 @@ def _record_label(context: "AgentContext") -> "Callable[[str | None, str], str]"
 
     def _name(record_id: str | None, name: str) -> str:
         shown_id = shortener.shorten_if_known(record_id) if shortener is not None and record_id else record_id
-        return f"{name} (record {shown_id})" if name and shown_id else name or shown_id or "a record"
+        return record_ref(shown_id, name)
 
     return _name
 

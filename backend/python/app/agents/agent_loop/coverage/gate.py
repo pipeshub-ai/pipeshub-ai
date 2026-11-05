@@ -30,7 +30,11 @@ from app.agents.agent_loop.coverage.checks import (
     near_duplicate_reads,
     unread_references,
 )
-from app.agents.agent_loop.coverage.evidence import Evidence, evidence_digest
+from app.agents.agent_loop.coverage.evidence import (
+    Evidence,
+    evidence_digest,
+    record_ref,
+)
 from app.agents.agent_loop.coverage.facets import (
     FacetPlan,
     facet_stated,
@@ -182,7 +186,7 @@ def rulings_from_report(
 
 
 def _default_name(record_id: str | None, name: str) -> str:
-    return f"{name} ({record_id})" if name and record_id else name or record_id or "a record"
+    return record_ref(record_id, name)
 
 
 async def assess_draft(

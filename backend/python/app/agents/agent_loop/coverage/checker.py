@@ -103,7 +103,9 @@ def _str(value: object) -> str:
 
 def _labels(value: object) -> list[str]:
     items: list[object] = [value] if isinstance(value, str) else cast("list[object]", value) if isinstance(value, list) else []
-    return [label.strip().upper() for label in items if isinstance(label, str) and label.strip()]
+    # The digest shows labels as "[R2]", and the reply may copy that form.
+    labels = (label.strip().strip("[]").strip().upper() for label in items if isinstance(label, str))
+    return [label for label in labels if label]
 
 
 def _bool(value: object, default: bool) -> bool:  # noqa: FBT001
