@@ -384,9 +384,10 @@ async def _update_push_during_cascade(env, deleting, seed: int, run: int, *, hol
     undo_records = wrap(env.graph, "_delete_nodes_by_keys", before=cascade_at_records) if arango(env) else (lambda: None)
     if lost_attempts is None and arango(env) and hold_at == "after_claim":
         # The cascade's retries back off for a random 0.4 to 1.1 s in all, so a hold of fixed length can end after the
-        # retries do and the delete fails: hold until the cascade has lost 0, 1 or 2 times instead (the same push,
-        # interleaved at a point the cascade decides, not the clock).
-        lost_attempts = rng.choice([0, 1, 2])
+        # retries do and the delete fails: hold until the cascade has lost once or twice instead (the same push,
+        # interleaved at a point the cascade decides, not the clock). Never 0: the hold would end as the first batch
+        # starts, and whether that batch loses would then depend on scheduling, not on the case.
+        lost_attempts = rng.choice([1, 2])
     push_task = asyncio.ensure_future(push_outcome(env, ext="upd-1", version=2, text="new"))
     try:
         await asyncio.wait_for(gate_in.wait(), 30)
