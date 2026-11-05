@@ -23,6 +23,7 @@ import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextOrgId } from '../context/request-context';
 import { recordAgentCall } from './agent-call-recorder';
+import { CALLER_ROLE_LOOKUP_PATH, MCP_PATH } from './rate-limit.middleware';
 
 const CLIENT_NAME_HEADER = 'client-name';
 const WEB_CLIENT_NAME = 'pipeshub-ai';
@@ -147,6 +148,19 @@ export class AuthMiddleware {
 
     // verify the oauth token (checks signature, expiry, revocation status)
     const payload = await oauthTokenService.verifyAccessToken(token);
+
+    // Audience-bound tokens (RFC 8707) are only issued for /mcp, so one works elsewhere only
+    // as part of an /mcp tool call. The role lookup is also allowed: a Python service that a
+    // tool call reaches asks it to confirm the token is live, and it sends no relay header.
+    const route = `${req.baseUrl}${req.path}`.replace(/\/$/, '');
+    if (
+      payload.aud !== undefined &&
+      route !== MCP_PATH &&
+      !(req.method === 'GET' && route === CALLER_ROLE_LOOKUP_PATH) &&
+      !this.tokenService.isMcpRelay(req)
+    ) {
+      throw new UnauthorizedError('This token is only valid at /mcp');
+    }
 
     const tokenScopes = parseScopeString(payload.scope);
     if (tokenScopes.length === 0) {
@@ -305,6 +319,7 @@ export class AuthMiddleware {
       delegatedBy,
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
+      oauthAudience: payload.aud,
     };
     setContextOrgId(orgId);
     // The web app's client name lets an agent run wait for a person to approve a tool call.

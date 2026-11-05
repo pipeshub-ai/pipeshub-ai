@@ -37,6 +37,7 @@ interface AppInfo {
   homepageUrl?: string;
   privacyPolicyUrl?: string;
   isDynamic?: boolean;
+  clientIdHost?: string;
   knowledgeLimit?: KnowledgeLimit;
 }
 
@@ -636,6 +637,17 @@ export function OAuthAuthorizeView() {
               {t('oauthConsent.unreviewedApp')}
             </Text>
           ) : null}
+
+          {consentData.app.clientIdHost ? (
+            <Text as="p" size="2" color="gray" style={{ wordBreak: 'break-all' }}>
+              {t('oauthConsent.clientIdHost', { host: consentData.app.clientIdHost })}
+            </Text>
+          ) : null}
+
+          {/* In full, port included: a loopback redirect may use any port, so the host alone would not show which program gets the code. */}
+          <Text as="p" size="2" color="gray" style={{ wordBreak: 'break-all' }}>
+            {t('oauthConsent.redirectTo', { uri: consentData.redirectUri })}
+          </Text>
 
           <Separator size="4" />
 

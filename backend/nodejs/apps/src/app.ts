@@ -99,6 +99,10 @@ import {
   createSlackEventsRateLimiter,
   slackEventsRateLimitPerMinute,
 } from './libs/middlewares/rate-limit.middleware';
+import {
+  noFraming,
+  UNFRAMEABLE_PAGE_PATHS,
+} from './libs/middlewares/no-framing.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
@@ -386,6 +390,8 @@ export class Application {
       this.bootstrapNotificationBrokerConsumer();
       this.bootstrapMailBrokerConsumer();
       editionBoot.startWorkers(this.logger);
+
+      this.app.use(UNFRAMEABLE_PAGE_PATHS, noFraming);
 
       // Serve static frontend files\
       const publicDir = path.join(__dirname, 'public');
