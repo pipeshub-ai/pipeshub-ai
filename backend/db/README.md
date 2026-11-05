@@ -173,7 +173,7 @@ Privileges are attributed through the whole membership graph (inherit or SET), s
 every role that reaches it.
 
 Roles: `python -m db.bootstrap_roles [--vetted schema,schema]` (administrative `PG_ADMIN_URL`; idempotent, additive, no
-role gets SUPERUSER, CREATEROLE or BYPASSRLS). On an existing database, run it again before every `db.migrate` upgrade: a new revision can need a role the old bootstrap did not create, and migrate stops at that revision. Each service has a login `pipeshub_<svc>_login`, a member of its own NOLOGIN
+role gets SUPERUSER, CREATEROLE or BYPASSRLS). A login that would be created needs its `PG_<ROLE>_PASSWORD` or the run stops (exit 2) before creating anything; `PG_BOOTSTRAP_ALLOW_NO_PASSWORD=1` waives that for peer, trust or certificate authentication. On an existing database, run it again before every `db.migrate` upgrade: a new revision can need a role the old bootstrap did not create, and migrate stops at that revision. Each service has a login `pipeshub_<svc>_login`, a member of its own NOLOGIN
 service role `WITH INHERIT FALSE, SET TRUE`: the login holds no privileges until the unit of work switches role. No role
 bypasses RLS: `pipeshub_backup` reads all rows through a SELECT policy, `pipeshub_restore` (NOLOGIN) inserts through a
 policy that admits only the org of an open restore window.

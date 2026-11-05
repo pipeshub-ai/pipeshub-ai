@@ -18,7 +18,7 @@ import time
 from typing import TYPE_CHECKING
 
 from app.core.org_context import OrgContext, bind, spawn_detached
-from app.services.graph_db.postgres.kg import guard
+from app.services.graph_db.postgres.kg import guard, modes
 from app.services.graph_db.postgres.kg.project import decode, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.telemetry.backend import METRICS_BACKEND
@@ -108,9 +108,13 @@ _pending: set[asyncio.Task] = set()
 _in_sweep: contextvars.ContextVar[bool] = contextvars.ContextVar("kg_in_sweep", default=False)
 
 
+class _Busy(Exception):
+    """A connector on a copy is locked by a flip or a promotion."""
+
+
 async def _take_back(tx: Tx) -> None:
     """Projection off: keep no change-log row. Every write unit of the connectors service (not only one that wrote the graph: the indexing and query roles log too, cannot take
-    their rows back, and may be the only ones writing) takes back its own rows at commit. The ack runs in a savepoint: a lock wait or a timeout in it rolls back to the savepoint,
+    their rows back, and may be the only ones writing) takes back its own rows at commit; rows taken back send every connector of the org back to the walk (one select when nothing is on the copy). The ack runs in a savepoint: a lock wait or a timeout in it rolls back to the savepoint,
     is logged and counted, and the unit goes on to commit, because it must never fail a business write; the rows stay for a later sweep. The rows of the other roles are swept
     after the commit (:func:`_after_commit`). Switching the projection on later starts with a backfill (a later change), which copies every node of the org, so what was dropped
     here is not lost."""
@@ -118,7 +122,14 @@ async def _take_back(tx: Tx) -> None:
         return
     try:
         async with tx.savepoint("kg_take_back"):
-            await KgWriter(tx).changes_ack()
+            mine = {r["app_id"] for r in await tx.fetch("/* pipeshub:kg.own_apps */ SELECT DISTINCT app_id FROM kg.graph_changes WHERE org_id = $1 AND txid = pg_current_xact_id()", tx.org_id)}
+            if not await modes.try_lock_copies(tx, tx.org_id, mine - {""}, org_wide="" in mine):      # a flip, a promotion or a first backfill batch holds a connector: it must see the rows, and this unit must not wait
+                raise _Busy
+            taken = await KgWriter(tx).changes_ack()
+            if taken:
+                await modes.demote_org(tx, tx.org_id)      # the rows just deleted were the only evidence that kg is behind: no copy of this org can be trusted any more
+    except _Busy:
+        TAKE_BACK_FAILED.inc("busy")
     except Exception:
         TAKE_BACK_FAILED.inc("ack")
         logger.exception("kg take-back of this unit's change-log rows failed; the unit commits and the rows wait for the sweep")
@@ -144,10 +155,15 @@ async def _sweep(db: KernelDB, org: str) -> None:
     async def go(tx: Tx) -> None:
         w = KgWriter(tx)
         for _ in range(SWEEP_PAGES):
-            ids = [r["id"] for r in await tx.fetch("/* pipeshub:kg.sweep_read */ SELECT id FROM kg.graph_changes WHERE org_id = $1 ORDER BY id LIMIT $2", org, SWEEP_PAGE)]
-            if ids:
-                await w.changes_delete(ids)
-            if len(ids) < SWEEP_PAGE:
+            page = await tx.fetch("/* pipeshub:kg.sweep_read */ SELECT id, app_id FROM kg.graph_changes WHERE org_id = $1 ORDER BY id LIMIT $2", org, SWEEP_PAGE)
+            apps = {r["app_id"] for r in page}
+            if not await modes.try_lock_copies(tx, org, apps - {""}, org_wide="" in apps):      # the connectors of the rows too (a first backfill batch is on no copy yet)
+                TAKE_BACK_FAILED.inc("busy")
+                return
+            if page:
+                await w.changes_delete([r["id"] for r in page])
+                await modes.demote_org(tx, org)
+            if len(page) < SWEEP_PAGE:
                 break
     token = _in_sweep.set(True)
     try:
