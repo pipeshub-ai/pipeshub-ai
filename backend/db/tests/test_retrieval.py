@@ -503,3 +503,32 @@ def test_an_unfiltered_sparse_search_never_returns_a_tombstoned_point_whose_post
         c.execute("INSERT INTO retrieval.point_tombstones (org_id, point_sk) VALUES (%s, %s)", (ORG_A, gone))
     assert [r[0] for r in search(cluster, name, ORG_A, [10])] == [live]               # no filter
     assert [r[0] for r in search(cluster, name, ORG_A, [10], arms=(["c"], None, None, None))] == []   # a filter that admits nothing here
+
+
+def test_downgrading_the_scope_fields_removes_the_path_and_scope_members_of_every_org_and_upgrades_again(rdb):
+    """retrieval_0002 -> retrieval_0001 runs as the migration role: kind 4 and 5 members of every org are gone, the old check is back, the columns are gone,
+    and an upgrade restores the wide check and the columns."""
+    cluster, name = rdb
+    seed_two_orgs(cluster, name)
+    with connect_as(cluster, name, "pipeshub_jobs") as c:
+        for org in (ORG_A, ORG_B):
+            with uow(c, "pipeshub_jobs", org):
+                c.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g', 4, 'p1'), (%s, 1, 'g', 5, 's1')", (org, org))
+
+    def members() -> list[tuple]:
+        with cluster.admin(name) as a:                                  # the superuser sees every org
+            return [tuple(r) for r in a.execute("SELECT org_id, kind FROM retrieval.group_members ORDER BY 1, 2")]
+
+    assert members() == [(o, k) for o in sorted((ORG_A, ORG_B)) for k in (1, 4, 5)]
+    r = run_migrate(cluster.url(name, "pipeshub_migrate"), "downgrade", "retrieval_0001", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    assert members() == [(o, 1) for o in sorted((ORG_A, ORG_B))]
+    with cluster.admin(name) as a:
+        assert a.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'retrieval' AND table_name = 'point_groups' AND column_name = 'scope_stamp'").fetchone()[0] == 0
+        with pytest.raises(pg.CheckViolation):
+            a.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g', 4, 'p1')", (ORG_A,))
+    r = run_migrate(cluster.url(name, "pipeshub_migrate"))
+    assert r.returncode == 0, r.stdout
+    with cluster.admin(name) as a:
+        a.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g', 4, 'p1'), (%s, 1, 'g', 5, 's1')", (ORG_A, ORG_B))
+        assert a.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'retrieval' AND table_name = 'point_groups' AND column_name = 'scope_stamp'").fetchone()[0] == 1

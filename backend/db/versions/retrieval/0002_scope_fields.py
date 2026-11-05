@@ -15,7 +15,10 @@ def upgrade():
 
 
 def downgrade():
+    # The table forces row-level security, which would hide every org's rows from the owner: lift it for the delete so that no org keeps a row the old check refuses.
+    op.execute("ALTER TABLE retrieval.group_members NO FORCE ROW LEVEL SECURITY")
     op.execute("DELETE FROM retrieval.group_members WHERE kind > 3")
+    op.execute("ALTER TABLE retrieval.group_members FORCE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE retrieval.group_members DROP CONSTRAINT group_members_kind_check")
     op.execute("ALTER TABLE retrieval.group_members ADD CONSTRAINT group_members_kind_check CHECK (kind IN (1, 2, 3))")
     op.execute("ALTER TABLE retrieval.point_groups DROP COLUMN path_ids, DROP COLUMN acl_scope, DROP COLUMN scope_stamp, "
