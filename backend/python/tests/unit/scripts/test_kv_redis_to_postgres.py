@@ -30,6 +30,9 @@ class FakePg:
     async def delete_key(self, key) -> bool:
         return self.rows.pop(key, None) is not None
 
+    async def list_keys_in_directory(self, directory) -> list[str]:
+        return [k for k in self.rows if k.startswith(directory)]
+
 
 def _src(redis, namespace="") -> RedisDistributedKeyValueStore:
     store = RedisDistributedKeyValueStore(bytes, bytes, host="x", port=1, key_prefix="pipeshub:kv:")
@@ -176,4 +179,14 @@ async def test_a_key_written_again_after_it_was_gone_is_copied(redis) -> None:
     dst = WrittenAgainDuringTheCopy()
     out = await copy_kv(src, dst)
     assert dst.rows["/services/back"] == b"enc-back"
+    assert out["different_after"] == 0
+
+
+async def test_a_configuration_key_only_postgres_holds_is_a_conflict_and_runtime_rows_are_left_alone(redis) -> None:
+    dst = FakePg({"/services/removed": b"stale", "lease:sync:1": b"runtime"})
+    out = await copy_kv(_src(redis), dst)
+    assert out["conflicts"] == ["/services/removed"]
+    assert "/services/a" not in dst.rows  # refused before any write
+    out = await copy_kv(_src(redis), dst, overwrite=True)
+    assert "/services/removed" not in dst.rows and dst.rows["lease:sync:1"] == b"runtime"
     assert out["different_after"] == 0

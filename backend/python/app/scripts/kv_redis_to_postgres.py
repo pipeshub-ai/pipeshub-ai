@@ -12,8 +12,9 @@ Only keys under the KV prefix and namespace are copied; leases, locks, caches an
 state and are left alone. Values are copied as stored (already encrypted); they are never decoded or
 printed. A key's remaining TTL becomes its expiry; a key already expired is not copied.
 
-A key PostgreSQL already holds with a different value stops the run before any write (exit 1, key
-names listed) unless ``--overwrite`` is given. Every live key is written with the value and TTL Redis
+A key PostgreSQL already holds with a different value, or a configuration key it holds that Redis does
+not, stops the run before any write (exit 1, key names listed) unless ``--overwrite`` is given (which
+replaces or removes them). Every live key is written with the value and TTL Redis
 holds at that moment (equal values too, so PostgreSQL's expiry matches Redis's), so a re-run after a
 successful copy changes nothing. Stop the services first for a clean cutover: after the copy every
 copied key is compared with Redis again and re-copied if a service changed it meanwhile, but a key
@@ -68,14 +69,16 @@ async def copy_kv(
     live = {k: r for k in keys if (r := await _read(src, k))}
     existing = {k: await dst.get_key(k) for k in keys}
     gone = [k for k in keys if k not in live]  # expired in Redis: PostgreSQL must not keep a live copy either
+    # configuration keys are paths ("/services/..."); runtime state in the same table ("lease:...") is never touched
+    only_in_postgres = sorted(set(await dst.list_keys_in_directory("/")) - set(keys))
     conflicts = sorted([k for k in live if existing[k] is not None and existing[k] != live[k][0]]
-                       + [k for k in gone if existing[k] is not None])
+                       + [k for k in gone if existing[k] is not None] + only_in_postgres)
     summary |= {"skipped_expired": len(keys) - len(live), "conflicts": conflicts}
     if conflicts and not overwrite:  # refuse before any write
         return summary
     removed = 0
-    for k in gone:
-        if existing[k] is not None:  # only reached with --overwrite: Redis no longer has the key
+    for k in [*gone, *only_in_postgres]:  # only reached with --overwrite: Redis no longer has the key
+        if k in only_in_postgres or existing[k] is not None:
             removed += await dst.delete_key(k)
     written = changed = expired_late = 0
     for k in live:
@@ -100,6 +103,7 @@ async def copy_kv(
         now = await _read(src, k)
         if await dst.get_key(k) != (now[0] if now else None):
             different += 1
+    different += len(set(await dst.list_keys_in_directory("/")) - set(keys))  # a configuration key Redis does not have
     return summary | {"written": written, "changed": changed, "unchanged": written - changed, "expired_during_copy": expired_late,
                       "removed_expired": removed,
                       "recopied": recopied, "different_after": different}
