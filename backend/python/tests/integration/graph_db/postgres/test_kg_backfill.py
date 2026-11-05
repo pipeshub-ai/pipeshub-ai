@@ -86,6 +86,43 @@ async def test_a_backfill_copies_a_connector_and_flips_it_to_shadow_with_its_dig
     assert again.flipped and again.batches == 0 and again.result.digest == out.result.digest
 
 
+async def test_a_connector_copied_after_its_neighbour_takes_the_neighbours_parent_out_of_leaf(pg_db) -> None:
+    """f2 (first connector) is the parent of x1 (second). The first connector is copied and stamped while kg holds no row for x1, so f2 is stamped a leaf; copying the second
+    connector must restamp f2, which its own restamp does not cover."""
+    p, org = await fresh_world(pg_db)
+    await add_edge(p, org, ("records", "f2"), ("records", "x1"), "nodeRelations", relationshipType="PARENT_CHILD")
+
+    async def clear(tx) -> None:
+        await KgWriter(tx).changes_delete([r["id"] for r in await tx.fetch("SELECT id FROM kg.graph_changes WHERE org_id = $1", org)])
+    await run_in(pg_db, org, clear, write=True)
+
+    async def leaf(tx) -> bool:
+        return (await tx.fetchrow("SELECT r.leaf FROM kg.records r JOIN kg.node_keys n ON n.org_id = r.org_id AND n.sk = r.sk WHERE r.org_id = $1 AND n.id = 'f2'", org))["leaf"]
+    await bf.backfill(pg_db, org, "app1", page=3)
+    assert await run_in(pg_db, org, leaf) is True                          # kg holds no child of f2 yet
+    await bf.backfill(pg_db, org, "app2", page=3)
+    assert await run_in(pg_db, org, leaf) is False
+
+
+async def test_a_connector_copied_after_its_neighbour_gives_the_neighbours_child_its_path(pg_db) -> None:
+    """The mirror: x1 (second connector) hangs under f2 (first). The second connector is copied and stamped while kg holds no row for f2, so x1 has no path; copying the first
+    must restamp x1, which its own restamp does not cover."""
+    p, org = await fresh_world(pg_db)
+    await add_edge(p, org, ("records", "f2"), ("records", "x1"), "nodeRelations", relationshipType="PARENT_CHILD")
+
+    async def clear(tx) -> None:
+        await KgWriter(tx).changes_delete([r["id"] for r in await tx.fetch("SELECT id FROM kg.graph_changes WHERE org_id = $1", org)])
+    await run_in(pg_db, org, clear, write=True)
+
+    async def has_path(tx) -> bool:
+        return (await tx.fetchrow("SELECT r.path IS NOT NULL AS p FROM kg.records r JOIN kg.node_keys n ON n.org_id = r.org_id AND n.sk = r.sk WHERE r.org_id = $1 AND n.id = 'x1'", org))["p"]
+    await bf.backfill(pg_db, org, "app2", page=3)
+    assert await run_in(pg_db, org, has_path) is False                     # kg holds no row for f2 yet
+    await bf.backfill(pg_db, org, "app1", page=3)
+    assert await run_in(pg_db, org, has_path) is True
+    assert (await verify(pg_db, org, "app2")).ok and (await verify(pg_db, org, "app1")).ok
+
+
 async def test_a_backfill_that_is_cut_resumes_at_its_last_committed_batch(pg_db, monkeypatch) -> None:
     p, org = await fresh_world(pg_db)
     part = await bf.backfill(pg_db, org, "app1", page=2, max_batches=1)
@@ -498,6 +535,20 @@ async def test_a_demotion_made_while_a_backfill_is_ending_is_not_undone_by_its_f
     out = await bf.backfill(pg_db, org, "app1", page=4)
     assert not out.flipped and out.result.ok
     assert (await state(pg_db, org, "app1"))[:2] == (None, "legacy")
+
+
+async def test_the_verify_names_a_stale_stamp_and_a_backfill_repairs_it(pg_db) -> None:
+    p, org = await shadowed(pg_db)
+    async def stamped(tx) -> int:
+        return await tx.fetchval("SELECT count(*) FROM kg.records WHERE org_id = $1 AND (class_id IS NOT NULL OR legacy_reason IS NOT NULL)", org)
+    assert await run_in(pg_db, org, stamped) > 0                              # the backfill restamped the connector (the copy itself writes none)
+    sk = await sk_of(pg_db, org, ("records", "fold"))
+    await corrupt(pg_db, org, lambda tx, w: w.stamps_set([{"sk": sk, "coll": 3, "id": "fold", "kind": 3, "path": None, "class_id": None, "self_lit": False, "seed": False, "own_grant": False,
+                                                          "under_deleted": False, "legacy_reason": 3, "leaf": True}]))
+    res = await verify(pg_db, org, "app1")
+    assert not res.ok and any(m.startswith("s|fold") for m in res.changed), res.changed
+    again = await bf.backfill(pg_db, org, "app1", page=4)                          # the backfill restamps the connector whole: the stale stamp is repaired
+    assert again.flipped and (await verify(pg_db, org, "app1")).ok
 
 
 async def test_a_take_back_leaves_the_rows_of_a_connector_whose_first_backfill_batch_has_not_committed(pg_db, monkeypatch) -> None:
