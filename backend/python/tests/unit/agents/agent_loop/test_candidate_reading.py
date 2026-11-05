@@ -3,6 +3,7 @@ the agent to read them before its answer is final."""
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -113,9 +114,12 @@ class TestFlag:
 
 
 class TestHook:
-    async def test_a_draft_that_skipped_top_records_is_held_to_read_them(self) -> None:
+    async def test_a_draft_that_skipped_top_records_is_held_to_read_them(self, caplog) -> None:
         context = _context()
-        ctx = await run_post_model(read_top_candidates(context), AssistantMessage(content=DRAFT), scope=_scope())
+        with caplog.at_level(logging.INFO, logger="app.agents.agent_loop.hooks.candidate_reading"):
+            ctx = await run_post_model(read_top_candidates(context), AssistantMessage(content=DRAFT), scope=_scope())
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert "ranks=[1, 2]" in logged and "chg-7702-per-depot" not in logged
         assert ctx.recovery_message is not None
         content = ctx.recovery_message.content
         assert "chg-7702-per-depot (record rec-b)" in content and "ops-1 (record rec-c)" in content

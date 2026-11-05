@@ -9,7 +9,7 @@ broke an answer that was right.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from app.agents.agent_loop.coverage.llm import complete_json
 from app.agents.agent_loop.coverage.opening import plain_text
@@ -59,13 +59,14 @@ async def disputed_quotes(
         llm, DISPUTE_SYSTEM, DISPUTE_USER.format(q=question, a=plain_text(draft)[:_MAX_DRAFT_CHARS]),
         timeout=timeout, purpose="dispute check", on_usage=on_usage,
     )
-    violations = (reply or {}).get("violations")
+    violations: object = (reply or {}).get("violations")
     if not isinstance(violations, list):
         return []
-    quotes = []
-    for violation in violations:
-        if not isinstance(violation, dict):
+    quotes: list[str] = []
+    for item in cast("list[object]", violations):
+        if not isinstance(item, dict):
             continue
+        violation = cast("dict[str, Any]", item)
         kind = str(violation.get("type") or "").strip().lower()
         quote = " ".join(str(violation.get("quote") or "").split())
         if kind in _DISPUTE_TYPES and quote and quote not in quotes:

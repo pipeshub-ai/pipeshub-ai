@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
@@ -1288,7 +1288,7 @@ async def _execute_search(
 
         _note_provenance(state, final_results, shown_records, raw_pattern_records)
         if candidate_reading_enabled():
-            note_search_ranks(state, final_results, shown_records)
+            note_search_ranks(cast("dict[str, Any]", state), final_results, shown_records)
         remember_shown_results(state, [*final_results, *pm_shown], shown_records)
         if targeted:
             remember_shown(state, final_results)

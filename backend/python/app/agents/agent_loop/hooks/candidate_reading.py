@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 CANDIDATE_READING_SENT = "candidate_reading_sent"
 # The fetch takes one turn, the restated answer another, and the completeness pass may take a third.
 _MIN_TURNS_LEFT = 3
-_LOGGED_NAME_CHARS = 120
 
 
 # ANSWER_SCOPE_GUARD: a candidate that only shared the question's words took the lead from the record the question
@@ -116,8 +115,8 @@ def read_top_candidates(context: "AgentContext") -> "Middleware[ModelResponseCon
             return
         context.tool_state[CANDIDATE_READING_SENT] = True
         logger.info(
-            "candidate_reading: sent back conversation=%s candidates=%r", context.conversation_id,
-            [(candidate.rank, candidate.name[:_LOGGED_NAME_CHARS]) for candidate in candidates],
+            "candidate_reading: sent back conversation=%s ranks=%r", context.conversation_id,
+            [candidate.rank for candidate in candidates],
         )
         ctx.recovery_message = UserMessage(
             content=render_reading_request([_label(context, candidate) for candidate in candidates]), injected=True,

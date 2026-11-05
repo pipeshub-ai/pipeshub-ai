@@ -215,7 +215,7 @@ def framing_hits(question: str, draft: str) -> list[FramingHit]:
     """What in a cited draft's framing should be rewritten, or nothing."""
     if framing_exempt(draft):
         return []
-    hits = []
+    hits: list[FramingHit] = []
     lead = limitation_lead(question, draft)
     if lead:
         hits.append(FramingHit("opening", lead))
