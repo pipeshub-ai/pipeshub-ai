@@ -1575,8 +1575,9 @@ class GraphDataStore(DataStoreProvider):
             # Retried; if it never lands the connector stays opened (not current) and is not closed.
             for attempt in range(_MARK_ATTEMPTS):
                 try:
-                    await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: new_unsafe_mark()}, transaction)
-                    tx_store.marked.add(connector_id)
+                    # False: no such app document, so no mark was written and the opening must not be counted as closed
+                    if await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: new_unsafe_mark()}, transaction) is not False:
+                        tx_store.marked.add(connector_id)
                     break
                 except Exception:
                     if attempt + 1 == _MARK_ATTEMPTS:

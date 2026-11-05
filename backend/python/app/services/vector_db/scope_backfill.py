@@ -185,17 +185,17 @@ class ScopeBackfill:
                 mark = unsafe_mark(app.get(UNSAFE_KEY))
             except ValueError:
                 structure = None
-            in_flight = unclosed_writes(app)
+            in_flight = unclosed_writes(app, allow_closed_ahead=close_open_mark)
             if in_flight is None:
                 structure = None
-            elif in_flight > 0:
+            elif in_flight != 0:
                 if not close_open_mark:
                     raise OpenMarkNotClosed(
                         f"{app_id} has {in_flight} unclassified write(s) that started and never wrote their closing mark, so a pass cannot tell whether "
                         "they finished. If no write of this organisation's connectors is still running, run again with --close-open-mark.")
                 # The operator says the writes are over: close them and write a mark now, which the pass that starts after it covers.
                 mark = new_unsafe_mark()
-                if not await self._graph.update_node(app_id, CollectionNames.APPS.value, {CLOSED_KEY: app.get(OPENED_KEY), UNSAFE_KEY: mark}):
+                if not await self._graph.update_node(app_id, CollectionNames.APPS.value, {CLOSED_KEY: app.get(OPENED_KEY) or 0, UNSAFE_KEY: mark}):
                     raise CheckpointRefused(f"the open writes of {app_id} could not be closed")
             if structure is None:  # a stored generation or mark that is not readable is not read as "never changed" or "none": nothing is written
                 raise UnreadableStructureState(
@@ -212,7 +212,7 @@ class ScopeBackfill:
                 except Exception as exc:  # the first write of a run: nothing else has been written
                     raise CheckpointRefused(
                         f"the back-fill checkpoint of {app_id} could not be written ({type(exc).__name__}). If the graph store's app schema is older "
-                        "than this release (it must list scopeBackfillStructureGeneration, scopeBackfillUnsafe, scopeProjectionOpened and scopeProjectionClosed), restart a connector or indexing "
+                        f"than this release (it must list {', '.join([*BACKFILL_KEYS.values(), OPENED_KEY, CLOSED_KEY])}), restart a connector or indexing "
                         "service, which applies the schema at start, and run again. Nothing was written."
                     ) from exc
             if p.state == DONE:

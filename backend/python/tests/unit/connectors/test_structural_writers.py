@@ -971,7 +971,7 @@ async def test_a_full_sync_moves_the_generation_when_it_removed_edges_or_may_hav
 class _AppDocs:
     """The app documents of a fake provider: update_node merges, increment_node_field is atomic (one statement, as on the three providers)."""
 
-    def __init__(self, provider, ids: list[str], fail=lambda kind, key: False) -> None:
+    def __init__(self, provider, ids: list[str], fail=lambda kind, key: False, missing: tuple[str, ...] = ()) -> None:
         self.docs: dict[str, dict] = {i: {} for i in ids}
         self.log: list[tuple[str, str, str]] = []
         self.fail = fail
@@ -979,6 +979,8 @@ class _AppDocs:
         async def update(key, collection, updates, *args, **kwargs) -> bool:
             if self.fail("update", key):
                 raise RuntimeError("graph down")
+            if key in missing:                                       # every provider answers False for a document that is not there
+                return False
             self.log.append(("update", key, ",".join(sorted(updates))))
             self.docs[key].update(updates)
             return True
@@ -1061,6 +1063,18 @@ async def test_a_connector_is_not_closed_when_its_mark_did_not_land(monkeypatch)
             await _Scratch.via_local_alias(tx, "r1")
     assert apps.docs["c1"].get("scopeProjectionClosed") == 1 and not apps.docs["c2"].get("scopeProjectionClosed")       # no closing step for c2
     assert apps.docs["c2"]["scopeProjectionOpened"] == 1
+
+
+async def test_a_connector_whose_app_document_is_missing_is_not_closed_for_a_mark_that_was_not_written(monkeypatch) -> None:
+    from app.core import org_context
+
+    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
+    apps = _AppDocs(provider, ["c1"], missing=("c1",))                                  # update_node answers False, it does not raise
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError):
+        async with store_provider.transaction() as tx:
+            await _Scratch.via_local_alias(tx, "r1")
+            raise RuntimeError("boom")
+    assert not apps.docs["c1"].get("scopeProjectionClosed") and not [e for e in apps.log if e[2] == "scopeProjectionClosed"]
 
 
 async def test_a_closing_step_that_fails_is_tried_again(monkeypatch) -> None:

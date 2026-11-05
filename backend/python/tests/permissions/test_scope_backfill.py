@@ -543,10 +543,22 @@ async def test_writes_that_never_closed_stop_the_run_until_the_operator_closes_t
     assert again.state == DONE
 
 
+async def test_the_flag_also_closes_a_connector_whose_closed_counter_got_ahead_of_the_opened_one() -> None:
+    from app.services.vector_db.scope_backfill import UnreadableStructureState
+
+    vdb, loaded, job, app = await setup()
+    loaded.graph.app_docs[app] = {"_key": app, "scopeProjectionOpened": 1, "scopeProjectionClosed": 2}   # closed by hand, then the write finished
+    with pytest.raises(UnreadableStructureState):
+        await job.run_connector(ORG, app)
+    p = await job.run_connector(ORG, app, close_open_mark=True)
+    doc = loaded.graph.app_docs[app]
+    assert doc["scopeProjectionOpened"] == 1 and doc["scopeProjectionClosed"] == 1 and p.state == DONE and app_is_current(doc)
+
+
 async def test_counters_that_do_not_read_stop_the_run_before_it_writes_anything_even_with_the_flag() -> None:
     from app.services.vector_db.scope_backfill import UnreadableStructureState
 
-    for opened, closed in (("x", 0), (1, "x"), (1, 2), (-1, 0), (True, 0)):
+    for opened, closed in (("x", 0), (1, "x"), (-1, 0), (True, 0)):
         vdb, loaded, job, app = await setup()
         loaded.graph.app_docs[app] = {"_key": app, "scopeProjectionOpened": opened, "scopeProjectionClosed": closed}
         with pytest.raises(UnreadableStructureState):
