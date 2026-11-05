@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import random
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -22,6 +23,9 @@ from .pg_support import new_org
 from .test_kg_derivation import ctx, edge, prov
 from .test_kg_projection import add_edge, delete_edge, delete_node, update_node
 from .test_kg_projection_races import OPS, world2
+
+if TYPE_CHECKING:
+    from app.core.db import Tx
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
 
@@ -170,7 +174,7 @@ async def test_a_page_of_the_whole_connector_restamp_that_reaches_another_connec
     held: list[set] = []
     real = backfill_mod.lock_apps
 
-    async def spy(tx, org_id, apps, **k):
+    async def spy(tx: Tx, org_id: str, apps: set[str], **k: bool) -> None:
         held.append(set(apps))
         return await real(tx, org_id, apps, **k)
     monkeypatch.setattr(backfill_mod, "lock_apps", spy)
