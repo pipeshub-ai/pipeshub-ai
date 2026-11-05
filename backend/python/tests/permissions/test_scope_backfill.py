@@ -323,7 +323,7 @@ async def test_a_page_written_again_after_a_failure_is_not_counted_twice() -> No
 
     async def save_once_failing(a: str, p: scope_backfill.Progress) -> None:
         saves["n"] += 1
-        if saves["n"] == 1:
+        if saves["n"] == 2:                      # the first save is the unfinished checkpoint of a fresh start; the second is the first page's
             raise RuntimeError("checkpoint store down")
         await real_save(a, p)
 
@@ -369,3 +369,214 @@ async def test_a_checkpoint_that_cannot_be_read_fails_the_run_and_leaves_the_sav
         await job.run_connector(ORG, app)
     monkeypatch.setattr(loaded.graph, "get_document", real)
     assert loaded.graph.app_docs[app] == saved  # the saved cursor was not overwritten by a fresh start
+
+
+# ---- currency: the pass records the structure generation it started from, read before any record ----
+
+from app.services.permissions.currency import StampCurrency, app_is_current  # noqa: E402
+from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY  # noqa: E402
+
+
+async def test_a_finished_pass_records_the_structure_generation_it_read_first_and_the_connector_is_current() -> None:
+    vdb, loaded, job, app = await setup()
+    loaded.graph.app_docs[app] = {"_key": app, GENERATION_KEY: 7}
+    p = await job.run_connector(ORG, app)
+    assert p.state == DONE and p.structure_generation == 7
+    assert loaded.graph.app_docs[app]["scopeBackfillStructureGeneration"] == 7
+    assert app_is_current(loaded.graph.app_docs[app]) and await StampCurrency(loaded.graph).current([app, "other"]) == {app}
+
+
+async def test_a_structural_change_during_the_pass_leaves_the_connector_not_current_until_the_pass_is_run_again() -> None:
+    vdb, loaded, job, app = await setup(page_size=3)
+    real_nodes, bumped = loaded.graph.stamps.nodes, {"done": False}
+
+    async def bump_while_reading(org: str, ids: frozenset[str]) -> dict:
+        if not bumped["done"]:
+            bumped["done"] = True
+            loaded.graph.app_docs.setdefault(app, {"_key": app})[GENERATION_KEY] = 1       # the change commits after the pass read the generation
+        return await real_nodes(org, ids)
+
+    loaded.graph.stamps.nodes = bump_while_reading  # type: ignore[method-assign]
+    p = await job.run_connector(ORG, app, max_pages=1000)
+    assert p.state == DONE and p.structure_generation == 0
+    assert not app_is_current(loaded.graph.app_docs[app])                  # done, but from before the change
+    again = await job.run_connector(ORG, app, max_pages=1000)               # a finished checkpoint of an older generation is not "nothing to do"
+    assert again.state == DONE and again.structure_generation == 1 and again.records > 0
+    assert app_is_current(loaded.graph.app_docs[app])
+
+
+async def test_a_change_after_the_pass_makes_the_connector_not_current_at_once_and_a_new_pass_makes_it_current() -> None:
+    vdb, loaded, job, app = await setup()
+    await job.run_connector(ORG, app)
+    assert app_is_current(loaded.graph.app_docs[app])
+    loaded.graph.app_docs[app][GENERATION_KEY] = 1                            # a structural write bumps it in its own transaction
+    assert not app_is_current(loaded.graph.app_docs[app]) and await StampCurrency(loaded.graph).current([app]) == frozenset()
+    await job.run_connector(ORG, app)
+    assert app_is_current(loaded.graph.app_docs[app])
+
+
+async def test_a_mark_written_before_the_pass_is_covered_by_it_and_one_written_during_it_is_not() -> None:
+    vdb, loaded, job, app = await setup()
+    await job.run_connector(ORG, app)
+    loaded.graph.app_docs[app][UNSAFE_KEY] = 1000                              # a change that could not move the generation
+    assert not app_is_current(loaded.graph.app_docs[app])
+    again = await job.run_connector(ORG, app)                                   # a DONE checkpoint does not hide the mark: the pass starts over
+    assert again.state == DONE and again.unsafe == 1000 and loaded.graph.app_docs[app][UNSAFE_KEY] == 1000      # and clears nothing
+    assert app_is_current(loaded.graph.app_docs[app])                           # the pass read the graph after that change
+
+
+async def test_a_mark_written_while_the_pass_runs_leaves_the_connector_not_current_even_when_the_old_mark_was_set() -> None:
+    """Both marks are set when the pass reads them and when it ends: the second must still be told from the first (a bare True would not be)."""
+    for first, second in ((1000, 2000), (True, 2000)):
+        vdb, loaded, job, app = await setup(page_size=3)
+        loaded.graph.app_docs[app] = {"_key": app, UNSAFE_KEY: first}
+        real_nodes, marked = loaded.graph.stamps.nodes, {"done": False}
+
+        async def mark_while_reading(org: str, ids: frozenset[str], real_nodes=real_nodes, marked=marked, loaded=loaded, app=app, second=second) -> dict:
+            if not marked["done"]:
+                marked["done"] = True
+                loaded.graph.app_docs[app][UNSAFE_KEY] = second
+            return await real_nodes(org, ids)
+
+        loaded.graph.stamps.nodes = mark_while_reading  # type: ignore[method-assign]
+        p = await job.run_connector(ORG, app, max_pages=1000)
+        assert p.state == DONE and p.unsafe == first and loaded.graph.app_docs[app][UNSAFE_KEY] == second, first
+        assert not app_is_current(loaded.graph.app_docs[app]), first
+        again = await job.run_connector(ORG, app, max_pages=1000)               # the next pass reads the new mark and covers it
+        assert again.unsafe == second and app_is_current(loaded.graph.app_docs[app]), first
+
+
+async def test_the_pass_never_writes_the_mark() -> None:
+    """Nothing the pass does can erase a mark written beside it: it does not write the field at all."""
+    vdb, loaded, job, app = await setup()
+    loaded.graph.app_docs[app] = {"_key": app, UNSAFE_KEY: 1000}
+    real_update, written = loaded.graph.update_node, []
+
+    async def spy(key: str, collection: str, updates: dict, *args: object) -> bool:
+        written.append(set(updates))
+        return await real_update(key, collection, updates, *args)
+
+    loaded.graph.update_node = spy  # type: ignore[method-assign]
+    await job.run_connector(ORG, app)
+    assert written and not any(UNSAFE_KEY in keys for keys in written)
+
+
+async def test_a_checkpoint_with_a_value_that_is_not_a_number_starts_the_pass_over_instead_of_failing_opaquely() -> None:
+    vdb, loaded, job, app = await setup()
+    await job.run_connector(ORG, app)
+    for key, junk in (("scopeBackfillStructureGeneration", "x"), ("scopeBackfillStructureGeneration", [1]), ("scopeBackfillUnsafe", "x"),
+                      ("scopeBackfillStructureGeneration", -1)):
+        loaded.graph.app_docs[app]["scopeBackfillState"] = DONE
+        loaded.graph.app_docs[app][key] = junk
+        p = await job.run_connector(ORG, app)
+        assert p.state == DONE and loaded.graph.app_docs[app][key] != junk, (key, junk)       # it started over and wrote its own
+
+
+async def test_a_progress_built_the_old_positional_way_keeps_its_meaning() -> None:
+    p = scope_backfill.Progress("running", "k", 5, 3, 2, 1, None)
+    assert (p.state, p.after, p.version, p.generation, p.records, p.stale, p.error) == ("running", "k", 5, 3, 2, 1, None)
+    assert p.structure_generation == -1 and p.unsafe is None
+
+
+async def test_a_structure_generation_that_is_not_a_number_stops_the_run_before_it_writes_anything() -> None:
+    from app.services.vector_db.scope_backfill import UnreadableStructureState
+
+    for junk in ("x", [], {}, float("nan"), True, "0.5"):
+        vdb, loaded, job, app = await setup()
+        loaded.graph.app_docs[app] = {"_key": app, GENERATION_KEY: junk}
+        before = dict(loaded.graph.app_docs[app])
+        with pytest.raises(UnreadableStructureState):
+            await job.run_connector(ORG, app)
+        assert loaded.graph.app_docs[app].keys() == before.keys() and not any(keys_of(vdb)), junk        # no checkpoint, no point
+
+
+async def test_a_graph_store_that_refuses_the_checkpoint_stops_the_run_before_anything_else_is_written() -> None:
+    """An app schema older than this release does not list the new key: the first write of the run is refused, with a message that says what
+    to do, and neither a point nor the unsafe mark is touched."""
+    from app.services.vector_db.scope_backfill import CheckpointRefused
+
+    vdb, loaded, job, app = await setup()
+    loaded.graph.app_docs[app] = {"_key": app, UNSAFE_KEY: True}
+    real_update = loaded.graph.update_node
+
+    async def old_schema(key: str, collection: str, updates: dict, *args: object) -> bool:
+        if "scopeBackfillStructureGeneration" in updates:
+            return False
+        return await real_update(key, collection, updates, *args)
+
+    loaded.graph.update_node = old_schema  # type: ignore[method-assign]
+    with pytest.raises(CheckpointRefused, match="restart a connector or indexing service"):
+        await job.run_connector(ORG, app)
+    assert loaded.graph.app_docs[app] == {"_key": app, UNSAFE_KEY: True} and not any(keys_of(vdb))
+
+
+async def test_true_and_the_token_one_are_different_marks_for_the_pass_as_for_the_currency_check() -> None:
+    from app.services.permissions.structure_generation import same_mark
+
+    assert not same_mark(True, 1) and not same_mark(1, True) and not same_mark(True, 1.0) and same_mark(True, True) and same_mark(7, 7)
+    for first, second in ((1, True), (True, 1)):
+        vdb, loaded, job, app = await setup()
+        loaded.graph.app_docs[app] = {"_key": app, UNSAFE_KEY: first}
+        await job.run_connector(ORG, app)
+        loaded.graph.app_docs[app][UNSAFE_KEY] = second                         # a mark that equals the recorded one in Python, but is another mark
+        assert not app_is_current(loaded.graph.app_docs[app])
+        again = await job.run_connector(ORG, app)                                # so the pass starts over instead of finding "nothing to do"
+        assert again.unsafe is second or (again.unsafe == second and type(again.unsafe) is type(second)), (first, second)
+        assert app_is_current(loaded.graph.app_docs[app])
+
+
+async def test_writes_that_never_closed_stop_the_run_until_the_operator_closes_them() -> None:
+    from app.services.vector_db.scope_backfill import OpenMarkNotClosed
+
+    vdb, loaded, job, app = await setup()
+    loaded.graph.app_docs[app] = {"_key": app, "scopeProjectionOpened": 3, "scopeProjectionClosed": 1}
+    before = dict(loaded.graph.app_docs[app])
+    with pytest.raises(OpenMarkNotClosed, match="--close-open-mark"):
+        await job.run_connector(ORG, app)
+    assert loaded.graph.app_docs[app] == before and not any(keys_of(vdb))        # nothing written, no point stamped
+    assert not app_is_current(loaded.graph.app_docs[app])
+    p = await job.run_connector(ORG, app, close_open_mark=True)
+    doc = loaded.graph.app_docs[app]
+    assert doc["scopeProjectionClosed"] == 3 and isinstance(doc[UNSAFE_KEY], int) and p.state == DONE and p.unsafe == doc[UNSAFE_KEY]
+    assert app_is_current(doc)
+    again = await job.run_connector(ORG, app)                                      # and nothing is left to close
+    assert again.state == DONE
+
+
+async def test_the_flag_also_closes_a_connector_whose_closed_counter_got_ahead_of_the_opened_one() -> None:
+    from app.services.vector_db.scope_backfill import UnreadableStructureState
+
+    vdb, loaded, job, app = await setup()
+    loaded.graph.app_docs[app] = {"_key": app, "scopeProjectionOpened": 1, "scopeProjectionClosed": 2}   # closed by hand, then the write finished
+    with pytest.raises(UnreadableStructureState):
+        await job.run_connector(ORG, app)
+    p = await job.run_connector(ORG, app, close_open_mark=True)
+    doc = loaded.graph.app_docs[app]
+    assert doc["scopeProjectionOpened"] == 1 and doc["scopeProjectionClosed"] == 1 and p.state == DONE and app_is_current(doc)
+
+
+async def test_an_unreadable_generation_or_mark_stops_the_run_before_the_flag_closes_anything() -> None:
+    from app.services.vector_db.scope_backfill import UnreadableStructureState
+
+    for key in (GENERATION_KEY, UNSAFE_KEY):
+        vdb, loaded, job, app = await setup()
+        loaded.graph.app_docs[app] = {"_key": app, "scopeProjectionOpened": 2, "scopeProjectionClosed": 0, key: "x"}
+        before = dict(loaded.graph.app_docs[app])
+        with pytest.raises(UnreadableStructureState):
+            await job.run_connector(ORG, app, close_open_mark=True)
+        assert loaded.graph.app_docs[app] == before and not any(keys_of(vdb)), key          # not closed, and the unreadable value is still there
+
+
+async def test_counters_that_do_not_read_stop_the_run_before_it_writes_anything_even_with_the_flag() -> None:
+    from app.services.vector_db.scope_backfill import UnreadableStructureState
+
+    for opened, closed in (("x", 0), (1, "x"), (-1, 0), (True, 0)):
+        vdb, loaded, job, app = await setup()
+        loaded.graph.app_docs[app] = {"_key": app, "scopeProjectionOpened": opened, "scopeProjectionClosed": closed}
+        with pytest.raises(UnreadableStructureState):
+            await job.run_connector(ORG, app, close_open_mark=True)
+        assert not any(keys_of(vdb)), (opened, closed)
+
+
+async def test_the_progress_line_shows_the_mark_it_started_from() -> None:
+    assert "unsafe=1234" in scope_backfill.Progress(unsafe=1234).line() and "unsafe=None" in scope_backfill.Progress().line()

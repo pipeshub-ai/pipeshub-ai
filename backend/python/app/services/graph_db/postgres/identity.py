@@ -121,10 +121,29 @@ class IdentityMixin(PgBase):
         return _arango(d, "users") if d else None
 
     @_soft(None, flag=True)
-    async def get_user_by_email(self, email: str, transaction: str | None = None, *, raise_on_error: bool = False) -> User | None:
+    async def get_user_by_email(self, email: str, transaction: str | None = None, *, raise_on_error: bool = False,
+                                org_id: str | None = None) -> User | None:
+        if not self._mine(org_id):
+            return None
         d = await self._one("/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) LIMIT 1",
                             current_org_id(), email, transaction=transaction)
         return User.from_arango_user(_arango(d, "users")) if d else None
+
+    @_soft(dict, flag=True)
+    async def get_users_by_emails(self, emails: list[str], transaction: str | None = None, *, raise_on_error: bool = False,
+                                  org_id: str | None = None) -> dict[str, User]:
+        org = current_org_id()
+        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        if not wanted or not self._mine(org_id):
+            return {}
+        # lower(doc->>'email') is the expression index nodes_user_email (org_id, lower(doc->>'email')).
+        rows = await self._id_rows("/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])",
+                                   [org, wanted], transaction)
+        out: dict[str, User] = {}
+        for r in rows:
+            d = _arango(_doc(r["doc"]), "users")
+            out.setdefault(d["email"].lower(), User.from_arango_user(d))
+        return out
 
     async def get_all_orgs(self, *, active: bool = True, is_external: bool = False, transaction: str | None = None, raise_on_error: bool = False) -> list[dict]:
         # One org under an org context; every org under a system context, through the vetted ``graph.system_orgs`` (pages of 1,000).

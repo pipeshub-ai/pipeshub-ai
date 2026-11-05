@@ -192,6 +192,7 @@ class TestAbstractMethodInventory:
         "get_document",
         "get_record_by_id",
         "get_typed_records_batch",
+        "page_record_ids_by_type",
         "get_node_depths_batch",
         "get_all_documents",
         "get_documents_paginated",
@@ -313,6 +314,7 @@ class TestAbstractMethodInventory:
         "ensure_taxonomy_hierarchy_edge",
         # User operations
         "get_user_by_email",
+        "get_users_by_emails",
         "get_user_by_source_id",
         "get_user_by_user_id",
         "apply_verified_user_email",
