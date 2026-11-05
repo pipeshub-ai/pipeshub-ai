@@ -95,6 +95,8 @@ PREVIEW_RECORD_COUNT = 3
 SEARCH_SCOPE_MAX_ENTITIES = 5
 SEARCH_SCOPE_MAX_RECORDS = 500
 SEARCH_SCOPE_MAX_SCAN = 2000
+# Readable records one count reaches before it reports "at least" instead of a total.
+COUNT_MAX_RECORDS = 1000
 
 _ACCESS_CONTEXT_CACHE_KEY = "_kg_entity_access_context"
 
@@ -594,7 +596,11 @@ async def search_entities_for_user(
     readable record spells yet, all within ``SEARCH_DEADLINE_SECONDS``, extended
     so the probes get at least ``PROBE_MIN_SECONDS`` after the vector request.
     Raises ``EntitySearchTimedOut`` when time ran out before any match was
-    confirmed and named.
+    named and a match the user can reach was left undecided or unnamed: the
+    access check of the record groups the user reaches did not finish, or an
+    entity a readable record was found for was not named in time. Probe rounds
+    that ran out answer as no match, since only hits not yet found readable keep
+    them running.
     """
     started = time.monotonic()
     deadline = started + SEARCH_DEADLINE_SECONDS
@@ -669,8 +675,12 @@ async def search_entities_for_user(
         context.org_id, "; ".join(stats), len(probes), rounds, len(kept), timed_out,
         int((time.monotonic() - started) * 1000),
     )
-    if (timed_out or naming_timed_out) and not kept:
-        raise EntitySearchTimedOut("Entity search timed out before confirming access to any match")
+    # No round ran: the check of the record groups the user reaches stopped first.
+    reachable_group_undecided = timed_out and rounds == 0 and any(
+        p.entity_type == RECORD_GROUP_ENTITY_TYPE and p.entity_id in context.record_group_ids for p in probes
+    )
+    if not kept and ((naming_timed_out and kept_probes) or reachable_group_undecided):
+        raise EntitySearchTimedOut("Entity search timed out before naming a match the user can reach")
     return kept[:top_k]
 
 
@@ -902,7 +912,8 @@ async def list_accessible_entity_records(
     """Records connected to one entity that the user can access, newest
     first. ``next_cursor`` is an offset into the org- and connector-scoped
     candidate list; every row is decided by the access check, so a forged
-    cursor exposes nothing. No totals are returned. ``capped`` is set when the
+    cursor exposes nothing. The page carries no total (see
+    ``count_accessible_entity_records``). ``capped`` is set when the
     provider's scan of the entity hit its cap (see ``EntityRecordPage``)."""
     if entity_type not in SEARCHABLE_ENTITY_TYPES:
         raise ValueError(f"Unsupported entity type {entity_type!r}")
@@ -910,6 +921,50 @@ async def list_accessible_entity_records(
         graph_provider, context, {"id": entity_id, "type": entity_type},
         record_types=record_types, limit=limit, cursor=cursor, max_scan=max_scan,
     )
+
+
+@dataclass(frozen=True)
+class RecordCount:
+    """``exact`` is False when the count stopped before the entity's last
+    record (its own cap, the provider's scan cap or the deadline), so
+    ``count`` is then a minimum. The ids let counts of several entities be
+    joined without counting a record twice."""
+
+    record_ids: frozenset[str]
+    exact: bool
+
+    @property
+    def count(self) -> int:
+        return len(self.record_ids)
+
+    def __or__(self, other: "RecordCount") -> "RecordCount":
+        return RecordCount(self.record_ids | other.record_ids, self.exact and other.exact)
+
+
+async def count_accessible_entity_records(
+    graph_provider: "IGraphDBProvider",
+    context: EntityAccessContext,
+    *,
+    entity_id: str,
+    entity_type: str,
+    record_types: list[str] | None = None,
+    cursor: str | None = None,
+) -> RecordCount:
+    """How many records connected to one entity the user can access from
+    ``cursor`` on, by the same access-checked scan as the listing, so no
+    unreadable record counts."""
+    if entity_type not in SEARCHABLE_ENTITY_TYPES:
+        raise ValueError(f"Unsupported entity type {entity_type!r}")
+    page = await _list_ref_records(
+        graph_provider, context, {"id": entity_id, "type": entity_type},
+        record_types=record_types, limit=COUNT_MAX_RECORDS, cursor=cursor,
+        max_scan=SEARCH_SCOPE_MAX_SCAN, deadline_seconds=SEARCH_DEADLINE_SECONDS,
+    )
+    return RecordCount(_ids(page.records), exact=page.next_cursor is None and not page.capped)
+
+
+def _ids(records: Iterable[dict[str, Any]]) -> frozenset[str]:
+    return frozenset(str(r["_key"]) for r in records if r.get("_key"))
 
 
 async def list_accessible_person_records(
@@ -1033,6 +1088,7 @@ async def _list_ref_records(
     limit: int,
     cursor: str | None,
     max_scan: int = MAX_SCAN_PER_CALL,
+    deadline_seconds: float | None = None,
 ) -> EntityRecordPage:
     entity_id, entity_type = ref["id"], ref["type"]
     offset = parse_cursor(cursor)
@@ -1044,7 +1100,8 @@ async def _list_ref_records(
     records: list[dict[str, Any]] = []
     scanned = 0
     capped = False
-    deadline = time.monotonic() + LISTING_DEADLINE_SECONDS
+    budget = LISTING_DEADLINE_SECONDS if deadline_seconds is None else deadline_seconds
+    deadline = time.monotonic() + max(0.0, budget)
     planned_window = min(max(limit * 4, LISTING_WINDOW_MIN), LISTING_WINDOW_MAX)
     while scanned < max_scan:
         if scanned and time.monotonic() >= deadline:
@@ -1109,6 +1166,9 @@ async def _list_ref_records(
 
 
 __all__ = [
+    "COUNT_MAX_RECORDS",
+    "RecordCount",
+    "count_accessible_entity_records",
     "EntityAccessContext",
     "EntityAccessError",
     "EntityHit",

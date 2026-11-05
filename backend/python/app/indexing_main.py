@@ -24,7 +24,12 @@ from app.config.constants.arangodb import (
 )
 from app.containers.indexing import initialize_container
 from app.core.envelope import configure_from_config as configure_envelope
-from app.core.org_context import for_org, spawn_detached, system
+from app.core.org_context import (
+    SystemContextNotAllowed,
+    for_org,
+    spawn_detached,
+    system,
+)
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
@@ -97,6 +102,7 @@ from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
+from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
@@ -582,70 +588,75 @@ async def recover_in_progress_records(
         # keeps a store that scans globally from returning the same records for every org.
         # Every organisation, active or not, internal or external: the scan this replaces was global, so a stuck record
         # in any of them is still recovered.
-        with system("stale_recovery"):
-            org_ids: set[str] = set()
-            for active in (True, False):
-                for is_external in (False, True):
-                    for o in await graph_provider.get_all_orgs(active=active, is_external=is_external) or []:
-                        if o.get("_key") or o.get("id"):
-                            org_ids.add(str(o.get("_key") or o.get("id")))
-        for org_id in sorted(org_ids):
-            with for_org(org_id, job="stale_recovery"):
-                for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
-                    offset = 0
-                    while True:
-                        if (
-                            recovery_renewal_task is not None
-                            and recovery_renewal_task.done()
-                        ):
-                            recovery_renewal_task.result()
+        try:
+            org_ids = await _all_org_ids(graph_provider)
+        except Exception as e:
+            # Said once, and the organisation-scoped passes wait for the next one: a failed read is not an install with no organisations.
+            logger.warning("Recovery pass skipped: the organisations could not be listed: %s: %s", type(e).__name__, e)
+            org_ids = []
+        for org_id in org_ids:
+            try:
+                with for_org(org_id, job="stale_recovery"):
+                    for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
+                        offset = 0
+                        while True:
+                            if (
+                                recovery_renewal_task is not None
+                                and recovery_renewal_task.done()
+                            ):
+                                recovery_renewal_task.result()
 
-                        page = await graph_provider.get_documents_paginated(
-                            CollectionNames.RECORDS.value,
-                            skip=offset,
-                            limit=page_size,
-                            filters={
-                                status_field: ProgressStatus.IN_PROGRESS.value,
-                                "orgId": org_id,
-                            },
-                            sort_field="_key",
-                            raise_on_error=True,
-                        )
-                        if not page:
-                            break
-
-                        resume_enrichment = status_field == "extractionStatus"
-                        candidates = [
-                            record
-                            for record in page
-                            if is_stale(record)
-                            and not (
-                                status_field == "parsingStatus"
-                                and record.get("indexingStatus")
-                                == ProgressStatus.IN_PROGRESS.value
+                            page = await graph_provider.get_documents_paginated(
+                                CollectionNames.RECORDS.value,
+                                skip=offset,
+                                limit=page_size,
+                                filters={
+                                    status_field: ProgressStatus.IN_PROGRESS.value,
+                                    "orgId": org_id,
+                                },
+                                sort_field="_key",
+                                raise_on_error=True,
                             )
-                            and (not resume_enrichment or _enrichment_cut_short(record))
-                        ]
+                            if not page:
+                                break
 
-                        outcomes = await asyncio.gather(
-                            *(
-                                process_single_record(record, resume_enrichment=resume_enrichment)
-                                for record in candidates
+                            resume_enrichment = status_field == "extractionStatus"
+                            candidates = [
+                                record
+                                for record in page
+                                if is_stale(record)
+                                and not (
+                                    status_field == "parsingStatus"
+                                    and record.get("indexingStatus")
+                                    == ProgressStatus.IN_PROGRESS.value
+                                )
+                                and (not resume_enrichment or _enrichment_cut_short(record))
+                            ]
+
+                            outcomes = await asyncio.gather(
+                                *(
+                                    process_single_record(record, resume_enrichment=resume_enrichment)
+                                    for record in candidates
+                                )
                             )
-                        )
-                        total_records += sum(outcome is not None for outcome in outcomes)
-                        removed_from_result = sum(outcome is True for outcome in outcomes)
+                            total_records += sum(outcome is not None for outcome in outcomes)
+                            removed_from_result = sum(outcome is True for outcome in outcomes)
 
-                        if len(page) < page_size:
-                            break
-                        # Successful recovery removes rows from this filtered result,
-                        # so only advance over rows that remain in front of the cursor.
-                        # Caveat: this only accounts for rows this page removed — a
-                        # concurrent status change on a row from an *earlier* page
-                        # (outside our control) can still shift the offset by one and
-                        # skip or repeat a row; harmless since the loop reruns on the
-                        # next stale_recovery_interval_seconds tick.
-                        offset += len(page) - removed_from_result
+                            if len(page) < page_size:
+                                break
+                            # Successful recovery removes rows from this filtered result,
+                            # so only advance over rows that remain in front of the cursor.
+                            # Caveat: this only accounts for rows this page removed — a
+                            # concurrent status change on a row from an *earlier* page
+                            # (outside our control) can still shift the offset by one and
+                            # skip or repeat a row; harmless since the loop reruns on the
+                            # next stale_recovery_interval_seconds tick.
+                            offset += len(page) - removed_from_result
+            except Exception as exc:
+                # A lost lease ends the pass; any other failure is this organisation's, and the later ones are still scanned.
+                if recovery_renewal_task is not None and recovery_renewal_task.done():
+                    raise
+                _org_pass_failed(logger, "stale_recovery", org_id, exc)
 
         # QUEUED records on a disabled connector are unreachable by the scan
         # above: it filters on IN_PROGRESS, and a QUEUED row has no
@@ -656,25 +667,38 @@ async def recover_in_progress_records(
         # Deliberately narrow: it only ever marks records whose connector is
         # gone or inactive. Re-queuing QUEUED rows for *live* connectors would
         # duplicate work, because a message for them may still be in the broker.
-        queued_swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph_provider,
-            logger=logger,
-            page_size=page_size,
-        )
+        queued_swept = 0
+        for org_id in org_ids:
+            try:
+                with for_org(org_id, job="queued_sweep"):
+                    queued_swept += await _sweep_queued_records_for_inactive_connectors(
+                        graph_provider=graph_provider,
+                        logger=logger,
+                        page_size=page_size,
+                        org_id=org_id,
+                    )
+            except Exception as exc:       # one organisation's failure does not stop the later ones
+                _org_pass_failed(logger, "queued_sweep", org_id, exc)
         total_records += queued_swept
 
         # The counterpart for *live* connectors: a row whose event was lost or
         # never published is invisible to both the scan above and the sweep.
         # STRANDED_RECORD_REPUBLISH_AFTER_SECONDS=0 disables it.
-        total_records += await _republish_stranded_records(
-            graph_provider=graph_provider,
-            logger=logger,
-            producer=retry_producer,
-            run_coordination=run_coordination,
-            concurrency_manager=concurrency_manager,
-            page_size=page_size,
-            read_backlog=read_backlog,
-        )
+        for org_id in org_ids:
+            try:
+                with for_org(org_id, job="stranded_republish"):
+                    total_records += await _republish_stranded_records(
+                        graph_provider=graph_provider,
+                        logger=logger,
+                        producer=retry_producer,
+                        run_coordination=run_coordination,
+                        concurrency_manager=concurrency_manager,
+                        page_size=page_size,
+                        read_backlog=read_backlog,
+                        org_id=org_id,
+                    )
+            except Exception as exc:
+                _org_pass_failed(logger, "stranded_republish", org_id, exc)
 
         await _upkeep_lanes(
             graph_provider=graph_provider,
@@ -694,12 +718,19 @@ async def recover_in_progress_records(
             pipeline = None
             logger.warning(f"Indexing pipeline unavailable for orphan sweep: {exc}")
         if pipeline is not None:
-            total_records += await _sweep_orphaned_virtual_record_mappings(
-                graph_provider=graph_provider,
-                pipeline=pipeline,
-                logger=logger,
-                page_size=page_size,
-            )
+            for org_id in org_ids:
+                try:
+                    with for_org(org_id, job="orphan_mapping_sweep"):
+                        total_records += await _sweep_orphaned_virtual_record_mappings(
+                            graph_provider=graph_provider,
+                            pipeline=pipeline,
+                            logger=logger,
+                            page_size=page_size,
+                            org_id=org_id,
+                        )
+                except Exception as exc:
+                    _org_pass_failed(logger, "orphan_mapping_sweep", org_id, exc)
+            await _clean_mappings_without_org(graph_provider=graph_provider, pipeline=pipeline, logger=logger, page_size=page_size)
 
         # A primary whose handler could not copy its taxonomy to promoted
         # duplicates keeps duplicateReconcilePending; a redelivery finds
@@ -786,6 +817,24 @@ async def recover_in_progress_records(
                 )
 
 
+def _org_pass_failed(logger: logging.Logger, job: str, org_id: str, exc: Exception) -> None:
+    """One organisation's part of a pass failed: say so with its id, and let the later organisations run."""
+    record_recovery_org_pass(job, "failed")
+    logger.warning("Recovery pass %s failed for organisation %s; the later organisations still run: %s: %s", job, org_id, type(exc).__name__, exc)
+
+
+async def _all_org_ids(graph_provider: IGraphDBProvider) -> list[str]:
+    """Every organisation, active or not, internal or external, read under a system context."""
+    found: set[str] = set()
+    with system("recovery_orgs"):
+        for active in (True, False):
+            for is_external in (False, True):
+                for o in await graph_provider.get_all_orgs(active=active, is_external=is_external, raise_on_error=True) or []:
+                    if o.get("_key") or o.get("id"):
+                        found.add(str(o.get("_key") or o.get("id")))
+    return sorted(found)
+
+
 def _read_once(read: Callable[[], Awaitable[_T]]) -> Callable[[], Awaitable[_T]]:
     """``read``, run on first call only; later calls get the same answer or error."""
     outcome: list[tuple[_T | None, BaseException | None]] = []
@@ -818,6 +867,12 @@ async def _upkeep_lanes(
     assignments = lane_assignments_in_use(Topic.RECORD_EVENTS.value)
     if assignments is None:
         return
+    # Read now, not at the start of the pass: the stale scan before this takes long, and an organisation created meanwhile has connectors with lanes.
+    try:
+        org_ids = await _all_org_ids(graph_provider)
+    except Exception as e:
+        logger.warning("Queue lane upkeep skipped this pass, the organisations could not be listed: %s: %s", type(e).__name__, e)
+        return
     backlog: LaneBacklog | None = None
     if read_backlog is not None:
         try:
@@ -831,6 +886,7 @@ async def _upkeep_lanes(
             graph_provider=graph_provider,
             backlog=backlog,
             logger=logger,
+            org_ids=org_ids,
         )
     except Exception as e:
         logger.warning(
@@ -846,7 +902,7 @@ async def _upkeep_lanes(
 ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
 # Between pages, while the indexing loop is busy (see LoopShare).
 ORPHAN_SCAN_MAX_PAUSE_SECONDS = 5.0
-_orphan_sweep_cursor = 0
+_orphan_sweep_cursor: dict[str, int] = {}
 
 
 
@@ -1070,6 +1126,7 @@ async def _sweep_orphaned_virtual_record_mappings(
     pipeline: "IndexingPipeline",
     logger: logging.Logger,
     page_size: int,
+    org_id: str,
 ) -> int:
     """Clean up VRIDs whose vectors outlived every graph record referencing them.
 
@@ -1090,10 +1147,8 @@ async def _sweep_orphaned_virtual_record_mappings(
     rather than all at once. The cursor is per-process and resets on restart —
     acceptable, since nothing here is required to be timely.
     """
-    global _orphan_sweep_cursor  # noqa: PLW0603 - the cursor is per process by design
-
     swept = 0
-    offset = _orphan_sweep_cursor
+    offset = _orphan_sweep_cursor.get(org_id, 0)
     pages_scanned = 0
     pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
     while pages_scanned < ORPHAN_SCAN_MAX_PAGES_PER_TICK:
@@ -1102,6 +1157,7 @@ async def _sweep_orphaned_virtual_record_mappings(
             CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
             skip=offset,
             limit=page_size,
+            filters={"orgId": org_id},
             sort_field="_key",
             raise_on_error=False,
         )
@@ -1115,6 +1171,12 @@ async def _sweep_orphaned_virtual_record_mappings(
             for mapping in page
             if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
         ]
+        # The org a mapping row names is the one its points are cleaned up for.
+        org_of = {
+            vrid: mapping.get("orgId")
+            for mapping in page
+            if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
+        }
         try:
             # One read per page, not one per mapping: the answer is the same,
             # and on Neo4j each read is a millisecond of the indexing loop.
@@ -1142,8 +1204,11 @@ async def _sweep_orphaned_virtual_record_mappings(
         for vrid in unreferenced:
             if vrid in trashed:
                 continue
+            if not org_of.get(vrid):
+                continue      # a row that names no organisation is the unscoped pass's (_clean_mappings_without_org)
             try:
-                outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
+                with for_org(org_of[vrid], job="orphan-sweep"):
+                    outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
             except Exception as exc:
                 logger.error(
                     "Failed to clean up orphaned vectors for virtual record %s: %s",
@@ -1161,7 +1226,7 @@ async def _sweep_orphaned_virtual_record_mappings(
             break
         offset += len(page) - swept_this_page
 
-    _orphan_sweep_cursor = offset
+    _orphan_sweep_cursor[org_id] = offset
 
     if swept:
         logger.info(
@@ -1172,11 +1237,77 @@ async def _sweep_orphaned_virtual_record_mappings(
     return swept
 
 
+
+_unscoped_mapping_cursor = 0
+
+
+async def _clean_mappings_without_org(
+    *, graph_provider: IGraphDBProvider, pipeline: "IndexingPipeline", logger: logging.Logger, page_size: int,
+) -> int:
+    """Clean up the orphan mappings that name no organisation: each owning organisation's points of that virtual record, then the row.
+
+    The per-organisation scan filters on ``orgId``, so a mapping an older bare upsert wrote without one is never listed under any
+    organisation. It is found here, by a bounded unscoped slice (a store that keeps every row under an organisation refuses an unscoped
+    read: it has no such rows). The points name their owners; the cleanup runs under each owner for that one virtual record only, and the
+    row goes with the last of them, or at once when no points are left. Rows marked ``orgNotResolved`` by the vector org-resolution sweep
+    are that sweep's. Returns how many were cleaned up.
+    """
+    global _unscoped_mapping_cursor  # noqa: PLW0603 - per process, like the per-organisation cursors
+    mapping = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+    swept, offset = 0, _unscoped_mapping_cursor
+    try:
+        for _ in range(ORPHAN_SCAN_MAX_PAGES_PER_TICK):
+            with system("orphan_mapping_unscoped"):
+                page = await graph_provider.get_documents_paginated(mapping, skip=offset, limit=page_size, sort_field="_key", raise_on_error=True)
+                if not page:
+                    offset = 0
+                    break
+                bare = [
+                    str(d.get("_key") or d.get("id")) for d in page
+                    if (d.get("_key") or d.get("id")) and not d.get("orgId") and not d.get("orgNotResolved")
+                ]
+                in_use = await graph_provider.get_virtual_record_ids_in_use(bare) if bare else set()
+                unreferenced = [v for v in bare if v not in in_use]
+                # Content still held by a record in the trash is the purge's to remove.
+                trashed = await graph_provider.get_virtual_record_ids_in_use(unreferenced, visibility=RecordVisibility.DELETED) if unreferenced else set()
+            swept_this_page = 0
+            for vrid in unreferenced:
+                if vrid in trashed:
+                    continue
+                try:
+                    with system("orphan_mapping_unscoped"):
+                        owners = await pipeline.orgs_holding_points(vrid)
+                        if not owners and await pipeline.release_orphan_mapping(vrid):
+                            swept += 1
+                            swept_this_page += 1
+                    outcome = None
+                    for owner in sorted(owners):
+                        with for_org(owner, job="orphan-sweep"):
+                            outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
+                except Exception as exc:      # the rest of the page is still cleaned; this one is tried again next pass
+                    logger.error("Failed to clean up the orphaned vectors of org-less mapping %s: %s", vrid, exc)
+                    continue
+                if outcome == "deleted":
+                    swept += 1
+                    swept_this_page += 1
+            if len(page) < page_size:
+                offset = 0
+                break
+            offset += len(page) - swept_this_page
+    except SystemContextNotAllowed:
+        return swept      # the store keeps every row under an organisation: there is nothing without one
+    except Exception as exc:
+        logger.warning("Could not look for mappings without an organisation this pass: %s: %s", type(exc).__name__, exc)
+    _unscoped_mapping_cursor = offset
+    return swept
+
+
 async def _sweep_queued_records_for_inactive_connectors(
     *,
     graph_provider: IGraphDBProvider,
     logger: logging.Logger,
     page_size: int,
+    org_id: str,
 ) -> int:
     """Move stranded records on gone/inactive connectors to AUTO_INDEX_OFF.
 
@@ -1248,7 +1379,7 @@ async def _sweep_queued_records_for_inactive_connectors(
                 CollectionNames.RECORDS.value,
                 skip=offset,
                 limit=page_size,
-                filters={"indexingStatus": status_value},
+                filters={"indexingStatus": status_value, "orgId": org_id},
                 sort_field="_key",
                 raise_on_error=False,
             )
@@ -1364,6 +1495,7 @@ async def _republish_stranded_records(
     run_coordination: CoordinationRunner,
     concurrency_manager: DistributedConcurrencyManager | None,
     page_size: int,
+    org_id: str,
     read_backlog: Callable[[], Awaitable[LaneBacklog]] | None = None,
 ) -> int:
     """Re-publish records that have been waiting on an event that never came.
@@ -1570,7 +1702,7 @@ async def _republish_stranded_records(
                 CollectionNames.RECORDS.value,
                 skip=offset,
                 limit=page_size,
-                filters={"indexingStatus": status_value},
+                filters={"indexingStatus": status_value, "orgId": org_id},
                 sort_field="_key",
                 raise_on_error=False,
             )
@@ -1591,22 +1723,11 @@ async def _republish_stranded_records(
         backlog nor a manual-indexing connector's AUTO_INDEX_OFF records
         (no reason) is read on every pass; each read is a seek in the
         (connectorId, indexingStatus, reason, key) index."""
-        offset = 0
-        while True:
-            apps = await graph_provider.get_documents_paginated(
-                CollectionNames.APPS.value,
-                skip=offset,
-                limit=page_size,
-                filters={"isActive": True},
-                sort_field="_key",
-                raise_on_error=False,
-            )
-            for app in apps:
-                if key := app.get("_key") or app.get("id"):
-                    enabled_at[key] = app.get("enabledAtTimestamp")
-            if len(apps) < page_size:
-                break
-            offset += len(apps)
+        # The organisation's apps are the ones it is linked to, not the ones whose document names it: an app written before documents carried
+        # an orgId is still this organisation's, and an app of no organisation is nobody's to sweep.
+        for app in await graph_provider.get_org_apps(org_id, active_only=True, raise_on_error=False) or []:
+            if key := app.get("_key") or app.get("id"):
+                enabled_at[key] = app.get("enabledAtTimestamp")
         for connector_id in list(enabled_at):
             # "" rather than None, so the first page has the key predicate
             # too: Neo4j uses a composite index only when every property in
@@ -1622,6 +1743,7 @@ async def _republish_stranded_records(
                         "connectorId": connector_id,
                         "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                         "reason": CONNECTOR_OFF,
+                        "orgId": org_id,
                     },
                     sort_field="_key",
                     raise_on_error=False,
@@ -2336,6 +2458,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.services.permissions.wiring import register_viewer_scope_version
 
     await register_viewer_scope_version(app_container.config_service(), logger)
+    from app.services.permissions.wiring import register_scope_generation
+
+    await register_scope_generation(app_container.config_service(), logger)
 
 
     # Start all message consumers centrally

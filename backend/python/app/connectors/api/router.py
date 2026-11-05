@@ -174,6 +174,7 @@ from app.services.featureflag.platform_settings import (
 )
 from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.permissions.structure_generation import note_structure_change
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
 from app.utils.chat_helpers import (
@@ -2391,6 +2392,12 @@ async def delete_record(
             org_id=org_id,
             soft_delete=soft_delete,
         )
+        if result["success"]:
+            # a structural write made outside the transaction store: move the connector's structure generation (never fails the
+            # request, the delete is done; a connector it cannot record is marked unsafe, and one it cannot mark is logged at error)
+            # a KB is an app whose records carry its id as their connector, so the KB the access check found is the last resort
+            kb = has_access.get("knowledgeBase") or {}
+            await note_structure_change(graph_provider, result.get("connectorId") or record.get("connectorId") or kb.get("id"), logger)
 
         if result["success"] and result.get("softDeleted"):
             # In the trash: vectors go now, the record and its files at the purge.

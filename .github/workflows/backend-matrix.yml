@@ -60,6 +60,10 @@ on:
       - 'backend/python/app/sources/client/linear/**'
       - 'backend/python/app/sources/external/linear/**'
       - 'backend/python/app/indexing_main.py'
+      # The recovery sweeps graph_db/test_recovery_sweeps_real_backends.py drives.
+      - 'backend/python/app/modules/indexing/lane_upkeep.py'
+      - 'backend/python/app/modules/indexing/duplicate_reconcile.py'
+      - 'backend/python/app/modules/indexing/named_entity_persist_retry.py'
       - 'backend/python/tests/integration/messaging/**'
       - 'backend/python/tests/integration/vector_db/**'
       - 'backend/python/tests/integration/kv/**'

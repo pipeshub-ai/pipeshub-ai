@@ -18,8 +18,10 @@ from app.agents.actions.code_graph.repos import (
     repo_for_record,
     resolve_code_repo,
 )
+from app.api import connection_limit
 from app.api.routes import code_graph as routes
 from app.models.entities import RecordType
+from app.modules.retrieval.selection_scope import SelectionTooLargeError
 
 from .conftest import CONN, ORG, USER
 from .test_repo_identity import BLOBS, MAIN, TwoRepos
@@ -289,6 +291,47 @@ async def test_an_unreadable_record_is_a_404_that_names_it(blobs) -> None:
     res = _client(Repos(deny={"rec-shop"})).post("/api/v1/code-graph/read", json={"record_id": "rec-shop"})
     assert res.status_code == 404
     assert res.json()["error"] == "record_id 'rec-shop' is not an indexed code file you can read."
+
+
+LIMITED = {"orgId": ORG, "userId": USER,
+           "knowledgeLimit": {"apps": [], "recordGroups": ["g-shop-code"], "records": []}}
+
+
+def _limit_admits(monkeypatch, *inside: str) -> None:
+    """The graph's answer for a connected app's limit: only ``inside`` is in it."""
+    async def outside(graph, user_id, org_id, ids, limit) -> set[str]:
+        return set() if limit is None else {i for i in ids if i not in inside}
+
+    monkeypatch.setattr(connection_limit, "outside_connection", outside)
+
+
+async def test_a_connected_apps_limit_hides_every_repo_outside_it(monkeypatch, blobs) -> None:
+    """A PAT or OAuth app limited to some sources reads no repo past them (H3)."""
+    _limit_admits(monkeypatch, "g-shop-code")
+    client = _client(Repos(), user=LIMITED)
+    assert [r["repo"] for r in client.get("/api/v1/code-graph/repos").json()["repos"]] == ["acme/shop"]
+    by_name = client.post("/api/v1/code-graph/read", json={"repo": "acme/admin", "file_path": MAIN})
+    assert by_name.status_code == 404
+    assert by_name.json()["error"].startswith("No indexed repository you can read")
+    by_record = client.post("/api/v1/code-graph/read", json={"record_id": "rec-admin"})
+    assert by_record.status_code == 404
+    assert by_record.json()["error"] == "record_id 'rec-admin' is not an indexed code file you can read."
+    # A tool reads the record's own repo, whatever `repo` names.
+    mixed = client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "record_id": "rec-admin"})
+    assert mixed.status_code == 404
+    assert mixed.json()["error"] == "record_id 'rec-admin' is not an indexed code file you can read."
+    inside = client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN})
+    assert inside.status_code == 200, inside.text
+
+
+async def test_a_limit_too_large_to_check_is_a_422_not_an_outage(monkeypatch) -> None:
+    async def too_large(*_: object) -> set[str]:
+        raise SelectionTooLargeError
+
+    monkeypatch.setattr(connection_limit, "outside_connection", too_large)
+    client = _client(Repos(), user=LIMITED)
+    assert client.get("/api/v1/code-graph/repos").status_code == 422
+    assert client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN}).status_code == 422
 
 
 def test_a_large_result_is_cut_to_the_budget_and_says_so() -> None:

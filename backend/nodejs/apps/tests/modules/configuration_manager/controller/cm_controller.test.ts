@@ -3584,7 +3584,7 @@ describe('ConfigurationManager Controller', () => {
     function stubAiService(
       takeoverStatus = 200,
       healthCheck: AiAnswer = healthy,
-      takeoverRefusal: { status: string; message: string } = { status: 'not healthy', message: 'refused' },
+      takeoverRefusal: { status: string; message: string; code?: string; error?: string } = { status: 'not healthy', message: 'refused' },
     ) {
       const calls: SentCommand[] = []
       sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: AIServiceCommand<unknown>) {
@@ -3677,6 +3677,23 @@ describe('ConfigurationManager Controller', () => {
       const [takeover] = takeoverCalls(calls)
       expect(models(takeover)).to.have.length(1)
       expect(models(takeover)?.[0]?.configuration?.model).to.equal('BAAI/bge-small-en-v1.5')
+    })
+
+    it('shows the store\'s own text when it cannot change model in place', async () => {
+      const text = 'The embedding model cannot be changed yet: this installation keeps vectors in PostgreSQL (pgvector).'
+      stubAiService(400, healthy, { status: 'not healthy', code: 'embedding_change_unsupported', error: text, message: text })
+      const kvs = storedModels([openai, local])
+      const next = createMockNext()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.firstCall.args[0].statusCode).to.equal(400)
+      expect(next.firstCall.args[0].message).to.equal(text)
+      expect(storeWrites(kvs)).to.equal(0)
     })
 
     it('deletes the default embedding model when nothing is stored, and the next model takes over', async () => {

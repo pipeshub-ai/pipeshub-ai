@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from .ports import AppFacts, Principal, ScopeNode
+from .ports import AppFacts, Principal, ScopeNode, StampApp, StampNode
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -64,3 +64,34 @@ class InMemoryPrincipalView:
             raise self.failure
         self.calls.append(len(node_ids))
         return node_ids & self.admitted.get((org_id, str(who.context)), frozenset())
+
+
+@dataclass
+class InMemoryStampGraph:
+    """A `StampGraph` over dicts. `reads` counts the `nodes` calls and `failure` makes every read raise."""
+
+    org_id: str
+    apps: Mapping[str, StampApp] = field(default_factory=lambda: dict[str, StampApp]())
+    node_map: Mapping[str, StampNode] = field(default_factory=lambda: dict[str, StampNode]())
+    failure: Exception | None = None
+    reads: list[int] = field(default_factory=lambda: list[int]())
+    app_reads: int = 0
+
+    async def app(self, org_id: str, app_id: str) -> StampApp:
+        self._check()
+        self.app_reads += 1
+        return self.apps.get(app_id, StampApp("", False, False)) if org_id == self.org_id else StampApp("", False, False)
+
+    async def nodes(self, org_id: str, ids: frozenset[str]) -> dict[str, StampNode]:
+        self._check()
+        self.reads.append(len(ids))
+        return {i: self.node_map[i] for i in ids if i in self.node_map} if org_id == self.org_id else {}
+
+    async def record_page(self, org_id: str, app_id: str, after: str | None, limit: int) -> list[str]:
+        self._check()
+        ids = sorted(i for i, n in self.node_map.items() if n.kind == "record" and n.connector_id == app_id)
+        return [i for i in ids if after is None or i > after][:limit] if org_id == self.org_id else []
+
+    def _check(self) -> None:
+        if self.failure is not None:
+            raise self.failure

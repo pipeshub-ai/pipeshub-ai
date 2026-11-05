@@ -439,6 +439,32 @@ async def test_a_shared_alias_gives_no_family() -> None:
     assert await alias_family(graph, CONTEXT, short["id"], probe=_probe(readable)) == []
 
 
+async def test_an_unreadable_node_sharing_the_alias_leaves_the_family_as_it_would_be_without_it() -> None:
+    from app.modules.named_entities.linking.candidates import alias_family
+
+    hospitality = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    bank = _aliased(_node("organization", "name:organization:pinecrest bank", "Pinecrest Bank"), _SHORT_KEY)
+    short = _node("organization", _SHORT_KEY, "Pinecrest")
+    readable = {hospitality["id"], short["id"]}
+    alone = await alias_family(_Graph([hospitality, short]), CONTEXT, hospitality["id"], probe=_probe(readable))
+    shared = await alias_family(_Graph([bank, hospitality, short]), CONTEXT, hospitality["id"], probe=_probe(readable))
+    assert shared == alone == [{"id": short["id"], "kind": "organization", "name": "Pinecrest"}]
+    assert await alias_family(_Graph([bank, hospitality, short]), CONTEXT, short["id"], probe=_probe(readable)) == [
+        {"id": hospitality["id"], "kind": "organization", "name": "Pinecrest Hospitality"},
+    ]
+
+
+async def test_an_unreadable_carrier_of_an_asked_alias_does_not_untie_it() -> None:
+    hospitality = _aliased(_node("organization", _FULL_KEY, "Pinecrest Hospitality"), _SHORT_KEY)
+    bank = _aliased(_node("organization", "name:organization:pinecrest bank", "Pinecrest Bank"), _SHORT_KEY)
+    _, found = await _find([bank, hospitality], {hospitality["id"]}, [{"name": "Pinecrest", "kind": "organization"}])
+    (entry,) = found.per_mention
+    assert [(c.entity_id, c.source) for c in entry.candidates if c.source is CandidateSource.ALIAS] == [
+        (hospitality["id"], CandidateSource.ALIAS),
+    ]
+    assert bank["id"] not in {c.entity_id for c in entry.candidates}
+
+
 @pytest.mark.asyncio
 async def test_an_unreadable_names_alias_never_shows_through_a_readable_alias_node() -> None:
     # The full node is unreadable; its learned alias node is readable. Asking for the full
