@@ -24,7 +24,6 @@ from app.services.vector_db.models import FilterExpression
 from app.services.vector_db.pgvector import scope_filter as scope_sql
 from app.services.vector_db.pgvector.errors import PgVectorUnsupportedError
 from app.services.vector_db.pgvector.sql_filters import (
-    MEMBERSHIP,
     PROMOTED,
     compile_filter,
     values_of,
@@ -34,6 +33,8 @@ if TYPE_CHECKING:
     from app.services.vector_db.filters import ScopeFilter
     from app.services.vector_db.models import FieldCondition
 
+# the membership arrays a search arm may name (the scope lists are not arms: a search that took one would drop it and widen)
+_ARM_KEYS = frozenset({"connectorIds", "recordGroupIds", "rootRecordGroupIds"})
 _VRID = "metadata.virtualRecordId"
 PER_ROW_PROBE = True      # False only to measure the hashed form (benchmarks)
 _GM = "FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2"
@@ -147,7 +148,7 @@ def scope_of(expr: FilterExpression, scope_filter: ScopeFilter | None = None) ->
     arms: dict[str, list[str]] = {}
     for cond in expr.should:
         vals = values_of(cond)
-        if (cond.key != _VRID and cond.key not in MEMBERSHIP) or vals is None or cond.values_count_lte is not None:
+        if (cond.key != _VRID and cond.key not in _ARM_KEYS) or vals is None or cond.values_count_lte is not None:
             raise PgVectorUnsupportedError(f"a vector search cannot filter on '{cond.key}' in SHOULD")
         arms.setdefault(cond.key, []).extend(vals)
     extra = FilterExpression(must=extra_must, must_not=list(expr.must_not)) if extra_must or expr.must_not else None

@@ -190,6 +190,7 @@
   "app/modules/indexing/named_entity_persist_retry.py": 2,
   "app/modules/indexing/record_label_repair.py": 1,
   "app/modules/indexing/record_republish.py": 1,
+  "app/modules/indexing/record_title_consumer.py": 2,
   "app/modules/indexing/run.py": 2,
   "app/modules/indexing/stored_content_cleanup.py": 1,
   "app/modules/indexing/vector_membership_backfill.py": 1,

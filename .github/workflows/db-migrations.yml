@@ -33,12 +33,12 @@ jobs:
             suites: ''
           - shard: integration
             files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py
-            min_tests: 55
+            min_tests: 56
             suites: ''
           - shard: graph
             files: tests/test_graph.py tests/test_retrieval.py
             min_tests: 55
-            suites: '--expect-suite tests.test_graph=34 --expect-suite tests.test_retrieval=21'
+            suites: '--expect-suite tests.test_graph=34 --expect-suite tests.test_retrieval=22'
           - shard: vetted
             files: tests/test_vetted.py tests/test_vetted_kernel.py tests/test_change_log.py
             min_tests: 503

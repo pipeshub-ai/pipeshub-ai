@@ -20,6 +20,7 @@ from app.core import org_context
 from app.services.vector_db.models import (
     FieldCondition,
     FilterExpression,
+    HybridSearchRequest,
     SparseVector,
     VectorPoint,
 )
@@ -28,6 +29,7 @@ from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.errors import (
     OrgRequired,
     PgVectorError,
+    PgVectorUnsupportedError,
     SpaceMismatch,
 )
 from app.services.vector_db.pgvector.pgvector import PgVectorService
@@ -393,3 +395,45 @@ async def test_a_malformed_stamp_is_refused_and_nothing_of_the_write_is_stored(s
     with pytest.raises(PgVectorError, match="pathIds"):
         await store.set_payload("records", {**STAMP, "pathIds": {"a": 1}}, flt(A, virtualRecordId="r1"))
     assert (await sql(store, SCOPE_ROW, A))[0][2] is None
+
+
+def scope_flt(org: str, key: str, *values: object) -> FilterExpression:
+    return FilterExpression(must=[FieldCondition(key="metadata.orgId", value=org), FieldCondition(key=key, values=list(values))])
+
+
+async def test_a_filter_on_a_scope_field_matches_the_group_that_holds_it_in_scroll_update_and_delete(store) -> None:
+    stamped = point(A, "p1", conn=["c1"])
+    stamped.payload.update(STAMP)
+    other = point(A, "p2", vrid="r2")                                                       # never stamped
+    await store.upsert_points("records", [stamped, point(A, "p3"), other])
+    await store.upsert_points("records", [point(B, "q1")])                                    # p3 is the same record as p1: it has no stamp of its own
+    for key, hit, miss in (("scopeStamp", "union", "container"), ("scopeFieldsVersion", 5, 4), ("scopeGeneration", 3, 2),
+                           ("pathIds", "p1", "zz"), ("aclScope", "s1", "zz")):
+        got = await store.scroll("records", scope_flt(A, key, hit), 10)
+        assert sorted(p.id for p in got.points) == sorted([pid(f"{A}/p1"), pid(f"{A}/p3")]), key      # both points of the stamped record, none of the others
+        assert (await store.scroll("records", scope_flt(A, key, miss), 10)).points == [], key
+    await store.set_payload("records", {"tag": "x"}, scope_flt(A, "scopeStamp", "union"))
+    tagged = await sql(store, "SELECT p.block_id FROM retrieval.point_text pt JOIN retrieval.points p USING (org_id, point_sk) "
+                              "WHERE pt.org_id = $1 AND pt.payload ? 'tag' ORDER BY 1", A)
+    assert [r[0] for r in tagged] == ["p1", "p3"]
+    await store.delete_points("records", scope_flt(A, "scopeStamp", "union"))
+    assert await live(store, A) == 1 and await live(store, B) == 1                      # the unstamped record and the other org are left
+
+
+async def test_a_search_does_not_take_a_scope_list_as_an_arm(store) -> None:
+    await store.upsert_points("records", [point(A, "p1")])
+    req = HybridSearchRequest(dense_query=[1.0] + [0.0] * (DIM - 1), filter=FilterExpression(
+        must=[FieldCondition(key="metadata.orgId", value=A)], should=[FieldCondition(key="pathIds", values=["s1"])]), limit=5)
+    with pytest.raises(PgVectorUnsupportedError, match="pathIds"):
+        await store.query_nearest_points("records", [req])
+
+
+async def test_scope_keys_left_in_a_stored_payload_are_not_read_as_the_groups_stamp(store) -> None:
+    await store.upsert_points("records", [point(A, "p1")])                                 # a group nobody stamped
+    await sql(store, "UPDATE retrieval.point_text SET payload = payload || '{\"scopeStamp\": \"container\", \"pathIds\": [\"old\"], \"scopeFieldsVersion\": 5}'::jsonb "
+                     "WHERE org_id = $1", A)                                              # a point written before the fields moved to the group
+    with org_context.bind(org_context.OrgContext(A, None, "service", "t", "-")):
+        got = (await store.retrieve_points("records", [pid(f"{A}/p1")]))[0].payload
+        assert not {"scopeStamp", "pathIds", "aclScope", "scopeFieldsVersion", "scopeGeneration"} & set(got)
+        scrolled = (await store.scroll("records", flt(A), 10)).points[0].payload
+        assert not {"scopeStamp", "pathIds", "aclScope", "scopeFieldsVersion", "scopeGeneration"} & set(scrolled)
