@@ -42,10 +42,14 @@ async def lock_apps(tx: Tx, org: str, app_ids: set[str], *, org_wide: bool) -> N
         await tx.execute("/* pipeshub:kg.lock_app */ SELECT pg_advisory_xact_lock($1::int, $2::int)", LOCK_CLASS, keys[a])
 
 
-async def try_lock_apps(tx: Tx, org: str, app_ids: set[str]) -> bool:
-    """The locks of :func:`lock_apps` for a unit that must not wait (shared org key, then the connectors in the same order), or False at the first one that is held elsewhere. The caller
-    rolls back to a savepoint of its own on False, which releases what was taken."""
-    if not await tx.fetchval("/* pipeshub:kg.try_lock_org */ SELECT pg_try_advisory_xact_lock_shared($1::int, hashtext($2))", LOCK_CLASS, f"{org}|"):
+async def try_lock_apps(tx: Tx, org: str, app_ids: set[str], *, org_wide: bool = False) -> bool:
+    """The locks of :func:`lock_apps` for a unit that must not wait (the org key, shared or with ``org_wide`` exclusive, then the connectors in the same order), or False at the first one that
+    is held elsewhere. The caller rolls back to a savepoint of its own on False, which releases what was taken."""
+    if org_wide:
+        taken = await tx.fetchval("/* pipeshub:kg.try_lock_org_exclusive */ SELECT pg_try_advisory_xact_lock($1::int, hashtext($2))", LOCK_CLASS, f"{org}|")
+    else:
+        taken = await tx.fetchval("/* pipeshub:kg.try_lock_org */ SELECT pg_try_advisory_xact_lock_shared($1::int, hashtext($2))", LOCK_CLASS, f"{org}|")
+    if not taken:
         return False
     apps = sorted(app_ids - {""})
     if not apps:
