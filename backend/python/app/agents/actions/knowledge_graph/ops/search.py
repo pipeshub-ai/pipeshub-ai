@@ -496,6 +496,7 @@ async def execute_search(
     scope_virtual_record_ids: list[str] | None = None,
     preamble: str = "",
     max_result_chars: int | None = None,
+    keyword_wait_s: float | None = None,
 ) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope (see
     `_execute_search`).
@@ -506,7 +507,9 @@ async def execute_search(
     ``preamble`` opens the result: the rendered text, where it counts toward
     the result size, or the ``entities`` field of a JSON result.
     ``max_result_chars`` sizes the result below the request's own cap, for a
-    search run in code beside others.
+    search run in code beside others. ``keyword_wait_s`` caps how long it waits
+    for keyword matches after the semantic results, whatever the request or
+    ``HIGH_ACCURACY_MODE`` asks, for a caller bounded by a timeout of its own.
 
     Without a scope or a size, dates over a span longer than a month run the
     timeline tool's search instead (``ops/timeline.automatic_timeline_search``),
@@ -547,9 +550,17 @@ async def execute_search(
         created_after=created_after, created_before=created_before,
         modified_after=modified_after, modified_before=modified_before,
         entity_ids=entity_ids, scope_virtual_record_ids=scope_virtual_record_ids, preamble=preamble,
-        max_result_chars=max_result_chars,
+        max_result_chars=max_result_chars, keyword_wait_s=keyword_wait_s,
     )
     return with_json_preamble(result, preamble)
+
+
+def _keyword_wait(requested: str | None, cap: float | None) -> float | None:
+    """The request's keyword wait (``pattern_match_wait_budget``), no longer than ``cap``."""
+    wait = pattern_match_wait_budget(requested)
+    if cap is None:
+        return wait
+    return cap if wait is None else min(wait, cap)
 
 
 def with_json_preamble(result: str | list[Part], preamble: str) -> str | list[Part]:
@@ -579,6 +590,7 @@ async def _execute_search(
     scope_virtual_record_ids: list[str] | None = None,
     preamble: str = "",
     max_result_chars: int | None = None,
+    keyword_wait_s: float | None = None,
 ) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope.
 
@@ -1022,7 +1034,7 @@ async def _execute_search(
         if pattern_match_task is not None:
             raw_pattern_records = await await_pattern_match(
                 pattern_match_task, logger_instance, run_timer=state.get("_run_timer"),
-                wait_budget=pattern_match_wait_budget(state.get("keyword_search_budget")),
+                wait_budget=_keyword_wait(state.get("keyword_search_budget"), keyword_wait_s),
                 found_so_far=grep_found,
                 coverage=grep_coverage,
             )

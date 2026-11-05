@@ -187,6 +187,7 @@ async def check_draft(
     timeout: float,
     on_usage: "Callable[[BaseMessage], None] | None" = None,
 ) -> CheckerReport | None:
+    """The checker's report on a draft, or None when the call fails or its reply cannot be read."""
     searched_list = [query for query in searched if query]
     user = CHECK_USER.format(
         question=_as_data(question.strip()),

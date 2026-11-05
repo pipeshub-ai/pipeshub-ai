@@ -40,6 +40,7 @@ class CoverageState:
 
 
 def coverage_state(tool_state: MutableMapping[str, Any]) -> CoverageState:
+    """The request's loop state, created on first use."""
     state = tool_state.get(COVERAGE_STATE_KEY)
     if not isinstance(state, CoverageState):
         state = CoverageState()

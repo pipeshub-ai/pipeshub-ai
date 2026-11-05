@@ -1193,6 +1193,29 @@ class TestKeywordSearchBudget:
         assert waited.await_args.kwargs["found_so_far"] is grep.call_args.kwargs["found"]
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("requested", "high_accuracy", "expected"), [
+        (None, None, 4.0), ("short", None, 4.0), (None, "true", 4.0), ("short", "true", 4.0),
+    ])
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_caller_with_its_own_timeout_caps_the_wait(
+        self, mock_parse, monkeypatch, requested, high_accuracy, expected,
+    ) -> None:
+        if high_accuracy is None:
+            monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+        else:
+            monkeypatch.setenv("HIGH_ACCURACY_MODE", high_accuracy)
+        state = _entity_search_state(_empty_retrieval(), keyword_search_budget=requested)
+        waited = AsyncMock(return_value=[])
+
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[])), \
+                patch(f"{search_mod}.await_pattern_match", waited):
+            await execute_search(state, "roadmap", keyword_wait_s=4.0)
+
+        assert waited.await_args.kwargs["wait_budget"] == expected
+
+
 class TestUnknownEntityIds:
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))

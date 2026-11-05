@@ -44,6 +44,7 @@ FACET_CONTEXT_INTRO = (
 
 
 def start_facet_plan(context: "AgentContext", question: str) -> "asyncio.Future[FacetPlan | None]":
+    """Start planning the question's parts as a task of this request, beside the prefetch."""
     async def _plan() -> FacetPlan | None:
         llm = await coverage_llm(context.config_service, context.org_id, fallback=context.llm)
         return await plan_facets(
