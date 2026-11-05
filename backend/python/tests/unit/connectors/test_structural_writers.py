@@ -1087,7 +1087,7 @@ async def test_a_closing_step_that_may_have_been_applied_is_not_tried_again(monk
     apps = _AppDocs(provider, ["c1"])
     plain = provider.increment_node_field.side_effect
 
-    async def applies_then_raises(key, collection, field, *args, **kwargs):
+    async def applies_then_raises(key, collection, field, *args, **kwargs) -> int:
         value = await plain(key, collection, field, *args, **kwargs)
         if field == "scopeProjectionClosed":
             raise TimeoutError("applied, but the answer never came")
