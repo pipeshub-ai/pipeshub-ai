@@ -135,12 +135,14 @@ describe('OAuthAuthorizeView not-granted scopes', () => {
   });
 
   it('shows the full redirect URI, so a changed loopback port is visible', async () => {
-    get.mockResolvedValue(consentResponse([]));
+    const response = consentResponse([]);
+    response.data.consentData.redirectUri = 'http://127.0.0.1:49237/callback';
+    get.mockResolvedValue(response);
 
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
     expect(
-      await screen.findByText('Sends you back to https://claude.ai/api/mcp/auth_callback'),
+      await screen.findByText('Sends you back to http://127.0.0.1:49237/callback'),
     ).toBeTruthy();
   });
 
