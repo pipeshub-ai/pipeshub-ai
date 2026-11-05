@@ -944,6 +944,9 @@ class TestCreateExecuteQueryTool:
         ) as create, patch(
             "app.utils.execute_query._connector_is_accessible",
             AsyncMock(return_value=True),
+        ), patch(
+            "app.utils.execute_query._connector_is_public_only",
+            AsyncMock(return_value=False),
         ):
             tool = create_execute_query_tool(
                 config_service=MagicMock(),
@@ -997,7 +1000,10 @@ class TestCreateExecuteQueryTool:
         ) as create, patch(
             "app.utils.execute_query._connector_is_accessible",
             AsyncMock(return_value=True),
-        ) as accessible:
+        ) as accessible, patch(
+            "app.utils.execute_query._connector_is_public_only",
+            AsyncMock(return_value=False),
+        ):
             tool = create_execute_query_tool(
                 config_service=MagicMock(),
                 graph_provider=graph,
@@ -1461,3 +1467,78 @@ async def test_a_database_timeout_is_a_tool_error() -> None:
     ):
         out = await eq._execute_postgres_query("SELECT pg_sleep(999)", MagicMock(), "c")
     assert out["ok"] is False and f"up to {SQL_QUERY_TIMEOUT_S}s" in out["error"]
+
+
+class TestZeroRowNote:
+    """A filter on a literal from the question ('America', 'stealth') returned
+    nothing and the answer said "none" without checking the stored spelling."""
+
+    @pytest.mark.parametrize(("query", "rows", "expected"), [
+        ("SELECT name FROM cards WHERE keyword = 'stealth'", [], True),
+        ("SELECT COUNT(*) FROM players WHERE country = 'America'", [(0,)], True),
+        ("SELECT SUM(x) FROM t WHERE t.name ILIKE '%acme%'", [(None,)], True),
+        ("SELECT name FROM t WHERE name = 'O''Brien'", [], True),
+        ("SELECT COUNT(*) FROM players WHERE country = 'America'", [(3,)], False),
+        ("SELECT name FROM cards WHERE keyword = 'stealth'", [("a",)], False),
+        ("SELECT name FROM cards WHERE year = 2020", [], False),
+        ("SELECT a, b FROM t WHERE c = 'x'", [(0, 0), (0, 0)], False),
+        ("SELECT name FROM t WHERE name = 'a\\'b'", [], False),
+        ("SELECT COUNT(*) FROM t WHERE c = 'x'", [(False,)], False),
+        ("SELECT name FROM t WHERE country NOT LIKE 'America'", [], False),
+        ("SELECT name FROM t WHERE country NOT ILIKE 'America'", [], False),
+        ("SELECT name FROM t WHERE country NOT LIKE 'A%' AND city = 'Paris'", [], True),
+        ("SELECT name FROM t WHERE id = 42 /* country = 'America' */", [], False),
+        ("SELECT name FROM t WHERE id = 42 -- country = 'America'", [], False),
+        ("SELECT name FROM t WHERE id = '42'", [], False),
+        ("SELECT CASE WHEN kind = 'a' THEN 1 END FROM t WHERE id = 7", [], False),
+        ("SELECT COUNT(*) FROM a JOIN b ON b.kind = 'gold'", [(0,)], True),
+    ])
+    def test_only_an_empty_result_on_a_text_literal_gets_the_note(self, query: str, rows: list, expected: bool) -> None:
+        from app.utils.execute_query import _zero_row_note
+
+        assert (_zero_row_note(query, "postgres", rows) is not None) is expected
+
+    def test_the_note_names_the_column_and_a_case_insensitive_lookup(self) -> None:
+        from app.utils.execute_query import _zero_row_note
+
+        note = _zero_row_note("SELECT * FROM p WHERE p.country = 'America'", "mariadb", [])
+        assert "p.country = 'America'" in note
+        assert "LOWER(p.country) LIKE LOWER('%America%')" in note
+
+    @pytest.mark.parametrize("query", [
+        "SELECT * FROM p WHERE \"Country\" = 'America'",
+        "SELECT * FROM p WHERE p.\"Country\" = 'America'",
+        "SELECT * FROM p WHERE \"my \"\"odd\"\" col\" = 'America'",
+    ])
+    def test_a_quoted_column_is_kept_whole(self, query: str) -> None:
+        from app.utils.execute_query import _zero_row_note
+
+        column = query.split(" WHERE ")[1].split(" = ")[0]
+        assert f"LOWER({column}) LIKE" in _zero_row_note(query, "postgres", [])
+
+    def test_a_decimal_zero_counts_as_empty(self) -> None:
+        from decimal import Decimal
+
+        from app.utils.execute_query import _zero_row_note
+
+        assert _zero_row_note("SELECT SUM(amount) FROM t WHERE region = 'West'", "postgres", [(Decimal("0"),)])
+
+    def test_the_suggested_lookup_keeps_apostrophes_escaped(self) -> None:
+        from app.utils.execute_query import _zero_row_note
+
+        note = _zero_row_note("SELECT id FROM t WHERE name = 'O''Brien'", "postgres", [])
+        assert "name = 'O'Brien'" in note
+        assert "LIKE LOWER('%O''Brien%')" in note
+
+    def test_postgres_reads_only_the_statement_it_ran(self) -> None:
+        from app.utils.execute_query import _zero_row_note
+
+        query = "SELECT name FROM t WHERE name = 'Alpha'; SELECT COUNT(*) FROM t WHERE id = -1;"
+        assert _zero_row_note(query, "postgres", [(0,)]) is None
+
+    @pytest.mark.asyncio
+    async def test_the_note_reaches_the_model_with_the_empty_result(self) -> None:
+        with patch.object(eq, "_execute_postgres_query", AsyncMock(return_value={"ok": True, "columns": ["n"], "rows": [(0,)]})):
+            out = await eq._execute_query_impl("SELECT COUNT(*) AS n FROM p WHERE country = 'America'", "PostgreSQL", MagicMock(), "c")
+        assert "the filter country = 'America' may not match the stored value" in out["markdown_result"]
+        assert out["raw_rows"] == [(0,)]

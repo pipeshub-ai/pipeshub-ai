@@ -23,6 +23,9 @@ def _make_graph_provider():
 def _make_tx_store():
     """Return a mock transactional graph data store."""
     store = AsyncMock()
+    # what the real transaction store carries for the structure generation; a bare AsyncMock would answer with coroutines
+    store.unclassified_write = False
+    store.structural_connectors = set()
     store.get_record_by_key = AsyncMock(return_value={"_key": "rec-1"})
     store.get_nodes_by_filters = AsyncMock(return_value=[])
     store.get_edge = AsyncMock(return_value=None)

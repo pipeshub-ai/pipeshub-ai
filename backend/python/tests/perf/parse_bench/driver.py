@@ -40,10 +40,13 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tests.perf.parse_bench import golden, proc_cpu, report
 from tests.perf.parse_bench.corpus import Entry, load_manifest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 MIXES: dict[str, dict[str, int]] = {
     # kind -> copies of each file in a pass
@@ -105,6 +108,7 @@ class TreeSampler(threading.Thread):
         self.peak_tree_pss = 0
         self.peak_threads = 0
         self.peak_parse_workers = 0
+        self.busy_gauge: BusyGauge | None = None
         self.cpu_sampled = 0.0
         self.procs: dict[int, dict[str, Any]] = {}
         self._tick = 0
@@ -239,6 +243,94 @@ def rss_profile(series: list[tuple[float, int]], after: float = 20.0) -> dict[st
     grown = max(0, max(later) - at[-1]) if at and later else 0
     out[f"growth_after_{int(after)}s"] = round(grown / report.MIB, 1)
     return out
+
+class BusyGauge(threading.Thread):
+    """An independent gauge of lane use: workers whose CPU advanced in the last 250 ms.
+
+    It reads /proc and never the lease table. A parse worker counts as busy when it, or the
+    raster child it waits on, ran in that window; an idle resident worker is not busy, so a
+    worker started outside a lease would show up here as an over-limit sample.
+    """
+
+    WINDOW = 0.25
+    TICK = 0.05
+
+    def __init__(self, limit: Callable[[], int | None], resident_limit: Callable[[], int | None]) -> None:
+        super().__init__(name="busy-gauge", daemon=True)
+        import psutil
+
+        self._ps = psutil
+        self._me = psutil.Process()
+        self._stop_event = threading.Event()
+        self._limit, self._resident_limit = limit, resident_limit
+        self._cpu: dict[int, float] = {}
+        self._progress: dict[int, float] = {}
+        self.samples = 0
+        self.busy_peak = 0
+        self.resident_peak = 0
+        self.busy_over_limit = 0
+        self.resident_over_limit = 0
+        self.limit_seen: int | None = None
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        while not self._stop_event.wait(self.TICK):
+            try:
+                self.sample()
+            except Exception:  # a process exiting under us is normal
+                log.debug("busy sample failed", exc_info=True)
+
+    def sample(self) -> None:
+        now = time.monotonic()
+        workers: dict[int, int] = {}  # worker pid -> itself; children map to it
+        owner: dict[int, int] = {}
+        children = self._me.children(recursive=True)
+        for proc in children:
+            try:
+                if "app.modules.parsers.parse_worker" in " ".join(proc.cmdline()):
+                    workers[proc.pid] = proc.pid
+                    owner[proc.pid] = proc.pid
+            except self._ps.Error:
+                continue
+        for proc in children:
+            if proc.pid in owner:
+                continue
+            try:
+                parent = proc.ppid()
+            except self._ps.Error:
+                continue
+            if parent in owner:
+                owner[proc.pid] = owner[parent]
+        for proc in children:
+            if proc.pid not in owner:
+                continue
+            try:
+                times = proc.cpu_times()
+            except self._ps.Error:
+                continue
+            cpu = times.user + times.system
+            if cpu > self._cpu.get(proc.pid, -1.0):
+                self._progress[owner[proc.pid]] = now
+            self._cpu[proc.pid] = cpu
+        busy = sum(now - self._progress.get(pid, -1e9) < self.WINDOW for pid in workers)
+        limit, resident_limit = self._limit(), self._resident_limit()
+        self.samples += 1
+        self.busy_peak = max(self.busy_peak, busy)
+        self.resident_peak = max(self.resident_peak, len(workers))
+        if limit is not None:
+            self.limit_seen = limit
+            self.busy_over_limit += busy > limit
+        if resident_limit is not None:
+            self.resident_over_limit += len(workers) > resident_limit
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "samples": self.samples, "busy_peak": self.busy_peak, "resident_peak": self.resident_peak,
+            "limit": self.limit_seen, "busy_over_limit_samples": self.busy_over_limit,
+            "resident_over_limit_samples": self.resident_over_limit,
+        }
 
 
 class StackCollector(logging.Handler):
@@ -443,6 +535,12 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
         probe=TierProbe(build_probe(), args.cpus, mem_limit, sampler),
     )
     parse_pool.set_resource_governor(governor)
+    gauge: BusyGauge | None = None
+    if governor.lanes is not None:  # PARSE_LANES=on
+        budget = governor.lanes
+        gauge = BusyGauge(budget.limit, budget.resident_limit)
+        gauge.start()
+        sampler.busy_gauge = gauge
     docling_processor.set_resource_governor(governor)
     pdf_rasterizer.set_resource_governor(governor)
     ceilings = governor.ceilings
@@ -539,6 +637,8 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
     probes = [] if args.no_probe else await probe_after_freezing(sampler, args.probe_only)
     cpu_run_total = cpu.total_seconds()
     cpu.stop()
+    if gauge is not None:
+        gauge.stop()
     monitor.stop()
     governor.stop()
     governor_task.cancel()
@@ -575,6 +675,7 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
         "cores_busy_mean": cpu.mean_busy(),
         "cores_busy_peak": cpu.busy_peak,
         "worker_probes": probes,
+        "lanes_stats": gov_stats.get("lanes") if gauge is not None else None,
         "ceilings": gov_stats.get("ceilings"),
         "limits": gov_stats.get("limits"),
         "cpu_quota": gov_stats.get("cpu_quota"),
@@ -631,7 +732,7 @@ def assemble(args: argparse.Namespace, raw: dict[str, Any], sampler: TreeSampler
             "onnx_threads_per_worker": onnx_threads, "reserve_embedding": args.reserve_embedding,
             "only_path": args.only_path, "scan_route": args.scan_route,
             "env": {k: os.environ[k] for k in sorted(os.environ) if k.startswith(
-                ("PARSE_POOL", "PDF_", "LOCAL_DOCLING", "MAX_CONCURRENT", "GOVERNOR_", "ENABLE_PDFPLUMBER"))},
+                ("PARSE_POOL", "PARSE_LANE", "PIPESHUB_LANE", "LANE_", "PDF_", "LOCAL_DOCLING", "MAX_CONCURRENT", "GOVERNOR_", "ENABLE_PDFPLUMBER"))},
         },
         "host": {"python": platform.python_version(), "node": socket.gethostname(), "host_cpus": os.cpu_count(),
                  "affinity": len(os.sched_getaffinity(0)), **load},
@@ -685,6 +786,10 @@ def assemble(args: argparse.Namespace, raw: dict[str, Any], sampler: TreeSampler
                 ],
             },
             "backpressure_429": raw["stats"].get("backpressure_429", 0),
+            "lanes": (
+                {"mode": "on", **sampler.busy_gauge.summary(), "stats_at_end": raw.get("lanes_stats")}
+                if sampler.busy_gauge is not None else {"mode": "off"}
+            ),
         },
         "cgroup": raw["cgroup"],
         "golden": raw["golden"],

@@ -12,11 +12,16 @@ Four sources, cheapest and most precise first:
   is a near spelling ("Maya Castelanos" -> "Maya Castellanos"), read in the same
   call as the prefixes;
 - dense: the entity vector search, already permission-checked by
-  ``search_entities_for_user``.
+  ``search_entities_for_user``;
+- alias: for organizations and products, the nodes a name is the other half of
+  a learned short form for: the asked name carried as an alias by exactly one
+  node ("Pinecrest" -> "Pinecrest Hospitality"), and an exact node's own aliases
+  stored as nodes of their own ("Pinecrest Hospitality" -> "Pinecrest"), each only
+  while no other readable node carries that alias. Taken like an exact match.
 
-Every exact or prefix candidate passes ``probe_permitted_entities`` before
-anything is decided about it, so whether a node exists that the user cannot
-read changes nothing a caller sees.
+Every exact, prefix or alias candidate, and every node carrying an asked alias,
+passes ``probe_permitted_entities`` before anything is decided about it, so
+whether a node exists that the user cannot read changes nothing a caller sees.
 """
 
 from __future__ import annotations
@@ -28,12 +33,17 @@ from difflib import SequenceMatcher
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from app.modules.named_entities.domain.kinds import VECTOR_KINDS, EntityKind
+from app.modules.named_entities.domain.kinds import (
+    ALIAS_KINDS,
+    VECTOR_KINDS,
+    EntityKind,
+)
 from app.modules.named_entities.keys import named_entity_key
 from app.modules.retrieval.entity_permissions import (
     EntityHit,
     EntitySearchTimedOut,
     probe_permitted_entities,
+    readable_spellings,
 )
 
 if TYPE_CHECKING:
@@ -61,12 +71,25 @@ Probe = Callable[["IGraphDBProvider", "EntityAccessContext", list[tuple[str, str
 
 class CandidateSource(str, Enum):
     EXACT = "exact"
+    ALIAS = "alias"
     PREFIX = "prefix"
     FUZZY = "fuzzy"
     DENSE = "dense"
 
 
-_RANK = {CandidateSource.EXACT: 0, CandidateSource.PREFIX: 1, CandidateSource.FUZZY: 2, CandidateSource.DENSE: 3}
+_RANK = {
+    CandidateSource.EXACT: 0, CandidateSource.ALIAS: 1, CandidateSource.PREFIX: 2,
+    CandidateSource.FUZZY: 3, CandidateSource.DENSE: 4,
+}
+# Sources taken without the verifier's check: the name's own node, or one a learned
+# alias ties to it.
+SETTLED_SOURCES = frozenset({CandidateSource.EXACT, CandidateSource.ALIAS})
+# Carriers read per alias. Uniqueness is decided over the readable ones, so this
+# reads past a few unreadable carriers to a second readable one.
+#
+# shortcut: the provider's window is unordered, so with more carriers than this a
+# second readable one may be missed; page the carriers if aliases get that crowded.
+_ALIAS_ROW_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -95,7 +118,9 @@ class MentionCandidates:
 class CandidateSet:
     per_mention: list[MentionCandidates]
     timed_out: bool
-    """An access check or the vector search stopped at its deadline."""
+    """An access check or the vector search stopped at its deadline. For logs only:
+    only candidates not yet found readable keep a check running, so a reply that
+    said so would hint that unreadable ones exist."""
 
 
 class CandidateFinder:
@@ -106,11 +131,13 @@ class CandidateFinder:
         *,
         dense: DenseSearch | None,
         probe: Probe = probe_permitted_entities,
+        aliases: bool = True,
     ) -> None:
         self._graph = graph
         self._context = context
         self._dense = dense
         self._probe = probe
+        self._aliases = aliases
 
     async def find(self, mentions: list[Mention]) -> CandidateSet:
         org_id = self._context.org_id
@@ -127,11 +154,23 @@ class CandidateFinder:
                 if (first := _fuzzy_first_word_key(kind, key)) is not None:
                     fuzzy.setdefault((kind.value, first), set()).add(index)
 
-        by_ids, by_prefix, dense = await asyncio.gather(
+        asked_aliases: dict[tuple[str, str], set[int]] = {}
+        if self._aliases:
+            for index, mention in enumerate(mentions):
+                for kind, key in mention.keys:
+                    if kind in ALIAS_KINDS:
+                        asked_aliases.setdefault((kind.value, key), set()).add(index)
+        by_ids, by_prefix, dense, carriers = await asyncio.gather(
             self._graph.get_named_entities_by_ids(org_id, sorted(exact_ids)),
             self._graph.find_named_entities_by_key_prefix(org_id, sorted({*prefixes, *fuzzy}), PREFIX_ROW_LIMIT),
             asyncio.gather(*(self._dense_for(mention) for mention in mentions)),
+            self._carriers(org_id, sorted(asked_aliases)),
         )
+        # (node, the exact node it was reached from or None): an alias reached through a
+        # node the user cannot read must not show that node exists.
+        family: list[list[tuple[dict[str, Any], str | None]]] = [[] for _ in mentions]
+        # Exact node -> its own aliases that are nodes of their own, with their carriers.
+        own_aliases = await self._own_aliases(org_id, by_ids, exact_ids, len(mentions))
         extended = [row for row in by_prefix if (str(row.get("kind")), str(row.get("key"))) in prefixes]
         near: list[list[dict[str, Any]]] = [[] for _ in mentions]
         for row in by_prefix:
@@ -139,9 +178,30 @@ class CandidateFinder:
                 if index not in exact_ids.get(str(row.get("id")), ()) and _near_spelling(mentions[index], row):
                     near[index].append(row)
         # Only rows that can become candidates are access-checked.
-        rows = {row["id"]: row for row in [*by_ids, *extended, *(r for hits in near for r in hits)] if row.get("id")}
+        # Only rows that can become candidates, and the carriers deciding whether an
+        # alias is unique, are access-checked.
+        rows = {
+            row["id"]: row
+            for row in [
+                *by_ids, *extended, *(r for hits in near for r in hits),
+                *(r for found_rows in carriers.values() for r in found_rows),
+                *(r for hits in own_aliases for node, _, others in hits for r in (node, *others)),
+            ]
+            if row.get("id")
+        }
         probe = await self._probe(self._graph, self._context, [(entity_id, NAMED_ENTITY) for entity_id in rows])
         timed_out = probe.timed_out or any(late for _, late in dense)
+        # Asked name -> the one readable node carrying it as an alias.
+        for pair, found_rows in carriers.items():
+            readable = [row for row in found_rows if row["id"] in probe.permitted]
+            if len(readable) == 1:
+                for index in asked_aliases[pair]:
+                    family[index].append((readable[0], None))
+        for index, hits in enumerate(own_aliases):
+            family[index].extend(
+                (node, owner) for node, owner, others in hits
+                if [row["id"] for row in others if row["id"] in probe.permitted] == [owner]
+            )
 
         per_mention = [MentionCandidates(mention=mention) for mention in mentions]
         found: list[dict[str, Candidate]] = [{} for _ in mentions]
@@ -160,6 +220,10 @@ class CandidateFinder:
         for row in by_ids:
             for index in exact_ids.get(row.get("id", ""), ()):
                 _add(index, row, CandidateSource.EXACT)
+        for index, hits in enumerate(family):
+            for row, owner in hits:
+                if owner is None or owner in probe.permitted:
+                    _add(index, row, CandidateSource.ALIAS)
         prefix_hits: list[list[dict[str, Any]]] = [[] for _ in mentions]
         for row in extended:
             if row.get("id") not in probe.permitted:
@@ -191,14 +255,55 @@ class CandidateFinder:
             ordered = sorted(found[index].values(), key=lambda c: _RANK[c.source])
             # Exact nodes are kept outside the cap: they are taken, not offered,
             # so they must not push a longer name out of the check.
-            exact = [c for c in ordered if c.source is CandidateSource.EXACT]
-            others = [c for c in ordered if c.source is not CandidateSource.EXACT]
+            exact = [c for c in ordered if c.source in SETTLED_SOURCES]
+            others = [c for c in ordered if c.source not in SETTLED_SOURCES]
             entry.candidates = [*exact, *others[:MAX_CANDIDATES]]
             entry.more_related = any(
                 c.source is CandidateSource.PREFIX and not entry.mention.settles(c.kind)
                 for c in others[MAX_CANDIDATES:]
             )
         return CandidateSet(per_mention=per_mention, timed_out=timed_out)
+
+    async def _carriers(self, org_id: str, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], list[dict[str, Any]]]:
+        """Each ``(kind, key)`` to the nodes carrying it as an alias that is not their own key."""
+        rows = await self._graph.find_named_entities_by_alias(org_id, pairs, _ALIAS_ROW_LIMIT) if pairs else []
+        found: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in rows or []:
+            if row.get("id"):
+                found.setdefault((str(row.get("kind")), str(row.get("key"))), []).append(row)
+        return found
+
+    async def _own_aliases(
+        self, org_id: str, exact_rows: list[dict[str, Any]], exact_ids: dict[str, set[int]], count: int,
+    ) -> list[list[tuple[dict[str, Any], str, list[dict[str, Any]]]]]:
+        """Per mention, the nodes of its exact nodes' learned aliases ("Pinecrest" for
+        "Pinecrest Hospitality"), each with the exact node it came from and the nodes
+        carrying that alias; the caller takes it when the owner is the only readable carrier."""
+        per_mention: list[list[tuple[dict[str, Any], str, list[dict[str, Any]]]]] = [[] for _ in range(count)]
+        if not self._aliases:
+            return per_mention
+        kinds = {kind.value for kind in ALIAS_KINDS}
+        wanted: dict[str, tuple[str, str, str, set[int]]] = {}
+        for row in exact_rows:
+            kind, own = str(row.get("kind")), row.get("normKey")
+            if kind not in kinds or not row.get("id"):
+                continue
+            for alias in row.get("normalizedAliases") or []:
+                if alias and alias != own:
+                    wanted[named_entity_key(org_id, kind, alias)] = (kind, alias, row["id"], exact_ids.get(row["id"], set()))
+        if not wanted:
+            return per_mention
+        nodes, carriers = await asyncio.gather(
+            self._graph.get_named_entities_by_ids(org_id, sorted(wanted)),
+            self._carriers(org_id, sorted({(kind, alias) for kind, alias, _, _ in wanted.values()})),
+        )
+        for node in nodes or []:
+            kind, alias, owner, indexes = wanted.get(node.get("id", ""), ("", "", "", set()))
+            others = carriers.get((kind, alias), [])
+            if owner in {row["id"] for row in others}:
+                for index in indexes:
+                    per_mention[index].append((node, owner, others))
+        return per_mention
 
     async def _dense_for(self, mention: Mention) -> tuple[list[EntityHit], bool]:
         kinds = [kind.value for kind in mention.kinds if kind in VECTOR_KINDS]
@@ -246,3 +351,69 @@ def _near_spelling(mention: Mention, row: dict[str, Any]) -> bool:
 
 def _norm_key(row: dict[str, Any]) -> str:
     return str(row.get("normKey"))
+
+
+async def alias_family(
+    graph: IGraphDBProvider,
+    context: EntityAccessContext,
+    entity_id: str,
+    *,
+    probe: Probe = probe_permitted_entities,
+) -> list[dict[str, Any]]:
+    """The readable nodes a learned alias ties to ``entity_id``: its own aliases stored
+    as nodes ("Pinecrest" for "Pinecrest Hospitality") and the node carrying its key as
+    an alias, each only while no other readable node carries that alias. ``{id, kind, name}``,
+    named as the readable records found for it spell it (a stored name may come from a
+    record the user cannot read); a node none of them spells is left out."""
+    org_id = context.org_id
+    nodes = await graph.get_named_entities_by_ids(org_id, [entity_id])
+    node = nodes[0] if nodes else None
+    kinds = {kind.value for kind in ALIAS_KINDS}
+    if node is None or str(node.get("kind")) not in kinds:
+        return []
+    kind, own = str(node["kind"]), node.get("normKey")
+    aliases = [alias for alias in node.get("normalizedAliases") or [] if alias and alias != own]
+    by_id = {named_entity_key(org_id, kind, alias): alias for alias in aliases}
+    pairs = sorted({(kind, alias) for alias in aliases} | ({(kind, own)} if own else set()))
+    short_nodes, rows = await asyncio.gather(
+        graph.get_named_entities_by_ids(org_id, sorted(by_id)) if by_id else _no_rows(),
+        graph.find_named_entities_by_alias(org_id, pairs, _ALIAS_ROW_LIMIT) if pairs else _no_rows(),
+    )
+    carriers: dict[str, list[dict[str, Any]]] = {}
+    for row in rows or []:
+        if row.get("id"):
+            carriers.setdefault(str(row.get("key")), []).append(row)
+    short_nodes = [n for n in short_nodes or [] if n.get("id")]
+    if not short_nodes and not carriers.get(str(own)):
+        return []
+    # The node asked about must be readable too, or its aliases would show it exists;
+    # every carrier is checked so uniqueness is decided over readable ones only.
+    probed = [
+        (entity_id, NAMED_ENTITY),
+        *((n["id"], NAMED_ENTITY) for n in short_nodes),
+        *((row["id"], NAMED_ENTITY) for found in carriers.values() for row in found),
+    ]
+    permitted = (await probe(graph, context, probed)).permitted
+    if entity_id not in permitted:
+        return []
+
+    def _readable_carriers(key: str) -> list[dict[str, Any]]:
+        return [row for row in carriers.get(key, []) if row["id"] in permitted]
+
+    family = [
+        n for n in short_nodes
+        if n["id"] in permitted and [row["id"] for row in _readable_carriers(by_id.get(n["id"], ""))] == [entity_id]
+    ]
+    reverse = _readable_carriers(str(own))
+    if len(reverse) == 1 and reverse[0]["id"] != entity_id:
+        family.append(reverse[0])
+    readable = list({n["id"]: n for n in family}.values())
+    if not readable:
+        return []
+    record_ids = sorted({str(r["_key"]) for n in readable for r in permitted[n["id"]].records if r.get("_key")})
+    spelled = await readable_spellings(graph, org_id, [n["id"] for n in readable], record_ids)
+    return [{"id": n["id"], "kind": n.get("kind"), "name": spelled[n["id"]]} for n in readable if n["id"] in spelled]
+
+
+async def _no_rows() -> list[dict[str, Any]]:
+    return []

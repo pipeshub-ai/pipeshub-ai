@@ -1,0 +1,38 @@
+- id: REGR-02
+  title: 'Linked account: its group''s grant counts in its own connector only; removing the group membership narrows'
+  source: independent review of the conformance harness
+  rule: linked-account
+  world:
+    principals:
+      - {id: u}
+      - {id: v}
+      - {id: acct, org_member: false}
+      - {id: jg, kind: group}
+    nodes:
+      - {id: J, kind: app, app_type: JIRA}
+      - {id: C, kind: app, app_type: CONFLUENCE}
+      - {id: P, kind: group, connector: J, rule: OPEN, parents: [J], belongs: [J]}
+      - {id: i1, kind: record, connector: J, rule: STRICT, parents: [P], inherits: [P]}
+      - {id: S, kind: group, connector: C, rule: OPEN, parents: [C], belongs: [C]}
+      - {id: pg, kind: record, connector: C, rule: STRICT, parents: [S], inherits: [S]}
+    grants:
+      - [jg, P]
+      - [acct, S]
+      - [jg, pg]
+    memberships:
+      - [acct, jg]
+    gates:
+      - [u, C]
+      - [v, J]
+    links:
+      - [u, acct, J]
+  mutations:
+    - {kind: member_removed, node: jg, ref: acct}
+  expect:
+    before:
+      u: {J: admit, P: admit, i1: admit, S: deny, pg: deny}
+      v: {P: deny}
+    verdicts:
+      u: {J: admit, P: deny, i1: deny, S: deny}
+  tags: [regression, qa, linked-account]
+  comment: u is gated into J only through AUTHENTICATED_AS. acct's grants on C's space and page must not count for u, even though u is gated into C.

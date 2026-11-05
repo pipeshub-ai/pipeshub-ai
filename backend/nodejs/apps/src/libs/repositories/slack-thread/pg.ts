@@ -8,8 +8,22 @@ import { installOrg } from '../oauth-app/pg-org';
 import { stripNul } from '../nul';
 import { asOrg, inUnit, orgForKey } from '../pg-util';
 import type { SlackThreadRepository } from './types';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importSlackThreadDocs } from './pg-import';
+import { kernelTx } from '../pg';
+import type { Tx } from '../uow';
 
-export class PgSlackThreadRepository implements SlackThreadRepository {
+export class PgSlackThreadRepository
+  implements SlackThreadRepository, Importable
+{
+  /** The migration copy: documents as they were stored (see ./pg-import.ts). */
+  importBatch(
+    _collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importSlackThreadDocs(kernelTx(tx), docs);
+  }
   async getConversationId(
     threadId: string,
     botId: string,

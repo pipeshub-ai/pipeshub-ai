@@ -33,7 +33,9 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import for_org, system
 from app.services.graph_db.common.record_visibility import is_live_record
+from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -59,42 +61,58 @@ async def retry_pending_named_entity_persists(
     """Retry the due named-entity writes. Returns how many records were written."""
     if sink is None:
         return 0
-    rows = await graph_provider.get_due_named_entity_persist_retries(page_size)
+    # The read spans every organisation; each row's follow-up is bound to the organisation the row carries.
+    with system("named_entity_persist_retry"):
+        rows = await graph_provider.get_due_named_entity_persist_retries(page_size)
     written = 0
     for row in rows:
         record_id, org_id, due = row.get("recordId"), row.get("orgId"), row.get("dueAt")
         if not record_id or due is None:
             continue
-        attempts = int(row.get("attempts") or 0)
-        try:
-            if attempts > MAX_PERSIST_ATTEMPTS:
-                logger.error(
-                    "named_entity_persist_retry: giving up on record %s after %d failures; "
-                    "it is written again when next indexed", record_id, attempts,
-                )
-                await graph_provider.clear_named_entity_persist_retry(record_id, due)
-                continue
-            outcome = await _under_record_lease(
-                concurrency_manager, record_id,
-                lambda record_id=record_id, org_id=org_id, due=due, attempts=attempts: _retry_one(
-                    graph_provider, sink, record_id, org_id, due, attempts,
-                ),
-            )
-            if outcome is _BUSY:
-                continue  # being indexed now; that write is newer than this retry
-        except Exception as exc:
-            # The persist itself never raises, so this is the record or blob read:
-            # count it as a failure so the backoff grows instead of retrying every pass.
-            logger.warning("named_entity_persist_retry: record %s failed: %s", record_id, type(exc).__name__)
-            await _count_failure(graph_provider, logger, org_id, record_id, type(exc).__name__, attempts)
+        if not org_id:
+            # Nothing can run for it, and left pending it would take a place in every page: drop the retry (the entities are written
+            # again when the record is next indexed, as when the retries are given up) and count it.
+            with system("named_entity_persist_retry"):
+                try:
+                    cleared = await graph_provider.clear_named_entity_persist_retry(record_id, due)
+                except Exception:
+                    cleared = False
+                    logger.warning("named_entity_persist_retry: could not drop the retry of %s", record_id, exc_info=True)
+            if cleared:      # counted once it is gone: a retry that stays due would otherwise be counted on every pass
+                logger.warning("named_entity_persist_retry: record %s has no organisation; its retry was dropped", record_id)
+                record_recovery_org_pass("named_entity_persist_retry", "no_org_row")
             continue
-        if outcome in ("failed", "superseded"):
-            continue  # rescheduled by the sink, or already replaced by a newer write
-        # A write that landed has dropped the retry in its own transaction; this
-        # ends the ones that had nothing to write.
-        await graph_provider.clear_named_entity_persist_retry(record_id, due)
-        if outcome == "written":
-            written += 1
+        with for_org(str(org_id), job="named_entity_persist_retry"):
+            attempts = int(row.get("attempts") or 0)
+            try:
+                if attempts > MAX_PERSIST_ATTEMPTS:
+                    logger.error(
+                        "named_entity_persist_retry: giving up on record %s after %d failures; "
+                        "it is written again when next indexed", record_id, attempts,
+                    )
+                    await graph_provider.clear_named_entity_persist_retry(record_id, due)
+                    continue
+                outcome = await _under_record_lease(
+                    concurrency_manager, record_id,
+                    lambda record_id=record_id, org_id=org_id, due=due, attempts=attempts: _retry_one(
+                        graph_provider, sink, record_id, org_id, due, attempts,
+                    ),
+                )
+                if outcome is _BUSY:
+                    continue  # being indexed now; that write is newer than this retry
+            except Exception as exc:
+                # The persist itself never raises, so this is the record or blob read:
+                # count it as a failure so the backoff grows instead of retrying every pass.
+                logger.warning("named_entity_persist_retry: record %s failed: %s", record_id, type(exc).__name__)
+                await _count_failure(graph_provider, logger, org_id, record_id, type(exc).__name__, attempts)
+                continue
+            if outcome in ("failed", "superseded"):
+                continue  # rescheduled by the sink, or already replaced by a newer write
+            # A write that landed has dropped the retry in its own transaction; this
+            # ends the ones that had nothing to write.
+            await graph_provider.clear_named_entity_persist_retry(record_id, due)
+            if outcome == "written":
+                written += 1
     if rows:
         logger.info("named_entity_persist_retry: %d due, %d written", len(rows), written)
     return written

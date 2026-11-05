@@ -269,6 +269,18 @@ _DOMAIN_SHARED_CODE_TOOL_NAMES: frozenset[str] = frozenset({
     "codegraph__impact",
     "codegraph__entry_points",
 })
+# The named-entity and typed-value tools, SHARED with the exploration child
+# (`reads_entities`) the same way: the child explores "documents over $50k" or
+# "everything naming Acme" with them, and the parent keeps them. Filtered
+# through `_initial_entity_tool_grant` per request before the child's prompt
+# is built, so the child is never told about a tool it does not hold.
+_DOMAIN_SHARED_ENTITY_TOOL_NAMES: frozenset[str] = frozenset({
+    "knowledgegraph__search_entities",
+    SEARCH_BY_ENTITIES_TOOL_NAME,
+    "knowledgegraph__find_records_by_entity",
+    "knowledgegraph__find_records_by_value",
+    "knowledgegraph__find_co_mentioned_entities",
+})
 # Tools a deployment switch adds to the knowledge tools. Not counted toward
 # the lazy-disclosure threshold, so turning one on never hides web search or
 # connector tools behind fetch_tools for a request that was eager without it.
@@ -896,6 +908,9 @@ class PipesHubAgentFactory:
                     | _DOMAIN_SHARED_NAV_TOOL_NAMES
                 ),
                 code_tool_names=_DOMAIN_SHARED_CODE_TOOL_NAMES,
+                entity_tool_names=frozenset(
+                    _initial_entity_tool_grant(list(_DOMAIN_SHARED_ENTITY_TOOL_NAMES), context)
+                ),
             )
             run_code_delegated_to_coding_agent = "coding_agent" in composed_names
             logger.info(

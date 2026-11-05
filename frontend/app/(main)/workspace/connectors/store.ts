@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { immer } from 'zustand/middleware/immer';
 import { devtools } from 'zustand/middleware';
 import type {
@@ -973,3 +974,5 @@ export const useConnectorsStore = create<ConnectorsState>()(
     { name: 'connectors-store' }
   )
 );
+
+resetStoreOnSessionEnd(useConnectorsStore);

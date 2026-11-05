@@ -77,6 +77,7 @@ from app.services.cache.invalidation_hooks import (
     notify_connector_permissions_changed,
     notify_connector_sync_completed,
     notify_kb_records_changed,
+    notify_principals_changed,
 )
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
@@ -3938,7 +3939,7 @@ class DataSourceEntitiesProcessor:
                 # Raising rolls the whole batch back, so it is never half restored.
                 raise await self._restore_refusal(tx_store, connector_id, items, reclaim, ids, restored)
         record_restored(DeleteSource(restore_source).value, len(restored))
-        await notify_kb_records_changed(connector_id)
+        await notify_kb_records_changed(connector_id, getattr(self, "org_id", None) or None)
         return restored
 
     @staticmethod
@@ -4384,7 +4385,7 @@ class DataSourceEntitiesProcessor:
             #
             # No-ops unless connector_id is a KB; connectors invalidate on sync
             # completion instead, so a mid-sync delete does not thrash the cache.
-            await notify_kb_records_changed(connector_id)
+            await notify_kb_records_changed(connector_id, getattr(self, "org_id", None) or None)
         unpublished_record_ids = await self._publish_delete_events((result or {}).get("eventData"))
         if unpublished_record_ids:
             result = dict(result or {})
@@ -4533,7 +4534,7 @@ class DataSourceEntitiesProcessor:
         source = DeleteSource(delete_source).value
         record_soft_deleted(source, marked)
         if marked:
-            await notify_kb_records_changed(connector_id)
+            await notify_kb_records_changed(connector_id, org_id)
             await self._access_changed([connector_id], org_id)
         return await self._publish_soft_delete_events(
             org_id=org_id or self.org_id,
@@ -5464,6 +5465,7 @@ class DataSourceEntitiesProcessor:
             async with self.data_store_provider.transaction() as tx_store:
                 reaped = await tx_store.reap_stale_external_app_relations(connector_id)
             if reaped:
+                await self._access_changed([connector_id])
                 self.logger.info(
                     "Removed %d orphaned person node(s) while reaping connector %s",
                     reaped,
@@ -6249,7 +6251,9 @@ class DataSourceEntitiesProcessor:
             return
         for external_id in sorted(external_ids):
             members = run.group_memberships.get(external_id, {})
-            async with self.data_store_provider.transaction() as tx_store:
+            async def give_members(
+                tx_store: TransactionStore, external_id: str, members: dict[str, tuple[str, str]]
+            ) -> list[str]:
                 copies = await tx_store.get_nodes_by_filters(
                     groups,
                     {"connectorId": connector_id, "externalGroupId": external_id},
@@ -6271,6 +6275,9 @@ class DataSourceEntitiesProcessor:
                         for user_id, (source_id, email) in members.items()
                     ]
                     await tx_store.replace_edges_to(group_id, groups, edges, CollectionNames.PERMISSION.value)
+                return group_ids
+
+            group_ids = await self.data_store_provider.execute_in_transaction(give_members, external_id, members)
             for group_id in group_ids:
                 run.add(groups, group_id)
         await self._access_changed([connector_id])
@@ -6416,6 +6423,8 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self._log_failure(f"Failed to delete user group {group_id}: {str(e)}", e,exc_info=True)
             raise
+        finally:
+            await notify_principals_changed(self.org_id or None)      # a group that held access is gone (or may be)
 
     @retry_on_deadlock()
     async def migrate_group_permissions_to_user(

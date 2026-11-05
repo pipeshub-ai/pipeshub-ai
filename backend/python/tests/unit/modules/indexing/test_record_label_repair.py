@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.core import org_context
 from app.modules.artifacts import sidecars as sidecars_module
 from app.modules.artifacts.sidecars import ArtifactSidecars
 from app.modules.indexing.record_label_repair import (
@@ -274,6 +275,29 @@ class TestARecordGetsItsOwnLabelsBackFromItsEdges:
         outcomes = await _run_until_idle(graph, blob, page_size=1)
         assert outcomes.count("page") >= 4
         assert graph.apps[CONNECTOR][RecordLabelRepairState.AFTER_KEY] is None
+
+
+class TestTheRecordsOrgIsBound:
+    async def test_storage_and_settings_are_read_inside_the_records_org(self, world) -> None:
+        graph, blob = world
+        seen: list[tuple[str, str]] = []
+        read = blob.get_record_from_storage
+        settings = blob.config_service.get_config.return_value
+
+        async def _read(*args, **kwargs) -> dict | None:
+            seen.append(("storage", org_context.current_org_id()))
+            return await read(*args, **kwargs)
+
+        async def _settings(*args, **kwargs) -> dict:
+            seen.append(("settings", org_context.current_org_id()))
+            return settings
+
+        blob.get_record_from_storage = _read
+        blob.config_service.get_config = _settings
+        await _run_until_idle(graph, blob)
+
+        assert ("storage", ORG) in seen and ("settings", ORG) in seen
+        assert {org for _, org in seen} == {ORG}
 
 
 class TestOwnLabelFields:

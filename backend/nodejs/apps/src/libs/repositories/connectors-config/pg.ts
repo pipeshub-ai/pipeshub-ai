@@ -4,6 +4,10 @@ import { stripNul } from '../nul';
 import { assertOrg, fill, inUnit, newObjectId, oidOf } from '../pg-util';
 import type { Tx as PgKernelTx } from '../../db';
 import type { ConnectorsConfigDto, ConnectorsConfigRepository } from './types';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importConnectorsConfigDocs } from './pg-import';
+import { kernelTx } from '../pg';
+import type { Tx } from '../uow';
 
 interface Row {
   id: string;
@@ -53,7 +57,17 @@ async function read(
   return rows[0] ? dto(rows[0]) : null;
 }
 
-export class PgConnectorsConfigRepository implements ConnectorsConfigRepository {
+export class PgConnectorsConfigRepository
+  implements ConnectorsConfigRepository, Importable
+{
+  /** The migration copy: documents as they were stored (see ./pg-import.ts). */
+  importBatch(
+    _collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importConnectorsConfigDocs(kernelTx(tx), docs);
+  }
   async find(orgId: string, name: string): Promise<ConnectorsConfigDto | null> {
     return inUnit(undefined, { write: false }, (k) => {
       assertOrg(k, orgId);

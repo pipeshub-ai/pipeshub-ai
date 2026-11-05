@@ -64,7 +64,7 @@ async def test_each_value_constraint_is_read_and_a_records_names_keep_their_orde
 
 def test_values_are_ordered_largest_first_and_never_null_on_both_backends() -> None:
     assert "SORT value.size DESC" in VALUES_IN_RECORDS_AQL and "v.name != null" in VALUES_IN_RECORDS_AQL
-    assert "ORDER BY coalesce(v.amountFloat, v.siValue, v.numericValue, v.startMs, 0) DESC" in VALUES_IN_RECORDS_CYPHER
+    assert "ORDER BY coalesce(v.amountHighFloat, v.amountFloat, v.siValue, v.numericValue, v.startMs, 0) DESC" in VALUES_IN_RECORDS_CYPHER
     assert "v.name IS NOT NULL" in VALUES_IN_RECORDS_CYPHER
 
 
