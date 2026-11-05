@@ -48,7 +48,7 @@ def runtime_service() -> str:
 
 
 def runtime_db_config() -> DbConfig:
-    """``PG_CORE_URL`` is the login of ``PG_RUNTIME_SERVICE``'s role (process_monitor.sh hands each process its own)."""
+    """``PG_CORE_URL`` is the login of ``PG_RUNTIME_SERVICE``'s role (process_monitor.sh sets it for a process whose own PG_CORE_<ROLE>_URL is set)."""
     return DbConfig.from_env(runtime_service())
 
 

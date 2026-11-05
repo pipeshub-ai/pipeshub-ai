@@ -106,10 +106,11 @@ start_docling() {
     log "Docling started with PID: $DOCLING_PID"
 }
 
+# A PG_CORE_<SERVICE>_URL (that service's own database login) makes the process use that role; without it nothing changes.
 start_indexing() {
     log "Starting Indexing service..."
     cd /app/python
-    python -m app.indexing_main &
+    env ${PG_CORE_INDEXING_URL:+PG_RUNTIME_SERVICE=indexing} python -m app.indexing_main &
     INDEXING_PID=$!
     log "Indexing started with PID: $INDEXING_PID"
 }
@@ -117,7 +118,7 @@ start_indexing() {
 start_connector() {
     log "Starting Connector service..."
     cd /app/python
-    python -m app.connectors_main &
+    env ${PG_CORE_CONNECTORS_URL:+PG_RUNTIME_SERVICE=connectors} python -m app.connectors_main &
     CONNECTOR_PID=$!
     log "Connector started with PID: $CONNECTOR_PID"
     
@@ -145,7 +146,7 @@ start_connector() {
 start_query() {
     log "Starting Query service..."
     cd /app/python
-    python -m app.query_main &
+    env ${PG_CORE_QUERY_URL:+PG_RUNTIME_SERVICE=query} python -m app.query_main &
     QUERY_PID=$!
     log "Query started with PID: $QUERY_PID"
 }

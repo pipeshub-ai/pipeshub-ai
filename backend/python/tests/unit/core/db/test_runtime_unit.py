@@ -71,6 +71,21 @@ def test_config_validates_and_derives_from_the_pooler() -> None:
             DbConfig(**{"service": "query", "dsn": "x", **bad})
 
 
+def test_per_service_url_and_pool_override_the_shared_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    for k in ("PG_CORE_QUERY_URL", "PG_QUERY_POOL_MAX"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("PG_CORE_URL", "postgresql://shared@h/db")
+    monkeypatch.setenv("PG_POOL_MAX", "7")
+    q = DbConfig.from_env("query")  # nothing per-service set: today's behaviour
+    assert (q.dsn, q.pool_max) == ("postgresql://shared@h/db", 7)
+    monkeypatch.setenv("PG_CORE_QUERY_URL", "postgresql://query@h/db")
+    monkeypatch.setenv("PG_QUERY_POOL_MAX", "4")
+    q = DbConfig.from_env("query")
+    assert (q.dsn, q.pool_max) == ("postgresql://query@h/db", 4)
+    i = DbConfig.from_env("indexing")  # another service keeps the shared values
+    assert (i.dsn, i.pool_max) == ("postgresql://shared@h/db", 7)
+
+
 def test_pooled_connection_sends_no_client_reset() -> None:
     assert PooledConnection.get_reset_query(object()) == ""  # type: ignore[arg-type]
 
