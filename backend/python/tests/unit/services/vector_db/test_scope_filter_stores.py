@@ -186,3 +186,26 @@ async def test_a_list_past_the_stores_limit_is_refused_not_cut(store, limit) -> 
         with pytest.raises(ScopeFilterTooLarge):
             await sr.captured(store, [scoped("dense_only", flt(**{kw: big}))])
     await sr.captured(store, [scoped("dense_only", flt(excluded=frozenset(list(big)[:limit])))])         # exactly the limit is fine
+
+
+def test_redis_drops_and_counts_what_the_exact_rule_refuses_and_keeps_the_rest(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dataclasses
+
+    from app.services.vector_db.models import SearchResult
+    from app.services.vector_db.redis import redis_vector
+
+    class Rec:
+        dropped = 0
+
+        def inc(self, *labels: str, value: float = 1.0) -> None:
+            Rec.dropped += int(value)
+
+    monkeypatch.setattr(redis_vector, "SCOPE_PREFILTER_DROPPED", Rec())
+    ok = {"connectorIds": ["c1"], "recordGroupIds": ["g1"], "scopeStamp": "container", "scopeFieldsVersion": VERSION, "scopeGeneration": GENERATION}
+    results = [SearchResult("ok", 1.0, ok), SearchResult("capital_connector", 1.0, {**ok, "connectorIds": ["C1"]}),
+               SearchResult("new_connector", 1.0, {**ok, "connectorIds": ["c1", "cnew"]}), SearchResult("capital_group", 1.0, {**ok, "recordGroupIds": ["G1"]})]
+    req = dataclasses.replace(sr.plain_requests()["dense_only"], scope_filter=flt(open_apps=frozenset()))
+    got = redis_vector.RedisVectorService._exact_scope(req, results)
+    assert [r.id for r in got] == ["ok"] and Rec.dropped == 3
+    assert [r.id for r in redis_vector.RedisVectorService._exact_scope(sr.plain_requests()["dense_only"], results)] == [r.id for r in results]   # no filter: untouched
+    assert redis_vector.RedisVectorService._exact_scope(dataclasses.replace(req, with_payload=False), results)[0].payload == {}
