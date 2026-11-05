@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import time
+import secrets
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
@@ -40,9 +40,10 @@ def whole_number(value: object) -> int | None:
 
 
 def new_unsafe_mark() -> int:
-    """A fresh unsafe mark: microseconds since the epoch. A connector's mark is rewritten by every change that could not move the generation, and
-    a pass records the mark it read, so a mark written after the read is a different value (a constant would hide it)."""
-    return time.time_ns() // 1000
+    """A fresh unsafe mark: a random positive whole number below 2**53 (exact in JSON and in the graph stores). A connector's mark is rewritten by
+    every change that could not move the generation, and a pass records the mark it read, so a mark written after the read must be a different
+    value (a constant would hide it). Only equality is used; a clock would give two writers in the same instant the same mark."""
+    return secrets.randbits(52) + 1
 
 
 OPENED_KEY = "scopeProjectionOpened"

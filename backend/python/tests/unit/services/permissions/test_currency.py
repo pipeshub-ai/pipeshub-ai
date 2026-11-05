@@ -121,3 +121,13 @@ def test_unclosed_writes_counts_what_is_open_and_reads_a_broken_counter_as_unrea
     assert unclosed_writes(None) == 0 and unclosed_writes({}) == 0 and unclosed_writes({OPENED: 5, CLOSED: 2}) == 3
     for junk in GARBAGE:
         assert unclosed_writes({OPENED: junk}) is None and unclosed_writes({OPENED: 5, CLOSED: junk}) is None, junk
+
+
+def test_a_new_unsafe_mark_is_a_fresh_number_the_currency_checks_accept() -> None:
+    from app.services.permissions.structure_generation import new_unsafe_mark, same_mark, unsafe_mark, whole_number
+
+    marks = [new_unsafe_mark() for _ in range(1000)]
+    assert len(set(marks)) == 1000                                   # two writers in the same instant do not share a mark
+    for mark in marks:
+        assert type(mark) is int and 0 < mark < 2**53 and whole_number(mark) == mark and unsafe_mark(mark) == mark
+        assert same_mark(mark, mark) and not same_mark(mark, True)
