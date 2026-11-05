@@ -23,6 +23,7 @@ from app.config.constants.arangodb import (
 from app.events.events import DedupDecision, EventProcessor
 from app.exceptions.indexing_exceptions import ProcessingError
 from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf, UnreadablePdfError
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -1830,6 +1831,67 @@ class TestOnEventUpdateEvent:
         call_kwargs = processor.process_sql_structured_data.call_args[1]
         assert call_kwargs["virtual_record_id"] != "shared-vrid"
         assert len(call_kwargs["virtual_record_id"]) == 36
+
+    @pytest.mark.asyncio
+    async def test_a_twin_in_the_trash_isolates_the_update_rather_than_rewriting_its_content(self) -> None:
+        """A restore reads the VRID's stored content, so rewriting it in place
+        would bring the twin back holding this record's new content."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "shared-vrid",
+        }
+
+        async def holders(_vrid, *, visibility=RecordVisibility.LIVE, **_kwargs) -> list[str]:
+            return ["rec-1", "rec-trashed"] if visibility == RecordVisibility.ALL else ["rec-1"]
+
+        gp.get_records_by_virtual_record_id = AsyncMock(side_effect=holders)
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch.object(ep, "_cleanup_abandoned_vrid_storage", new_callable=AsyncMock), \
+             patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock):
+            await _drain(ep.on_event(_make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.UPDATE_RECORD.value,
+                virtual_record_id="shared-vrid",
+            )))
+
+        assert processor.process_sql_structured_data.call_args[1]["virtual_record_id"] != "shared-vrid"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_of_who_shares_the_vrid_fails_the_update_and_writes_nothing(self) -> None:
+        """Answered as [] it reads as "only this record", and the update would
+        rewrite content another record is serving."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "shared-vrid",
+        }
+
+        async def unreadable(_vrid, *, raise_on_error=False, **_kwargs) -> list[str]:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []
+
+        gp.get_records_by_virtual_record_id = AsyncMock(side_effect=unreadable)
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             pytest.raises(ConnectionError):
+            await _drain(ep.on_event(_make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.UPDATE_RECORD.value,
+                virtual_record_id="shared-vrid",
+            )))
+
+        processor.process_sql_structured_data.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_shared_vrid_with_missing_content_is_rebuilt_not_isolated(self):

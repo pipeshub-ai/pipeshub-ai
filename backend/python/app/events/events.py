@@ -63,6 +63,7 @@ from app.services.docling.client import (
 )
 from app.services.extraction.client import ExtractionClient
 from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
     indexed_copy_fields,
     is_live_record,
 )
@@ -1631,9 +1632,13 @@ class EventProcessor:
                 if is_reconciliation_type:
                     prev_virtual_record_id = virtual_record_id
                     if prev_virtual_record_id:
-                        # Check how many records share this vrid
+                        # Rewriting in place changes what every holder reads, so a
+                        # trashed record counts (a restore reads this content) and a
+                        # failed read must not pass for "only this record".
                         records_with_vrid = await self.graph_provider.get_records_by_virtual_record_id(
-                            prev_virtual_record_id
+                            prev_virtual_record_id,
+                            raise_on_error=True,
+                            visibility=RecordVisibility.ALL,
                         )
                         if len(records_with_vrid) > 1:
                             # N:1 case: multiple records share this vrid, isolate with new vrid
