@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Union
 
+from app.services.permissions.scope_fields import SCOPE_KEYS
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -45,7 +46,7 @@ if TYPE_CHECKING:
 
 # Top-level payload fields — must not be auto-prefixed with ``metadata.``.
 TOP_LEVEL_FILTER_FIELDS = frozenset(
-    {CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD, ROOT_RECORD_GROUP_IDS_FIELD}
+    {CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD, ROOT_RECORD_GROUP_IDS_FIELD, *SCOPE_KEYS}
 )
 
 

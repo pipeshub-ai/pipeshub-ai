@@ -475,3 +475,13 @@ async def test_an_update_chooses_its_points_before_it_changes_what_the_filter_re
     await store.overwrite_payload("records", {"tag": "z", **container}, scope_flt(A, "scopeStamp", "container"))
     assert [r[0] for r in await sql(store, "SELECT p.block_id FROM retrieval.point_text pt JOIN retrieval.points p USING (org_id, point_sk) "
                                            "WHERE pt.org_id = $1 AND pt.payload ->> 'tag' = 'z' ORDER BY 1", A)] == ["p1", "p2"]
+
+
+async def test_a_filter_built_by_the_shared_builder_on_a_scope_key_reaches_the_group(store) -> None:
+    stamped = point(A, "p1", conn=["c1"])
+    stamped.payload.update(STAMP)
+    await store.upsert_points("records", [stamped, point(A, "p2", vrid="r2", conn=["c1"])])
+    for key, hit in (("scopeStamp", "union"), ("scopeFieldsVersion", 5), ("scopeGeneration", 3), ("pathIds", ["p1"]), ("aclScope", ["s1"])):
+        expr = await store.filter_collection(must={"orgId": A, key: hit})              # the key goes through build_generic_conditions
+        assert [c.key for c in expr.must] == ["metadata.orgId", key], key                 # a top-level key, not "metadata.<key>"
+        assert [p.id for p in (await store.scroll("records", expr, 10)).points] == [pid(f"{A}/p1")], key
