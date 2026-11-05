@@ -19,7 +19,7 @@ One seeded Drive app, browsed by three users:
 * the owner, who sees both top-level groups.
 
 Both backends must return the same nodes with the same type and children flag
-(a connector's items carry no role; a record group's flag is always true).
+(a connector's items carry no role; a row's arrow is on exactly when opening it lists something).
 On Arango the test also asks the optimizer
 for the plan of every statement the browse sends: nesting the permission lookups
 once made planning alone need more than 1 GB.
@@ -88,9 +88,8 @@ DIRECT_GRANTS = (
 # (nodeType, hasChildren) by name.
 EXTERNAL_SEES = {
     "shared_top": ("recordGroup", True),
-    # A record group always answers yes: whether it holds anything this user
-    # may open is not its row's to say.
-    "nested_orphan": ("recordGroup", True),
+    # A browse answers a record group's arrow from what opening it lists for this user: nothing, here.
+    "nested_orphan": ("recordGroup", False),
     "orphan_direct": ("record", False),
     "in_hidden_folder": ("record", False),
     "shared_folder": ("folder", True),
@@ -99,8 +98,8 @@ EXTERNAL_SEES = {
 # The same direct grants; in_hidden_folder reaches the external collaborator through a user group.
 GUEST_SEES = {name: seen for name, seen in EXTERNAL_SEES.items() if name != "in_hidden_folder"}
 OWNER_SEES = {
-    "hidden_top": ("recordGroup", True),
-    "shared_top": ("recordGroup", True),
+    "hidden_top": ("recordGroup", False),
+    "shared_top": ("recordGroup", False),
 }
 
 

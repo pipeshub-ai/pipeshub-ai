@@ -22,6 +22,7 @@ from app.modules.transformers.vectorstore import (
     VectorStore,
     _embed_under,
     _embedding_text,
+    _Window,
 )
 from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorstore_p1
 
@@ -332,9 +333,46 @@ async def test_switched_off_text_with_headings_embeds_as_before(monkeypatch) -> 
 
 def test_context_is_left_off_rather_than_overflowing_the_model_limit(monkeypatch) -> None:
     monkeypatch.setenv("PIPESHUB_EMBED_TOKEN_LIMIT", "8")
-    document = Document(page_content="a b c d e f g h", metadata={})
-    _embed_under("A long title › A long section", [document])
+    document = Document(page_content="a b c d e f g h", metadata={"blockId": "b"})
+    _embed_under([document], {"b": "A long title › A long section"})
     assert _embedding_text(document) == "a b c d e f g h"
+
+
+def test_a_model_window_is_counted_once_for_all_documents() -> None:
+    calls: list[list[str]] = []
+
+    def count(texts: list[str]) -> list[int]:
+        calls.append(texts)
+        return [len(t.split()) for t in texts]
+
+    short = Document(page_content="two words", metadata={"blockId": "s"})
+    long = Document(page_content="one two three four five six", metadata={"blockId": "l"})
+    _embed_under([short, long], {"s": "Care", "l": "Care"}, _Window(limit=5, count=count))
+
+    assert len(calls) == 1
+    assert _embedding_text(short) == "Care\ntwo words"
+    assert _embedding_text(long) == "one two three four five six"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_one_point_per_block_policies_embed_under_the_line_too(monkeypatch) -> None:
+    monkeypatch.setenv("EMBED_POINT_POLICY", "C")
+    vs, capture = _capturing_vectorstore()
+    rows = _table("Tray row one")
+    rows.blocks.append(Block(index=1, type=BlockType.TABLE_ROW, format=DataFormat.JSON, parent_index=0,
+                             data={"row_natural_language_text": "Second row", "row_number": 2}))
+    rows.block_groups[0].children = BlockGroupChildren.from_indices(block_indices=[0, 1])
+    _under(rows.blocks[0], "Lighting")
+    _under(rows.blocks[1], "Lighting")
+    text = _under(_text_block(2, "Lamps switch off at nine."), "Lighting")
+    container = BlocksContainer(blocks=[*rows.blocks, text], block_groups=rows.block_groups)
+
+    await _index_record(vs, container, _record())
+
+    assert "Greenhouse Handbook › Lighting\nLamps switch off at nine." in capture.dense
+    grouped = next(t for t in capture.dense if "Second row" in t)
+    assert grouped.startswith("Greenhouse Handbook › Lighting\n")
 
 
 def test_image_alt_text_is_part_of_the_image_description() -> None:

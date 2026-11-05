@@ -184,6 +184,22 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
     );
   }
 
+  async setDynamicGrant(
+    orgId: string,
+    id: string,
+    grant: Pick<OAuthAppDto, 'allowedScopes' | 'allowedGrantTypes'>,
+  ): Promise<void> {
+    await OAuthApp.updateOne(
+      { _id: oid(id), orgId: oid(orgId), isDynamic: true, isDeleted: false },
+      {
+        $set: {
+          allowedScopes: grant.allowedScopes,
+          allowedGrantTypes: grant.allowedGrantTypes,
+        },
+      },
+    );
+  }
+
   async listClientIdsActingAs(userId: string): Promise<string[]> {
     const apps = await OAuthApp.find({
       tokenIdentityUserId: userId,

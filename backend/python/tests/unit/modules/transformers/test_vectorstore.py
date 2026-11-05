@@ -14,6 +14,9 @@ from tests.support.vector_db import (
 # ---------------------------------------------------------------------------
 
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _make_vectorstore():
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
     from app.modules.transformers.vectorstore import VectorStore
@@ -2796,6 +2799,13 @@ class TestTokenBudgetBatches:
         vs.embedding_endpoint = None
         vs.dense_embeddings = MagicMock(openai_api_base="https://llm-gateway.example.com/v1")
         assert not vs._batches_by_tokens()
+
+    @pytest.mark.asyncio
+    async def test_openai_regional_host_packs_by_tokens(self) -> None:
+        batches = await self._batches(
+            "openAI", self._sentence_docs(550), "https://us.api.openai.com/v1"
+        )
+        assert len(batches) == 1
 
     @pytest.mark.asyncio
     async def test_openai_named_explicitly_still_packs_by_tokens(self) -> None:

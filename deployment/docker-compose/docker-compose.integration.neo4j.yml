@@ -165,7 +165,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read,project:read,project:write,project:delete}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,connector:write,connector:sync,code:read,project:read,project:write,project:delete}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
@@ -838,6 +838,10 @@ services:
       ELASTICSEARCH_ENABLED: "true"
       ELASTICSEARCH_HOST: zammad-elasticsearch
       ELASTICSEARCH_PORT: "9200"
+      # As zammad-docker-compose's own .env sets it. Without it the scheduler's database pool is used up from the
+      # start (ConnectionTimeoutError on every job), search indexing stalls, and the suite's wait for searchable
+      # tickets times out (seen on a local 6.4.1 stack).
+      POSTGRESQL_OPTIONS: "?pool=50"
     command: ["zammad-init"]
     volumes:
       - zammad-storage:/opt/zammad/storage

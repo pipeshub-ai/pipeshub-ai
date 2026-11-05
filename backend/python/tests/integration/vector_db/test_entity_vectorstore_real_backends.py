@@ -257,6 +257,7 @@ class TestMembershipReads:
 
         await store.vector_db_service.update_payload_by_ids(
             store.collection_name, [present, missing], {"connectorIds": ["c2"]},
+            org_id=org,
         )
 
         assert (await _point(store, org, "topic", "t1"))["connectorIds"] == ["c2"]
@@ -804,6 +805,7 @@ class TestWriteOutcomeAndLocks:
                 await service.update_payload_by_ids(
                     collection, [store._point_id(org, "topic", "t1")],
                     {"connectorIds": ["c-gone", "c-other", "c-new"]},
+                    org_id=org,
                 )
             return await real_retrieve(collection, ids)
 

@@ -72,6 +72,9 @@ class FakeStorage:
         assert (extension, content_type) == ("bin", "application/octet-stream")
         return doc_id
 
+    async def upload_limit(self, *, use_cache: bool = False) -> int:
+        return 30 << 20
+
     async def exists(self, org_id: str, document_id: str) -> bool:
         return document_id in self.docs and document_id not in self.gone
 

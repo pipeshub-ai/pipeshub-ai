@@ -13,6 +13,7 @@ env var has a typo in it is worse than falling back to the shipped default.
 
 from __future__ import annotations
 
+import logging
 import os
 
 
@@ -91,6 +92,27 @@ def env_int(
     return value
 
 
+def env_positive_int(name: str, default: int) -> int:
+    """Value of the env var `name` when it is an integer >= 1, else `default`.
+
+    For caps, where clamping a typo'd 0 to some floor would silently reject
+    nearly all traffic. A set but unusable value is logged; blank counts as unset.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = 0
+    if value < 1:
+        logging.getLogger(__name__).warning(
+            "%s=%r is not a positive integer; using the default %d", name, raw, default,
+        )
+        return default
+    return value
+
+
 def uvicorn_worker_healthcheck_timeout() -> int:
     """Seconds a uvicorn worker may go without answering its supervisor before
     it is killed and replaced (`UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS`).
@@ -103,4 +125,4 @@ def uvicorn_worker_healthcheck_timeout() -> int:
     return env_int("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", 60, lo=5) or 60
 
 
-__all__ = ["env_bool", "env_int", "uvicorn_worker_healthcheck_timeout"]
+__all__ = ["env_bool", "env_int", "env_positive_int", "uvicorn_worker_healthcheck_timeout"]

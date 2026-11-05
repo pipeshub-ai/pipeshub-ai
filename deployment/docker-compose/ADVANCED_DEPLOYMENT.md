@@ -320,6 +320,22 @@ access token (never `client_credentials` through DCR).
 |----------|---------|--------|
 | `PIPESHUB_ENABLE_DCR` | off (only `true` enables it) | `POST /api/v1/oauth2/register` |
 | `PIPESHUB_ENABLE_DEVICE_GRANT` | on | `POST /api/v1/oauth2/device_authorization` and the device `grant_type` |
+| `PIPESHUB_ENABLE_CIMD` | on (`false` disables it) | An https URL that serves an OAuth Client ID Metadata Document is accepted as `client_id` |
+| `MCP_ALLOWED_ORIGINS` | none | Extra browser origins (comma-separated) allowed to call `/mcp`, e.g. a browser-based MCP inspector |
+
+`/mcp` refuses a request whose `Origin` header is not this instance's own
+origin, one in `ALLOWED_ORIGINS`, or one in `MCP_ALLOWED_ORIGINS` (403). Desktop,
+CLI and hosted AI clients send no `Origin` and are not affected. Each account
+may make `MAX_REQUESTS_PER_MINUTE` requests a minute to `/mcp`; the API calls a
+tool makes on its behalf are not counted again. An address is limited only on
+requests with an invalid or expired token, so many users behind one address
+(an office, or a hosted AI client) do not share a limit.
+
+`/mcp` accepts OAuth access tokens and personal access tokens, not web session
+tokens. A client that sends the RFC 8707 `resource` parameter (this instance's
+`/mcp` URL) gets an access token whose audience is `/mcp`; `/mcp` refuses a
+token whose audience is anything else. Tokens without an audience are accepted
+as before.
 
 Discovery: `GET {origin}/.well-known/openid-configuration` lists
 `device_authorization_endpoint` and the device grant type only while the
@@ -340,6 +356,17 @@ official agent app or created by an administrator.
 
 DCR refuses `client_credentials`. Tokens issued after device consent carry the
 logged-in user's `userId` and `orgId`.
+
+With client ID metadata documents on, discovery includes
+`client_id_metadata_document_supported: true`, and MCP clients that publish
+their metadata at an https URL (Claude Code, VS Code and others) use that URL
+as `client_id` with no registration step. PipesHub fetches the document when
+a signed-in user opens the authorization page, accepts only public clients
+(`token_endpoint_auth_method: none`, PKCE required) and the redirect URIs the
+document lists, and refuses documents on loopback or private addresses. A
+loopback redirect URI listed without a port matches any port (RFC 8252). The
+consent screen shows the document's host next to the unreviewed-app warning,
+because the name and logo come from the client.
 
 ---
 

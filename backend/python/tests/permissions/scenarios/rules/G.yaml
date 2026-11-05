@@ -1,0 +1,151 @@
+- id: RULE-G01
+  title: 'Direct grant but no gate into the app: denied'
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [u, f]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, any]
+  comment: A grant in a connector the user cannot enter is dropped.
+- id: RULE-G02
+  title: Gate through a group's USER_APP_RELATION
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: g, kind: group, org_member: false}
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [u, f]
+    memberships:
+      - [u, g]
+    gates:
+      - [g, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, any]
+- id: RULE-G03
+  title: ORG_APP_RELATION alone does not gate
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [u, f]
+    gates:
+      - [org, A, ORG_APP_RELATION]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, any]
+- id: RULE-G04
+  title: Org PERMISSION->App of any type gates every org member
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [org, A, DOMAIN]
+      - [u, f]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, any]
+  comment: The gate does not apply the ORG/ORGANIZATION type test that grants do. Nothing found writes such an edge.
+- id: RULE-G05
+  title: 'App of another org: not gated even with USER_APP_RELATION'
+  source: rule cases R1-R13 (spec)
+  rule: org-isolation
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, org: other}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, org: other, parents: [d]}
+    grants:
+      - [u, f]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, org-isolation]
+- id: RULE-G06
+  title: Disabled connector (App.isActive=false) still admits
+  source: rule cases R1-R13 (spec)
+  rule: lifecycle
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, active: false}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [u, f]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, lifecycle]
+  comment: No isActive test in the gate; whether search reaches its chunks is a retrieval matter.
+- id: RULE-G07
+  title: 'Asking for the App node itself: admitted when gated'
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {A: admit}
+  tags: [rules, any]
+- id: RULE-G08
+  title: 'Target record of another org, asked under the viewer''s org: denied'
+  source: rule cases R1-R13 (spec)
+  rule: org-isolation
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, org: other, parents: [d]}
+    grants:
+      - [u, f]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, org-isolation]

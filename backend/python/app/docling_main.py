@@ -31,6 +31,7 @@ from app.services.docling.docling_service import (
 )
 from app.services.messaging.config import messaging_env
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.controller import run_for_health
 from app.telemetry.setup import setup_telemetry
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
@@ -205,7 +206,7 @@ async def health_check() -> JSONResponse:
             governor: ResourceGovernor | None = getattr(app.state, "governor", None)
             if governor is not None:
                 try:
-                    content["resource_governor"] = governor.stats()
+                    content["resource_governor"] = await run_for_health(governor.stats)
                 except Exception as stats_error:
                     # Observability failure must not fail the liveness
                     # probe — the service itself is still healthy.

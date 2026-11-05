@@ -37,6 +37,7 @@ from app.agents.constants.mcp_server_constants import (
 from app.agents.mcp import cimd, stdio_policy, step_up
 from app.agents.mcp import dcr as dcr_module
 from app.agents.mcp import lifecycle as mcp_lifecycle
+from app.agents.mcp import logo as mcp_logo
 from app.agents.mcp import oauth_client as oauth_client_module
 from app.agents.mcp import service as mcp_service
 from app.agents.mcp import token_refresh as mcp_token_refresh
@@ -52,6 +53,7 @@ from app.agents.mcp.models import (
     DiscoveredOAuthMetadata,
     MCPAuthMode,
     MCPServerInstanceConfig,
+    MCPServerLogoPayload,
     MCPTransport,
     TokenEndpointAuthMethod,
     is_web_url,
@@ -70,6 +72,7 @@ from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
+from app.core.org_context import current_org_id
 from app.edition_config import (
     build_schedule_refresh_kwargs,
     can_reveal_secrets,
@@ -80,6 +83,7 @@ from app.edition_config import (
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
 )
+from app.utils.concurrency import gather_with_concurrency
 from app.utils.desktop_state import (
     mark_desktop_state,
     strip_desktop_state,
@@ -388,6 +392,8 @@ def _validate_instance_config(payload: MCPServerInstanceConfig, registry: MCPReg
             )
         if template.supported_auth_modes and payload.auth_mode not in template.supported_auth_modes:
             raise _bad_request(f"{template.display_name} does not support the {payload.auth_mode.value} auth mode.")
+        if template.url_editable is True and not (payload.url or "").strip():
+            raise _bad_request(f"{template.display_name} needs your server URL.")
         return
 
     # Custom server — validate transport-specific required fields.
@@ -459,7 +465,11 @@ def _build_instance_record(
     if template:
         # A catalog server's launch and OAuth settings are fixed by its template: taking
         # them from the request would let a "GitHub" instance run any command or URL.
-        record.update(template_connection_fields(template))
+        # `url_editable` is the exception: the admin supplies that one address.
+        fields = template_connection_fields(template)
+        if template.url_editable is True:
+            fields["url"] = payload.url
+        record.update(fields)
     else:
         record.update({
             "command": payload.command,
@@ -759,6 +769,74 @@ async def delete_instance(request: Request, instance_id: str) -> dict[str, Any]:
     await mcp_lifecycle.delete_instance_data(config_service, instance)
 
     return {"success": True, "_id": instance_id}
+
+
+# ============================================================================
+# Logos — custom servers only; a catalog server shows its vendor's
+# ============================================================================
+
+# Logos read at once for a listing.
+_LOGO_READ_CONCURRENCY = 16
+# Uploads decoded at once in this process: decoding a large image takes tens of MiB, so the rest
+# wait their turn rather than adding up.
+_LOGO_NORMALIZE_CONCURRENCY = 2
+_LOGO_NORMALIZE_SLOTS = asyncio.Semaphore(_LOGO_NORMALIZE_CONCURRENCY)
+
+
+@router.get("/logos", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
+async def get_logos(request: Request) -> dict[str, Any]:
+    """The logos of the custom servers the caller can see, by instance id."""
+    config_service = _get_config_service(request)
+    user_context = _get_user_context(request)
+    instances = await resolve_mcp_instances_with_inheritance(
+        config_service, current_org_id(), user_context["user_id"],
+    )
+
+    async def _logo_of(instance_id: str) -> tuple[str, Optional[str]]:
+        owner_svc = await resolve_instance_owner_config_service(instance_id, config_service) or config_service
+        return instance_id, await mcp_logo.load_logo(owner_svc, instance_id)
+
+    pairs = await gather_with_concurrency(
+        _LOGO_READ_CONCURRENCY, *[_logo_of(i["_id"]) for i in instances if i.get("isCustom")],
+    )
+    return {"logos": {instance_id: logo for instance_id, logo in pairs if logo}}
+
+
+async def _logo_target(request: Request, instance_id: str, config_service: ConfigurationService) -> dict[str, Any]:
+    """The instance whose logo the caller may change: the same people who may edit the server."""
+    user_context = _get_user_context(request)
+    instance = await _get_org_instance(instance_id, config_service, current_org_id(), user_context["user_id"])
+    if not instance:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
+    await _require_manage_access(instance, user_context, request, config_service, "change the logo of")
+    forbid_inherited_mcp_mutation(instance)
+    return instance
+
+
+@router.put("/instances/{instance_id}/logo", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
+async def set_instance_logo(request: Request, instance_id: str, payload: MCPServerLogoPayload) -> dict[str, Any]:
+    config_service = _get_config_service(request)
+    instance = await _logo_target(request, instance_id, config_service)
+    if not instance.get("isCustom"):
+        raise _bad_request("Only custom MCP servers take a logo. A catalog server shows its vendor's.")
+    try:
+        # Decoding and shrinking a large image takes long enough to stall other requests.
+        async with _LOGO_NORMALIZE_SLOTS:
+            logo = await asyncio.to_thread(mcp_logo.normalize_logo, payload.logo)
+    except mcp_logo.LogoError as e:
+        raise _bad_request(str(e)) from e
+    if not await mcp_logo.save_logo(config_service, instance_id, logo):
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save the logo.")
+    return {"logo": logo}
+
+
+@router.delete("/instances/{instance_id}/logo", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
+async def remove_instance_logo(request: Request, instance_id: str) -> dict[str, Any]:
+    config_service = _get_config_service(request)
+    await _logo_target(request, instance_id, config_service)
+    if not await mcp_logo.delete_logo(config_service, instance_id):
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to remove the logo.")
+    return {"success": True}
 
 
 # ============================================================================

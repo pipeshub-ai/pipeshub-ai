@@ -240,3 +240,25 @@ def test_a_renamed_heading_marks_the_blocks_under_it_for_reindexing() -> None:
 
     assert service.compute_diff(old, service.build_metadata(_section("Care", "Watering")))[0] == set()
     assert service.compute_diff(old, service.build_metadata(_section("Care", "Irrigation")))[0] == {"p"}
+
+
+def test_without_a_record_title_text_keeps_the_data_only_hash() -> None:
+    hashes = ReconciliationService().build_metadata(_section(), record_title=None).hash_to_block_ids
+    assert hashes[_hash_for("Water at dawn.")] == ["p"]
+
+
+def test_a_new_record_title_marks_text_and_rows_for_reindexing_and_nothing_else() -> None:
+    def container() -> BlocksContainer:
+        return BlocksContainer(blocks=[
+            Block(id="p", index=0, type=BlockType.TEXT, data="Water at dawn."),
+            Block(id="r", index=1, type=BlockType.TABLE_ROW, data={"row_natural_language_text": "Bay 2"}),
+            Block(id="c", index=2, type=BlockType.CODE, data={"text": "def water(): ..."}),
+        ])
+
+    service = ReconciliationService()
+    untitled = service.build_metadata(container())
+    titled = service.build_metadata(container(), record_title="Greenhouse Handbook")
+    again = service.build_metadata(container(), record_title="Greenhouse Handbook")
+
+    assert service.compute_diff(untitled, titled)[0] == {"p", "r"}
+    assert service.compute_diff(titled, again)[0] == set()

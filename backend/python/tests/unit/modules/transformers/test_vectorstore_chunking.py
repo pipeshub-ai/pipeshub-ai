@@ -17,6 +17,7 @@ from app.modules.transformers.vectorstore import (
     _build_chunked_text_documents,
     _pack_windows,
     _process_text_blocks,
+    _Window,
     deterministic_point_id,
 )
 from app.services.vector_db.models import ScrollResult, VectorPoint
@@ -105,6 +106,19 @@ async def test_a_heading_starts_a_chunk_that_holds_its_section() -> None:
     await _index(vs, blocks)
 
     assert _spans(capture.points) == [[0], [1, 2, 3], [4, 5]]
+
+
+def test_a_chunk_longer_than_the_model_window_is_cut_to_it() -> None:
+    blocks = [_text_block(i, _words(12)) for i in range(3)]
+    window = _Window(limit=10, count=lambda texts: [len(t.split()) for t in texts])
+
+    docs = _build_chunked_text_documents(blocks, "vr-1", "org-1", "en", window)
+
+    assert all(len(d.page_content.split()) <= 10 for d in docs)
+    first = [d for d in docs if d.metadata["blockIndex"] == 0]
+    assert len(first) > 1
+    assert all(d.metadata["spanBlockIndices"] == [0, 1] for d in first)
+    assert [d.metadata["isBlock"] for d in first][:2] == [True, False]
 
 
 @pytest.mark.asyncio
@@ -198,7 +212,7 @@ def _events(vs: VectorStore) -> list[str]:
         events.append("upsert")
         await upsert(collection_name, points)
 
-    async def delete(block_ids: set, virtual_record_id: str, collection_name: str) -> None:
+    async def delete(block_ids: set, virtual_record_id: str, collection_name: str, **_: object) -> None:
         if block_ids:
             events.append("delete " + ",".join(sorted(block_ids)))
 
@@ -224,7 +238,7 @@ async def test_an_unchanged_chunk_is_not_embedded_again() -> None:
     _stored(vs, {"a": _ids(documents)})
     events = _events(vs)
 
-    await vs._replace_text_points(documents, {"a"}, "vr-1", "rec-1", "records")
+    await vs._replace_text_points(documents, {"a"}, "vr-1", "rec-1", "records", org_id="org-1")
 
     assert events == []
 
@@ -237,7 +251,7 @@ async def test_a_changed_chunk_under_the_same_first_block_is_embedded_before_its
     _stored(vs, {"a": {"old-a"}, "b": {"old-b"}})
     events = _events(vs)
 
-    await vs._replace_text_points(_chunk(blocks), {"a", "b"}, "vr-1", "rec-1", "records")
+    await vs._replace_text_points(_chunk(blocks), {"a", "b"}, "vr-1", "rec-1", "records", org_id="org-1")
 
     assert events == ["embed", "delete a", "upsert", "delete b"]
     assert capture.points[0].payload["metadata"]["spanBlockIds"] == ["a", "b"]
@@ -250,7 +264,7 @@ async def test_a_chunk_under_a_new_block_is_written_before_anything_is_deleted()
     _stored(vs, {"gone": {"old"}})
     events = _events(vs)
 
-    await vs._replace_text_points(_chunk(blocks), {"n"}, "vr-1", "rec-1", "records")
+    await vs._replace_text_points(_chunk(blocks), {"n"}, "vr-1", "rec-1", "records", org_id="org-1")
 
     assert events == ["embed", "upsert", "delete gone"]
 
@@ -264,7 +278,7 @@ async def test_a_failed_embedding_deletes_nothing() -> None:
     vs._embed_documents_with_retry = AsyncMock(side_effect=RuntimeError("provider down"))
 
     with pytest.raises(RuntimeError):
-        await vs._replace_text_points(_chunk(blocks), {"a"}, "vr-1", "rec-1", "records")
+        await vs._replace_text_points(_chunk(blocks), {"a"}, "vr-1", "rec-1", "records", org_id="org-1")
 
     vs.delete_blocks_by_ids.assert_not_awaited()
 
@@ -277,19 +291,21 @@ async def test_unreadable_stored_points_replace_every_chunk() -> None:
     vs.vector_db_service.scroll = AsyncMock(side_effect=RuntimeError("scroll window exceeded"))
     events = _events(vs)
 
-    await vs._replace_text_points(_chunk(blocks), {"a", "b"}, "vr-1", "rec-1", "records")
+    await vs._replace_text_points(_chunk(blocks), {"a", "b"}, "vr-1", "rec-1", "records", org_id="org-1")
 
     assert events == ["embed", "delete a", "upsert", "delete b"]
 
 
 @pytest.mark.asyncio
-async def test_stored_points_are_read_by_record_alone() -> None:
+async def test_stored_points_are_read_by_org_and_record_alone() -> None:
     vs, _ = _capturing_vectorstore()
     _stored(vs, {})
 
-    await vs._stored_text_points("vr-1", "records")
+    await vs._stored_text_points("vr-1", "records", org_id="org-1")
 
-    vs.vector_db_service.filter_collection.assert_awaited_once_with(must={"virtualRecordId": "vr-1"})
+    vs.vector_db_service.filter_collection.assert_awaited_once_with(
+        must={"orgId": "org-1", "virtualRecordId": "vr-1"},
+    )
     assert "metadata.blockType" in vs.vector_db_service.scroll.await_args.kwargs["with_payload"]
 
 

@@ -36,7 +36,8 @@ _ELLIPSIS = "…"
 _HEADING_NAME_RE = re.compile(r"^H([1-6])$")
 _ATX_PREFIX_RE = re.compile(r"^\s{0,3}#{1,6}\s+")
 _ATX_CLOSING_RE = re.compile(r"\s+#+\s*$")
-_EMPHASIS_RE = re.compile(r"(\*\*|\*|~~|`)(?=\S)(.+?)(?<=\S)\1")
+_CODE_SPAN_RE = re.compile(r"(`+)(.+?)\1")
+_EMPHASIS_RE = re.compile(r"(\*\*|\*|~~)(?=\S)(.+?)(?<=\S)\1")
 # Underscores mark emphasis only at word boundaries: get_user_id is a name.
 _UNDERSCORE_EMPHASIS_RE = re.compile(r"(?<!\w)(__|_)(?=\S)(.+?)(?<=\S)\1(?!\w)")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -76,17 +77,25 @@ def clean_heading_text(text: str, *, markdown: bool = True) -> str:
     """
     if not text:
         return ""
-    label = text.strip().split("\n", 1)[0]
+    label = _WHITESPACE_RE.sub(" ", text).strip()
     if markdown:
         if _ATX_PREFIX_RE.match(label):
             label = _ATX_CLOSING_RE.sub("", _ATX_PREFIX_RE.sub("", label))
         label = anchor_text_only(label)
-        label = _EMPHASIS_RE.sub(r"\2", label)
-        label = _UNDERSCORE_EMPHASIS_RE.sub(r"\2", label)
-    label = _WHITESPACE_RE.sub(" ", label).strip()
+        # A code span's text is kept as written: `__init__` is a name.
+        pieces: list[str] = []
+        last = 0
+        for span in _CODE_SPAN_RE.finditer(label):
+            pieces += [_without_emphasis(label[last : span.start()]), span.group(2)]
+            last = span.end()
+        label = "".join([*pieces, _without_emphasis(label[last:])]).strip()
     if len(label) > MAX_HEADING_CHARS:
         label = label[: MAX_HEADING_CHARS - 1].rstrip() + _ELLIPSIS
     return label
+
+
+def _without_emphasis(text: str) -> str:
+    return _UNDERSCORE_EMPHASIS_RE.sub(r"\2", _EMPHASIS_RE.sub(r"\2", text))
 
 
 def format_section_path(parts: Sequence[str]) -> str:
