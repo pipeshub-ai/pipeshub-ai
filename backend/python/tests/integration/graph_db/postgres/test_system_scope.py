@@ -95,9 +95,11 @@ async def test_the_app_listing_pages_over_an_id_two_orgs_hold(pg_provider, org_c
                 both = await pg_provider.get_documents_paginated(
                     "apps", limit=2, filters={"isActive": True}, after_key=key[:-1], raise_on_error=True)
                 assert sorted((d["_key"], d["orgId"]) for d in both) == sorted((key, org) for org in holders)
-            # ``after_key`` continues after the id whichever orgs hold it: neither holder of the shared id comes back
-            after = await pg_provider.get_documents_paginated("apps", limit=1, filters={"isActive": True}, after_key=shared, raise_on_error=True)
-            assert after and after[0]["_key"] != shared
+            # ``after_key`` continues after the id whichever orgs hold it: neither holder of the shared id comes back, and both holders of
+            # the later id do, in order. Other tests' apps may sit between the two ids, so the check is on this test's rows only.
+            after = await pg_provider.get_documents_paginated("apps", limit=1000, filters={"isActive": True}, after_key=shared, raise_on_error=True)
+            assert shared not in {d["_key"] for d in after}
+            assert [(d["_key"], d["orgId"]) for d in after if d["_key"].endswith(tag)] == [(last, org) for org in holders]
     finally:
         for org in (a, b):
             with bind(OrgContext(org, None, "job", "job:test", "t")):
