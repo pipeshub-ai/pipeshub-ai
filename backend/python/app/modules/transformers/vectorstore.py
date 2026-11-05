@@ -995,6 +995,7 @@ class _RecordPresence:
         self._present_since: float | None = None
 
     async def check(self) -> bool:
+        """Whether the record exists. A failed read raises: it must not read as a deletion."""
         async with self._lock:
             started = time.monotonic()
             if (

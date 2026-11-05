@@ -2716,10 +2716,12 @@ class TestRecordPresenceAcrossBatches:
 
         vs = self._store(AsyncMock(side_effect=self._graph_down))
 
-        with pytest.raises(VectorStoreError):
+        with pytest.raises(VectorStoreError) as failure:
             await vs._process_document_chunks(
                 self._docs(2 * _DEFAULT_DOCUMENT_BATCH_SIZE), "rec-1", "test_collection"
             )
+
+        assert isinstance(failure.value.__cause__, ConnectionError)
 
     @pytest.mark.asyncio
     async def test_a_failed_read_does_not_drop_the_images(self) -> None:
