@@ -1417,12 +1417,12 @@ class TestTheShadowComparisonDoesNotChangeTheAnswer:
     """With ACL_FILTER_MODE=shadow a comparator sees every finished search; whatever it does (nothing, an exception, a flood of over-admits),
     the response is the one it would have been."""
 
-    async def _answer(self, retrieval_service, mock_graph_provider, mock_vector_db_service, shadow):
+    async def _answer(self, retrieval_service, mock_graph_provider, mock_vector_db_service, shadow) -> dict:
         mock_vector_db_service.supports_scope_filter = True
         retrieval_service._shadow = shadow
         mock_graph_provider.get_accessible_containers = AsyncMock(return_value=_containers(record_group_ids_verify=frozenset({"rg"})))
 
-        async def search(queries, filter, limit, org_id, user_id=None, *, plan=None, record_cut=None):  # noqa: A002, ANN001, ANN202
+        async def search(queries, filter, limit, org_id, user_id=None, *, plan=None, record_cut=None) -> list:
             plan.dense, plan.sparse, plan.collections = [[0.1]], [[1]], ["c"]
             return [_hit("v-allowed"), _hit("v-denied")]
 

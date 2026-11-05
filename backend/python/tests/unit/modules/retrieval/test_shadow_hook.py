@@ -7,7 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import app.modules.retrieval.retrieval_service as mod
-from app.modules.retrieval.retrieval_service import RetrievalService, _QueryPlan, _SHADOW_SCOPE_FILTER
+from app.modules.retrieval.retrieval_service import (
+    _SHADOW_SCOPE_FILTER,
+    RetrievalService,
+    _QueryPlan,
+)
 from app.services.vector_db.filters import ScopeFilter
 
 
@@ -34,7 +38,7 @@ async def test_the_comparator_runs_the_same_search_with_the_filter_and_a_plan_of
     s = service(shadow)
     real_plan = _QueryPlan(dense=[[0.1]], sparse=[[1]], collections=["c"])
 
-    async def search(queries, filter, limit, org_id, user_id, *, plan=None, record_cut=None):  # noqa: A002, ANN001, ANN202
+    async def search(queries, filter, limit, org_id, user_id, *, plan=None, record_cut=None):
         seen.update(queries=queries, filter=filter, limit=limit, org=org_id, plan=plan, scope=_SHADOW_SCOPE_FILTER.get())
         plan.failed_collections.append("shadow-only")
         return [{"metadata": {"virtualRecordId": "v1"}}]
@@ -76,7 +80,7 @@ async def test_a_real_search_request_carries_no_scope_filter_and_the_shadow_sear
     s.cache_service = None
     seen: list = []
 
-    async def fan_out(collections, requests, *a, **k):  # noqa: ANN001, ANN202
+    async def fan_out(collections, requests, *a, **k):
         seen.extend(requests)
         return [[] for _ in requests]
 

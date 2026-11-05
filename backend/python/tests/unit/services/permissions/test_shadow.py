@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -15,11 +16,17 @@ from app.core import org_context
 from app.services.permissions import shadow as shadow_mod
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.mode import ENV_ACL_FILTER_MODE
-from app.services.permissions.scope_fields import SCOPE_FIELDS_VERSION, set_resolved_generation
+from app.services.permissions.scope_fields import (
+    SCOPE_FIELDS_VERSION,
+    set_resolved_generation,
+)
 from app.services.permissions.scopes import ViewerScopes
 from app.services.permissions.shadow import ShadowComparator
 from app.services.permissions.wiring import build_shadow_comparator
 from app.services.vector_db.filters import ScopeFilter, ScopeFilterTooLarge
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 ORG, USER = "o" * 24, "user-1"
 GEN = 3
@@ -40,7 +47,7 @@ class Counter:
 
 
 @pytest.fixture(autouse=True)
-def _generation_and_metrics(monkeypatch: pytest.MonkeyPatch):
+def _generation_and_metrics(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleMetrics]:
     set_resolved_generation(GEN)
     compared, skipped, seconds = Counter(), Counter(), Counter()
     monkeypatch.setattr(shadow_mod, "SHADOW_COMPARED", compared)
