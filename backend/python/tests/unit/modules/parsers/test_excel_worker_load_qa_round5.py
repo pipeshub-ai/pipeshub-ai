@@ -12,6 +12,7 @@ The expansion is replaced by a counter, so the tests are fast.
 from __future__ import annotations
 
 import io
+import signal
 import time
 import zipfile
 from typing import TYPE_CHECKING
@@ -20,6 +21,7 @@ import pytest
 from openpyxl.worksheet.worksheet import Worksheet
 
 from app.modules.parsers.excel import excel_parser as module
+from app.modules.parsers.excel import workbook_model
 from app.modules.parsers.excel.workbook_model import (
     WorkbookRefused,
     load_workbook_model,
@@ -163,3 +165,20 @@ def test_an_operator_who_lowers_the_heavy_parse_working_set_is_still_honoured(mo
     snap = _snapshot(cpu_quota=16.0, mem_limit_bytes=32 * 1024**3)
     monkeypatch.setattr(policy_mod, "HEAVY_PARSE_WORKING_SET_GB", 0.5)
     assert policy_mod.heavy_memory_cap(snap) == int(31 / 0.5)  # 32 GiB limit, 1 GiB resident
+
+
+def test_a_cpu_limit_swallowed_by_a_bare_except_in_openpyxl_is_still_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    # openpyxl's descriptors.base._convert has a bare `except:` that turns whatever interrupts it into a
+    # TypeError; the SIGXCPU handler's exception landing there must not be reported as a loader failure
+    def extract(_data: bytes) -> None:
+        try:
+            signal.raise_signal(signal.SIGXCPU)
+        except:  # noqa: E722 - the clause under test
+            raise TypeError("expected <class 'bool'>") from None
+
+    monkeypatch.setattr(workbook_model, "_extract", extract)
+    with pytest.raises(WorkbookRefused) as refused:
+        load_workbook_model(
+            workbook_zip("<sheetData/>"), module.EXCEL_LOAD_MAX_BYTES, module.EXCEL_MAX_SHEET_XML_BYTES, module.EXCEL_MAX_TEXT_CHARS, LOAD_SECONDS
+        )
+    assert refused.value.too_large
