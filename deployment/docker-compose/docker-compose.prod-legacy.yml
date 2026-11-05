@@ -206,6 +206,13 @@ services:
       # Opt-in only: an enterprise-search answer is checked for evidence of
       # every part of the question, and gaps are searched, before it is final.
       - COVERAGE_LOOP=${COVERAGE_LOOP:-}
+      - COVERAGE_LOOP_FACETS=${COVERAGE_LOOP_FACETS:-}
+      - COVERAGE_LOOP_GATE=${COVERAGE_LOOP_GATE:-}
+      - COVERAGE_LOOP_ADJUDICATION=${COVERAGE_LOOP_ADJUDICATION:-}
+      - COVERAGE_LOOP_PROMPT=${COVERAGE_LOOP_PROMPT:-}
+      - COVERAGE_LOOP_FACET_SEARCHES=${COVERAGE_LOOP_FACET_SEARCHES:-}
+      - COVERAGE_LOOP_GATE_ROUNDS=${COVERAGE_LOOP_GATE_ROUNDS:-}
+      - COVERAGE_LOOP_GATE_SEARCHES=${COVERAGE_LOOP_GATE_SEARCHES:-}
       - COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S=${COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S:-}
 
       # Storage config
