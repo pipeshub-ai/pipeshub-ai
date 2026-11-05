@@ -151,6 +151,7 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/permissions/model.py",
     f"{PYTHON}/tests/permissions/runner.py",
     f"{PYTHON}/tests/permissions/scenario.py",
+    f"{PYTHON}/tests/permissions/scope_corpus.py",
 )
 
 # backend-matrix.yml's Python suites. Their tests import more than their own

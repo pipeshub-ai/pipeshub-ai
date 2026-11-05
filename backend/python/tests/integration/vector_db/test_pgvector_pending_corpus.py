@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.services.vector_db.models import FieldCondition, FilterExpression, HybridSearchRequest, VectorPoint
+from app.services.vector_db.models import (
+    FieldCondition,
+    FilterExpression,
+    HybridSearchRequest,
+    VectorPoint,
+)
 from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.pgvector import PgVectorService
 from tests.integration.db.conftest import cluster, env  # noqa: F401  (fixtures)

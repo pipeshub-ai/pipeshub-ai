@@ -139,6 +139,7 @@ on:
       - 'backend/python/tests/permissions/model.py'
       - 'backend/python/tests/permissions/runner.py'
       - 'backend/python/tests/permissions/scenario.py'
+      - 'backend/python/tests/permissions/scope_corpus.py'
       - 'backend/python/pyproject.toml'
       - 'deployment/docker-compose/docker-compose.integration.messaging.yml'
       - 'deployment/docker-compose/docker-compose.integration.vector-db.yml'

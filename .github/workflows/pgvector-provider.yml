@@ -20,6 +20,7 @@ on:
       - 'backend/python/app/services/resource_governor/**'
       - 'backend/python/tests/integration/db/**'
       - 'backend/python/tests/integration/vector_db/test_pgvector_*.py'
+      - 'backend/python/tests/permissions/scope_corpus.py'
       - 'backend/python/pyproject.toml'
       - 'scripts/assert_no_skips.py'
       - '.github/workflows/pgvector-provider.yml'
