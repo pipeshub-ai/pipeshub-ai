@@ -260,7 +260,8 @@ async def _send_back(
     state.bump("gate_searches_with_results", len(found))
     _count_gap_kinds(state, decision.gaps)
     evidence = collect_evidence(context.tool_state) if found else draft.evidence
-    shown = draft.evidence.virtual_record_ids()
+    # Records whose text the draft had; one a fetch only named is new once a search shows its text.
+    shown = {record.virtual_record_id for record in draft.evidence.read_records()}
     new = {record.virtual_record_id for record in evidence.read_records()} - shown
     state.bump("gate_new_records", len(new))
     rulings = list(decision.rulings)
