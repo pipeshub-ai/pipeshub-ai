@@ -80,7 +80,7 @@ def _days_with_spans(text: str) -> list[tuple[int, date]]:
 
 
 def _message_header_days(text: str) -> list[date]:
-    days = []
+    days: list[date] = []
     for match in _MESSAGE_HEADER.finditer(text):
         days += [day for _start, day in _days_with_spans(match["rest"])]
     return days

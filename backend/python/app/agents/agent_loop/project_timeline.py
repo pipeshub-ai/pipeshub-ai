@@ -33,9 +33,9 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.actions.knowledge_graph.ops.entity_search import verifier_model
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from app.agents.agent_loop.context import AgentContext
+    from app.modules.agents.qna.chat_state import ChatState
     from app.utils.chat_helpers import RecordIdShortener
 
 logger = logging.getLogger(__name__)
@@ -181,6 +182,11 @@ class Timeline:
     entries: tuple[TimelineEntry, ...]
 
 
+def _as_dict(value: object) -> dict[str, Any] | None:
+    """``value`` when it is a JSON object, else None."""
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else None
+
+
 def parse_subject(reply: Mapping[str, Any] | None) -> TimelineSubject | None:
     """The subject a reply names, or None for none or a malformed reply."""
     if not isinstance(reply, dict) or reply.get("kind") not in ("project", "policy"):
@@ -188,7 +194,8 @@ def parse_subject(reply: Mapping[str, Any] | None) -> TimelineSubject | None:
     name = reply.get("subject")
     if not isinstance(name, str) or not name.strip():
         return None
-    searches = reply.get("searches") if isinstance(reply.get("searches"), list) else []
+    raw_searches = reply.get("searches")
+    searches = cast("list[object]", raw_searches) if isinstance(raw_searches, list) else []
     extra = tuple(dict.fromkeys(
         text.strip()[:_SUBJECT_CHARS] for text in searches
         if isinstance(text, str) and text.strip() and text.strip().lower() != name.strip().lower()
@@ -201,12 +208,10 @@ async def detect_subject(context: AgentContext, question: str) -> TimelineSubjec
     # Imported here: app.utils.streaming loads the whole retrieval stack.
     from app.utils.streaming import extract_json_from_string
 
-    llm, _model = await verifier_model(context.tool_state)
+    llm, _model = await verifier_model(cast("ChatState", context.tool_state))
     if llm is None:
         return None
     reply = await llm.ainvoke([SystemMessage(content=subject_prompt()), HumanMessage(content=f"Question: {question}")])
-    if not isinstance(reply, BaseMessage):
-        return None
     report_usage = llm_usage_reporter(context.tool_state, PROJECT_TIMELINE_SOURCE)
     if report_usage is not None:
         report_usage(reply)
@@ -233,15 +238,16 @@ def _source_day(graph_record: Mapping[str, Any]) -> tuple[str, str] | None:
 
 def _stored_text(stored: Mapping[str, Any] | None) -> str:
     """The text blocks and table rows of a stored record, in order."""
-    containers = (stored or {}).get("block_containers") or {}
-    blocks = containers.get("blocks") if isinstance(containers, dict) else None
+    containers = _as_dict(stored.get("block_containers")) if stored else None
+    blocks = containers.get("blocks") if containers else None
     parts: list[str] = []
-    for block in blocks or ():
-        if not isinstance(block, dict):
+    for value in cast("list[object]", blocks) if isinstance(blocks, list) else ():
+        block = _as_dict(value)
+        if block is None:
             continue
         data = block.get("data")
-        if block.get("type") == "table_row" and isinstance(data, dict):
-            data = data.get("row_natural_language_text")
+        if block.get("type") == "table_row":
+            data = (_as_dict(data) or {}).get("row_natural_language_text")
         elif block.get("type") != "text":
             continue
         if isinstance(data, str) and data.strip():
@@ -282,16 +288,16 @@ async def collect_timeline(state: Mapping[str, Any], subject: TimelineSubject) -
         limit=_SEARCH_LIMIT,
         filter_groups=state.get("filters") or {},
     )
-    if not isinstance(result, dict) or result.get("status_code", 200) != 200:
+    found = _as_dict(result)
+    if found is None or found.get("status_code", 200) != 200:
         return None
-    hits = sorted(
-        (hit for hit in result.get("searchResults") or [] if isinstance(hit, dict)),
-        key=lambda hit: -float(hit.get("score") or 0.0),
-    )
-    graph_records = result.get("virtual_to_record_map") or {}
+    hits = [hit for value in cast("list[object]", found.get("searchResults") or []) if (hit := _as_dict(value))]
+    hits.sort(key=lambda hit: -float(hit.get("score") or 0.0))
+    graph_records: dict[str, Any] = _as_dict(found.get("virtual_to_record_map")) or {}
+    vrids = ((_as_dict(hit.get("metadata")) or {}).get("virtualRecordId") for hit in hits)
     order = [
-        vrid for vrid in dict.fromkeys((hit.get("metadata") or {}).get("virtualRecordId") for hit in hits)
-        if vrid and isinstance(graph_records.get(vrid), dict)
+        vrid for vrid in dict.fromkeys(vrids)
+        if isinstance(vrid, str) and vrid and isinstance(graph_records.get(vrid), dict)
     ][:MAX_RECORDS]
     if not order:
         return None
@@ -365,7 +371,7 @@ def start_project_timeline(context: AgentContext, question: str) -> asyncio.Task
     """The timeline build for this question, run beside the first-turn search; None while the switch is off."""
     if not project_timeline_enabled() or not question.strip():
         return None
-    return spawn_in_request(_build_or_none(context, question), name="project-timeline")
+    return cast("asyncio.Task[Timeline | None]", spawn_in_request(_build_or_none(context, question), name="project-timeline"))
 
 
 async def finish_project_timeline(
