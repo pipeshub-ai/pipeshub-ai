@@ -818,6 +818,25 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
   seed_env "0.7.0-slim"
   run_installer "--upgrade to the tag already in use" -- --upgrade --version 0.7.0-slim
   check "asking for the current tag is a no-op with a clear message" "$out" "Already on image tag 0.7.0-slim"
+
+  # --reconfigure rewrites .env in full; datastore sizing an operator set by hand
+  # must survive it, or a small machine silently goes back to the defaults.
+  sizing=(NEO4J_HEAP_INITIAL=256M NEO4J_HEAP_MAX=1536M NEO4J_PAGECACHE=256M
+          NEO4J_MEMORY_LIMIT=2688M NEO4J_MEMORY_RESERVATION=1G
+          MONGO_MEMORY_RESERVATION=256M QDRANT_MEMORY_RESERVATION=512M)
+  seed_env "0.6.0-slim"
+  printf '%s\n' "${sizing[@]}" >>"$work/.env"
+  run_installer "--reconfigure with datastore sizing" -- --reconfigure --yes
+  for kv in "${sizing[@]}"; do
+    check "--reconfigure keeps ${kv%%=*}" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
+  done
+
+  seed_env "0.6.0-slim"
+  printf 'NEO4J_HEAP_INITIAL=2G\nNEO4J_HEAP_MAX=1G\n' >>"$work/.env"
+  status=0
+  out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only 2>&1)" || status=$?
+  if [[ $status -ne 0 ]]; then pass "initial heap above the maximum is refused"; else fail "initial heap above the maximum is refused"; fi
+  check "the refusal names both heap settings" "$out" "NEO4J_HEAP_INITIAL (2G) must be <= NEO4J_HEAP_MAX (1G)"
 )
 
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"

@@ -1202,6 +1202,15 @@ if ! ${SKIP_WIZARD:-false}; then
   MONGO_IMAGE_TAG="$(get_existing_val MONGO_IMAGE_TAG "")"
   MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "")"
   MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
+  MONGO_MEMORY_RESERVATION="$(get_existing_val MONGO_MEMORY_RESERVATION "")"
+  # Datastore memory sizing (docs/deployment/vector-db-sizing.md): an operator
+  # lowers these on a small machine, so a rewrite must not put the defaults back.
+  NEO4J_HEAP_INITIAL="$(get_existing_val NEO4J_HEAP_INITIAL "")"
+  NEO4J_HEAP_MAX="$(get_existing_val NEO4J_HEAP_MAX "")"
+  NEO4J_PAGECACHE="$(get_existing_val NEO4J_PAGECACHE "")"
+  NEO4J_MEMORY_LIMIT="$(get_existing_val NEO4J_MEMORY_LIMIT "")"
+  NEO4J_MEMORY_RESERVATION="$(get_existing_val NEO4J_MEMORY_RESERVATION "")"
+  QDRANT_MEMORY_RESERVATION="$(get_existing_val QDRANT_MEMORY_RESERVATION "")"
   # Qdrant's memory limit decides search speed once the index grows
   # (docs/deployment/vector-db-sizing.md); keep an operator's value.
   QDRANT_MEMORY_LIMIT="$(get_existing_val QDRANT_MEMORY_LIMIT "${QDRANT_MEMORY_LIMIT:-}")"
@@ -1327,6 +1336,13 @@ ARANGO_PASSWORD=${ARANGO_PASSWORD}
 NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=${NEO4J_PASSWORD}
 NEO4J_DATABASE=neo4j
+# Neo4j memory. Keep heap max + page cache clearly below the container limit,
+# and the initial heap no larger than the maximum.
+$(optional_env_line NEO4J_HEAP_INITIAL "$NEO4J_HEAP_INITIAL" "1G")
+$(optional_env_line NEO4J_HEAP_MAX "$NEO4J_HEAP_MAX" "2G")
+$(optional_env_line NEO4J_PAGECACHE "$NEO4J_PAGECACHE" "1G")
+$(optional_env_line NEO4J_MEMORY_LIMIT "$NEO4J_MEMORY_LIMIT" "3G")
+$(optional_env_line NEO4J_MEMORY_RESERVATION "$NEO4J_MEMORY_RESERVATION" "2G")
 
 # ── Key-value / config store ─────────────────────────────────────────────────
 # "redis" (default, uses always-on Redis) | "etcd" (dedicated container)
@@ -1355,6 +1371,7 @@ $(optional_env_line MONGO_IMAGE_TAG "$MONGO_IMAGE_TAG" "8.0.17")
 # larger or dedicated hosts; avoid dropping the cache below 1 GB.
 $(optional_env_line MONGO_CACHE_GB "$MONGO_CACHE_GB" "1")
 $(optional_env_line MONGO_MEMORY_LIMIT "$MONGO_MEMORY_LIMIT" "2G")
+$(optional_env_line MONGO_MEMORY_RESERVATION "$MONGO_MEMORY_RESERVATION" "512M")
 
 # App container memory ceiling and its combined memory+swap ceiling. Derived
 # from this machine on a fresh install; set them yourself to pin. The governor
@@ -1374,6 +1391,7 @@ QDRANT_API_KEY=${QDRANT_API_KEY}
 # warning. Search stays fast only while the index fits; size it from
 # docs/deployment/vector-db-sizing.md.
 $(optional_env_line QDRANT_MEMORY_LIMIT "$QDRANT_MEMORY_LIMIT" "6G")
+$(optional_env_line QDRANT_MEMORY_RESERVATION "$QDRANT_MEMORY_RESERVATION" "2G")
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
 # Do not write MAX_CONCURRENT_* / EMBEDDING_*_CONCURRENCY here. Empty values
@@ -1490,6 +1508,13 @@ _app_mem_mb="$(_parse_mem_mb "${APP_MEMORY_LIMIT:-10G}")" || _app_mem_mb=""
 _app_memswap_mb="$(_parse_mem_mb "${APP_MEMSWAP_LIMIT:-16G}")" || _app_memswap_mb=""
 if [[ -n "$_app_mem_mb" && -n "$_app_memswap_mb" ]] && (( _app_memswap_mb < _app_mem_mb )); then
   die "APP_MEMSWAP_LIMIT (${APP_MEMSWAP_LIMIT:-16G}) must be >= APP_MEMORY_LIMIT (${APP_MEMORY_LIMIT:-10G}). Raise APP_MEMSWAP_LIMIT in .env (or raise both together) before launching."
+fi
+# The JVM refuses to start when the initial heap exceeds the maximum, and Neo4j
+# would then restart in a loop with only a JVM error in its log.
+_neo4j_heap_init_mb="$(_parse_mem_mb "${NEO4J_HEAP_INITIAL:-1G}")" || _neo4j_heap_init_mb=""
+_neo4j_heap_max_mb="$(_parse_mem_mb "${NEO4J_HEAP_MAX:-2G}")" || _neo4j_heap_max_mb=""
+if [[ -n "$_neo4j_heap_init_mb" && -n "$_neo4j_heap_max_mb" ]] && (( _neo4j_heap_init_mb > _neo4j_heap_max_mb )); then
+  die "NEO4J_HEAP_INITIAL (${NEO4J_HEAP_INITIAL:-1G}) must be <= NEO4J_HEAP_MAX (${NEO4J_HEAP_MAX:-2G}). Lower NEO4J_HEAP_INITIAL in .env before launching."
 fi
 
 # Resolve APP_PORT from .env when wizard was skipped (upgrade / reuse)
