@@ -17,6 +17,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
+from app.services.permissions.errors import ViewerScopesUnavailable
 from tests.integration.graph_permissions.processor_harness import build_processor
 from tests.integration.graph_permissions.test_write_path import _group, _record
 from tests.integration.graph_permissions.write_path_support import (
@@ -77,7 +78,7 @@ def reference(edges, starts) -> set[str]:
     out, seen, todo = set(starts), set(starts), [(s, 0) for s in starts]
     while todo:
         cur, depth = todo.pop(0)
-        if depth >= 50:
+        if depth >= 200:
             continue
         for a, b, t in edges:
             if a == cur and t in HIER and b not in seen:
@@ -109,7 +110,46 @@ async def test_the_real_subtree_equals_a_hierarchy_only_reference_on_random_grap
     assert not bad, (case, "missing/extra vs reference", bad, "edges", sorted(seen))
 
 
-def stored_reference(graph, org: str, start: str) -> set[str]:
+@pytest.mark.parametrize("length", [201, 202])
+async def test_a_subtree_deeper_than_the_limit_is_refused_not_cut(backend, length) -> None:
+    names = [f"c{i}" for i in range(length)]
+    conn, ids = await _records(backend, names)
+    for a, b in zip(names, names[1:]):
+        await backend.add_node_relation(ids[a], ids[b], {"relationshipType": "PARENT_CHILD", **STAMPS})
+    if length == 201:                                                        # c200 is 200 levels below c0: the deepest record that is answered
+        assert sorted(await _subtree(backend, [ids["c0"]])) == sorted(f"v-{n}-{conn}" for n in names)
+    else:                                                                   # c201 is at depth 201: a record that deep would never be hidden
+        with pytest.raises(ViewerScopesUnavailable):
+            await _subtree(backend, [ids["c0"]])
+        assert sorted(await _subtree(backend, [ids["c2"]])) == sorted(f"v-{n}-{conn}" for n in names[2:])
+
+
+async def test_stacked_diamonds_are_walked_in_linear_time(backend) -> None:
+    """20 diamonds in a row (top -> left, right -> next top): 2**20 paths from the first node to the last, 61 nodes. Enumerating paths would not finish."""
+    import time
+
+    levels = 20
+    names = [f"t{i}" for i in range(levels + 1)] + [f"l{i}" for i in range(levels)] + [f"r{i}" for i in range(levels)]
+    conn, ids = await _records(backend, names)
+    for i in range(levels):
+        for mid in (f"l{i}", f"r{i}"):
+            await backend.add_node_relation(ids[f"t{i}"], ids[mid], {"relationshipType": "PARENT_CHILD", **STAMPS})
+            await backend.add_node_relation(ids[mid], ids[f"t{i + 1}"], {"relationshipType": "PARENT_CHILD", **STAMPS})
+    started = time.monotonic()
+    got = await _subtree(backend, [ids["t0"]])
+    assert sorted(got) == sorted(f"v-{n}-{conn}" for n in names)
+    assert time.monotonic() - started < 10
+
+
+async def test_another_organisations_start_id_gives_nothing(backend) -> None:
+    conn, ids = await _records(backend, ["a", "b"])
+    await backend.add_node_relation(ids["a"], ids["b"], {"relationshipType": "PARENT_CHILD", **STAMPS})
+    assert len(await _subtree(backend, [ids["a"]])) == 2
+    with for_org("another-org", job="test"):
+        assert await backend.provider.permission_stamp_graph().subtree_vrids("another-org", [ids["a"]]) == []
+
+
+def stored_reference(graph, org: str, start: str) -> set[str] | None:
     """The virtual records the subtree of `start` holds in the graph as the store was given it (a store may refuse a node: ArangoDB's schema does):
     a walk over hierarchy edges between nodes of the organisation."""
     nodes = {n["id"]: n for n in graph["nodes"] if n["props"].get("orgId") == org}
@@ -120,8 +160,10 @@ def stored_reference(graph, org: str, start: str) -> set[str]:
     if nodes.get(start, {}).get("kind") not in ("Record", "RecordGroup"):
         return set()
     seen, frontier = {start}, [start]
-    for _ in range(50):
+    for depth in range(1, 202):
         frontier = [c for i in frontier for c in below.get(i, ()) if c not in seen]
+        if frontier and depth > 200:
+            return None                                                      # deeper than the limit: the graph refuses it
         seen.update(frontier)
     return {nodes[i]["props"]["virtualRecordId"] for i in seen if nodes[i]["kind"] == "Record" and nodes[i]["props"].get("virtualRecordId")}
 
@@ -139,9 +181,12 @@ async def test_every_node_of_every_corpus_world_gives_the_reference_subtree(grap
                 for node in world.nodes:
                     if node.kind == "app" or node.org is not None:
                         continue
-                    with for_org(ns.org, job="test"):
-                        got = set(await graph.subtree_vrids(ns.org, [ns.id(node.id)]))
                     want = stored_reference(compiled, ns.org, ns.id(node.id))
+                    with for_org(ns.org, job="test"):
+                        try:
+                            got = set(await graph.subtree_vrids(ns.org, [ns.id(node.id)]))
+                        except ViewerScopesUnavailable:
+                            got = None
                     if got != want:
                         bad.append((layer.name, s.id, node.id, sorted(want - got), sorted(got - want)))
         assert not bad, (len(bad), bad[:10])

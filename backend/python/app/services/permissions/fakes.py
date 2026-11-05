@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from .ports import AppFacts, Principal, ScopeNode, StampApp, StampNode
+from .errors import ViewerScopesUnavailable
+from .ports import SUBTREE_DEPTH, AppFacts, Principal, ScopeNode, StampApp, StampNode
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -93,10 +94,12 @@ class InMemoryStampGraph:
             return []
         seen = {i for i in ids if i in self.node_map}
         frontier = list(seen)
-        for _ in range(50):
+        for depth in range(1, SUBTREE_DEPTH + 2):
             frontier = [k for k, n in self.node_map.items() if k not in seen and any(p in frontier for p in n.parents)]
             if not frontier:
                 break
+            if depth > SUBTREE_DEPTH:
+                raise ViewerScopesUnavailable("subtree_too_deep")
             seen.update(frontier)
         return sorted({n.vrid for k in seen if (n := self.node_map[k]).kind == "record" and n.vrid})
 

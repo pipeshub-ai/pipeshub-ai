@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from app.core.org_context import instrument_org_methods
 from app.services.permissions.errors import ViewerScopesUnavailable
-from app.services.permissions.ports import StampApp, StampNode
+from app.services.permissions.ports import SUBTREE_DEPTH, StampApp, StampNode
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -47,16 +47,17 @@ WITH r ORDER BY r.connectorId, r.id LIMIT $limit
 RETURN r.id AS id
 """
 
-# The records of these records and groups and everything below them over hierarchy edges: EVERY edge of the path is one (a record reached only
-# through a link edge is not below it), to a depth of 50, through nodes of this organisation only.
-SUBTREE = f"""
-MATCH (a) WHERE (a:Record OR a:RecordGroup) AND a.id IN $ids AND a.orgId = $org
-OPTIONAL MATCH p = (a)-[:NODE_RELATION*1..50]->(d:Record)
-WHERE all(h IN relationships(p) WHERE h.relationshipType IN {_HIER}) AND all(v IN nodes(p) WHERE v.orgId = $org)
-WITH collect(DISTINCT a) + collect(DISTINCT d) AS ns
-UNWIND ns AS n
-WITH n WHERE n:Record AND n.virtualRecordId IS NOT NULL
-RETURN DISTINCT n.virtualRecordId AS vrid
+# The subtree is walked one level at a time (one bounded query per level over the frontier, a visited set kept here): a single variable-length
+# pattern enumerates PATHS, which grows as 2^depth on stacked diamonds or parallel edges. EVERY edge walked is a hierarchy edge (a record reached
+# only through a link edge is not below it) and every node is of this organisation.
+START = """
+MATCH (a:Record|RecordGroup) WHERE a.id IN $ids AND a.orgId = $org
+RETURN a.id AS id, a:Record AS rec, a.virtualRecordId AS vrid
+"""
+
+LEVEL = f"""
+MATCH (p)-[h:NODE_RELATION]->(c) WHERE p.id IN $frontier AND p.orgId = $org AND c.orgId = $org AND h.relationshipType IN {_HIER}
+RETURN DISTINCT c.id AS id, c:Record AS rec, c.virtualRecordId AS vrid
 """
 
 
@@ -99,7 +100,27 @@ class Neo4jStampGraph:
         return [str(r["id"]) for r in await self._rows(PAGE, app=app_id, org=org_id, after=after or "", limit=limit)]
 
     async def subtree_vrids(self, org_id: str, ids: Sequence[str]) -> list[str]:
-        return [str(r["vrid"]) for r in await self._rows(SUBTREE, ids=sorted(set(ids)), org=org_id)] if ids else []
+        if not ids:
+            return []
+        seen: set[str] = set()
+        vrids: set[str] = set()
+
+        def take(rows: list[dict[str, object]]) -> list[str]:
+            fresh = [str(r["id"]) for r in rows if str(r["id"]) not in seen]
+            for r in rows:
+                if str(r["id"]) not in seen and r["rec"] and r["vrid"]:
+                    vrids.add(str(r["vrid"]))
+            seen.update(fresh)
+            return fresh
+
+        frontier = take(await self._rows(START, ids=sorted(set(ids)), org=org_id))
+        for depth in range(1, SUBTREE_DEPTH + 2):
+            if not frontier:
+                break
+            frontier = take(await self._rows(LEVEL, frontier=sorted(frontier), org=org_id))
+            if frontier and depth > SUBTREE_DEPTH:
+                raise ViewerScopesUnavailable("subtree_too_deep")
+        return sorted(vrids)
 
 
 instrument_org_methods(Neo4jStampGraph)

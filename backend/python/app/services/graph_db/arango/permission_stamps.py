@@ -8,7 +8,7 @@ from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import instrument_org_methods
 from app.services.graph_db.neo4j.permission_stamps import to_node
 from app.services.permissions.errors import ViewerScopesUnavailable
-from app.services.permissions.ports import StampApp, StampNode
+from app.services.permissions.ports import SUBTREE_DEPTH, StampApp, StampNode
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -54,16 +54,19 @@ FOR r IN {_REC} FILTER r.connectorId == @app AND r.orgId == @org AND (@after == 
 
 # Every edge of the path must be a hierarchy edge, and the filter sits where ArangoDB applies it while it walks: with `uniqueVertices: "global"` a
 # child first met through a link edge (SIBLING, OTHERS, BLOCKS ...) would be marked visited by it, dropped, and never emitted through its hierarchy
-# edge. A record reachable only through a link edge (and everything below it) is not in the subtree. Depth 50 and nodes of this organisation only, as the Neo4j query.
+# edge. A record reachable only through a link edge (and everything below it) is not in the subtree. Every node of the path is of this organisation.
+# The walk goes one level past @depth: `deep` says something is there, and the caller refuses the answer rather than cut it. A start id is looked
+# up in the records, then in the record groups (their keys are UUIDs, so one id does not name both).
 SUBTREE = f"""
 LET starts = (FOR id IN @ids
   LET d = FIRST(FOR c IN [DOCUMENT("{_REC}", id), DOCUMENT("{_GRP}", id)] FILTER c != null RETURN c)
   FILTER d != null AND d.orgId == @org RETURN d)
-LET below = (FOR s IN starts FOR v, e, p IN 1..50 OUTBOUND s._id {_REL} OPTIONS {{bfs: true, uniqueVertices: "global"}}
+LET walked = (FOR s IN starts FOR v, e, p IN 1..@limit OUTBOUND s._id {_REL} OPTIONS {{bfs: true, uniqueVertices: "global"}}
   FILTER p.edges[*].relationshipType ALL IN {_HIER} AND p.vertices[*].orgId ALL == @org
-  FILTER IS_SAME_COLLECTION("{_REC}", v) RETURN v)
-FOR r IN UNION_DISTINCT(starts, below) FILTER IS_SAME_COLLECTION("{_REC}", r) AND r.virtualRecordId != null
-  RETURN DISTINCT r.virtualRecordId
+  RETURN {{v: v, depth: LENGTH(p.edges)}})
+RETURN {{deep: LENGTH(FOR w IN walked FILTER w.depth > @depth LIMIT 1 RETURN 1) > 0,
+        vrids: (FOR r IN UNION_DISTINCT(starts, (FOR w IN walked FILTER w.depth <= @depth RETURN w.v))
+                FILTER IS_SAME_COLLECTION("{_REC}", r) AND r.virtualRecordId != null RETURN DISTINCT r.virtualRecordId)}}
 """
 
 
@@ -93,7 +96,13 @@ class ArangoStampGraph:
         return [str(r) for r in await self._rows(PAGE, {"app": app_id, "org": org_id, "after": after, "limit": limit})]
 
     async def subtree_vrids(self, org_id: str, ids: Sequence[str]) -> list[str]:
-        return [str(r) for r in await self._rows(SUBTREE, {"ids": sorted(set(ids)), "org": org_id})] if ids else []
+        if not ids:
+            return []
+        bind = {"ids": sorted(set(ids)), "org": org_id, "depth": SUBTREE_DEPTH, "limit": SUBTREE_DEPTH + 1}
+        row = cast("dict[str, object]", (await self._rows(SUBTREE, bind))[0])
+        if row["deep"]:
+            raise ViewerScopesUnavailable("subtree_too_deep")
+        return sorted(str(v) for v in cast("list[object]", row["vrids"]))
 
 
 instrument_org_methods(ArangoStampGraph)
