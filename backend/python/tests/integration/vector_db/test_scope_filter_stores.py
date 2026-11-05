@@ -21,6 +21,7 @@ from app.services.vector_db.models import (
     SparseVector,
     VectorPoint,
 )
+from app.services.vector_db.filters import ScopeFilter
 from tests.integration.vector_db.conftest import make_collection
 from tests.integration.vector_db.helpers import (
     make_collection_config,
@@ -31,7 +32,9 @@ from tests.integration.vector_db.scope_world import (
     ADMIT_CASES,
     EVERYTHING,
     TERMS,
+    GENERATION,
     TRUST_CASES,
+    VERSION,
     WORLD,
     f,
 )
@@ -128,6 +131,17 @@ class _ScopeFilterContract:
         for leg in LEGS:
             assert "union_hidden" in await self._search(loaded, f(readable_scopes=EVERYTHING, excluded=frozenset({"x1"})), leg=leg)      # by its own id
             assert await self._search(loaded, f(readable_scopes=frozenset({"s1"}), excluded=frozenset({"x1", "s1"})), leg=leg) == set()
+
+    async def test_a_filter_built_by_of_hides_pending_paths_and_blocked_containers(self, loaded) -> None:
+        from app.services.permissions.scopes import ViewerScopes
+        for leg in LEGS:
+            def built(blocked: tuple[str, ...] = (), **kw: object) -> ScopeFilter:
+                scopes = ViewerScopes(org_id=A, user_key="u", **kw)  # type: ignore[arg-type]
+                return ScopeFilter.of(scopes, {"c1", "c2"}, version=VERSION, generation=GENERATION, blocked=blocked)
+            assert await self._search(loaded, built(readable_scopes=frozenset({"s1"})), leg=leg) == {"union", "union_hidden"}
+            assert await self._search(loaded, built(readable_scopes=frozenset({"s1"}), pending=frozenset({"p1"})), leg=leg) == {"union_hidden"}
+            assert await self._search(loaded, built(readable_groups=frozenset({"g3"})), leg=leg) == {"container_own"}
+            assert await self._search(loaded, built(blocked=("c2",), readable_groups=frozenset({"g3"})), leg=leg) == set()
 
     async def test_the_filter_is_anded_with_the_request_arms_and_narrowing_list_never_replacing_them(self, loaded) -> None:
         for leg in LEGS:
