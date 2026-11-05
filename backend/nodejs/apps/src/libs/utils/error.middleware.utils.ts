@@ -1,6 +1,11 @@
 import { Response } from 'express';
+import axios, { AxiosError } from 'axios';
 import { BaseError } from '../errors/base.error';
 import { Logger } from '../services/logger.service';
+import {
+  redactSecretsInText,
+  redactSensitiveQueryParams,
+} from './log-redaction.utils';
 
 /**
  * 'warn' for a 4xx of ours: the caller's request answered as intended (a taken
@@ -10,6 +15,46 @@ import { Logger } from '../services/logger.service';
 export const logLevelFor = (error: unknown): 'warn' | 'error' =>
   error instanceof BaseError && error.statusCode < 500 ? 'warn' : 'error';
 
+// An OAuth-style error code (`invalid_grant`, `invalid_auth`). Anything else in
+// that field (case, digits, `-`, `.`, length) could be an echoed token.
+const UPSTREAM_ERROR_CODE = /^[a-z_]{1,64}$/;
+
+const upstreamErrorCode = (data: unknown): string | undefined => {
+  const code = (data as { error?: unknown } | null | undefined)?.error;
+  return typeof code === 'string' && UPSTREAM_ERROR_CODE.test(code)
+    ? code
+    : undefined;
+};
+
+/**
+ * A failed axios call, logged by what helps debugging. Never its config: that
+ * holds the request headers and the body, which axios has already turned into
+ * a string that key-based redaction cannot see into (an OAuth body carries
+ * client_secret, refresh_token or the authorization code).
+ */
+const axiosErrorData = (
+  error: AxiosError,
+  includeStack: boolean,
+): Record<string, unknown> => {
+  const upstreamError = upstreamErrorCode(error.response?.data);
+  const url = error.config?.url;
+  return {
+    name: error.name,
+    // `new AxiosError()` has no message; redacting it would throw and lose the rest.
+    message:
+      typeof error.message === 'string'
+        ? redactSecretsInText(error.message)
+        : undefined,
+    code: error.code,
+    status: error.response?.status,
+    method: error.config?.method,
+    url: url === undefined ? undefined : redactSensitiveQueryParams(url),
+    ...(upstreamError !== undefined && { upstreamError }),
+    ...(includeStack &&
+      error.stack !== undefined && { stack: redactSecretsInText(error.stack) }),
+  };
+};
+
 /**
  * Extract error data without circular references
  * Note: Stack traces are included here for logging purposes only, not for client responses
@@ -18,20 +63,14 @@ export const extractErrorData = (error: any, includeStack = true): any => {
   if (!error) return null;
 
   try {
+    // Before toJSON: an AxiosError's toJSON serialises the request it carried.
+    if (axios.isAxiosError(error)) return axiosErrorData(error, includeStack);
+
     // For errors with a toJSON method (like BaseError)
     // Include stack trace for logging purposes only (not for client responses)
-    if (typeof error.toJSON === 'function') {
-      const json: unknown = error.toJSON(includeStack);
-      // An AxiosError's toJSON ignores the argument and always adds the stack.
-      if (includeStack || !json || typeof json !== 'object') return json;
-      const { stack: _stack, ...withoutStack } = json as Record<
-        string,
-        unknown
-      >;
-      return withoutStack;
-    }
+    if (typeof error.toJSON === 'function') return error.toJSON(includeStack);
 
-    // Handle Axios error response data
+    // Another HTTP client's error that carries the upstream answer (e.g. GaxiosError)
     if (error.response?.data) {
       const data = error.response.data;
       return {
