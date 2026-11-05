@@ -36,6 +36,11 @@ from app.exceptions.indexing_exceptions import (
     RecordDeletedError,
 )
 from app.models.entities import Record
+from app.modules.indexing.parse_now_marker import (
+    run_settings,
+    shape_status_write,
+    store_only_active,
+)
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
@@ -505,17 +510,19 @@ class EventProcessor:
             data=PipelineEventData(record_id=record_id),
         )
 
+        store_only = store_only_active()
         if not block_container.blocks and not block_container.block_groups:
             self.logger.info(
                 "⚠️ Empty document for %s — marking EMPTY", record_id
             )
-            if is_code:
+            if is_code and not store_only:
                 # As process_code_document does: an emptied file kept its last
                 # version's blocks, and their calls and imports stayed (B3).
                 await self.processor._drop_code_blocks(record_id)
-            await self._drop_the_previous_vectors_of_an_emptied_record(
-                record_doc, prev_virtual_record_id or virtual_record_id, event_type
-            )
+            if not store_only:
+                await self._drop_the_previous_vectors_of_an_emptied_record(
+                    record_doc, prev_virtual_record_id or virtual_record_id, event_type
+                )
             self._require_persisted(
                 await self.update_record_fields(
                     record_doc,
@@ -551,15 +558,18 @@ class EventProcessor:
             record=record,
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
+            settings=run_settings(),
         )
 
-        with stage("reconcile"):
-            ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
-                ctx, self.logger, self.sink_orchestrator
-            )
+        # A store-only run keeps no reconciliation metadata, so a later index embeds every block.
+        if not store_only:
+            with stage("reconcile"):
+                ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
+                    ctx, self.logger, self.sink_orchestrator
+                )
 
-        # The classify stage enriches the record once it is searchable.
-        ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: True}
+            # The classify stage enriches the record once it is searchable.
+            ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: True}
 
         # Before indexing, which marks the record COMPLETED, and so also before
         # enrichment. COMPLETED is what tells the edge builder the repo has
@@ -567,7 +577,7 @@ class EventProcessor:
         # the whole repo resolved against a symbol table it does not appear in.
         # Being ahead of enrichment additionally means a deferred or failing
         # extraction still leaves the code graph populated.
-        if is_code:
+        if is_code and not store_only:
             await self.processor.project_code_blocks_to_graph(
                 record_id=record_id,
                 org_id=org_id,
@@ -582,6 +592,13 @@ class EventProcessor:
         # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────
         self.logger.debug("📥 Indexing record %s (making searchable)", record_id)
         await self.sink_orchestrator.index(ctx)
+        if store_only:
+            self.logger.info("Record %s: content stored; not embedded (automatic indexing is off)", record_id)
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id=record_id),
+            )
+            return
         self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
         # ── Step 3: classification runs as a pipeline stage, on its own permits ──
@@ -597,7 +614,11 @@ class EventProcessor:
     async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any]) -> bool:
         """Persist a partial record update or fail the current attempt."""
         record_id = _record_key(doc) or "unknown"
+        # In a parse-now run the status fields become the marker (see parse_now_marker).
+        fields = shape_status_write(fields)
         doc.update(fields)
+        if not fields:
+            return True
         success = await self.graph_provider.update_node(
             record_id,
             CollectionNames.RECORDS.value,
@@ -1308,6 +1329,7 @@ class EventProcessor:
         # reference, regardless of where in the try block an exception occurs.
         file_content: bytes | str | None = None
         forced_record_id: str | None = None
+        store_only = store_only_active()
         try:
             # Extract event type and record ID
             event_type = event_data.get(
@@ -1375,7 +1397,7 @@ class EventProcessor:
             # A successful attempt never clears `reason` (the status writer only
             # sets it when non-empty), so drop the previous failure text here or
             # it outlives a good reindex.
-            if doc.get("reason"):
+            if doc.get("reason") and not store_only:
                 self._require_persisted(
                     await self.update_record_fields(doc, {"reason": None}),
                     "Failed to clear the previous failure reason for record",
@@ -1470,7 +1492,9 @@ class EventProcessor:
             rebuild_shared_vrid = False
             # Calculate MD5 hash and check for duplicates for ALL record types
             try:
-                dedup_decision = await self._check_duplicate_by_md5(
+                # A store-only run stands on its own: attaching to a finished twin would copy that
+                # record's statuses onto one whose statuses must stay as they are.
+                dedup_decision = DedupDecision() if store_only else await self._check_duplicate_by_md5(
                     file_content, doc, before_reusing_status=before_reusing_status,
                     content_rev=content_rev, scans_for_secrets=scans_for_secrets,
                 )
@@ -1498,12 +1522,13 @@ class EventProcessor:
                 file_content = file_content.strip()
 
             if not file_content or file_content == b"":
-                if is_code:
+                if is_code and not store_only:
                     # A file emptied to zero bytes is caught here, before parsing (B3).
                     await self.processor._drop_code_blocks(record_id)
-                await self._drop_the_previous_vectors_of_an_emptied_record(
-                    doc, virtual_record_id, event_type
-                )
+                if not store_only:
+                    await self._drop_the_previous_vectors_of_an_emptied_record(
+                        doc, virtual_record_id, event_type
+                    )
                 await self.mark_record_status(doc, ProgressStatus.EMPTY)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1577,7 +1602,14 @@ class EventProcessor:
 
             prev_virtual_record_id = None
             abandoned_virtual_record_id = None
-            if rebuild_shared_vrid:
+            if store_only:
+                # Nothing is reconciled and nothing is cleaned up: a record with automatic indexing off holds no
+                # vectors, so its content is stored under its own id, or a new one when others share it.
+                if virtual_record_id and len(
+                    await self.graph_provider.get_records_by_virtual_record_id(virtual_record_id)
+                ) > 1:
+                    virtual_record_id = str(uuid4())
+            elif rebuild_shared_vrid:
                 # Identical content under a VRID that lost its stored content:
                 # isolating would fix only this record and leave the others
                 # sharing that VRID unreadable, so rebuild it in place.

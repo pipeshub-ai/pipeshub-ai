@@ -6693,6 +6693,14 @@ components:
         by a paragraph that starts `Not indexed:` and names the status, e.g.
         `(status: AUTO_INDEX_OFF)`. It is not the record's text.
 
+        Before answering that way, the service asks indexing to parse the record
+        and waits for it (55 seconds unless an admin changed the wait). When the
+        parse finishes in time the record's content is returned as for an indexed
+        record. When it does not, the description is returned with `preparing: true`
+        and the paragraph starts `Content being prepared:`; reading again shortly
+        returns the content. A record that cannot be parsed (for example a
+        password-protected file) gets the `Not indexed:` paragraph.
+
         `content` is the literal `No record found` when the caller may read
         an indexed record but its stored content could not be loaded. An id
         that does not exist, a record in the trash, and a record the caller
@@ -6813,6 +6821,13 @@ components:
             is left to read after this one. A block larger than the largest
             `maxChars` (140000) is returned cut and given up; when nothing
             follows it, `complete` is true and `truncatedBy` is `clipped`.
+        preparing:
+          type: boolean
+          description: >-
+            Present, and true, only when the record is not indexed and its content was still
+            being prepared when the wait ended (55 seconds unless an admin changed it).
+            `content` then holds the record's details and a note, `complete` is true for that
+            note, and reading the record again shortly returns its content.
         truncatedBy:
           type: string
           nullable: true

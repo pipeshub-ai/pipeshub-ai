@@ -20,9 +20,10 @@ from typing import TYPE_CHECKING
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.kg import flush, modes
 from app.services.graph_db.postgres.kg.drainer import drain_org
-from app.services.graph_db.postgres.kg.locks import lock_apps
+from app.services.graph_db.postgres.kg.locks import NeedLocks, lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH, Key
 from app.services.graph_db.postgres.kg.project import project
+from app.services.graph_db.postgres.kg.stamp import stamp_app
 from app.services.graph_db.postgres.kg.verify import (
     PAGE,
     Result,
@@ -119,7 +120,7 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
                 if not nodes:
                     await w.projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor="done", verified_at=None)
                     return False
-                await project(tx, org, set(nodes), lock_for={app_id} if app_id else None, expand_neighbours=False)     # locks first, reads after
+                await project(tx, org, set(nodes), lock_for={app_id} if app_id else None, expand_neighbours=False, stamps=False)     # locks first, reads after; the stamps come once the connector is copied
                 await w.projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor=_fmt(nodes[-1]), verified_at=None)
                 return True
             if not await db.run(batch, write=True):
@@ -127,6 +128,27 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
             done += 1
             BATCHES.inc(scope)
     return done
+
+
+async def restamp_app(db: KernelDB, org: str, app_id: str, *, page: int = 2000) -> int:
+    """Stamp every record and record group of a connector, a page at a time under its lock; returns the pages. The structural rows come first: a page's classes are compiled from the
+    graph, whose closure the pages share. A stamp that reaches another connector takes its lock too and redoes the page."""
+    pages = 0
+    after: str | None = None
+    extra: set[str] = set()
+    with bind(_ctx(org)):
+        while True:
+            async def go(tx: Tx, cursor: str | None = after, held: frozenset[str] = frozenset(extra)) -> str | None:
+                await lock_apps(tx, org, {app_id} | held, org_wide=False)
+                return await stamp_app(tx, org, app_id, cursor, page, locked={app_id} | held)
+            try:
+                after = await db.run(go, write=True)
+            except NeedLocks as e:
+                extra |= e.apps
+                continue
+            if after is None:
+                return pages
+            pages += 1
 
 
 async def _pending(tx: Tx, org: str, app_id: str) -> int:
@@ -145,6 +167,8 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
             if not (await drain_org(db, org)).rows:
                 break
             rounds += 1
+
+        await restamp_app(db, org, app_id)
 
         async def flip(tx: Tx) -> Outcome:
             await lock_apps(tx, org, {app_id}, org_wide=False)
