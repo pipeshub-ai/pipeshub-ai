@@ -186,11 +186,14 @@ async def test_a_writer_classified_projected_through_a_helper_leaves_kg_equal_to
 
 
 async def quiet_world2(p, org: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The shared world, written with no sweep of the org's change log running. With the projection off, the first write unit of the world spawns a sweep
+    """The shared world, written with no sweep of the org's change log running. With the projection off, a write unit of the world spawns a sweep
     after its commit, and the units that follow take their own rows back while it holds the org's lock: a unit that finds the lock held leaves its rows, and the
-    tests below count rows. The org counts as just swept, so the world is written without one; a test that wants a sweep clears ``_last_sweep`` afterwards."""
-    monkeypatch.setattr(flush, "_last_sweep", {org: time.monotonic()})
-    await world2(p, org)
+    tests below count rows. The org counts as just swept and the gap between sweeps is made very long for the whole setup, however long it takes; both are
+    put back after it, so a test that wants a sweep sets its own gap and clears ``_last_sweep`` as before."""
+    with monkeypatch.context() as quiet:
+        quiet.setattr(flush, "SWEEP_GAP_S", 1e9)
+        quiet.setattr(flush, "_last_sweep", {org: time.monotonic()})
+        await world2(p, org)
 
 
 async def log_rows(p, org: str) -> int:
