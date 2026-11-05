@@ -436,27 +436,32 @@ _DEADLINE_SCRIPT = textwrap.dedent(
     """
     import faulthandler, sys
     sys.path.insert(0, {tests!r})
-    from test_image_references import _ADVERSARIAL, _HTML_UNITS
+    from test_image_references import _ADVERSARIAL, _HTML_UNITS, _SHARED_TAILS
     from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
     from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
     from app.modules.parsers.markdown.image_references import extract_and_replace_images
 
-    scans = [(name, extract_and_replace_images, unit) for name, unit in _ADVERSARIAL.items()]
+    scans = [(name, extract_and_replace_images, unit * (65536 // len(unit))) for name, unit in _ADVERSARIAL.items()]
+    # Openers that all share one closing tail: their only other check is the count of work.
+    scans += [("tail " + tail, extract_and_replace_images, "![" * 32000 + tail) for tail in _SHARED_TAILS]
     for parser_class in (SelectolaxHtmlParser, DoclingHtmlParser):
         parser = parser_class.__new__(parser_class)
-        scans += [(parser_class.__name__ + " " + unit, parser.extract_and_replace_images, unit) for unit in _HTML_UNITS]
-    for name, scan, unit in scans:
+        scans += [
+            (parser_class.__name__ + " " + unit, parser.extract_and_replace_images, unit * (65536 // len(unit)))
+            for unit in _HTML_UNITS
+        ]
+    for name, scan, text in scans:
         # A regular expression that backtracks inside one call cannot be interrupted or counted; the watchdog thread ends the
         # process, naming where it was, long before the test runner's own timeout.
         faulthandler.dump_traceback_later({deadline}, exit=True)
-        scan(unit * (65536 // len(unit)))
+        scan(text)
         faulthandler.cancel_dump_traceback_later()
     """
 )
 
 
 def test_no_crafted_input_makes_a_single_scan_run_away() -> None:
-    """The work counts above cannot see a pattern that backtracks inside one call. Each family's largest input is scanned once in a
+    """The work counts above cannot see a pattern that backtracks inside one call. Each family's largest input, and each shared-tail input, is scanned once in a
     child process under a deadline of seconds where a scan takes milliseconds: only a real blow-up misses it."""
     script = _DEADLINE_SCRIPT.format(tests=str(Path(__file__).parent), deadline=3)
     run = subprocess.run(
