@@ -363,7 +363,7 @@ async def test_each_store_hides_a_pending_subtree_and_a_blocked_connector_in_its
     assert text.count("pend1") == 1 and text.count("blk9") == 2
     cmds = await sr.captured("redis", [scoped("no_filter", f)], tagvals=[b"c1"])
     knn = redis_filters(cmds)[1]
-    assert "-(@pathIds:{pend1})" in knn and knn.count("-(@connectorIds:{blk9})") == 2
+    assert "pend1" not in knn and "blk9" not in knn         # exclusions are enforced by the exact check on the points the query returns (case-insensitive tags)
     clean = await sr.captured("redis", [scoped("no_filter", flt())], tagvals=[b"c1"])
     assert "pend1" not in redis_filters(clean)[1] and "pathIds:{pend1" not in redis_filters(clean)[1]
 
@@ -380,3 +380,33 @@ async def test_the_pending_and_blocked_lists_have_the_stores_limit_too(store, li
     for kw in ("pending", "blocked"):
         with pytest.raises(ScopeFilterTooLarge):
             await sr.captured(store, [scoped("dense_only", flt(**{kw: big}))])
+
+
+async def test_redis_leaves_the_excluded_scopes_out_of_the_query_and_the_exact_check_enforces_them() -> None:
+    f = flt(readable_scopes=frozenset({"s1"}), excluded=frozenset({"x1"}))
+    cmds = await sr.captured("redis", [scoped("dense_only", f)], tagvals=[b"c1"])
+    knn = redis_filters(cmds)[1]
+    assert "x1" not in knn and "@pathIds:{c1|g1|s1}" in knn                       # the path rule still needs a path that reaches something
+    union = {"connectorIds": ["c1"], "scopeStamp": "union", "scopeFieldsVersion": VERSION, "scopeGeneration": GENERATION, "aclScope": []}
+    node = sx.admits(f)
+    assert sx.evaluate(node, {**union, "pathIds": ["s1", "X1"]}) is True          # stored X1 is not the excluded x1: admitted
+    assert sx.evaluate(node, {**union, "pathIds": ["s1", "x1"]}) is False         # the exact rule still excludes x1
+    assert sx.relax(node, [sx.Has("pathIds", ("x1",))]) != node and sx.relax(node, []) == node
+
+
+async def test_redis_keeps_a_point_that_stores_a_capital_where_the_filter_excludes_the_lowercase_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dataclasses
+
+    from app.services.vector_db.models import SearchResult
+    from app.services.vector_db.redis import redis_vector
+
+    svc = redis_vector.RedisVectorService.__new__(redis_vector.RedisVectorService)
+    base = {"connectorIds": ["c1"], "scopeStamp": "union", "scopeFieldsVersion": VERSION, "scopeGeneration": GENERATION, "aclScope": []}
+    ranked = [SearchResult("cap", 1.0, {**base, "pathIds": ["s1", "X1"]}), SearchResult("excluded", 0.9, {**base, "pathIds": ["s1", "x1"]})]
+
+    async def once(idx: str, coll: str, req: object, limit: int) -> list:
+        return ranked[:limit]
+
+    svc._search_once = once  # type: ignore[method-assign]
+    req = dataclasses.replace(sr.plain_requests()["dense_only"], limit=5, scope_filter=flt(readable_scopes=frozenset({"s1"}), excluded=frozenset({"x1"})))
+    assert [r.id for r in await svc._run_single_hybrid_query("idx", "c", req)] == ["cap"]
