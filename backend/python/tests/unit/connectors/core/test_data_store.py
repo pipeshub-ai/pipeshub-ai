@@ -194,7 +194,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def update_sync_point(self, sync_point_key, sync_point_data):
         pass
 
-    async def get_edges_from_node(self, from_node_id, edge_collection):
+    async def get_edges_from_node(self, from_node_id, edge_collection, *, raise_on_error=False):
         return []
     
     async def get_edges_from_node_with_target_name(self, from_node_id, edge_collection, *, raise_on_error=False):
