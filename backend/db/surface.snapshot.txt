@@ -810,13 +810,18 @@ column retrieval.placement_requests.next_try_at type=timestamp with time zone no
 column retrieval.placement_requests.note type=text notnull=false identity= generated= default=-
 column retrieval.placement_requests.org_id type=text notnull=true identity= generated= default=-
 column retrieval.placement_requests.requested_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column retrieval.point_groups.acl_scope type=text[] notnull=false identity= generated= default=-
 column retrieval.point_groups.collection_id type=smallint notnull=true identity= generated= default=-
 column retrieval.point_groups.computed_at type=timestamp with time zone notnull=true identity= generated= default=-
 column retrieval.point_groups.connector_ids type=text[] notnull=true identity= generated= default='{}'::text[]
 column retrieval.point_groups.group_key type=text notnull=true identity= generated= default=-
 column retrieval.point_groups.org_id type=text notnull=true identity= generated= default=-
+column retrieval.point_groups.path_ids type=text[] notnull=false identity= generated= default=-
 column retrieval.point_groups.record_group_ids type=text[] notnull=true identity= generated= default='{}'::text[]
 column retrieval.point_groups.root_record_group_ids type=text[] notnull=true identity= generated= default='{}'::text[]
+column retrieval.point_groups.scope_generation type=integer notnull=false identity= generated= default=-
+column retrieval.point_groups.scope_stamp type=text notnull=false identity= generated= default=-
+column retrieval.point_groups.scope_version type=integer notnull=false identity= generated= default=-
 column retrieval.point_text.org_id type=text notnull=true identity= generated= default=-
 column retrieval.point_text.page_content type=text notnull=false identity= generated= default=-
 column retrieval.point_text.payload type=jsonb notnull=true identity= generated= default=-
@@ -1115,7 +1120,7 @@ constraint retrieval.embedding_spaces embedding_spaces_metric_check c def=52fe5e
 constraint retrieval.embedding_spaces embedding_spaces_model_dim_metric_key u def=1a24612c57d8b1202441827dd6199ad3
 constraint retrieval.embedding_spaces embedding_spaces_pkey p def=b6a6c6e8072ad14299469e74903f7d2e
 constraint retrieval.embedding_spaces embedding_spaces_status_check c def=43fab1afe5d71741fd4c3b4f6630081b
-constraint retrieval.group_members group_members_kind_check c def=5f98950dec5b97c275e5bdf929471240
+constraint retrieval.group_members group_members_kind_check c def=1e52f69e5a8b5e3eac8c0c8a0e6a500b
 constraint retrieval.group_members group_members_pkey p def=18e9bd91b19dda8f7f72b1c172e66de6
 constraint retrieval.group_members org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint retrieval.group_members org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
@@ -1165,6 +1170,9 @@ extension vector schema=ext owner=<bootstrap-superuser>
 func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
 func graph.system_apps(boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=48011eecd76084ecc02f84468779b9b1 ext=-
 func graph.system_orgs(boolean,boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=e304f1fb996469c629ea8ca32ecee2c6 ext=-
+func identity.gauge_auth_configs() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=3552003eb4695b7ca0cab3eeae5e9e09 ext=-
+func identity.gauge_live_orgs() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=f76feba6daecb9efd1f27e8c4fcf3455 ext=-
+func identity.gauge_user_counts() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=9e6fc8a791411aba6338419c433f72cc ext=-
 func identity.oldest_org() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=7b7fd3d718eb548a5a207136e23c8290 ext=-
 func identity.org_count(boolean) owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=892c38309b38ba7ac2fb88a0d1f3aaea ext=-
 func kernel._import_policy(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=e487fa418a1422d72efe0653ec0fc640 ext=-
@@ -1253,6 +1261,9 @@ funcacl graph.system_apps(boolean,text,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_query EXECUTE
+funcacl identity.gauge_auth_configs() pipeshub_jobs EXECUTE
+funcacl identity.gauge_live_orgs() pipeshub_jobs EXECUTE
+funcacl identity.gauge_user_counts() pipeshub_jobs EXECUTE
 funcacl identity.oldest_org() pipeshub_node EXECUTE
 funcacl identity.org_count(boolean) pipeshub_node EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_connectors EXECUTE
@@ -1692,6 +1703,7 @@ policy identity.org_auth_config import_all cmd=* permissive=true roles=pipeshub_
 policy identity.org_auth_config jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.org_auth_config org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.org_auth_config restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.org_auth_config vetted_read cmd=r permissive=true roles=pipeshub_vetted_identity using=true check=-
 policy identity.org_logos backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.org_logos import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.org_logos org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
@@ -1735,6 +1747,7 @@ policy identity.users import_all cmd=* permissive=true roles=pipeshub_import usi
 policy identity.users jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.users org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.users restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.users vetted_read cmd=r permissive=true roles=pipeshub_vetted_identity using=true check=-
 policy integrations.slack_threads backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy integrations.slack_threads import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy integrations.slack_threads org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
@@ -2171,6 +2184,7 @@ relacl identity.org_auth_config pipeshub_node INSERT grantable=false
 relacl identity.org_auth_config pipeshub_node SELECT grantable=false
 relacl identity.org_auth_config pipeshub_node UPDATE grantable=false
 relacl identity.org_auth_config pipeshub_restore INSERT grantable=false
+relacl identity.org_auth_config pipeshub_vetted_identity SELECT grantable=false
 relacl identity.org_logos pipeshub_backup SELECT grantable=false
 relacl identity.org_logos pipeshub_import DELETE grantable=false
 relacl identity.org_logos pipeshub_import INSERT grantable=false
@@ -2275,6 +2289,7 @@ relacl identity.users pipeshub_node INSERT grantable=false
 relacl identity.users pipeshub_node SELECT grantable=false
 relacl identity.users pipeshub_node UPDATE grantable=false
 relacl identity.users pipeshub_restore INSERT grantable=false
+relacl identity.users pipeshub_vetted_identity SELECT grantable=false
 relacl integrations.slack_threads pipeshub_backup SELECT grantable=false
 relacl integrations.slack_threads pipeshub_import DELETE grantable=false
 relacl integrations.slack_threads pipeshub_import INSERT grantable=false
