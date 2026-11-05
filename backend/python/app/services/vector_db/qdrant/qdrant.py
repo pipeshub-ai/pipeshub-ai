@@ -46,7 +46,6 @@ from app.services.vector_db.filters import (
     forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
-    reject_scope_filter,
     require_filter_org,
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -831,7 +830,6 @@ class QdrantService(IVectorDBService):
         requests: List[HybridSearchRequest],
     ) -> List[List[SearchResult]]:
         self._assert_connected()
-        reject_scope_filter(requests, "Qdrant")
         qdrant_requests = [QdrantUtils.search_request_to_qdrant(req) for req in requests]
         raw_results = await self.client.query_batch_points(  # type: ignore
             collection_name=collection_name,

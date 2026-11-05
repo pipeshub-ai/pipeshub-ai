@@ -58,7 +58,6 @@ from app.services.vector_db.filters import (
     forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
-    reject_scope_filter,
     require_filter_org,
     split_values_count_conditions,
 )
@@ -110,6 +109,9 @@ if TYPE_CHECKING:
     from app.services.vector_db.filters import ScopeFilter
 
 logger = create_logger("redis_vector_service")
+
+#: The most candidates a scoped Redis search asks for while it looks for ``limit`` points that pass the exact rule.
+MAX_SCOPE_CANDIDATES = 1000
 
 _REDIS_CAPABILITIES = VectorDBCapabilities(
     supports_sparse_vectors=False,
@@ -1097,7 +1099,6 @@ class RedisVectorService(IVectorDBService):
         requests: list[HybridSearchRequest],
     ) -> list[list[SearchResult]]:
         self._assert_connected()
-        reject_scope_filter(requests, "Redis")
         idx = self._index_name(collection_name)
         # Bound the fan-out: one request per agent source means a wide query
         # would otherwise issue unbounded concurrent FT.HYBRID commands.
@@ -1119,7 +1120,32 @@ class RedisVectorService(IVectorDBService):
         collection_name: str,
         req: HybridSearchRequest,
     ) -> list[SearchResult]:
-        """Execute one FT.HYBRID query and return SearchResult list.
+        """One search; with a scope filter, until ``req.limit`` points pass the exact rule or the candidates run out.
+
+        The query is already narrowed by the scope filter, but a tag query compares without case (and the connectors it excludes were read just
+        before): a point it returns that the exact rule refuses is dropped (:meth:`_exact_scope`). Dropping after the limit was applied would
+        leave fewer than ``limit`` points although the next candidates are valid, so a search that lost points asks for twice as many, up to
+        ``MAX_SCOPE_CANDIDATES``, and keeps the first ``limit`` that pass."""
+        if req.scope_filter is None:
+            return await self._search_once(idx, collection_name, req, req.limit)
+        asked = req.limit
+        while True:
+            found = await self._search_once(idx, collection_name, req, asked)
+            kept = self._exact_scope(req, found, count=False)
+            if len(kept) >= req.limit or len(found) < asked or asked >= MAX_SCOPE_CANDIDATES:
+                if len(kept) != len(found):      # counted once, on the answer that is returned, not on every widening
+                    SCOPE_PREFILTER_DROPPED.inc("redis", value=len(found) - len(kept))
+                return kept[: req.limit]
+            asked = min(asked * 2, MAX_SCOPE_CANDIDATES)
+
+    async def _search_once(
+        self,
+        idx: str,
+        collection_name: str,
+        req: HybridSearchRequest,
+        limit: int,
+    ) -> list[SearchResult]:
+        """Execute one FT.HYBRID query for ``limit`` points and return SearchResult list.
 
         When ``dense_query`` is None the caller expects text-only search
         (e.g. no embedding model configured).  All other errors propagate so
@@ -1141,10 +1167,10 @@ class RedisVectorService(IVectorDBService):
 
         if req.dense_query is None:
             # Dense vector required for FT.HYBRID; use text-only FT.SEARCH
-            return self._exact_scope(req, await self._text_only_search(idx, search_query, req.limit))
+            return await self._text_only_search(idx, search_query, limit)
 
         vec_bytes = vector_to_bytes(req.dense_query, self._dense_dtype)
-        k = req.limit
+        k = limit
         window = max(k * 2, 20)
 
         # FT.HYBRID <idx>
@@ -1210,10 +1236,10 @@ class RedisVectorService(IVectorDBService):
             payload = hash_doc_to_payload(doc)
             results.append(SearchResult(id=point_id, score=score, payload=payload))
 
-        return self._exact_scope(req, results)
+        return results
 
     @staticmethod
-    def _exact_scope(req: HybridSearchRequest, results: list[SearchResult]) -> list[SearchResult]:
+    def _exact_scope(req: HybridSearchRequest, results: list[SearchResult], *, count: bool = True) -> list[SearchResult]:
         """What the scope filter admits, decided again on the points themselves with the exact rule (case-sensitive ids, the connectors the point
         holds now). The query already narrowed the search, but a tag query compares without case and the connectors it excludes were read just
         before the search: a point it let through that the rule refuses is dropped and counted, so the answer never holds more than the rule admits."""
@@ -1221,7 +1247,7 @@ class RedisVectorService(IVectorDBService):
             return results
         node = sx.admits(req.scope_filter)
         kept = [r for r in results if sx.evaluate(node, r.payload)]
-        if len(kept) != len(results):
+        if count and len(kept) != len(results):
             SCOPE_PREFILTER_DROPPED.inc("redis", value=len(results) - len(kept))
         return kept if req.with_payload else [replace(r, payload={}) for r in kept]
 

@@ -83,17 +83,18 @@ class _ScopeFilterContract:
     def _org(org: str) -> FilterExpression:
         return FilterExpression(must=[FieldCondition(key="metadata.orgId", value=org)])
 
-    async def _search(self, loaded, scope_filter, *, org: str = A, leg: str = "dense", should: dict | None = None, vrids: list | None = None) -> set[str]:
+    async def _search(self, loaded, scope_filter, *, org: str = A, leg: str = "dense", should: dict | None = None, vrids: list | None = None,
+                      limit: int = 100, dense: list[float] | None = None) -> set[str]:
         svc, col = loaded
         must = [FieldCondition(key="metadata.orgId", value=org)]
         if vrids is not None:
             must.append(FieldCondition(key="metadata.virtualRecordId", values=vrids))
         flt = FilterExpression(must=must, should=[FieldCondition(key=k, values=v) for k, v in (should or {}).items()])
         req = HybridSearchRequest(
-            dense_query=make_dense([1.0]) if leg in ("dense", "both") else None,
+            dense_query=(dense or make_dense([1.0])) if leg in ("dense", "both") else None,
             sparse_query=SparseVector(list(TERMS), [1.0, 1.0]) if leg in ("lexical", "both") and svc.get_service_name() == "qdrant" else None,
             text_query=WORD if leg in ("lexical", "both") and svc.get_service_name() != "qdrant" else None,
-            filter=flt, limit=100, scope_filter=scope_filter)
+            filter=flt, limit=limit, scope_filter=scope_filter)
         [hits] = await svc.query_nearest_points(col, [req])
         return {h.payload["metadata"]["virtualRecordId"] for h in hits}
 
@@ -211,12 +212,14 @@ class TestRedisPreFilterIsExact(TestRedisScopeFilter):
         monkeypatch.setattr(redis_vector, "SCOPE_PREFILTER_DROPPED", rec)
         return rec
 
-    async def _put(self, loaded, name: str, **fields) -> None:
+    async def _put(self, loaded, name: str, dense: list[float] | None = None, **fields) -> None:
         svc, col = loaded
         p = _point(A, "container", 50)
         p.id = _pid(A, name)
         p.payload["metadata"].update(virtualRecordId=name, blockId=name)
         p.payload.update(fields)
+        if dense is not None:
+            p.dense_vector = dense
         await svc.upsert_points(col, [p])
 
         async def indexed() -> bool:
@@ -233,6 +236,16 @@ class TestRedisPreFilterIsExact(TestRedisScopeFilter):
         for name in ("cap_connector", "cap_group", "cap_path"):
             assert name not in got, name
         assert dropped.dropped >= 3                                               # the query let them through (no case); the exact rule did not
+
+    async def test_a_search_with_a_small_limit_is_not_emptied_by_capitalised_ids_that_rank_above_the_valid_ones(self, loaded, dropped) -> None:
+        """Several capitalised-connector points that match the query best: with limit 1 the answer is a valid point, not nothing (the hybrid
+        ranking mixes in a lexical leg, so which point ranks first is not fixed here; the unit test fixes the order and pins the widening)."""
+        query = make_dense([1.0, -0.3])
+        for i in range(4):
+            await self._put(loaded, f"cap_first_{i}", dense=query, connectorIds=["C1"])
+        for limit in (1, 2):
+            got = await self._search(loaded, f(readable_groups=frozenset({"g1"})), limit=limit, dense=query)
+            assert got == {"container"}, limit
 
     async def test_ids_with_whitespace_in_them_are_matched_exactly(self, loaded, dropped) -> None:
         await self._put(loaded, "tabbed", recordGroupIds=["g\ttab"])

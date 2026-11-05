@@ -125,7 +125,7 @@ async def test_qdrant_never_uses_an_empty_should_which_matches_everything() -> N
     for f in (flt(), flt(current=frozenset()), flt(generation=-2), flt(readable_groups=frozenset(), readable_scopes=frozenset(), open_apps=frozenset())):
         [req] = await sr.captured("qdrant", [scoped("no_filter", f)])
         assert not [n for n in walk(req["filter"]) if isinstance(n, dict) and n.get("should") == []], f
-        assert not [n for n in walk(req["filter"]) if isinstance(n, dict) and n.get("must") == [] and len(n) > 3 and False]
+        assert not [n for n in walk(req["filter"]) if isinstance(n, dict) and n.get("must") == []], f          # an empty must matches everything too
     [nothing] = await sr.captured("qdrant", [scoped("no_filter", flt(generation=-2))])
     assert nothing["filter"]["must"][0]["match"]["any"] == []                       # a match on an empty list: nothing
 
@@ -265,3 +265,53 @@ async def test_opensearch_reads_the_clause_limit_once_and_assumes_the_default_if
     broken.client = AsyncMock()
     broken.client.cluster.get_settings = AsyncMock(side_effect=RuntimeError("no"))
     assert await broken._clause_limit() == 1024
+
+
+async def test_the_test_doubles_that_cannot_evaluate_a_scope_filter_refuse_it_instead_of_answering_without_it() -> None:
+    from tests.support.entity_vector_db import FakeEntityVectorDB
+    from tests.support.in_memory_vector_db import InMemoryVectorDBService
+
+    request = scoped("dense_only")
+    for double in (InMemoryVectorDBService(), FakeEntityVectorDB()):
+        with pytest.raises(ScopeFilterUnsupported):
+            await double.query_nearest_points("c", [request])
+
+
+async def test_redis_looks_further_when_the_exact_rule_drops_what_the_query_let_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """limit 1, a capitalised connector ranks first for a lowercase filter (a tag query does not tell them apart): the answer is the next valid
+    point, not nothing."""
+    import dataclasses
+
+    from app.services.vector_db.models import SearchResult
+    from app.services.vector_db.redis import redis_vector
+
+    class Rec:
+        dropped = 0
+
+        def inc(self, *labels: str, value: float = 1.0) -> None:
+            Rec.dropped += int(value)
+
+    monkeypatch.setattr(redis_vector, "SCOPE_PREFILTER_DROPPED", Rec())
+    ok = {"connectorIds": ["c1"], "recordGroupIds": ["g1"], "scopeStamp": "container", "scopeFieldsVersion": VERSION, "scopeGeneration": GENERATION}
+    ranked = [SearchResult("capital", 1.0, {**ok, "connectorIds": ["C1"]}), SearchResult("valid", 0.9, ok), SearchResult("valid2", 0.8, ok),
+              SearchResult("valid3", 0.7, ok)]
+    asked: list[int] = []
+    svc = redis_vector.RedisVectorService.__new__(redis_vector.RedisVectorService)
+
+    async def once(idx: str, coll: str, req: object, limit: int) -> list:
+        asked.append(limit)
+        return ranked[:limit]
+
+    svc._search_once = once  # type: ignore[method-assign]
+    req = dataclasses.replace(sr.plain_requests()["dense_only"], limit=1, scope_filter=flt(open_apps=frozenset()))
+    got = await svc._run_single_hybrid_query("idx", "c", req)
+    assert [r.id for r in got] == ["valid"] and asked == [1, 2] and Rec.dropped == 1
+    req2 = dataclasses.replace(req, limit=2)                                          # still cut at the limit
+    assert [r.id for r in await svc._run_single_hybrid_query("idx", "c", req2)] == ["valid", "valid2"]
+    asked.clear()
+    only_capital = [ranked[0]]
+    ranked[:] = only_capital                                                          # nothing valid exists: the candidates run out, no endless loop
+    assert await svc._run_single_hybrid_query("idx", "c", req) == [] and asked == [1, 2]
+    never = dataclasses.replace(req, scope_filter=None)
+    asked.clear()
+    assert [r.id for r in await svc._run_single_hybrid_query("idx", "c", never)] == ["capital"] and asked == [1]       # no scope filter: one search, as before
