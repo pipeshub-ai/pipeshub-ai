@@ -523,12 +523,19 @@ def test_downgrading_the_scope_fields_removes_the_path_and_scope_members_of_ever
     r = run_migrate(cluster.url(name, "pipeshub_migrate"), "downgrade", "retrieval_0001", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout
     assert members() == [(o, 1) for o in sorted((ORG_A, ORG_B))]
+
+    def forced() -> bool:
+        with cluster.admin(name) as a:
+            return a.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'retrieval.group_members'::regclass").fetchone()[0]
+
+    assert forced()                     # the delete lifted the force only for its own statement
     with cluster.admin(name) as a:
         assert a.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'retrieval' AND table_name = 'point_groups' AND column_name = 'scope_stamp'").fetchone()[0] == 0
         with pytest.raises(pg.CheckViolation):
             a.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g', 4, 'p1')", (ORG_A,))
     r = run_migrate(cluster.url(name, "pipeshub_migrate"))
     assert r.returncode == 0, r.stdout
+    assert forced()
     with cluster.admin(name) as a:
         a.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g', 4, 'p1'), (%s, 1, 'g', 5, 's1')", (ORG_A, ORG_B))
         assert a.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'retrieval' AND table_name = 'point_groups' AND column_name = 'scope_stamp'").fetchone()[0] == 1
