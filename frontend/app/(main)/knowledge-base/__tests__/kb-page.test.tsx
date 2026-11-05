@@ -1728,6 +1728,24 @@ describe('Knowledge base page — All Records', () => {
     );
   });
 
+  it('fills the tree of a source folder from its complete listing, but never an app, whose tree lives elsewhere', async () => {
+    withCollections();
+    const folder = hubNode({ id: 'fold-1', name: 'Reports', nodeType: 'folder', parentId: 'rg-drive' });
+    api.hub.loadFolderData.mockResolvedValue(hubResponse([folder]));
+
+    const first = openAt('/knowledge-base?view=all-records&nodeType=recordGroup&nodeId=rg-drive');
+    await screen.findByRole('row', { name: 'Reports' });
+    expect(useKnowledgeBaseStore.getState().nodeChildrenCache.get('rg-drive')?.map((n) => n.id)).toEqual(['fold-1']);
+    first.unmount();
+
+    openAt('/knowledge-base?view=all-records&nodeType=app&nodeId=app-drive');
+    await waitFor(() => expect(api.hub.loadFolderData).toHaveBeenCalledWith('app', 'app-drive', expect.anything(), expect.anything()));
+    await screen.findByRole('row', { name: 'Reports' });
+
+    expect(useKnowledgeBaseStore.getState().nodeChildrenCache.has('app-drive')).toBe(false);
+    expect(useKnowledgeBaseStore.getState().appChildrenCache.has('app-drive')).toBe(false);
+  });
+
   it('scopes a question from the chat box to the connectors the filter bar picked', async () => {
     withCollections();
     api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
@@ -1929,6 +1947,12 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
     );
   }
 
+  /** The table's first page of a collection with more children than fit on it. */
+  function engineeringFirstPage(items: KnowledgeHubNode[]) {
+    const response = engineeringContents(items);
+    return { ...response, pagination: { ...response.pagination!, hasNext: true, nextCursor: 'p2' } };
+  }
+
   function childRequests(id: string) {
     return api.hub.getNodeChildren.mock.calls
       .filter(([, requested]) => requested === id)
@@ -1939,7 +1963,7 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
     const folders = numberedFolders(30, 'kb-eng');
     withCollections([ENGINEERING]);
     api.hub.getNodeChildren.mockImplementation(hubChildrenFake(() => ({ 'kb-eng': folders })));
-    api.hub.loadFolderData.mockResolvedValue(engineeringContents(folders.slice(0, 3)));
+    api.hub.loadFolderData.mockResolvedValue(engineeringFirstPage(folders.slice(0, 3)));
     openWithSidebarAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
 
     await waitFor(() => expect(childIdsOf('kb-eng')).toEqual(folders.slice(0, 20).map((f) => f.id)));
@@ -1950,6 +1974,17 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
       await loadMoreNodeChildrenPage('kb-eng');
     });
     expect(childIdsOf('kb-eng')).toEqual(folders.map((f) => f.id));
+  });
+
+  it('lists a small collection once: the sidebar reuses the table listing', async () => {
+    withCollections([ENGINEERING]);
+    api.hub.getNodeChildren.mockImplementation(hubChildrenFake(() => ({ 'kb-eng': [DESIGNS, SPECS_DIR] })));
+    api.hub.loadFolderData.mockResolvedValue(engineeringContents([SPEC, SPECS_DIR, DESIGNS]));
+    openWithSidebarAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+
+    await waitFor(() => expect(childIdsOf('kb-eng')).toEqual(['folder-designs', 'folder-specs']));
+    expect(within(sidebar).getByText('Specs')).toBeTruthy();
+    expect(childRequests('kb-eng')).toEqual([]);
   });
 
   it('keeps every folder shown and the renamed one in view after a sidebar rename', async () => {
@@ -1965,7 +2000,7 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
       renamed = true;
       return {};
     });
-    api.hub.loadFolderData.mockResolvedValue(engineeringContents(folders.slice(0, 3)));
+    api.hub.loadFolderData.mockResolvedValue(engineeringFirstPage(folders.slice(0, 3)));
     openWithSidebarAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
     await waitFor(() => expect(childIdsOf('kb-eng')).toHaveLength(20));
     await act(async () => {
@@ -2058,7 +2093,7 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
     api.hub.getNodeChildren.mockImplementation(
       hubChildrenFake(() => ({ 'kb-eng': [DESIGNS, SPECS_DIR], 'folder-designs': [MOCKUPS] })),
     );
-    api.hub.loadFolderData.mockResolvedValue(engineeringContents([DESIGNS, SPEC]));
+    api.hub.loadFolderData.mockResolvedValue(engineeringContents([DESIGNS, SPECS_DIR, SPEC]));
     openWithSidebarAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
     await screen.findByRole('row', { name: 'spec.pdf' });
     await waitFor(() => expect(childIdsOf('kb-eng')).toEqual(['folder-designs', 'folder-specs']));

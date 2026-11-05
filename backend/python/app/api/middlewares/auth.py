@@ -221,7 +221,11 @@ async def isJwtTokenValid(request: Request) -> dict:
         token = extract_bearer_token(authorization_header)
 
         try:
-            payload = jwt.decode(token, regular_jwt_secret, algorithms=[algorithm])
+            # The audience is checked where it means something, at /mcp in the Node API; PyJWT
+            # would otherwise refuse every token that names one.
+            payload = jwt.decode(
+                token, regular_jwt_secret, algorithms=[algorithm], options={"verify_aud": False}
+            )
             logger.debug("✅ Validated token using regular JWT secret")
             return _normalize_regular_payload(payload, token)
         except PyJWTError as regular_jwt_error:

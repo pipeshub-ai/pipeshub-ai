@@ -281,7 +281,7 @@ class TestMarker:
         """People joined the org pass: orgs already done project them, and no
         connector is re-scanned for it."""
         assert ORG_PASS_VERSION >= 3  # 2: people; 3: organisations
-        assert ENTITY_INDEX_VERSION == 1
+        assert ENTITY_INDEX_VERSION == 2  # its own bump (unindexed and trashed records), not people
 
     def test_marker_changes_with_the_fingerprint(self) -> None:
         assert entity_index_marker("a:b:3") != entity_index_marker("a:b:4")
@@ -379,7 +379,7 @@ class TestConnectorPass:
         await _run_until_idle(_rebuilder(graph, store))
         assert store.written()[0].record_group_ids == []
 
-    async def test_unindexed_deleted_unnamed_and_orgless_rows_are_skipped(self) -> None:
+    async def test_deleted_unnamed_and_orgless_rows_are_skipped(self) -> None:
         graph, store = FakeGraph(), FakeStore()
         graph.docs[APPS]["app-1"] = _app()
         graph.sources[(RECORDS, "app-1")] = [
@@ -394,8 +394,84 @@ class TestConnectorPass:
             {"_key": "g1", "name": "Eng", "orgId": None},
         ]
         await _run_until_idle(_rebuilder(graph, store, page_size=10))
-        assert [e.entity_id for e in store.written()] == ["r5"]
+        assert [e.entity_id for e in store.written()] == ["r1", "r5"]
         assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == MARKER
+
+    @pytest.mark.parametrize(
+        "status", ["QUEUED", "NOT_STARTED", "AUTO_INDEX_OFF", "FAILED", "COMPLETED", "IN_PROGRESS", None],
+    )
+    async def test_records_get_a_point_whatever_their_indexing_status(self, status: str | None) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app()
+        row = _rec("r1")
+        if status is None:
+            del row["indexingStatus"]
+        else:
+            row["indexingStatus"] = status
+        graph.sources[(RECORDS, "app-1")] = [row]
+        await _run_until_idle(_rebuilder(graph, store, page_size=10))
+        assert [e.entity_id for e in store.written()] == ["r1"]
+        assert all(call["merge"] is False for call in store.upserts)
+
+    async def test_points_of_trashed_records_are_removed_not_written(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.sources[(RECORDS, "app-1")] = [
+            _rec("r1"), _rec("r2", deleted=True), _rec("r3", deleted=True),
+            {**_rec("r4", deleted=True), "name": ""},
+            _rec("r5", deleted=True, org="org-2"),
+        ]
+        await _run_until_idle(_rebuilder(graph, store, page_size=10))
+        assert [e.entity_id for e in store.written()] == ["r1"]
+        assert sorted(store.deletes) == [
+            ("org-1", "record", ["r2", "r3", "r4"]),
+            ("org-2", "record", ["r5"]),
+        ]
+
+    async def test_long_record_names_are_cut_like_the_live_title_path(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.sources[(RECORDS, "app-1")] = [{**_rec("r1"), "name": "x" * 600}]
+        await _run_until_idle(_rebuilder(graph, store, page_size=10))
+        assert [len(e.name) for e in store.written()] == [512]
+
+    async def test_internal_records_and_stubs_get_no_point(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.sources[(RECORDS, "app-1")] = [
+            _rec("r1"), {**_rec("r2"), "isInternal": True}, {**_rec("r3"), "isPlaceholder": True},
+            {**_rec("r4"), "isInternal": False, "isPlaceholder": False},
+        ]
+        await _run_until_idle(_rebuilder(graph, store, page_size=10))
+        assert [e.entity_id for e in store.written()] == ["r1", "r4"]
+
+    async def test_folders_get_no_point(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.sources[(RECORDS, "app-1")] = [
+            _rec("r1"), {**_rec("r2"), "mimeType": "text/directory"}, {**_rec("r3"), "mimeType": "text/plain"},
+        ]
+        await _run_until_idle(_rebuilder(graph, store, page_size=10))
+        assert [e.entity_id for e in store.written()] == ["r1", "r3"]
+
+    async def test_no_delete_call_when_nothing_is_trashed(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1"), _rec("r2")]
+        await _run_until_idle(_rebuilder(graph, store, page_size=10))
+        assert store.deletes == []
+
+    async def test_a_failed_removal_is_counted_and_does_not_stop_the_page(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1"), _rec("r2", deleted=True)]
+        store.delete_entities = AsyncMock(side_effect=RuntimeError("vector db down"))
+        rebuilder = _rebuilder(graph, store, page_size=10)
+        await rebuilder.tick()  # groups (empty)
+        await rebuilder.tick()  # records
+        assert [e.entity_id for e in store.written()] == ["r1"]
+        app = graph.docs[APPS]["app-1"]
+        assert app[EntityIndexState.ATTEMPTS] == 1
 
     async def test_resumes_from_the_saved_phase_and_cursor(self) -> None:
         graph, store = FakeGraph(), FakeStore()

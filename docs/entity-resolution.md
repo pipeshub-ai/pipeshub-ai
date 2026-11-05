@@ -285,8 +285,10 @@ The `entities` collection is a projection of the graph. The indexing service
 rebuilds it in the background (`app/modules/indexing/entity_index_rebuild.py`),
 without extraction or model calls other than embedding:
 
-- **Per connector** (app document): its record groups, then its indexed,
-  non-deleted, named records, written as on the index path.
+- **Per connector** (app document): its record groups, then its named records,
+  indexed or not (a record is findable by name before it is indexed; see
+  `docs/indexing-service.md` section 4.12), written as on the index path. The
+  points of trashed records are deleted.
 - **Per org** (org document): its canonical taxonomy nodes and its
   departments (including global ones). Membership is read from the graph and
   replaces the stored one; a node no record reaches has its point deleted.
