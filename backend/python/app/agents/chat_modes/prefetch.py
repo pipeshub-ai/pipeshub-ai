@@ -29,6 +29,7 @@ from app.modules.retrieval.context.targeted import (
     targeted_retrieval_enabled,
 )
 from app.modules.retrieval.context.units import unit_children
+from app.modules.retrieval.record_rerank import search_record_rerank
 from app.modules.retrieval.selection_scope import connection_sources_of
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, is_base64_image
 
@@ -165,6 +166,7 @@ async def prefetch_retrieval(
             user_id=user_id,
             limit=limit,
             filter_groups=filters,
+            **search_record_rerank(query),
         )
     except Exception as exc:  # noqa: BLE001 - surfaced as a graceful empty prefetch
         logger.error("prefetch_retrieval: search_with_filters failed: %s", exc, exc_info=True)

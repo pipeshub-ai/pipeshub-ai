@@ -11,6 +11,7 @@ from app.utils.llm import (
     get_embedding_model_config,
     get_image_generation_config,
     get_llm,
+    get_llm_by_name,
     get_llm_for_role,
     get_stt_config,
     get_stt_model_instance,
@@ -173,6 +174,46 @@ class TestGetLlm:
 
         assert llm is mock_llm
         assert config["provider"] == "openAI"
+
+
+class TestGetLlmByName:
+    _CONFIGS = {"llm": [
+        {"provider": "openAI", "modelKey": "k1", "isDefault": True, "configuration": {"model": "alpha"}},
+        {"provider": "openAI", "modelKey": "k2", "configuration": {"model": "beta, gamma"}},
+    ]}
+
+    @pytest.mark.asyncio
+    async def test_a_model_name_builds_that_model_of_its_entry(self, mock_config_service) -> None:
+        mock_config_service.get_config.return_value = self._CONFIGS
+        mock_llm = MagicMock()
+        with patch("app.utils.llm.get_generator_model", return_value=mock_llm) as build:
+            llm, config = await get_llm_by_name(mock_config_service, "gamma", reasoning_effort="low")
+        assert llm is mock_llm
+        assert config["modelKey"] == "k2"
+        build.assert_called_once_with("openAI", config, "gamma", "low")
+
+    @pytest.mark.asyncio
+    async def test_a_model_key_builds_the_first_model_of_its_entry(self, mock_config_service) -> None:
+        mock_config_service.get_config.return_value = self._CONFIGS
+        with patch("app.utils.llm.get_generator_model", return_value=MagicMock()) as build:
+            _, config = await get_llm_by_name(mock_config_service, "k2")
+        assert config["modelKey"] == "k2"
+        build.assert_called_once_with("openAI", config, None, None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ai_models", [{}, None, {"llm": []}])
+    async def test_nothing_configured_or_matching_is_none(self, mock_config_service, ai_models) -> None:
+        mock_config_service.get_config.return_value = ai_models
+        with patch("app.utils.llm.get_generator_model") as build:
+            assert await get_llm_by_name(mock_config_service, "delta") is None
+        build.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_name_is_none(self, mock_config_service) -> None:
+        mock_config_service.get_config.return_value = self._CONFIGS
+        with patch("app.utils.llm.get_generator_model") as build:
+            assert await get_llm_by_name(mock_config_service, "delta") is None
+        build.assert_not_called()
 
 
 class TestGetEmbeddingModelConfig:
