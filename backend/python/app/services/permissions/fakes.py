@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from .ports import AppFacts, Principal, ScopeNode, StampApp, StampNode
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 
 @dataclass
@@ -86,6 +86,19 @@ class InMemoryStampGraph:
         self._check()
         self.reads.append(len(ids))
         return {i: self.node_map[i] for i in ids if i in self.node_map} if org_id == self.org_id else {}
+
+    async def subtree_vrids(self, org_id: str, ids: Sequence[str]) -> list[str]:
+        self._check()
+        if org_id != self.org_id:
+            return []
+        seen = {i for i in ids if i in self.node_map}
+        frontier = list(seen)
+        for _ in range(50):
+            frontier = [k for k, n in self.node_map.items() if k not in seen and any(p in frontier for p in n.parents)]
+            if not frontier:
+                break
+            seen.update(frontier)
+        return sorted({n.vrid for k in seen if (n := self.node_map[k]).kind == "record" and n.vrid})
 
     async def record_page(self, org_id: str, app_id: str, after: str | None, limit: int) -> list[str]:
         self._check()

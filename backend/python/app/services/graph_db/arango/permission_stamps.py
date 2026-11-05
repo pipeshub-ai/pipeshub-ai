@@ -11,7 +11,7 @@ from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.ports import StampApp, StampNode
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 
@@ -52,6 +52,20 @@ FOR r IN {_REC} FILTER r.connectorId == @app AND r.orgId == @org AND (@after == 
   SORT r._key LIMIT @limit RETURN r._key
 """
 
+# Every edge of the path must be a hierarchy edge, and the filter sits where ArangoDB applies it while it walks: with `uniqueVertices: "global"` a
+# child first met through a link edge (SIBLING, OTHERS, BLOCKS ...) would be marked visited by it, dropped, and never emitted through its hierarchy
+# edge. A record reachable only through a link edge (and everything below it) is not in the subtree. Depth 50 and nodes of this organisation only, as the Neo4j query.
+SUBTREE = f"""
+LET starts = (FOR id IN @ids
+  LET d = FIRST(FOR c IN [DOCUMENT("{_REC}", id), DOCUMENT("{_GRP}", id)] FILTER c != null RETURN c)
+  FILTER d != null AND d.orgId == @org RETURN d)
+LET below = (FOR s IN starts FOR v, e, p IN 1..50 OUTBOUND s._id {_REL} OPTIONS {{bfs: true, uniqueVertices: "global"}}
+  FILTER p.edges[*].relationshipType ALL IN {_HIER} AND p.vertices[*].orgId ALL == @org
+  FILTER IS_SAME_COLLECTION("{_REC}", v) RETURN v)
+FOR r IN UNION_DISTINCT(starts, below) FILTER IS_SAME_COLLECTION("{_REC}", r) AND r.virtualRecordId != null
+  RETURN DISTINCT r.virtualRecordId
+"""
+
 
 class ArangoStampGraph:
     def __init__(self, http_client: Callable[[], ArangoHTTPClient | None]) -> None:
@@ -77,6 +91,9 @@ class ArangoStampGraph:
 
     async def record_page(self, org_id: str, app_id: str, after: str | None, limit: int) -> list[str]:
         return [str(r) for r in await self._rows(PAGE, {"app": app_id, "org": org_id, "after": after, "limit": limit})]
+
+    async def subtree_vrids(self, org_id: str, ids: Sequence[str]) -> list[str]:
+        return [str(r) for r in await self._rows(SUBTREE, {"ids": sorted(set(ids)), "org": org_id})] if ids else []
 
 
 instrument_org_methods(ArangoStampGraph)

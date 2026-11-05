@@ -14,7 +14,7 @@ from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.ports import StampApp, StampNode
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 
@@ -45,6 +45,18 @@ MATCH (r:Record) USING INDEX r:Record(connectorId, id)
 WHERE r.connectorId = $app AND r.id > $after AND r.orgId = $org
 WITH r ORDER BY r.connectorId, r.id LIMIT $limit
 RETURN r.id AS id
+"""
+
+# The records of these records and groups and everything below them over hierarchy edges: EVERY edge of the path is one (a record reached only
+# through a link edge is not below it), to a depth of 50, through nodes of this organisation only.
+SUBTREE = f"""
+MATCH (a) WHERE (a:Record OR a:RecordGroup) AND a.id IN $ids AND a.orgId = $org
+OPTIONAL MATCH p = (a)-[:NODE_RELATION*1..50]->(d:Record)
+WHERE all(h IN relationships(p) WHERE h.relationshipType IN {_HIER}) AND all(v IN nodes(p) WHERE v.orgId = $org)
+WITH collect(DISTINCT a) + collect(DISTINCT d) AS ns
+UNWIND ns AS n
+WITH n WHERE n:Record AND n.virtualRecordId IS NOT NULL
+RETURN DISTINCT n.virtualRecordId AS vrid
 """
 
 
@@ -85,6 +97,9 @@ class Neo4jStampGraph:
 
     async def record_page(self, org_id: str, app_id: str, after: str | None, limit: int) -> list[str]:
         return [str(r["id"]) for r in await self._rows(PAGE, app=app_id, org=org_id, after=after or "", limit=limit)]
+
+    async def subtree_vrids(self, org_id: str, ids: Sequence[str]) -> list[str]:
+        return [str(r["vrid"]) for r in await self._rows(SUBTREE, ids=sorted(set(ids)), org=org_id)] if ids else []
 
 
 instrument_org_methods(Neo4jStampGraph)
