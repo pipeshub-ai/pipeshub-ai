@@ -21,7 +21,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.services.graph_db.postgres.kg import stampgraph
-from app.services.graph_db.postgres.kg.dependents import held_apps, held_keys, parents_of
+from app.services.graph_db.postgres.kg.dependents import (
+    held_apps,
+    held_keys,
+    parents_of,
+)
 from app.services.graph_db.postgres.kg.locks import NeedLocks
 from app.services.graph_db.postgres.kg.model import (
     CODE_COLL,
