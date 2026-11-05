@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +157,21 @@ class TestSharedVridIsNeverDeleted:
         gp.get_document.assert_not_awaited()
         gp.remove_nodes_by_field.assert_not_awaited()
         assert gp.get_records_by_virtual_record_id.await_args.kwargs["raise_on_error"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_record_in_the_trash_keeps_everything_for_its_restore(self):
+        async def holders(_vrid, *, visibility=RecordVisibility.LIVE, **_kwargs):
+            return ["rec-trashed"] if visibility == RecordVisibility.ALL else []
+
+        gp = AsyncMock()
+        gp.get_records_by_virtual_record_id = AsyncMock(side_effect=holders)
+        bs = _make_blob_storage(graph_provider=gp)
+
+        with patch("app.modules.transformers.blob_storage.get_shared_session") as session:
+            await bs.delete_storage_docs_for_vrid("org-1", "vrid-trashed-twin")
+
+        session.assert_not_called()
+        gp.remove_nodes_by_field.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_record_appearing_on_confirming_reread_keeps_everything(self):
