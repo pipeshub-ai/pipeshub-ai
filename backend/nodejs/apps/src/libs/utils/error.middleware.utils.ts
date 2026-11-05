@@ -15,13 +15,29 @@ import {
 export const logLevelFor = (error: unknown): 'warn' | 'error' =>
   error instanceof BaseError && error.statusCode < 500 ? 'warn' : 'error';
 
-// An OAuth-style error code (`invalid_grant`, `invalid_auth`). Anything else in
-// that field (case, digits, `-`, `.`, length) could be an echoed token.
-const UPSTREAM_ERROR_CODE = /^[a-z_]{1,64}$/;
+// The standard OAuth error codes (RFC 6749 §4.1.2.1 and §5.2, RFC 6750 §3.1,
+// RFC 8628 §3.5). Any other value in that field could be an echoed credential.
+const OAUTH_ERROR_CODES: ReadonlySet<string> = new Set([
+  'invalid_request',
+  'invalid_client',
+  'invalid_grant',
+  'unauthorized_client',
+  'unsupported_grant_type',
+  'invalid_scope',
+  'access_denied',
+  'unsupported_response_type',
+  'server_error',
+  'temporarily_unavailable',
+  'invalid_token',
+  'insufficient_scope',
+  'authorization_pending',
+  'slow_down',
+  'expired_token',
+]);
 
 const upstreamErrorCode = (data: unknown): string | undefined => {
   const code = (data as { error?: unknown } | null | undefined)?.error;
-  return typeof code === 'string' && UPSTREAM_ERROR_CODE.test(code)
+  return typeof code === 'string' && OAUTH_ERROR_CODES.has(code)
     ? code
     : undefined;
 };

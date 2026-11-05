@@ -242,6 +242,7 @@ describe('error.middleware.utils', () => {
 // `config`, with the body already a string, so no key-based redaction sees it.
 describe('error.middleware.utils: a failed axios call is logged without its request', () => {
   const TOKEN_IN_ERROR = 'AIzaSyFAKE0Echoed0Token0000000000000000'
+  const LOWERCASE_TOKEN_IN_ERROR = 'abcdefghijklmnopqrstuvwxyz_abcdefghij'
   const SECRETS = [
     'RT-SECRET-123', // refresh_token
     'CS-SECRET-456', // client_secret
@@ -252,6 +253,7 @@ describe('error.middleware.utils: a failed axios call is logged without its requ
     'X-CUSTOM-222', // a header no redaction list names
     'RESP-BODY-333', // a value the upstream echoed in its answer
     TOKEN_IN_ERROR,
+    LOWERCASE_TOKEN_IN_ERROR,
   ]
   const expectNoSecret = (logged: unknown): void => {
     const text = JSON.stringify(logged)
@@ -268,6 +270,14 @@ describe('error.middleware.utils: a failed axios call is logged without its requ
     '/token-shaped': (res) => {
       res.writeHead(400, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: TOKEN_IN_ERROR }))
+    },
+    '/lowercase-token': (res) => {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: LOWERCASE_TOKEN_IN_ERROR }))
+    },
+    '/invalid-client': (res) => {
+      res.writeHead(401, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'invalid_client' }))
     },
     '/too-long': (res) => {
       res.writeHead(400, { 'content-type': 'application/json' })
@@ -400,9 +410,15 @@ describe('error.middleware.utils: a failed axios call is logged without its requ
     expect(logged).to.not.have.property('stack')
   })
 
+  it('keeps a standard OAuth error code as upstreamError', async () => {
+    const logged = loggedError(await failedCall(() => axios.post(`${base}/invalid-client`)))
+    expect(logged).to.include({ status: 401, upstreamError: 'invalid_client' })
+  })
+
   for (const [name, send] of [
     ['a token-shaped string', () => axios.post(`${base}/token-shaped`)],
-    ['longer than 64 characters', () => axios.post(`${base}/too-long`)],
+    ['a lowercase credential-shaped string', () => axios.post(`${base}/lowercase-token`)],
+    ['an unlisted 65-character code', () => axios.post(`${base}/too-long`)],
     ['an object', () => axios.post(`${base}/object`)],
     ['a text body', () => axios.post(`${base}/text`)],
     ['a Buffer body', () => axios.post(`${base}/token`, undefined, { responseType: 'arraybuffer' })],
