@@ -1499,6 +1499,8 @@
     },
     "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán.",
     "noResultsFor": "No se encontraron resultados para «{{query}}»",
+    "matchedByName": "Coincidencias por nombre",
+    "contentNotIndexedYet": "Contenido aún no indexado",
     "removeSelectedSource": "Quitar {{name}}",
     "diagramSourceCopied": "Código del diagrama copiado",
     "diagramImageCopied": "Imagen del diagrama copiada",

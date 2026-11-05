@@ -55,6 +55,7 @@ from app.modules.indexing.record_republish import (
     record_event,
     republish_eligible,
 )
+from app.modules.indexing.record_title_consumer import build_record_title_consumer
 from app.modules.indexing.recovery_budget import (
     ExhaustedRecordSink,
     record_handback,
@@ -2126,11 +2127,12 @@ def _distributed_leases_wanted() -> bool:
     return messaging_env.distributed_concurrency_enabled or uses_pg_state()
 
 
-async def _start_stages_when_topics_exist(
+async def _start_when_topics_exist(
     admin: IMessageAdmin,
     topics: list[str],
     start_stages: Callable[[], Awaitable[None]],
     logger: logging.Logger,
+    what: str = "Pipeline stage",
 ) -> None:
     # ``start_stages`` stops what it started when it fails, so each attempt starts every stage.
     delay = _TOPIC_RETRY_FIRST_S
@@ -2140,15 +2142,57 @@ async def _start_stages_when_topics_exist(
             await admin.ensure_topics_exist(topics)
         except Exception as e:
             delay = min(delay * 2, _TOPIC_RETRY_MAX_S)
-            logger.error("❌ Pipeline stage topics %s are still not available (%s); retrying in %.0fs", topics, e, delay)
+            logger.error("❌ %s topics %s are still not available (%s); retrying in %.0fs", what, topics, e, delay)
             continue
         try:
             await start_stages()
-            logger.info("✅ Pipeline stage topics %s are available; stage consumers started", topics)
+            logger.info("✅ %s topics %s are available; consumers started", what, topics)
             return
         except Exception as e:
             delay = min(delay * 2, _TOPIC_RETRY_MAX_S)
-            logger.error("❌ Starting the pipeline stage consumers failed (%s); retrying in %.0fs", e, delay)
+            logger.error("❌ Starting the %s consumers failed (%s); retrying in %.0fs", what.lower(), e, delay)
+
+
+async def _start_record_title_consumer(
+    app_container: IndexingAppContainer,
+    admin: IMessageAdmin,
+    consumers: list[tuple[str, Any, Any]],
+    *,
+    broker_type: Any,  # noqa: ANN401
+    retry_manager: Any,  # noqa: ANN401
+    worker: WorkerLoop,
+    logger: logging.Logger,
+) -> None:
+    """Start the consumer that writes record names into the entity index (record-title-events).
+
+    Outside the record lanes, the fair scheduler and the governor's slots, so a content backlog never
+    holds a name back. Optional: records stay indexable without it, so a failure here is logged and retried, never raised.
+    """
+    topics = [Topic.RECORD_TITLE_EVENTS.value]
+
+    async def start() -> None:
+        title_consumer = await build_record_title_consumer(
+            app_container, broker_type=broker_type, retry_manager=retry_manager, worker=worker, logger=logger,
+        )
+        try:
+            await title_consumer.start()
+        except Exception:
+            await title_consumer.writer.aclose()
+            raise
+        # No retry producer of its own: the record consumer's entry owns the shared one.
+        consumers.append(("record_title", title_consumer, None))
+        logger.info("✅ Record title consumer started: %s", topics[0])
+
+    try:
+        await admin.ensure_topics_exist(topics)
+        await start()
+    except Exception as e:
+        logger.error("❌ Record title consumer did not start (%s); retrying in the background", e)
+        setattr(
+            app_container,
+            "record_title_startup_task",
+            spawn_detached(_start_when_topics_exist(admin, topics, start, logger, "Record title")),
+        )
 
 
 async def start_kafka_consumers(
@@ -2310,6 +2354,10 @@ async def start_kafka_consumers(
                 raise
 
         admin = MessagingFactory.create_admin(logger, producer_config, broker_type)
+        await _start_record_title_consumer(
+            app_container, admin, consumers,
+            broker_type=broker_type, retry_manager=retry_manager, worker=worker, logger=logger,
+        )
         try:
             await admin.ensure_topics_exist(stage_topics)
         except Exception as e:
@@ -2325,7 +2373,7 @@ async def start_kafka_consumers(
                 app_container,
                 "stage_startup_task",
                 spawn_detached(
-                    _start_stages_when_topics_exist(admin, stage_topics, start_stage_consumers, logger)
+                    _start_when_topics_exist(admin, stage_topics, start_stage_consumers, logger)
                 ),
             )
             return consumers
@@ -2359,11 +2407,12 @@ async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_
 
     logger = container.logger()
     # A stage start still waiting for its topics must not start consumers once these stop.
-    stage_startup = getattr(container, "stage_startup_task", None)
-    if isinstance(stage_startup, asyncio.Task) and not stage_startup.done():
-        _ = stage_startup.cancel()
-        with suppress(asyncio.CancelledError):
-            await stage_startup
+    for attr in ("stage_startup_task", "record_title_startup_task"):
+        startup = getattr(container, attr, None)
+        if isinstance(startup, asyncio.Task) and not startup.done():
+            _ = startup.cancel()
+            with suppress(asyncio.CancelledError):
+                await startup
     consumers = getattr(container, 'kafka_consumers', [])
     await _stop_consumers_then_shared_resources(consumers, logger)
 

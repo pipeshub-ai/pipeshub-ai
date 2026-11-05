@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.core.org_context import OrgContext, bind
-from app.services.graph_db.postgres.kg.model import COLL_CODE
+from app.services.graph_db.postgres.kg.model import CODE_EPOCH, COLL_CODE
 from app.services.graph_db.postgres.kg.project import decode, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.telemetry.backend import METRICS_BACKEND
@@ -110,7 +110,7 @@ async def lag(db: KernelDB, org: str) -> int:
 
 async def quarantined(tx: Tx, org: str) -> list[int]:
     """Ids of the change-log rows the drain cannot read (kept in the log, out of every page)."""
-    return [r["id"] for r in await tx.fetch(r"/* pipeshub:kg.poison */ SELECT id FROM kg.graph_changes WHERE org_id = $1 AND NOT NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258) ORDER BY id", org)]
+    return [r["id"] for r in await tx.fetch(r"/* pipeshub:kg.poison */ SELECT id FROM kg.graph_changes WHERE org_id = $1 AND EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258) ORDER BY id", org)]
 
 
 async def purge_quarantined(db: KernelDB, org: str) -> int:
@@ -120,6 +120,43 @@ async def purge_quarantined(db: KernelDB, org: str) -> int:
         return await KgWriter(tx).changes_delete(ids) if ids else 0
     with bind(_ctx(org)):
         return await db.run(go, write=True)
+
+
+async def is_current(tx: Tx, org: str, app_id: str) -> bool:
+    """May a reader trust kg for this connector? Its copy is verified (``shadow`` or ``enforce``), no row of the log is unreadable, and no change is waiting that can alter it: none logged
+    for it or for the org as a whole (edges, principals), and none logged for another connector while either of the two links records across connectors (``cross_app``: a record's
+    parent or group belongs to the other, so a change there reaches this one). A pending connector kg has never seen may link anything, so it is not current either. A node that changed
+    connector is logged under both, so neither is current. The fence of a queued restamp (a connector hidden whole until its restamp is done) is a later change: it needs the restamp
+    queue, which this schema does not have yet, and must be added here with it."""
+    st = await tx.fetchrow("""/* pipeshub:kg.current_mode */ SELECT s.mode, s.cross_app FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+        WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2""", org, app_id)
+    if st is None or st["mode"] not in ("shadow", "enforce"):
+        return False
+    if await tx.fetchval(r"/* pipeshub:kg.poison_any */ SELECT EXISTS (SELECT 1 FROM kg.graph_changes WHERE org_id = $1 AND EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258))", org):
+        return False                                  # a row that cannot be read may name anything
+    pending = [r["app_id"] for r in await tx.fetch("/* pipeshub:kg.pending_apps */ SELECT DISTINCT app_id FROM kg.graph_changes WHERE org_id = $1", org)]
+    if any(a in (app_id, "") for a in pending):
+        return False
+    if not pending:
+        return True
+    if st["cross_app"]:
+        return False
+    linked = {r["id"] for r in await tx.fetch("""/* pipeshub:kg.cross_apps */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+        WHERE s.org_id = $1 AND k.coll = 1 AND s.cross_app AND k.id = ANY($2::text[])""", org, pending)}
+    known = {r["id"] for r in await tx.fetch("""/* pipeshub:kg.known_apps */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+        WHERE s.org_id = $1 AND k.coll = 1 AND k.id = ANY($2::text[])""", org, pending)}
+    return not linked and known >= set(pending)
+
+
+async def serves(tx: Tx, org: str, app_id: str) -> bool:
+    """May a reader answer from kg for this connector? The stricter question, for the readers: :func:`is_current`, and the connector is in ``enforce`` (``shadow`` only compares), it was
+    verified by this code (``code_epoch`` is the code's, ``verified_at`` is set), and the org's principals are copied (their pseudo-connector, ``app_sk`` 0, has finished its copy:
+    the closure of every user is part of every answer). Anything else is the walk."""
+    if not await is_current(tx, org, app_id):
+        return False
+    row = await tx.fetchrow("""/* pipeshub:kg.serves */ SELECT s.mode, s.code_epoch, s.verified_at, (SELECT p.backfill_cursor FROM kg.projection_state p WHERE p.org_id = s.org_id AND p.app_sk = 0) AS principals
+        FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2""", org, app_id)
+    return bool(row and row["mode"] == "enforce" and row["code_epoch"] == CODE_EPOCH and row["verified_at"] is not None and row["principals"] == "done")
 
 
 async def drain_or_retry(db: KernelDB, org: str, *, page: int = PAGE, stop: asyncio.Event | None = None) -> int:
