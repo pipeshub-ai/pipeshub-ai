@@ -50,6 +50,7 @@ from app.sources.external.postgres.postgres_ import (
     ForeignKeyInfo,
     TableColumnStatistics,
 )
+from tests.support.data_store import runs_in_its_transaction
 
 # ===========================================================================
 # Helpers
@@ -78,7 +79,7 @@ def _make_mock_deps() -> tuple:
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.reindex_existing_records = AsyncMock()
 
-    dsp = MagicMock()
+    dsp = runs_in_its_transaction(MagicMock())
     cs = MagicMock()
     cs.get_config = AsyncMock()
 
@@ -4360,7 +4361,7 @@ class TestCreateConnector:
     @pytest.mark.asyncio
     async def test_creates_connector(self) -> None:
         logger = logging.getLogger("test")
-        dsp = MagicMock()
+        dsp = runs_in_its_transaction(MagicMock())
         cs = MagicMock()
 
         processor = MagicMock()

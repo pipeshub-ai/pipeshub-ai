@@ -99,6 +99,10 @@ import {
   createSlackEventsRateLimiter,
   slackEventsRateLimitPerMinute,
 } from './libs/middlewares/rate-limit.middleware';
+import {
+  noFraming,
+  UNFRAMEABLE_PAGE_PATHS,
+} from './libs/middlewares/no-framing.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
@@ -109,13 +113,17 @@ import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
+import { createAgentRegistrationRouter } from './modules/oauth_provider/routes/agent-registration.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
 import { createServiceTokenRouter } from './modules/oauth_provider/routes/service-token.routes';
 import { ServiceAccountsService } from './modules/user_management/services/service-accounts.service';
 import { ServiceTokenService } from './modules/oauth_provider/services/service-token.service';
 import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
-import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
+import {
+  createAuthMdRouter,
+  createOIDCDiscoveryRouter,
+} from './modules/oauth_provider/routes/oid.provider.routes';
 import {
   resolveMessageBrokerConfig,
   ensureMessageTopicsExist,
@@ -381,6 +389,8 @@ export class Application {
       this.bootstrapNotificationBrokerConsumer();
       this.bootstrapMailBrokerConsumer();
       editionBoot.startWorkers(this.logger);
+
+      this.app.use(UNFRAMEABLE_PAGE_PATHS, noFraming);
 
       // Serve static frontend files\
       const publicDir = path.join(__dirname, 'public');
@@ -838,6 +848,12 @@ export class Application {
       createOAuthProviderRouter(this.oauthProviderContainer),
     );
 
+    // auth.md agent registration (service_auth)
+    this.app.use(
+      '/api/v1/agent',
+      createAgentRegistrationRouter(this.oauthProviderContainer),
+    );
+
     // OAuth Clients routes (OAuth app management)
     this.app.use(
       '/api/v1/oauth-clients',
@@ -895,6 +911,11 @@ export class Application {
     //          GET /.well-known/oauth-authorization-server
     //          GET /.well-known/oauth-protected-resource
     //          GET /.well-known/jwks.json
+    // How an agent gets a credential, for agents that look for /auth.md.
+    const authMd = createAuthMdRouter(this.oauthProviderContainer, (origin) =>
+      editionBoot.authMdSections(origin),
+    );
+    this.app.use(['/auth.md', '/.well-known/auth.md'], authMd);
     this.app.use(
       '/.well-known',
       createOIDCDiscoveryRouter(this.oauthProviderContainer),

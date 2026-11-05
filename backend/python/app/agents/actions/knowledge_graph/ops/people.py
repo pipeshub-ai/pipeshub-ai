@@ -4,22 +4,25 @@ involved), limited to what the user can read inside the turn, newest first,
 paged by cursor.
 
 Listing and access go through the entity listing engine
-(``list_accessible_person_records``). A name that matches no one and a person
-with no readable linked records get the same reply, and candidates are only
-named when they link to a record the user can read.
+(``list_accessible_person_records``). A person is shown (named, counted,
+offered as a choice or a continuation) only when they link to a record the
+user can read: a name that matches no one, a person with no readable linked
+records and a probe that ran out of time all get the same reply.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     limited_scope_note,
     load_entity_access_context,
 )
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     LOOKUP_FAILED_MSG,
+    cite_note,
+    listing_facts,
     record_line,
 )
 from app.agents.actions.knowledge_graph.views import _read_hint, _trunc
@@ -28,8 +31,9 @@ from app.config.constants.arangodb import EntityRelations
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
-    EntityRecordPage,
     list_accessible_person_records,
+    parse_cursor,
+    readable_person_offsets,
 )
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.utils.chat_helpers import (
@@ -55,8 +59,6 @@ _MAX_LIMIT = 50
 _DEFAULT_LIMIT = 20
 _MAX_READ_HINT_IDS = 8
 _USER_MATCH_LIMIT = 20
-# Each candidate costs one listing; a name this common needs an email anyway.
-_MAX_PEOPLE_PROBED = 5
 NO_FURTHER_RECORDS_MSG = (
     "No further readable records for this person - the previous page was the last."
 )
@@ -92,45 +94,44 @@ async def execute_find_records_by_person(
     wanted_types = [str(t).strip().upper() for t in (record_types or []) if str(t).strip()] or None
     bounded_limit = min(max(1, limit or _DEFAULT_LIMIT), _MAX_LIMIT)
 
-    async def listing(user_ids: list[str]) -> EntityRecordPage:
-        return await list_accessible_person_records(
-            graph, context, user_ids=user_ids, edge_types=edge_types,
-            record_types=wanted_types, limit=bounded_limit, cursor=cursor,
-        )
-
     is_self = asked.casefold() in SELF_NAMES
     try:
+        # Before anyone is looked up, so a bad cursor reads the same whoever is named.
+        parse_cursor(cursor)
         context = await load_entity_access_context(state)
         if is_self:
-            people = [await _caller(state, graph, context)]
+            group, start = await _caller(state, graph, context), None
         else:
-            people = _people(await graph.find_users(context.org_id, asked, limit=_USER_MATCH_LIMIT))
-        probed = people[:_MAX_PEOPLE_PROBED]
-        pages = await asyncio.gather(*(listing([u["id"] for u in group]) for group in probed))
+            shown = await _shown_people(graph, context, asked, edge_types, wanted_types)
+            if len(shown) > 1:
+                return True, _ambiguous(asked, [g for g, _ in shown])
+            if not shown:
+                return True, _no_match(state, asked, context)
+            group, start = shown[0]
+        page = await list_accessible_person_records(
+            graph, context, user_ids=[u["id"] for u in group], edge_types=edge_types,
+            record_types=wanted_types, limit=bounded_limit,
+            # The probe already walked the newer candidates and found none readable.
+            cursor=cursor or (str(start) if start else None),
+        )
     except ValueError as exc:
         return False, str(exc)
     except Exception:  # access, permission-service and query failures all read the same to the model
         logger.warning("find_records_by_person failed", exc_info=True)
         return False, LOOKUP_FAILED_MSG
 
-    found = [(group, page) for group, page in zip(probed, pages) if page.records]
-    if len(found) > 1:
-        return True, _ambiguous(asked, [group for group, _ in found], more=len(people) > len(probed))
-    if not found:
-        if len(people) == 1 and pages[0].next_cursor is not None:
-            # The scan window ran out before reaching a readable record; later ones may be.
+    if not page.records:
+        # Only the caller or a person with a readable record gets here, so naming them is allowed.
+        if page.next_cursor is not None:
             again = _continue_call(
-                asked, probed[0], wanted_roles, wanted_types, pages[0].next_cursor,
+                asked, group, wanted_roles, wanted_types, page.next_cursor,
                 is_self=is_self, limit=bounded_limit,
             )
             return True, f"No readable records in this part of the listing yet. Continue with: {again}"
-        if cursor and len(people) == 1:
+        if cursor:
             return True, NO_FURTHER_RECORDS_MSG
-        if len(people) > len(probed):
-            return True, _too_many(asked)
         return True, _no_match(state, asked, context)
 
-    group, page = found[0]
     record_ids = [r["_key"] for r in page.records if r.get("_key")]
     remember_record_ids(
         state, record_ids, names={r["_key"]: r.get("recordName") or "" for r in page.records if r.get("_key")},
@@ -139,15 +140,18 @@ async def execute_find_records_by_person(
     shortener = get_record_id_shortener_if_enabled(state)
     frontend_url = await resolve_frontend_url(state.get("config_service"))
     who = _label(group)
-    lines = [f"Records linked to {who} as {' / '.join(wanted_roles or ROLE_EDGES)}, newest first:"]
-    lines.extend(record_line(record, context, shortener, frontend_url) for record in page.records)
+    # The roles asked for, as the header says them: a record's own role is not known here.
+    roles = wanted_roles or list(ROLE_EDGES)
+    linked = f"linked to {who} as {'one of ' if len(roles) > 1 else ''}{' / '.join(roles)}"
+    cite_refs = await cite_listed_records(
+        state, graph, context.org_id, {r["_key"]: listing_facts(r, linked) for r in page.records if r.get("_key")},
+    )
+    lines = [f"Records {linked}, newest first:", *cite_note(page.records, cite_refs)]
+    lines.extend(
+        record_line(record, context, shortener, frontend_url, cite=cite_refs.get(record["_key"]))
+        for record in page.records
+    )
     lines.append("")
-    if len(people) > 1:
-        # Only this person links to a readable record; the others stay unnamed.
-        lines.append(
-            f'Other people also match "{_trunc(asked)}". If {who} is not the one meant, '
-            "call again with that person's email."
-        )
     if page.next_cursor is not None:
         again = _continue_call(
             asked, group, wanted_roles, wanted_types, page.next_cursor, is_self=is_self, limit=bounded_limit,
@@ -176,6 +180,22 @@ async def _caller(state: "ChatState", graph: Any, context: EntityAccessContext) 
     return mine
 
 
+async def _shown_people(
+    graph: Any, context: EntityAccessContext, asked: str,  # noqa: ANN401
+    edge_types: list[str], record_types: list[str] | None,
+) -> list[tuple[list[dict[str, Any]], int]]:
+    """The people ``asked`` names that link to a record the user can read, each
+    with the candidate offset of the newest one; nobody else may be shown."""
+    people = _people(await graph.find_users(context.org_id, asked, limit=_USER_MATCH_LIMIT))
+    if not people:
+        return []
+    starts = await readable_person_offsets(
+        graph, context, [[u["id"] for u in group] for group in people],
+        edge_types=edge_types, record_types=record_types,
+    )
+    return [(group, start) for group, start in zip(people, starts) if start is not None]
+
+
 def _people(users: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     """Users grouped into people: nodes sharing an email are one person."""
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -195,20 +215,11 @@ def _label(group: list[dict[str, Any]]) -> str:
     return _trunc(name or email or "this person")
 
 
-def _ambiguous(asked: str, groups: list[list[dict[str, Any]]], *, more: bool) -> str:
+def _ambiguous(asked: str, groups: list[list[dict[str, Any]]]) -> str:
     lines = [f'Several people match "{_trunc(asked)}":']
     lines.extend(f"- {_label(group)}" for group in groups)
-    if more:
-        lines.append("Others match too.")
     lines.append("Call knowledgegraph__find_records_by_person again with the person's email.")
     return "\n".join(lines)
-
-
-def _too_many(asked: str) -> str:
-    return (
-        f'Many people match "{_trunc(asked)}" and none of the first {_MAX_PEOPLE_PROBED} checked has '
-        "readable linked records. Call knowledgegraph__find_records_by_person again with the person's email."
-    )
 
 
 def _no_match(state: "ChatState", asked: str, context: EntityAccessContext) -> str:

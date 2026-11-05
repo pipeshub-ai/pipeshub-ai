@@ -60,6 +60,10 @@ on:
       - 'backend/python/app/sources/client/linear/**'
       - 'backend/python/app/sources/external/linear/**'
       - 'backend/python/app/indexing_main.py'
+      # The recovery sweeps graph_db/test_recovery_sweeps_real_backends.py drives.
+      - 'backend/python/app/modules/indexing/lane_upkeep.py'
+      - 'backend/python/app/modules/indexing/duplicate_reconcile.py'
+      - 'backend/python/app/modules/indexing/named_entity_persist_retry.py'
       - 'backend/python/tests/integration/messaging/**'
       - 'backend/python/tests/integration/vector_db/**'
       - 'backend/python/tests/integration/kv/**'
@@ -120,6 +124,9 @@ on:
       - 'backend/python/tests/support/**'
       - 'backend/python/tests/unit/agents/adapter/conftest.py'
       - 'backend/python/tests/unit/agents/adapter/support/scripted_transport.py'
+      - 'backend/python/tests/unit/connectors/sources/localKB/push/bodies.py'
+      - 'backend/python/tests/unit/connectors/sources/localKB/push/fake_storage.py'
+      - 'backend/python/tests/unit/connectors/sources/localKB/push/image_harness.py'
       - 'backend/python/tests/unit/connectors/sources/test_connector_workflow_integration.py'
       - 'backend/python/tests/unit/modules/entity_resolution/conftest.py'
       - 'backend/python/tests/unit/modules/indexing/test_entity_index_rebuild.py'
@@ -128,6 +135,10 @@ on:
       - 'backend/python/tests/unit/services/artifact_registry/fakes.py'
       - 'backend/python/tests/unit/services/vector_db/test_strategy_contract.py'
       - 'backend/python/tests/unit/web/qa/lab.py'
+      - 'backend/python/tests/permissions/graph.py'
+      - 'backend/python/tests/permissions/model.py'
+      - 'backend/python/tests/permissions/runner.py'
+      - 'backend/python/tests/permissions/scenario.py'
       - 'backend/python/pyproject.toml'
       - 'deployment/docker-compose/docker-compose.integration.messaging.yml'
       - 'deployment/docker-compose/docker-compose.integration.vector-db.yml'
@@ -179,7 +190,8 @@ jobs:
     name: ${{ matrix.suite }} · ${{ matrix.backend }}
     needs: changes
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The graph jobs take 27-28 minutes of a 30-minute limit, so any new graph test pushed them over it.
+    timeout-minutes: 45
 
     strategy:
       fail-fast: false

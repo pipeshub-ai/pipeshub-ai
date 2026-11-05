@@ -59,6 +59,7 @@ class _ListedPR(SimpleNamespace):
 def _pr(
     *, number: int = 1, title: str = "Add feature", state: str = "open", merged: bool = False,
     mergeable: bool | None = None, head_sha: str = "sha-head", full_payload: bool = False,
+    milestone: dict | None = None,
 ) -> SimpleNamespace:
     """A PullRequest as the LIST endpoint returns it by default.
 
@@ -68,6 +69,8 @@ def _pr(
     object reading it fires a per-PR fetch, so the code must use ``merged_at``.
     """
     raw: dict = {}
+    if milestone is not None:
+        raw["milestone"] = milestone
     if full_payload:
         raw["mergeable"] = mergeable
         raw["merged_by"] = {"login": "maintainer"} if merged else None
@@ -284,6 +287,17 @@ class TestProcessPullRequest:
         related = ru.record.related_external_records
         assert [r.weburl for r in related if r.weburl] == ["https://acme.atlassian.net/browse/PA-1718"]
         assert [r.issue_key for r in related if r.issue_key] == ["PA-1844"]
+
+    async def test_milestone_title_is_read_off_the_listing_payload(self) -> None:
+        """The /pulls listing carries the milestone object, so no extra call."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=10)
+        pr = _pr(number=5, milestone={"title": "Airflow 3.5.0", "state": "open"})
+
+        ru = await PullRequestsSync(c).process_pull_request(repo, pr)
+
+        assert ru is not None
+        assert ru.record.milestone == "Airflow 3.5.0"
 
     async def test_maps_fields_for_open_pr(self) -> None:
         c = make_mock_connector()

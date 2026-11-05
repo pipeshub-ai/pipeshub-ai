@@ -5,6 +5,7 @@ time budget, a delete is fenced on the listed stamp, and the cursor only moves f
 from __future__ import annotations
 
 import asyncio
+import collections
 import os
 import random
 import time
@@ -208,24 +209,50 @@ async def test_a_hung_delete_is_bounded_like_a_hung_listing(monkeypatch) -> None
     monkeypatch.setenv("REVISION_RETENTION_TICK_BUDGET_SECONDS", "20")
     monkeypatch.setattr(blob_module, "BLOB_HTTP_SOCK_READ_TIMEOUT_SECONDS", 0.5)
 
+    listed: set[str] = set()
+
     async def listing(request: web.Request) -> web.Response:
         vrid = request.query["virtualRecordId"]
+        listed.add(f"{vrid}-a")
         return web.json_response({"revisions": [
             {"documentId": f"{vrid}-a", "virtualRecordId": vrid, "rev": "a", "createdAt": _old_ms(), "deleteFence": True}
         ]})
 
+    attempts: collections.Counter[str] = collections.Counter()
+
     async def delete(request: web.Request) -> web.Response:
+        attempts[request.match_info["doc"]] += 1
         await asyncio.sleep(3600)
         return web.json_response({"purged": 1})
+
+    sock_reads: list[float | None] = []
+    real_session = store_module.get_shared_session
+
+    class Recording:
+        def __init__(self, session: object) -> None:
+            self._session = session
+
+        def delete(self, *args: object, **kwargs: object) -> object:
+            sock_reads.append(getattr(kwargs.get("timeout"), "sock_read", None))
+            return self._session.delete(*args, **kwargs)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._session, name)
+
+    monkeypatch.setattr(store_module, "get_shared_session", lambda: Recording(real_session()))
 
     runner, origin = await _server([("GET", LIST, listing), ("DELETE", DELETE, delete)])
     try:
         took = await _tick(origin, _graph(200))
     finally:
         await runner.cleanup()
-    print(f"tick with hung deletes took {took:.1f}s = {took / 0.5:.1f} x sock_read")
+    print(f"tick with hung deletes took {took:.1f}s = {took / 0.5:.1f} x sock_read, {max(attempts.values(), default=0)} attempt(s) per document")
     # A hung listing ends the page after ~1 listing timeout; a hung delete should not cost 3 attempts.
-    assert took < 2 * 0.5 + 0.5, f"tick took {took:.1f}s ({took / 0.5:.1f} x the read timeout)"
+    # Attempts are counted, not timed: a loaded host stretches the clock but not the count.
+    assert listed and dict(attempts) == dict.fromkeys(listed, 1), f"delete attempts per listed document: {dict(attempts)}"
+    assert sock_reads
+    assert set(sock_reads) == {0.5}, sock_reads  # the scaled read timeout, not the deadline-derived total
+    assert took < 20, f"tick ran into its 20 s budget ({took:.1f}s)"
 
 
 # --- D: the resume key never skips a vrid, and the walk always advances ---------------------

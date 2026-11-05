@@ -86,6 +86,7 @@ def _make_connector() -> LinearConnector:
     dep.org_id = "org-linear-gaps"
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.on_new_app_users = AsyncMock()
+    dep.get_all_app_users = AsyncMock(return_value=[])
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()

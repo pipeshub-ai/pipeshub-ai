@@ -23,6 +23,10 @@ import {
   type UpdateOwnedOptions,
 } from './types';
 import { ConflictError } from '../errors';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importOAuthAppDocs } from './pg-import';
+import { kernelTx } from '../pg';
+import type { Tx } from '../uow';
 
 interface AppRow {
   id: string;
@@ -122,7 +126,15 @@ function owned(p: Params, orgId: string, userId: string): string {
     AND NOT starts_with(client_id, ${p.add(PAT_APP_CLIENT_ID_PREFIX)}) AND NOT starts_with(client_id, ${p.add(SERVICE_TOKEN_APP_CLIENT_ID_PREFIX)})`;
 }
 
-export class PgOAuthAppRepository implements OAuthAppRepository {
+export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
+  /** The migration copy: documents as they were stored (see ./pg-import.ts). */
+  importBatch(
+    _collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importOAuthAppDocs(kernelTx(tx), docs);
+  }
   async create(input: NewOAuthApp): Promise<OAuthAppDto> {
     const i = stripNul(input, 'oauth-app', 'app');
     return inOrgUnit(i.orgId, undefined, true, async (k) => {
@@ -363,6 +375,23 @@ export class PgOAuthAppRepository implements OAuthAppRepository {
             SELECT u.s FROM unnest($3::text[]) WITH ORDINALITY AS u(s, o) WHERE u.s <> ALL(allowed_scopes) GROUP BY u.s ORDER BY min(u.o)),
             updated_at = $4 WHERE org_id = $1 AND id = $2::text`,
         [k.orgId, oid, wanted, new Date()],
+      );
+    });
+  }
+
+  async setDynamicGrant(
+    orgId: string,
+    id: string,
+    grant: Pick<OAuthAppDto, 'allowedScopes' | 'allowedGrantTypes'>,
+  ): Promise<void> {
+    const appId = oidOf(id);
+    if (appId === undefined) return;
+    const scopes = stripNul(grant.allowedScopes, 'oauth-app', 'scopes');
+    await inOrgUnit(orgId, undefined, true, async (k) => {
+      await k.query(
+        `/* pipeshub:oauth.app_set_dynamic_grant */ UPDATE oauth.apps SET allowed_scopes = $3, allowed_grant_types = $4, version = version + 1, updated_at = $5
+            WHERE org_id = $1 AND id = $2::text AND is_dynamic AND NOT is_deleted`,
+        [k.orgId, appId, scopes, grant.allowedGrantTypes, new Date()],
       );
     });
   }

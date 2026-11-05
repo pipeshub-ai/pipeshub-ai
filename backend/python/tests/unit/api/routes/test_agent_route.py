@@ -675,7 +675,6 @@ class TestGetServices:
         retrieval.llm = MagicMock()
         container.retrieval_service = AsyncMock(return_value=retrieval)
         container.graph_provider = AsyncMock(return_value=AsyncMock())
-        container.reranker_service.return_value = MagicMock()
         container.config_service.return_value = MagicMock()
         container.logger.return_value = MagicMock()
         request.app.container = container

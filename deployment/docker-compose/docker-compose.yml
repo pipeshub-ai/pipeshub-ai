@@ -247,19 +247,22 @@ services:
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-2000}
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
       - MAX_AUTH_REQUESTS_PER_MINUTE=${MAX_AUTH_REQUESTS_PER_MINUTE:-10}
+      - ADDRESS_RATE_LIMIT_PER_MINUTE=${ADDRESS_RATE_LIMIT_PER_MINUTE:-60}
       - TRUST_PROXY=${TRUST_PROXY:-}
 
       # Security
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # Auth / tokens
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read,project:read,project:write,project:delete}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,connector:write,connector:sync,code:read,project:read,project:write,project:delete}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
       - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
-      # RFC 7591 DCR is off unless "true". RFC 8628 device grant is on unless "false".
+      # RFC 7591 DCR is off unless "true". RFC 8628 device grant and client ID metadata documents are on unless "false".
       - PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}
+      - PIPESHUB_ENABLE_CIMD=${PIPESHUB_ENABLE_CIMD:-}
       - PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}
+      - MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS:-}
 
       # ML threading
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
@@ -393,10 +396,22 @@ services:
       - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}
       - EMBEDDING_SERVER_QUERY_RESERVED_SLOTS=${EMBEDDING_SERVER_QUERY_RESERVED_SLOTS:-}
       - EMBEDDING_SERVER_MODEL_IDLE_SECONDS=${EMBEDDING_SERVER_MODEL_IDLE_SECONDS:-}
+      # Request size caps (HTTP 413 over a cap); empty keeps the defaults.
+      - EMBEDDING_SERVER_MAX_REQUEST_BYTES=${EMBEDDING_SERVER_MAX_REQUEST_BYTES:-}
+      - EMBEDDING_SERVER_MAX_INPUTS=${EMBEDDING_SERVER_MAX_INPUTS:-}
+      - EXTRACTION_MAX_REQUEST_BYTES=${EXTRACTION_MAX_REQUEST_BYTES:-}
       - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-}
       # Skip per-sentence embeddings unless the block has more than this many
       # words (default 100). Set 0 to split every multi-sentence block.
       - EMBED_SENTENCE_MIN_WORDS=${EMBED_SENTENCE_MIN_WORDS:-100}
+      # Vector points per record: A (default), B (one per text block) or C (B plus
+      # 5 table rows per point). See docs/indexing-service.md.
+      - EMBED_POINT_POLICY=${EMBED_POINT_POLICY:-A}
+      - EMBED_TABLE_ROWS_PER_POINT=${EMBED_TABLE_ROWS_PER_POINT:-5}
+      - EMBED_MAX_TABLE_POINTS=${EMBED_MAX_TABLE_POINTS:-200}
+      # Longest input of a hosted embedding model, in tokens (default 8191); the
+      # bundled embedding server reports its own.
+      - PIPESHUB_EMBED_TOKEN_LIMIT=${PIPESHUB_EMBED_TOKEN_LIMIT:-}
 
       # Slack bot (optional)
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}

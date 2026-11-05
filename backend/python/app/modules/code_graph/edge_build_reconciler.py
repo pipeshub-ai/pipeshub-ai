@@ -16,6 +16,7 @@ import time
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from app.core.org_context import for_org
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.build_state import BuildStateStore, PendingBuild, is_due
 from app.telemetry.modules import code_graph_metrics
@@ -89,9 +90,11 @@ async def _start_due(event_service: CodeGraphEventService, log: Logger,
     started = 0
     for pending in _round_robin_by_org(due):
         try:
-            handled = await event_service.start_build(
-                pending.org_id, pending.connector_id, pending.record_group_id,
-            )
+            # The build task copies this context, so its storage and settings reads are the repo's org's.
+            with for_org(pending.org_id, job="code_edge_reconcile"):
+                handled = await event_service.start_build(
+                    pending.org_id, pending.connector_id, pending.record_group_id,
+                )
         except Exception:
             log.exception(
                 "Failed to reconcile code edge build for org=%s record_group=%s",

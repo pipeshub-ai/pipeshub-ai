@@ -2,14 +2,40 @@ import { forOrg } from '../../../libs/context/orgContext';
 import { injectable, inject } from 'inversify'
 import { Logger } from '../../../libs/services/logger.service'
 import { BadRequestError, ForbiddenError } from '../../../libs/errors/http.errors'
-import { InvalidScopeError } from '../../../libs/errors/oauth.errors'
+import { InvalidClientError, InvalidScopeError } from '../../../libs/errors/oauth.errors';
 import { getIdentityPort } from '../../../libs/repositories/identity'
 import { getUserRepository } from '../../../libs/repositories/user'
-import { OAuthGrantType } from '../../../libs/repositories/oauth-app'
-import { OAuthAppService } from './oauth.app.service'
+import {
+  DYNAMIC_ACCESS_TOKEN_LIFETIME,
+  DYNAMIC_REFRESH_TOKEN_LIFETIME,
+  OAuthAppService,
+} from './oauth.app.service'
 import { ScopeValidatorService } from './scope.validator.service'
-import { AgentMcpScopes } from '../config/scopes.config'
+import { AgentMcpScopes, mcpDiscoveryScopes } from '../config/scopes.config';
 import { AppConfig } from '../../tokens_manager/config/config'
+import {
+  getOAuthAppRepository,
+  OAuthAppStatus,
+  OAuthGrantType,
+  type OAuthAppDto,
+} from '../../../libs/repositories/oauth-app';
+import {
+  cimdEnabled,
+  fetchClientMetadataDocument,
+  isClientIdMetadataUrl,
+} from './client_metadata_document';
+
+/** The client of an authorization request, and how to keep it once the person consents. */
+export interface AuthorizeClient {
+  app: OAuthAppDto;
+  /** Stores a metadata document client seen for the first time; the app as it is otherwise. */
+  store(): Promise<OAuthAppDto>;
+}
+
+type NewDynamicClient = Parameters<OAuthAppService['createDynamicClient']>[0];
+
+const sameMembers = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((x) => b.includes(x));
 
 export interface DcrRequestBody {
   redirect_uris?: string[]
@@ -109,6 +135,139 @@ export class OAuthDcrService {
       response.client_secret = created.clientSecret
     }
     return response
+  }
+
+  /**
+   * The client an authorization request names. A client id that is an https URL is a Client ID
+   * Metadata Document: it is fetched on every authorization request, so the consent page and the
+   * redirect check follow the document as it is now.
+   *
+   * A metadata client seen for the first time is not stored until the person consents:
+   * `store()` stores it, so the token endpoints find it like any other client. A stored one gets
+   * its scopes and grants re-derived from the document and the instance's limits each time,
+   * so narrowing either takes effect at the next authorization and its refresh.
+   * shortcut: the stored name and links keep their first fetch (they are overlaid from the
+   * fresh document here); store them too if something reads them off the stored app.
+   */
+  async resolveAuthorizeClient(clientId: string): Promise<AuthorizeClient> {
+    if (!cimdEnabled() || !isClientIdMetadataUrl(clientId)) {
+      const app = await this.oauthAppService.getAppByClientId(clientId);
+      return { app, store: () => Promise.resolve(app) };
+    }
+    const doc = await fetchClientMetadataDocument(clientId);
+    // The redirect check compares against these, so they get the same checks as at registration.
+    this.oauthAppService.validateDcrRedirectUris(doc.redirect_uris);
+    const supported = new Set<string>([
+      OAuthGrantType.AUTHORIZATION_CODE,
+      OAuthGrantType.REFRESH_TOKEN,
+    ]);
+    // The same default as registration: without refresh_token, the refresh token offline_access issues could not be used.
+    const allowedGrantTypes = (
+      doc.grant_types ?? [
+        OAuthGrantType.AUTHORIZATION_CODE,
+        OAuthGrantType.REFRESH_TOKEN,
+      ]
+    ).filter((g): g is OAuthGrantType => supported.has(g));
+    if (!allowedGrantTypes.includes(OAuthGrantType.AUTHORIZATION_CODE)) {
+      throw new InvalidClientError(
+        'The client metadata document must allow the authorization_code grant',
+      );
+    }
+    // A metadata document rarely names a scope, and its client cannot register one, so it gets what the /mcp tools use (with offline_access, for a refresh token).
+    const allowedScopes = doc.scope
+      ? this.resolveScopes(doc.scope)
+      : this.mcpToolScopes();
+    const fresh = {
+      name: (doc.client_name || new URL(clientId).host).slice(0, 100),
+      redirectUris: doc.redirect_uris,
+      homepageUrl: doc.client_uri,
+      privacyPolicyUrl: doc.policy_uri,
+      termsOfServiceUrl: doc.tos_uri,
+      logoUrl: doc.logo_uri,
+      allowedScopes,
+      allowedGrantTypes,
+    };
+
+    if (await getOAuthAppRepository().findLiveByClientId(clientId)) {
+      const stored = await this.oauthAppService.getAppByClientId(clientId);
+      if (
+        !sameMembers(stored.allowedScopes, allowedScopes) ||
+        !sameMembers(stored.allowedGrantTypes, allowedGrantTypes)
+      ) {
+        await getOAuthAppRepository().setDynamicGrant(
+          stored.orgId,
+          stored._id,
+          {
+            allowedScopes,
+            allowedGrantTypes,
+          },
+        );
+      }
+      const app = { ...stored, ...fresh };
+      return { app, store: () => Promise.resolve(app) };
+    }
+
+    const now = new Date();
+    const unsaved: OAuthAppDto = {
+      _id: '',
+      slug: '',
+      clientId,
+      clientSecretEncrypted: '',
+      orgId: '',
+      createdBy: '',
+      status: OAuthAppStatus.ACTIVE,
+      isConfidential: false,
+      isDynamic: true,
+      accessTokenLifetime: DYNAMIC_ACCESS_TOKEN_LIFETIME,
+      refreshTokenLifetime: DYNAMIC_REFRESH_TOKEN_LIFETIME,
+      isDeleted: false,
+      createdAt: now,
+      updatedAt: now,
+      __v: 0,
+      ...fresh,
+    };
+    return {
+      app: unsaved,
+      store: () => this.storeMetadataClient(clientId, fresh),
+    };
+  }
+
+  private async storeMetadataClient(
+    clientId: string,
+    fresh: Omit<
+      NewDynamicClient,
+      'clientId' | 'orgId' | 'createdBy' | 'isConfidential'
+    >,
+  ): Promise<OAuthAppDto> {
+    const { orgId, createdBy } = await this.resolveRegistrationOrg();
+    try {
+      await this.oauthAppService.createDynamicClient({
+        ...fresh,
+        clientId,
+        orgId,
+        createdBy,
+        isConfidential: false,
+      });
+      this.logger.info('Stored client from its metadata document', {
+        clientId,
+      });
+    } catch (error) {
+      // Two first consents at once: the other one stored it. Anything else is a real failure.
+      if (!(await getOAuthAppRepository().findLiveByClientId(clientId))) {
+        throw error;
+      }
+    }
+    return this.oauthAppService.getAppByClientId(clientId);
+  }
+
+  private mcpToolScopes(): string[] {
+    const memberAllowed = new Set(
+      this.scopeValidatorService.getAllowedScopeNamesForRole(false),
+    );
+    const granted = mcpDiscoveryScopes(this.appConfig.mcpScopes).filter((s) =>
+      memberAllowed.has(s),
+    );
+    return granted.length > 0 ? granted : this.resolveScopes();
   }
 
   private parseGrantTypes(raw?: string[]): OAuthGrantType[] {

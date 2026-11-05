@@ -56,14 +56,28 @@ class Mem:
         self.raw = int(self.limit * fraction)
 
 
-def start_role(role: str, args: dict, *, cwd: str | None = None) -> subprocess.Popen:
-    """Start *role* in a new interpreter (spawn, not fork) and return it."""
+def start_role(
+    role: str, args: dict, *, cwd: str | None = None, commands: bool = False
+) -> subprocess.Popen:
+    """Start *role* in a new interpreter (spawn, not fork) and return it.
+
+    With ``commands`` the child reads JSON lines from its stdin (see ``send``).
+    """
     root = cwd or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     env = {**os.environ, "PYTHONPATH": root}
     return subprocess.Popen(
         [sys.executable, "-m", "tests.unit.lane_gauge", role, json.dumps(args)],
-        cwd=root, env=env, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
+        cwd=root, env=env, stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE if commands else subprocess.DEVNULL, text=True,
     )
+
+
+def send(proc: subprocess.Popen, **command: object) -> dict:
+    """Send one command to a role started with ``commands=True`` and return its reply."""
+    assert proc.stdin is not None
+    proc.stdin.write(json.dumps(command) + "\n")
+    proc.stdin.flush()
+    return first_line(proc)
 
 
 def first_line(proc: subprocess.Popen) -> dict:
@@ -78,6 +92,8 @@ def reap(*procs: subprocess.Popen) -> None:
         if proc.poll() is None:
             proc.kill()
         proc.wait()
+        if proc.stdin is not None:
+            proc.stdin.close()
         if proc.stdout is not None:
             proc.stdout.close()
 
@@ -112,6 +128,34 @@ def max_overlap(path: str | Path) -> int:
     return peak
 
 
+def pid_job(path: str | Path, seconds: float) -> int:
+    """A gauge job that returns the pid of the process it ran in (a parse worker, in a pool)."""
+    gauge_job(path, seconds)
+    return os.getpid()
+
+
+def env_job(names: list[str]) -> dict[str, str | None]:
+    """What a parse worker sees in its environment."""
+    return {name: os.environ.get(name) for name in names}
+
+
+def spawn_sleeper_job(path: str) -> None:
+    """Leave a child in the worker's process group, as the PDF rasteriser's pool does, and keep parsing.
+
+    The child's pid goes to *path*. A worker blocked in a parse is the case the
+    exit-with-parent watcher exists for: an idle one sees its pipe close.
+    """
+    import subprocess as sp
+
+    child = sp.Popen(
+        [sys.executable, "-c", "import os, time; os.closerange(3, 4096); time.sleep(600)"],
+        stdin=sp.DEVNULL,
+    )
+    with open(path, "w") as handle:
+        handle.write(str(child.pid))
+    time.sleep(600)
+
+
 def wait_until(stamp: float) -> None:
     while now() < stamp:
         time.sleep(0.0005)
@@ -132,6 +176,8 @@ def _budget(args: dict) -> LaneBudget:
         options["memory_reader"] = _reader(args["mem_limit"], args.get("mem_raw"))
     if "view_ttl" in args:
         options["view_ttl"] = args["view_ttl"]
+    if "warmup_seconds" in args:
+        options["warmup_seconds"] = args["warmup_seconds"]
     return LaneBudget.open(plan, P(args["dir"]), **options)
 
 
@@ -268,15 +314,85 @@ def role_incident(args: dict) -> dict:
 
 
 def role_live(args: dict) -> dict:
-    """Open a budget (which creates a presence file) and wait."""
+    """Open a budget, count this process as a pool owner, and wait."""
     budget = _budget(args)
+    budget.register_presence()
     print(json.dumps({"pid": os.getpid()}), flush=True)
     time.sleep(60)
     budget.close()
     return {}
 
 
+def role_pool(args: dict) -> dict:
+    """A budgeted parse pool with real workers, driven by JSON commands on stdin.
+
+    ``{"op": "job", "gauge": path, "seconds": s}`` replies with the worker pid;
+    ``{"op": "stats"}`` with the pool gauges; ``{"op": "quit"}`` ends the role.
+    """
+    from app.modules.parsers.parse_pool import _Job
+    from app.modules.parsers.parse_pool_lanes import LanePool, worker_thread_env
+
+    # Under ``-m`` this module is ``__main__``, which a worker cannot import by name.
+    from tests.unit.lane_gauge import pid_job
+
+    budget = _budget(args)
+    budget.register_presence()
+    pool = LanePool(
+        kind="budgeted", threads=args.get("threads", 3), budget=budget, admit=True,
+        worker_env=worker_thread_env(1), reap_tick=args.get("tick", 1.0),
+        idle_seconds=args.get("idle_seconds"),
+    )
+    print(json.dumps({"ready": True, "pid": os.getpid()}), flush=True)
+    out = threading.Lock()
+
+    def answer(reply: dict) -> None:
+        with out:
+            print(json.dumps(reply), flush=True)
+
+    def run(command: dict) -> None:
+        job = _Job(pid_job, (command["gauge"], command["seconds"]), "role", 0)
+        pool.enqueue(job)
+        try:
+            reply = {"pid": job.future.result(timeout=command.get("timeout", 120))}
+        except Exception as exc:
+            reply = {"error": type(exc).__name__}
+        answer(reply | {"id": command.get("id"), "done_at": now()})
+
+    for line in sys.stdin:
+        command = json.loads(line)
+        if command["op"] == "quit":
+            break
+        if command["op"] == "stats":
+            answer(pool.stats() | {"cap": budget.cap()})
+        else:
+            threading.Thread(target=run, args=(command,), daemon=True).start()
+    pool.shutdown()
+    budget.close()
+    return {}
+
+
+def role_pool_orphans(args: dict) -> dict:
+    """Start a worker that leaves a child behind, report both pids, then wait to be killed."""
+    from app.modules.parsers.parse_pool import _Job
+    from app.modules.parsers.parse_pool_lanes import LanePool
+    from tests.unit.lane_gauge import spawn_sleeper_job
+
+    budget = _budget(args)
+    budget.register_presence()
+    pool = LanePool(kind="budgeted", threads=1, budget=budget, admit=True, reap_tick=60.0)
+    marker = os.path.join(args["dir"], "child.pid")
+    pool.enqueue(_Job(spawn_sleeper_job, (marker,), "orphans", 0))
+    while not os.path.exists(marker) or not open(marker).read():
+        time.sleep(0.05)
+    worker = next(iter(pool._out))
+    print(json.dumps({"worker": worker.worker.process.pid, "child": int(open(marker).read())}), flush=True)
+    time.sleep(60)
+    return {}
+
+
 ROLES = {
+    "pool": role_pool,
+    "pool_orphans": role_pool_orphans,
     "run": role_run,
     "admit": role_admit,
     "hold_resident": role_hold_resident,
