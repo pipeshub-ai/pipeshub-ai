@@ -321,7 +321,10 @@ class ScopeFilter:
 
     * ``container``: a record group or root group in ``readable_groups``, or a connector in ``open_apps``;
     * ``union`` / ``intersection``: ``pathIds`` meets ``reach`` and does not meet ``excluded``;
-    * any of them: ``aclScope`` (the record's own id and the seeds on its chain) meets ``reach``.
+    * any of them: ``aclScope`` (the record's own id and the seeds on its chain) meets ``reach``;
+    * **whatever the stamp**, a point whose ``pathIds`` meet ``pending`` (the scopes whose subtree is being rewritten) is hidden, and a
+      ``container`` point of a connector in ``blocked`` (a connector with a pending root) is not admitted by the stamp at all: a point with no
+      path cannot be hidden by a path, so it is read with the legacy filter until the rewrite finishes.
 
     Every other point (never stamped, a ``legacy`` or unknown stamp, an untrusted one, a connector not in ``current``) is **not** admitted:
     an empty list admits nothing, never everything. ``reach`` is ``readable_groups | readable_scopes | open_apps``.
@@ -331,17 +334,22 @@ class ScopeFilter:
     open_apps: frozenset[str] = frozenset()
     readable_groups: frozenset[str] = frozenset()
     readable_scopes: frozenset[str] = frozenset()
-    #: Restricted scopes the viewer cannot read, and scopes being rewritten: a path through one hides the point.
+    #: Restricted scopes the viewer cannot read: a ``union`` / ``intersection`` path through one hides the point.
     excluded: frozenset[str] = frozenset()
     #: The field version and scope generation a stamp must carry to be used (`ScopeFields.trusted`); a negative generation (the shared
     #: state could not be read) trusts nothing.
     version: int = 0
     generation: int = -1
+    #: Scopes whose subtree is being rewritten (hide-first), and the connectors that have such a scope (see the class docstring). Last, so the
+    #: positional order of the fields before them is unchanged.
+    pending: frozenset[str] = frozenset()
+    blocked: frozenset[str] = frozenset()
 
     @classmethod
-    def of(cls, scopes: ViewerScopes, current_connectors: Iterable[str] | Mapping[str, int], *, version: int, generation: int) -> ScopeFilter:
+    def of(cls, scopes: ViewerScopes, current_connectors: Iterable[str] | Mapping[str, int], *, version: int, generation: int,
+           blocked: Iterable[str] = ()) -> ScopeFilter:
         return cls(frozenset(current_connectors), scopes.open_apps, scopes.readable_groups, scopes.readable_scopes,
-                   scopes.unreadable_restricted | scopes.pending, version, generation)
+                   scopes.unreadable_restricted, version, generation, scopes.pending, frozenset(blocked))
 
     @property
     def reach(self) -> frozenset[str]:
@@ -351,13 +359,14 @@ class ScopeFilter:
     def trusts_nothing(self) -> bool:
         return self.generation < 0 or not self.current
 
-    def lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
-        """``(current, open_apps, readable_groups, reach, excluded)``, sorted, for a store that binds arrays. Computed once per filter: callers must not mutate it."""
+    def lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
+        """``(current, open_apps, readable_groups, reach, excluded, pending, blocked)``, sorted, for a store that binds arrays. Computed once per
+        filter: callers must not mutate it."""
         return self._lists
 
     @cached_property
-    def _lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
-        sets = (self.current, self.open_apps, self.readable_groups, self.reach, self.excluded)
+    def _lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
+        sets = (self.current, self.open_apps, self.readable_groups, self.reach, self.excluded, self.pending, self.blocked)
         if any(len(x) > MAX_SCOPE_IDS for x in sets):                                                     # refuse before paying for the sort
             raise ScopeFilterTooLarge(f"a scope list holds more than {MAX_SCOPE_IDS} ids")
         return tuple(sorted(x) for x in sets)  # type: ignore[return-value]

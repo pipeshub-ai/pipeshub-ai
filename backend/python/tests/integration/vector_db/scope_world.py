@@ -23,6 +23,8 @@ WORLD: dict[str, tuple[list[str], list[str], list[str], dict | None]] = {
     "intersection": (["c1"], ["g2"], [], _stamp("intersection", ["s2"], ["own_i"])),
     "intersection_hidden": (["c1"], ["g2"], [], _stamp("intersection", ["s2", "x1"], ["own_ih"])),
     "override": (["c1"], ["g2"], [], _stamp("override", [], ["own_o", "seed"])),
+    "override_pathed": (["c1"], ["g2"], [], _stamp("override", ["s3", "p3"], ["own_op"])),
+    "container_own": (["c2"], ["g3"], [], _stamp("container", [], ["own_c"])),
     "unstamped": (["c1"], ["g1"], [], None),
     "legacy": (["c1"], ["g1"], [], _stamp("legacy", ["s1"], ["own_l"])),
     "unknown_stamp": (["c1"], ["g1"], [], _stamp("something", ["s1"], ["own_x"])),
@@ -35,7 +37,7 @@ WORLD: dict[str, tuple[list[str], list[str], list[str], dict | None]] = {
     # stamped by a process that could not read the scope generation (-2): no reader may trust it, not even one in the same state
     "unavailable_stamp": (["c1"], ["g1"], [], _stamp("container", [], [], generation=-2)),
 }
-EVERYTHING = frozenset({"g1", "g2", "r2", "s1", "s2", "p1", "own_u", "own_h", "own_i", "own_ih", "own_o", "seed", "own_l", "own_x", "c1", "c9"})
+EVERYTHING = frozenset({"g1", "g2", "r2", "s1", "s2", "p1", "own_u", "own_h", "own_i", "own_ih", "own_o", "seed", "own_l", "own_x", "c1", "c9", "own_op", "own_c", "s3", "p3", "g3", "c2"})
 
 
 def f(**kw: object) -> ScopeFilter:
@@ -62,8 +64,18 @@ ADMIT_CASES = _cases([
     ({"readable_scopes": frozenset({"seed"})}, {"override"}),
     ({"readable_groups": frozenset({"g2"})}, {"container_other"}),
     ({"current": frozenset({"c1", "c9"}), "readable_groups": frozenset({"g1"})}, {"container", "other_connector", "mixed_connectors"}),
+    ({"readable_scopes": frozenset({"own_h"}), "pending": frozenset({"x1"})}, set()),
+    ({"readable_scopes": frozenset({"s1"}), "pending": frozenset({"p1"})}, {"union_hidden"}),
+    ({"readable_scopes": frozenset({"own_op"})}, {"override_pathed"}),
+    ({"readable_scopes": frozenset({"own_op"}), "pending": frozenset({"p3"})}, set()),
+    ({"readable_scopes": frozenset({"own_op"}), "pending": frozenset({"zz"})}, {"override_pathed"}),
+    ({"current": frozenset({"c1", "c2"}), "readable_scopes": frozenset({"own_c"})}, {"container_own"}),
+    ({"current": frozenset({"c1", "c2"}), "readable_scopes": frozenset({"own_c"}), "blocked": frozenset({"c2"})}, set()),
+    ({"current": frozenset({"c1", "c2"}), "readable_groups": frozenset({"g1", "g3"}), "blocked": frozenset({"c2"})}, {"container"}),
+    ({"readable_scopes": frozenset({"s1"}), "excluded": frozenset({"x1"}), "blocked": frozenset({"c1"})}, {"union"}),
+    ({"current": frozenset({"c1", "c9"}), "readable_groups": frozenset({"g1"}), "blocked": frozenset({"c9"})}, {"container"}),
     ({}, set()),
-], ['record_group', 'other_group', 'root_group', 'open_app', 'open_app_not_current', 'path', 'path_excluded', 'intersection', 'intersection_excluded', 'intersection_own_id', 'own_id', 'override_seed', 'group_not_union', 'two_current_connectors', 'nothing'])
+], ['record_group', 'other_group', 'root_group', 'open_app', 'open_app_not_current', 'path', 'path_excluded', 'intersection', 'intersection_excluded', 'intersection_own_id', 'own_id', 'override_seed', 'group_not_union', 'two_current_connectors', 'pending_hides_own_id', 'pending_hides_path', 'override_pathed', 'pending_hides_override', 'unrelated_pending', 'container_own_id', 'blocked_own_id_of_a_container', 'blocked_container_group', 'blocked_leaves_paths', 'blocked_other_connector', 'nothing'])
 
 #: a viewer that reads everything, with one thing wrong about what it may trust
 TRUST_CASES = _cases([
