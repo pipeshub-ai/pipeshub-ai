@@ -20,6 +20,7 @@ from app.services.graph_db.postgres.kg.locks import MAX_ROUNDS, NeedLocks, lock_
 from app.services.graph_db.postgres.kg.model import (
     CODE_COLL,
     COLL_CODE,
+    MAX_ID,
     RECORD_COLLS,
     Derived,
     Key,
@@ -173,7 +174,7 @@ async def project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | Non
 async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | None, expand_neighbours: bool, extra: set[str], wide: bool) -> Stats:
     st = Stats()
     w = KgWriter(tx)
-    focus = {k for k in focus if k[0] in COLL_CODE}
+    focus = {k for k in focus if k[0] in COLL_CODE and len(k[1]) <= MAX_ID}
     if not focus:
         return st
     docs = await load_nodes(tx, org, {k for k in focus if k[0] in RECORD_COLLS})
@@ -197,6 +198,8 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
             if not fresh:
                 break
             focus |= await _expanded(tx, org, fresh, focus)             # this unit writes the row of a node kg has none for: it is a node that appears, and its dependents are looked at
+    focus = {k for k in focus if len(k[1]) <= MAX_ID}              # what the expansion brought in: a node whose id the writers cannot take is not part of kg
+    leaf_only = {k for k in leaf_only if len(k[1]) <= MAX_ID}
     every = focus | leaf_only
     await _held(tx, org, every, locked, org_wide=org_wide)
 
