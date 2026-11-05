@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import sys
 
 # Importing the runtime-thread settings first matches every service entry point: they must
 # precede any import that starts native threads.
@@ -38,6 +39,24 @@ class _State:
 
 
 _state = _State()
+
+
+def require_off_loop() -> None:
+    """Raise when ``docling`` is not imported yet and the caller is on an event loop thread.
+
+    The synchronous entry points that build a Docling converter (``converter`` properties)
+    would import the library inline and stall the loop for the whole import. Reaching one
+    from a coroutine without ``await ensure_docling()`` first is a bug; fail loudly.
+    """
+    if "docling.document_converter" in sys.modules:
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    raise RuntimeError(
+        "docling is not imported yet: await ensure_docling() first, or call this from a worker thread"
+    )
 
 
 def _import_docling() -> None:

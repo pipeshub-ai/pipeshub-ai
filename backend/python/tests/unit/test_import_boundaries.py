@@ -36,6 +36,12 @@ BACKEND = Path(__file__).resolve().parents[2]
 # The libraries whose import costs hundreds of MiB and tens of seconds. ``docling``
 # brings ``torch`` and ``transformers`` with it.
 HEAVY_LIBS = frozenset({"docling", "torch", "transformers", "sentence_transformers"})
+# Also held out of every entry: it loads onnxruntime and a tokenizer, nothing at start-up needs it.
+# The LLM provider packages (langchain_openai, langchain_anthropic, langchain_google_genai,
+# langchain_aws, langchain_mistralai) are NOT forbidden: every service that makes a model
+# call imports them through app/utils/streaming.py at start-up today, and they do not pull
+# torch or transformers. Moving them behind first use is the SDK-lazy-loading follow-up.
+HEAVY_LIBS = HEAVY_LIBS | {"fastembed"}
 
 # entry module -> (libraries, app modules) that must not be reachable at import time.
 BOUNDARIES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
@@ -297,6 +303,10 @@ def test_walker_resolves_relative_imports() -> None:
         ("app.query_main", "app.api.routes.chatbot", "from app.events.processor import Processor"),
         ("app.indexing_main", "app.utils.converters.docling_doc_to_blocks", "from docling.datamodel.document import DoclingDocument"),
         ("app.docling_main", "app.containers.docling", "from app.containers.utils.utils import ContainerUtils"),
+        ("app.connectors_main", "app.containers.utils.utils", "import fastembed"),
+        ("app.query_main", "app.containers.utils.utils", "import fastembed"),
+        ("app.indexing_main", "app.containers.utils.utils", "import fastembed"),
+        ("app.docling_main", "app.docling_main", "import fastembed"),
     ],
 )
 def test_control_a_planted_import_fails_the_ratchet(entry: str, planted_module: str, planted_line: str) -> None:

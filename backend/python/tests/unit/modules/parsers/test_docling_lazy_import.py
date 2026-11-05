@@ -99,28 +99,37 @@ def make_docx():
     return buf.getvalue()
 
 async def main():
-    lags = []
+    phase = ["warmup"]
+    samples = {"import": [], "convert": []}
     async def probe():
         last = time.perf_counter()
         while True:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
             now = time.perf_counter()
-            lags.append(now - last - 0.05)
+            if phase[0] in samples:
+                samples[phase[0]].append(now - last - 0.01)
             last = now
     task = asyncio.create_task(probe())
     await asyncio.sleep(0.2)
-    lags.clear()  # measure from the first use of docling, not from start-up
     processor = DoclingProcessor(logging.getLogger("t"), MagicMock())
+    from app.utils.lazy_heavy import ensure_docling
+    phase[0] = "import"
     started = time.perf_counter()
+    await ensure_docling()
+    import_seconds = time.perf_counter() - started
+    phase[0] = "convert"
     doc = await processor.parse_document("plan.docx", make_docx())
-    elapsed = time.perf_counter() - started
     blocks = await processor.create_blocks(doc, skip_table_enrichment=True)
+    phase[0] = "done"
     task.cancel()
-    lags.sort()
-    p99 = lags[int(len(lags) * 0.99) - 1] if len(lags) > 1 else 0.0
-    p95 = lags[int(len(lags) * 0.95) - 1] if len(lags) > 1 else 0.0
+    def stats(v):
+        v = sorted(v)
+        if len(v) < 2:
+            return {"n": len(v), "p95": 0.0, "p99": 0.0, "max": 0.0}
+        return {"n": len(v), "p95": v[int(len(v) * 0.95) - 1], "p99": v[int(len(v) * 0.99) - 1], "max": v[-1], "worst": v[-5:]}
     print("RESULT " + json.dumps({
-        "p99_lag": p99, "p95_lag": p95, "max_lag": lags[-1], "worst": lags[-5:], "ticks": len(lags), "seconds": elapsed,
+        "import": stats(samples["import"]), "convert": stats(samples["convert"]),
+        "import_seconds": import_seconds,
         "import_thread_is_loop": bool(imported_on) and imported_on[0] == loop_thread,
         "imported": bool(imported_on),
         "texts": [str(b.data) for b in blocks.blocks],
@@ -137,13 +146,12 @@ def test_the_first_docx_imports_docling_off_the_loop_and_does_not_stall_it() -> 
     result = _run(_REAL_DOCLING, timeout=290)
     assert result["imported"], "docling was never imported: the test proves nothing"
     assert not result["import_thread_is_loop"], "docling was imported on the event loop thread"
-    assert result["ticks"] >= 10, "the probe task barely ran while docling was imported"
-    # `import torch` initialises native code while holding the GIL (about 0.4 s on a warm
-    # cache), so a handful of ticks are late and the p99 of a short import sits on that
-    # stall. What the guard promises is that the loop is not blocked for the import's
-    # duration (10 to 30 s inline): the bulk stays responsive and no stall nears a second.
-    detail = f"p95 {result['p95_lag']:.3f}s p99 {result['p99_lag']:.3f}s worst {result['worst']}"
-    assert result["p95_lag"] < 0.25, f"event loop lag during the first import: {detail}"
-    assert result["max_lag"] < 1.0, f"event loop stalled during the first import: {detail}"
+    imp, conv = result["import"], result["convert"]
+    assert imp["n"] >= 50, f"the probe barely ran during the import: {imp}"
+    # `import torch` initialises native code holding the GIL for about 0.4 s, so the import
+    # shows a few late ticks; none may approach the import's own 10 s or more.
+    assert imp["p99"] < 0.25, f"event loop lag p99 during the first import: {imp}"
+    assert imp["max"] < 0.75, f"event loop stalled during the first import: {imp}"
+    assert conv["p95"] < 0.25 and conv["max"] < 1.0, f"event loop lag during the first conversion: {conv}"
     joined = " ".join(result["texts"])
     assert "Quarterly plan" in joined and "first paragraph" in joined

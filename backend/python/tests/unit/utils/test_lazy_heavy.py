@@ -32,6 +32,7 @@ def fake_heavy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tupl
     monkeypatch.syspath_prepend(str(tmp_path))
     importlib.invalidate_caches()
     imported_on: list[int] = []
+    attempts: list[int] = []
 
     class Recorder:
         def find_spec(self, fullname: str, path: object = None, target: object = None) -> None:
@@ -41,7 +42,12 @@ def fake_heavy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tupl
     recorder = Recorder()
     sys.meta_path.insert(0, recorder)
     monkeypatch.setattr(lazy_heavy, "_MODULES", (name,))
-    monkeypatch.setattr(lazy_heavy, "_import_docling", lambda: importlib.import_module(name))
+    def counted_import() -> None:
+        attempts.append(threading.get_ident())
+        importlib.import_module(name)
+
+    monkeypatch.setattr(lazy_heavy, "_import_docling", counted_import)
+    monkeypatch.setattr(lazy_heavy, "_attempts", attempts, raising=False)
     yield name, imported_on
     sys.meta_path.remove(recorder)
     sys.modules.pop(name, None)
@@ -56,6 +62,8 @@ async def test_twenty_concurrent_first_calls_run_one_import_in_a_worker_thread(f
     name, imported_on = fake_heavy
     loop_thread = threading.get_ident()
     await asyncio.gather(*(lazy_heavy.ensure_docling() for _ in range(20)))
+    # The interpreter's own import lock would dedupe the module load; count the guard's attempts.
+    assert len(lazy_heavy._attempts) == 1  # type: ignore[attr-defined]
     assert len(imported_on) == 1
     _assert_no_import_on(loop_thread, imported_on)
     assert name in sys.modules
@@ -67,6 +75,7 @@ async def test_later_calls_return_without_importing_again(fake_heavy: tuple[str,
     sys.modules.pop(fake_heavy[0])
     await lazy_heavy.ensure_docling()
     assert len(imported_on) == 1
+    assert len(lazy_heavy._attempts) == 1  # type: ignore[attr-defined]
 
 
 async def test_the_loop_keeps_running_while_the_import_runs(fake_heavy: tuple[str, list[int]]) -> None:
@@ -135,3 +144,27 @@ def test_the_guard_is_usable_from_two_event_loops_in_turn(monkeypatch: pytest.Mo
     monkeypatch.setattr(lazy_heavy._state, "done", False)
     asyncio.run(lazy_heavy.ensure_docling())
     assert len(calls) == 2
+
+
+async def test_the_converter_properties_refuse_to_import_docling_on_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reaching a sync converter from a coroutine before ensure_docling() must fail, not stall."""
+    from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
+    from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
+    from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+    from app.modules.parsers.pptx.pptx_parser import PPTXParser
+
+    monkeypatch.delitem(sys.modules, "docling.document_converter", raising=False)
+    for obj in (PPTXParser(), DoclingHtmlParser(), DoclingMarkdownParser(), DoclingProcessor(None, None)):  # type: ignore[arg-type]
+        with pytest.raises(RuntimeError, match="ensure_docling"):
+            _ = obj.converter
+
+
+def test_the_loop_check_passes_off_the_loop_and_once_docling_is_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(sys.modules, "docling.document_converter", raising=False)
+    lazy_heavy.require_off_loop()  # no running loop
+
+    async def on_loop() -> None:
+        monkeypatch.setitem(sys.modules, "docling.document_converter", object())  # type: ignore[arg-type]
+        lazy_heavy.require_off_loop()
+
+    asyncio.run(on_loop())

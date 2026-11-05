@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 from docling_core.types.doc.document import DoclingDocument
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.lazy_heavy import require_off_loop
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.html_parser import url_utils
 from app.modules.parsers.text_decoding import decode_text
@@ -59,6 +60,7 @@ class DoclingHtmlParser:
         """The Docling converter, built on first use (this imports ``docling``; see
         ``app.utils.lazy_heavy``). Call from a worker thread or after ``ensure_docling()``."""
         if self._converter is None:
+            require_off_loop()
             from docling.datamodel.base_models import InputFormat
             from docling.document_converter import DocumentConverter
 

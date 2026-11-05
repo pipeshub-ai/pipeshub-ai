@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from docling_core.types.doc.document import DoclingDocument
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.lazy_heavy import require_off_loop
 
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
@@ -20,6 +21,7 @@ class PPTXParser:
     @property
     def converter(self) -> "DocumentConverter":
         if self._converter is None:
+            require_off_loop()
             from docling.datamodel.base_models import InputFormat
             from docling.document_converter import DocumentConverter
 
