@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.services.vector_db.filters import ScopeFilter, ScopeFilterTooLarge, reject_scope_filter
+from app.services.vector_db.filters import (
+    ScopeFilter,
+    ScopeFilterTooLarge,
+    reject_scope_filter,
+)
 from app.services.vector_db.models import HybridSearchRequest
 from app.services.vector_db.pgvector import scope_filter as scope_sql
 from tests.unit.services.vector_db import pgvector_statements as stmts

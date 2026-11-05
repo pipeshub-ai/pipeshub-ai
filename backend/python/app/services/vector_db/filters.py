@@ -21,7 +21,6 @@ Typical provider usage::
 """
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Union
 
@@ -39,6 +38,8 @@ from app.services.vector_db.models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
     from app.services.permissions.scopes import ViewerScopes
 
 # Top-level payload fields — must not be auto-prefixed with ``metadata.``.
