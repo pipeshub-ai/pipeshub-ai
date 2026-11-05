@@ -435,3 +435,36 @@ async def test_a_stopped_worker_returns_between_batches_while_jobs_keep_coming_a
     await no_stale_visible(p, pg_db, org)
     assert await restamp.run_jobs(pg_db, org, "w2", batch=50) >= 0
     assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_rows_job_whose_records_reach_another_connector_takes_its_lock_and_never_runs_without_locks(pg_db, monkeypatch) -> None:
+    from app.services.graph_db.postgres.kg import stamp as stamp_mod
+    from app.services.graph_db.postgres.kg.locks import NeedLocks
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    await add_edge(p, org, ("records", "x1"), ("records", "f1"), "nodeRelations", relationshipType="PARENT_CHILD")      # f1 (app1) hangs under x1 (app2)
+    await drain_org(pg_db, org)
+
+    async def queue(tx) -> None:
+        await restamp.enqueue_rows(tx, org, {("records", "f1"), ("records", "fold")}, "reach")
+    await run_in(pg_db, org, queue, write=True)
+    assert await marks(p, org) == 2
+    seen: list = []
+    real = stamp_mod.stamp_keys
+
+    async def spy(tx: object, o: str, keys: set, *a: object, **k: object) -> object:
+        try:
+            return await real(tx, o, keys, *a, **k)
+        except NeedLocks as e:
+            seen.append((k.get("locked"), set(e.apps)))
+            raise
+        finally:
+            seen.append((k.get("locked"), None))
+    monkeypatch.setattr(stamp_mod, "stamp_keys", spy)
+    assert await restamp.run_jobs(pg_db, org, "w1", batch=5) == 1
+    assert all(locked is not None for locked, _ in seen)                          # the job always says which connectors it holds
+    assert any(apps == {"app2"} for _, apps in seen if apps is not None)         # the batch that reached app2 asked for it, before it wrote
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == []
+    for app in ("app1", "app2"):
+        assert await dry_diffs(p, org, app) == []
