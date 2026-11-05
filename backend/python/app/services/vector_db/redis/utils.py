@@ -139,7 +139,7 @@ def refuse_unsafe_ids(flt: "ScopeFilter") -> None:
 
     if flt.trusts_nothing:  # matches nothing, no id is written
         return
-    for name in ("current", "open_apps", "readable_groups", "readable_scopes", "excluded"):
+    for name in ("current", "open_apps", "readable_groups", "readable_scopes", "excluded", "pending", "blocked"):
         for v in getattr(flt, name):
             if v != v.lower():
                 raise ScopeFilterUnsupported(f"Redis: the filter's {name} list holds an id with capital letters, which a tag query cannot tell from a lowercase one")

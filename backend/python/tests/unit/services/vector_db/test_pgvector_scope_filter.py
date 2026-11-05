@@ -47,15 +47,15 @@ def test_with_the_filter_on_it_is_anded_after_the_existing_conditions_and_change
 def test_the_condition_binds_every_value_and_splices_only_parameter_numbers() -> None:
     sql, params = scope_sql.predicate(flt(current=frozenset({"c1", "it's"}), readable_groups=frozenset({"g'; DROP TABLE x;--"})), 12)
     assert "DROP" not in sql and "it's" not in sql and "c1" not in sql and "g1" not in sql
-    assert [f"${n}" for n in range(12, 19)] == sorted({t for t in sql.replace("::", " ").split() if t.startswith("$") and t[1:].isdigit() and int(t[1:]) >= 12},
+    assert [f"${n}" for n in range(12, 21)] == sorted({t for t in sql.replace("::", " ").split() if t.startswith("$") and t[1:].isdigit() and int(t[1:]) >= 12},
                                                          key=lambda t: int(t[1:]))
-    assert len(params) == scope_sql.N_PARAMS == 7
-    assert params[0] == ["c1", "it's"] and params[5:] == [5, 3]
+    assert len(params) == scope_sql.N_PARAMS == 9
+    assert params[0] == ["c1", "it's"] and params[7:] == [5, 3]
 
 
 def test_the_condition_starts_after_the_extra_conditions_parameters() -> None:
     sql, _ = scope_sql.predicate(flt(), 14)
-    assert "$14::text[]" in sql and "$20::int" in sql and "$13" not in sql and "$21" not in sql
+    assert "$14::text[]" in sql and "$22::int" in sql and "$13" not in sql and "$23" not in sql
 
 
 @pytest.mark.parametrize("kw", [{"generation": -2}, {"generation": -1}, {"current": frozenset()}], ids=["unavailable", "unknown", "no connector"])
@@ -65,11 +65,15 @@ def test_a_filter_that_can_trust_nothing_admits_nothing(kw: dict) -> None:
 
 def test_every_admit_rule_requires_a_trusted_stamp_and_a_known_connector_set() -> None:
     sql, _ = scope_sql.predicate(flt(), 12)
-    for need in ("sg.org_id = $1", "sg.collection_id = $2", "sg.group_key = p.group_key", "sg.scope_version = $17::int",
-                 "sg.scope_generation = $18::int", "cardinality(sg.connector_ids) > 0", "sg.connector_ids <@ $12::text[]"):
+    for need in ("sg.org_id = $1", "sg.collection_id = $2", "sg.group_key = p.group_key", "sg.scope_version = $19::int",
+                 "sg.scope_generation = $20::int", "cardinality(sg.connector_ids) > 0", "sg.connector_ids <@ $12::text[]"):
         assert need in sql, need
     assert sql.index("AND (") > sql.index("sg.connector_ids <@")            # the rules sit inside the trust conditions, never beside them
     assert "NOT (sg.path_ids && $16::text[])" in sql
+    # pending hides whatever the stamp (before the rules); blocked limits only the container rule and the own-id rule of a container stamp
+    assert sql.index("NOT coalesce(sg.path_ids && $17::text[], false)") < sql.index("AND (") and sql.count("$18::text[]") == 2
+    assert "sg.scope_stamp = 'container' AND NOT (sg.connector_ids && $18::text[])" in sql
+    assert "(sg.scope_stamp <> 'container' OR NOT (sg.connector_ids && $18::text[]))" in sql
 
 
 def test_too_large_a_list_is_refused_not_truncated() -> None:
@@ -83,5 +87,5 @@ def test_the_sorted_lists_are_computed_once_per_filter(monkeypatch: pytest.Monke
     real = sorted
     monkeypatch.setattr("builtins.sorted", lambda x, *a, **k: (calls.append(1), real(x, *a, **k))[1])
     first = f.lists()
-    assert len(calls) == 5 and f.lists() is first and scope_sql.predicate(f, 12) and len(calls) == 5   # later calls (statement, key, args) sort nothing
-    assert first == (["c1"], ["c1"], ["g1"], ["c1", "g1", "s1"], ["x1"])
+    assert len(calls) == 7 and f.lists() is first and scope_sql.predicate(f, 12) and len(calls) == 7   # later calls (statement, key, args) sort nothing
+    assert first == (["c1"], ["c1"], ["g1"], ["c1", "g1", "s1"], ["x1"], [], [])
