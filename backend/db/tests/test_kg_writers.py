@@ -33,8 +33,11 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_classes_set": (([7], [1], [None], ['[[1,"@self"]]'], [b"\x01" * 32]), "kg.scope_classes"),
     "kg.w_class_literals_set": (([5], [7]), "kg.class_literals"),
     "kg.w_app_facts_set": ((5, True, False), "kg.projection_state"),
+    "kg.w_stamps_set": (([11], [3], ["rec"], [3], [b"\x00" * 8], [None], [False], [False], [False], [False], [None], [True]), "kg.records"),
 }
 CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that are not what it sends
+    "kg.w_stamps_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bytea[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]",
+                        "%s::smallint[]", "%s::boolean[]"],
     "kg.w_classes_set": ["%s::bigint[]", "%s::bigint[]", "%s::bigint[]", "%s::text[]::jsonb[]", "%s::bytea[]"],
     "kg.w_grants_set": ["%s::bigint[]", "%s::bigint[]", "%s::text[]", "%s::text[]", "%s::bigint[]", "%s::boolean[]"],
 }
@@ -163,6 +166,10 @@ BAD = {
     "kg.w_classes_set": [([7], [1], [None], [None], [b"x"]), ([7, 8], [1], [None], ['[]'], [b"x"])],
     "kg.w_class_literals_set": [([5], [7, 8]), ([None], [7])],
     "kg.w_app_facts_set": [(-1, True, False), (None, True, False), (5, None, False)],
+    "kg.w_stamps_set": [([11, 12], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([None], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
+                        ([11], [4], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([11], [3], [""], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
+                        ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [9], [True]), ([11], [3], ["rec"], [3], [None], [None], [None], [False], [False], [False], [None], [True]),
+                        (None, [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True])],
     "kg.w_projection_set": [(-1, 1, "shadow", None, None, None), (5, 1, "bogus", None, None, None), (5, -1, "shadow", None, None, None), (5, 1, "shadow", "x" * 129, None, None), (None, 1, "shadow", None, None, None)],
 }
 
@@ -387,4 +394,16 @@ def test_overlapping_batches_in_opposite_orders_do_not_deadlock(pdb, name, make)
             call(c, name, ORG_A, make(0))                                                     # the rows exist, so a conflict locks them
     assert _hammer(pdb, name, make, 100) == []
     with conn(pdb) as c:
+        clean(c)
+
+
+def test_stamps_set_writes_the_stamp_columns_of_a_row_and_leaves_the_rest(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values())))
+        before = c.execute("SELECT " + REC_COLUMNS + " FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert call(c, "kg.w_stamps_set", ORG_A, ([11], [3], ["rec-1"], [3], [b"\x00\x01"], [None], [True], [True], [False], [True], [4], [False])) == [(1,)]
+        got = c.execute("SELECT path, class_id, self_lit, seed, own_grant, under_deleted, legacy_reason, leaf, " + REC_COLUMNS + " FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert tuple(got[:8]) == (b"\x00\x01", None, True, True, False, True, 4, False)
+        assert tuple(got[8:]) == tuple(before)                       # the structural columns are what the other writer left
         clean(c)
