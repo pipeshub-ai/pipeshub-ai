@@ -181,6 +181,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    await app_container.retrieval_candidates_cache()
+
     # KB uploads made through chat index in this process, so it invalidates too.
     try:
         from app.services.cache.invalidation_hooks import (
@@ -404,6 +406,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("✅ Accessible-records cache closed")
     except Exception as e:
         logger.error(f"❌ Error closing accessible-records cache: {e}")
+
+    try:
+        retrieval_candidates_cache = await app_container.retrieval_candidates_cache()
+        await retrieval_candidates_cache.close()
+        logger.info("✅ Retrieval-candidates cache closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing retrieval-candidates cache: {e}")
 
 
 # Create FastAPI app with lifespan

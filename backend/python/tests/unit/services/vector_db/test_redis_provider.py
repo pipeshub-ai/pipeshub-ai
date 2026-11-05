@@ -398,6 +398,39 @@ class TestRedisHybridQuery:
         assert "dense_embedding" not in results[0].payload["metadata"]
 
     @pytest.mark.asyncio
+    async def test_ft_hybrid_can_fetch_only_candidate_metadata(self, service, mock_redis_client):
+        hybrid_reply = [
+            b"total_results", 1,
+            b"results", [
+                [b"__key", b"coll:abc-123", b"__score", b"0.0167"],
+            ],
+            b"warnings", [],
+        ]
+        mock_redis_client.execute_command = AsyncMock(return_value=hybrid_reply)
+
+        payload_pipeline = MagicMock()
+        payload_pipeline.hmget = MagicMock()
+        payload_pipeline.execute = AsyncMock(return_value=[[b"vr-1", b"org-1"]])
+        mock_redis_client.pipeline = MagicMock(return_value=payload_pipeline)
+        req = HybridSearchRequest(
+            dense_query=[0.1, 0.2],
+            limit=5,
+            with_payload=["metadata.virtualRecordId", "metadata.orgId"],
+        )
+
+        results_list = await service.query_nearest_points("coll", [req])
+
+        payload_pipeline.hmget.assert_called_once_with(
+            "coll:abc-123", "metadata_virtualRecordId", "metadata_orgId"
+        )
+        result = results_list[0][0]
+        assert result.payload["page_content"] == ""
+        assert result.payload["metadata"] == {
+            "virtualRecordId": "vr-1",
+            "orgId": "org-1",
+        }
+
+    @pytest.mark.asyncio
     async def test_text_only_fallback_when_no_dense(self, service, mock_redis_client):
         mock_redis_client.execute_command = AsyncMock(return_value=[0])
 

@@ -93,6 +93,16 @@ class TestFormatResults:
         assert retrieval_service._format_results([]) == []
 
 
+class TestRetrievalCandidatesCacheDependency:
+    def test_defaults_to_noop_cache(self, retrieval_service):
+        from app.services.cache.interface import NoopRetrievalCandidatesCache
+
+        assert isinstance(
+            retrieval_service.retrieval_candidates_cache,
+            NoopRetrievalCandidatesCache,
+        )
+
+
 # ============================================================================
 # _create_empty_response
 # ============================================================================

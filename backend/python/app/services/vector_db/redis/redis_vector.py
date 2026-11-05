@@ -1070,8 +1070,8 @@ class RedisVectorService(IVectorDBService):
         #       [FILTER <tag_query>]               ← pre-filter on the KNN leg
         #   COMBINE RRF 4 WINDOW <w> CONSTANT 60  ← 4 = arg-count for the 2 pairs
         #   LIMIT 0 <k>
-        #   LOAD 2 @__key @__score                ← key + RRF score only; full doc
-        #                                            fetched via pipelined HGETALL
+        #   LOAD 2 @__key @__score                  ← key + RRF score only; payload
+        #                                            fetched from the hash afterward
         #   PARAMS 2 vec <bytes>                  ← bare name "vec"; "$vec" is only
         #                                            the query-syntax reference form
         #
@@ -1112,16 +1112,27 @@ class RedisVectorService(IVectorDBService):
                 for key, score in key_score_pairs
             ]
 
-        # Pipeline HGETALL for each key to retrieve full document payload.
-        # All fields including dynamic metadata_* keys are returned in one shot.
+        # Candidate-only searches need the VRID but must not fetch chunk text
+        # before permission adjudication. Redis stores dotted metadata paths as
+        # flattened hash fields, so select only those fields with HMGET.
         pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        selected_fields = (
+            [field.replace(".", "_") for field in req.with_payload]
+            if isinstance(req.with_payload, list)
+            else None
+        )
         for key, _ in key_score_pairs:
-            pipeline.hgetall(key)
+            if selected_fields is not None:
+                pipeline.hmget(key, *selected_fields)
+            else:
+                pipeline.hgetall(key)
         hash_docs = await pipeline.execute()
 
         results: List[SearchResult] = []
         for (key, score), raw_doc in zip(key_score_pairs, hash_docs or []):
             point_id = key.rsplit(":", 1)[-1] if ":" in key else key
+            if selected_fields is not None:
+                raw_doc = dict(zip(selected_fields, raw_doc or []))
             doc = decode_hash_doc(raw_doc)
             payload = hash_doc_to_payload(doc)
             results.append(SearchResult(id=point_id, score=score, payload=payload))

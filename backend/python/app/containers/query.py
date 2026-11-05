@@ -29,6 +29,12 @@ class QueryAppContainer(BaseAppContainer):
         config_service=config_service,
     )
 
+    retrieval_candidates_cache = providers.Resource(
+        container_utils.create_retrieval_candidates_cache,
+        logger=logger,
+        config_service=config_service,
+    )
+
     # Graph Database Provider via Factory (HTTP mode - fully async)
     graph_provider = providers.Resource(
         container_utils.create_graph_provider,
@@ -64,6 +70,7 @@ class QueryAppContainer(BaseAppContainer):
         graph_provider=graph_provider,
         blob_store=blob_store,
         collection_registry=collection_registry,
+        retrieval_candidates_cache=retrieval_candidates_cache,
     )
     reranker_service = providers.Singleton(
         RerankerService,

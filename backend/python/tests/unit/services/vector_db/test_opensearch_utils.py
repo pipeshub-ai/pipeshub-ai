@@ -543,6 +543,17 @@ class TestBuildHybridQuery:
         body = OpenSearchUtils.build_hybrid_query(req)
         assert body["_source"]["exclude"] == ["dense_embedding"]
 
+    def test_source_can_be_limited_to_candidate_permission_metadata(self):
+        req = HybridSearchRequest(
+            dense_query=[0.1],
+            with_payload=["metadata.virtualRecordId", "metadata.orgId"],
+        )
+        body = OpenSearchUtils.build_hybrid_query(req)
+        assert body["_source"]["includes"] == [
+            "metadata.virtualRecordId",
+            "metadata.orgId",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # OpenSearchService.filter_collection (returns FilterExpression)

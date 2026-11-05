@@ -197,7 +197,11 @@ class OpenSearchUtils:
 
         body: Dict[str, Any] = {
             "size": request.limit,
-            "_source": {"exclude": ["dense_embedding"]},
+            "_source": (
+                {"includes": request.with_payload}
+                if isinstance(request.with_payload, list)
+                else {"exclude": ["dense_embedding"]}
+            ),
         }
 
         if len(queries) >= 2:

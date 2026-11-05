@@ -4,6 +4,8 @@ change, and it is the service that runs the rebuild that refills it."""
 import inspect
 from unittest.mock import MagicMock
 
+from dependency_injector import providers
+
 from app import indexing_main
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
@@ -29,6 +31,14 @@ async def test_factory_passes_the_recreate_flag() -> None:
 def test_only_indexing_recreates() -> None:
     assert IndexingAppContainer.entity_vector_store.kwargs.get("recreate_on_dimension_mismatch") is True
     assert not QueryAppContainer.entity_vector_store.kwargs.get("recreate_on_dimension_mismatch")
+
+
+def test_query_container_wires_retrieval_candidates_cache() -> None:
+    assert isinstance(QueryAppContainer.retrieval_candidates_cache, providers.Resource)
+    assert (
+        QueryAppContainer.retrieval_service.kwargs.get("retrieval_candidates_cache")
+        is QueryAppContainer.retrieval_candidates_cache
+    )
 
 
 def test_the_connector_service_has_no_entity_store() -> None:

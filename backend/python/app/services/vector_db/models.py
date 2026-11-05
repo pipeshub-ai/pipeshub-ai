@@ -217,7 +217,7 @@ class HybridSearchRequest:
     filter: Optional[FilterExpression] = None
     limit: int = 10
     fusion_method: FusionMethod = FusionMethod.RRF
-    with_payload: bool = True
+    with_payload: bool | List[str] = True
 
 
 @dataclass

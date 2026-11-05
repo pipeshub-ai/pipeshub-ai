@@ -207,13 +207,43 @@ class TestCreateRetrievalServiceExtended:
             mock_instance = MagicMock()
             MockRS.return_value = mock_instance
             registry = MagicMock()
+            retrieval_candidates_cache = MagicMock()
 
             await cu.create_retrieval_service(
-                MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(), registry
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+                registry,
+                retrieval_candidates_cache,
             )
 
             call_kwargs = MockRS.call_args[1]
             assert call_kwargs["collection_registry"] is registry
+            assert (
+                call_kwargs["retrieval_candidates_cache"]
+                is retrieval_candidates_cache
+            )
+
+
+class TestCreateRetrievalCandidatesCache:
+    @pytest.mark.asyncio
+    async def test_delegates_to_cache_factory(self):
+        cu = ContainerUtils()
+        logger = MagicMock()
+        config_service = MagicMock()
+        expected_cache = MagicMock()
+
+        with patch(
+            "app.services.cache.retrieval_candidates_cache.RetrievalCandidatesCache.create",
+            new_callable=AsyncMock,
+            return_value=expected_cache,
+        ) as create_cache:
+            result = await cu.create_retrieval_candidates_cache(logger, config_service)
+
+        assert result is expected_cache
+        create_cache.assert_awaited_once_with(logger, config_service)
 
 
 # ---------------------------------------------------------------------------

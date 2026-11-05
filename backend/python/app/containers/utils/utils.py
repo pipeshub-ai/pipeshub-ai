@@ -51,7 +51,10 @@ if TYPE_CHECKING:
     from app.services.cache.accessible_records_cache import (
         AccessibleRecordsInvalidator,
     )
-    from app.services.cache.interface import IAccessibleRecordsCache
+    from app.services.cache.interface import (
+        IAccessibleRecordsCache,
+        IRetrievalCandidatesCache,
+    )
 
 
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
@@ -91,6 +94,16 @@ class ContainerUtils:
         from app.services.cache.accessible_records_cache import AccessibleRecordsCache
 
         return await AccessibleRecordsCache.create(logger, config_service)
+
+    async def create_retrieval_candidates_cache(
+        self,
+        logger: Logger,
+        config_service: ConfigurationService,
+    ) -> "IRetrievalCandidatesCache":
+        """Async factory for the shared retrieval-candidate cache."""
+        from app.services.cache.retrieval_candidates_cache import RetrievalCandidatesCache
+
+        return await RetrievalCandidatesCache.create(logger, config_service)
 
     async def create_accessible_records_invalidator(
         self,
@@ -368,6 +381,7 @@ class ContainerUtils:
         graph_provider: IGraphDBProvider,
         blob_store: BlobStorage,
         collection_registry: CollectionRegistry,
+        retrieval_candidates_cache: "IRetrievalCandidatesCache | None" = None,
     ) -> RetrievalService:
         """Async factory for RetrievalService"""
         service = RetrievalService(
@@ -377,6 +391,7 @@ class ContainerUtils:
             vector_db_service=vector_db_service,
             graph_provider=graph_provider,
             blob_store=blob_store,
+            retrieval_candidates_cache=retrieval_candidates_cache,
         )
         return service
 
