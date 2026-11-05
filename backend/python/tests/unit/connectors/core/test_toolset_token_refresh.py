@@ -2043,15 +2043,56 @@ class TestScheduleTokenRefresh:
 
         svc._create_refresh_task.assert_called_once()
 
-    async def test_cooldown_skips(self):
+    async def test_cooldown_skips_immediate_recheck(self) -> None:
+        """Right after a refresh, a token already at its threshold is left to the scan."""
         svc = _make_service()
         svc._running = True
-        token = _make_token(expires_in=3600)
-        svc._last_refresh_time["/path"] = time.time()  # Just refreshed
+        svc._last_refresh_time["/path"] = time.time()
         svc._create_refresh_task = MagicMock()
+        svc.logger = MagicMock()
 
-        await svc.schedule_token_refresh("/path", "googledrive", token)
+        await svc.schedule_token_refresh("/path", "googledrive", _make_expired_token())
         svc._create_refresh_task.assert_not_called()
+        logged = [c.args[0] for c in svc.logger.info.call_args_list]
+        assert any("Skipping immediate re-check" in m for m in logged)
+        assert not any("Scheduling token refresh" in m for m in logged)
+
+    async def test_oauth_callback_token_is_scheduled_right_after_a_background_refresh(self) -> None:
+        """A recent refresh must not swallow scheduling a fresh token (post-refresh or OAuth callback)."""
+        svc = _make_service()
+        svc._running = True
+        svc._last_refresh_time["/path"] = time.time()
+        svc._create_refresh_task = MagicMock(return_value=True)
+
+        await svc.schedule_token_refresh("/path", "googledrive", _make_token(expires_in=3600))
+
+        svc._create_refresh_task.assert_called_once()
+        delay = svc._create_refresh_task.call_args.args[2]
+        assert 3600 - PROACTIVE_REFRESH_WINDOW_SECONDS - 5 < delay <= 3600 - PROACTIVE_REFRESH_WINDOW_SECONDS
+
+    async def test_cooldown_raises_a_short_delay_to_the_cooldown_left(self) -> None:
+        """A 30 s token is due ~1 s after issue; right after a refresh it waits out the cooldown instead."""
+        svc = _make_service()
+        svc._running = True
+        svc._last_refresh_time["/path"] = time.time()
+        svc._create_refresh_task = MagicMock(return_value=True)
+
+        await svc.schedule_token_refresh("/path", "googledrive", _make_short_lived_token(expires_in=30))
+
+        delay = svc._create_refresh_task.call_args.args[2]
+        assert REFRESH_COOLDOWN - 1 < delay <= REFRESH_COOLDOWN
+
+    async def test_a_clock_stepped_back_does_not_stretch_the_cooldown(self) -> None:
+        """A last refresh "in the future" (wall clock stepped back) still waits at most one cooldown."""
+        svc = _make_service()
+        svc._running = True
+        svc._last_refresh_time["/path"] = time.time() + 3600
+        svc._create_refresh_task = MagicMock(return_value=True)
+
+        await svc.schedule_token_refresh("/path", "googledrive", _make_short_lived_token(expires_in=30))
+
+        delay = svc._create_refresh_task.call_args.args[2]
+        assert REFRESH_COOLDOWN - 1 < delay <= REFRESH_COOLDOWN
 
     async def test_expired_token_schedules_immediate(self):
         svc = _make_service()

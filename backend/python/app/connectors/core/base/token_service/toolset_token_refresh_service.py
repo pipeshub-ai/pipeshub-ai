@@ -1291,31 +1291,36 @@ class ToolsetTokenRefreshService:
                     )
                     del self._refresh_tasks[config_path]
 
-            # Prevent immediate re-refresh if we just completed one
-            current_time = time.time()
-            last_refresh = self._last_refresh_time.get(config_path, 0)
-            time_since_last_refresh = current_time - last_refresh
+            # Calculate refresh delay
+            delay, _ = self._calculate_refresh_delay(token)
+            since_last_refresh = max(0.0, time.time() - self._last_refresh_time.get(config_path, 0))
+            cooldown_left = REFRESH_COOLDOWN - since_last_refresh
 
-            if time_since_last_refresh < REFRESH_COOLDOWN:
+            # At most one refresh per cooldown, without dropping the reschedule that follows every
+            # refresh: a short delay waits out the cooldown; an already-due token waits for the scan.
+            if delay <= 0 and cooldown_left > 0:
                 self.logger.info(
-                    f"⏭️ Skipping schedule request for {config_path} - "
-                    f"refresh completed {time_since_last_refresh:.1f}s ago (cooldown: {REFRESH_COOLDOWN}s)"
+                    f"Skipping immediate re-check for {config_path}: refreshed "
+                    f"{since_last_refresh:.1f}s ago (cooldown {REFRESH_COOLDOWN}s); "
+                    f"next attempt on the periodic scan"
                 )
                 return
 
             self.logger.info(f"🔄 Scheduling token refresh for toolset {config_path} (type: {toolset_type})")
 
-            # Calculate refresh delay
-            delay, refresh_time = self._calculate_refresh_delay(token)
-
             # If token is at/past threshold, schedule immediate re-check.
             if delay <= 0:
                 delay = MIN_IMMEDIATE_RECHECK_DELAY
-                refresh_time = datetime.now() + timedelta(seconds=delay)
                 self.logger.info(
                     f"⏱️ Token for toolset {config_path} reached refresh threshold. "
                     f"Scheduling immediate re-check in {delay:.0f}s."
                 )
+            elif delay < cooldown_left:
+                delay = cooldown_left
+                self.logger.debug(
+                    f"Raised refresh delay for {config_path} to {delay:.1f}s (cooldown {REFRESH_COOLDOWN}s)"
+                )
+            refresh_time = datetime.now() + timedelta(seconds=delay)
 
             # Create new refresh task atomically while schedule lock is held
             self._create_refresh_task(config_path, toolset_type, delay, refresh_time)
