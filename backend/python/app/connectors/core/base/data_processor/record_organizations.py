@@ -6,8 +6,8 @@ record group, and links that group to the account's external organisation
 ``entityRelations`` edge (``FOR_ACCOUNT``, origin INFERRED), so the
 organisation is an entity reached from its records like a person is.
 
-Only an organisation of the record's tenant is linked: an external
-organisation carries its tenant as ``parentOrgId``.
+Only an organisation of the record's own org is linked: an external
+organisation carries the org it belongs to as ``parentOrgId``.
 """
 from __future__ import annotations
 

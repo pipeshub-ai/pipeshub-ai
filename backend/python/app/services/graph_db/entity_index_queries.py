@@ -45,7 +45,7 @@ class EntityIndexSource:
     canonical_only: bool = False
     include_global: bool = False
     # Boolean fields a node must have set to true (``isExternal``: a CRM
-    # account, never the tenant org itself).
+    # account, never the org itself).
     required_true: tuple[str, ...] = ()
 
 

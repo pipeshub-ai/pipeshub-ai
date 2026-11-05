@@ -210,6 +210,12 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_users_by_emails(
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, User]:
+        pass
+
+    @abstractmethod
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
     ) -> Optional[User]:

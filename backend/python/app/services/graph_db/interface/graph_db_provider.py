@@ -3430,6 +3430,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_users_by_emails(
+        self,
+        emails: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        org_id: str | None = None,
+    ) -> dict[str, 'User']:
+        """
+        Get the users whose email is any of ``emails``, in one query.
+
+        Matching ignores case. The result maps each matched address, lowercased,
+        to its user; an address with no user is absent, and no addresses give
+        ``{}`` without a query. Scoping, and a failed read, follow
+        :meth:`get_user_by_email`: a failed read answers ``{}`` unless
+        ``raise_on_error`` is set.
+        """
+        pass
+
+    @abstractmethod
     async def get_user_by_source_id(
         self,
         source_user_id: str,
@@ -8471,8 +8491,8 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def stamp_external_org_parents(self, org_id: str) -> int:
         """Set ``parentOrgId = org_id`` on the external organisations the
-        tenant org ``org_id`` has a ``prospect`` or ``customer`` edge to and
-        that carry no tenant yet (written before accounts recorded one).
+        org ``org_id`` has a ``prospect`` or ``customer`` edge to and
+        that carry no owning org yet (written before accounts recorded one).
         Returns how many were stamped.
 
         Raises:

@@ -471,6 +471,17 @@ class TestGraphTransactionStore:
         )
 
     @pytest.mark.asyncio
+    async def test_get_users_by_emails_asks_once_and_remembers_the_members(self, tx_store, mock_graph_provider) -> None:
+        ann = MagicMock(id="u1")
+        mock_graph_provider.get_users_by_emails = AsyncMock(return_value={"ann@x.io": ann})
+        assert await tx_store.get_users_by_emails(["Ann@x.io", "bob@x.io"], org_id="org-1") == {"ann@x.io": ann}
+        assert await tx_store.get_users_by_emails(["ann@x.io", "bob@x.io", "cat@x.io"], org_id="org-1") == {"ann@x.io": ann}
+        assert mock_graph_provider.get_users_by_emails.await_args_list == [
+            call(["ann@x.io", "bob@x.io"], transaction="txn-123", raise_on_error=False, org_id="org-1"),
+            call(["bob@x.io", "cat@x.io"], transaction="txn-123", raise_on_error=False, org_id="org-1"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_get_user_by_email_in_an_org_is_scoped_and_memoised_per_org(
         self, tx_store, mock_graph_provider
     ) -> None:

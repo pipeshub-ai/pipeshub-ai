@@ -98,6 +98,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_user_by_email(self, email, *, raise_on_error=False, org_id=None):
         return None
 
+    async def get_users_by_emails(self, emails, *, raise_on_error=False, org_id=None):
+        return {}
+
     async def get_user_by_source_id(self, source_user_id, connector_id, *, raise_on_error=False):
         return None
 
