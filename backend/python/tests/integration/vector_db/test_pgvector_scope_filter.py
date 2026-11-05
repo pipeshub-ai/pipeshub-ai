@@ -137,6 +137,17 @@ async def test_a_null_list_of_a_stamped_group_fails_closed(store, leg) -> None:
 
 
 @LEGS
+async def test_a_pending_list_does_not_hide_a_group_whose_path_list_is_null(store, leg) -> None:
+    conn = await store.env.admin()
+    try:
+        await conn.execute("UPDATE retrieval.point_groups SET path_ids = NULL WHERE org_id = $1 AND group_key = 'container_other'", A)
+    finally:
+        await conn.close()
+    flt = f(readable_groups=frozenset({"g2"}), pending=frozenset({"p1"}))
+    assert await search(store, flt, leg=leg) == {"container_other"}          # NOT (NULL && pending) is NULL, which would hide it
+
+
+@LEGS
 async def test_the_filter_is_anded_with_the_request_arms_and_narrowing_list_never_replacing_them(store, leg) -> None:
     flt = f(readable_groups=frozenset({"g1", "g2"}), open_apps=frozenset({"c1"}))
     assert await search(store, flt, leg=leg) == {"container", "container_other"}
