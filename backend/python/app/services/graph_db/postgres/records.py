@@ -111,6 +111,18 @@ class RecordsMixin(PgBase):
                 raise
             return []
 
+    async def page_record_ids_by_type(self, org_id: str, record_types: list[str], *, after_key: str | None = None, limit: int = 500) -> list[str]:
+        org = current_org_id()
+        if limit < 0:
+            raise ValueError("limit must not be negative")
+        if not org_id or not record_types or limit == 0 or org_id != org:  # an org argument is only ever the ambient org
+            return []
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_record_ids_by_type */ SELECT n.id FROM graph.nodes n
+            WHERE n.org_id = $1 AND n.coll = 'records' AND n.id > $2 AND n.doc->>'recordType' = ANY($3::text[])
+            AND NOT coalesce((n.doc->>'isDeleted')::boolean, false) ORDER BY n.id LIMIT $4""",
+                                                  org, after_key or "", list(record_types), limit), None)
+        return [r["id"] for r in rows]
+
     async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: str | None = None,
                                     transaction: str | None = None, visibility: RecordVisibility = RecordVisibility.LIVE) -> list[Record]:
         org = current_org_id()

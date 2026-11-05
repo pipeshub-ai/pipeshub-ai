@@ -836,9 +836,8 @@ class SalesforceConnector(BaseConnector):
         return Person(**kwargs)
 
     def _create_org(self, **kwargs) -> Org:
-        """An account's external organisation, recording its tenant as
-        parentOrgId (KG-13: it scopes the organisation entity). EE overrides
-        this to the same effect."""
+        """An account's external organisation, recording the org it belongs to
+        as parentOrgId, which scopes the organisation entity to that org."""
         return Org(**{"parent_org_id": self.data_entities_processor.org_id, **kwargs})
 
     def __init__(

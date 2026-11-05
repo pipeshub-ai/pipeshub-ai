@@ -7744,6 +7744,41 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Get file record by ID failed: {str(e)}")
             raise GraphQueryError(f"Could not read file record {record_id}: {e}") from e
 
+    async def get_users_by_emails(
+        self,
+        emails: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        org_id: str | None = None,
+    ) -> dict[str, User]:
+        """See :meth:`IGraphDBProvider.get_users_by_emails`."""
+        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        if not wanted:
+            return {}
+        scoped = org_id is not None
+        org_filter = "FILTER user.orgId == @org_id" if scoped else ""
+        bind_vars = {"emails": wanted, **({"org_id": org_id} if scoped else {})}
+        # LOWER(user.email) keeps matching case-insensitive, which no index on
+        # users.email can serve; one scan per call instead of one per address.
+        query = f"""
+        FOR user IN {CollectionNames.USERS.value}
+            FILTER LOWER(user.email) IN @emails
+            {org_filter}
+            RETURN user
+        """
+        try:
+            rows = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
+            found: dict[str, User] = {}
+            for row in rows or []:
+                found.setdefault(row["email"].lower(), User.from_arango_user(self._translate_node_from_arango(row)))
+            return found
+        except Exception as e:
+            self.logger.error(f"❌ Get users by emails failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return {}
+
     async def get_user_by_email(
         self,
         email: str,
@@ -21306,8 +21341,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     }
     # Entity types records reach over entityRelations (KG-13): the node
     # collection, how a node ``n`` is matched to @org_id, and its fields.
-    # An external organisation (a CRM account) carries its tenant as
-    # parentOrgId; the tenant org itself is never an entity.
+    # An external organisation (a CRM account) carries the org it belongs to as
+    # parentOrgId; the org itself is never an entity.
     _LINKED_ENTITY_NODES: dict[str, tuple[str, str, str]] = {
         EntityType.PERSON.value: (
             CollectionNames.USERS.value, "n.orgId == @org_id", "name: n.fullName, email: n.email",
