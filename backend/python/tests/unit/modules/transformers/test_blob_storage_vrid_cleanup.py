@@ -182,6 +182,11 @@ class TestSharedVridIsNeverDeleted:
         await bs.delete_storage_docs_for_vrid("org-1", "vrid-racing")
 
         gp.get_document.assert_not_awaited()
+        reads = gp.get_records_by_virtual_record_id.await_args_list
+        assert len(reads) == 2
+        for read in reads:
+            assert read.kwargs["visibility"] == RecordVisibility.ALL
+            assert read.kwargs["raise_on_error"] is True
 
     @pytest.mark.asyncio
     async def test_unreadable_graph_raises_and_deletes_nothing(self):
