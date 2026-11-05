@@ -137,6 +137,8 @@ def refuse_unsafe_ids(flt: "ScopeFilter") -> None:
     rather than allowed to meet a different id or to fail inside the server."""
     from app.services.vector_db.filters import ScopeFilterUnsupported
 
+    if flt.trusts_nothing:  # matches nothing, no id is written
+        return
     for name in ("current", "open_apps", "readable_groups", "readable_scopes", "excluded"):
         for v in getattr(flt, name):
             if v != v.lower():
