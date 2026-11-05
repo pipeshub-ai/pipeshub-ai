@@ -47,7 +47,7 @@ function textToTemplates(text: string): Record<string, string> {
 interface IdentityForwardingDialogProps {
   model: ConfiguredModel | null;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved?: () => void;
 }
 
 export function IdentityForwardingDialog({ model, onClose, onSaved }: IdentityForwardingDialogProps) {
@@ -133,7 +133,7 @@ export function IdentityForwardingDialog({ model, onClose, onSaved }: IdentityFo
         ...(serviceApiKey !== undefined ? { serviceApiKey } : {}),
       });
       toast.success(t('workspace.aiModels.identity.saved'));
-      onSaved();
+      onSaved?.();
       onClose();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t('workspace.aiModels.identity.saveFailed'));

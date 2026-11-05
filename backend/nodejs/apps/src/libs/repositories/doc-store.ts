@@ -32,7 +32,7 @@ const CONVERSATION_EPOCH = 2;
 const CONTENT_EPOCH = 2;
 const PLATFORM_DATA_EPOCH = 1;
 const IDENTITY_EPOCH = 3;
-const OAUTH_EPOCH = 2;
+const OAUTH_EPOCH = 4;
 const INTEGRATIONS_EPOCH = 2;
 const IDENTITY_REPOSITORIES = [
   'identity',

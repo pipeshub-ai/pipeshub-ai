@@ -1,5 +1,6 @@
 """Unit tests for ``ops/entity_records.py`` (``find_records_by_entity`` and
 record-group scoping for ``search(entity_ids)``)."""
+import asyncio
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,6 +23,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
     EntityRecordPage,
+    RecordCount,
 )
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
@@ -43,17 +45,23 @@ def _state(**overrides) -> dict:
     return state
 
 
+def _counted(n: int, *, exact: bool = True, prefix: str = "x") -> RecordCount:
+    return RecordCount(frozenset(f"{prefix}{i}" for i in range(n)), exact=exact)
+
+
 def _row(key: str, **extra: object) -> dict:
     return {"_key": key, "recordName": f"doc {key}", "recordType": "FILE", "connectorId": "conf-1", **extra}
 
 
 @pytest.fixture
-def patched(monkeypatch: pytest.MonkeyPatch) -> tuple[AsyncMock, AsyncMock]:
+def patched(monkeypatch: pytest.MonkeyPatch) -> tuple[AsyncMock, AsyncMock, AsyncMock]:
     access = AsyncMock(return_value=CONTEXT)
     listing = AsyncMock(return_value=EntityRecordPage(records=[], next_cursor=None))
+    count = AsyncMock(return_value=_counted(303, exact=True))
     monkeypatch.setattr(entity_filters, "get_entity_access_context", access)
     monkeypatch.setattr(entity_records, "list_accessible_entity_records", listing)
-    return access, listing
+    monkeypatch.setattr(entity_records, "count_accessible_entity_records", count)
+    return access, listing, count
 
 
 class TestFindRecordsByEntity:
@@ -149,8 +157,33 @@ class TestFindRecordsByEntity:
         ok_next, later = await execute_find_records_by_entity(state, "full-1", cursor="20")
 
         assert ok and 'Pinecrest (organization): knowledgegraph__find_records_by_entity(entity_id="short-1"' in first
-        assert "add them to a count" in first
+        assert "Together with this entity they are on 304 readable record(s), each counted once" in first
         assert ok_next and "learned alias" not in later
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_alias_lookup_is_left_out_and_the_listing_still_returns(
+        self, patched, monkeypatch,
+    ) -> None:
+        """The alias note is optional: a graph read inside it that never answers must not
+        hold the listing, and the reply must read as one with no alias."""
+        async def stall(*_args: object, **_kwargs: object) -> None:
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_records, "alias_family", stall)
+        monkeypatch.setattr(entity_records, "ALIAS_NOTE_SECONDS", 0.05, raising=False)
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+
+        ok, listed = await asyncio.wait_for(
+            execute_find_records_by_entity(_state(), "e1", entity_type="named_entity"), timeout=2,
+        )
+        patched[1].return_value = EntityRecordPage(records=[], next_cursor=None)
+        ok_empty, empty = await asyncio.wait_for(
+            execute_find_records_by_entity(_state(), "e1", entity_type="named_entity"), timeout=2,
+        )
+
+        assert ok and "record_id=r1" in listed and "learned alias" not in listed
+        assert (ok_empty, empty) == (True, NO_ACCESSIBLE_RECORDS_MSG)
 
     @pytest.mark.asyncio
     async def test_no_alias_note_for_other_entity_types_or_when_turned_off(self, patched, monkeypatch) -> None:
@@ -344,19 +377,203 @@ class TestStrictAndExcludedScope:
 
 class TestEmptyWindow:
     @pytest.mark.asyncio
-    async def test_empty_window_with_more_candidates_gives_the_continuation_cursor(
-        self, patched
+    async def test_an_empty_window_with_nothing_readable_further_reads_as_an_unknown_entity(
+        self, patched, monkeypatch,
     ) -> None:
-        """The scan budget ran out before anything visible turned up; saying
-        "no accessible records" would hide records further down."""
+        """A continuation would say the entity exists and has records the user cannot read."""
+        probe = AsyncMock(return_value={})
+        monkeypatch.setattr(entity_records, "first_readable_offsets", probe)
         patched[1].return_value = EntityRecordPage(records=[], next_cursor="1000")
+        _, dry = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+        patched[1].return_value = EntityRecordPage(records=[], next_cursor=None)
+        _, unknown = await execute_find_records_by_entity(_state(), "nope", entity_type="topic")
+
+        assert dry == unknown
+        assert "cursor=" not in dry and "t1" not in dry
+        assert probe.await_args.kwargs["offset"] == 1000
+
+    @pytest.mark.asyncio
+    async def test_an_empty_window_lists_from_the_next_readable_record_further_down(
+        self, patched, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(
+            entity_records, "first_readable_offsets", AsyncMock(return_value={("topic", "t1"): 1400}),
+        )
+        patched[1].side_effect = [
+            EntityRecordPage(records=[], next_cursor="1000"),
+            EntityRecordPage(records=[_row("r9")], next_cursor="1401"),
+        ]
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert ok and "doc r9" in text
+        assert patched[1].await_args.kwargs["cursor"] == "1400"
+        assert 'More records may exist: knowledgegraph__find_records_by_entity(entity_id="t1", ' in text
+
+
+class TestTotals:
+    @pytest.mark.asyncio
+    async def test_the_first_page_states_the_readable_total(self, patched) -> None:
+        patched[1].return_value = EntityRecordPage(records=[_row("r1"), _row("r2")], next_cursor="2")
+
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic", limit=2)
+
+        assert ok and "(2 shown of 305 readable record(s) in all):" in text
+        assert patched[2].await_args.kwargs == {
+            "entity_id": "t1", "entity_type": "topic", "record_types": None, "cursor": "2",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_count_that_stopped_early_is_a_minimum(self, patched) -> None:
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor="1")
+        patched[2].return_value = _counted(1000, exact=False)
+
+        _, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert "at least 1001 readable record(s)" in text
+        assert "a minimum, not the total" in text
+        assert " in all" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_holds_every_record_is_its_own_total_without_a_count(self, patched) -> None:
+        patched[1].return_value = EntityRecordPage(records=[_row("r1"), _row("r2")], next_cursor=None)
+
+        _, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert "(2 shown of 2 readable record(s) in all):" in text
+        patched[2].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_capped_entity_whose_paging_ended_is_a_minimum(self, patched) -> None:
+        """A capped page is newest of a sample: its end is not the entity's last record,
+        and nothing past it can be scanned, so no count runs."""
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None, capped=True)
+
+        _, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert "at least 1 readable" in text
+        patched[2].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_capped_page_with_more_to_scan_is_a_minimum_even_if_the_rest_counts_exactly(
+        self, patched,
+    ) -> None:
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor="1", capped=True)
+        patched[2].return_value = _counted(4, exact=True)
+
+        _, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert "at least 5 readable" in text
+
+    @pytest.mark.asyncio
+    async def test_the_total_is_for_the_record_types_asked(self, patched) -> None:
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor="1")
+        patched[2].return_value = _counted(7, exact=True)
+
+        _, text = await execute_find_records_by_entity(
+            _state(), "t1", entity_type="topic", record_types=["file", "mail"],
+        )
+
+        assert "of 8 readable FILE/MAIL record(s) in all" in text
+        assert patched[2].await_args.kwargs["record_types"] == ["FILE", "MAIL"]
+
+    @pytest.mark.asyncio
+    async def test_a_page_reached_by_the_probe_jump_counts_on_from_its_own_end(
+        self, patched, monkeypatch,
+    ) -> None:
+        """Candidates before the jump are unreadable, so the count starts where the page ended."""
+        monkeypatch.setattr(entity_records, "first_readable_offsets", AsyncMock(return_value={("topic", "t1"): 1400}))
+        patched[1].side_effect = [
+            EntityRecordPage(records=[], next_cursor="1000"),
+            EntityRecordPage(records=[_row("r1"), _row("r2")], next_cursor="1402"),
+        ]
+        patched[2].return_value = _counted(3, exact=True)
+
+        _, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert "(2 shown of 5 readable record(s) in all):" in text
+        assert patched[2].await_args.kwargs["cursor"] == "1402"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [EntityAccessError("timed out"), TimeoutError(), RuntimeError("boom")])
+    async def test_a_failed_count_leaves_the_listing_without_a_total(self, patched, error) -> None:
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor="1")
+        patched[2].side_effect = error
 
         ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
 
-        assert ok is True
-        assert text not in (NO_ACCESSIBLE_RECORDS_MSG, NO_FURTHER_RECORDS_MSG)
-        assert 'cursor="1000"' in text
-        assert 'entity_id="t1"' in text
+        assert ok and "(1 shown; total not available this time" in text
+        assert "never report the page size as the total" in text
+        assert "More records may exist" in text
+
+    @pytest.mark.asyncio
+    async def test_later_pages_are_not_counted_again(self, patched) -> None:
+        patched[1].return_value = EntityRecordPage(records=[_row("r9")], next_cursor="41")
+
+        _, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic", cursor="40")
+
+        assert "(1 shown):" in text
+        patched[2].assert_not_awaited()
+
+
+class TestAliasFamilyTotal:
+    """The agent sees only totals, so the family's total must already count a shared record once."""
+
+    @pytest.fixture
+    def aliased(self, patched, monkeypatch) -> tuple[AsyncMock, AsyncMock, AsyncMock]:
+        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(
+            entity_records, "alias_family",
+            AsyncMock(return_value=[{"id": "short-1", "kind": "organization", "name": "Pinecrest"}]),
+        )
+        return patched
+
+    @staticmethod
+    def _by_entity(counts: dict) -> AsyncMock:
+        async def _count(_graph, _context, *, entity_id, **_kwargs) -> RecordCount:
+            outcome = counts[entity_id]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return AsyncMock(side_effect=_count)
+
+    async def _first(self, aliased, monkeypatch, counts: dict, records=None, next_cursor="2") -> str:
+        monkeypatch.setattr(entity_records, "count_accessible_entity_records", self._by_entity(counts))
+        aliased[1].return_value = EntityRecordPage(
+            records=[_row("r1"), _row("r2")] if records is None else records, next_cursor=next_cursor,
+        )
+        _, text = await execute_find_records_by_entity(_state(), "full-1", entity_type="named_entity")
+        return text
+
+    @pytest.mark.asyncio
+    async def test_a_record_under_both_names_is_counted_once(self, aliased, monkeypatch) -> None:
+        shared = RecordCount(frozenset({"r1", "x0", "y0", "y1"}), exact=True)
+        text = await self._first(aliased, monkeypatch, {"full-1": _counted(3), "short-1": shared})
+
+        assert "(2 shown of 5 readable record(s) in all)" in text
+        assert "they are on 7 readable record(s), each counted once" in text
+
+    @pytest.mark.asyncio
+    async def test_an_alias_whose_count_stopped_early_makes_the_family_a_minimum(self, aliased, monkeypatch) -> None:
+        text = await self._first(
+            aliased, monkeypatch, {"full-1": _counted(3), "short-1": _counted(1000, exact=False, prefix="y")},
+        )
+        assert "on at least 1005 readable record(s), each counted once" in text
+
+    @pytest.mark.asyncio
+    async def test_a_failed_alias_count_says_to_count_each_record_once(self, aliased, monkeypatch) -> None:
+        text = await self._first(aliased, monkeypatch, {"full-1": _counted(3), "short-1": EntityAccessError("x")})
+
+        assert "(2 shown of 5 readable record(s) in all)" in text
+        assert "count each record_id once" in text
+        assert "each counted once:" not in text
+
+    @pytest.mark.asyncio
+    async def test_an_empty_entity_still_states_its_aliases_total(self, aliased, monkeypatch) -> None:
+        text = await self._first(
+            aliased, monkeypatch, {"short-1": _counted(4, prefix="y")}, records=[], next_cursor=None,
+        )
+        assert text.startswith(NO_ACCESSIBLE_RECORDS_MSG)
+        assert "they are on 4 readable record(s), each counted once" in text
 
 
 def test_candidate_rows_carry_the_hide_url_flag() -> None:

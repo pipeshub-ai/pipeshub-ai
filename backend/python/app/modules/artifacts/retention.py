@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import current_org_id, for_org
 from app.modules.artifacts.store import ARTIFACT_ROUTES, ArtifactRoutesUnavailable
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.config import messaging_env
@@ -92,6 +93,8 @@ class RetentionReport:
     # Virtual records left for the next pass because a holder's lease was held.
     skipped_busy: int = 0
     stage_states_deleted: int = 0
+    # Pointers with no organisation: nothing is read or deleted for them.
+    skipped_no_org: int = 0
     failed: int = 0
     # The recovery lease was lost part-way; the page is to be read again.
     interrupted: bool = False
@@ -197,10 +200,28 @@ class RevisionRetentionSweep:
             return None, report
         report.scanned = len(pointers)
         cutoff_ms = self._now_ms() - self.grace_ms
-        vrids = [str(p["virtualRecordId"]) for p in pointers if p.get("virtualRecordId")]
-        trashed = await self.graph_provider.get_virtual_record_ids_in_use(
-            vrids, visibility=RecordVisibility.DELETED
-        )
+        # Every read and delete below runs bound to its pointer's org; one with none is skipped, never run unscoped.
+        # A virtual record id can repeat across organisations, so each pointer is told by (org, virtual record id).
+        key_of: list[tuple[str, str] | None] = [
+            (str(org), str(p["virtualRecordId"])) if p.get("virtualRecordId") and (org := p.get("orgId")) else None for p in pointers
+        ]
+        no_org = [p for p, k in zip(pointers, key_of, strict=True) if k is None]
+        if no_org:
+            report.skipped_no_org = len(no_org)
+            record_retention("virtual_record", "skipped_no_org", len(no_org))
+            self.logger.warning(
+                "Revision retention: %d virtual record(s) have no organisation and are skipped: %s",
+                len(no_org), [p.get("virtualRecordId") for p in no_org],
+            )
+        by_org: dict[str, list[str]] = {}
+        for key in dict.fromkeys(k for k in key_of if k is not None):
+            by_org.setdefault(key[0], []).append(key[1])
+        trashed: set[tuple[str, str]] = set()
+        for org_id, org_vrids in by_org.items():
+            with for_org(org_id, job="revision_retention"):
+                trashed |= {(org_id, v) for v in await self.graph_provider.get_virtual_record_ids_in_use(
+                    org_vrids, visibility=RecordVisibility.DELETED
+                )}
         report.skipped_trashed = len(trashed)
         record_retention("virtual_record", "skipped_trashed", len(trashed))
 
@@ -210,19 +231,29 @@ class RevisionRetentionSweep:
             report.interrupted = True
             return False
 
-        unheld = await self._unheld_stage_revisions([v for v in vrids if v not in trashed], cutoff_ms, report)
+        unheld: dict[tuple[str, str], list[str]] = {}
+        for org_id, org_vrids in by_org.items():
+            with for_org(org_id, job="revision_retention"):
+                found = await self._unheld_stage_revisions([v for v in org_vrids if (org_id, v) not in trashed], cutoff_ms, report)
+                unheld |= {(org_id, v): revs for v, revs in found.items()}
         gate = asyncio.Semaphore(self.concurrency)
         # Per pointer: whether it was tried. A failure counts (the next walk
         # retries it), even one of the run that ended the page: resuming at it
         # could hold the walk on a few vrids that keep failing.
-        finished = [not p.get("virtualRecordId") or p["virtualRecordId"] in trashed for p in pointers]
+        finished = [k is None or k in trashed for k in key_of]
         failing_run: list[int] = []
         tried = 0
 
-        def stop_starting() -> bool:
+        started: set[str] = set()
+
+        def stop_starting(vrid: str) -> bool:
             # The deadline never stops the first vrid of a page: when the page's own
             # graph reads used up the budget, the walk would otherwise re-read the
-            # same page every tick and never move.
+            # same page every tick and never move. Nor does it stop in the middle of
+            # the organisations that share a vrid: the cursor is a vrid, so a walk cut
+            # inside the group could only resume before it and would start it again.
+            if vrid in started:
+                return False
             if len(failing_run) >= self.max_consecutive_failures or (
                 deadline is not None and tried > 0 and time.monotonic() >= deadline
             ):
@@ -232,14 +263,22 @@ class RevisionRetentionSweep:
         async def one(index: int, pointer: dict[str, Any]) -> None:
             nonlocal tried
             vrid = str(pointer["virtualRecordId"])
+            key = key_of[index]
+            if key is None:      # a pointer without an organisation starts out finished
+                return
             async with gate:
-                if not leader() or stop_starting():
+                if not leader() or stop_starting(vrid):
                     return
                 tried += 1
+                # An organisation that joins a group already started is finished whatever the deadline says: the cursor moves past
+                # the whole group, so what is left of it here would wait for the next lap.
+                joined = vrid in started
+                started.add(vrid)
                 try:
-                    ok = await self._retire_virtual_record(
-                        pointer, unheld.get(vrid, []), cutoff_ms, report, leader, deadline
-                    )
+                    with for_org(key[0], job="revision_retention"):
+                        ok = await self._retire_virtual_record(
+                            pointer, unheld.get(key, []), cutoff_ms, report, leader, None if joined else deadline
+                        )
                 except Exception as exc:
                     ok = False
                     report.failed += 1
@@ -297,11 +336,11 @@ class RevisionRetentionSweep:
         the page's failures-in-a-row stop.
         """
         vrid = str(pointer["virtualRecordId"])
-        if not pointer.get("currentRev") or not pointer.get("orgId") or not ARTIFACT_ROUTES.available:
+        if not pointer.get("currentRev") or not ARTIFACT_ROUTES.available:
             return [], True
         try:
             revisions = await self.store.list_revisions(
-                pointer["orgId"], vrid, timeout_seconds=self.list_timeout_seconds
+                current_org_id(), vrid, timeout_seconds=self.list_timeout_seconds
             )
         except ArtifactRoutesUnavailable as exc:
             # Process-wide, as for writes: the storage service has no artifact routes
@@ -350,10 +389,7 @@ class RevisionRetentionSweep:
         candidates, listed = await self._deletable_revisions(pointer, cutoff_ms, report)
         if not candidates and not unheld_revs:
             return listed
-        org_id = pointer.get("orgId")
-        if not org_id:
-            # The holders are read per organization; without one nothing is known to be unheld.
-            return listed
+        org_id = current_org_id()      # run_page binds the pointer's org around this call
 
         def keep_all() -> None:
             report.revisions_kept += len(candidates)
