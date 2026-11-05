@@ -54,3 +54,10 @@ async def differences(p, org: str) -> bool:
     """True when what is held for ``org`` is not what a whole projection of its graph holds."""
     want, other = await fresh(p, org)
     return not same(await held(p, org), org, want, other)
+
+
+async def fresh_with_stamps(p, org: str) -> tuple[str, dict]:
+    """(the organisation a whole projection of the graph was made in, its stamps by node id)."""
+    from .test_kg_stamps import held_stamps
+    _, other = await fresh(p, org)
+    return other, await held_stamps(p, other)
