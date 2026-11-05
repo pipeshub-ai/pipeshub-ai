@@ -68,7 +68,8 @@ def scopes(**kw: object) -> ViewerScopes:
 
 def graph(docs: dict[str, dict | None]) -> MagicMock:
     g = MagicMock()
-    g.get_document = AsyncMock(side_effect=lambda key, coll, **k: docs.get(key))
+    g.get_nodes_by_field_in = AsyncMock(side_effect=lambda coll, field, values, **k: [{"_key": v, **docs[v]} for v in values if docs.get(v) is not None])
+    g.get_document = AsyncMock(side_effect=AssertionError("one document per connector would take the connection pool"))
     return g
 
 
@@ -312,3 +313,25 @@ async def test_the_viewer_scope_cache_registered_after_the_comparator_is_used(mo
     with pytest.raises(ViewerScopesUnavailable, match="bypass"):         # the cache is consulted now
         await c._scopes.scopes(ORG, USER)
     cache.version.assert_awaited()
+
+
+async def test_the_connectors_are_read_in_one_query_however_many_there_are(_generation_and_metrics) -> None:
+    many = {f"c{i}": done() for i in range(500)}
+    c = comparator(many, scope_value=scopes(gated_apps=frozenset(many), open_apps=frozenset()), max_apps=500)
+    seen: list[ScopeFilter] = []
+
+    async def run_scoped(flt: ScopeFilter) -> list[dict]:
+        seen.append(flt)
+        return []
+
+    await c.compare(ORG, USER, {"a"}, {"a"}, run_scoped, AsyncMock())
+    assert len(seen[0].current) == 500
+    assert c._graph.get_nodes_by_field_in.await_count == 1 and c._graph.get_document.await_count == 0          # one query, not 500 reads
+    assert c._graph.get_nodes_by_field_in.await_args.args == ("apps", "_key", sorted(many))
+
+
+async def test_a_failing_connector_read_means_no_connector_is_current_and_the_comparison_is_skipped(_generation_and_metrics) -> None:
+    c = comparator()
+    c._graph.get_nodes_by_field_in = AsyncMock(side_effect=RuntimeError("graph down"))
+    assert await c.compare(ORG, USER, {"a"}, {"a"}, AsyncMock(), AsyncMock()) == {}
+    assert _generation_and_metrics.skipped.total("no_current_connector") == 1

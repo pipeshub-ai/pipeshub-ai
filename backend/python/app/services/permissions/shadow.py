@@ -106,8 +106,12 @@ class ShadowComparator:
         generation = current_scope_generation()
         if generation < 0 or len(apps) > self._max_apps:
             return set()
-        docs = await asyncio.gather(*(self._graph.get_document(a, "apps") for a in sorted(apps)), return_exceptions=True)
-        return {a for a, d in zip(sorted(apps), docs, strict=True) if isinstance(d, dict) and d.get(_BACKFILL_STATE) == _DONE
+        try:  # one query for all of them: up to max_apps reads per comparison, several comparisons at a time, would take the graph's connection pool from searches
+            found = await self._graph.get_nodes_by_field_in("apps", "_key", sorted(apps), raise_on_error=True)
+        except Exception:
+            return set()
+        docs = {str(d.get("_key") or d.get("id")): d for d in found if isinstance(d, dict)}
+        return {a for a, d in docs.items() if a in apps and d.get(_BACKFILL_STATE) == _DONE
                 and d.get(_BACKFILL_VERSION) == SCOPE_FIELDS_VERSION and d.get(_BACKFILL_GENERATION) == generation and not d.get(_UNSAFE)}
 
     async def compare(
