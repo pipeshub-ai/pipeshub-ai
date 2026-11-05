@@ -106,11 +106,23 @@ start_docling() {
     log "Docling started with PID: $DOCLING_PID"
 }
 
-# A PG_CORE_<SERVICE>_URL (that service's own database login) makes the process use that role; without it nothing changes.
+# A process whose own login is set (PG_CORE_<SERVICE>_URL, e.g. PG_CORE_QUERY_URL) connects with it, as its own role,
+# with PG_<SERVICE>_POOL_MAX as its pool size when set. Chosen by the process, not the role: a process without its own
+# login keeps the shared PG_CORE_URL and role exactly as before. Call it in the subshell that execs the service.
+use_own_pg_login() {
+    local up url_var pool_var
+    up=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
+    url_var="PG_CORE_${up}_URL"
+    pool_var="PG_${up}_POOL_MAX"
+    [ -n "${!url_var:-}" ] || return 0
+    export PG_RUNTIME_SERVICE="$1" PG_CORE_URL="${!url_var}"
+    if [ -n "${!pool_var:-}" ]; then export PG_POOL_MAX="${!pool_var}"; fi
+}
+
 start_indexing() {
     log "Starting Indexing service..."
     cd /app/python
-    env ${PG_CORE_INDEXING_URL:+PG_RUNTIME_SERVICE=indexing} python -m app.indexing_main &
+    (use_own_pg_login indexing; exec python -m app.indexing_main) &
     INDEXING_PID=$!
     log "Indexing started with PID: $INDEXING_PID"
 }
@@ -118,7 +130,7 @@ start_indexing() {
 start_connector() {
     log "Starting Connector service..."
     cd /app/python
-    env ${PG_CORE_CONNECTORS_URL:+PG_RUNTIME_SERVICE=connectors} python -m app.connectors_main &
+    (use_own_pg_login connectors; exec python -m app.connectors_main) &
     CONNECTOR_PID=$!
     log "Connector started with PID: $CONNECTOR_PID"
     
@@ -146,7 +158,7 @@ start_connector() {
 start_query() {
     log "Starting Query service..."
     cd /app/python
-    env ${PG_CORE_QUERY_URL:+PG_RUNTIME_SERVICE=query} python -m app.query_main &
+    (use_own_pg_login query; exec python -m app.query_main) &
     QUERY_PID=$!
     log "Query started with PID: $QUERY_PID"
 }

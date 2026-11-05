@@ -75,14 +75,13 @@ class DbConfig:
     @classmethod
     def from_env(cls, service: str) -> DbConfig:
         env = os.environ
-        svc = service.upper()  # PG_CORE_<SVC>_URL and PG_<SVC>_POOL_MAX win over the shared values; unset means today's behaviour
         return cls(
             service=service,
-            dsn=env.get(f"PG_CORE_{svc}_URL") or env.get("PG_CORE_URL", ""),
+            dsn=env.get("PG_CORE_URL", ""),
             jobs_dsn=env.get("PG_JOBS_URL", ""),
             pooler=(env.get("PG_POOLER") or "pgbouncer_txn").strip(),  # type: ignore[arg-type]
             strict=env.get("PG_STRICT", "true").strip().lower() not in ("0", "false", "no"),
-            pool_max=int(env.get(f"PG_{svc}_POOL_MAX") or env.get("PG_POOL_MAX") or 10),
+            pool_max=int(env.get("PG_POOL_MAX") or 10),
             jobs_pool_max=int(env.get("PG_JOBS_POOL_MAX") or 3),
             pool_idle_seconds=float(env.get("PG_POOL_IDLE_SECONDS") or 300),
             pool_min=int(env.get("PG_POOL_MIN") or 1),
