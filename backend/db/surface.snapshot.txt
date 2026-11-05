@@ -798,13 +798,18 @@ column retrieval.placement_requests.next_try_at type=timestamp with time zone no
 column retrieval.placement_requests.note type=text notnull=false identity= generated= default=-
 column retrieval.placement_requests.org_id type=text notnull=true identity= generated= default=-
 column retrieval.placement_requests.requested_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column retrieval.point_groups.acl_scope type=text[] notnull=false identity= generated= default=-
 column retrieval.point_groups.collection_id type=smallint notnull=true identity= generated= default=-
 column retrieval.point_groups.computed_at type=timestamp with time zone notnull=true identity= generated= default=-
 column retrieval.point_groups.connector_ids type=text[] notnull=true identity= generated= default='{}'::text[]
 column retrieval.point_groups.group_key type=text notnull=true identity= generated= default=-
 column retrieval.point_groups.org_id type=text notnull=true identity= generated= default=-
+column retrieval.point_groups.path_ids type=text[] notnull=false identity= generated= default=-
 column retrieval.point_groups.record_group_ids type=text[] notnull=true identity= generated= default='{}'::text[]
 column retrieval.point_groups.root_record_group_ids type=text[] notnull=true identity= generated= default='{}'::text[]
+column retrieval.point_groups.scope_generation type=integer notnull=false identity= generated= default=-
+column retrieval.point_groups.scope_stamp type=text notnull=false identity= generated= default=-
+column retrieval.point_groups.scope_version type=integer notnull=false identity= generated= default=-
 column retrieval.point_text.org_id type=text notnull=true identity= generated= default=-
 column retrieval.point_text.page_content type=text notnull=false identity= generated= default=-
 column retrieval.point_text.payload type=jsonb notnull=true identity= generated= default=-
@@ -1099,7 +1104,7 @@ constraint retrieval.embedding_spaces embedding_spaces_metric_check c def=52fe5e
 constraint retrieval.embedding_spaces embedding_spaces_model_dim_metric_key u def=1a24612c57d8b1202441827dd6199ad3
 constraint retrieval.embedding_spaces embedding_spaces_pkey p def=b6a6c6e8072ad14299469e74903f7d2e
 constraint retrieval.embedding_spaces embedding_spaces_status_check c def=43fab1afe5d71741fd4c3b4f6630081b
-constraint retrieval.group_members group_members_kind_check c def=5f98950dec5b97c275e5bdf929471240
+constraint retrieval.group_members group_members_kind_check c def=1e52f69e5a8b5e3eac8c0c8a0e6a500b
 constraint retrieval.group_members group_members_pkey p def=18e9bd91b19dda8f7f72b1c172e66de6
 constraint retrieval.group_members org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint retrieval.group_members org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
