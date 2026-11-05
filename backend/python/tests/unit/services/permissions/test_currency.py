@@ -44,6 +44,8 @@ def test_a_connector_whose_pass_finished_from_its_current_generation_is_current(
     ("unsafe", {UNSAFE_KEY: True}), ("unsafe with a token", {UNSAFE_KEY: 123}),
     ("a mark written since the pass", {UNSAFE_KEY: 2000, K["unsafe"]: 1000}), ("a mark where the pass read none", {UNSAFE_KEY: 2000}),
     ("the mark was cleared after the pass read one", {K["unsafe"]: 1000}), ("a bool mark over a token", {UNSAFE_KEY: True, K["unsafe"]: 1000}),
+    ("a bool mark over the token 1", {UNSAFE_KEY: True, K["unsafe"]: 1}), ("the token 1 over a bool mark", {UNSAFE_KEY: 1, K["unsafe"]: True}),
+    ("a whole float mark over a bool mark", {UNSAFE_KEY: 1.0, K["unsafe"]: True}),
     ("a token over a bool mark", {UNSAFE_KEY: 1000, K["unsafe"]: True}), ("an unreadable mark", {UNSAFE_KEY: "x", K["unsafe"]: "x"}),
     ("an unreadable recorded mark", {UNSAFE_KEY: 5, K["unsafe"]: [5]}), ("a zero mark", {UNSAFE_KEY: 0, K["unsafe"]: 0}),
     ("both generations -1", {GENERATION_KEY: -1, K["structure_generation"]: -1}), ("a negative held generation", {GENERATION_KEY: -5, K["structure_generation"]: 5}),
