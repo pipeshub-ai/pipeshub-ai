@@ -110,7 +110,7 @@ async def lag(db: KernelDB, org: str) -> int:
 
 async def quarantined(tx: Tx, org: str) -> list[int]:
     """Ids of the change-log rows the drain cannot read (kept in the log, out of every page)."""
-    return [r["id"] for r in await tx.fetch(r"/* pipeshub:kg.poison */ SELECT id FROM kg.graph_changes WHERE org_id = $1 AND NOT NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258) ORDER BY id", org)]
+    return [r["id"] for r in await tx.fetch(r"/* pipeshub:kg.poison */ SELECT id FROM kg.graph_changes WHERE org_id = $1 AND EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258) ORDER BY id", org)]
 
 
 async def purge_quarantined(db: KernelDB, org: str) -> int:

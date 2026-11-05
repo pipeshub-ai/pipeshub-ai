@@ -2719,6 +2719,21 @@ components:
             PKCE code verifier (RFC 7636). Required if code_challenge was used.
             Must be 43-128 characters from [A-Za-z0-9-._~]
           pattern: '^[A-Za-z0-9\-._~]{43,128}$'
+        resource:
+          description: |
+            RFC 8707 resource indicator (authorization_code and refresh_token grants). This
+            instance's `/mcp` URL gets an access token whose `aud` is that URL, which `/mcp`
+            accepts; any other value is `400 invalid_target`. An authorization_code request
+            without it gets a token with no audience, as before. A refresh without it keeps the
+            audience of the refresh token; naming another resource is `400 invalid_target`.
+          oneOf:
+            - type: string
+              maxLength: 2048
+            - type: array
+              maxItems: 10
+              items:
+                type: string
+                maxLength: 2048
         subject_token:
           type: string
           minLength: 1
@@ -2993,6 +3008,8 @@ components:
               refusal about the person asked for, with one wording, so a
               service token cannot tell "no such person" from "not on your
               list". The real cause is in the delegation log.
+              Also the `resource` (RFC 8707) is not this instance's `/mcp`
+              URL, or a refresh names another resource than its grant.
           enum:
             - invalid_request
             - invalid_client
@@ -3107,6 +3124,9 @@ components:
           type: string
           format: uri
           description: Dynamic client registration endpoint (RFC 7591). Present only when dynamic client registration is enabled (`PIPESHUB_ENABLE_DCR=true`).
+        client_id_metadata_document_supported:
+          type: boolean
+          description: "`true` when a client may use an https URL that serves its OAuth Client ID Metadata Document as its `client_id`, without registering first. The document is fetched at authorization time. Omitted when `PIPESHUB_ENABLE_CIMD=false`."
         device_authorization_endpoint:
           type: string
           format: uri
@@ -25553,6 +25573,17 @@ paths:
           schema:
             type: string
           description: Accepted and not used
+        - name: resource
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 2048
+          description: |
+            RFC 8707 resource indicator. When present it must be this instance's `/mcp` URL (the
+            `resource` in `/.well-known/oauth-protected-resource/mcp`). Any other value is answered
+            with `200` and a `redirectUrl` carrying `error=invalid_target`, which the consent page
+            shows instead of redirecting. The audience itself is set at the token endpoint.
       responses:
         '302':
           description: |
@@ -25641,7 +25672,10 @@ paths:
                                 type: string
                               isDynamic:
                                 type: boolean
-                                description: Whether the app was created through dynamic client registration
+                                description: Whether the app was created through dynamic client registration or from a client ID metadata document
+                              clientIdHost:
+                                type: string
+                                description: Host of the client ID metadata document, present only when `client_id` is an https URL. The app chooses its name and logo, but not this host.
                               knowledgeLimit:
                                 description: What the app's creator let it see; absent when it may see everything the user can.
                                 allOf:
@@ -26223,6 +26257,8 @@ paths:
               polling (RFC 8628 Section 3.5): still pending, polled sooner than `interval`, unknown,
               expired or already redeemed, or denied by the user. `access_denied` is a `400` here,
               not a `403`.
+            - `invalid_target` - `resource` is not this instance's `/mcp` URL, or a refresh names
+              another resource than the one its grant was for
             - `invalid_target`, `invalid_request`, `invalid_grant`, `invalid_scope`,
               `unsupported_grant_type` - a refusal from the token-exchange grant (see above)
             - `server_error` - any other failure, also with status `400`. This includes an unknown or

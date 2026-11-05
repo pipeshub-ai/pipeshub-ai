@@ -6,12 +6,15 @@ off sends the connectors back to the walk, because the take-back deletes the onl
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.core.org_context import spawn_detached
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import drainer, flush, modes
 from app.services.graph_db.postgres.kg.drainer import drain_org
+from app.services.graph_db.postgres.kg.locks import lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from app.services.graph_db.postgres.kg.reader import load_sks
 from app.services.graph_db.postgres.kg.verify import (
@@ -509,3 +512,30 @@ async def test_the_verify_names_a_stale_stamp_and_a_backfill_repairs_it(pg_db) -
     assert not res.ok and any(m.startswith("s|fold") for m in res.changed), res.changed
     again = await bf.backfill(pg_db, org, "app1", page=4)                          # the backfill restamps the connector whole: the stale stamp is repaired
     assert again.flipped and (await verify(pg_db, org, "app1")).ok
+
+
+async def test_a_take_back_leaves_the_rows_of_a_connector_whose_first_backfill_batch_has_not_committed(pg_db, monkeypatch) -> None:
+    """A first batch holds its connector's lock but has no mode and no cursor until it commits, so the connectors on a copy do not name it: the take-back has to try the lock of the connector of
+    the rows it acknowledges, or it deletes the rows, demotes nothing, and the batch then commits a copy with no row in the log to show it is behind."""
+    p, org = await fresh_world(pg_db)
+    held, release = asyncio.Event(), asyncio.Event()
+
+    async def first_batch(tx) -> None:
+        await lock_apps(tx, org, {"app1"}, org_wide=False)
+        held.set()
+        await release.wait()
+        w = KgWriter(tx)
+        sk = (await w.nodes_upsert({("apps", "app1")}))[("apps", "app1")]
+        await w.projection_set(sk, epoch=0, mode="legacy", digest=None, cursor="2:x", verified_at=None)
+    batch = asyncio.create_task(run_in(pg_db, org, first_batch, write=True))
+    await held.wait()
+    monkeypatch.setenv("PG_KG_PROJECT", "0")
+    await OPS[5](p, org)                                          # a record moves into app2: rows of app1 and app2, taken back at the commit of the unit that wrote them
+    rows = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
+    release.set()
+    await batch
+    assert rows > 0                                                # the lock of app1 was held: the rows were left for the sweep
+    assert (await state(pg_db, org, "app1"))[0] == "2:x"           # the batch committed its cursor
+    await flush._sweep(pg_db, org)
+    left = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
+    assert left == 0 and (await state(pg_db, org, "app1"))[:2] == (None, "legacy")       # the sweep took them and sent the connector back to the walk
