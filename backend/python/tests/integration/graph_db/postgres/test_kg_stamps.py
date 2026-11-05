@@ -307,6 +307,19 @@ async def test_a_record_deleted_from_the_graph_asks_for_the_lock_of_its_former_c
         assert await pg_db.run(asks, write=True) == {"app1"}
 
 
+async def test_a_connector_with_a_record_of_an_over_long_id_verifies_clean_and_the_record_stays_without_a_stamp(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    long_id = "Q" * 300
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": long_id, "recordName": "long", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"},
+                                    {"_key": "c", "recordName": "child", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+        await p.batch_create_edges([edge("c", "records", "app1", "apps")], "belongsTo")
+    await drain_org(pg_db, org)
+    assert await dry_diffs(p, org, "app1") == []
+    assert long_id not in await held_stamps(p, org) and "c" in await held_stamps(p, org)      # no row for the long id: a reader finds no stamp for it
+
+
 async def test_a_parent_whose_id_kg_cannot_name_never_widens_the_class_of_its_child(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     long_id = "P" * 300                                  # over 256 characters: kg holds no key for it

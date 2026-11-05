@@ -28,6 +28,7 @@ from app.services.graph_db.postgres.kg.model import (
     COLL_CODE,
     HIERARCHY,
     KIND,
+    MAX_ID,
     RECORD_COLLS,
     Key,
 )
@@ -249,6 +250,7 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
     w = KgWriter(tx)
     app_sks = dict(app_sks or {})
     facts = dict(facts or {})
+    keys = {k for k in keys if len(k[1]) <= MAX_ID}       # kg holds no key for a longer id (a dry run must not call that a difference); it still counts in the closure as a node of the graph
     ids = _nks(keys)
     nodes = await stampgraph.closure(tx, org, ids, known=known)
     if not dry:
