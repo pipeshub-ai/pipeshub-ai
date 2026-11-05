@@ -186,13 +186,17 @@ def test_a_cpu_limit_swallowed_by_a_bare_except_in_openpyxl_is_still_a_refusal(m
 
 
 def test_a_cpu_limit_swallowed_silently_does_not_return_a_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    def extract(_data: bytes) -> None:
+    real_extract = workbook_model._extract
+
+    def extract(data: bytes) -> workbook_model.WorkbookModel:
+        model = real_extract(data)  # a valid model, so only the fired limit can stop the load
         with contextlib.suppress(BaseException):  # a swallowed interrupt, as in openpyxl
             signal.raise_signal(signal.SIGXCPU)
+        return model
 
     monkeypatch.setattr(workbook_model, "_extract", extract)
+    args = (module.EXCEL_LOAD_MAX_BYTES, module.EXCEL_MAX_SHEET_XML_BYTES, module.EXCEL_MAX_TEXT_CHARS)
+    data = workbook_zip('<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row></sheetData>')
     with pytest.raises(WorkbookRefused) as refused:
-        load_workbook_model(
-            workbook_zip("<sheetData/>"), module.EXCEL_LOAD_MAX_BYTES, module.EXCEL_MAX_SHEET_XML_BYTES, module.EXCEL_MAX_TEXT_CHARS, LOAD_SECONDS
-        )
+        load_workbook_model(data, *args, LOAD_SECONDS)
     assert refused.value.too_large
