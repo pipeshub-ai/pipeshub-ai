@@ -18,19 +18,22 @@ import copy
 import json
 import logging
 import re
-from contextlib import contextmanager
-from typing import Any, Iterator, NamedTuple
+from contextlib import contextmanager, suppress
+from typing import TYPE_CHECKING, Any, NamedTuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 pytest.importorskip("app.services.graph_db.postgres.provider")
 
-from app.core.org_context import OrgContext, bind  # noqa: E402
-from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError  # noqa: E402
-from app.services.graph_db.postgres.base import _arango  # noqa: E402
-from app.services.graph_db.postgres.kg.registry import WRITERS  # noqa: E402
-from app.services.graph_db.postgres.provider import PostgresGraphProvider  # noqa: E402
+from app.core.org_context import OrgContext, bind
+from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+from app.services.graph_db.postgres.base import _arango
+from app.services.graph_db.postgres.kg.registry import WRITERS
+from app.services.graph_db.postgres.provider import PostgresGraphProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 ORG = "org-1"
 VALIDATE_METHODS = ("validate_node", "validate_node_update", "validate_node_upsert", "validate_edge", "validate_edge_update")
@@ -62,10 +65,8 @@ class Stmt(NamedTuple):
         out = []
         for a in self.args:
             if isinstance(a, str) and a[:1] in "[{":
-                try:
+                with suppress(ValueError):
                     out.append(json.loads(a))
-                except ValueError:
-                    pass
         return out
 
 
@@ -419,10 +420,8 @@ async def test_connector_status_with_a_non_boolean_issues_no_statement() -> None
     """RED until wired. ``batch_update_connector_status`` is wrapped in ``_soft(0)``, which turns any exception into ``0``: the contract is that
     nothing is written; whether the error is also raised is the next test."""
     h = Harness()
-    try:
+    with suppress(SchemaValidationError):
         await h.call("batch_update_connector_status", "apps", ["a1"], is_active="yes", is_agent_active=False)
-    except SchemaValidationError:
-        pass
     assert_nothing_issued(h)
 
 
@@ -437,10 +436,8 @@ async def test_connector_status_with_a_non_boolean_raises_the_schema_error() -> 
 async def test_indexing_status_for_record_ids_with_a_bad_status_issues_no_statement() -> None:
     """RED until wired. The method documents "a failure is logged, not raised", so only the absence of a write is asserted."""
     h = Harness()
-    try:
+    with suppress(SchemaValidationError):
         await h.call("update_indexing_status_for_record_ids", ["r1"], "NOT_A_STATUS")
-    except SchemaValidationError:
-        pass
     assert_nothing_issued(h)
 
 

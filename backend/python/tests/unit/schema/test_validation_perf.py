@@ -12,10 +12,9 @@ from __future__ import annotations
 import random
 import threading
 import time
-from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import jsonschema
@@ -23,6 +22,9 @@ import pytest
 
 from app.schema import node_validator
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 RECORD_TYPES = ["FILE", "WEBPAGE", "MESSAGE", "MAIL", "TICKET", "LINK"]
 INDEXING_STATUSES = ["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "FAILED"]

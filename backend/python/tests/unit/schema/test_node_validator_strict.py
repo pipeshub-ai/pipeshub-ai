@@ -39,7 +39,7 @@ for _name in COLLECTIONS:
             UNGENERATABLE[(_name, _full)] = str(exc)
 
 
-def _params(kinds, collections=COLLECTIONS):
+def _params(kinds, collections=COLLECTIONS) -> list:
     return [
         pytest.param(name, bad, path, id=f"{name}:{kind}:{label}")
         for name in collections
@@ -79,12 +79,12 @@ def _fail_text(call, *args) -> str:
 
 
 # --- the fixtures themselves ------------------------------------------------------------------
-def test_collections_come_from_the_registry():
+def test_collections_come_from_the_registry() -> None:
     assert COLLECTIONS and NO_SCHEMA
     assert not set(COLLECTIONS) & set(NO_SCHEMA)
 
 
-def test_every_schema_is_generatable():
+def test_every_schema_is_generatable() -> None:
     """A schema the generator cannot handle is listed here, never skipped."""
     assert not UNGENERATABLE
 
@@ -93,47 +93,47 @@ def test_every_schema_is_generatable():
 @METHODS
 @pytest.mark.parametrize("full", [True, False], ids=["all-props", "required-only"])
 @pytest.mark.parametrize("name", COLLECTIONS)
-def test_valid_document_passes(name, full, method):
+def test_valid_document_passes(name, full, method) -> None:
     _accepts(method, name, DOCS[(name, full)])
 
 
 @METHODS
 @pytest.mark.parametrize("name,bad,path", ACCEPTED)
-def test_whole_number_is_a_valid_number(name, bad, path, method):
+def test_whole_number_is_a_valid_number(name, bad, path, method) -> None:
     _accepts(method, name, bad)
 
 
 @pytest.mark.parametrize("name,subset", SUBSETS)
-def test_partial_document_passes_update(name, subset):
+def test_partial_document_passes_update(name, subset) -> None:
     V.validate_node_update(name, subset)
 
 
 @pytest.mark.parametrize("name,subset", SUBSETS)
-def test_upsert_reports_exactly_the_missing_required_names(name, subset):
+def test_upsert_reports_exactly_the_missing_required_names(name, subset) -> None:
     missing = sorted(set(SCHEMAS[name].get("required") or []) - set(subset))
     assert sorted(V.validate_node_upsert(name, subset)) == missing
 
 
 @METHODS
 @pytest.mark.parametrize("name", COLLECTIONS)
-def test_id_is_ignored(name, method):
+def test_id_is_ignored(name, method) -> None:
     _accepts(method, name, {**DOCS[(name, True)], "_id": f"{name}/abc"})
 
 
 @METHODS
 @pytest.mark.parametrize("key", INTERNAL)
 @pytest.mark.parametrize("name", COLLECTIONS)
-def test_internal_properties_are_ignored_not_rejected(name, key, method):
+def test_internal_properties_are_ignored_not_rejected(name, key, method) -> None:
     _accepts(method, name, {**DOCS[(name, True)], key: "x"})
 
 
-def test_internal_properties_are_declared_by_the_validator():
+def test_internal_properties_are_declared_by_the_validator() -> None:
     assert {"khSortName", "khScope"} <= set(getattr(node_validator, "INTERNAL_PROPERTIES", ()))
 
 
 @METHODS
-@pytest.mark.parametrize("name", NO_SCHEMA + ["noSuchCollection"])
-def test_collection_without_schema_passes_silently(name, method):
+@pytest.mark.parametrize("name", [*NO_SCHEMA, "noSuchCollection"])
+def test_collection_without_schema_passes_silently(name, method) -> None:
     _accepts(method, name, {"anything": [1, {"x": None}], "_id": "x/y"})
 
 
@@ -143,43 +143,43 @@ def _expect(name: str, path: str, text: str) -> None:
 
 
 @pytest.mark.parametrize("name,bad,path", DROPS)
-def test_missing_required_key_fails_full_validation(name, bad, path):
+def test_missing_required_key_fails_full_validation(name, bad, path) -> None:
     _expect(name, path, _fail_text(V.validate_node, name, bad))
 
 
 @pytest.mark.parametrize("name,bad,path", DROPS)
-def test_missing_required_key_is_reported_by_upsert(name, bad, path):
+def test_missing_required_key_is_reported_by_upsert(name, bad, path) -> None:
     expected = sorted(set(SCHEMAS[name]["required"]) - set(bad))
     assert len(expected) == 1
     assert V.validate_node_upsert(name, bad) == expected
 
 
 @pytest.mark.parametrize("name,bad,path", DROPS)
-def test_missing_required_key_does_not_fail_update(name, bad, path):
+def test_missing_required_key_does_not_fail_update(name, bad, path) -> None:
     V.validate_node_update(name, bad)
 
 
 @pytest.mark.parametrize("name", WITH_REQUIRED)
-def test_upsert_reports_every_missing_required_name(name):
+def test_upsert_reports_every_missing_required_name(name) -> None:
     assert sorted(V.validate_node_upsert(name, {})) == sorted(SCHEMAS[name]["required"])
 
 
 @pytest.mark.parametrize("name,bad,path", OTHER_REJECTED)
-def test_full_validation_rejects(name, bad, path):
+def test_full_validation_rejects(name, bad, path) -> None:
     _expect(name, path, _fail_text(V.validate_node, name, bad))
 
 
 @pytest.mark.parametrize("name,bad,path", OTHER_REJECTED)
-def test_update_rejects(name, bad, path):
+def test_update_rejects(name, bad, path) -> None:
     _expect(name, path, _fail_text(V.validate_node_update, name, bad))
 
 
 @pytest.mark.parametrize("name,bad,path", OTHER_REJECTED)
-def test_upsert_rejects(name, bad, path):
+def test_upsert_rejects(name, bad, path) -> None:
     _expect(name, path, _fail_text(V.validate_node_upsert, name, bad))
 
 
-def test_error_message_format():
+def test_error_message_format() -> None:
     name = CollectionNames.RECORDS.value
     text = _fail_text(V.validate_node, name, {**DOCS[(name, True)], "recordName": 5})
     assert re.match(r"^Schema validation failed for collection 'records': at 'recordName': .*string", text), text
@@ -187,7 +187,7 @@ def test_error_message_format():
 
 @METHODS
 @pytest.mark.parametrize("name", OPEN_SHAPE)
-def test_unknown_key_is_accepted_where_additional_properties_are_open(name, method):
+def test_unknown_key_is_accepted_where_additional_properties_are_open(name, method) -> None:
     _accepts(method, name, {**DOCS[(name, True)], gen.UNKNOWN_KEY: 1})
 
 
@@ -202,18 +202,18 @@ def _first_bad(name: str) -> dict:
 
 @METHODS
 @pytest.mark.parametrize("name", [n for n in COLLECTIONS if (n, True) in DOCS])
-def test_enforcement_off_makes_every_call_a_no_op(name, method, monkeypatch):
+def test_enforcement_off_makes_every_call_a_no_op(name, method, monkeypatch) -> None:
     monkeypatch.setenv(ENV, "off")
     _accepts(method, name, _first_bad(name))
 
 
-def test_enforcement_off_also_skips_missing_required_names(monkeypatch):
+def test_enforcement_off_also_skips_missing_required_names(monkeypatch) -> None:
     monkeypatch.setenv(ENV, "off")
     _accepts("validate_node_upsert", WITH_REQUIRED[0], {})
 
 
 @pytest.mark.parametrize("setting", [None, "strict"])
-def test_default_and_strict_enforce(setting, monkeypatch):
+def test_default_and_strict_enforce(setting, monkeypatch) -> None:
     name = WITH_REQUIRED[0]
     monkeypatch.delenv(ENV, raising=False)
     if setting:
@@ -222,7 +222,7 @@ def test_default_and_strict_enforce(setting, monkeypatch):
         V.validate_node(name, {})
 
 
-def test_switching_back_to_strict_enforces_again(monkeypatch):
+def test_switching_back_to_strict_enforces_again(monkeypatch) -> None:
     name = WITH_REQUIRED[0]
     monkeypatch.setenv(ENV, "off")
     V.validate_node(name, {})

@@ -102,7 +102,7 @@ _TEXT = {"unicode": "naïve 日本語 🚀 שלום é", "long": "x" * 50_000}
 _NOW = 1_700_000_000_000
 
 
-def _members(ann):
+def _members(ann) -> list:
     if typing.get_origin(ann) in (typing.Union, types.UnionType):
         return [a for a in typing.get_args(ann) if a is not type(None)]
     return [ann]
@@ -112,14 +112,14 @@ def _nullable(ann) -> bool:
     return type(None) in typing.get_args(ann)
 
 
-def _fill(ann, mode: str, name: str):
+def _fill(ann, mode: str, name: str) -> object:
     cands = _members(ann)
     pick = cands[0]
     if str in cands and mode in ("empty", "unicode", "long"):
         pick = str
     origin = typing.get_origin(pick) or pick
     if isinstance(origin, type) and issubclass(origin, Enum):
-        return list(origin)[0]
+        return next(iter(origin))
     if origin is bool:
         return mode == "full"
     if origin is int:
@@ -133,7 +133,7 @@ def _fill(ann, mode: str, name: str):
         inner = args[0] if args else str
         if mode == "empty":
             return []
-        if (typing.get_origin(inner) or inner) in (dict, typing.Dict):
+        if (typing.get_origin(inner) or inner) in (dict, dict):
             return [{"column": "a", "ref": {"table": "t", "column": "id"}}]
         if inner is float:
             return [1.5, 2.5]
@@ -170,16 +170,16 @@ _OVERRIDES: dict[type, dict[str, object]] = {
 
 def _record_kwargs(cls, record_type: RecordType, mode: str) -> dict:
     text_mode = mode in ("unicode", "long")
-    kw = dict(
-        record_name=_TEXT[mode] if text_mode else "Quarterly report.pdf",
-        record_type=record_type,
-        external_record_id=_TEXT[mode] if text_mode else "ext-1",
-        version=0,
-        origin=OriginTypes.CONNECTOR,
-        connector_name=Connectors.GOOGLE_DRIVE,
-        connector_id="conn-1",
-        org_id="org-1",
-    )
+    kw = {
+        "record_name": _TEXT[mode] if text_mode else "Quarterly report.pdf",
+        "record_type": record_type,
+        "external_record_id": _TEXT[mode] if text_mode else "ext-1",
+        "version": 0,
+        "origin": OriginTypes.CONNECTOR,
+        "connector_name": Connectors.GOOGLE_DRIVE,
+        "connector_id": "conn-1",
+        "org_id": "org-1",
+    }
     base_fields = E.Record.model_fields
     if mode != "minimal":
         for name in _BASE_FILL:
@@ -283,35 +283,35 @@ def _part(cls, rt, mode, part) -> tuple[str, dict]:
 # ---------------------------------------------------------------------------
 # Non-record entities: (class, converter name, collection, required kwargs)
 # ---------------------------------------------------------------------------
-_RG_REQ = dict(
-    name="Engineering",
-    external_group_id="grp-1",
-    connector_name=Connectors.CONFLUENCE,
-    connector_id="conn-1",
-    group_type=E.RecordGroupType.CONFLUENCE_SPACES,
-)
+_RG_REQ = {
+    "name": "Engineering",
+    "external_group_id": "grp-1",
+    "connector_name": Connectors.CONFLUENCE,
+    "connector_id": "conn-1",
+    "group_type": E.RecordGroupType.CONFLUENCE_SPACES,
+}
 _ENTITIES = [
     (E.RecordGroup, "to_arango_base_record_group", CollectionNames.RECORD_GROUPS.value, _RG_REQ),
     (E.ArtifactsRecordGroup, "to_arango_base_record_group", CollectionNames.RECORD_GROUPS.value, _RG_REQ),
-    (E.Org, "to_arango_org", CollectionNames.ORGS.value, dict(name="Acme")),
-    (E.Person, "to_arango_person", CollectionNames.PEOPLE.value, dict(email="Ann@Example.com")),
+    (E.Org, "to_arango_org", CollectionNames.ORGS.value, {"name": "Acme"}),
+    (E.Person, "to_arango_person", CollectionNames.PEOPLE.value, {"email": "Ann@Example.com"}),
     (
         E.AppUser,
         "to_arango_base_user",
         CollectionNames.USERS.value,
-        dict(app_name=Connectors.SLACK, connector_id="c", source_user_id="U1", email="a@b.co", full_name="Ann"),
+        {"app_name": Connectors.SLACK, "connector_id": "c", "source_user_id": "U1", "email": "a@b.co", "full_name": "Ann"},
     ),
     (
         E.AppUserGroup,
         "to_arango_base_user_group",
         CollectionNames.GROUPS.value,
-        dict(app_name=Connectors.SLACK, connector_id="c", source_user_group_id="G1", name="eng"),
+        {"app_name": Connectors.SLACK, "connector_id": "c", "source_user_group_id": "G1", "name": "eng"},
     ),
     (
         E.AppRole,
         "to_arango_base_role",
         CollectionNames.ROLES.value,
-        dict(app_name=Connectors.SLACK, connector_id="c", source_role_id="R1", name="admin"),
+        {"app_name": Connectors.SLACK, "connector_id": "c", "source_role_id": "R1", "name": "admin"},
     ),
 ]
 _ENTITY_MODE_CASES = [
@@ -321,7 +321,7 @@ _ENTITY_MODE_CASES = [
 ]
 
 
-def _entity(cls, req, mode):
+def _entity(cls, req, mode) -> object:
     kw = dict(req)
     if mode != "minimal":
         for name, field in cls.model_fields.items():
@@ -343,53 +343,53 @@ def _entity(cls, req, mode):
 # ---------------------------------------------------------------------------
 class TestRecordPayloads:
     @pytest.mark.parametrize(("cls", "rt", "mode", "part"), _DOC_MODE_CASES)
-    def test_connector_path_docs_validate(self, cls, rt, mode, part):
+    def test_connector_path_docs_validate(self, cls, rt, mode, part) -> None:
         collection, doc = _part(cls, rt, mode, part)
         _validate(collection, _stored(doc))
 
-    def test_null_vlm_ocr_flag_is_accepted(self):
+    def test_null_vlm_ocr_flag_is_accepted(self) -> None:
         """``Record.is_vlm_ocr_processed`` is ``bool | None`` and the converter writes it as is
         (entities.py to_arango_base_record, ``isVLMOcrProcessed``); the schema says boolean only."""
         kw = _record_kwargs(E.Record, RecordType.FILE, "minimal") | {"is_vlm_ocr_processed": None}
         _validate(CollectionNames.RECORDS.value, _stored(E.Record(**kw).to_arango_base_record()))
 
     @pytest.mark.parametrize("account_type", _ACCOUNT_TYPES)
-    def test_org_account_types(self, account_type):
+    def test_org_account_types(self, account_type) -> None:
         _validate(CollectionNames.ORGS.value, _stored(E.Org(name="o", account_type=account_type).to_arango_org()))
 
     @pytest.mark.parametrize(("cls", "rt"), _RECORD_CASES)
-    def test_typed_collection_matches_mapping(self, cls, rt):
+    def test_typed_collection_matches_mapping(self, cls, rt) -> None:
         """The pair has a subtype doc exactly when the mapping names a collection (guards the corpus itself)."""
         assert (len(_record_docs(cls, rt, "minimal")) == 2) == _has_typed_doc(cls, rt)
 
     @pytest.mark.parametrize("rt", list(RecordType), ids=lambda r: r.value)
-    def test_every_record_type_base_doc(self, rt):
+    def test_every_record_type_base_doc(self, rt) -> None:
         doc = E.Record(**_record_kwargs(E.Record, rt, "full")).to_arango_base_record()
         _validate(CollectionNames.RECORDS.value, _stored(doc))
 
     @pytest.mark.parametrize("origin", list(OriginTypes), ids=lambda o: o.value)
-    def test_every_origin(self, origin):
+    def test_every_origin(self, origin) -> None:
         kw = _record_kwargs(E.Record, RecordType.FILE, "minimal") | {"origin": origin}
         _validate(CollectionNames.RECORDS.value, _stored(E.Record(**kw).to_arango_base_record()))
 
     @pytest.mark.parametrize("connector", list(Connectors), ids=lambda c: c.name)
-    def test_every_connector_name(self, connector):
+    def test_every_connector_name(self, connector) -> None:
         kw = _record_kwargs(E.Record, RecordType.FILE, "minimal") | {"connector_name": connector}
         _validate(CollectionNames.RECORDS.value, _stored(E.Record(**kw).to_arango_base_record()))
 
     @pytest.mark.parametrize("status", list(ProgressStatus), ids=lambda s: s.name)
     @pytest.mark.parametrize("field", ["parsing_status", "indexing_status", "extraction_status"])
-    def test_every_progress_status(self, field, status):
+    def test_every_progress_status(self, field, status) -> None:
         kw = _record_kwargs(E.Record, RecordType.FILE, "minimal") | {field: status.value}
         _validate(CollectionNames.RECORDS.value, _stored(E.Record(**kw).to_arango_base_record()))
 
     @pytest.mark.parametrize("rule", list(AccessRule), ids=lambda r: r.name)
-    def test_every_access_rule(self, rule):
+    def test_every_access_rule(self, rule) -> None:
         kw = _record_kwargs(E.Record, RecordType.FILE, "minimal") | {"access_rule": rule}
         _validate(CollectionNames.RECORDS.value, _stored(E.Record(**kw).to_arango_base_record()))
 
     @pytest.mark.parametrize("source", [*DeleteSource, None], ids=lambda s: getattr(s, "name", "none"))
-    def test_every_delete_source(self, source):
+    def test_every_delete_source(self, source) -> None:
         kw = _record_kwargs(E.Record, RecordType.FILE, "minimal") | {
             "is_deleted": source is not None,
             "deleted_at": _NOW if source else None,
@@ -398,7 +398,7 @@ class TestRecordPayloads:
         _validate(CollectionNames.RECORDS.value, _stored(E.Record(**kw).to_arango_base_record()))
 
     @pytest.mark.parametrize("status", list(E.LinkPublicStatus), ids=lambda s: s.name)
-    def test_every_link_public_status(self, status):
+    def test_every_link_public_status(self, status) -> None:
         kw = _record_kwargs(E.LinkRecord, RecordType.LINK, "minimal") | {"is_public": status}
         _validate(CollectionNames.LINKS.value, _stored(E.LinkRecord(**kw).to_arango_record()))
 
@@ -408,7 +408,7 @@ class TestRecordPayloads:
                                 ("delivery_status", E.DeliveryStatus)] for m in enum],
         ids=lambda v: getattr(v, "name", v),
     )
-    def test_every_ticket_enum_member(self, field, member):
+    def test_every_ticket_enum_member(self, field, member) -> None:
         kw = _record_kwargs(E.TicketRecord, RecordType.TICKET, "minimal") | {field: member}
         _validate(CollectionNames.TICKETS.value, _stored(E.TicketRecord(**kw).to_arango_record()))
 
@@ -418,11 +418,11 @@ class TestRecordPayloads:
                                 ("visibility", E.ArtifactVisibility)] for m in enum],
         ids=lambda v: getattr(v, "name", v),
     )
-    def test_every_artifact_enum_member(self, field, member):
+    def test_every_artifact_enum_member(self, field, member) -> None:
         kw = _record_kwargs(E.ArtifactRecord, RecordType.ARTIFACT, "minimal") | {field: member}
         _validate(CollectionNames.ARTIFACTS.value, _stored(E.ArtifactRecord(**kw).to_arango_artifact_record()))
 
-    def test_artifact_with_versions_and_result_schema(self):
+    def test_artifact_with_versions_and_result_schema(self) -> None:
         kw = _record_kwargs(E.ArtifactRecord, RecordType.ARTIFACT, "minimal") | {
             "versions": [{"registryVersion": 1, "storageVersion": 0, "contentHash": "h", "sizeBytes": 3, "createdAt": 5}],
             "result_schema": {"type": "object", "properties": {"rows": {"type": "array", "items": {"type": "object"}}}},
@@ -430,14 +430,14 @@ class TestRecordPayloads:
         doc = E.ArtifactRecord(**kw).to_arango_artifact_record()
         _validate(CollectionNames.ARTIFACTS.value, _stored(doc))
 
-    def test_sql_table_with_foreign_keys(self):
+    def test_sql_table_with_foreign_keys(self) -> None:
         kw = _record_kwargs(E.SQLTableRecord, RecordType.SQL_TABLE, "minimal") | {
             "foreign_keys": [{"column": "user_id", "ref": {"table": "users", "column": "id"}}],
             "primary_keys": ["id"],
         }
         _validate(CollectionNames.SQL_TABLES.value, _stored(E.SQLTableRecord(**kw).to_arango_record()))
 
-    def test_neo4j_readback_with_record_properties_and_internal_keys(self):
+    def test_neo4j_readback_with_record_properties_and_internal_keys(self) -> None:
         """A record read back from Neo4j carries ``p_*`` projections and ``kh*`` keys; the read path strips ``kh*``."""
         provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
         doc = E.Record(**_record_kwargs(E.Record, RecordType.FILE, "full")).to_arango_base_record()
@@ -451,28 +451,28 @@ class TestRecordPayloads:
 
 class TestEntityPayloads:
     @pytest.mark.parametrize(("cls", "conv", "collection", "req", "mode"), _ENTITY_MODE_CASES)
-    def test_converter_output_validates(self, cls, conv, collection, req, mode):
+    def test_converter_output_validates(self, cls, conv, collection, req, mode) -> None:
         doc = getattr(_entity(cls, req, mode), conv)()
         _validate(collection, _stored(doc))
 
     @pytest.mark.parametrize("group_type", list(E.RecordGroupType), ids=lambda g: g.name)
-    def test_every_record_group_type(self, group_type):
+    def test_every_record_group_type(self, group_type) -> None:
         kw = _RG_REQ | {"group_type": group_type}
         _validate(CollectionNames.RECORD_GROUPS.value, _stored(E.RecordGroup(**kw).to_arango_base_record_group()))
 
     @pytest.mark.parametrize("model", [PermissionModel.RECORD_GROUP_LEVEL, PermissionModel.RECORD_LEVEL, None],
                              ids=lambda m: getattr(m, "name", "none"))
-    def test_record_group_permission_models(self, model):
+    def test_record_group_permission_models(self, model) -> None:
         kw = _RG_REQ | {"permission_model": model}
         _validate(CollectionNames.RECORD_GROUPS.value, _stored(E.RecordGroup(**kw).to_arango_base_record_group()))
 
     @pytest.mark.parametrize("rule", list(AccessRule), ids=lambda r: r.name)
-    def test_record_group_access_rules(self, rule):
+    def test_record_group_access_rules(self, rule) -> None:
         kw = _RG_REQ | {"access_rule": rule}
         _validate(CollectionNames.RECORD_GROUPS.value, _stored(E.RecordGroup(**kw).to_arango_base_record_group()))
 
     @pytest.mark.parametrize("connector", list(Connectors), ids=lambda c: c.name)
-    def test_every_connector_on_record_group_role_and_user(self, connector):
+    def test_every_connector_on_record_group_role_and_user(self, connector) -> None:
         _validate(CollectionNames.RECORD_GROUPS.value,
                   _stored(E.RecordGroup(**(_RG_REQ | {"connector_name": connector})).to_arango_base_record_group()))
         role = E.AppRole(app_name=connector, connector_id="c", source_role_id="R", name="r")
@@ -480,7 +480,7 @@ class TestEntityPayloads:
         group = E.AppUserGroup(app_name=connector, connector_id="c", source_user_group_id="G", name="g")
         _validate(CollectionNames.GROUPS.value, _stored(group.to_arango_base_user_group()))
 
-    def test_user_as_neo4j_provider_writes_it(self):
+    def test_user_as_neo4j_provider_writes_it(self) -> None:
         """``upsert_users`` adds ``id``, ``orgId`` and ``isActive`` to the converter output (neo4j_provider.py)."""
         user = E.AppUser(app_name=Connectors.SLACK, connector_id="c", source_user_id="U", email="a@b.co",
                          full_name="Ann", title="Engineer")
@@ -489,7 +489,7 @@ class TestEntityPayloads:
         doc.pop("_key")
         _validate(CollectionNames.USERS.value, doc)
 
-    def test_app_documents(self):
+    def test_app_documents(self) -> None:
         """Apps have no Python converter (the Node service writes them); this mirrors ``AppMetadata.from_db_document``."""
         minimal = {"_key": "c1", "name": "Drive", "type": "GOOGLE_DRIVE", "appGroup": "Google Workspace",
                    "scope": "personal", "isActive": True, "createdAtTimestamp": _NOW}
@@ -509,7 +509,7 @@ class TestEntityPayloads:
 # ---------------------------------------------------------------------------
 class TestRawConverterOutput:
     @pytest.mark.parametrize(("cls", "rt", "mode", "part"), [p for p in _DOC_MODE_CASES if p.values[2] == "full"])
-    def test_converter_output_with_arango_key_is_accepted(self, cls, rt, mode, part):
+    def test_converter_output_with_arango_key_is_accepted(self, cls, rt, mode, part) -> None:
         """The converters emit ``_key`` and callers validate before conversion.
 
         The registry adapts ``_key`` to ``id`` (node_schema_registry.adapt_schema), so on every schema that is
@@ -518,7 +518,7 @@ class TestRawConverterOutput:
         _validate(*_part(cls, rt, mode, part))
 
     @pytest.mark.parametrize(("cls", "conv", "collection", "req"), _ENTITIES, ids=lambda v: getattr(v, "__name__", None))
-    def test_entity_converter_output_with_arango_key_is_accepted(self, cls, conv, collection, req):
+    def test_entity_converter_output_with_arango_key_is_accepted(self, cls, conv, collection, req) -> None:
         _validate(collection, getattr(_entity(cls, req, "full"), conv)())
 
 
@@ -543,20 +543,20 @@ def _comparable(doc: dict) -> dict:
 
 class TestNeo4jRoundTrip:
     @pytest.mark.parametrize(("cls", "rt", "mode", "part"), _DOC_MODE_CASES)
-    def test_record_docs_survive_round_trip_and_validate(self, provider, cls, rt, mode, part):
+    def test_record_docs_survive_round_trip_and_validate(self, provider, cls, rt, mode, part) -> None:
         collection, doc = _part(cls, rt, mode, part)
         back = _round_trip(provider, collection, doc)
         assert _comparable(back) == _comparable(doc)
         _validate(collection, _stored(back))
 
     @pytest.mark.parametrize(("cls", "conv", "collection", "req", "mode"), _ENTITY_MODE_CASES)
-    def test_entity_docs_survive_round_trip_and_validate(self, provider, cls, conv, collection, req, mode):
+    def test_entity_docs_survive_round_trip_and_validate(self, provider, cls, conv, collection, req, mode) -> None:
         doc = getattr(_entity(cls, req, mode), conv)()
         back = _round_trip(provider, collection, doc)
         assert _comparable(back) == _comparable(doc)
         _validate(collection, _stored(back))
 
-    def test_artifact_nested_values_round_trip_and_validate(self, provider):
+    def test_artifact_nested_values_round_trip_and_validate(self, provider) -> None:
         kw = _record_kwargs(E.ArtifactRecord, RecordType.ARTIFACT, "minimal") | {
             "result_schema": {"type": "object", "properties": {"rows": {"type": "array", "items": {"type": "object"}}}},
             "versions": [{"registryVersion": 1, "storageVersion": 0, "contentHash": "h", "sizeBytes": 3, "createdAt": 5}],
@@ -566,7 +566,7 @@ class TestNeo4jRoundTrip:
         assert back["resultSchema"] == doc["resultSchema"]
         _validate(CollectionNames.ARTIFACTS.value, _stored(back))
 
-    def test_sql_table_foreign_keys_round_trip_and_validate(self, provider):
+    def test_sql_table_foreign_keys_round_trip_and_validate(self, provider) -> None:
         fks = [{"column": "user_id", "ref": {"table": "users", "column": "id"}, "on_delete": None}]
         kw = _record_kwargs(E.SQLTableRecord, RecordType.SQL_TABLE, "minimal") | {"foreign_keys": fks}
         doc = E.SQLTableRecord(**kw).to_arango_record()
@@ -574,7 +574,7 @@ class TestNeo4jRoundTrip:
         assert back["foreignKeys"] == fks
         _validate(CollectionNames.SQL_TABLES.value, _stored(back))
 
-    def test_record_props_round_trip_and_validate(self, provider):
+    def test_record_props_round_trip_and_validate(self, provider) -> None:
         doc = E.Record(**_record_kwargs(E.Record, RecordType.FILE, "full")).to_arango_base_record()
         doc["recordProps"] = {"owner": "ann", "tags": ["a", "b"], "nested": {"k": [1, {"z": None}]}}
         back = _round_trip(provider, CollectionNames.RECORDS.value, doc)
@@ -603,11 +603,11 @@ _NESTED_CASES = [
 
 class TestJsonEncodedFields:
     @pytest.mark.parametrize(("collection", "field"), _NESTED_CASES)
-    def test_declared_field_has_a_sample(self, collection, field):
+    def test_declared_field_has_a_sample(self, collection, field) -> None:
         assert (collection, field) in _NESTED_SAMPLES, "add a realistic nested sample for this encoded field"
 
     @pytest.mark.parametrize(("collection", "field"), _NESTED_CASES)
-    def test_value_survives_write_and_read_and_satisfies_its_property_schema(self, provider, collection, field):
+    def test_value_survives_write_and_read_and_satisfies_its_property_schema(self, provider, collection, field) -> None:
         value = _NESTED_SAMPLES[(collection, field)]
         node = provider._arango_to_neo4j_node({"_key": "k1", field: value}, collection)
         assert isinstance(node[field], str), "Neo4j has no map property: the writer must JSON-encode it"
@@ -629,7 +629,7 @@ class TestJsonEncodedFields:
 _EXEMPT = {("User", "to_arango_base_record")}
 
 
-def test_every_to_arango_converter_in_entities_is_exercised():
+def test_every_to_arango_converter_in_entities_is_exercised() -> None:
     defined = {
         (cls.__name__, name)
         for _, cls in inspect.getmembers(E, inspect.isclass)
@@ -647,5 +647,5 @@ def test_every_to_arango_converter_in_entities_is_exercised():
     assert defined - covered - _EXEMPT == set()
 
 
-def test_every_record_type_is_covered():
+def test_every_record_type_is_covered() -> None:
     assert {rt for rts in _RECORD_CLASSES.values() for rt in rts} == set(RecordType)

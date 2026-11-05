@@ -10,15 +10,22 @@ reason. The set starts empty on purpose.
 """
 
 import importlib
-from typing import Any
+from collections.abc import Iterator
 
 import pytest
 from jsonschema import validators
 
 from app.config.constants.arangodb import CollectionNames
 from app.schema import node_validator
-from app.schema.node_schema_registry import JSON_ENCODED_FIELDS, NODE_SCHEMA_REGISTRY, adapt_schema
-from app.services.graph_db.arango.arango_http_provider import EDGE_COLLECTIONS, NODE_COLLECTIONS
+from app.schema.node_schema_registry import (
+    JSON_ENCODED_FIELDS,
+    NODE_SCHEMA_REGISTRY,
+    adapt_schema,
+)
+from app.services.graph_db.arango.arango_http_provider import (
+    EDGE_COLLECTIONS,
+    NODE_COLLECTIONS,
+)
 
 # (kind, collection) -> one-line reason the collection may lack a registry schema.
 WAIVERS: dict[tuple[str, str], str] = {}
@@ -42,7 +49,7 @@ DRAFT_DIVERGENT_KEYWORDS = frozenset({
 _REGISTRY_MODULES = ("app.schema.edge_schema_registry", "app.schema.node_schema_registry")
 
 
-def _from_registry_modules(name: str) -> Any:
+def _from_registry_modules(name: str) -> object:
     """`name` from wherever the change defines it, or None while it does not exist."""
     for module in _REGISTRY_MODULES:
         try:
@@ -58,7 +65,7 @@ def _edge_registry() -> dict[str, dict | None] | None:
     return _from_registry_modules("EDGE_SCHEMA_REGISTRY")
 
 
-def _subschemas(schema: dict, path: str = "root"):
+def _subschemas(schema: dict, path: str = "root") -> Iterator[tuple[str, dict]]:
     """Yield (path, schema node) for every schema position. Property names are not keywords."""
     yield path, schema
     for key in ("properties", "patternProperties", "definitions", "$defs"):

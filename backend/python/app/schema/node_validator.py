@@ -157,10 +157,9 @@ def _clean(collection: str, payload: dict[str, Any], strip: frozenset[str]) -> d
     for key in INTERNAL_PROPERTIES.intersection(payload):
         if not (payload[key] is None or isinstance(payload[key], (str, int, float, bool))):
             raise SchemaValidationError(collection, f"at '{key}': internal property must be a string, number, boolean or null")
-    if "_key" in payload:
-        if not isinstance(payload["_key"], str):
-            raise SchemaValidationError(collection, "at '_key': must be a string")
-        # A differing `_key` is not an error: providers let the requested key win over a stale one in the node.
+    if "_key" in payload and not isinstance(payload["_key"], str):
+        raise SchemaValidationError(collection, "at '_key': must be a string")
+    # A differing `_key` is not an error: providers let the requested key win over a stale one in the node.
     cleaned = {key: value for key, value in payload.items() if key not in strip}
     if "_key" in payload and "id" not in payload:
         cleaned["id"] = payload["_key"]

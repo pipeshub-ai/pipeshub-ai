@@ -15,7 +15,8 @@ that names the collection, never a silent skip.
 import copy
 import random
 import re
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from jsonschema import Draft4Validator, validators
 
@@ -36,7 +37,7 @@ def _types(schema: dict) -> set[str]:
     return set(declared) if isinstance(declared, list) else ({declared} if declared else set())
 
 
-def _matches(value: Any, types: set[str]) -> bool:
+def _matches(value: object, types: set[str]) -> bool:
     if not types:
         return True
     if value is None:
@@ -86,7 +87,7 @@ def from_pattern(pattern: str, rng: random.Random) -> str:
 
 
 # --- values -----------------------------------------------------------------------------------
-def _value(schema: dict, rng: random.Random, full: bool, depth: int = 0) -> Any:
+def _value(schema: dict, rng: random.Random, full: bool, depth: int = 0) -> object:
     if depth > _MAX_DEPTH:
         raise Ungeneratable("schema nests deeper than the generator allows")
     for word in _UNSUPPORTED:
@@ -152,18 +153,18 @@ def build_doc(schema: dict, seed: str, full: bool = True) -> dict:
 Mutation = tuple[str, dict, str]  # (label, mutated doc, dotted path jsonschema reports)
 
 
-def _slots(schema: dict, value: Any, path: tuple = ()) -> Iterator[tuple[tuple, dict]]:
+def _slots(schema: dict, value: object, path: tuple = ()) -> Iterator[tuple[tuple, dict]]:
     """(path, property schema) for every declared property present in `value`, nested included."""
     if isinstance(value, dict):
         for name, sub in (schema.get("properties") or {}).items():
             if name in value:
-                yield path + (name,), sub
-                yield from _slots(sub, value[name], path + (name,))
+                yield (*path, name), sub
+                yield from _slots(sub, value[name], (*path, name))
     elif isinstance(value, list) and isinstance(schema.get("items"), dict) and value:
-        yield from _slots(schema["items"], value[0], path + (0,))
+        yield from _slots(schema["items"], value[0], (*path, 0))
 
 
-def _set(doc: dict, path: tuple, new: Any) -> dict:
+def _set(doc: dict, path: tuple, new: object) -> dict:
     out = copy.deepcopy(doc)
     node = out
     for step in path[:-1]:
@@ -185,9 +186,11 @@ def mutations(schema: dict, doc: dict, kind: str, skip: frozenset = frozenset())
     """Every way to break `doc` in one `kind` of way. Keys in `skip` (edge endpoints) are left alone."""
     found: list[Mutation] = []
     if kind == "required":
-        for name in schema.get("required") or []:
-            if name not in skip:
-                found.append((f"drop {name}", {k: v for k, v in doc.items() if k != name}, "root"))
+        found.extend(
+            (f"drop {name}", {k: v for k, v in doc.items() if k != name}, "root")
+            for name in schema.get("required") or []
+            if name not in skip
+        )
     elif kind == "unknown_key":
         if schema.get("additionalProperties") is False:
             found.append((f"add {UNKNOWN_KEY}", {**doc, UNKNOWN_KEY: "x"}, "root"))

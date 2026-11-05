@@ -24,11 +24,10 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -41,8 +40,10 @@ from app.config.constants.neo4j import (
     Neo4jRelationshipType,
 )
 from app.schema.arango import documents as arango_documents
-from app.schema.arango import edges as arango_edges
 from app.schema.node_schema_registry import adapt_schema, get_node_schema
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 pytestmark = pytest.mark.unit
 
@@ -124,7 +125,7 @@ def _undeclared(schema: dict, keys: set[str]) -> list[str]:
     )
 
 
-def _value_errors(schema: dict, key: str, value: Any) -> list[str]:
+def _value_errors(schema: dict, key: str, value: object) -> list[str]:
     prop = schema.get("properties", {}).get(key)
     if prop is None:
         return []
@@ -458,7 +459,7 @@ class RawWrite:
     def id(self) -> str:
         return f"{self.method}::{self.target}.{self.field}::{self.operation}"
 
-    def value(self) -> Any:
+    def value(self) -> object:
         if self.literal in {"true", "false"}:
             return self.literal == "true"
         if self.literal.startswith("'"):
@@ -527,11 +528,11 @@ def _raw_writes() -> tuple[RawWrite, ...]:
         nodes: dict[str, set[str]] = {}
         for var, label in _NODE_PATTERN.findall(text):
             nodes.setdefault(var, set()).add(label)
-        rels = {var: label for var, label in _REL_PATTERN.findall(text)}
+        rels = dict(_REL_PATTERN.findall(text))
         for var, label in re.findall(r"\bSET\s+(\w+)\s*:\s*(\w+)", text):  # a relabel: later writes hit the new label
             nodes[var] = {label}
 
-        def target(var: str) -> tuple[str, bool] | None:
+        def target(var: str, nodes=nodes, rels=rels) -> tuple[str, bool] | None:
             labels = nodes.get(var)
             if labels and len(labels) == 1:
                 collection = LABEL_TO_COLLECTION.get(next(iter(labels)))

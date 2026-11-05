@@ -29,6 +29,7 @@ the whole list under ``ids``.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import logging
@@ -56,7 +57,7 @@ BOGUS = "NOT_A_REAL_VALUE"
 # --------------------------------------------------------------------------------------------
 
 
-def _strings(value: Any) -> list[str]:
+def _strings(value: object) -> list[str]:
     """Every string found anywhere inside *value* (parameters nest rows inside rows)."""
     if isinstance(value, str):
         return [value]
@@ -70,7 +71,7 @@ def _strings(value: Any) -> list[str]:
 def _answers(existing: set[str]) -> Callable[..., Awaitable[list[dict]]]:
     """Answers statements: constraint checks pass, writes succeed, anything else is an existence probe."""
 
-    async def answer(query: str, parameters: Any = None, *args: Any, **kwargs: Any) -> list[dict]:
+    async def answer(query: str, parameters: object = None, *args: object, **kwargs: object) -> list[dict]:
         if "SHOW CONSTRAINTS" in query:
             return [{"found": 1}]
         if WRITE_CYPHER.search(query):
@@ -151,7 +152,7 @@ TEMPLATES = "agentTemplates"
 NO_SCHEMA = "drives"
 
 
-def _record(key: str = "r1", **override: Any) -> dict[str, Any]:
+def _record(key: str = "r1", **override: object) -> dict[str, object]:
     node = {
         "_key": key, "orgId": "o1", "recordName": "a.txt", "externalRecordId": f"ext-{key}",
         "recordType": "FILE", "origin": "CONNECTOR", "createdAtTimestamp": 1, "connectorId": "c1",
@@ -160,7 +161,7 @@ def _record(key: str = "r1", **override: Any) -> dict[str, Any]:
     return node
 
 
-def _skill(key: str = "s1", **override: Any) -> dict[str, Any]:
+def _skill(key: str = "s1", **override: object) -> dict[str, object]:
     node = {
         "_key": key, "orgId": "o1", "name": "n", "description": "d", "content": "c", "status": "active",
         "createdBy": "u1", "createdAtTimestamp": 1, "resources": {"files": [{"path": "a", "meta": {"x": 1}}]},
@@ -169,7 +170,7 @@ def _skill(key: str = "s1", **override: Any) -> dict[str, Any]:
     return node
 
 
-def _template(key: str = "t1", **override: Any) -> dict[str, Any]:
+def _template(key: str = "t1", **override: object) -> dict[str, object]:
     node = {
         "_key": key, "name": "n", "description": "d", "startMessage": "s", "systemPrompt": "p",
         "tools": [{"name": "x", "description": "y"}],
@@ -247,39 +248,8 @@ CLASSIFICATION: dict[str, str] = {
 }
 
 # Names filled in below from the first run of the classification test (deletes and maintenance).
-CLASSIFICATION.update({
-    name: _D for name in (
-        "batch_delete_edges", "delete_all_edges_for_node", "delete_all_team_permissions", "delete_edge",
-        "delete_edges_between_collections", "delete_edges_by_relationship_types",
-        "delete_edges_by_source_keys", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups",
-        "delete_edges_touching_nodes", "delete_kb_hub_app", "delete_nodes", "delete_nodes_and_edges",
-        "delete_parent_child_edge_to_record", "delete_records_and_relations", "delete_records_recursive",
-        "delete_single_record", "delete_team_member_edges", "hard_delete_agent", "hard_delete_all_agents",
-        "reap_stale_external_app_relations", "remove_authenticated_as", "remove_kb_permission",
-        "remove_nodes_by_field", "remove_sync_point", "remove_user_access_to_connector",
-        "remove_user_access_to_record", "stage_states_delete_for_virtual_records",
-        "stage_states_delete_unheld_revisions", "delete_agent", "delete_agent_template",
-        "delete_blocks_by_connector_id", "delete_blocks_for_records", "delete_connector_instance",
-        "delete_connector_sync_edges", "delete_dangling_named_entity_mentions",
-        "delete_dangling_named_entity_values", "delete_inherit_permissions_relation_record_group",
-        "delete_orphan_named_entities", "delete_record", "delete_record_by_external_id",
-        "delete_sync_points_by_connector_id", "purge_trash_kept_record_groups", "purge_trashed_records",
-        "drop_redundant_group_edges",
-    )
-})
-CLASSIFICATION.update({
-    name: _I for name in (
-        "backfill_app_org_ids", "backfill_block_name_folded", "backfill_hierarchy",
-        "backfill_indexed_copy_flags", "heal_taxonomy_alias_nodes", "migrate_legacy_kb_to_app",
-        "migrate_person_to_user", "normalize_folder_mime_types", "restore_records", "soft_delete_records",
-        "stamp_kh_listing_state", "kh_scope_forget", "kh_scope_mark_changed", "kh_scope_mark_stale",
-        "kh_scope_reset_syncing", "kh_scope_restamp_stale", "kh_scope_stamp", "kh_scope_sync_ended",
-        "clear_named_entity_persist_retry", "clear_orphan_named_entity_marks", "mark_orphan_named_entities",
-        "schedule_named_entity_persist_retry", "schedule_named_entity_reextract",
-        "schedule_named_entity_reproject", "migrate_agent_hub_knowledge", "name_knowledge_hub_parents",
-        "reindex_record_group_records", "reindex_single_record", "unlink_nodes_missed_by_full_sync",
-    )
-})
+CLASSIFICATION.update(dict.fromkeys(("batch_delete_edges", "delete_all_edges_for_node", "delete_all_team_permissions", "delete_edge", "delete_edges_between_collections", "delete_edges_by_relationship_types", "delete_edges_by_source_keys", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_kb_hub_app", "delete_nodes", "delete_nodes_and_edges", "delete_parent_child_edge_to_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges", "hard_delete_agent", "hard_delete_all_agents", "reap_stale_external_app_relations", "remove_authenticated_as", "remove_kb_permission", "remove_nodes_by_field", "remove_sync_point", "remove_user_access_to_connector", "remove_user_access_to_record", "stage_states_delete_for_virtual_records", "stage_states_delete_unheld_revisions", "delete_agent", "delete_agent_template", "delete_blocks_by_connector_id", "delete_blocks_for_records", "delete_connector_instance", "delete_connector_sync_edges", "delete_dangling_named_entity_mentions", "delete_dangling_named_entity_values", "delete_inherit_permissions_relation_record_group", "delete_orphan_named_entities", "delete_record", "delete_record_by_external_id", "delete_sync_points_by_connector_id", "purge_trash_kept_record_groups", "purge_trashed_records", "drop_redundant_group_edges"), _D))
+CLASSIFICATION.update(dict.fromkeys(("backfill_app_org_ids", "backfill_block_name_folded", "backfill_hierarchy", "backfill_indexed_copy_flags", "heal_taxonomy_alias_nodes", "migrate_legacy_kb_to_app", "migrate_person_to_user", "normalize_folder_mime_types", "restore_records", "soft_delete_records", "stamp_kh_listing_state", "kh_scope_forget", "kh_scope_mark_changed", "kh_scope_mark_stale", "kh_scope_reset_syncing", "kh_scope_restamp_stale", "kh_scope_stamp", "kh_scope_sync_ended", "clear_named_entity_persist_retry", "clear_orphan_named_entity_marks", "mark_orphan_named_entities", "schedule_named_entity_persist_retry", "schedule_named_entity_reextract", "schedule_named_entity_reproject", "migrate_agent_hub_knowledge", "name_knowledge_hub_parents", "reindex_record_group_records", "reindex_single_record", "unlink_nodes_missed_by_full_sync"), _I))
 
 # Names a method must start with to count as a write when its body holds no Cypher write keyword
 # (it delegates to another method). A write method that matches neither is missed: keep this list wide.
@@ -731,16 +701,16 @@ async def test_targeted_status_write_through_the_field_updater_rejects_a_bogus_s
     ids=["isDeleted", "connectorId", "app-isActive", "user-isActive"],
 )
 class TestTargetedFields:
-    async def test_good_value_is_written(self, collection: str, field: str, good: Any, bad: Any) -> None:
+    async def test_good_value_is_written(self, collection: str, field: str, good: object, bad: object) -> None:
         p = _provider()
         assert await p.update_node_fields_if_match("k1", collection, {field: good}, {field: None}) is True
         assert len(_writes(p)) == 1
 
-    async def test_bad_value_is_rejected_before_the_statement(self, collection: str, field: str, good: Any, bad: Any) -> None:
+    async def test_bad_value_is_rejected_before_the_statement(self, collection: str, field: str, good: object, bad: object) -> None:
         p = _provider()
         await _rejected(p, p.update_node_fields_if_match("k1", collection, {field: bad}, {field: None}))
 
-    async def test_bad_value_through_update_node_is_rejected(self, collection: str, field: str, good: Any, bad: Any) -> None:
+    async def test_bad_value_through_update_node_is_rejected(self, collection: str, field: str, good: object, bad: object) -> None:
         p = _provider()
         await _rejected(p, p.update_node("k1", collection, {field: bad}))
 
@@ -755,10 +725,8 @@ async def test_status_only_update_of_records_ids_accepts_every_status() -> None:
 
 async def test_status_only_update_of_records_rejects_a_bogus_status_without_writing() -> None:
     p = _provider(existing=("r1",))
-    try:
+    with contextlib.suppress(SchemaValidationError):  # raising is acceptable too
         await p.update_indexing_status_for_record_ids(["r1"], BOGUS)
-    except SchemaValidationError:
-        pass  # raising is acceptable too
     assert _writes(p) == []
 
 
@@ -770,10 +738,8 @@ async def test_connector_status_batch_writes_booleans() -> None:
 
 async def test_connector_status_batch_does_not_write_a_non_boolean() -> None:
     p = _provider()
-    try:
+    with contextlib.suppress(SchemaValidationError):  # this writer swallows other failures; raising is acceptable
         await p.batch_update_connector_status("apps", ["a1"], is_active="yes", is_agent_active=False)  # type: ignore[arg-type]
-    except SchemaValidationError:
-        pass  # this writer swallows other failures; raising is acceptable
     assert _writes(p) == []
 
 
@@ -786,10 +752,8 @@ async def test_user_sync_state_accepts_the_declared_states() -> None:
 
 async def test_user_sync_state_does_not_write_a_bogus_state() -> None:
     p = _provider()
-    try:
+    with contextlib.suppress(SchemaValidationError):  # this writer swallows other failures; raising is acceptable
         await p.update_user_sync_state("u@example.com", BOGUS, "DRIVE")
-    except SchemaValidationError:
-        pass  # this writer swallows other failures; raising is acceptable
     assert _writes(p) == []
 
 
@@ -823,7 +787,7 @@ class EdgeFamily:
     props: dict[str, Any]
     breakers: dict[str, Callable[[dict], dict]]
 
-    def edge(self, fmt: str, i: int = 1, **override: Any) -> dict[str, Any]:
+    def edge(self, fmt: str, i: int = 1, **override: object) -> dict[str, object]:
         return {**ENDS[fmt](f"a{i}", f"b{i}", self.from_coll, self.to_coll), **self.props, **override}
 
 
