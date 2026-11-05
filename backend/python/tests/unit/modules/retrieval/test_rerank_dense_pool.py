@@ -4,10 +4,11 @@ with the switch off a search is what it was."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval.record_cut import FUSION_RECORD_CUT_ENV_VAR
 from app.modules.retrieval.record_rerank import POINTS, record_rerank_settings
 from app.modules.retrieval.record_rerank.dense_pool import (
@@ -115,6 +116,18 @@ class _DenseFake(_FakeStore):
         return out
 
 
+@dataclass
+class _PartialDenseFake(_DenseFake):
+    """The dense-only request is answered from a partial search."""
+
+    async def query_nearest_points(self, collection_name: str, requests: list[HybridSearchRequest]) -> list:
+        out = await super().query_nearest_points(collection_name, requests)
+        return [
+            [replace(p, degraded="timeout") for p in batch] if self.dense(req) else batch
+            for batch, req in zip(out, requests)
+        ]
+
+
 def _pooled(**settings: object) -> object:
     return _rerank(dense_pool=200, pool=200, **settings)
 
@@ -211,6 +224,14 @@ class TestContainerPath:
         assert "r11" not in _shown_records(response)
         assert _shown_records(response)[0] == "r3"
 
+    async def test_no_dense_request_when_verification_is_unavailable(self) -> None:
+        store = _DenseFake()
+        service = _container_service(store, self.readers)
+        service.graph_provider.check_access = AsyncMock(side_effect=PermissionVerificationUnavailableError("down"))
+        await _search(service, limit=10, record_rerank=_pooled())
+        assert not [r for r in store.requests if store.dense(r)]
+        assert _Scripted.requests == []
+
     async def test_a_failed_access_check_reranks_the_admitted_hits(self) -> None:
         service = _container_service(_DenseFake(), self.readers)
         check = service.graph_provider.check_access.side_effect
@@ -228,3 +249,22 @@ class TestContainerPath:
         response = await _search(service, limit=10, record_rerank=_pooled())
         assert "r11" not in [c.record_id for c in _Scripted.requests[0].candidates]
         assert _shown_records(response)[0] == "r3"
+
+
+class TestPartialDenseSearch:
+    async def test_a_partial_dense_search_marks_the_response(self) -> None:
+        _Scripted.ranking = ["r11"]
+        response = await _search(_service(_PartialDenseFake(), _graph()), record_rerank=_pooled())
+        assert response["searchDegraded"] is True
+
+    async def test_the_container_path_marks_it_too(self) -> None:
+        _Scripted.ranking = ["r11"]
+        response = await _search(
+            _container_service(_PartialDenseFake(), TestContainerPath.readers), limit=10, record_rerank=_pooled(),
+        )
+        assert response["searchDegraded"] is True
+
+    async def test_without_the_dense_pool_nothing_is_marked(self) -> None:
+        _Scripted.ranking = ["r3"]
+        response = await _search(_service(_PartialDenseFake(), _graph()), record_rerank=_rerank())
+        assert "searchDegraded" not in response

@@ -17,6 +17,8 @@ import pytest
 
 import app.modules.retrieval.retrieval_service as mod
 from app.agents.chat_modes.prefetch import prefetch_retrieval
+from app.exceptions.fastapi_responses import Status
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval.context.ordering import order_for_reading
 from app.modules.retrieval.context.ranking import rank_units
 from app.modules.retrieval.record_cut import FUSION_RECORD_CUT_ENV_VAR
@@ -221,6 +223,15 @@ class TestPermissions:
         assert set(_shown_records(response)) <= readers[("dave", ORG_1)]
         assert _shown_records(response) == ["long", "secret"]
         assert {r["virtualRecordId"] for r in response["records"]} <= readers[("dave", ORG_1)]
+
+    async def test_container_path_skips_the_rerank_when_verification_is_unavailable(self) -> None:
+        """The caller discards that page and reports the outage, so no model call is made for it."""
+        service = _container_service(_FakeStore(), {("dave", ORG_1): {"secret", "long"}})
+        service.graph_provider.check_access = AsyncMock(side_effect=PermissionVerificationUnavailableError("down"))
+        _Scripted.ranking = ["long"]
+        response = await _search(service, user="dave", limit=10, record_rerank=_rerank())
+        assert response["status"] == Status.PERMISSION_CHECK_UNAVAILABLE.value
+        assert _Scripted.requests == []
 
     async def test_container_path_without_the_rerank_is_unchanged(self) -> None:
         readers = {("dave", ORG_1): {"secret", "long"}}

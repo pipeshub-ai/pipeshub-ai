@@ -20,6 +20,7 @@ from app.modules.retrieval.record_rerank.dense_pool import (
 from app.modules.retrieval.record_rerank.settings import RecordRerankSettings
 from app.services.vector_db.models import SearchResult
 from tests.unit.agents.actions.knowledge_graph.test_outside_dates import (
+    _DATES,
     _THE_WEEK,
     _Index,
     _run,
@@ -183,3 +184,15 @@ class TestTheSearchTool:
         rerank = index.calls[0]["record_rerank"]
         assert rerank.anchor == _QUESTION
         assert rerank.question.startswith(f"{_QUESTION}\n(Search query: ")
+
+    async def test_the_search_beside_a_dated_one_is_not_reranked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only its best few matches outside the dates are listed, so its rerank would cost a model call for little."""
+        monkeypatch.setenv(RERANK, "true")
+        monkeypatch.setenv(TOOL, "true")
+        index = _Index(_THE_WEEK)
+        await _run({**_state(index), "query": _QUESTION}, **_DATES)
+        dated = [call for call in index.calls if call.get("time_range")]
+        undated = [call for call in index.calls if not call.get("time_range")]
+        assert dated and undated
+        assert all("record_rerank" in call for call in dated)
+        assert not any("record_rerank" in call for call in undated)

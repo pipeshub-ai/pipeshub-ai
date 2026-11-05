@@ -826,6 +826,7 @@ async def _execute_search(
         failed_sources = 0
         # Set when a search that answered could not reach part of the index.
         search_incomplete: str | None = None
+        record_rerank = tool_search_record_rerank(query, state.get("query"))
 
         async def _search_one(
             fg: dict[str, list[str]],
@@ -833,6 +834,8 @@ async def _execute_search(
             vrids: list[str] | None,
             bounds: dict[str, int] | None,
             limit: int,
+            *,
+            rerank: bool,
         ) -> dict[str, Any] | None:
             filter_groups_for_call: dict[str, Any] = merge_filter_groups(fg, entity_fg)
             if strict_scope:
@@ -847,7 +850,7 @@ async def _execute_search(
                 filter_groups=filter_groups_for_call,
                 time_range=bounds,
                 virtual_record_ids_from_tool=vrids,
-                **tool_search_record_rerank(query, state.get("query")),
+                **(record_rerank if rerank else {}),
             )
 
         async def _attempt(
@@ -870,7 +873,8 @@ async def _execute_search(
             *bounds* and *limit* are each search's date bounds and hits.
             Without *record_gaps* (the search without dates, run beside the
             main one) the attempt leaves *failed_sources* and
-            *search_incomplete* alone: they describe the results shown.
+            *search_incomplete* alone: they describe the results shown. Only
+            the results shown are reranked (RECORD_RERANK_TOOL_SEARCHES).
             """
             failed = 0
             incomplete: str | None = None
@@ -893,6 +897,7 @@ async def _execute_search(
                         vrids,
                         bounds,
                         limit,
+                        rerank=record_gaps,
                     ))
                 for kb_id in resolved_kbs:
                     tasks.append(_search_one(
@@ -903,6 +908,7 @@ async def _execute_search(
                         vrids,
                         bounds,
                         limit,
+                        rerank=record_gaps,
                     ))
 
                 raw_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -947,7 +953,7 @@ async def _execute_search(
                 return _fuse_sources(per_source), attempt_map, None
 
             _keep_gaps()
-            results = await _search_one(filter_groups, entity_fg, vrids, bounds, limit)
+            results = await _search_one(filter_groups, entity_fg, vrids, bounds, limit, rerank=record_gaps)
             if results is None:
                 return [], {}, json.dumps({"status": "error", "message": "Retrieval service returned no results"})
             status_code = results.get("status_code", 200)

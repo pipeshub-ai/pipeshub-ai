@@ -2240,8 +2240,9 @@ class RetrievalService:
         ]
         admitted.sort(key=lambda r: r.get("score") or 0, reverse=True)
         # After verification, so the strategy reads only records this user may
-        # see; not on a page the record-id search is about to replace.
-        if record_rerank is not None and not plan.narrow_shortfall:
+        # see; not on a page the record-id search is about to replace, nor on
+        # one the caller discards because verification could not answer.
+        if record_rerank is not None and not plan.narrow_shortfall and not best_degraded:
             added: set[str] = set()
             if record_rerank.settings.dense_pool:
                 admitted, best_accessible, added = await self._verified_dense_pool(
