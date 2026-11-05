@@ -11,8 +11,8 @@ With `ANSWER_OPENING_CHECK`, a cited draft that opens with a limitation or a
 status ahead of its substance, or disputes wording the question uses, is also
 sent back, once, to lead with the answer: in the same request as any gaps, or
 alone without a search when there are none. With
-`ANSWER_OPENING_CHECK_DISPUTE`, a draft the patterns pass is also read by
-the dispute checker, beside the gate's own check.
+`ANSWER_OPENING_CHECK_DISPUTE`, the dispute checker also reads, once per
+answer, the draft that will be sent when the patterns pass it.
 
 Registered before `completion_gate` and `ask_in_text_recovery`, so it acts
 after them and stays out of the way when one of them sends the reply back.
@@ -215,9 +215,12 @@ def coverage_gate(context: "AgentContext") -> "Middleware[ModelResponseContext]"
             return
         started = time.monotonic()
         framing = _framing_hits(context, text)
+        # The one dispute check reads the draft that will be sent: on the last
+        # round beside the gate's own check, else once no gap sends it back.
+        dispute_now = state.gate_rounds + 1 >= gate_round_budget() and _wants_dispute_check(context, text, framing)
         try:
             draft = _read_draft(context, text)
-            if _wants_dispute_check(context, text, framing):
+            if dispute_now:
                 decision, framing = await asyncio.gather(_decide(context, ctx, draft), _dispute_hits(context, text))
             else:
                 decision = await _decide(context, ctx, draft)
@@ -235,6 +238,7 @@ def coverage_gate(context: "AgentContext") -> "Middleware[ModelResponseContext]"
             int((time.monotonic() - started) * 1000),
         )
         if decision.covered:
+            framing = framing or await _dispute_hits_if_due(context, text, framing)
             if framing:
                 state.gate_rounds += 1
                 _ask_for_opening(context, ctx, framing)
@@ -243,6 +247,11 @@ def coverage_gate(context: "AgentContext") -> "Middleware[ModelResponseContext]"
             await _send_back(context, ctx, draft, decision, framing)
         except Exception:
             logger.warning("coverage_loop: gate send-back failed", exc_info=True)
+            return
+        if ctx.recovery_message is None:
+            hits = await _dispute_hits_if_due(context, text, framing)
+            if hits:
+                _ask_for_opening(context, ctx, hits)
 
     return _middleware
 
@@ -266,6 +275,15 @@ def _wants_dispute_check(context: "AgentContext", text: str, framing: list[Frami
         and not coverage_state(context.tool_state).dispute_checked
         and not framing_exempt(text)
     )
+
+
+async def _dispute_hits_if_due(
+    context: "AgentContext", text: str, framing: list[FramingHit],
+) -> list[FramingHit]:
+    """The dispute check for a draft about to be sent, unless it already ran."""
+    if not _wants_dispute_check(context, text, framing):
+        return []
+    return await _dispute_hits(context, text)
 
 
 async def _dispute_hits(context: "AgentContext", text: str) -> list[FramingHit]:

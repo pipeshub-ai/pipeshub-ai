@@ -375,6 +375,25 @@ class TestDisputeChecker:
         assert len(dispute_calls) == 1
         assert coverage_state(context.tool_state).counters["gate_dispute_checks"] == 1
 
+    async def test_with_rounds_left_it_reads_the_draft_that_will_be_sent(self, checker_on, monkeypatch) -> None:
+        monkeypatch.setenv("COVERAGE_LOOP_GATE_ROUNDS", "3")
+        monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(side_effect=[
+            GateDecision(gaps=[Gap("facet", "EU region", "q")], checked=True), GateDecision(),
+        ]))
+        llm = _dispute_reply()
+        llm.ainvoke = AsyncMock(return_value=AIMessage(content=json.dumps({"violations": []})))
+        monkeypatch.setattr(gate_module, "coverage_llm", AsyncMock(return_value=llm))
+        gate = coverage_gate(self._context())
+        revised = _PAYROLL_DRAFT.replace("Ines Varga said", "Ines Varga, the co-founder, said")
+
+        first = await run_post_model(gate, AssistantMessage(content=_PAYROLL_DRAFT), scope=_scope())
+        second = await run_post_model(gate, AssistantMessage(content=revised), scope=_scope())
+
+        assert first.recovery_message is not None and second.recovery_message is None
+        dispute_calls = [call for call in llm.ainvoke.await_args_list if call.args[0][0].content == DISPUTE_SYSTEM]
+        assert len(dispute_calls) == 1
+        assert "the co-founder, said" in dispute_calls[0].args[0][1].content
+
     @pytest.mark.parametrize("violation", [("opening_concedes", "x"), ("internal_error", "y"), ("rival_value_mixed", "z")])
     async def test_other_kinds_do_not_fire(self, checker_on, monkeypatch, violation) -> None:
         monkeypatch.setattr(gate_module, "coverage_llm", AsyncMock(return_value=_dispute_reply(violation)))
