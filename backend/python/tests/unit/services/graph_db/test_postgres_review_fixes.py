@@ -117,7 +117,7 @@ async def test_a_key_only_incomplete_document_for_an_existing_node_passes() -> N
     assert "r9" in h.reads[0].ids()
 
 
-# ---- 4. duplicates in one batch are checked merged -------------------------------------------------------------------------------------
+# ---- 4. a repeated id in one batch: the last one is written, and that is what is checked -------------------------------------------------------------------------------------
 
 async def test_partial_then_full_for_an_absent_id_is_valid_in_batch_upsert_nodes() -> None:
     h = Harness(existing=())
@@ -125,11 +125,18 @@ async def test_partial_then_full_for_an_absent_id_is_valid_in_batch_upsert_nodes
     assert h.reads == [] and h.writes
 
 
-async def test_full_then_partial_writes_the_merged_document() -> None:
+async def test_full_then_partial_for_an_absent_id_is_refused_because_the_last_one_is_written() -> None:
     h = Harness(existing=())
+    with pytest.raises(SchemaValidationError):
+        await h.call("batch_upsert_nodes", [rec("r1"), {"id": "r1", "isDeleted": True}], "records")
+    assert h.writes == []
+
+
+async def test_full_then_partial_for_an_existing_id_writes_only_the_last_one() -> None:
+    h = Harness(existing=("r1",))
     await h.call("batch_upsert_nodes", [rec("r1"), {"id": "r1", "isDeleted": True}], "records")
     doc = next(j for s in h.writes for j in s.json_args() if isinstance(j, list))[0]["doc"]
-    assert doc["recordName"] == "Doc r1" and doc["isDeleted"] is True
+    assert doc["isDeleted"] is True and "recordName" not in doc
 
 
 async def test_partial_duplicates_for_an_absent_id_still_raise() -> None:

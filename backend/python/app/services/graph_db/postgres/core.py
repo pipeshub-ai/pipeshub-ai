@@ -129,11 +129,8 @@ class CoreMixin(PgBase):
         if not nodes:
             return True
         org = current_org_id()
-        by_id: dict[str, dict] = {}
-        for d in (_node(n, collection) for n in nodes):
-            by_id[d["id"]] = {**by_id.get(d["id"], {}), **d}     # a repeated id: its writes apply in order, the last wins per field
-        docs = list(by_id.values())
-        await self._validate_upserts(collection, docs, transaction)
+        docs = list({d["id"]: d for d in (_node(n, collection) for n in nodes)}.values())     # a repeated id: the last one wins
+        await self._validate_upserts(collection, docs, transaction)      # what is checked is what is written
         # a field set to None is removed (``SET n += {x: null}``), so the nulls are cleared before the merge
         payload = _j([{"id": d["id"], "doc": d} for d in docs])
         clears = _j([{"id": d["id"], "nulls": nulls} for d in docs if (nulls := [k for k, v in d.items() if v is None])])
