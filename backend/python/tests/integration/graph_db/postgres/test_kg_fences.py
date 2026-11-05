@@ -368,3 +368,35 @@ async def test_a_whole_connector_hidden_leaves_no_outdated_stamp_visible_in_anot
     await restamp.run_jobs(pg_db, org, "w1", batch=2)
     for app in ("app1", "app2"):
         assert await dry_diffs(p, org, app) == []
+
+
+async def test_a_connector_job_whose_pages_reach_another_connector_takes_its_lock_and_never_runs_without_locks(pg_db, monkeypatch) -> None:
+    from app.services.graph_db.postgres.kg import stamp as stamp_mod
+    from app.services.graph_db.postgres.kg.locks import NeedLocks
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    await add_edge(p, org, ("records", "x1"), ("records", "f1"), "nodeRelations", relationshipType="PARENT_CHILD")      # f1 (app1) hangs under x1 (app2)
+    await drain_org(pg_db, org)
+
+    async def queue(tx) -> None:
+        await restamp.enqueue_app(tx, org, (await tx.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)), "app")
+    await run_in(pg_db, org, queue, write=True)
+    seen: list = []
+    real = stamp_mod.stamp_app
+
+    async def spy(tx, o, app_id, after, limit, st=None, *, dry=False, locked=None):
+        try:
+            return await real(tx, o, app_id, after, limit, st, dry=dry, locked=locked)
+        except NeedLocks as e:
+            seen.append((locked, set(e.apps)))
+            raise
+        finally:
+            seen.append((locked, None))
+    monkeypatch.setattr(stamp_mod, "stamp_app", spy)
+    assert await restamp.run_jobs(pg_db, org, "w1", batch=2) == 1
+    assert all(locked is not None for locked, _ in seen)                          # the job always says which connectors it holds
+    assert any(apps == {"app2"} for _, apps in seen if apps is not None)         # the page that reached app2 asked for it, before it wrote
+    assert await jobs(pg_db, org) == []
+    for app in ("app1", "app2"):
+        assert await dry_diffs(p, org, app) == []
