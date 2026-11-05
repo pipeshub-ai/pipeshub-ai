@@ -71,26 +71,33 @@ async def test_system_scope_reads_no_other_collection_across_orgs(pg_provider, t
 
 
 async def test_the_app_listing_pages_over_an_id_two_orgs_hold(pg_provider, org_ctx) -> None:
-    """An id is unique per org only: a page boundary between its two holders loses neither, and ``after_key`` continues after the id."""
+    """An id is unique per org only: a page boundary between its two holders loses neither, and ``after_key`` continues after the id.
+
+    The database is shared: tests that run beside this one add and remove apps, so a page of the whole listing at a fixed offset can
+    move. Each id is paged from just before it (``after_key`` is a prefix of the id, which sorts first), where only a row of this test
+    can be, and the checks are on the rows of this test."""
     tag = uuid.uuid4().hex[:8]
     a, b = uuid.uuid4().hex[:24], uuid.uuid4().hex[:24]
-    shared = f"dup-{tag}"
+    shared, last = f"dup-{tag}", f"zz-{tag}"
     for org in (a, b):
         with org_ctx(org):
-            await pg_provider.batch_upsert_nodes([{"_key": shared, "isActive": True, "orgId": org}, {"_key": f"zz-{tag}", "isActive": True, "orgId": org}], "apps")
+            await pg_provider.batch_upsert_nodes([{"_key": shared, "isActive": True, "orgId": org}, {"_key": last, "isActive": True, "orgId": org}], "apps")
+    holders = sorted([a, b])                                  # the order of the listing: by id, then by org
     try:
         with org_context.system("test.paging"):
-            every = await pg_provider.get_documents_paginated("apps", limit=1000, filters={"isActive": True}, sort_field="_key", raise_on_error=True)
-            ours = [(d["_key"], d["orgId"]) for d in every if d["_key"].endswith(tag)]
-            assert sorted(ours) == sorted([(shared, a), (shared, b), (f"zz-{tag}", a), (f"zz-{tag}", b)])
-            # one row per page, from the start: every row appears once, the shared id twice
-            seen = []
-            for skip in range(len(every)):
-                page = await pg_provider.get_documents_paginated("apps", skip=skip, limit=1, filters={"isActive": True}, raise_on_error=True)
-                seen += [(d["_key"], d["orgId"]) for d in page if d["_key"].endswith(tag)]
-            assert sorted(seen) == sorted(ours)
-            after = await pg_provider.get_documents_paginated("apps", limit=1000, filters={"isActive": True}, after_key=shared, raise_on_error=True)
-            assert shared not in {d["_key"] for d in after} and {d["orgId"] for d in after if d["_key"] == f"zz-{tag}"} == {a, b}
+            for key in (shared, last):
+                # one row per page from just before the id: both holders appear, in order, one on each side of the page boundary
+                for skip, org in enumerate(holders):
+                    page = await pg_provider.get_documents_paginated(
+                        "apps", skip=skip, limit=1, filters={"isActive": True}, after_key=key[:-1], raise_on_error=True)
+                    assert [(d["_key"], d["orgId"]) for d in page] == [(key, org)]
+                # two rows in one page, and the page after them does not begin with either
+                both = await pg_provider.get_documents_paginated(
+                    "apps", limit=2, filters={"isActive": True}, after_key=key[:-1], raise_on_error=True)
+                assert sorted((d["_key"], d["orgId"]) for d in both) == sorted((key, org) for org in holders)
+            # ``after_key`` continues after the id whichever orgs hold it: neither holder of the shared id comes back
+            after = await pg_provider.get_documents_paginated("apps", limit=1, filters={"isActive": True}, after_key=shared, raise_on_error=True)
+            assert after and after[0]["_key"] != shared
     finally:
         for org in (a, b):
             with bind(OrgContext(org, None, "job", "job:test", "t")):
