@@ -71,7 +71,6 @@ from app.services.vector_db.filters import (
     forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
-    reject_scope_filter,
     require_filter_org,
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -830,7 +829,7 @@ class OpenSearchService(IVectorDBService):
                 }
             }
         else:
-            os_type = "keyword" if field_schema.get("type") == "keyword" else "text"
+            os_type = {"keyword": "keyword", "integer": "long"}.get(field_schema.get("type"), "text")
             mapping_body = {"properties": {field_name: {"type": os_type}}}
 
         await self.client.indices.put_mapping(index=collection_name, body=mapping_body)  # type: ignore
@@ -963,7 +962,6 @@ class OpenSearchService(IVectorDBService):
         requests: List[HybridSearchRequest],
     ) -> List[List[SearchResult]]:
         await self._assert_connected()
-        reject_scope_filter(requests, "OpenSearch")
         pipeline_name = f"{collection_name}-rrf-pipeline"
 
         has_hybrid = any(

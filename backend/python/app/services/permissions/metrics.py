@@ -24,3 +24,9 @@ SCOPE_STAMP_FAILED = METRICS_BACKEND.counter(
     "Scope fields that could not be computed (the point is left without them and keeps the legacy filter), by where",
     ["where"],
 )
+SCOPE_PREFILTER_DROPPED = METRICS_BACKEND.counter(
+    "pipeshub_scope_prefilter_dropped_total",
+    "Points a store's scope pre-filter returned that the exact rule refuses (Redis compares tags without case and reads the connectors it excludes "
+    "just before searching), dropped before the answer is returned, by store",
+    ["store"],
+)

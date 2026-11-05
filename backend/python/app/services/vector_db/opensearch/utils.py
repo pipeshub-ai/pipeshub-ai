@@ -6,6 +6,7 @@ from app.services.vector_db.const.const import (
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
 )
+from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.filters import build_generic_conditions
 from app.services.vector_db.models import (
     FieldCondition,
@@ -111,6 +112,35 @@ class OpenSearchUtils:
         return {"term": {cond.key: cond.value}}
 
     @staticmethod
+    def scope_query(node: "sx.Node") -> Dict[str, Any]:
+        """A scope tree (:mod:`~app.services.vector_db.scope_expr`) as a query. A ``bool`` with no clause matches everything, so FALSE is
+        ``match_none``. "Every connector is current" is a ``terms_set`` that needs as many matches as the point has values."""
+        if isinstance(node, sx.Has):
+            return {"terms": {node.field: list(node.values)}} if node.values else {"match_none": {}}
+        if isinstance(node, sx.Is):
+            return {"term": {node.field: node.value}}
+        if isinstance(node, sx.Within):
+            return {"terms_set": {node.field: {"terms": list(node.values), "minimum_should_match_script": {
+                "source": "doc[params.f].size()", "params": {"f": node.field}}}}}
+        if isinstance(node, sx.All):
+            return {"bool": {"filter": [OpenSearchUtils.scope_query(p) for p in node.parts]}} if node.parts else {"match_all": {}}
+        if isinstance(node, sx.Some):
+            if not node.parts:
+                return {"match_none": {}}
+            return {"bool": {"should": [OpenSearchUtils.scope_query(p) for p in node.parts], "minimum_should_match": 1}}
+        return {"bool": {"must_not": [OpenSearchUtils.scope_query(node.part)]}}
+
+    @staticmethod
+    def with_scope(filter_query: Dict[str, Any], request: HybridSearchRequest) -> Dict[str, Any]:
+        """``filter_query`` ANDed with the request's scope filter (if any), the request's own filter kept whole inside a ``must``."""
+        if request.scope_filter is None:
+            return filter_query
+        sx.check_size(request.scope_filter, "OpenSearch")
+        scope = OpenSearchUtils.scope_query(sx.admits(request.scope_filter))
+        base = [] if not filter_query or filter_query == {"match_all": {}} else [filter_query]
+        return {"bool": {"must": base, "filter": [scope]}} if base else {"bool": {"filter": [scope]}}
+
+    @staticmethod
     def _wrap_with_filter(
         base_query: Dict[str, Any], filter_query: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -145,6 +175,7 @@ class OpenSearchUtils:
         filter_query: Dict[str, Any] = {}
         if request.filter is not None and not request.filter.is_empty():
             filter_query = OpenSearchUtils.filter_expression_to_bool_query(request.filter)
+        filter_query = OpenSearchUtils.with_scope(filter_query, request)
 
         # Give the RRF merger enough candidates from each leg to produce
         # ``limit`` high-quality final results.  limit*2 with a floor of 20

@@ -307,6 +307,10 @@ class ScopeFilterTooLarge(ValueError):
     """A viewer's scope list is longer than a store can take in one query."""
 
 
+class ScopeFilterUnsupported(ValueError):
+    """A store cannot evaluate this filter exactly (Redis tags compare without case, so an id with capitals could meet another id)."""
+
+
 @dataclass(frozen=True)
 class ScopeFilter:
     """What one viewer may read, as a store-neutral predicate over the scope fields a point carries (ANDed with the request's filter).

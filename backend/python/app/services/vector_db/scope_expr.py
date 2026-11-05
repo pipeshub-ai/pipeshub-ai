@@ -138,3 +138,18 @@ def evaluate(node: Node, payload: dict[str, Any]) -> bool:
     if isinstance(node, Some):
         return any(evaluate(p, payload) for p in node.parts)
     return not evaluate(node.part, payload)
+
+
+#: The most ids one list may hold in a query, per store (Qdrant and OpenSearch bind them as a list, Redis writes them into the query text; OpenSearch
+#: refuses a ``terms`` list longer than 65,536). Past it the filter is refused (`ScopeFilterTooLarge`), never truncated: a cut list would admit less
+#: for a positive list and more for ``excluded``.
+MAX_IDS = {"Qdrant": 50_000, "OpenSearch": 60_000, "Redis": 20_000}
+
+
+def check_size(flt: ScopeFilter, store: str) -> None:
+    from app.services.vector_db.filters import ScopeFilterTooLarge
+
+    limit = MAX_IDS[store]
+    for name in ("current", "open_apps", "readable_groups", "readable_scopes", "excluded", "reach"):
+        if len(getattr(flt, name)) > limit:
+            raise ScopeFilterTooLarge(f"{store}: the filter's {name} list holds more than {limit} ids")
