@@ -54,6 +54,7 @@ INLINE_MAX = 20000                  # records a change may reach before they are
 
 
 def inline_max() -> int:
+    """Records a change may reach beyond its seeds before they are hidden and restamped by the worker (``PG_KG_INLINE_MAX``)."""
     v = os.environ.get("PG_KG_INLINE_MAX")
     return int(v) if v and v.isdigit() else INLINE_MAX
 

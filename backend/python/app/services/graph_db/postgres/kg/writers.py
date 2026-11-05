@@ -114,6 +114,7 @@ class KgWriter:
         return n
 
     async def queue_add(self, job: int, app_sk: int, kind: str, reason: str, *, fenced: bool) -> bool:
+        """Queue a restamp job; an id already taken is left as it is."""
         return await self.tx.fetchval("/* pipeshub:kg.w_queue_add */ SELECT kg.w_queue_add($1, $2, $3, $4, $5)", job, app_sk, kind, reason, fenced)
 
     async def queue_touch(self, job: int, seen: int, worker: str, attempts: int, cursor: str | None) -> int | None:
@@ -122,6 +123,7 @@ class KgWriter:
         return await self.tx.fetchval("/* pipeshub:kg.w_queue_touch */ SELECT kg.w_queue_touch($1, $2, $3, $4, $5)", job, seen, worker, attempts, cursor) or None
 
     async def queue_done(self, job: int) -> bool:
+        """Delete a finished job; False when it was not there."""
         return await self.tx.fetchval("/* pipeshub:kg.w_queue_done */ SELECT kg.w_queue_done($1)", job)
 
     async def changes_ack(self) -> int:

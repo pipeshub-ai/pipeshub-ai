@@ -188,7 +188,7 @@ async def test_a_stop_during_a_restamp_batch_ends_the_job_between_batches_and_op
     published = {"n": 0}
     _NoUow.opened = 0
     holder: dict[str, KgWorker] = {}
-    job = restamp.Job(1, 5, "rows", "reach", True, 0, 1, None)
+    job = restamp.Job(1, 5, "rows", "reach", True, 0, 1, "7")
 
     async def no_rows(_db: object, _org: str, *, limit: int) -> int:
         return 0

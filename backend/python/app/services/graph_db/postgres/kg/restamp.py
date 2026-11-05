@@ -59,6 +59,7 @@ class _Beat:
     units of its own every third of the staleness. It and the batch's last touch both compare-and-set on the heartbeat the other wrote, which is why the batch takes ``lock``."""
 
     def __init__(self, db: KernelDB, org: str, job: Job, worker: str, stale_ms: int) -> None:
+        """Start the heartbeat of ``job`` for ``worker``; ``seen`` is the last heartbeat this beat wrote (or the claim's)."""
         self._db, self._org, self._job, self._worker, self._every = db, org, job, worker, stale_ms / 3000
         self.seen = job.heartbeat_ms
         self.lock = asyncio.Lock()
@@ -82,6 +83,7 @@ class _Beat:
                 self.lock.release()
 
     async def _run(self) -> None:
+        """Touch the claim every third of the staleness until the batch stops it or the claim is lost."""
         try:
             while True:
                 await asyncio.sleep(self._every)
@@ -91,12 +93,14 @@ class _Beat:
             logger.exception("kg restamp heartbeat stopped; the claim goes stale after %s s", self._every * 3)
 
     async def stop(self) -> None:
+        """Stop the heartbeat and wait for its task."""
         self._task.cancel()
         await asyncio.gather(self._task, return_exceptions=True)
 
 
 @dataclass(frozen=True)
 class Job:
+    """A queued restamp job as a worker holds it: ``heartbeat_ms`` and ``cursor`` are the values it last wrote."""
     id: int
     app_sk: int
     kind: str
@@ -109,10 +113,12 @@ class Job:
 
 
 def _ctx(org: str) -> OrgContext:
+    """The org context of the restamp worker, for the tenant policy of the units it opens."""
     return OrgContext(org, None, "job", "job:kg-restamp", "kg-restamp")
 
 
 async def _notify(tx: Tx) -> None:
+    """Wake the restamp worker at commit."""
     await tx.execute("/* pipeshub:kg.restamp_notify */ SELECT pg_notify('pipeshub_kg_restamp', '')")
 
 
@@ -162,6 +168,7 @@ async def enqueue_rows(tx: Tx, org: str, keys: set[Key], reason: str, *, skip_ap
 
 
 async def pending(tx: Tx, org: str) -> list[Job]:
+    """Every queued job of the org, oldest first."""
     rows = await tx.fetch("""/* pipeshub:kg.queue_read */ SELECT id, app_sk, kind, reason, fenced, heartbeat_ms, attempts, cursor, enqueued_ms FROM kg.restamp_queue
         WHERE org_id = $1 ORDER BY id""", org)
     return [Job(r["id"], r["app_sk"], r["kind"], r["reason"], r["fenced"], r["heartbeat_ms"], r["attempts"], r["cursor"], r["enqueued_ms"]) for r in rows]
@@ -171,6 +178,7 @@ async def claim(db: KernelDB, org: str, worker: str, *, stale_ms: int = STALE_MS
     """The oldest job nobody holds (or whose holder stopped touching it), claimed by compare-and-set on its heartbeat. Staleness is judged and the heartbeat written by the database's
     clock, never the worker's: a worker with a fast clock can neither take a live claim nor leave a heartbeat in the future that would keep the job from being taken again."""
     async def go(tx: Tx) -> Job | None:
+        """One claim attempt: the first claimable job whose compare-and-set touch wins."""
         rows = await tx.fetch("""/* pipeshub:kg.queue_claimable */ SELECT id, app_sk, kind, reason, fenced, heartbeat_ms, attempts, cursor, enqueued_ms FROM kg.restamp_queue
             WHERE org_id = $1 AND (claimed_by IS NULL OR heartbeat_ms < floor(extract(epoch FROM clock_timestamp()) * 1000) - $2) ORDER BY id LIMIT 8""", org, stale_ms)
         for r in rows:
@@ -183,6 +191,7 @@ async def claim(db: KernelDB, org: str, worker: str, *, stale_ms: int = STALE_MS
 
 
 async def _app_id(tx: Tx, org: str, app_sk: int) -> str | None:
+    """The id of the connector with this sk, or None (a job of records with no connector, or a connector whose key is gone)."""
     return await tx.fetchval("/* pipeshub:kg.app_id */ SELECT id FROM kg.node_keys WHERE org_id = $1 AND sk = $2 AND coll = 1", org, app_sk)
 
 
@@ -198,9 +207,11 @@ async def run_batch(db: KernelDB, org: str, job: Job, worker: str, *, batch: int
 
 
 async def _run_batch(db: KernelDB, org: str, job: Job, worker: str, beat: _Beat, batch: int | None) -> tuple[bool, Job]:
+    """One batch in a unit of its own, retried with the larger lock set whenever the stamps reach a connector it does not hold."""
     extra: set[str] = set()
     for _ in range(locks.MAX_ROUNDS):
         async def go(tx: Tx, held: frozenset[str] = frozenset(extra)) -> tuple[bool, Job]:
+            """The batch: lock, restamp the next rows or page, unhide what was restamped, touch the claim, and delete the job when nothing is left."""
             app_id = await _app_id(tx, org, job.app_sk)
             await lock_apps(tx, org, ({app_id} if app_id else set()) | held, org_wide=False)
             w = KgWriter(tx)
@@ -246,6 +257,7 @@ async def _run_batch(db: KernelDB, org: str, job: Job, worker: str, beat: _Beat,
 
 
 def _stopped(stop: asyncio.Event | None) -> bool:
+    """Is the stop event set?"""
     return stop is not None and stop.is_set()
 
 
