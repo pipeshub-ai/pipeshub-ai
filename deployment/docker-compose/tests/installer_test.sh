@@ -459,6 +459,29 @@ eval "$(extract_fn port_owned_by_project "$INNER_INSTALLER")"
   if port_owned_by_project 3001; then fail "must not match a different port"; else pass "ignores unrelated port"; fi
 )
 
+echo "== In-tree installer: default broker per deploy type (real code) =="
+# Run the installer's own default-selection block (case + volume overrides).
+_bsnip="$(awk '/^  case "\$DEPLOY_TYPE" in/{g=1} /if \$DETECTED_ETCD; then/{g=0} g' "$INNER_INSTALLER")"
+default_broker_for() ( # <deploy type> <kafka volume detected: true|false>
+  info() { :; }
+  DEPLOY_TYPE="$1"; DETECTED_KAFKA="$2"; DETECTED_ARANGO=false; DETECTED_NEO4J=false
+  eval "$_bsnip"; echo "$DEFAULT_BROKER"
+)
+check "full, no volumes -> redis" "$(default_broker_for full false)" "redis"
+check "full, existing Kafka volume -> kafka" "$(default_broker_for full true)" "kafka"
+check "slim, no volumes -> redis" "$(default_broker_for slim false)" "redis"
+check "explicit PIPESHUB_BROKER still read" "$(grep -c 'BROKER="${PIPESHUB_BROKER:-}"' "$INNER_INSTALLER")" "1"
+check "PIPESHUB_BROKER=kafka beats the default" "$(PIPESHUB_BROKER=kafka; BROKER="${PIPESHUB_BROKER:-}"; DEFAULT_BROKER=redis; echo "${BROKER:-$DEFAULT_BROKER}")" "kafka"
+
+echo "== In-tree installer: volume_exists (real function) =="
+eval "$(extract_fn volume_exists "$INNER_INSTALLER")"
+(
+  docker() { [ "$1 $2" = "volume inspect" ] && [ "$3" = "pipeshub-ai_kafka_data" ]; }   # only that volume exists
+  if volume_exists pipeshub-ai_kafka_data; then pass "finds an existing volume by exact name"; else fail "finds an existing volume by exact name"; fi
+  if volume_exists pipeshub-ai_kafka; then fail "a name prefix is not a match"; else pass "a name prefix is not a match"; fi
+  if volume_exists pipeshub-ai_etcd_data; then fail "an absent volume reads as absent"; else pass "an absent volume reads as absent"; fi
+)
+
 echo "== In-tree installer: COMPOSE_PROFILES derivation (real functions) =="
 # Pull the real function definitions out of the installer and exercise them in
 # isolation. Both are defined at top level with the closing brace in column 0.
