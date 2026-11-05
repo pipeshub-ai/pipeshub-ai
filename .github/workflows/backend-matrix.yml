@@ -43,6 +43,7 @@ on:
       - 'backend/python/app/services/messaging/**'
       - 'backend/python/app/services/vector_db/**'
       - 'backend/python/app/services/graph_db/**'
+      - 'backend/python/app/services/permissions/**'
       - 'backend/python/app/services/redis/**'
       - 'backend/python/app/config/**'
       - 'backend/python/app/connectors/core/base/data_processor/**'
