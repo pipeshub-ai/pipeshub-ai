@@ -300,6 +300,14 @@ class TestListingStateStaysInternal:
         }
         assert node["khSortName"] == "plan"
 
+    def test_in_place_converts_the_given_dict(self, neo4j_provider: Neo4jProvider) -> None:
+        node = {"id": "r1", "recordName": "Plan", "khSortName": "plan", "khScope": "s1"}
+
+        out = neo4j_provider._neo4j_to_arango_node(node, "records", in_place=True)
+
+        assert out is node
+        assert out == {"id": "r1", "_key": "r1", "_id": "records/r1", "recordName": "Plan"}
+
 
 class TestCheckToolsetInstanceInUse:
     @pytest.mark.asyncio
@@ -1780,7 +1788,7 @@ class TestQueryAndFilterHelpers:
             return_value=[{"id": "n1", "name": "A"}, {"id": "n2", "name": "B"}]
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
-            side_effect=lambda node, _collection: {"_key": node.get("id"), "name": node.get("name")}
+            side_effect=lambda node, _collection, **_: {"_key": node.get("id"), "name": node.get("name")}
         )
 
         result = await neo4j_provider.get_nodes_by_field_in(
@@ -2277,6 +2285,17 @@ class TestUserAndOrganizationLookups:
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "u1", "userId": "uid1"})  # type: ignore[method-assign]
         assert await neo4j_provider.get_user_by_user_id("uid1") == {"_key": "u1", "userId": "uid1"}
 
+        del neo4j_provider._neo4j_to_arango_node  # back to the real conversion
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"u": {"id": "u1", "userId": "uid1", "khScope": "s"}}]
+        )
+        assert await neo4j_provider.get_user_by_user_id("uid1") == {
+            "id": "u1", "userId": "uid1", "_key": "u1", "_id": "users/u1",
+        }
+        call = neo4j_provider.client.execute_query.await_args
+        assert "RETURN u {.*} AS u" in call.args[0]
+        assert call.kwargs["plain"] is True
+
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         assert await neo4j_provider.get_user_by_user_id("missing") is None
 
@@ -2388,6 +2407,9 @@ class TestUserAndOrganizationLookups:
         assert apps == [{"_key": "app1"}]
         query = neo4j_provider.client.execute_query.await_args.args[0]
         assert "app.isActive = true" in query
+        # A property map read as plain rows, not a node the driver converts.
+        assert "RETURN app {.*} AS app" in query
+        assert neo4j_provider.client.execute_query.await_args.kwargs["plain"] is True
 
         apps_all = await neo4j_provider.get_org_apps("org-1", active_only=False)
         query_all = neo4j_provider.client.execute_query.await_args.args[0]
@@ -2396,6 +2418,12 @@ class TestUserAndOrganizationLookups:
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("apps fail"))
         assert await neo4j_provider.get_org_apps("org-1") == []
+
+        del neo4j_provider._neo4j_to_arango_node  # back to the real conversion
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"app": {"id": "app1", "type": "KB"}}])
+        assert await neo4j_provider.get_org_apps("org-1") == [
+            {"id": "app1", "type": "KB", "_key": "app1", "_id": "apps/app1"},
+        ]
 
     @pytest.mark.asyncio
     async def test_a_record_without_an_indexing_status_is_not_excluded(self, neo4j_provider: Neo4jProvider) -> None:
@@ -3289,12 +3317,7 @@ class TestVirtualAccessAndRecordLookup:
         self, neo4j_provider: Neo4jProvider
     ):
         neo4j_provider.client.execute_query = AsyncMock(
-            return_value=[
-                {"virtualId": "v1", "recordId": "r1"},
-                {"virtualId": "v1", "recordId": "r1-mutated"},
-                {"virtualId": "v2", "recordId": "r2"},
-                {"virtualId": None, "recordId": "rx"},
-            ]
+            return_value=[{"pairs": [["v1", "r1"], ["v1", "r1-mutated"], ["v2", "r2"], [None, "rx"]]}]
         )
 
         result = await neo4j_provider._get_virtual_ids_for_connector(
@@ -3310,6 +3333,7 @@ class TestVirtualAccessAndRecordLookup:
 
         assert result == {"v1": "r1", "v2": "r2"}
         kwargs = neo4j_provider.client.execute_query.await_args.kwargs
+        assert kwargs["plain"] is True
         assert kwargs["parameters"]["userId"] == "user-1"
         assert kwargs["parameters"]["orgId"] == "org-1"
         assert kwargs["parameters"]["connectorId"] == "conn-1"
@@ -3342,11 +3366,7 @@ class TestVirtualAccessAndRecordLookup:
     @pytest.mark.asyncio
     async def test_get_kb_virtual_ids_with_kb_filter_and_metadata(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
-            return_value=[
-                {"virtualId": "v1", "recordId": "r1"},
-                {"virtualId": "v1", "recordId": "r1-later"},
-                {"virtualId": "v2", "recordId": "r2"},
-            ]
+            return_value=[{"pairs": [["v1", "r1"], ["v1", "r1-later"], ["v2", "r2"]]}]
         )
 
         result = await neo4j_provider._get_kb_virtual_ids(
@@ -3360,6 +3380,31 @@ class TestVirtualAccessAndRecordLookup:
         kwargs = neo4j_provider.client.execute_query.await_args.kwargs
         assert kwargs["parameters"]["kb_ids"] == ["kb-1", "kb-2"]
         assert kwargs["parameters"]["categoryNames"] == ["Policy"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method, args", [
+        ("_get_all_virtual_ids_for_connector", ("conn-1",)),
+        ("_get_kb_virtual_ids_for_kb", ("kb-1",)),
+    ])
+    async def test_whole_scope_virtual_id_maps_read_one_row(
+        self, neo4j_provider: Neo4jProvider, method: str, args: tuple
+    ) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"pairs": [["v1", "r1"], ["v1", "r1-later"], ["v2", "r2"], ["v3", None]]}]
+        )
+
+        assert await getattr(neo4j_provider, method)(*args) == {"v1": "r1", "v2": "r2"}
+        call = neo4j_provider.client.execute_query.await_args
+        assert call.kwargs["plain"] is True
+        assert "RETURN collect([virtualId, recordId]) AS pairs" in call.args[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rows", [[], [{"pairs": []}], [{"pairs": None}]])
+    async def test_virtual_id_maps_empty_result(self, neo4j_provider: Neo4jProvider, rows: list) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=rows)
+        assert await neo4j_provider._get_virtual_ids_for_connector("user-1", "org-1", "conn-1") == {}
+        assert await neo4j_provider._get_kb_virtual_ids("user-1", "org-1") == {}
+        assert await neo4j_provider._get_all_virtual_ids_for_connector("conn-1") == {}
 
     @pytest.mark.asyncio
     async def test_get_kb_virtual_ids_returns_empty_on_exception(self, neo4j_provider: Neo4jProvider):
@@ -3819,6 +3864,7 @@ class TestRecordRelationOperations:
         kwargs = neo4j_provider.client.execute_query.await_args.kwargs
         assert kwargs["parameters"] == {"record_ids": ["r1", "r2"]}
         assert kwargs["txn_id"] == "txn-vid"
+        assert kwargs["plain"] is True
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("vid fail"))
         assert await neo4j_provider.get_virtual_record_ids_for_record_ids(["r1"]) == {}

@@ -499,9 +499,7 @@ class TestGetRecordFromStorageExtended:
         # First response: signedUrl
         first_resp = AsyncMock()
         first_resp.status = 200
-        first_resp.json = AsyncMock(
-            return_value={"signedUrl": "https://s3/signed"}
-        )
+        first_resp.read = AsyncMock(return_value=json.dumps({"signedUrl": "https://s3/signed"}).encode())
         first_resp.__aenter__ = AsyncMock(return_value=first_resp)
         first_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -543,18 +541,14 @@ class TestGetRecordFromStorageExtended:
         # First response: signedUrl
         first_resp = AsyncMock()
         first_resp.status = 200
-        first_resp.json = AsyncMock(
-            return_value={"signedUrl": "https://s3/signed"}
-        )
+        first_resp.read = AsyncMock(return_value=json.dumps({"signedUrl": "https://s3/signed"}).encode())
         first_resp.__aenter__ = AsyncMock(return_value=first_resp)
         first_resp.__aexit__ = AsyncMock(return_value=False)
 
         # Fallback response
         fallback_resp = AsyncMock()
         fallback_resp.status = 200
-        fallback_resp.json = AsyncMock(
-            return_value={"record": record_data, "isCompressed": False}
-        )
+        fallback_resp.read = AsyncMock(return_value=json.dumps({"record": record_data, "isCompressed": False}).encode())
         fallback_resp.__aenter__ = AsyncMock(return_value=fallback_resp)
         fallback_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -592,9 +586,7 @@ class TestGetRecordFromStorageExtended:
 
         first_resp = AsyncMock()
         first_resp.status = 200
-        first_resp.json = AsyncMock(
-            return_value={"signedUrl": "https://s3/signed"}
-        )
+        first_resp.read = AsyncMock(return_value=json.dumps({"signedUrl": "https://s3/signed"}).encode())
         first_resp.__aenter__ = AsyncMock(return_value=first_resp)
         first_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -637,9 +629,7 @@ class TestGetRecordFromStorageExtended:
 
         first_resp = AsyncMock()
         first_resp.status = 200
-        first_resp.json = AsyncMock(
-            return_value={"signedUrl": "https://s3/signed"}
-        )
+        first_resp.read = AsyncMock(return_value=json.dumps({"signedUrl": "https://s3/signed"}).encode())
         first_resp.__aenter__ = AsyncMock(return_value=first_resp)
         first_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -677,16 +667,14 @@ class TestGetRecordFromStorageExtended:
 
         first_resp = AsyncMock()
         first_resp.status = 200
-        first_resp.json = AsyncMock(
-            return_value={"signedUrl": "https://s3/signed"}
-        )
+        first_resp.read = AsyncMock(return_value=json.dumps({"signedUrl": "https://s3/signed"}).encode())
         first_resp.__aenter__ = AsyncMock(return_value=first_resp)
         first_resp.__aexit__ = AsyncMock(return_value=False)
 
         # Signed URL response has no "record" key
         signed_resp = AsyncMock()
         signed_resp.status = 200
-        signed_resp.json = AsyncMock(return_value={"something": "else"})
+        signed_resp.read = AsyncMock(return_value=json.dumps({"something": "else"}).encode())
         signed_resp.__aenter__ = AsyncMock(return_value=signed_resp)
         signed_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -722,9 +710,7 @@ class TestGetRecordFromStorageExtended:
 
         first_resp = AsyncMock()
         first_resp.status = 200
-        first_resp.json = AsyncMock(
-            return_value={"signedUrl": "https://s3/signed"}
-        )
+        first_resp.read = AsyncMock(return_value=json.dumps({"signedUrl": "https://s3/signed"}).encode())
         first_resp.__aenter__ = AsyncMock(return_value=first_resp)
         first_resp.__aexit__ = AsyncMock(return_value=False)
 

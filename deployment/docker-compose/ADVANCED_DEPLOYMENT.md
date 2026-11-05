@@ -345,8 +345,10 @@ logged-in user's `userId` and `orgId`.
 
 ## Runtime tuning (workers and query-service flags)
 
-These live in `.env` alongside the rest of your configuration. Every default below
-reproduces current behaviour, so an upgrade changes nothing until you opt in.
+These live in `.env` alongside the rest of your configuration. The defaults below keep
+the earlier behaviour except two: the stored-record cache is on (up to 512 MiB per query
+worker; `PIPESHUB_RECORD_CACHE_BYTES=0` turns it off and restores the earlier memory use),
+and storage search runs ripgrep on up to half the container's CPUs (`GREP_THREADS`).
 
 Compose forwards **only** the variables it enumerates, so a name that is not listed in
 the compose file never reaches the container. All of these are wired; setting them in
@@ -391,11 +393,31 @@ not documented here.
 | `PIPESHUB_ACCESSIBLE_RECORDS_CACHE` | blank (on) \| a disabled value | on |
 | `PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL` | seconds | `300` |
 | `PIPESHUB_SIGNED_URL_CACHE_SECONDS` | seconds, `0` disables, capped at `3000` | `0` |
+| `PIPESHUB_RECORD_CACHE_BACKEND` | `memory` \| `redis` | `memory` |
+| `PIPESHUB_RECORD_CACHE_BYTES` | bytes per worker, capped at 512 MiB; `0` turns the cache off (`redis` too) | 512 MiB |
+| `GREP_THREADS` | threads per search, capped at half the container's CPUs | half the CPUs |
 | `PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS` | characters, `0` removes the limit | `1000000` |
 
 `direct` calls model providers without the LangChain layer. A provider with no direct
 transport, or with credentials it cannot use, falls back to LangChain for that turn
 rather than failing it; an unrecognised value logs a warning and falls back too.
+
+The stored-record cache keeps recently read records for 60 seconds. `memory` keeps them
+decoded in each query worker, so it uses up to `PIPESHUB_RECORD_CACHE_BYTES` per worker.
+`redis` keeps the stored JSON in Redis instead, shared by all workers and with nothing held
+in the process; it is a little slower because each hit is decoded again. The bundled Redis
+also holds the configuration and the event queue and has no memory limit, so before choosing
+`redis` give Redis a `maxmemory` with the `volatile-ttl` (or `volatile-lru`) policy, which
+evicts only keys that expire, such as these cache entries. Records written with
+append-only persistence on also go to its file on disk. Only records the storage service
+returns inline (local storage) are cached by either backend; reads through signed URLs (S3,
+Azure Blob) are not. If Redis cannot be reached when a worker first needs it, that worker
+reads records from storage without a cache until it restarts.
+
+Storage search runs grep through ripgrep when the image has it and the command can be
+reproduced exactly; otherwise it runs GNU grep. `GREP_THREADS` sets ripgrep's threads per
+search. It is capped at half the CPUs the container may use, so concurrent searches leave
+CPU for answering, and defaults to that cap.
 
 `PIPESHUB_SIGNED_URL_CACHE_SECONDS` is clamped to 3000 in code, keeping it under the
 3600-second signing lifetime so a URL handed out at the end of its cached life still has
@@ -425,7 +447,7 @@ the table says.
 > **Naming note.** The `PIPESHUB_*` variables in
 > [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
 > are read by `install.sh` *before* `.env` is written and control the installer itself.
-> The four above are read by the running service. They share a prefix but not a purpose.
+> The `PIPESHUB_*` variables above are read by the running service. They share a prefix but not a purpose.
 
 ---
 

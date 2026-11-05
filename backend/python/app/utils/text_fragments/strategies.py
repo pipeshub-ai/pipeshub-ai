@@ -14,7 +14,11 @@ if TYPE_CHECKING:
 
 class DirectiveStrategy(Protocol):
     def build(self, blocks: Sequence[SegmentedBlock]) -> TextDirective | None:
-        """Build a directive from eligible, non-empty blocks; None if this strategy does not apply."""
+        """Build a directive from eligible, non-empty blocks; None if this strategy does not apply.
+
+        *blocks* holds the first and last eligible block of the snippet (one when
+        they are the same): the blocks between them are not passed in.
+        """
         ...
 
 

@@ -50,12 +50,14 @@ class RecordArtifactReader(Protocol):
         org_id: str,
         *,
         lookup: dict[str, Any] | None = None,
+        head_only: bool = False,
     ) -> dict[str, Any] | None:
         """The record's processed content in the stored-record dict shape.
 
         ``lookup`` is the entry ``lookup_many`` returned for this id; without
         it the reader resolves the id itself. None when the record has no
-        stored content.
+        stored content. ``head_only`` asks for the record without its blocks
+        (metadata and semantic metadata); a reader may return it whole.
         """
         ...
 
@@ -79,7 +81,12 @@ class LegacyRecordArtifactReader:
         org_id: str,
         *,
         lookup: dict[str, Any] | None = None,
+        head_only: bool = False,
     ) -> dict[str, Any] | None:
+        if head_only:
+            return await self._blob_store.get_record_from_storage(
+                virtual_record_id, org_id, lookup_result=lookup, head_only=True
+            )
         return await self._blob_store.get_record_from_storage(
             virtual_record_id, org_id, lookup_result=lookup
         )
@@ -182,6 +189,7 @@ class ShadowRecordArtifactReader:
         org_id: str,
         *,
         lookup: dict[str, Any] | None = None,
+        head_only: bool = False,
     ) -> dict[str, Any] | None:
         if not self._slots.acquire(blocking=False):
             record_artifact_shadow_read("skipped")
@@ -245,6 +253,7 @@ class ArtifactFirstRecordArtifactReader:
         org_id: str,
         *,
         lookup: dict[str, Any] | None = None,
+        head_only: bool = False,
     ) -> dict[str, Any] | None:
         # An older indexing member may be writing in place without the stored-write protocol, or the
         # membership check cannot be seen: the stored record is the only safe answer.
@@ -285,9 +294,13 @@ class ConfiguredRecordArtifactReader:
         org_id: str,
         *,
         lookup: dict[str, Any] | None = None,
+        head_only: bool = False,
     ) -> dict[str, Any] | None:
         mode = await artifact_read_mode(getattr(self._blob_store, "config_service", None))
-        return await self.reader(mode).read_record(virtual_record_id, org_id, lookup=lookup)
+        # The shadow and artifact readers serve and compare whole records.
+        return await self.reader(mode).read_record(
+            virtual_record_id, org_id, lookup=lookup, head_only=head_only and mode == "legacy",
+        )
 
     async def lookup_many(self, virtual_record_ids: list[str]) -> dict[str, dict[str, Any]]:
         return await self.legacy.lookup_many(virtual_record_ids)

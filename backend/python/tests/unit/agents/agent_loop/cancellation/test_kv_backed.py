@@ -46,7 +46,7 @@ class _FakeKVStore:
 
 @pytest.fixture(autouse=True)
 def _fast_poll(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The real 1s poll interval would make the watcher tests below slow
+    """The real 2s poll interval would make the watcher tests below slow
     (or flaky under load); every test in this module gets a fast one."""
     monkeypatch.setattr(kv_backed_module, "_POLL_INTERVAL_SECONDS", 0.01)
 

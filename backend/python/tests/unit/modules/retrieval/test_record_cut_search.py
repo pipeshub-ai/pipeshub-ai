@@ -493,6 +493,15 @@ class TestExecuteParallelSearches:
         assert self._limits(store) == [4]
         assert [r["metadata"]["point_id"] for r in results] == ["a-0", "a-1", "a-2", "a-3"]
 
+    async def test_only_the_payload_a_hit_is_read_for_is_asked(self) -> None:
+        service, store = self._service([[], []])
+
+        await service._execute_parallel_searches(["q"], None, 4, ORG_1)
+
+        asked = [req.with_payload for call in store.query_nearest_points.await_args_list
+                 for req in call.kwargs["requests"]]
+        assert asked == [["page_content", "metadata"]]
+
     async def test_each_query_is_cut_by_record_on_its_own(self) -> None:
         service, store = self._service([
             _store_points(*("a" * 10), "b", "c"),

@@ -40,7 +40,7 @@ _KEY_SUFFIX = ":cancel"
 # Bounds a leaked key if a producer's `finally` never runs (process killed
 # mid-run) — not the normal cleanup path, `unregister()` deletes it.
 _TTL_SECONDS = 600
-_POLL_INTERVAL_SECONDS = 1.0
+_POLL_INTERVAL_SECONDS = 2.0
 
 
 def _key(run_id: str) -> str:
