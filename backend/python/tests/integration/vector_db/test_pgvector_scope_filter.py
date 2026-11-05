@@ -99,7 +99,7 @@ async def test_what_cannot_be_trusted_is_never_admitted_even_when_the_viewer_rea
     for never in ("unstamped", "legacy", "unknown_stamp", "old_version", "old_generation", "new_generation", "other_connector",
                   "mixed_connectors", "no_connector", "unavailable_stamp"):
         assert never not in got, never
-    assert {"container", "container_other", "union", "union_hidden", "intersection", "intersection_hidden", "override"} == got
+    assert {"container", "container_other", "union", "union_hidden", "intersection", "intersection_hidden", "override", "override_pathed"} == got
 
 
 @LEGS
@@ -134,6 +134,17 @@ async def test_a_null_list_of_a_stamped_group_fails_closed(store, leg) -> None:
         finally:
             await conn.close()
         assert "container" not in await search(store, f(readable_groups=EVERYTHING, open_apps=frozenset({"c1"})), leg=leg)
+
+
+@LEGS
+async def test_a_pending_list_does_not_hide_a_group_whose_path_list_is_null(store, leg) -> None:
+    conn = await store.env.admin()
+    try:
+        await conn.execute("UPDATE retrieval.point_groups SET path_ids = NULL WHERE org_id = $1 AND group_key = 'container_other'", A)
+    finally:
+        await conn.close()
+    flt = f(readable_groups=frozenset({"g2"}), pending=frozenset({"p1"}))
+    assert await search(store, flt, leg=leg) == {"container_other"}          # NOT (NULL && pending) is NULL, which would hide it
 
 
 @LEGS

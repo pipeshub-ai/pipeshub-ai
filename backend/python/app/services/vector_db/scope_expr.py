@@ -7,7 +7,8 @@ A point is admitted only when ALL hold; everything else, including a missing fie
 * its field version and scope generation are the ones the filter names (a negative generation, or no current connector, trusts nothing);
 * it has at least one connector and every connector is in ``current`` (:class:`Within`);
 * by its stamp: ``container`` and a record group, root group or connector the viewer reads; any of ``container`` / ``union`` / ``intersection`` /
-  ``override`` and ``aclScope`` meets ``reach``; ``union`` / ``intersection`` and ``pathIds`` meets ``reach`` and does not meet ``excluded``.
+  ``override`` and ``aclScope`` meets ``reach``; ``union`` / ``intersection`` and ``pathIds`` meets ``reach`` and does not meet ``excluded``;
+* whatever the stamp, ``pathIds`` does not meet ``pending``, and a ``container`` point does not belong to a ``blocked`` connector.
 
 An empty list matches nothing (:func:`has` of no values is FALSE), never everything.
 """
@@ -111,14 +112,18 @@ def admits(flt: ScopeFilter) -> Node:
     """The tree of the points ``flt`` admits (FALSE for a filter that can trust nothing)."""
     if flt.trusts_nothing:
         return FALSE
+    # a subtree being rewritten is hidden whatever the stamp; a connector with a pending root is not read from its container stamps
+    not_pending = not_(has(PATH_IDS_FIELD, flt.pending))
+    not_blocked = not_(has(CONNECTOR_IDS_FIELD, flt.blocked))
     return all_of(
         Is(SCOPE_VERSION_FIELD, flt.version), Is(SCOPE_GENERATION_FIELD, flt.generation),
-        Within(CONNECTOR_IDS_FIELD, tuple(sorted(flt.current))),
+        Within(CONNECTOR_IDS_FIELD, tuple(sorted(flt.current))), not_pending,
         some_of(
-            all_of(has(SCOPE_STAMP_FIELD, ("container",)),
+            all_of(has(SCOPE_STAMP_FIELD, ("container",)), not_blocked,
                    some_of(has(RECORD_GROUP_IDS_FIELD, flt.readable_groups), has(ROOT_RECORD_GROUP_IDS_FIELD, flt.readable_groups),
                            has(CONNECTOR_IDS_FIELD, flt.open_apps))),
-            all_of(has(SCOPE_STAMP_FIELD, OWN_ID_STAMPS), has(ACL_SCOPE_FIELD, flt.reach)),
+            all_of(has(SCOPE_STAMP_FIELD, OWN_ID_STAMPS), has(ACL_SCOPE_FIELD, flt.reach),
+                   some_of(not_(has(SCOPE_STAMP_FIELD, ("container",))), not_blocked)),
             all_of(has(SCOPE_STAMP_FIELD, PATH_STAMPS), has(PATH_IDS_FIELD, flt.reach), not_(has(PATH_IDS_FIELD, flt.excluded)))))
 
 
@@ -170,6 +175,6 @@ def check_size(flt: ScopeFilter, store: str) -> None:
     if flt.trusts_nothing:  # admits nothing and no list is ever written: a size that cannot be sent is no reason to refuse
         return
     limit = MAX_IDS[store]
-    for name in ("current", "open_apps", "readable_groups", "readable_scopes", "excluded", "reach"):
+    for name in ("current", "open_apps", "readable_groups", "readable_scopes", "excluded", "pending", "blocked", "reach"):
         if len(getattr(flt, name)) > limit:
             raise ScopeFilterTooLarge(f"{store}: the filter's {name} list holds more than {limit} ids")
