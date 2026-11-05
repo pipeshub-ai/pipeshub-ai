@@ -121,9 +121,10 @@ class IdentityMixin(PgBase):
         return _arango(d, "users") if d else None
 
     @_soft(None, flag=True)
-    async def get_user_by_email(self, email: str, transaction: str | None = None, *, raise_on_error: bool = False) -> User | None:
+    async def get_user_by_email(self, email: str, transaction: str | None = None, *, raise_on_error: bool = False,
+                                org_id: str | None = None) -> User | None:
         d = await self._one("/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) LIMIT 1",
-                            current_org_id(), email, transaction=transaction)
+                            org_id or current_org_id(), email, transaction=transaction)
         return User.from_arango_user(_arango(d, "users")) if d else None
 
     async def get_all_orgs(self, *, active: bool = True, is_external: bool = False, transaction: str | None = None, raise_on_error: bool = False) -> list[dict]:
