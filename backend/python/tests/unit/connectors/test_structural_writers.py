@@ -976,14 +976,14 @@ class _AppDocs:
         self.log: list[tuple[str, str, str]] = []
         self.fail = fail
 
-        async def update(key, collection, updates, *args, **kwargs):
+        async def update(key, collection, updates, *args, **kwargs) -> bool:
             if self.fail("update", key):
                 raise RuntimeError("graph down")
             self.log.append(("update", key, ",".join(sorted(updates))))
             self.docs[key].update(updates)
             return True
 
-        async def increment(key, collection, field, *args, **kwargs):
+        async def increment(key, collection, field, *args, **kwargs) -> int:
             if self.fail("increment:" + field, key):
                 raise RuntimeError("graph down")
             self.log.append(("increment", key, field))
@@ -1056,7 +1056,7 @@ async def test_a_connector_is_not_closed_when_its_mark_did_not_land(monkeypatch)
     provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}, {"_key": "c2"}], explicit=False)
     monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
     apps = _AppDocs(provider, ["c1", "c2"], fail=lambda kind, key: kind == "update" and key == "c2")        # c2's mark never lands
-    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(Exception):
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")), pytest.raises(RuntimeError, match="graph down"):
         async with store_provider.transaction() as tx:
             await _Scratch.via_local_alias(tx, "r1")
     assert apps.docs["c1"].get("scopeProjectionClosed") == 1 and not apps.docs["c2"].get("scopeProjectionClosed")       # no closing step for c2
