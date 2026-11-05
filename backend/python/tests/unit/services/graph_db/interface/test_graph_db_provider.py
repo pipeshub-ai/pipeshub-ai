@@ -315,6 +315,7 @@ class TestAbstractMethodInventory:
         "ensure_taxonomy_hierarchy_edge",
         # User operations
         "get_user_by_email",
+        "get_users_by_emails",
         "get_user_by_source_id",
         "get_user_by_user_id",
         "apply_verified_user_email",
