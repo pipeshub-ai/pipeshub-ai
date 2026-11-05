@@ -1425,6 +1425,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:User) ON (n.orgId)"
         )
 
+        # COMPOSITE: orgId + email (org-scoped member email lookups; non-unique: stub users and login users share email)
+        indexes.append(
+            "CREATE INDEX user_org_email IF NOT EXISTS "
+            "FOR (n:User) ON (n.orgId, n.email)"
+        )
+
         # ==================== RECORDGROUP INDEXES (High Priority) ====================
 
         # COMPOSITE: externalGroupId + connectorId (ALWAYS queried together)
@@ -6095,17 +6101,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str | None = None,
     ) -> dict[str, User]:
         """See :meth:`IGraphDBProvider.get_users_by_emails`."""
-        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        wanted = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
         if not wanted:
             return {}
         try:
             scoped = org_id is not None
-            org_filter = "AND u.orgId = $org_id" if scoped else ""
-            # toLower(u.email) keeps matching case-insensitive, which the
-            # user_email index cannot serve.
+            where_clause = "WHERE u.orgId = $org_id AND u.email IN $emails" if scoped else "WHERE u.email IN $emails"
+            # Direct comparison against normalized inputs allows the composite index
+            # on (orgId, email) to be used without scanning all user nodes.
             query = f"""
             MATCH (u:User)
-            WHERE toLower(u.email) IN $emails {org_filter}
+            {where_clause}
             RETURN u
             """
             results = await self.client.execute_query(
@@ -6114,7 +6120,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             found: dict[str, User] = {}
             for row in results or []:
                 user_dict = self._neo4j_to_arango_node(dict(row["u"]), CollectionNames.USERS.value)
-                found.setdefault(user_dict["email"].lower(), User.from_arango_user(user_dict))
+                u = User.from_arango_user(user_dict)
+                key = (user_dict.get("email") or "").lower()
+                if key not in found or (u.is_active and not found[key].is_active):
+                    found[key] = u
             return found
         except Exception as e:
             self.logger.error(f"❌ Get users by emails failed: {str(e)}")
@@ -6131,13 +6140,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str | None = None,
     ) -> User | None:
         """Get user by email"""
+        normalized_email = email.strip().lower() if email else ""
+        if not normalized_email:
+            return None
         try:
             scoped = org_id is not None
-            org_filter = "AND u.orgId = $org_id" if scoped else ""
-            parameters = {"email": email, **({"org_id": org_id} if scoped else {})}
+            where_clause = "WHERE u.orgId = $org_id AND u.email = $email" if scoped else "WHERE u.email = $email"
+            parameters = {"email": normalized_email, **({"org_id": org_id} if scoped else {})}
             query = f"""
             MATCH (u:User)
-            WHERE toLower(u.email) = toLower($email) {org_filter}
+            {where_clause}
             RETURN u
             LIMIT 1
             """

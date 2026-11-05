@@ -303,6 +303,7 @@ class EntityEventService(BaseEventService):
                     "id": user_key,
                     "userId": payload["userId"],
                     "orgId": payload["orgId"],
+                    "email": payload["email"].strip().lower() if payload.get("email") else "",
                     "isActive": True,
                     "updatedAtTimestamp": current_timestamp,
                 }
@@ -325,7 +326,7 @@ class EntityEventService(BaseEventService):
                     "id": user_key,
                     "userId": payload["userId"],
                     "orgId": payload["orgId"],
-                    "email": payload["email"],
+                    "email": payload["email"].strip().lower() if payload.get("email") else "",
                     "fullName": payload.get("fullName", ""),
                     "firstName": payload.get("firstName", ""),
                     "middleName": payload.get("middleName", ""),
@@ -379,7 +380,8 @@ class EntityEventService(BaseEventService):
             # collaborator. Never fatal: the account itself is what this event is for, and
             # letting a failed adoption bubble up would make Kafka redeliver forever while
             # the person still has no user.
-            await self._adopt_existing_person(payload["email"], user_key, payload["orgId"])
+            normalized_email = payload["email"].strip().lower() if payload.get("email") else ""
+            await self._adopt_existing_person(normalized_email, user_key, payload["orgId"])
 
             # Get or create knowledge base for the user (creates app + all edges)
             kb_name = self._kb_name_from_user_added_payload(payload)
@@ -476,7 +478,7 @@ class EntityEventService(BaseEventService):
                 "id": user_id,
                 "userId": payload["userId"],
                 "orgId": payload["orgId"],
-                "email": payload["email"],
+                "email": payload["email"].strip().lower() if payload.get("email") else "",
                 "fullName": payload.get("fullName", ""),
                 "firstName": payload.get("firstName", ""),
                 "middleName": payload.get("middleName", ""),

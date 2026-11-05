@@ -1808,13 +1808,19 @@ class TestRecordGroup:
 
 
 class TestUser:
-    def test_to_arango_base_record(self):
+    def test_to_arango_base_record(self) -> None:
         from app.models.entities import User
         user = User(email="test@test.com", full_name="Test User", is_active=True)
         arango = user.to_arango_base_record()
         assert arango["email"] == "test@test.com"
         assert arango["fullName"] == "Test User"
         assert arango["isActive"] is True
+
+    def test_to_arango_base_record_normalizes_email(self) -> None:
+        from app.models.entities import User
+        user = User(email="  John.Doe@ACME.Com  ", full_name="John Doe", is_active=True)
+        arango = user.to_arango_base_record()
+        assert arango["email"] == "john.doe@acme.com"
 
     def test_validate_with_email(self):
         from app.models.entities import User
@@ -1913,7 +1919,7 @@ class TestPerson:
 
 
 class TestAppUser:
-    def test_to_arango_base_user(self):
+    def test_to_arango_base_user(self) -> None:
         from app.models.entities import AppUser
         au = AppUser(
             app_name=Connectors.GOOGLE_DRIVE,
@@ -1926,6 +1932,18 @@ class TestAppUser:
         assert arango["email"] == "user@test.com"
         assert arango["fullName"] == "App User"
         assert arango["userId"] == "src-1"
+
+    def test_to_arango_base_user_normalizes_email(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(
+            app_name=Connectors.GOOGLE_DRIVE,
+            connector_id="conn-1",
+            source_user_id="src-1",
+            email="  Alice.Smith@COMPANY.Org  ",
+            full_name="Alice Smith",
+        )
+        arango = au.to_arango_base_user()
+        assert arango["email"] == "alice.smith@company.org"
 
     def test_title_round_trips_through_graph_doc(self) -> None:
         from app.models.entities import AppUser

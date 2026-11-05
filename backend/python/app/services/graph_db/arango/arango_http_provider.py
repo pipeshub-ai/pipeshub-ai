@@ -1526,6 +1526,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ["orgId"],
         )
 
+        # COMPOSITE: orgId + email (org-scoped member email lookups; non-unique: stub users and login users share email)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.USERS.value,
+            ["orgId", "email"],
+            unique=False,
+        )
+
         # ==================== RECORDGROUP INDEXES (High Priority) ====================
 
         # COMPOSITE: externalGroupId + connectorId (ALWAYS queried together)
@@ -7792,25 +7799,29 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str | None = None,
     ) -> dict[str, User]:
         """See :meth:`IGraphDBProvider.get_users_by_emails`."""
-        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        wanted = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
         if not wanted:
             return {}
         scoped = org_id is not None
         org_filter = "FILTER user.orgId == @org_id" if scoped else ""
         bind_vars = {"emails": wanted, **({"org_id": org_id} if scoped else {})}
-        # LOWER(user.email) keeps matching case-insensitive, which no index on
-        # users.email can serve; one scan per call instead of one per address.
+        # Direct comparison against normalized inputs allows the persistent index
+        # on (orgId, email) to be used without a full collection scan.
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
-            FILTER LOWER(user.email) IN @emails
             {org_filter}
+            FILTER user.email IN @emails
             RETURN user
         """
         try:
             rows = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
             found: dict[str, User] = {}
             for row in rows or []:
-                found.setdefault(row["email"].lower(), User.from_arango_user(self._translate_node_from_arango(row)))
+                node = self._translate_node_from_arango(row)
+                u = User.from_arango_user(node)
+                key = (row.get("email") or "").lower()
+                if key not in found or (u.is_active and not found[key].is_active):
+                    found[key] = u
             return found
         except Exception as e:
             self.logger.error(f"❌ Get users by emails failed: {str(e)}")
@@ -7829,13 +7840,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Get user by email.
         """
+        normalized_email = email.strip().lower() if email else ""
+        if not normalized_email:
+            return None
         scoped = org_id is not None
         org_filter = "FILTER user.orgId == @org_id" if scoped else ""
-        bind_vars = {"email": email, **({"org_id": org_id} if scoped else {})}
+        bind_vars = {"email": normalized_email, **({"org_id": org_id} if scoped else {})}
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
-            FILTER LOWER(user.email) == LOWER(@email)
             {org_filter}
+            FILTER user.email == @email
             LIMIT 1
             RETURN user
         """

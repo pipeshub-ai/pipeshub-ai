@@ -150,3 +150,73 @@ class TestPostgresPageRecordIdsByType:
             with pytest.raises(ValueError):
                 await p.page_record_ids_by_type("o1", ["MAIL"], limit=-1)
         p.tx.fetch.assert_not_awaited()
+
+
+# ---- Email normalization & index-backed direct property comparison ---------------------------------------------------
+
+@pytest.mark.parametrize("make", [_arango, _neo4j], ids=["arango", "neo4j"])
+@pytest.mark.asyncio
+async def test_the_query_compares_stored_field_directly_without_scalar_lower(make) -> None:
+    p = make(ROWS)
+    await p.get_users_by_emails(["ANN@acme.com"], org_id="o1")
+    if isinstance(p, ArangoHTTPProvider):
+        query = p.http_client.execute_aql.await_args.args[0]
+        assert "LOWER(user.email)" not in query
+        assert "user.email IN @emails" in query
+        assert "user.orgId == @org_id" in query
+    elif isinstance(p, Neo4jProvider):
+        query = p.client.execute_query.await_args.args[0]
+        assert "toLower(u.email)" not in query
+        assert "u.email IN $emails" in query
+        assert "u.orgId = $org_id" in query
+
+
+@pytest.mark.parametrize("make", [_arango, _neo4j], ids=["arango", "neo4j"])
+@pytest.mark.asyncio
+async def test_duplicate_email_user_nodes_prefer_active_user(make) -> None:
+    duplicate_rows = [
+        {"_key": "stub1", "email": "ann@acme.com", "orgId": "o1", "userId": "third_party_id", "isActive": False, "fullName": "Ann Stub"},
+        {"_key": "real1", "email": "ann@acme.com", "orgId": "o1", "userId": "507f1f77bcf86cd799439011", "isActive": True, "fullName": "Ann Real"},
+    ]
+    p = make(duplicate_rows)
+    got = await p.get_users_by_emails(["ann@acme.com"], org_id="o1")
+    assert got["ann@acme.com"].id == "real1"
+    assert got["ann@acme.com"].is_active is True
+
+
+@pytest.mark.parametrize("make", [_arango, _neo4j], ids=["arango", "neo4j"])
+@pytest.mark.asyncio
+async def test_get_user_by_email_compares_directly_and_normalizes_input(make) -> None:
+    p = make(ROWS)
+    got = await p.get_user_by_email("  ANN@acme.com  ", org_id="o1")
+    assert got is not None
+    assert got.id == "u1"
+    if isinstance(p, ArangoHTTPProvider):
+        query = p.http_client.execute_aql.await_args.args[0]
+        assert "LOWER(user.email)" not in query
+        assert "user.email == @email" in query
+        assert p.http_client.execute_aql.await_args.kwargs["bind_vars"]["email"] == "ann@acme.com"
+    elif isinstance(p, Neo4jProvider):
+        query = p.client.execute_query.await_args.args[0]
+        assert "toLower(u.email)" not in query
+        assert "u.email = $email" in query
+        assert p.client.execute_query.await_args.kwargs["parameters"]["email"] == "ann@acme.com"
+
+
+@pytest.mark.asyncio
+async def test_arango_ensures_non_unique_org_email_composite_index() -> None:
+    p = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
+    p.logger = MagicMock()
+    p.http_client = MagicMock(ensure_persistent_index=AsyncMock())
+    p.collection_indexes = {}
+    await p._ensure_indexes()
+    calls = p.http_client.ensure_persistent_index.await_args_list
+    match = [c for c in calls if c.args[0] == "users" and c.args[1] == ["orgId", "email"]]
+    assert len(match) == 1
+    assert match[0].kwargs.get("unique") is False
+
+
+def test_neo4j_generates_non_unique_org_email_composite_index() -> None:
+    p = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+    indexes = p._generate_performance_indexes()
+    assert any("CREATE INDEX user_org_email IF NOT EXISTS FOR (n:User) ON (n.orgId, n.email)" in q for q in indexes)
