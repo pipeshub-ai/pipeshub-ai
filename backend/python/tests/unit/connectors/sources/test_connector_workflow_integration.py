@@ -431,9 +431,22 @@ class MockTransactionStore:
 
     # -- users ---
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False,
+    ) -> User | None:
+        return None  # this store keeps no userAppRelation edges
+
+    async def get_users_by_emails(
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, User]:
+        found = {e.lower(): await self.get_user_by_email(e, org_id=org_id) for e in emails}
+        return {e: u for e, u in found.items() if u is not None}
+
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> User | None:
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
-            if doc.get("email") == email:
+            if doc.get("email") == email and (org_id is None or doc.get("orgId") == org_id):
                 return User(
                     id=doc["_key"],
                     email=doc["email"],
@@ -955,6 +968,8 @@ def processor(data_store_provider):
     proc = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
     proc.org_id = ORG_ID
     proc.messaging_producer = AsyncMock()
+    # Title events have their own tests (tests/unit/connectors/core/test_dsp_record_title_events.py).
+    proc._publish_record_titles = AsyncMock()
     return proc
 
 

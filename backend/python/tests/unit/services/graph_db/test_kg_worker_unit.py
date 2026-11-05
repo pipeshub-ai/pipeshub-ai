@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from app.services.graph_db.postgres.kg import drainer, legacy
+from app.services.graph_db.postgres.kg import drainer, legacy, restamp
 from app.services.graph_db.postgres.kg import worker as worker_mod
 from app.services.graph_db.postgres.kg.worker import KgWorker
 
@@ -180,4 +180,40 @@ async def test_no_unit_is_opened_for_the_gauges_once_the_worker_is_stopping(monk
     w = KgWorker(_NoUow(), orgs, dsn=None, poll_s=0.05)  # type: ignore[arg-type]
     holder["w"] = w
     await w.run_once()
+    assert published["n"] == 0 and _NoUow.opened == 0
+
+
+async def test_a_stop_during_a_restamp_batch_ends_the_job_between_batches_and_opens_no_unit_for_the_gauges(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"claim": 0, "batch": 0}
+    published = {"n": 0}
+    _NoUow.opened = 0
+    holder: dict[str, KgWorker] = {}
+    job = restamp.Job(1, 5, "rows", "reach", True, 0, 1, "7")
+
+    async def no_rows(_db: object, _org: str, *, limit: int) -> int:
+        return 0
+
+    async def claim(_db: object, _org: str, _worker: str, **_k: object) -> restamp.Job:
+        calls["claim"] += 1
+        return job
+
+    async def one_batch(_db: object, _org: str, j: restamp.Job, _worker: str, **_k: object) -> tuple[bool, restamp.Job]:
+        calls["batch"] += 1
+        holder["w"]._stop.set()                         # the stop arrives while a batch is running: the batch ends, no other starts
+        await asyncio.sleep(0.01)
+        return False, j
+
+    async def orgs() -> list[str]:
+        return ["org-a", "org-b"]
+
+    async def publish(_tx: object, _org: str) -> None:
+        published["n"] += 1
+    monkeypatch.setattr(drainer, "drain", no_rows)
+    monkeypatch.setattr(restamp, "claim", claim)
+    monkeypatch.setattr(restamp, "run_batch", one_batch)
+    monkeypatch.setattr(legacy, "publish", publish)
+    w = KgWorker(_NoUow(), orgs, dsn=None, poll_s=0.05)  # type: ignore[arg-type]
+    holder["w"] = w
+    await w.run_once()
+    assert calls == {"claim": 1, "batch": 1}                      # one job claimed, one batch, no second batch, no second organisation
     assert published["n"] == 0 and _NoUow.opened == 0

@@ -6693,6 +6693,14 @@ components:
         by a paragraph that starts `Not indexed:` and names the status, e.g.
         `(status: AUTO_INDEX_OFF)`. It is not the record's text.
 
+        Before answering that way, the service asks indexing to parse the record
+        and waits for it (55 seconds unless an admin changed the wait). When the
+        parse finishes in time the record's content is returned as for an indexed
+        record. When it does not, the description is returned with `preparing: true`
+        and the paragraph starts `Content being prepared:`; reading again shortly
+        returns the content. A record that cannot be parsed (for example a
+        password-protected file) gets the `Not indexed:` paragraph.
+
         `content` is the literal `No record found` when the caller may read
         an indexed record but its stored content could not be loaded. An id
         that does not exist, a record in the trash, and a record the caller
@@ -6813,6 +6821,13 @@ components:
             is left to read after this one. A block larger than the largest
             `maxChars` (140000) is returned cut and given up; when nothing
             follows it, `complete` is true and `truncatedBy` is `clipped`.
+        preparing:
+          type: boolean
+          description: >-
+            Present, and true, only when the record is not indexed and its content was still
+            being prepared when the wait ended (55 seconds unless an admin changed it).
+            `content` then holds the record's details and a note, `complete` is true for that
+            note, and reading the record again shortly returns its content.
         truncatedBy:
           type: string
           nullable: true
@@ -12503,6 +12518,21 @@ components:
           description: |
             Present (`true`) only when the search store answered from a partial search.
             The results are valid but may be incomplete.
+        unindexedMatches:
+          type: array
+          description: |
+            Present only when records match the query by name or meaning but their content is not
+            indexed yet (just synced, queued, or with automatic indexing off). Search reads
+            only indexed text, so these are never in `searchResults`; they are found by their
+            names, and the name must be close in meaning to the query (a shared word alone does not
+            count). Best match first, up to 10, only records the caller may read, and never a
+            record `searchResults` already cites. Each carries the reason its content is
+            missing; pass it on, and do not read a missing passage as a missing record.
+            Omitted when there are none, when the search has date bounds or `filters.entityFilters`,
+            and when the lookup could not run. When no indexed content matched (which answers
+            `404` otherwise), the response is a `200` with empty `searchResults` and this field.
+          items:
+            $ref: '#/components/schemas/SemanticSearchUnindexedMatch'
         searchIncomplete:
           type: string
           description: |
@@ -12510,6 +12540,41 @@ components:
             results may miss documents: says how many parts failed, for example
             `1 of 3 parts of the search index could not be searched, so this search may
             have missed documents.`
+    SemanticSearchUnindexedMatch:
+      type: object
+      additionalProperties: false
+      description: A record that matches the query by name and whose content is not indexed yet.
+      required:
+        - recordId
+        - recordName
+        - indexingStatus
+        - note
+      properties:
+        recordId:
+          type: string
+        recordName:
+          type: string
+        connector:
+          type: string
+          nullable: true
+          description: Name of the app the record comes from.
+        connectorId:
+          type: string
+          nullable: true
+        recordType:
+          type: string
+          nullable: true
+        indexingStatus:
+          type: string
+          nullable: true
+          description: |
+            The record's indexing status, for example `NOT_STARTED`, `QUEUED`, `IN_PROGRESS`,
+            `AUTO_INDEX_OFF` or `FAILED`. `null` when the record has none.
+        note:
+          type: string
+          description: |
+            Plain-language label saying the record exists but its content is not indexed yet,
+            and why, to pass on with it.
     SemanticSearchOutsideDates:
       type: object
       additionalProperties: false
@@ -18006,11 +18071,12 @@ components:
     # Web Search Schemas
     WebSearchProviderType:
       type: string
-      enum: [duckduckgo, serper, tavily, exa, brave, searxng, firecrawl, crawl4ai]
+      enum: [duckduckgo, serper, tavily, exa, brave, searxng, firecrawl, crawl4ai, keenable]
       description: >-
         Supported web search provider. crawl4ai only reads pages (it backs up the built-in page reader)
         and cannot be the default; firecrawl both searches and reads pages. searxng, firecrawl and
-        crawl4ai take a baseUrl; firecrawl defaults to its cloud API.
+        crawl4ai take a baseUrl; firecrawl defaults to its cloud API. keenable works without an
+        apiKey (keyless public endpoint) and uses the keyed endpoint when one is set.
     WebSearchSettingsUpdate:
       type: object
       description: Web search global settings
@@ -48766,11 +48832,37 @@ paths:
                   limit: 10
       responses:
         '200':
-          description: Search ID plus retrieval payload (`searchResponse`) from the AI search service
+          description: |
+            Search ID plus retrieval payload (`searchResponse`) from the AI search service.
+            `searchResponse.unindexedMatches` lists records found by name whose content is not
+            indexed yet.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SemanticSearchExecuteResponse'
+              examples:
+                foundByNameOnly:
+                  summary: Nothing indexed matched; one record matches by name
+                  value:
+                    searchId: 66f0c1a2b3c4d5e6f7a8b9c0
+                    searchResponse:
+                      searchResults: []
+                      records: []
+                      status: success
+                      status_code: 200
+                      message: >-
+                        No indexed content matched; 1 record(s) matched by name only, content
+                        not indexed yet. They are in unindexedMatches.
+                      unindexedMatches:
+                        - recordId: 3f1c2a9e-7d4b-4c55-9a0e-2b6d8e1f4a73
+                          recordName: Quarterly planning
+                          connector: Confluence
+                          connectorId: 8b2e6c1d-5a7f-4e39-b0c4-1d9f3a2e7b65
+                          recordType: WEBPAGE
+                          indexingStatus: QUEUED
+                          note: |-
+                            Not indexed: this record exists, but its content is not indexed yet (status: QUEUED); it is waiting to be indexed, so asking again shortly may work.
+                            Search cannot find its text and its content cannot be read, so a search that misses it does not mean it does not exist. Use its name, link and dates, and say its content could not be read.
         '400':
           description: |
             Invalid request. `VALIDATION_ERROR` when `query` is missing, empty or not text,
@@ -48818,7 +48910,9 @@ paths:
         '404':
           description: |
             The search service found nothing the caller is allowed to
-            search — no indexed document is accessible to the caller, or
+            search — no indexed document is accessible to the caller (and no record matches
+            by name with its content not indexed yet, which answers `200` with
+            `searchResponse.unindexedMatches`), or
             none remains inside the scope set by `filters`, or nothing
             selected below app level exists or is readable by the caller
             ("Nothing in your selection is available to search"). The
@@ -49142,11 +49236,10 @@ paths:
         - Semantic Search
       summary: Clear all search history
       description: |
-        Permanently delete every persisted search row owned by, or shared
-        with, the authenticated user, along with the citation rows those
-        searches reference. The action cannot be undone. Searches other
-        users shared with the caller are deleted for their owners too, even
-        when the caller only has `read` access.
+        Permanently delete every persisted search row the authenticated
+        user owns, along with the citation rows those searches reference.
+        The action cannot be undone. Searches other users shared with the
+        caller are left alone.
 
         Scoped to the caller's org and limited to rows where
         `isArchived: false`. The optional `shared`, `startDate` and
@@ -49233,7 +49326,7 @@ paths:
         '404':
           description: |
             No matching rows (`HTTP_NOT_FOUND`, "Search history not found"). Returned when the
-            caller has no owned or shared, unarchived searches that satisfy the filters.
+            caller has no owned, unarchived searches that satisfy the filters.
           content:
             application/json:
               schema:
@@ -49359,10 +49452,8 @@ paths:
       summary: Delete search by ID
       description: |
         Permanently delete a single persisted search row, plus every
-        citation row referenced by its `citationIds`. The caller must
-        either own the row or have it shared with them: a user the search
-        was shared with, even with `read` access only, deletes the owner's
-        search for everyone.
+        citation row referenced by its `citationIds`. Only the owner can
+        delete it; a user the search was shared with gets `404`.
 
         Scoped to the caller's org and limited to rows where
         `isArchived: false`; an archived or already-deleted row is `404`.
@@ -49459,8 +49550,8 @@ paths:
         '404':
           description: |
             No search matched (`HTTP_NOT_FOUND`, "Search Id not found"). Returned when the id
-            does not exist for this caller, the caller neither owns it nor has it shared with
-            them, the row is archived or already deleted, or a query filter does not match it.
+            does not exist for this caller, the caller does not own it, the row is archived or
+            already deleted, or a query filter does not match it.
           content:
             application/json:
               schema:
@@ -49484,9 +49575,8 @@ paths:
         from the search history and from `GET /search/{searchId}`, and
         cannot be shared, unshared or deleted until they are unarchived.
 
-        The caller must own the search or have it shared with them: a user
-        the search was shared with, even with `read` access only, can
-        archive the owner's search for everyone.
+        Only the owner can archive it; a user the search was shared with
+        gets `404`.
       operationId: archiveSearch
       x-pipeshub-sdk: true
       security:
@@ -49622,8 +49712,8 @@ paths:
         '404':
           description: |
             No active search matched (`HTTP_NOT_FOUND`, "Search Id not found or no archive
-            permission"): the id does not exist in the caller's org, the caller neither owns
-            the search nor has it shared with them, it is already archived, or a `shared`,
+            permission"): the id does not exist in the caller's org, the caller does not own
+            the search, it is already archived, or a `shared`,
             `startDate` or `endDate` query filter does not match it.
           content:
             application/json:
@@ -49645,7 +49735,7 @@ paths:
       summary: Unarchive a search
       description: |
         Restore a previously archived search result back to the active search history.
-        The owner or any user the search was shared with can unarchive it.
+        Only the owner can unarchive it.
       operationId: unarchiveSearch
       x-pipeshub-sdk: true
       security:
@@ -49781,8 +49871,8 @@ paths:
         '404':
           description: |
             No archived search matched (`HTTP_NOT_FOUND`, "Search Id not found or no unarchive
-            permission"): the id does not exist in the caller's org, the caller neither owns
-            the search nor has it shared with them, it is not archived, it was deleted, or a
+            permission"): the id does not exist in the caller's org, the caller does not own
+            the search, it is not archived, it was deleted, or a
             `shared`, `startDate` or `endDate` query filter does not match it.
           content:
             application/json:
@@ -72878,9 +72968,8 @@ paths:
         - Semantic Search
       summary: Share a search with users
       description: |
-        Give other users access to a persisted search. The caller must own
-        the search or already have it shared with them; archived and
-        deleted searches cannot be shared.
+        Give other users access to a persisted search. Only the owner can
+        share it; archived and deleted searches cannot be shared.
 
         - `accessLevel` defaults to `read` when omitted and is applied to
           every user in `userIds`.
@@ -72999,8 +73088,8 @@ paths:
         '404':
           description: |
             No search matched. Returned when the id does not exist in the
-            caller's org, when the caller neither owns the search nor has
-            it shared with them, when the search is archived or deleted, or
+            caller's org, when the caller does not own the search, when the
+            search is archived or deleted, or
             when a `shared`, `startDate` or `endDate` query filter does not
             match it.
           content:
@@ -73023,16 +73112,13 @@ paths:
         - Semantic Search
       summary: Revoke share access for users
       description: |
-        Remove users from a shared search. The caller must own the search
-        or have it shared with them; archived and deleted searches cannot
-        be changed.
+        Remove users from a shared search. Only the owner can change who
+        it is shared with; archived and deleted searches cannot be changed.
 
         - Ids in `userIds` that the search was never shared with are
           ignored; they are still echoed back in `unsharedUsers`.
         - When the last user is removed the search stops being shared
           (`isShared: false`), but its `shareLink` is kept.
-        - Any user the search is shared with can unshare, including
-          removing themselves.
         - `accessLevel` is accepted in the body because both share routes
           use one validator, but it has no effect here.
         - Every id in `userIds` is looked up before anything is written;
@@ -73146,8 +73232,8 @@ paths:
         '404':
           description: |
             No search matched. Returned when the id does not exist in the
-            caller's org, when the caller neither owns the search nor has
-            it shared with them, when the search is archived or deleted, or
+            caller's org, when the caller does not own the search, when the
+            search is archived or deleted, or
             when a `shared`, `startDate` or `endDate` query filter does not
             match it.
           content:

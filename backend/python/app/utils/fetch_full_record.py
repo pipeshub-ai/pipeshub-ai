@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-
+import itertools
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
@@ -20,8 +19,14 @@ from app.models.entities import (
     TicketRecord,
     substitute_user_email,
 )
+from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.modules.pipeline.parse_now import READY, max_per_call, parse_outcome
 from app.modules.transformers.blob_storage import BlobStorage
-from app.services.graph_db.common.record_visibility import is_searchable_record
+from app.services.featureflag.platform_settings import parse_now_wait_seconds
+from app.services.graph_db.common.record_visibility import (
+    is_live_record,
+    is_readable_record,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.chat_helpers import (
     accessible_node_ids,
@@ -36,9 +41,12 @@ from app.utils.chat_helpers import (
 )
 from app.utils.logger import create_logger
 from app.utils.not_indexed import record_metadata_lines
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
+
+    from app.modules.pipeline.parse_now import ParseNow
 
 logger = create_logger(__name__)
 
@@ -238,6 +246,15 @@ _RESOLVE_CONCURRENCY = 5
 UNAVAILABLE = "not_available"
 NOT_INDEXED_YET = "not_indexed_yet"
 STORAGE_ERROR = "storage_error"
+# Being parsed for this read: it was not ready in time, or this call asked for
+# more records to be parsed than it may.
+PREPARING = "content_being_prepared"
+
+# Seconds between looks at a record being parsed: quick at first, then every 3.
+_POLL_STEPS = (1, 1, 2, 2)
+_POLL_THEN_EVERY = 3
+_GONE = "gone"
+_FINISH_GRACE_SECONDS = 2.0  # past the wait budget, for reading what became ready
 
 
 class _RecordResolver:
@@ -259,6 +276,7 @@ class _RecordResolver:
         frontend_url: str | None,
         accessible: set[str] | None = None,
         connection_sources: Mapping[str, Iterable[str]] | None = None,
+        parse_now: ParseNow | None = None,
     ) -> None:
         self._map = virtual_record_id_to_result
         self._connection_sources = connection_sources
@@ -276,7 +294,13 @@ class _RecordResolver:
         self._viewer_email: asyncio.Future[str | None] | None = None
         # Records the caller may read that exist but have no indexed content,
         # by id: their status and metadata, so "not indexed" can name them.
-        self.not_indexed: dict[str, dict[str, str]] = {}
+        self.not_indexed: dict[str, dict[str, Any]] = {}
+        self._parse_now = parse_now
+        self._asked = 0
+        self._started_ms: int | None = None
+        self._parse_outcomes: dict[str, str] = {}
+        # Records this call asked indexing to parse, by id: the document as last read.
+        self.waiting: dict[str, dict[str, Any]] = {}
 
     async def _excluded_apps(self) -> frozenset[str]:
         """The Acme Corp demo, when this person switched it off; read once per fetch.
@@ -364,14 +388,13 @@ class _RecordResolver:
         # Search leaves switched-off demo data out; opening it by id must too.
         if graph_record.get("connectorId") in await self._excluded_apps():
             return record_id, None, UNAVAILABLE
-        if not is_searchable_record(graph_record):
-            # Past the access check, so describing it reveals nothing.
-            self.not_indexed[record_id] = {
-                "status": graph_record.get("indexingStatus") or "unknown",
-                "context": await self._metadata(record_id, graph_record),
-            }
-            return record_id, None, NOT_INDEXED_YET
+        if not is_readable_record(graph_record):
+            return await self._not_readable(record_id, graph_record)
+        return await self._read_stored(record_id, graph_record)
 
+    async def _read_stored(
+        self, record_id: str, graph_record: dict[str, Any],
+    ) -> tuple[str, dict[str, Any] | None, str | None]:
         try:
             record = await self._download(graph_record)
         except Exception:
@@ -381,6 +404,95 @@ class _RecordResolver:
         if record is None:
             return record_id, None, UNAVAILABLE
         return record_id, await self._enrich(record), None
+
+    async def _describe(
+        self, record_id: str, graph_record: dict[str, Any], status: str, reason: str = NOT_INDEXED_YET,
+        **extra: str,
+    ) -> tuple[str, dict[str, Any] | None, str | None]:
+        # Past the access check, so describing it reveals nothing.
+        self.not_indexed[record_id] = {
+            "status": status, "context": await self._metadata(record_id, graph_record), **extra,
+        }
+        return record_id, None, reason
+
+    async def _not_readable(
+        self, record_id: str, graph_record: dict[str, Any],
+    ) -> tuple[str, dict[str, Any] | None, str | None]:
+        status = graph_record.get("indexingStatus") or "unknown"
+        if self._parse_now is None:
+            return await self._describe(record_id, graph_record, status)
+        parse, status = await self._parse_now.assess(self._graph_provider, graph_record)
+        if not parse:
+            return await self._describe(record_id, graph_record, status)
+        if record_id in self.waiting:
+            return record_id, None, PREPARING
+        if self._asked >= max_per_call():
+            return await self._describe(record_id, graph_record, status, PREPARING, preparing="deferred")
+        # Held before the request is sent, so a repeat of this id in the call is not asked twice.
+        self._asked += 1
+        if self._started_ms is None:
+            self._started_ms = get_epoch_timestamp_in_ms()
+        self.waiting[record_id] = graph_record
+        if not await self._parse_now.request(record_id, graph_record, self._org_id, self._user_id):
+            del self.waiting[record_id]
+            return await self._describe(record_id, graph_record, status)
+        return record_id, None, PREPARING
+
+    async def wait_for_parse(self, seconds: float) -> None:
+        """Look at the records asked for, together, until each is readable or has
+        ended, or ``seconds`` have passed since the first look."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + seconds
+        steps = itertools.chain(_POLL_STEPS, itertools.repeat(_POLL_THEN_EVERY))
+        # A FAILED marker written before this read asked (2 s skew allowed) is an earlier run's.
+        fresh_from = (self._started_ms or 0) - 2000
+        while len(self._parse_outcomes) < len(self.waiting) and (left := deadline - loop.time()) > 0:
+            await asyncio.sleep(min(next(steps), left))
+            open_ids = [rid for rid in self.waiting if rid not in self._parse_outcomes]
+            try:
+                docs = await asyncio.wait_for(
+                    asyncio.gather(*(self._read_marker(r) for r in open_ids)), deadline - loop.time(),
+                )
+            except TimeoutError:
+                break
+            for rid, doc in zip(open_ids, docs, strict=True):
+                if doc is None:
+                    continue
+                if not is_live_record(doc):
+                    self._parse_outcomes[rid] = _GONE
+                    continue
+                self.waiting[rid] = doc
+                outcome = parse_outcome(doc)
+                if outcome == "FAILED" and (doc.get("parseNowAt") or 0) < fresh_from:
+                    continue
+                if outcome is not None:
+                    self._parse_outcomes[rid] = outcome
+        # A final outcome frees the dedup claim; on timeout it stays, the parse may still run.
+        for rid in self._parse_outcomes:
+            await self._parse_now.release(rid, self._org_id)
+
+    async def _read_marker(self, record_id: str) -> dict[str, Any] | None:
+        try:
+            return await self._graph_provider.get_document(
+                document_key=record_id, collection=CollectionNames.RECORDS.value,
+            )
+        except Exception:
+            logger.warning("Graph read failed while waiting for %s", record_id, exc_info=True)
+            return None
+
+    async def finish(self, record_id: str) -> tuple[str, dict[str, Any] | None, str | None]:
+        """The resolution of a record asked for, once the wait is over."""
+        graph_record = await self._with_viewer_link(self.waiting[record_id])
+        outcome = self._parse_outcomes.get(record_id)
+        if outcome == READY:
+            return await self._read_stored(record_id, graph_record)
+        if outcome == _GONE:
+            return record_id, None, UNAVAILABLE
+        if outcome is not None:
+            return await self._describe(record_id, graph_record, outcome)
+        return await self._describe(
+            record_id, graph_record, graph_record.get("indexingStatus") or "unknown", PREPARING, preparing="waiting",
+        )
 
     async def _metadata(self, record_id: str, graph_record: dict[str, Any]) -> str:
         """Name, type, link and dates for a record with no content to read.
@@ -474,6 +586,7 @@ async def _fetch_multiple_records_impl(
     user_id: str | None = None,
     connection_sources: Mapping[str, Iterable[str]] | None = None,
     accessible: set[str] | None = None,
+    parse_now: ParseNow | None = None,
 ) -> dict[str, Any]:
     """
     Fetch multiple complete records at once.
@@ -489,6 +602,10 @@ async def _fetch_multiple_records_impl(
     2. Fetch the record content from blob_store
     3. Enrich with FK relations if SQL_TABLE
 
+    ``parse_now`` asks indexing to parse a readable record that is not indexed and waits
+    for it, up to the configured time, shared by all the ids; without it such a record is
+    described as not indexed.
+
     Without `user_id` the check cannot run, so the id-resolution path is
     skipped entirely rather than served unchecked. A caller that already ran
     the check passes its answer as `accessible`, so it is not asked twice.
@@ -502,8 +619,10 @@ async def _fetch_multiple_records_impl(
       "invalid_record_ids": {"id": "Invalid record ID"},          # malformed / non-UUID IDs
       "not_indexed_records": {"id": {"status": ..., "context": ...}}  # readable by the caller,
                                                                      # but no indexed content
+                                                                     # (+ "preparing" if parse-now is under way)
     }
     """
+    started = asyncio.get_running_loop().time()  # the parse wait is what is left of one budget
     found_records = []
     not_available_ids = []
     unavailable_reasons: dict[str, str] = {}
@@ -531,6 +650,10 @@ async def _fetch_multiple_records_impl(
                 "unavailable_reasons": dict.fromkeys(record_ids, STORAGE_ERROR),
             }
 
+    wait_seconds = await parse_now_wait_seconds(parse_now.config_service) if parse_now is not None else 0
+    if not wait_seconds:
+        parse_now = None
+
     # Built once, not once per record: this used to be constructed inside the
     # loop, along with a fresh ENDPOINTS read.
     resolver = _RecordResolver(
@@ -543,6 +666,7 @@ async def _fetch_multiple_records_impl(
         frontend_url=frontend_url,
         accessible=accessible,
         connection_sources=connection_sources,
+        parse_now=parse_now,
     )
 
     # Records resolve concurrently -- each miss costs an ACL check, a graph
@@ -556,6 +680,22 @@ async def _fetch_multiple_records_impl(
             return await resolver.resolve(record_id)
 
     resolutions = await asyncio.gather(*(_resolve(rid) for rid in record_ids))
+    if resolver.waiting:
+        # Every id was asked for above; one wait serves them all.
+        await resolver.wait_for_parse(wait_seconds - (asyncio.get_running_loop().time() - started))
+
+        async def _finish(record_id: str) -> tuple[str, dict[str, Any] | None, str | None]:
+            async with semaphore:
+                return await resolver.finish(record_id)
+
+        # Reading what became ready gets a short grace past the budget, so the call stays near it.
+        left = wait_seconds - (asyncio.get_running_loop().time() - started) + _FINISH_GRACE_SECONDS
+        try:
+            done = await asyncio.wait_for(asyncio.gather(*(_finish(rid) for rid in resolver.waiting)), max(left, 0))
+        except TimeoutError:
+            done = []
+        finished = {r[0]: r for r in done}
+        resolutions = [finished.get(r[0], r) for r in resolutions]
     # Additive: callers that know nothing of it still get the reasons above.
     not_indexed = {rid: resolver.not_indexed[rid] for rid in record_ids if rid in resolver.not_indexed}
     if not_indexed and connection_sources is not None:
@@ -596,6 +736,8 @@ async def _fetch_multiple_records_impl(
             "ok": False,
             "error": (
                 "No record IDs were provided." if not record_ids
+                else "The content of the requested records is being prepared; ask again shortly."
+                if not_available_ids and all(unavailable_reasons[r] == PREPARING for r in not_available_ids)
                 # Each one exists; saying "not available" would say otherwise.
                 else "None of the requested records has indexed content to read yet."
                 if not_available_ids and set(not_available_ids) <= set(not_indexed)
@@ -620,6 +762,7 @@ def create_fetch_full_record_tool(
     blob_store: BlobStorage | None = None,
     user_id: str | None = None,
     connection_sources: Mapping[str, Iterable[str]] | None = None,
+    parse_now: ParseNow | None = None,
 ) -> Callable:
     """
     Factory function to create the tool with runtime dependencies injected.
@@ -633,6 +776,8 @@ def create_fetch_full_record_tool(
         user_id: Requesting user, required to resolve a record ID that is not
                  already in the (ACL-filtered) map — see
                  `_fetch_multiple_records_impl`
+        parse_now: Asks indexing to parse a record that is not indexed and waits
+                   for it; None reads what is indexed and nothing more
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
     async def fetch_full_record_tool(record_ids: list[str], reason: str = "Fetching full record content for comprehensive answer") -> dict[str, Any]:
@@ -686,6 +831,7 @@ def create_fetch_full_record_tool(
                 blob_store=blob_store,
                 user_id=user_id,
                 connection_sources=connection_sources,
+                parse_now=parse_now,
             )
         except Exception as e:
             # Return error as dict

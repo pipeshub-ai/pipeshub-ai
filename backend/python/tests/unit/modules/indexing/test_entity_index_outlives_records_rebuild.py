@@ -17,6 +17,7 @@ import pytest
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.models.entities import EntityRecord
 from app.modules.indexing.entity_index_rebuild import (
+    ORG_PASS_VERSION,
     EntityIndexState,
     entity_index_marker,
 )
@@ -224,14 +225,16 @@ class TestEmbeddingModelChange:
             assert await d.rebuild() == ["idle"]
 
         fingerprint = "openAI:text-embedding-3-small:6"
-        assert outcomes.count("connector") == 2 and outcomes.count("taxonomy") == 7
+        assert outcomes.count("connector") == 2 and outcomes.count("taxonomy") == 8
         assert d.entities.dimension == 6 and d.entities.deletions == 1
         assert len(d.entities.entity_points) == 2
         for point in d.entities.entity_points.values():
             assert point.payload["metadata"][EMBEDDING_MODEL_FIELD] == fingerprint
             assert len(point.dense_vector) == 6
         assert d.state(APPS, "app-1") == entity_index_marker(fingerprint, d.entities.stamp)
-        assert d.state(ORGS, "org-1") == entity_index_marker(fingerprint, d.entities.stamp)
+        assert d.state(ORGS, "org-1") == entity_index_marker(
+            fingerprint, d.entities.stamp, version=ORG_PASS_VERSION,
+        )
 
 
 class TestADeploymentAlreadyHit:
@@ -244,7 +247,8 @@ class TestADeploymentAlreadyHit:
         with _default_model():
             d = await _Deployment().index(manifest_lists_entities=True)
             before = entity_index_marker(fingerprint, d.entities.stamp)
-            assert d.state(ORGS, "org-1") == before
+            org_before = entity_index_marker(fingerprint, d.entities.stamp, version=ORG_PASS_VERSION)
+            assert d.state(ORGS, "org-1") == org_before
             expected = set(d.entities.entity_points)
             await d.db.delete_collection("entities")
             await d.db.create_collection("entities", CollectionConfig(embedding_size=4))
@@ -260,6 +264,7 @@ class TestADeploymentAlreadyHit:
             assert set(d.entities.entity_points) == expected
             assert ENTITY_INDEXES <= d.entities.indexes
             after = entity_index_marker(fingerprint, d.entities.stamp)
-            assert after != before
-            assert d.state(APPS, "app-1") == after and d.state(ORGS, "org-1") == after
+            org_after = entity_index_marker(fingerprint, d.entities.stamp, version=ORG_PASS_VERSION)
+            assert after != before and org_after != org_before
+            assert d.state(APPS, "app-1") == after and d.state(ORGS, "org-1") == org_after
             assert await d.rebuild() == ["idle"]

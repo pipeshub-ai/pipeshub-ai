@@ -56,7 +56,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_record_by_key(self, key, *, raise_on_error=False):
         return self._records.get(key)
 
-    async def get_record_by_external_id(self, connector_id, external_id):
+    async def get_record_by_external_id(self, connector_id, external_id, visibility=None, *, raise_on_error=False):
         return None
 
     async def take_back_kept_record_group(self, group_id) -> bool:
@@ -68,7 +68,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_record_by_issue_key(self, connector_id, issue_key):
         return None
 
-    async def get_records_by_parent(self, connector_id, parent_external_record_id, record_type=None):
+    async def get_records_by_parent(self, connector_id, parent_external_record_id, record_type=None, *, visibility=None):
         return []
 
     async def get_records_by_record_type(self, connector_id, record_type):
@@ -80,7 +80,10 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_record_path_segments(self, record_id):
         return []
 
-    async def get_records_by_status(self, org_id, connector_id, status_filters, limit=None, offset=0, after_key=None, exclude_statuses=None):
+    async def get_records_by_status(
+        self, org_id, connector_id, status_filters, limit=None, offset=0, record_group_id=None, is_placeholder=None,
+        after_key=None, exclude_statuses=None, visibility=None,
+    ):
         return []
 
     async def get_record_group_by_external_id(self, connector_id, external_id):
@@ -92,10 +95,13 @@ class ConcreteTransactionStore(TransactionStore):
     async def create_user_group_membership(self, user_source_id, group_external_id, connector_id):
         return True
 
-    async def get_user_by_email(self, email):
+    async def get_user_by_email(self, email, *, raise_on_error=False, org_id=None):
         return None
 
-    async def get_user_by_source_id(self, source_user_id, connector_id):
+    async def get_users_by_emails(self, emails, *, raise_on_error=False, org_id=None) -> dict:
+        return {}
+
+    async def get_user_by_source_id(self, source_user_id, connector_id, *, raise_on_error=False):
         return None
 
     async def get_app_user_by_email(self, email, connector_id):
@@ -104,10 +110,10 @@ class ConcreteTransactionStore(TransactionStore):
     async def batch_upsert_people(self, people):
         pass
 
-    async def get_person_by_email(self, email, org_id):
+    async def get_person_by_email(self, email, org_id, *, raise_on_error=False):
         return None
 
-    async def upsert_person_by_email(self, person):
+    async def upsert_person_by_email(self, person, *, raise_on_error=False):
         return None
 
     async def ensure_app_membership(
@@ -122,13 +128,13 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_users(self, org_id, active=True):
         return []
 
-    async def get_user_groups(self, connector_id, org_id):
+    async def get_user_groups(self, connector_id, org_id, *, raise_on_error=False):
         return []
 
     async def delete_record_by_key(self, key):
         self._records.pop(key, None)
 
-    async def delete_record_by_external_id(self, connector_id, external_id, user_id=None):
+    async def delete_record_by_external_id(self, connector_id, external_id, user_id=None, *, soft_delete=False):
         pass
 
     async def get_record_by_conversation_index(self, connector_id, conversation_index, thread_id, org_id, user_id):
@@ -140,10 +146,10 @@ class ConcreteTransactionStore(TransactionStore):
     async def delete_user_group_by_id(self, group_id):
         pass
 
-    async def get_record_owner_source_user_email(self, record_id):
+    async def get_record_owner_source_user_email(self, record_id, *, raise_on_error=False):
         return None
 
-    async def batch_upsert_records(self, records):
+    async def batch_upsert_records(self, records, *, release_trashed_external_ids=False):
         pass
 
     async def batch_upsert_record_groups(self, record_groups):
@@ -170,22 +176,22 @@ class ConcreteTransactionStore(TransactionStore):
     async def create_record_group_relation(self, record_id, record_group_id):
         pass
 
-    async def create_sync_point(self, sync_point):
+    async def create_sync_point(self, sync_point_key, sync_point_data):
         pass
 
-    async def delete_sync_point(self, sync_point):
+    async def delete_sync_point(self, sync_point_key):
         pass
 
-    async def read_sync_point(self, sync_point):
+    async def read_sync_point(self, sync_point_key, *, raise_on_error=False):
         pass
 
-    async def update_sync_point(self, sync_point):
+    async def update_sync_point(self, sync_point_key, sync_point_data):
         pass
 
     async def get_edges_from_node(self, from_node_id, edge_collection):
         return []
     
-    async def get_edges_from_node_with_target_name(self, from_node_id, edge_collection):
+    async def get_edges_from_node_with_target_name(self, from_node_id, edge_collection, *, raise_on_error=False):
         return []
 
     async def get_edge(self, from_id, from_collection, to_id, to_collection, collection, *, raise_on_error=False):
@@ -224,7 +230,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_app_by_id(self, connector_id):
         return None
 
-    async def get_app_users(self, org_id, connector_id):
+    async def get_app_users(self, org_id, connector_id, *, raise_on_error=False):
         return []
 
     async def get_file_record_by_id(self, id):

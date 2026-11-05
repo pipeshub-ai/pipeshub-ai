@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from app.agents.actions.knowledge_graph.ops.scope import derive_scope
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.retrieval.entity_permissions import (
+    PERSON_ENTITY_TYPE,
     RECORD_GROUP_ENTITY_TYPE,
     SEARCHABLE_ENTITY_TYPES,
     TAXONOMY_ENTITY_TYPES,
@@ -32,6 +33,8 @@ from app.modules.retrieval.selection_scope import SelectionTooLargeError
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from app.modules.agents.qna.chat_state import ChatState
 
 # EntityType value -> get_accessible_virtual_record_ids() filter key. Graph
@@ -44,10 +47,10 @@ ENTITY_TYPE_TO_FILTER_KEY: dict[str, str] = {
 }
 
 # Scoped through the permission-checked record resolver instead of a name
-# filter: record groups have no filter key, and subcategory entities carry no
-# level while the per-level subcategory filters do.
+# filter: record groups and people have no filter key, and subcategory
+# entities carry no level while the per-level subcategory filters do.
 RECORD_SCOPED_ENTITY_TYPES: frozenset[str] = frozenset(
-    {RECORD_GROUP_ENTITY_TYPE, "subcategory", "named_entity"}
+    {RECORD_GROUP_ENTITY_TYPE, PERSON_ENTITY_TYPE, "subcategory", "named_entity"}
 )
 
 ENTITY_ID_FILTER_KEY_CACHE_KEY = "_kg_entity_id_filter_key"
@@ -67,11 +70,15 @@ def limited_scope_note(context: EntityAccessContext) -> str:
     return LIMITED_SCOPE_NOTE if context.row_scopes else ""
 
 
-async def load_entity_access_context(state: "ChatState") -> EntityAccessContext:
+async def load_entity_access_context(
+    state: "ChatState", source_ids: "Sequence[str] | None" = None,
+) -> EntityAccessContext:
     """The entity access context for this run's scope, honouring
     ``strictScope``, the turn's selection or bound, and switched-off demo apps
     as content search does. Every app the turn touches is a source; a
-    selection or bound that covers one only in part limits its records."""
+    selection or bound that covers one only in part limits its records.
+    ``source_ids`` replaces the apps and collections taken from the turn, for
+    a search the model narrowed to some of them."""
     scope = derive_scope(state)
     filters = state.get("filters") or {}
     try:
@@ -80,7 +87,7 @@ async def load_entity_access_context(state: "ChatState") -> EntityAccessContext:
             state.get("graph_provider"),
             org_id=state.get("org_id", ""),
             user_id=state.get("user_id", ""),
-            source_ids=[*scope.app_ids, *scope.kb_ids],
+            source_ids=list(source_ids) if source_ids else [*scope.app_ids, *scope.kb_ids],
             strict=bool(filters.get(STRICT_SCOPE_FILTER_KEY)),
             exclude_app_ids=excluded_app_ids(state),
             filters=filters,

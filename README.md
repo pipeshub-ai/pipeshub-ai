@@ -6,7 +6,7 @@
 
 <p>Permission-aware search and cited answers across Slack, Google Drive, Jira, Confluence, GitHub and 50+ apps, for your people and for agents through MCP. Self-hosted or PipesHub Cloud.</p>
 
-<p><strong>#1 of 39 systems on <a href="https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard">EnterpriseRAG-Bench</a></strong>, ahead of OpenAI File Search, Amazon Q, Azure AI Search and Vertex AI Search. <a href="#benchmarks">All benchmarks →</a></p>
+<p><strong>#1 of 39 systems on <a href="https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard">EnterpriseRAG-Bench</a></strong>, ahead of OpenAI File Search, Amazon Q, Azure AI Search and Vertex AI Search. <a href="#benchmarks">All benchmarks →</a> · <a href="#how-pipeshub-works">How it works →</a></p>
 
 <p>
   <a href="https://www.pipeshub.com/">Website</a> ·
@@ -52,6 +52,18 @@
 
 Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
 
+> [!TIP]
+> Deploy with a single command:
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install | bash
+> ```
+
+<p align="center">
+  <a href="https://youtu.be/VgyND38QZ7w"><img src="https://img.youtube.com/vi/VgyND38QZ7w/maxresdefault.jpg" alt="Watch the PipesHub demo on YouTube" width="720"/></a>
+  <br/>
+  <strong><a href="https://youtu.be/VgyND38QZ7w">▶ Watch the 2½-minute demo</a></strong>: Claude Code answering from Jira, Slack, GitHub and Drive, with each person's permissions
+</p>
+
 ### How PipesHub works
 
 PipesHub builds a **unified context layer** across documents, conversations, structured data, wikis, tickets and code. Connectors sync each source along with its permissions. The indexing pipeline parses, chunks and embeds the content, and links records, people and entities in a knowledge graph.
@@ -64,18 +76,6 @@ Questions are answered by an **agent loop**, not a single retrieve-then-generate
 - **Document reading** — opens the full source instead of trusting a single matched chunk.
 
 Every tool call is filtered by the asking user's permissions, and every answer cites the blocks it came from.
-
-> [!TIP]
-> Deploy with a single command:
-> ```bash
-> curl -fsSL https://get.pipeshub.com/install | bash
-> ```
-
-<p align="center">
-  <a href="https://youtu.be/VgyND38QZ7w"><img src="https://img.youtube.com/vi/VgyND38QZ7w/maxresdefault.jpg" alt="Watch the PipesHub demo on YouTube" width="720"/></a>
-  <br/>
-  <strong><a href="https://youtu.be/VgyND38QZ7w">▶ Watch the 2½-minute demo</a></strong>: Claude Code answering from Jira, Slack, GitHub and Drive, with each person's permissions
-</p>
 
 ## Benchmarks
 

@@ -20,6 +20,11 @@ from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
+from app.modules.indexing.parse_now_marker import (
+    ParseNowStatus,
+    current_run,
+    marker_fields,
+)
 from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.record_metadata.projection import (
     NOT_PROVIDED,
@@ -54,6 +59,8 @@ from app.modules.transformers.transformer import (
     ENRICHMENT_FOLLOWS,
     EXTRACTION_DEFERRED_FIELD,
     IMAGE_DESCRIPTION_BUDGET_S,
+    PARSE_NOW,
+    STORE_ONLY,
     TransformContext,
     Transformer,
 )
@@ -241,8 +248,13 @@ class SinkOrchestrator(Transformer):
         After this method returns, the document is queryable via the vector
         store and ``indexingStatus`` is set to ``COMPLETED``.  The graph
         enrichment (``extractionStatus``) is left unchanged here.
+
+        A parse-now run marks the record once its content is stored. With ``STORE_ONLY`` the run
+        ends there: no vectors, no status on the record, no reconciliation metadata (a later index
+        embeds every block) and no entity points.
         """
         record = ctx.record
+        store_only = bool(ctx.settings.get(STORE_ONLY))
         skip_blob = bool(ctx.settings.get("skip_blob"))
         skip_vector_store = bool(ctx.settings.get("skip_vector_store")) or bool(
             ctx.settings.get("sink_only")
@@ -266,12 +278,18 @@ class SinkOrchestrator(Transformer):
                 await self.write_blob(ctx)
 
         written: WrittenRevision | None = None
-        if not skip_blob and not skip_vector_store:
+        if not skip_blob and (store_only or not skip_vector_store):
             with stage("artifacts.write"):
                 written = await self._write_artifacts(ctx, record_doc)
             if written is not None:
                 # Right after the set, before vectors and COMPLETED: the pointer must not wait on them.
                 await self._flip_revision_pointer(ctx.record, written, ctx.settings[STORED_WRITE].run)
+
+        if not skip_blob and ctx.settings.get(PARSE_NOW):
+            await self._mark_parse_now_stored(ctx, record_doc, required=store_only)
+        if store_only:
+            self.logger.info("Stored the content of record %s; not embedded", record_id)
+            return
 
         if skip_vector_store:
             await self._project_properties(ctx, record_doc)
@@ -352,6 +370,39 @@ class SinkOrchestrator(Transformer):
             )
             record_property_projection("error")
 
+    async def _mark_parse_now_stored(
+        self, ctx: TransformContext, record_doc: dict[str, Any], *, required: bool
+    ) -> None:
+        """Mark the record's stored content readable, for the revision it was written under.
+
+        Not when a newer write replaced this one (the run that wrote that one marks it). ``required``
+        is a store-only run, whose whole result is this marker: a write that did not take fails the
+        attempt so it is retried. In a run that goes on to index, the record becomes readable
+        anyway, so a failure is only logged.
+        """
+        rev = record_doc.get("contentRev")
+        if not rev or ctx.settings.get(RUN_SUPERSEDED):
+            return
+        try:
+            stored = await self.graph_provider.update_node(
+                ctx.record.id, CollectionNames.RECORDS.value, marker_fields(ParseNowStatus.STORED, str(rev)),
+            )
+        except Exception:
+            if required:
+                raise
+            self.logger.warning("Parse-now marker of record %s not written", ctx.record.id, exc_info=True)
+            return
+        if not stored:
+            if required:
+                raise IndexingError(
+                    message=f"Could not mark the stored content of record {ctx.record.id}",
+                    record_id=ctx.record.id,
+                )
+            self.logger.warning("Parse-now marker of record %s not written: no such record", ctx.record.id)
+            return
+        if run := current_run():
+            run.stored = True
+
     async def _sync_record_identity_entities(self, ctx: TransformContext) -> None:
         """Write the record's own entity points, its title and its record group
         (a Jira project, a Drive folder), in one batch.
@@ -386,16 +437,52 @@ class SinkOrchestrator(Transformer):
                 entities.append(EntityRecord.for_record_group(
                     record.record_group_id, group_name, record.org_id, record.connector_id,
                 ))
-        if not entities:
-            return
+        if entities:
+            try:
+                outcome = await self.entity_vector_store.upsert_entities_batch(entities, merge_membership=False)
+                if outcome.failed:
+                    self.logger.warning(
+                        "Entity points for record %s not written (%d of %d)", record.id, outcome.failed, len(entities),
+                    )
+            except Exception as exc:
+                self.logger.warning("Record entity sync failed for record %s (non-fatal): %s", record.id, exc)
+        await self._sync_record_people_entities(
+            record.id, record.org_id, record.connector_id, record.record_group_id,
+        )
+
+    async def _sync_record_people_entities(
+        self, record_id: str, org_id: str, connector_id: str | None, record_group_id: str | None,
+    ) -> int:
+        """A person point for each member the record names (KG-13), merged so
+        it keeps every connector and group it was named in. Best-effort, as
+        the identity points: the B-1 rebuild projects people too. Returns how
+        many points were not written (a failed lookup counts as one)."""
+        from app.models.entities import EntityRecord
+
         try:
-            outcome = await self.entity_vector_store.upsert_entities_batch(entities, merge_membership=False)
-            if outcome.failed:
-                self.logger.warning(
-                    "Entity points for record %s not written (%d of %d)", record.id, outcome.failed, len(entities),
-                )
+            people = await self.graph_provider.get_record_people(record_id, org_id)
         except Exception as exc:
-            self.logger.warning("Record entity sync failed for record %s (non-fatal): %s", record.id, exc)
+            self.logger.warning("Person lookup failed for record %s (non-fatal): %s", record_id, exc)
+            return 1
+        entities = []
+        for person in people or []:
+            # Named as the rebuild names them (fullName, else email), so both
+            # write the same point; a member with neither is not searchable.
+            name = (person.get("name") or "").strip() or (person.get("email") or "").strip()
+            if person.get("id") and name:
+                entities.append(EntityRecord.for_person(
+                    person["id"], name, org_id, connector_id, record_group_id,
+                ))
+        if not entities:
+            return 0
+        try:
+            outcome = await self.entity_vector_store.upsert_entities_batch(entities, merge_membership=True)
+        except Exception as exc:
+            self.logger.warning("Person entity sync failed for record %s (non-fatal): %s", record_id, exc)
+            return len(entities)
+        if outcome.failed:
+            self.logger.warning("Person points for record %s not written (%d of %d)", record_id, outcome.failed, len(entities))
+        return outcome.failed
 
     async def sync_entities_for_duplicate(self, record_doc: dict) -> bool:
         """Re-project a deduplicated record's taxonomy into the entities
@@ -530,6 +617,9 @@ class SinkOrchestrator(Transformer):
                 failed += (await self.entity_vector_store.upsert_entities_batch(
                     identities, merge_membership=False,
                 )).failed
+            failed += await self._sync_record_people_entities(
+                str(record_key), org_id, connector_id, record_group_id,
+            )
             if failed:
                 self.logger.warning(
                     "Entity vector sync for deduplicated record %s left %d entities unwritten",

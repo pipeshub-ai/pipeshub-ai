@@ -136,6 +136,29 @@ class TestGuards:
         assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["record", "named_entity"], ["organization", "product"])
 
     @pytest.mark.asyncio
+    async def test_a_person_search_with_extraction_off_searches_the_people_entities(
+        self, patched, monkeypatch,
+    ) -> None:
+        # "person" is both an entity type (the members records name) and a
+        # named-entity kind: read as the kind alone, every people lookup failed
+        # while extraction was off, the default.
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        ok, _ = await execute_search_entities(_state(), "Mira Kowalski", entity_types=["person"])
+        assert ok is True
+        _, search_kwargs = patched[1].call_args
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["person"], None)
+
+    @pytest.mark.asyncio
+    async def test_a_person_search_with_extraction_on_also_searches_named_people(
+        self, patched, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
+        ok, _ = await execute_search_entities(_state(), "Mira Kowalski", entity_types=["person"])
+        assert ok is True
+        _, search_kwargs = patched[1].call_args
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["person", "named_entity"], ["person"])
+
+    @pytest.mark.asyncio
     async def test_access_failure_is_a_failed_call_not_empty_results(self, patched) -> None:
         patched[0].side_effect = EntityAccessError("db down")
         ok, text = await execute_search_entities(_state(), "legal")
@@ -160,7 +183,7 @@ class TestGuards:
 class TestSearch:
     @pytest.mark.asyncio
     async def test_scope_comes_from_agent_sources(self, patched) -> None:
-        await execute_search_entities(_state(), "legal", entity_types=["topic", "person"], top_k=99)
+        await execute_search_entities(_state(), "legal", entity_types=["topic", "organization"], top_k=99)
 
         _, kwargs = patched[0].call_args
         assert kwargs["source_ids"] == ["conf-1", "kb-1"]
@@ -393,10 +416,11 @@ class TestWhereEntitySearchIsOffered:
 
     @pytest.mark.asyncio
     async def test_an_unservable_kind_named_as_an_entity_type_is_explained_too(self, patched) -> None:
+        # The people records name are still searched; only named people are not.
         _, search = patched
         ok, payload = await self._offered(query="Sam", entity_types=["person"])
-        assert ok and payload["results"] == [] and "search_by_entities" in " ".join(payload["kindNotes"])
-        search.assert_not_called()
+        assert ok and "search_by_entities" in " ".join(payload["kindNotes"])
+        assert (search.call_args.kwargs["entity_types"], search.call_args.kwargs["kinds"]) == (["person"], None)
 
 
 class TestWithoutEntitySearch:
@@ -487,3 +511,48 @@ class TestNoReadableMatch:
         assert reply == unknown and json.loads(reply[1])["message"] == "No accessible entities matched"
         assert "Globex" not in reply[1] and "t-globex" not in reply[1]
 
+
+class TestRecordHitsWhoseContentIsNotIndexed:
+    """A record found by name is labelled when search cannot read its text yet."""
+
+    @staticmethod
+    def _record_hit(status: str | None, *, indexed: bool, key: str = "r1") -> EntityHit:
+        return replace(
+            _hit(key, "record", records=[_row(key)]), indexing_status=status, indexed=indexed,
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unindexed_record_carries_its_status_and_the_note(self, patched) -> None:
+        patched[1].return_value = [self._record_hit("QUEUED", indexed=False)]
+        ok, text = await execute_search_entities(_state(), "plan", entity_types=["record"])
+        (item,) = json.loads(text)["results"]
+        assert ok and item["indexingStatus"] == "QUEUED"
+        assert "content is not indexed yet (status: QUEUED)" in item["note"]
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_automatic_indexing_off_is_found_with_the_note(self, patched) -> None:
+        patched[1].return_value = [self._record_hit("AUTO_INDEX_OFF", indexed=False)]
+        _, text = await execute_search_entities(_state(), "plan", entity_types=["record"])
+        (item,) = json.loads(text)["results"]
+        assert "automatic indexing is off" in item["note"]
+
+    @pytest.mark.asyncio
+    async def test_an_indexed_record_is_unchanged(self, patched) -> None:
+        patched[1].return_value = [self._record_hit("COMPLETED", indexed=True)]
+        _, text = await execute_search_entities(_state(), "plan", entity_types=["record"])
+        (item,) = json.loads(text)["results"]
+        assert "note" not in item and "indexingStatus" not in item
+
+    @pytest.mark.asyncio
+    async def test_a_missing_status_does_not_crash(self, patched) -> None:
+        patched[1].return_value = [self._record_hit(None, indexed=False)]
+        _, text = await execute_search_entities(_state(), "plan", entity_types=["record"])
+        (item,) = json.loads(text)["results"]
+        assert "status: unknown" in item["note"]
+
+    @pytest.mark.asyncio
+    async def test_the_record_is_remembered_so_it_can_be_fetched(self, patched) -> None:
+        patched[1].return_value = [self._record_hit("QUEUED", indexed=False)]
+        state = _state()
+        await execute_search_entities(state, "plan", entity_types=["record"])
+        assert "r1" in state["known_record_ids"]

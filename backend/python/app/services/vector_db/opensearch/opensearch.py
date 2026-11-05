@@ -829,7 +829,7 @@ class OpenSearchService(IVectorDBService):
                 }
             }
         else:
-            os_type = "keyword" if field_schema.get("type") == "keyword" else "text"
+            os_type = {"keyword": "keyword", "integer": "long"}.get(field_schema.get("type"), "text")
             mapping_body = {"properties": {field_name: {"type": os_type}}}
 
         await self.client.indices.put_mapping(index=collection_name, body=mapping_body)  # type: ignore
@@ -956,6 +956,20 @@ class OpenSearchService(IVectorDBService):
         )
         return [self._hit_to_point(doc) for doc in result.get("docs", []) if doc.get("found")]
 
+    async def _clause_limit(self) -> int:
+        """The cluster's ``indices.query.bool.max_clause_count`` (1024 unless set), read once. If it cannot be read the default is assumed: a
+        smaller assumed limit only refuses a filter, it never sends a search that fails."""
+        if self.__dict__.get("_max_clause_count") is None:
+            limit = 1024
+            try:
+                got = await self.client.cluster.get_settings(include_defaults=True, flat_settings=True)  # type: ignore
+                key = "indices.query.bool.max_clause_count"
+                limit = int(next((got[k][key] for k in ("transient", "persistent", "defaults") if key in (got.get(k) or {})), 1024))
+            except Exception as exc:
+                logger.warning(f"OpenSearch max_clause_count not read, assuming 1024: {exc}")
+            self.__dict__["_max_clause_count"] = limit
+        return self.__dict__["_max_clause_count"]
+
     async def query_nearest_points(
         self,
         collection_name: str,
@@ -972,7 +986,7 @@ class OpenSearchService(IVectorDBService):
             await self._ensure_rrf_pipeline(collection_name)
 
         async def _one_search(req: HybridSearchRequest) -> List[SearchResult]:
-            body = OpenSearchUtils.build_hybrid_query(req)
+            body = OpenSearchUtils.build_hybrid_query(req, await self._clause_limit() if req.scope_filter is not None else 1024)
             # Only attach the RRF pipeline when the request is genuinely hybrid
             # (has both a dense leg and a text/BM25 leg).  Single-leg queries
             # must not use it — the score-ranker-processor produces nonsensical
