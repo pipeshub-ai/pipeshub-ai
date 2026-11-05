@@ -1509,14 +1509,6 @@ _app_memswap_mb="$(_parse_mem_mb "${APP_MEMSWAP_LIMIT:-16G}")" || _app_memswap_m
 if [[ -n "$_app_mem_mb" && -n "$_app_memswap_mb" ]] && (( _app_memswap_mb < _app_mem_mb )); then
   die "APP_MEMSWAP_LIMIT (${APP_MEMSWAP_LIMIT:-16G}) must be >= APP_MEMORY_LIMIT (${APP_MEMORY_LIMIT:-10G}). Raise APP_MEMSWAP_LIMIT in .env (or raise both together) before launching."
 fi
-# The JVM refuses to start when the initial heap exceeds the maximum, and Neo4j
-# would then restart in a loop with only a JVM error in its log.
-_neo4j_heap_init_mb="$(_parse_mem_mb "${NEO4J_HEAP_INITIAL:-1G}")" || _neo4j_heap_init_mb=""
-_neo4j_heap_max_mb="$(_parse_mem_mb "${NEO4J_HEAP_MAX:-2G}")" || _neo4j_heap_max_mb=""
-if [[ -n "$_neo4j_heap_init_mb" && -n "$_neo4j_heap_max_mb" ]] && (( _neo4j_heap_init_mb > _neo4j_heap_max_mb )); then
-  die "NEO4J_HEAP_INITIAL (${NEO4J_HEAP_INITIAL:-1G}) must be <= NEO4J_HEAP_MAX (${NEO4J_HEAP_MAX:-2G}). Lower NEO4J_HEAP_INITIAL in .env before launching."
-fi
-
 # Resolve APP_PORT from .env when wizard was skipped (upgrade / reuse)
 APP_PORT="${APP_PORT:-3000}"
 HEALTH_URL="http://localhost:${APP_PORT}/api/v1/health/services"
@@ -1585,6 +1577,34 @@ case "${DATA_STORE:-}" in
     success "Repaired graph DB configuration in .env (DATA_STORE=${DATA_STORE})."
     ;;
 esac
+
+# Byte size in Neo4j's setting syntax (plain bytes, or k/m/g/t with an optional
+# B or iB suffix, any case; all binary) -> bytes. Returns 1 if not recognised.
+_parse_neo4j_bytes() {
+  local v="${1,,}" n unit
+  [[ "$v" =~ ^([0-9]+)([kmgt]?)(ib|b)?$ ]] || return 1
+  n="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[2]}"
+  case "$unit" in
+    k) n=$(( n * 1024 )) ;;
+    m) n=$(( n * 1024 ** 2 )) ;;
+    g) n=$(( n * 1024 ** 3 )) ;;
+    t) n=$(( n * 1024 ** 4 )) ;;
+  esac
+  echo "$n"
+}
+
+# The JVM refuses to start when the initial heap exceeds the maximum, and Neo4j
+# would then restart in a loop with only a JVM error in its log. Only Neo4j
+# reads these settings, so an ArangoDB deployment is not held to them.
+if [[ "$DATA_STORE" == "neo4j" ]]; then
+  _neo4j_heap_init="$(_parse_neo4j_bytes "${NEO4J_HEAP_INITIAL:-1G}")" || _neo4j_heap_init=""
+  _neo4j_heap_max="$(_parse_neo4j_bytes "${NEO4J_HEAP_MAX:-2G}")" || _neo4j_heap_max=""
+  if [[ -z "$_neo4j_heap_init" || -z "$_neo4j_heap_max" ]]; then
+    warn "Could not read NEO4J_HEAP_INITIAL (${NEO4J_HEAP_INITIAL:-1G}) or NEO4J_HEAP_MAX (${NEO4J_HEAP_MAX:-2G}) as a size; not checking that the initial heap fits the maximum."
+  elif (( _neo4j_heap_init > _neo4j_heap_max )); then
+    die "NEO4J_HEAP_INITIAL (${NEO4J_HEAP_INITIAL:-1G}) must be <= NEO4J_HEAP_MAX (${NEO4J_HEAP_MAX:-2G}). Lower NEO4J_HEAP_INITIAL in .env before launching."
+  fi
+fi
 
 # Repair COMPOSE_PROFILES if it disagrees with the configured services. Without
 # this, reusing an .env written by an older installer (or hand-edited) can start

@@ -832,11 +832,34 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
   done
 
   seed_env "0.6.0-slim"
-  printf 'NEO4J_HEAP_INITIAL=2G\nNEO4J_HEAP_MAX=1G\n' >>"$work/.env"
+  printf 'DATA_STORE=neo4j\nNEO4J_HEAP_INITIAL=2G\nNEO4J_HEAP_MAX=1G\n' >>"$work/.env"
   status=0
   out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only 2>&1)" || status=$?
   if [[ $status -ne 0 ]]; then pass "initial heap above the maximum is refused"; else fail "initial heap above the maximum is refused"; fi
   check "the refusal names both heap settings" "$out" "NEO4J_HEAP_INITIAL (2G) must be <= NEO4J_HEAP_MAX (1G)"
+
+  # Neo4j accepts GiB/MiB and plain bytes too; the check must read them.
+  for pair in "2GiB 1G" "1536MiB 1g" "2147483648 1024m"; do
+    seed_env "0.6.0-slim"
+    printf 'DATA_STORE=neo4j\nNEO4J_HEAP_INITIAL=%s\nNEO4J_HEAP_MAX=%s\n' ${pair} >>"$work/.env"
+    status=0
+    out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only </dev/null 2>&1)" || status=$?
+    if [[ $status -ne 0 ]]; then pass "initial heap above the maximum is refused (${pair})"; else fail "initial heap above the maximum is refused (${pair})"; fi
+  done
+  seed_env "0.6.0-slim"
+  printf 'DATA_STORE=neo4j\nNEO4J_HEAP_INITIAL=1GiB\nNEO4J_HEAP_MAX=1024m\n' >>"$work/.env"
+  run_installer "an initial heap equal to the maximum in other units" -- --reconfigure --yes
+
+  # ArangoDB does not read the Neo4j heap settings, so they must not block it.
+  seed_env "0.6.0-slim"
+  # A docker stub with no volumes or containers keeps the host's own stacks from
+  # steering the graph DB choice.
+  nodocker="$work/nodocker"; mkdir -p "$nodocker"
+  printf '#!/bin/sh\nexit 0\n' >"$nodocker/docker"; chmod +x "$nodocker/docker"
+  printf 'NEO4J_HEAP_INITIAL=2G\nNEO4J_HEAP_MAX=1G\n' >>"$work/.env"
+  run_installer "an ArangoDB install ignores the Neo4j heap settings" \
+    PIPESHUB_GRAPH_DB=arango PATH="$nodocker:$PATH" -- --reconfigure --yes
+  check "the ArangoDB install was chosen" "$(cat "$work/.env")" $'\nDATA_STORE=arangodb\n'
 )
 
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"
