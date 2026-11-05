@@ -34,7 +34,11 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+    IncompleteSyncError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -147,6 +151,7 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
     NotificationOutcome,
     NotificationSeverity,
@@ -850,13 +855,14 @@ class JiraConnector(BaseConnector):
     async def _keep_stored_records(self, project_id: str) -> None:
         """Note this project's stored records as seen by a full sync in progress: its issues
         could not be read, so they stay as stored and must survive the unlink after it. So does
-        the project's record group, even with no grants of its own, for the records' links into it."""
+        the project's record group, even with no grants of its own, for the records' links into it. Soft-deleted
+        records too: a restored issue must come back with its edges."""
         await self.data_entities_processor.note_kept_record_group(self.connector_id, project_id)
         page_size = 1000
         after_key: Optional[str] = None
         while True:
             page = await self.data_entities_processor.get_records_in_record_group(
-                self.connector_id, project_id, page_size, after_key,
+                self.connector_id, project_id, page_size, after_key, visibility=RecordVisibility.ALL,
             )
             self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
             if len(page) < page_size:
@@ -1021,9 +1027,17 @@ class JiraConnector(BaseConnector):
             # 9. Outcome: notify when any project failed issue sync (include keys)
             failed_keys = sync_stats.get("failed_project_keys") or []
             failed_statuses = sync_stats.get("failed_project_statuses") or {}
+            # A read that may pass next time fails the run below, but must not hold back the whole full sync's unlink: the
+            # project's stored issues are noted as seen, so only what a read in full shows gone is unlinked.
+            transient = [k for k in failed_keys
+                         if failed_statuses.get(k) is None or (failed_statuses[k] != HttpStatusCode.FORBIDDEN.value
+                                                               and is_inconclusive_status(failed_statuses[k]))]
             for key in failed_keys:
-                # Issues not read would look gone to a full sync's unlink.
-                self._note_unread(failed_statuses.get(key), ("project_issues", key))
+                if key in transient:
+                    self._kept_after_refusal.append(("project_issues", key))
+                else:
+                    # Issues not read would look gone to a full sync's unlink.
+                    self._note_unread(failed_statuses.get(key), ("project_issues", key))
             await self._note_kept_after_refusal(projects)
             if failed_keys:
                 preview = ", ".join(failed_keys[:10])
@@ -1042,6 +1056,17 @@ class JiraConnector(BaseConnector):
                         "Retry sync; check Jira access if it keeps failing."
                     ),
                 )
+
+            # A refusal (403) or a missing project (400, 404) is the account's lasting answer, already notified and kept
+            # as stored: failing every run for it would hide the others. A read that may pass next time leaves the graph
+            # without that project's newest issues, so this run must not look like a success.
+            if transient:
+                incomplete = IncompleteSyncError(
+                    f"Jira sync incomplete: {len(transient)} project(s) failed to sync issues: "
+                    f"{', '.join(transient[:10])}{f', and {len(transient) - 10} more' if len(transient) > 10 else ''}"
+                )
+                incomplete._notification_sent = True  # the notification above already said it
+                raise incomplete
 
             self.logger.info(
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "

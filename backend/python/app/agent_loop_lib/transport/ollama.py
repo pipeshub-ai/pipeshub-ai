@@ -269,6 +269,7 @@ class OllamaTransport(LLMTransport):
 
         text_parts: list[str] = []
         final_raw_message: dict[str, Any] = {}
+        stream_tool_calls: list[dict[str, Any]] = []
         usage = TokenUsage()
         try:
             async with self._client.stream("POST", "/api/chat", json=payload) as response:
@@ -283,6 +284,9 @@ class OllamaTransport(LLMTransport):
                         text_parts.append(delta)
                         yield TextDeltaEvent(delta=delta)
                     if msg.get("tool_calls"):
+                        # Ollama can spread several tool calls over multiple chunks;
+                        # accumulate them instead of keeping only the last chunk's.
+                        stream_tool_calls.extend(msg["tool_calls"])
                         final_raw_message = msg
                     if chunk.get("done"):
                         usage = self._usage_from(chunk)
@@ -292,5 +296,8 @@ class OllamaTransport(LLMTransport):
             raise self._wrap_error(exc, "stream") from exc
 
         final_text = "".join(text_parts) or final_raw_message.get("content") or None
-        message = self._parse_message({**final_raw_message, "content": final_text})
+        final_raw_message = {**final_raw_message, "content": final_text}
+        if stream_tool_calls:
+            final_raw_message["tool_calls"] = stream_tool_calls
+        message = self._parse_message(final_raw_message)
         yield StreamCompleteEvent(response=ModelResponse(message=message, usage=usage, model=resolved_model))

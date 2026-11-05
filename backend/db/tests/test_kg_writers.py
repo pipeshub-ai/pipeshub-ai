@@ -33,9 +33,14 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_classes_set": (([7], [1], [None], ['[[1,"@self"]]'], [b"\x01" * 32]), "kg.scope_classes"),
     "kg.w_class_literals_set": (([5], [7]), "kg.class_literals"),
     "kg.w_app_facts_set": ((5, True, False), "kg.projection_state"),
+    "kg.w_fence_rows": (([11], [3], ["fenced"], [3], [9]), "kg.records"),
+    "kg.w_queue_add": ((9, 5, "rows", "reach", True), "kg.restamp_queue"),
+    "kg.w_queue_touch": ((9, 0, "worker-1", 1, None), "kg.restamp_queue"),
+    "kg.w_queue_done": ((9,), "kg.restamp_queue"),
     "kg.w_stamps_set": (([11], [3], ["rec"], [3], [b"\x00" * 8], [None], [False], [False], [False], [False], [None], [True]), "kg.records"),
 }
 CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that are not what it sends
+    "kg.w_fence_rows": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]"],
     "kg.w_stamps_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bytea[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]",
                         "%s::smallint[]", "%s::boolean[]"],
     "kg.w_classes_set": ["%s::bigint[]", "%s::bigint[]", "%s::bigint[]", "%s::text[]::jsonb[]", "%s::bytea[]"],
@@ -76,7 +81,7 @@ def test_every_kg_table_requires_the_per_org_policy_and_is_plain_with_org_first_
     with conn(pdb) as c:
         tables = c.execute("SELECT c.oid::regclass::text, c.relkind::text, c.relispartition, COALESCE(r.vetted_org_policy, false), r.class FROM pg_class c "
                            "LEFT JOIN kernel.rls_registry r ON r.rel = c.oid WHERE c.relnamespace = 'kg'::regnamespace AND c.relkind IN ('r', 'p')").fetchall()
-        assert len(tables) == 9, tables
+        assert len(tables) == 10, tables
         assert [t[0] for t in tables if not t[3]] == [], "kg tables without kernel.require_vetted_org_policy"
         # rule 128 exempts a table the vetted role also reads unbound; no kg table is one (its vetted functions read through the per-org policy), and one that set the flag
         # would slip past 128 with the policy missing
@@ -166,6 +171,10 @@ BAD = {
     "kg.w_classes_set": [([7], [1], [None], [None], [b"x"]), ([7, 8], [1], [None], ['[]'], [b"x"])],
     "kg.w_class_literals_set": [([5], [7, 8]), ([None], [7])],
     "kg.w_app_facts_set": [(-1, True, False), (None, True, False), (5, None, False)],
+    "kg.w_fence_rows": [([11, 12], [3], ["s"], [3], [9]), ([11], [4], ["s"], [3], [9]), ([11], [3], [""], [3], [9]), ([None], [3], ["s"], [3], [9])],
+    "kg.w_queue_add": [(0, 5, "rows", "r", True), (9, -1, "rows", "r", True), (9, 5, "bogus", "r", True), (9, 5, "rows", "", True), (9, 5, "rows", "r", None), (None, 5, "rows", "r", True)],
+    "kg.w_queue_touch": [(0, 0, "w", 1, None), (9, -1, "w", 1, None), (9, 0, "", 1, None), (9, 0, "w", -1, None), (9, 0, "w", 1, "x" * 513)],
+    "kg.w_queue_done": [(0,), (None,)],
     "kg.w_stamps_set": [([11, 12], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([None], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [4], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([11], [3], [""], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [9], [True]), ([11], [3], ["rec"], [3], [None], [None], [None], [False], [False], [False], [None], [True]),
@@ -406,4 +415,42 @@ def test_stamps_set_writes_the_stamp_columns_of_a_row_and_leaves_the_rest(pdb):
         got = c.execute("SELECT path, class_id, self_lit, seed, own_grant, under_deleted, legacy_reason, leaf, " + REC_COLUMNS + " FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
         assert tuple(got[:8]) == (b"\x00\x01", None, True, True, False, True, 4, False)
         assert tuple(got[8:]) == tuple(before)                       # the structural columns are what the other writer left
+        clean(c)
+
+
+def test_a_job_is_claimed_by_compare_and_set_on_the_database_clock_and_deleted_only_in_the_session_org(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        for org in (ORG_A, ORG_B):
+            assert call(c, "kg.w_queue_add", org, (9, 5, "rows", "reach", True)) == [(True,)]
+        assert call(c, "kg.w_queue_add", ORG_A, (9, 5, "app", "other", False)) == [(True,)]                     # an id taken: nothing changes
+        assert rows(c, "kg.restamp_queue", ORG_A)[0][3:6] == ("rows", "reach", True)
+        db_ms = c.execute("SELECT (extract(epoch FROM clock_timestamp()) * 1000)::bigint").fetchone()[0]
+        assert abs(rows(c, "kg.restamp_queue", ORG_A)[0][6] - db_ms) < 60_000                                   # enqueued by the database clock
+        assert call(c, "kg.w_queue_touch", ORG_A, (9, 7, "w1", 1, "cur")) == [(None,)]                          # not the heartbeat the caller saw
+        [(beat,)] = call(c, "kg.w_queue_touch", ORG_A, (9, 0, "w1", 1, "cur"))
+        assert beat is not None and abs(beat - db_ms) < 60_000                                                  # the new heartbeat is the database's now, not the caller's
+        assert call(c, "kg.w_queue_touch", ORG_A, (9, 0, "w2", 2, None)) == [(None,)]                           # the second claimant lost
+        r = c.execute("SELECT claimed_by, heartbeat_ms, attempts, cursor FROM kg.restamp_queue WHERE org_id = %s", (ORG_A,)).fetchone()
+        assert tuple(r) == ("w1", beat, 1, "cur")
+        [(again,)] = call(c, "kg.w_queue_touch", ORG_A, (9, beat, "w1", 1, "cur"))
+        assert again > beat                                                                                     # each touch moves the heartbeat on, even within one millisecond
+        assert c.execute("SELECT claimed_by FROM kg.restamp_queue WHERE org_id = %s", (ORG_B,)).fetchone()[0] is None
+        assert call(c, "kg.w_queue_touch", ORG_B, (9, 0, "w3", 1, None))[0][0] is not None                      # each org has its own job 9: A's claim did not reach B's
+        assert call(c, "kg.w_queue_done", ORG_A, (9,)) == [(True,)]
+        assert call(c, "kg.w_queue_done", ORG_A, (9,)) == [(False,)]
+        assert len(rows(c, "kg.restamp_queue", ORG_B)) == 1
+        clean(c)
+
+
+def test_a_mark_is_set_and_lifted_on_a_row_of_the_session_org_only(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values())))
+        assert call(c, "kg.w_fence_rows", ORG_A, ([11], [3], ["rec-1"], [3], [9])) == [(1,)]
+        assert c.execute("SELECT fence_job FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] == 9
+        call(c, "kg.w_fence_rows", ORG_B, ([11], [3], ["rec-1"], [3], [None]))                                    # another org's call makes a row of its own, not a change to this one
+        assert c.execute("SELECT fence_job FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] == 9
+        assert call(c, "kg.w_fence_rows", ORG_A, ([11], [3], ["rec-1"], [3], [None])) == [(1,)]
+        assert c.execute("SELECT fence_job FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] is None
         clean(c)
