@@ -57,6 +57,7 @@ TAXONOMY_ENTITY_TYPES: frozenset[str] = frozenset(
 SEARCHABLE_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES | {
     RECORD_ENTITY_TYPE,
     RECORD_GROUP_ENTITY_TYPE,
+    PERSON_ENTITY_TYPE,
     "named_entity",
 }
 # Named by the records extracted into them; departments are the org's list.
