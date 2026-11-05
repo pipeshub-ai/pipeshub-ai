@@ -137,7 +137,7 @@ def refuse_unsafe_ids(flt: "ScopeFilter") -> None:
     rather than allowed to meet a different id or to fail inside the server."""
     from app.services.vector_db.filters import ScopeFilterUnsupported
 
-    for name in ("current", "open_apps", "readable_groups", "readable_scopes", "excluded"):
+    for name in ("current", "open_apps", "readable_groups", "readable_scopes", "excluded", "pending", "blocked"):
         for v in getattr(flt, name):
             if v != v.lower():
                 raise ScopeFilterUnsupported(f"Redis: the filter's {name} list holds an id with capital letters, which a tag query cannot tell from a lowercase one")
