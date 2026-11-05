@@ -1805,6 +1805,83 @@ class TestOnEventUpdateEvent:
         assert call_kwargs["prev_virtual_record_id"] == "existing-vrid"
 
     @pytest.mark.asyncio
+    async def test_a_retry_stays_on_the_vrid_it_saved_instead_of_taking_the_twins(self) -> None:
+        """The retried message still names the VRID shared with the twin. Only
+        the twin holds it by then, so it reads as 1:1 and would be rewritten."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "saved-by-attempt-1",
+        }
+
+        async def holders(vrid: str, **_kwargs: object) -> list[str]:
+            return ["rec-twin"] if vrid == "shared-vrid" else ["rec-1"]
+
+        gp.get_records_by_virtual_record_id = AsyncMock(side_effect=holders)
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch.object(ep, "_spawn_abandoned_vrid_cleanup") as cleanup:
+            await _drain(ep.on_event(_make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.REINDEX_RECORD.value,
+                virtual_record_id="shared-vrid",
+            )))
+
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["virtual_record_id"] == "saved-by-attempt-1"
+        assert call_kwargs["prev_virtual_record_id"] == "saved-by-attempt-1"
+        cleanup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_retry_of_an_unreconciled_type_cleans_up_what_its_first_attempt_left(self) -> None:
+        """The new VRID abandons the one the record is on, not the one in the
+        message, which the first attempt already left."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "FILE",
+            "virtualRecordId": "saved-by-attempt-1",
+        }
+        processor.process_excel_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock), \
+             patch.object(ep, "_spawn_abandoned_vrid_cleanup") as cleanup:
+            await _drain(ep.on_event(_make_event_payload(
+                mime_type=MimeTypes.XLSX.value,
+                extension=ExtensionTypes.XLSX.value,
+                event_type=EventTypes.REINDEX_RECORD.value,
+                virtual_record_id="vrid-in-the-message",
+            )))
+
+        cleanup.assert_called_once_with("org-1", "saved-by-attempt-1")
+        minted = processor.process_excel_document.call_args[1]["virtual_record_id"]
+        assert minted not in ("saved-by-attempt-1", "vrid-in-the-message")
+
+    @pytest.mark.asyncio
+    async def test_the_message_vrid_is_used_when_the_record_has_none(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "SQL_TABLE"}
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+            await _drain(ep.on_event(_make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.REINDEX_RECORD.value,
+                virtual_record_id="vrid-in-the-message",
+            )))
+
+        assert processor.process_sql_structured_data.call_args[1]["virtual_record_id"] == "vrid-in-the-message"
+
+    @pytest.mark.asyncio
     async def test_update_reconciliation_type_nto1_isolates_vrid(self):
         """Reconciliation type with N:1 mapping generates new vrid."""
         ep, _, processor, gp = _make_event_processor()
