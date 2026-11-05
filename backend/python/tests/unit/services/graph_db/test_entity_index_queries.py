@@ -21,6 +21,7 @@ APPS = CollectionNames.APPS.value
 ORGS = CollectionNames.ORGS.value
 RECORDS = CollectionNames.RECORDS.value
 GROUPS = CollectionNames.RECORD_GROUPS.value
+USERS = CollectionNames.USERS.value
 TOPICS = CollectionNames.TOPICS.value
 DEPARTMENTS = CollectionNames.DEPARTMENTS.value
 
@@ -198,6 +199,19 @@ async def test_record_group_name_falls_back_like_the_index_path() -> None:
     # ``or`` skips an empty groupName too, so the Cypher must not stop at "".
     assert "CASE WHEN coalesce(n.groupName, '') <> '' THEN n.groupName ELSE n.name END AS name" in _neo4j_call(neo)[0]
     assert "name: n.groupName || n.name" in _arango_call(arango)[0]
+
+
+async def test_a_blank_person_name_falls_back_to_the_email_like_the_index_path() -> None:
+    """Index time names a person ``fullName.strip() or email``: a name of
+    spaces must give the email here too, or the projection skips the person."""
+    neo, arango = _neo4j([]), _arango([])
+    await neo.page_entity_index_source(USERS, "org-1", None, 10)
+    await arango.page_entity_index_source(USERS, "org-1", None, 10)
+    assert (
+        "CASE WHEN trim(coalesce(toStringOrNull(n.fullName), '')) <> '' THEN n.fullName ELSE n.email END AS name"
+        in _neo4j_call(neo)[0]
+    )
+    assert 'name: TRIM(n.fullName) != "" ? n.fullName : n.email' in _arango_call(arango)[0]
 
 
 class TestKeysetIndexes:

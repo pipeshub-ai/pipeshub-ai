@@ -572,7 +572,10 @@ class TestSyncEntitiesForDuplicate:
         assert people.kwargs["merge_membership"] is True
         assert (people.args[0][0].connector_ids, people.args[0][0].record_group_ids) == (["conn-b"], ["rg-2"])
 
-        store.upsert_entities_batch = AsyncMock(return_value=MagicMock(failed=1))
+        async def _fail_people_only(entities, **_kwargs) -> MagicMock:
+            return MagicMock(failed=int(any(e.entity_type == EntityType.PERSON for e in entities)))
+
+        store.upsert_entities_batch = AsyncMock(side_effect=_fail_people_only)
         assert await orch.sync_entities_for_duplicate(self._RECORD_DOC) is False
 
     @pytest.mark.asyncio
