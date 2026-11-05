@@ -122,9 +122,11 @@ def test_service_builds_the_same_content_from_the_trimmed_request(
 
     full = extractor._prepare_content(
         container.blocks, is_multimodal_llm=multimodal, context_length=service_context,
+        allow_remote_image_uri=True
     )
     trimmed = extractor._prepare_content(
         _as_received(request_blocks), is_multimodal_llm=multimodal, context_length=service_context,
+        allow_remote_image_uri=True
     )
     assert trimmed == full
     if client_ceiling == 2000:

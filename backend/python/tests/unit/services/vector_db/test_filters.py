@@ -2,23 +2,13 @@
 
 import pytest
 
-from app.services.vector_db.filters import build_filter_expression, is_valid_filter_value
-from app.services.vector_db.models import FieldCondition, FilterMode
+from app.services.vector_db.errors import OrgMismatch, OrgRequired
+from app.services.vector_db.filters import (
+    build_filter_expression,
+    require_filter_org,
+)
+from app.services.vector_db.models import FieldCondition, FilterExpression, FilterMode
 from app.services.vector_db.qdrant.utils import QdrantUtils
-
-
-class TestIsValidFilterValue:
-    def test_none_is_invalid(self):
-        assert is_valid_filter_value(None) is False
-
-    def test_blank_string_is_invalid(self):
-        assert is_valid_filter_value("   ") is False
-
-    def test_empty_list_is_invalid(self):
-        assert is_valid_filter_value([]) is False
-
-    def test_scalar_is_valid(self):
-        assert is_valid_filter_value("org-1") is True
 
 
 class TestBuildFilterExpression:
@@ -52,11 +42,40 @@ class TestBuildFilterExpression:
     def test_blank_values_dropped(self):
         expr = build_filter_expression(
             FilterMode.MUST,
-            must={"orgId": "", "virtualRecordId": "vr1"},
+            must={"orgId": "o1", "virtualRecordId": "vr1", "x": " ", "y": None},
             build_conditions=QdrantUtils.build_conditions_generic,
         )
-        assert len(expr.must) == 1
-        assert expr.must[0].key == "metadata.virtualRecordId"
+        assert [c.key for c in expr.must] == ["metadata.orgId", "metadata.virtualRecordId"]
+
+    @pytest.mark.parametrize("org", [None, "", "  ", [], [""], [None], ["o1", "o2"], ["o1", ""]])
+    @pytest.mark.parametrize("key", ["orgId", "metadata.orgId"])
+    def test_a_blank_org_raises(self, key, org) -> None:
+        """A blank org would be dropped and the filter would then span every org."""
+        with pytest.raises(OrgRequired):
+            build_filter_expression(
+                FilterMode.MUST, must={key: org, "virtualRecordId": "vr1"},
+                build_conditions=QdrantUtils.build_conditions_generic,
+            )
+
+    def test_require_filter_org(self) -> None:
+        ok = FilterExpression(must=[FieldCondition(key="metadata.orgId", value="o1")])
+        require_filter_org(ok)
+        require_filter_org(FilterExpression(must=[FieldCondition(key="metadata.orgId", values=["o1"])]))
+        for bad in (
+            FilterExpression(must=[FieldCondition(key="metadata.virtualRecordId", value="v")]),
+            FilterExpression(must=[FieldCondition(key="metadata.orgId", value="")]),
+            FilterExpression(should=[FieldCondition(key="metadata.orgId", value="o1")]),
+            FilterExpression(must_not=[FieldCondition(key="metadata.orgId", value="o1")]),
+            FilterExpression(must=[FieldCondition(key="metadata.orgId", values=["o1", "o2"])]),
+            FilterExpression(must=[FieldCondition(key="metadata.orgId", values=["o1", ""])]),
+            FilterExpression(must=[FieldCondition(key="metadata.orgId", values=[])]),
+        ):
+            with pytest.raises(OrgRequired):
+                require_filter_org(bad)
+        with pytest.raises(OrgMismatch):        # two conditions that disagree
+            require_filter_org(FilterExpression(must=[
+                FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.orgId", value="o2"),
+            ]))
 
     def test_min_should_match_preserved(self):
         expr = build_filter_expression(

@@ -287,9 +287,8 @@ class SourceCatalog:
         lookup = granted("knowledgegraph.lookup_record", _tool_names)
         fetch = granted("knowledgegraph.fetch_record", _tool_names)
         # Only an agent actually granted search_entities gets the Entities
-        # paragraph — the exploration child renders this catalog without tool
-        # names; its only entity tool, find_records_by_person, routes by its own
-        # description. find_records_by_entity is named
+        # paragraph; the exploration child is granted it with the other entity
+        # tools (`reads_entities`). find_records_by_entity is named
         # literally: it unlocks mid-run, and the prompt text must not change.
         search_entities = granted("knowledgegraph.search_entities", _tool_names)
         search_by_entities = granted("knowledgegraph.search_by_entities", _tool_names)

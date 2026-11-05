@@ -81,7 +81,7 @@ SERVICE_ACCOUNT_JSON = AIModelField(
     .add_field(VERTEX_AI_PROJECT, ModelCapability.TEXT_GENERATION) \
     .add_field(VERTEX_AI_LOCATION, ModelCapability.TEXT_GENERATION) \
     .add_field(SERVICE_ACCOUNT_JSON, ModelCapability.TEXT_GENERATION) \
-    .add_field(model_field("e.g., gemini-2.5-flash, gemini-2.5-pro"), ModelCapability.TEXT_GENERATION) \
+    .add_field(model_field("e.g., gemini-3.8-flash"), ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[0], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \

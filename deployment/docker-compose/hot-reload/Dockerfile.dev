@@ -52,7 +52,6 @@ RUN uv pip install --system -e . && \
     uv pip install --system watchdog && \
     # Download ML models (no-op when already present in the base image)
     python -c "import nltk; nltk.download('punkt', quiet=True)" && \
-    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \
     # Clean up caches to save space
     rm -rf /root/.cache/pip /root/.cache/uv /tmp/*
 

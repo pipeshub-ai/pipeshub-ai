@@ -20,6 +20,7 @@ import { McpInstanceConfigPanel } from '../team/components';
 import { McpPersonalLayout, McpAuthDialog, McpAddServerDialog } from './components';
 import { McpDisconnectDialog, McpToolRulesDialog } from '../components';
 import { ruleToolsFromInfo } from '../tool-rules';
+import { reloadMcpLogos } from '../logo-store';
 
 export default function PersonalMcpServersPage() {
   const { t } = useTranslation();
@@ -158,7 +159,10 @@ export default function PersonalMcpServersPage() {
         searchQuery={store.searchQuery}
         busyInstanceId={busyInstanceId}
         onSearchChange={store.setSearchQuery}
-        onRefresh={() => void loadData()}
+        onRefresh={() => {
+          void loadData();
+          void reloadMcpLogos();
+        }}
         onAddServer={store.openAddDialog}
         onSetUp={store.openCreateFromTemplate}
         onAuthenticate={handleAuthenticate}

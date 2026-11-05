@@ -20,6 +20,11 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.api.middlewares.body_limit import BodyLimitMiddleware
+from app.api.routes.extraction import (
+    CLASSIFY_PATH,
+    MAX_CLASSIFY_REQUEST_BYTES,
+)
 from app.api.routes.extraction import router as extraction_router
 from app.containers.extraction import ExtractionAppContainer, initialize_container
 from app.edition_services import configure_app
@@ -105,6 +110,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 configure_app(app, "extraction")
+# Refuse before the block container is parsed into memory (see the cap in the route module).
+app.add_middleware(BodyLimitMiddleware, limits={CLASSIFY_PATH: MAX_CLASSIFY_REQUEST_BYTES})
 
 app.include_router(extraction_router)
 

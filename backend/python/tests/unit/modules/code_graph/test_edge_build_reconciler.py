@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.core import org_context
 from app.modules.code_graph import edge_build_reconciler
 from app.modules.code_graph.build_state import sync_point_key_for
 from tests.unit.modules.code_graph.sync_point_fakes import FakeSyncPoints
@@ -246,3 +247,19 @@ async def test_disabled_code_graph_runs_no_sweep(monkeypatch) -> None:
     monkeypatch.setattr(edge_build_reconciler, "reconcile_once", sweeps)
     await edge_build_reconciler.reconcile_forever(MagicMock(), MagicMock(), MagicMock())
     sweeps.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_each_build_starts_inside_its_repos_org() -> None:
+    provider = _graph_provider([_row("repo-1", STALE_MS), _row("repo-2", STALE_MS, org_id="org-2")])
+    service = _event_service()
+    bound: list[tuple[str, str]] = []
+
+    async def start_build(org_id: str, connector_id: str, record_group_id: str) -> bool:
+        bound.append((record_group_id, org_context.current_org_id()))
+        return True
+
+    service.start_build = start_build
+    await edge_build_reconciler.reconcile_once(provider, service, MagicMock(), now_ms=NOW_MS)
+
+    assert sorted(bound) == [("repo-1", "org-1"), ("repo-2", "org-2")]

@@ -92,6 +92,11 @@ fields:
   is_vlm_ocr_processed:
     required: false
     type: boolean
+  # Created by an API push; written only when true. Indexing never fetches remote
+  # content for such a record.
+  push_origin:
+    required: false
+    type: boolean
   is_deleted:
     required: false
     type: boolean

@@ -1,6 +1,7 @@
 """Comprehensive unit tests for app.connectors_main module."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import sys
@@ -1683,6 +1684,85 @@ class TestGraphDbHealthCheck:
             response = await graph_db_health_check(request)
 
         assert response.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_healthy(self) -> None:
+        """PostgreSQL graph probe pings the provider and answers 200."""
+        from app.connectors_main import graph_db_health_check
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=AsyncMock(return_value=None))
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 200
+        request.app.state.graph_provider.ping.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_unhealthy(self) -> None:
+        """A failing PostgreSQL graph read answers 503, not the unknown-store 200."""
+        from app.connectors_main import graph_db_health_check
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=AsyncMock(side_effect=RuntimeError("down")))
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_hanging_ping_answers_503_at_the_deadline(self) -> None:
+        """A ping stuck on a saturated pool answers 503 within the deadline instead of outlasting the caller's timeout."""
+        import time
+
+        from app.connectors_main import graph_db_health_check
+
+        async def hang() -> None:  # ignores cancellation, as a unit waiting on its rollback does
+            end = time.monotonic() + 2
+            while time.monotonic() < end:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.sleep(0.05)
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=hang)
+
+        t0 = time.monotonic()
+        with patch("app.connectors_main.os.getenv", return_value="postgres"), \
+             patch("app.connectors_main.PG_PROBE_TIMEOUT_SEC", 0.05):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        assert time.monotonic() - t0 < 1
+        assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_cancelled_handler_cancels_the_ping(self) -> None:
+        """If the request is cancelled while the probe waits, the ping is cancelled too and nothing is left unretrieved."""
+        from app.connectors_main import graph_db_health_check
+
+        started = asyncio.Event()
+        seen: list[asyncio.Task] = []
+
+        async def ping() -> None:
+            seen.append(asyncio.current_task())
+            started.set()
+            await asyncio.sleep(30)
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=ping)
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            handler = asyncio.create_task(graph_db_health_check(request))
+            await started.wait()
+            handler.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await handler
+            await asyncio.sleep(0)
+
+        assert seen[0].cancelled()
 
     @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_healthy(self):

@@ -27,6 +27,9 @@ import type {
   SemanticSearchDto,
   SemanticSearchRepository,
 } from './types';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importSearchDocs } from './pg-import';
+import { kernelTx } from '../pg';
 
 interface SearchRow {
   id: string;
@@ -137,7 +140,17 @@ async function hitsOf(
   return out;
 }
 
-export class PgSemanticSearchRepository implements SemanticSearchRepository {
+export class PgSemanticSearchRepository
+  implements SemanticSearchRepository, Importable
+{
+  /** The migration copy (see ./pg-import). */
+  importBatch(
+    collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importSearchDocs(kernelTx(tx), collection, docs);
+  }
   async create(input: NewSemanticSearch, tx?: Tx): Promise<SemanticSearchDto> {
     return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, input.orgId);

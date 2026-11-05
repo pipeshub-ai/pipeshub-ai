@@ -75,7 +75,7 @@ class Harness:
     def service(self) -> KbPushService:
         svc = KbPushService(
             graph_provider=MagicMock(), kb_service=self.kb, processor_for_kb=AsyncMock(), schema_registry=self.schemas,
-            storage=MagicMock(), worker=self.worker, spool=self.spool, publish_event=AsyncMock(),
+            storage=MagicMock(upload_limit=AsyncMock(return_value=30 << 20)), worker=self.worker, spool=self.spool, publish_event=AsyncMock(),
         )
 
         async def push(**kw) -> PushResult:
@@ -330,7 +330,7 @@ async def test_a_full_set_of_slots_gives_503_after_the_wait() -> None:
 
 # ---- schema routes ------------------------------------------------------------------------------
 
-TEAM = {"name": "team", "type": "STRING", "displayLabel": "Team", "filterable": True, "facetable": True}
+TEAM = {"name": "team", "type": "STRING", "displayLabel": "Team", "filterable": True}
 TIER = {"name": "tier", "type": "ENUM", "displayLabel": "Tier", "enumValues": ["P0", "P1"], "filterable": True}
 
 
@@ -348,7 +348,45 @@ def test_schema_put_is_versioned_and_idempotent(client, h) -> None:
     assert (b.json()["schemaId"], b.json()["created"]) == ("org1:kb1:2", True)
     reordered = put(client, [TIER, TEAM])
     assert (reordered.json()["schemaId"], reordered.json()["created"]) == ("org1:kb1:2", False)
-    assert b.json()["properties"][0]["facetable"] is True and b.json()["properties"][1]["enumValues"] == ["P0", "P1"]
+    assert b.json()["properties"][0]["filterable"] is True and b.json()["properties"][1]["enumValues"] == ["P0", "P1"]
+
+
+def test_schema_put_refuses_a_type_change_and_a_facet_that_cannot_bucket(client, h, monkeypatch) -> None:
+    monkeypatch.setenv("RECORD_PROPERTY_PROJECTION", "true")
+    h.user = "owner"
+    assert put(client, [TEAM]).status_code == 200
+    changed = put(client, [{**TEAM, "type": "INT"}])
+    assert (changed.status_code, error(changed)["reason"], error(changed)["property"]) == (422, "PROPERTY_TYPE_IMMUTABLE", "team")
+    facet = put(client, [TEAM, {**TIER, "name": "owner2", "type": "STRING", "enumValues": [], "facetable": True}])
+    assert (facet.status_code, error(facet)["reason"], error(facet)["property"]) == (422, "PROPERTY_FACET_TYPE", "owner2")
+    hidden = put(client, [TEAM, {"name": "flag", "type": "BOOL", "displayLabel": "F", "facetable": True, "retrievable": False}])
+    assert (hidden.status_code, error(hidden)["reason"]) == (422, "PROPERTY_FACET_RETRIEVABLE")
+    assert asyncio.run(h.schemas.get("org1", "kb1")).schema_id == "org1:kb1:1"
+
+
+def test_with_the_flag_off_the_registration_rules_do_not_apply(client, h, monkeypatch) -> None:
+    """Answered exactly as before the rules: a type change and a facetable STRING are accepted."""
+    monkeypatch.delenv("RECORD_PROPERTY_PROJECTION", raising=False)
+    h.user = "owner"
+    assert put(client, [{**TEAM, "facetable": True}]).status_code == 200
+    changed = put(client, [{**TEAM, "type": "INT"}])
+    assert changed.status_code == 200 and changed.json()["version"] == 2
+    hidden = put(client, [{"name": "flag", "type": "BOOL", "displayLabel": "F", "facetable": True, "retrievable": False}])
+    assert hidden.status_code == 200
+
+
+def test_a_registered_schema_is_learned_by_this_process_at_once(client, h) -> None:
+    from app.config.constants.arangodb import Connectors
+    from app.modules.record_metadata.projection import default_union_cache
+
+    h.user = "owner"
+    assert put(client, [TEAM]).status_code == 200
+    cache = default_union_cache()
+    union = asyncio.run(cache.union_for(h.schemas, "org1", "kb1", Connectors.KNOWLEDGE_BASE))
+    assert union.gen == 1
+    assert put(client, [TEAM, TIER]).status_code == 200
+    union = asyncio.run(cache.union_for(h.schemas, "org1", "kb1", Connectors.KNOWLEDGE_BASE))
+    assert union.gen == 2
 
 
 def test_schema_put_by_a_writer_is_403(client, h) -> None:

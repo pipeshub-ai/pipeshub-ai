@@ -50,8 +50,11 @@ vi.mock('../../api', async (importOriginal) => ({
   AgentsApi: agentsApi,
 }));
 
-const fetchAvailableLlms = vi.hoisted(() => vi.fn());
-vi.mock('@/chat/api', () => ({ ChatApi: { fetchAvailableLlms } }));
+const fetchOrgModels = vi.hoisted(() => vi.fn());
+vi.mock('@/chat/utils/fetch-models-for-context', () => ({
+  fetchModelsForContext: fetchOrgModels,
+  invalidateModelsForContext: vi.fn(),
+}));
 
 const toolsetsApi = vi.hoisted(() => ({
   getAllMyToolsets: vi.fn(),
@@ -89,7 +92,7 @@ beforeEach(() => {
   useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false, ENABLE_SKILLS: false } });
   agentsApi.getAllKnowledgeBasesForBuilder.mockResolvedValue({ knowledgeBases: [knowledgeBase()] });
   agentsApi.getAllKnowledgeHubAppNodes.mockResolvedValue([]);
-  fetchAvailableLlms.mockResolvedValue([model()]);
+  fetchOrgModels.mockResolvedValue([model()]);
   toolsetsApi.getAllMyToolsets.mockResolvedValue({ toolsets: [toolset()] });
   toolsetsApi.getAllAgentToolsets.mockResolvedValue([]);
   getUsersByIds.mockResolvedValue([]);

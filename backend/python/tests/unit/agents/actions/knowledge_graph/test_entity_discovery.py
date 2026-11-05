@@ -451,3 +451,39 @@ class TestUploadDates:
         preview = json.loads(text)["results"][0]["records"][0]
         assert preview["uploaded"] == "2026-10-15"
         assert "modified" not in preview
+
+
+class TestNoReadableMatch:
+    """Run over the real access probe: a query whose only hits U cannot read must
+    answer as a query with no hits, also when the probe runs out of time."""
+
+    @staticmethod
+    async def _ask(monkeypatch: pytest.MonkeyPatch, hits: list[dict], *, stall: bool) -> tuple[bool, str]:
+        import asyncio
+
+        from app.modules.retrieval import entity_permissions as ep
+        from tests.unit.modules.retrieval.entity_access_fakes import entity_graph
+
+        monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.05)
+        monkeypatch.setattr(ep, "PROBE_MIN_SECONDS", 0.05)
+        monkeypatch.setattr(entity_filters, "get_entity_access_context", AsyncMock(return_value=CONTEXT))
+        rows = [_row(f"d{i}") for i in range(2000)]
+
+        async def build(refs: list, org: str, *, limit_per_entity: int, offset: int, **_: object) -> dict:
+            if stall and offset:
+                await asyncio.sleep(1.0)
+            return {r["id"]: rows[offset:offset + limit_per_entity] for r in refs}
+
+        store = MagicMock()
+        store.search_entities_passes = AsyncMock(side_effect=lambda q, org, passes, **k: [list(hits) for _ in passes])
+        return await execute_search_entities(_state(graph_provider=entity_graph(build), entity_vector_store=store), "Globex")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stall", [False, True])
+    async def test_unreadable_hits_read_as_no_hits(self, monkeypatch: pytest.MonkeyPatch, stall: bool) -> None:
+        unknown = await self._ask(monkeypatch, [], stall=False)
+        hit = {"entityId": "t-globex", "entityType": "topic", "name": "Globex", "score": 0.9}
+        reply = await self._ask(monkeypatch, [hit], stall=stall)
+        assert reply == unknown and json.loads(reply[1])["message"] == "No accessible entities matched"
+        assert "Globex" not in reply[1] and "t-globex" not in reply[1]
+
