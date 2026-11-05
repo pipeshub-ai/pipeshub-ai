@@ -923,6 +923,13 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_all_orgs.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_get_all_orgs_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_all_orgs(is_external=True, raise_on_error=True)
+        mock_graph_provider.get_all_orgs.assert_awaited_once_with(
+            active=True, is_external=True, transaction="txn-123", raise_on_error=True
+        )
+
+    @pytest.mark.asyncio
     async def test_create_user_groups(self, tx_store, mock_graph_provider) -> None:
         group = MagicMock()
         group.to_arango_base_user_group.return_value = {"_key": "g1"}
@@ -994,7 +1001,14 @@ class TestGraphTransactionStore:
     async def test_get_edges_from_node(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_edges_from_node("node1", "edge_coll")
         mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
-            "node1", "edge_coll", transaction="txn-123"
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_edges_from_node_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_edges_from_node("node1", "edge_coll", raise_on_error=True)
+        mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio

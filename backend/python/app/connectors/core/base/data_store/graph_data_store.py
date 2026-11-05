@@ -1281,11 +1281,14 @@ class GraphTransactionStore(TransactionStore):
             raise_on_error=raise_on_error,
         )
 
-    async def get_all_orgs(self, *, active: bool = True, is_external: bool = False) -> list[Org]:
+    async def get_all_orgs(
+        self, *, active: bool = True, is_external: bool = False, raise_on_error: bool = False,
+    ) -> list[Org]:
         return await self.graph_provider.get_all_orgs(
             active=active,
             is_external=is_external,
             transaction=self.txn,
+            raise_on_error=raise_on_error,
         )
 
     async def create_user_groups(self, user_groups: list[AppUserGroup]) -> None:
@@ -1413,9 +1416,13 @@ class GraphTransactionStore(TransactionStore):
             node_id, edge_collection, transaction=self.txn, raise_on_error=raise_on_error
         )
 
-    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_from_node(
+        self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False,
+    ) -> list[dict]:
         """Get all edges originating from a specific node"""
-        return await self.graph_provider.get_edges_from_node(from_node_id, edge_collection, transaction=self.txn)
+        return await self.graph_provider.get_edges_from_node(
+            from_node_id, edge_collection, transaction=self.txn, raise_on_error=raise_on_error,
+        )
 
     async def get_edges_from_node_with_target_name(
         self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False

@@ -9631,7 +9631,7 @@ async def test_only_the_orgs_own_accounts_are_reused_by_name() -> None:
     connector = _make_connector()
     connector.data_entities_processor.org_id = "org-1"
     tx = AsyncMock()
-    tx.get_edges_from_node = AsyncMock(side_effect=lambda node, collection: (
+    tx.get_edges_from_node = AsyncMock(side_effect=lambda node, collection, **_: (
         [{"_from": node, "_to": "organizations/legacy-own"}] if collection == CollectionNames.PROSPECT.value else []
     ))
     nodes = [
@@ -9643,11 +9643,34 @@ async def test_only_the_orgs_own_accounts_are_reused_by_name() -> None:
     ]
     own = await connector._own_external_orgs(tx, nodes)
     assert [n["_key"] for n in own] == ["stamped-own", "legacy-own"]
-    tx.get_edges_from_node.assert_any_await("organizations/org-1", CollectionNames.PROSPECT.value)
+    tx.get_edges_from_node.assert_any_await(
+        "organizations/org-1", CollectionNames.PROSPECT.value, raise_on_error=True,
+    )
 
     tx.get_edges_from_node.reset_mock()
     assert await connector._own_external_orgs(tx, nodes[:1]) == nodes[:1]
     tx.get_edges_from_node.assert_not_awaited()  # nothing unstamped: no edge read
+
+
+@pytest.mark.asyncio
+async def test_a_failed_ownership_read_stops_the_account_sync_before_any_write() -> None:
+    """Unknown is not empty: read as "no edges", every unstamped account would
+    get a duplicate node."""
+    connector = _make_connector()
+    connector.data_entities_processor.org_id = "org-1"
+    mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+    mock_tx.get_all_orgs = AsyncMock(return_value=[{"name": "Acme", "_key": "acme", "isExternal": True}])
+    mock_tx.get_edges_from_node = AsyncMock(side_effect=RuntimeError("edges unreadable"))
+    mock_tx.batch_upsert_orgs = AsyncMock()
+    account = SalesforceAccount.model_validate({
+        "Id": "001000000000001AAA", "Name": "Acme", "Type": "Customer",
+        "CreatedDate": "2024-01-01T00:00:00.000+0000", "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        "Opportunities": {"records": []},
+    })
+    with pytest.raises(RuntimeError, match="edges unreadable"):
+        await connector._sync_accounts(_async_iter_pages([account]))
+    mock_tx.batch_upsert_orgs.assert_not_awaited()
+    mock_tx.get_all_orgs.assert_awaited_with(raise_on_error=True)
 
 
 @pytest.mark.asyncio
