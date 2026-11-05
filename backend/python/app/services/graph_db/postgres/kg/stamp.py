@@ -9,14 +9,16 @@ with the class compiler over the closure of the graph, and writes the difference
 ``class_id`` NULL is "legacy": the record keeps today's walk. ``legacy_reason`` 0 marks a record that is never readable (deleted or placeholder, the oracle's R11) and 1-8 a refusal
 of the compiler (``REASONS``). A record that was never stamped has all of them NULL.
 
-Every record a change reaches is restamped in the writer's unit: there is no hiding of a large reach for a worker to restamp yet (the fences and the restamp queue are a later change),
-so a change under a very large folder takes as long as its subtree. A stamp that reaches a connector the unit holds no lock for raises :class:`locks.NeedLocks` before anything is
-written, and the unit starts again with the larger set.
+A change that reaches more than ``inline_max()`` records beyond its seeds is not restamped in the writer's unit: in that same unit the records it reaches that kg holds are hidden
+(``fence_job``; a change to a whole connector hides the connector with a queue row of kind ``app``) and a restamp job is queued (restamp.py), so a reader never answers from a
+stamp the change has outdated; the worker restamps them afterwards. The seeds themselves are always stamped in the unit. A stamp that reaches a connector the unit holds no lock for
+raises :class:`locks.NeedLocks` before anything is written, and the unit starts again with the larger set.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -43,6 +45,12 @@ if TYPE_CHECKING:
 REASONS = {"deny": 0, "missing_node": 1, "too_many_paths": 2, "too_many_seeds": 3, "too_many_clauses": 4, "rgl_below_seed": 5, "deep_below_seed": 6, "no_app": 7, "foreign_parent": 8}
 SELF = classes.SELF
 MAX_DEPTH = 64                      # the primary chain stored in ``path``; deeper (or a cycle) leaves it NULL
+INLINE_MAX = 20000                  # records a change may reach before they are hidden and restamped by the worker instead of in the writer's unit
+
+
+def inline_max() -> int:
+    v = os.environ.get("PG_KG_INLINE_MAX")
+    return int(v) if v and v.isdigit() else INLINE_MAX
 
 
 @dataclass
@@ -53,6 +61,8 @@ class StampStats:
     classes: int = 0
     legacy: int = 0
     whole_apps: int = 0
+    deferred: int = 0                                    # connectors fenced whole and queued
+    hidden: int = 0                                      # records hidden and queued
     keys: set = field(default_factory=set)               # every record-like key this call compiled (the affected set and the seeds)
     diffs: list[str] = field(default_factory=list)       # a dry run: the records whose stamps differ from a fresh compile
 
@@ -124,16 +134,26 @@ async def stored_facts(tx: Tx, org: str, app_sk: int) -> tuple[bool, bool] | Non
     return (r["opens"], r["has_group_level"]) if r else None
 
 
-async def affected(tx: Tx, org: str, seeds: set[Key], apps: dict[str, tuple[int, bool, bool]]) -> tuple[set[Key], set[str]]:
-    """Every record-like key whose class can differ after a change to ``seeds``, and the connectors restamped whole.
+async def stamped_over(tx: Tx, org: str, app_sk: int, limit: int) -> bool:
+    """Does the connector hold more than ``limit`` stamped records? Bounded: reads at most ``limit + 1`` index entries."""
+    n = await tx.fetchval("""/* pipeshub:kg.stamp_over */ SELECT count(*) FROM (SELECT 1 FROM kg.records WHERE org_id = $1 AND app_sk = $2 AND class_id IS NOT NULL LIMIT $3) t""", org, app_sk, limit + 1)
+    return n > limit
 
-    ``apps``: app id -> (sk, opens, has_group_level) as the graph says now. A connector is restamped whole when its app node is a seed or the stored facts differ."""
+
+async def affected(tx: Tx, org: str, seeds: set[Key], apps: dict[str, tuple[int, bool, bool]], *, defer_over: int | None = None) -> tuple[set[Key], set[str], set[str]]:
+    """Every record-like key whose class can differ after a change to ``seeds``, the connectors restamped whole, and those of them left to a restamp job.
+
+    ``apps``: app id -> (sk, opens, has_group_level) as the graph says now. A connector is restamped whole when its app node is a seed or the stored facts differ. With ``defer_over``,
+    a connector that holds more stamped records than that is not enumerated: it is returned in the third set for the caller to hide and queue."""
     whole: set[str] = set()
+    deferred: set[str] = set()
     for app_id, (sk, opens, rgl) in apps.items():
         if ("apps", app_id) in seeds or await stored_facts(tx, org, sk) != (opens, rgl):
             whole.add(app_id)
+            if defer_over is not None and await stamped_over(tx, org, sk, defer_over):
+                deferred.add(app_id)
     out = {k for k in seeds if k[0] in RECORD_COLLS}
-    for app_id in whole:
+    for app_id in whole - deferred:
         out |= await app_nodes(tx, org, app_id)
     frontier = set(out)
     while frontier:
@@ -141,7 +161,7 @@ async def affected(tx: Tx, org: str, seeds: set[Key], apps: dict[str, tuple[int,
         nxt = {k for k in nxt if k[0] in RECORD_COLLS} - out
         out |= nxt
         frontier = nxt
-    return out, whole
+    return out, whole, deferred
 
 
 def _under_deleted(i: str, nodes: dict[str, StampNode]) -> bool:
@@ -209,6 +229,8 @@ async def stamp(tx: Tx, org: str, seeds: set[Key], *, also: set[Key] | None = No
     """Restamp everything a change to ``seeds`` can reach, plus ``also`` (nodes whose own stamps may change but whose descendants' do not: the parents of a node that gained or
     lost a child, whose ``leaf`` flips); returns what it did. Runs in the projection's unit, under the connector's lock, after the structural rows. ``locked``: the connectors the
     unit holds (with ``org_wide``, any): a stamp that reaches another raises :class:`NeedLocks` before anything is written."""
+    from app.services.graph_db.postgres.kg import restamp  # restamp imports this module
+
     recs = {k for k in seeds if k[0] in RECORD_COLLS}
     st = StampStats(seeds=len(recs))
     if not recs and not also:
@@ -220,14 +242,22 @@ async def stamp(tx: Tx, org: str, seeds: set[Key], *, also: set[Key] | None = No
     app_ids = {aid(n.connector_id) for n in seed_nodes.values() if n.connector_id} | {k[1] for k in every if k[0] == "apps"} | await _former_apps(tx, org, gone)
     _need(app_ids, locked, org_wide=org_wide)
     app_sks, facts = await _facts(tx, org, w, app_ids)
-    a_set, whole = await affected(tx, org, recs, {a: (app_sks[a], f.opens, f.has_group_level) for a, f in facts.items()})
+    limit = inline_max()
+    a_set, whole, deferred = await affected(tx, org, recs, {a: (app_sks[a], f.opens, f.has_group_level) for a, f in facts.items()}, defer_over=limit)
     st.whole_apps = len(whole)
     # A record kg holds no row for yet is still in the change log (every committed graph change is) and is stamped when its own projection comes, from the graph as it is
     # then: restamping it here would compile it twice and leave a row of nothing but a key.
     a_set = (await held_keys(tx, org, a_set - every)) | (a_set & every)
     for a in sorted(whole):
         await w.app_facts_set(app_sks[a], opens=facts[a].opens, group_level=facts[a].has_group_level)
-    await stamp_keys(tx, org, a_set | every, st, app_sks=app_sks, facts=facts, known=seed_nodes, locked=locked, org_wide=org_wide)
+    for a in sorted(deferred):
+        await restamp.enqueue_app(tx, org, app_sks[a], "app")
+        st.deferred += 1
+    rest = a_set - every
+    if len(rest) > limit:
+        st.hidden = await restamp.enqueue_rows(tx, org, rest, "reach", skip_apps=frozenset(app_sks[x] for x in deferred))
+        a_set -= rest
+    await stamp_keys(tx, org, a_set | every, st, app_sks=app_sks, facts=facts, skip_apps=deferred, known=seed_nodes, locked=locked, org_wide=org_wide)
     return st
 
 
@@ -240,10 +270,10 @@ def _need(app_ids: set[str], locked: set[str] | None, *, org_wide: bool) -> None
 
 
 async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = None, *, app_sks: dict[str, int] | None = None,
-                     facts: dict[str, StampApp] | None = None, dry: bool = False, known: dict[str, StampNode] | None = None, locked: set[str] | None = None,
+                     facts: dict[str, StampApp] | None = None, dry: bool = False, skip_apps: set[str] | None = None, known: dict[str, StampNode] | None = None, locked: set[str] | None = None,
                      org_wide: bool = False) -> StampStats:
     """Compile and write the stamps of exactly these keys (the ones that exist as records or record groups). ``dry``: write nothing, list the differences in ``st.diffs``.
-    ``known``: nodes the caller has just read, not read again.
+    ``skip_apps``: connectors a restamp job will stamp whole. ``known``: nodes the caller has just read, not read again.
 
     Raises :class:`NeedLocks`, before writing, when a stamp reaches a connector the unit does not hold (``locked``, unless ``org_wide``)."""
     st = st or StampStats()
@@ -255,7 +285,7 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
     nodes = await stampgraph.closure(tx, org, ids, known=known)
     if not dry:
         _need({aid(n.connector_id) for n in nodes.values() if n.connector_id}, locked, org_wide=org_wide)
-    present = sorted(i for i in ids if i in nodes and nodes[i].kind in ("record", "group"))
+    present = sorted(i for i in ids if i in nodes and nodes[i].kind in ("record", "group") and aid(nodes[i].connector_id) not in (skip_apps or ()))
     st.affected += len(present)
     st.keys |= {stampgraph.split(i) for i in present}
     if not present:
@@ -331,9 +361,9 @@ def _after(cursor: str | None) -> tuple[str | None, str | None]:
     return (None, None) if cursor is None else stampgraph.split(cursor)
 
 
-async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int, st: StampStats | None = None, *, dry: bool = False) -> str | None:
+async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int, st: StampStats | None = None, *, dry: bool = False, locked: set[str] | None = None) -> str | None:
     """One page of the whole-connector restamp (the backfill's last step): the next ``limit`` records and groups after the cursor ``after`` (ordered by collection and id); returns the new cursor or None when done.
-    The first page also stores what the stamps are compiled with."""
+    The first page also stores what the stamps are compiled with. ``locked``: see :func:`stamp_keys`."""
     w = KgWriter(tx)
     app_sks, facts = await _facts(tx, org, w, {app_id})
     if app_id not in facts:
@@ -347,7 +377,7 @@ async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int
     keys = {(r["coll"], r["id"]) for r in rows}
     if not dry:      # a record kg holds no row for is not given one of nothing but stamps: its own projection writes the row
         keys = await held_keys(tx, org, keys)
-    await stamp_keys(tx, org, keys, st, app_sks=app_sks, facts=facts, dry=dry)
+    await stamp_keys(tx, org, keys, st, app_sks=app_sks, facts=facts, dry=dry, locked=locked)
     return stampgraph.nk(rows[-1]["coll"], rows[-1]["id"])
 
 
