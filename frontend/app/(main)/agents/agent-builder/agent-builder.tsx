@@ -990,7 +990,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           onServiceAccountUserIdChange={canPersist ? setServiceAccountUserId : undefined}
           editing={Boolean(loadedAgent || editingKey)}
           loading={agentLoading || agentLoadFailed}
-          onEnableServiceAccount={canPersist && canConvertToServiceAgent(loadedAgent, isAdmin) ? handleRequestServiceAccount : undefined}
+          onEnableServiceAccount={canPersist && canConvertToServiceAgent(loadedAgent, isAdmin, Boolean(editingKey)) ? handleRequestServiceAccount : undefined}
           canDeleteAgent={Boolean(loadedAgent?.can_delete)}
           onRequestDeleteAgent={() => setAgentDeleteDialogOpen(true)}
           serviceAccountPermissionDenied={!canAccessServiceAgent}

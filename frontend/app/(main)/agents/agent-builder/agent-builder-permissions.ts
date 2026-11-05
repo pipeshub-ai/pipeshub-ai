@@ -60,9 +60,15 @@ export function getAgentBuilderPermissions(loadedAgent: AgentDetail | null): Age
  * Whether the viewer may turn this agent into a service agent: its owner or an
  * organization administrator. A service agent searches with someone else's
  * access, so an editor may not decide that; the server refuses it too. A new
- * agent belongs to whoever is creating it. An unknown admin state reads as no.
+ * agent belongs to whoever is creating it; an existing one that has not loaded
+ * yet is not offered, so an editor never sees the control flash. An unknown
+ * admin state reads as no.
  */
-export function canConvertToServiceAgent(loadedAgent: AgentDetail | null, isAdmin: boolean | null): boolean {
-  if (!loadedAgent) return true;
+export function canConvertToServiceAgent(
+  loadedAgent: AgentDetail | null,
+  isAdmin: boolean | null,
+  editingExisting: boolean
+): boolean {
+  if (!loadedAgent) return !editingExisting;
   return loadedAgent.user_role === 'OWNER' || isAdmin === true;
 }
