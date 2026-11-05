@@ -149,6 +149,7 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
     NotificationOutcome,
     NotificationSeverity,
@@ -852,13 +853,14 @@ class JiraConnector(BaseConnector):
     async def _keep_stored_records(self, project_id: str) -> None:
         """Note this project's stored records as seen by a full sync in progress: its issues
         could not be read, so they stay as stored and must survive the unlink after it. So does
-        the project's record group, even with no grants of its own, for the records' links into it."""
+        the project's record group, even with no grants of its own, for the records' links into it. Soft-deleted
+        records too: a restored issue must come back with its edges."""
         await self.data_entities_processor.note_kept_record_group(self.connector_id, project_id)
         page_size = 1000
         after_key: Optional[str] = None
         while True:
             page = await self.data_entities_processor.get_records_in_record_group(
-                self.connector_id, project_id, page_size, after_key,
+                self.connector_id, project_id, page_size, after_key, visibility=RecordVisibility.ALL,
             )
             self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
             if len(page) < page_size:
