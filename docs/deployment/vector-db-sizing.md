@@ -165,3 +165,34 @@ temporarily more disk space while old and new segments coexist. If
 
 Raising the memory limit to the figure above gives the same speed without the
 out-of-memory risk, so prefer that.
+
+## Datastore memory settings on small machines
+
+The Compose deployment reads these optional variables from `.env`. Each default
+is the value used before the variable existed, so leaving them unset changes
+nothing.
+
+| Variable | Default | Controls |
+|---|---|---|
+| `MONGO_CACHE_GB` | `1` | WiredTiger cache size (GB) |
+| `MONGO_MEMORY_LIMIT` / `MONGO_MEMORY_RESERVATION` | `2G` / `512M` | MongoDB container limit and reservation |
+| `QDRANT_MEMORY_LIMIT` / `QDRANT_MEMORY_RESERVATION` | `6G` / `2G` (`4G` / `2G` in `docker-compose.build.neo4j.yml`) | Qdrant container limit and reservation |
+| `NEO4J_HEAP_INITIAL` / `NEO4J_HEAP_MAX` | `1G` / `2G` | Neo4j JVM heap at start and at most |
+| `NEO4J_PAGECACHE` | `1G` | Neo4j page cache |
+| `NEO4J_MEMORY_LIMIT` / `NEO4J_MEMORY_RESERVATION` | `3G` / `2G` | Neo4j container limit and reservation |
+
+- Neo4j also uses memory outside the heap and page cache (thread stacks,
+  metaspace, network buffers). The defaults put heap maximum + page cache equal
+  to the 3G limit; that holds because the heap rarely grows to its maximum. When
+  you change these values, keep heap maximum + page cache clearly below the
+  container limit, or the container can be killed under load.
+- A reservation is not a cap. The container limit is what protects the rest of
+  the machine, so lower the limit and the heap together.
+- The Neo4j page cache holds the graph store. If the store outgrows it, graph
+  queries read from disk and slow down; raise `NEO4J_PAGECACHE` first.
+- Neo4j uses 70 % of its heap maximum as the pool for one write transaction, so
+  a very small heap limits how many relationships one write can hold. Lower
+  `NEO4J_HEAP_MAX` only for small data sets.
+
+If your override file already sets the `NEO4J_dbms_memory_*` keys, it keeps
+working: those key names are unchanged.
