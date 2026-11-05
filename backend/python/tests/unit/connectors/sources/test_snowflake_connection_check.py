@@ -2,12 +2,13 @@
 
 import logging
 import re
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from app.connectors.core.base.connector.connector_service import ConnectionCheckResult
 from app.connectors.sources.snowflake.connection_check import (
     CHECK_STATEMENT,
     check_connection,
@@ -92,6 +93,14 @@ class TestCheck:
 
     async def test_the_connector_offers_it(self) -> None:
         assert SnowflakeConnector.supports_connection_check()
+
+    @pytest.mark.parametrize("public_only", [True, False])
+    async def test_the_connector_takes_the_address_rule_the_route_passes(self, public_only) -> None:
+        """The test-connection route passes the scope's address rule to every check."""
+        checked = ConnectionCheckResult(success=True, message="ok")
+        with patch(f"{SnowflakeConnector.__module__}.check_connection", AsyncMock(return_value=checked)) as check:
+            assert await SnowflakeConnector.check_connection(PAT, _LOGGER, public_only=public_only) is checked
+        check.assert_awaited_once_with(PAT, _LOGGER)
 
 
 def settings(auth=PAT) -> object:
