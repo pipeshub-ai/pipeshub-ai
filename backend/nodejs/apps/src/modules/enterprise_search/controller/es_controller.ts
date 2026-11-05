@@ -3710,7 +3710,7 @@ async function regenerateAnswersInternal(
       regenUserIdx === 0 &&
       (existingConversation.title === shownQuestion.content.slice(0, 100) ||
         existingConversation.title ===
-          conversationTitleFromQuery(String(shownQuestion.content)));
+          conversationTitleFromQuery(shownQuestion.content));
     // The rows a card turn asked again leaves behind: its card, the card's answers, earlier replies.
     // They go only after the new answer is saved, so a failed save loses nothing but the old answer.
     const replacedTurnIds =
@@ -3741,7 +3741,7 @@ async function regenerateAnswersInternal(
       editedQuestionSaved = true;
       turnAnswered = true;
       if (titleFollowsEdit) {
-        existingConversation.title = conversationTitleFromQuery(String(editedQuery));
+        existingConversation.title = conversationTitleFromQuery(editedQuery);
         editedTitles.set(existingConversation, existingConversation.title);
       }
     };
