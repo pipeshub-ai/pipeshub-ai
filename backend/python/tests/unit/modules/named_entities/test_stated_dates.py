@@ -16,6 +16,18 @@ def test_an_email_thread_takes_its_last_message_header() -> None:
     assert (found.day, found.basis) == (date(2025, 3, 6), "message header")
 
 
+def test_an_iso_timestamp_in_a_message_header_gives_its_day() -> None:
+    found = stated_date("thread", "From: Priya <priya@example.com>\nDate: 2025-05-07T10:00:00Z\n\nbody")
+    assert found is not None
+    assert (found.day, found.basis) == (date(2025, 5, 7), "message header")
+
+
+def test_an_iso_timestamp_on_a_labelled_line_gives_its_day() -> None:
+    found = stated_date("spec", "Badge spec\nLast updated: 2025-04-09T08:15:00+02:00\n")
+    assert found is not None
+    assert (found.day, found.basis) == (date(2025, 4, 9), "labelled date")
+
+
 def test_a_date_header_inside_a_code_fence_is_not_a_message_header() -> None:
     text = "Sample reply:\n```\nHTTP/1.1 503\nDate: Wed, 09 Apr 2025 07:00:00 GMT\n```\nRetested on 2025-02-11."
     found = stated_date("ticket", text)

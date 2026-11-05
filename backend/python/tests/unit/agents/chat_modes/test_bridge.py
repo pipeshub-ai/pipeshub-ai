@@ -877,7 +877,9 @@ class TestRunChatStream:
     async def _timeline_run(self, policy: ChatModePolicy, query_info: dict[str, Any]) -> tuple[MagicMock, list[str]]:
         captured: dict[str, Any] = {}
         start = MagicMock(return_value=MagicMock(name="timeline task"))
-        finish = AsyncMock(return_value='Records about the project "Badge reader rollout" ...')
+        finish = AsyncMock(side_effect=lambda _context, task: (
+            'Records about the project "Badge reader rollout" ...' if task is not None else None
+        ))
 
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, ...]:
             goal = MagicMock(constraints=[])
@@ -927,8 +929,9 @@ class TestRunChatStream:
     async def test_a_follow_up_or_another_mode_starts_no_project_timeline(
         self, policy: ChatModePolicy, query_info: dict[str, Any],
     ) -> None:
-        start, _constraints = await self._timeline_run(policy, query_info)
+        start, constraints = await self._timeline_run(policy, query_info)
         start.assert_not_called()
+        assert not any("Records about the project" in c for c in constraints)
 
     @pytest.mark.parametrize("high_accuracy", [False, True])
     async def test_internal_search_answer_rules_reach_the_agent_context(

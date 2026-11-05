@@ -34,7 +34,8 @@ _MONTHS = {name: number for number, name in enumerate(
 )}
 _MONTH = r"\b(?P<mon>jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
 _DAY_PATTERNS = (
-    re.compile(r"\b(?P<y>(?:19|20)\d\d)-(?P<m>\d\d)-(?P<d>\d\d)\b"),
+    # (?!\d), not \b: an ISO timestamp's T follows the day directly.
+    re.compile(r"\b(?P<y>(?:19|20)\d\d)-(?P<m>\d\d)-(?P<d>\d\d)(?!\d)"),
     re.compile(_MONTH + r"\s+(?P<d>\d{1,2})(?:st|nd|rd|th)?,?\s+(?P<y>(?:19|20)\d\d)\b", re.IGNORECASE),
     re.compile(r"\b(?P<d>\d{1,2})\s+" + _MONTH + r",?\s+(?P<y>(?:19|20)\d\d)\b", re.IGNORECASE),
 )
