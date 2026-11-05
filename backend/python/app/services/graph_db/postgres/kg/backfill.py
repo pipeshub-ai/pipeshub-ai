@@ -140,7 +140,7 @@ async def restamp_app(db: KernelDB, org: str, app_id: str, *, page: int = 2000) 
         while True:
             async def go(tx: Tx, cursor: str | None = after, held: frozenset[str] = frozenset(extra)) -> str | None:
                 await lock_apps(tx, org, {app_id} | held, org_wide=False)
-                return await stamp_app(tx, org, app_id, cursor, page)
+                return await stamp_app(tx, org, app_id, cursor, page, locked={app_id} | held)
             try:
                 after = await db.run(go, write=True)
             except NeedLocks as e:

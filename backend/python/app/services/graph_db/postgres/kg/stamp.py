@@ -331,9 +331,11 @@ def _after(cursor: str | None) -> tuple[str | None, str | None]:
     return (None, None) if cursor is None else stampgraph.split(cursor)
 
 
-async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int, st: StampStats | None = None, *, dry: bool = False) -> str | None:
+async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int, st: StampStats | None = None, *, dry: bool = False,
+                    locked: set[str] | None = None) -> str | None:
     """One page of the whole-connector restamp (the backfill's last step): the next ``limit`` records and groups after the cursor ``after`` (ordered by collection and id); returns the new cursor or None when done.
-    The first page also stores what the stamps are compiled with."""
+    The first page also stores what the stamps are compiled with. ``locked``: the connectors the unit holds; a page whose stamps reach another raises :class:`locks.NeedLocks` before it writes
+    (a ``dry`` page writes nothing and reads under the connector's lock in a unit that stays open, so it passes none)."""
     w = KgWriter(tx)
     app_sks, facts = await _facts(tx, org, w, {app_id})
     if app_id not in facts:
@@ -347,7 +349,7 @@ async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int
     keys = {(r["coll"], r["id"]) for r in rows}
     if not dry:      # a record kg holds no row for is not given one of nothing but stamps: its own projection writes the row
         keys = await held_keys(tx, org, keys)
-    await stamp_keys(tx, org, keys, st, app_sks=app_sks, facts=facts, dry=dry)
+    await stamp_keys(tx, org, keys, st, app_sks=app_sks, facts=facts, dry=dry, locked=locked)
     return stampgraph.nk(rows[-1]["coll"], rows[-1]["id"])
 
 

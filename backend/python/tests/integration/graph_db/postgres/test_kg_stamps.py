@@ -151,6 +151,35 @@ async def test_a_stamp_that_reaches_another_connector_asks_for_its_lock_before_i
     assert (await held_stamps(p, org))["x1"][0] == ("g1", "f2")
 
 
+async def test_a_page_of_the_whole_connector_restamp_that_reaches_another_connector_asks_for_its_lock_and_the_restamp_takes_it(pg_db, monkeypatch) -> None:
+    from app.services.graph_db.postgres.kg import backfill as backfill_mod
+
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await drain_org(pg_db, org)
+    await add_edge(p, org, ("records", "f2"), ("records", "x1"), "nodeRelations", relationshipType="PARENT_CHILD")      # x1 (app2) hangs under f2 (app1)
+
+    async def asks(tx) -> set:
+        try:
+            await stamp_app(tx, org, "app2", None, 100, locked={"app2"})
+        except NeedLocks as e:
+            return e.apps
+        return set()
+    with ctx(org):
+        assert await pg_db.run(asks, write=True) == {"app1"}                # raised before the page wrote anything
+    held: list[set] = []
+    real = backfill_mod.lock_apps
+
+    async def spy(tx, org_id, apps, **k):
+        held.append(set(apps))
+        return await real(tx, org_id, apps, **k)
+    monkeypatch.setattr(backfill_mod, "lock_apps", spy)
+    await drain_org(pg_db, org)                                            # the structural rows come first, as in a backfill
+    await backfill_mod.restamp_app(pg_db, org, "app2")
+    assert {"app1", "app2"} in held                                         # the restamp took the other connector's lock, in the same ascending pass, before it wrote
+    assert (await held_stamps(p, org))["x1"][0] == ("g1", "f2")
+
+
 async def test_the_records_of_a_deleted_connector_are_refused_as_without_an_app_and_come_back_with_it(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await world2(p, org)
