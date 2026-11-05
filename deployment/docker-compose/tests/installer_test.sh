@@ -845,7 +845,7 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
   check "the refusal names both heap settings" "$out" "NEO4J_HEAP_INITIAL (2G) must be <= NEO4J_HEAP_MAX (1G)"
 
   # Neo4j accepts GiB/MiB and plain bytes too; the check must read them.
-  for pair in "2GiB 1G" "1536MiB 1g" "2147483648 1024m"; do
+  for pair in "2GiB 1G" "1536MiB 1g" "2147483648 1024m" "010G 9G" "09G 8G"; do
     seed_env "0.6.0-slim"
     printf 'DATA_STORE=neo4j\nNEO4J_HEAP_INITIAL=%s\nNEO4J_HEAP_MAX=%s\n' ${pair} >>"$work/.env"
     status=0
