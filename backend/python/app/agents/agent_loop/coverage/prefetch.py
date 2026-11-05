@@ -17,6 +17,7 @@ from app.agents.agent_loop.coverage.facets import (
 from app.agents.agent_loop.coverage.llm import coverage_llm
 from app.agents.agent_loop.coverage.state import coverage_state
 from app.agents.agent_loop.coverage.targeted import (
+    delimit_results,
     render_results,
     run_targeted_searches,
 )
@@ -99,7 +100,7 @@ async def search_uncovered_facets(context: "AgentContext", plan: FacetPlan | Non
     results = await run_targeted_searches(context, queries, purpose="facet", timeout=FACET_SEARCH_TIMEOUT_S)
     if not any(result.text for result in results):
         return None
-    return f"{FACET_CONTEXT_INTRO}\n{render_results([r for r in results if r.text])}"
+    return f"{FACET_CONTEXT_INTRO}\n{delimit_results(render_results([r for r in results if r.text]))}"
 
 
 __all__ = [
