@@ -60,7 +60,7 @@ class KgWorker:
                 break                                      # what is left stays in the log for the next start
             rows += await drain_or_retry(self._db, org, page=self._page, stop=self._stop)
             try:
-                rows += await restamp.run_jobs(self._db, org, self.id, stale_ms=self._stale, batch=self._batch)
+                rows += await restamp.run_jobs(self._db, org, self.id, stale_ms=self._stale, batch=self._batch, stop=self._stop)
             except Exception:
                 logger.exception("kg restamp jobs failed for an org; retrying")
             try:

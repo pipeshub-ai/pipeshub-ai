@@ -243,10 +243,16 @@ async def _run_batch(db: KernelDB, org: str, job: Job, worker: str, beat: _Beat,
     raise RuntimeError("restamp batch kept reaching connectors it had not locked")
 
 
-async def run_job(db: KernelDB, org: str, job: Job, worker: str, *, batch: int | None = None, max_batches: int | None = None, stale_ms: int = STALE_MS) -> bool:
-    """Batches until the job is finished (True) or ``max_batches`` ran (False). A claim lost to another worker ends it quietly."""
+def _stopped(stop: asyncio.Event | None) -> bool:
+    return stop is not None and stop.is_set()
+
+
+async def run_job(db: KernelDB, org: str, job: Job, worker: str, *, batch: int | None = None, max_batches: int | None = None, stale_ms: int = STALE_MS,
+                  stop: asyncio.Event | None = None) -> bool:
+    """Batches until the job is finished (True), ``max_batches`` ran or ``stop`` is set (False). A claim lost to another worker ends it quietly. ``stop`` is looked at before each batch,
+    never inside one (a batch commits or rolls back whole): a job left unfinished keeps its marks, so what it hides stays hidden, and it is claimed again once its claim has gone stale."""
     n = 0
-    while max_batches is None or n < max_batches:
+    while (max_batches is None or n < max_batches) and not _stopped(stop):
         try:
             done, job = await run_batch(db, org, job, worker, batch=batch, stale_ms=stale_ms)
         except LostClaim:
@@ -260,15 +266,15 @@ async def run_job(db: KernelDB, org: str, job: Job, worker: str, *, batch: int |
     return False
 
 
-async def run_jobs(db: KernelDB, org: str, worker: str, *, stale_ms: int = STALE_MS, batch: int | None = None, max_jobs: int | None = None) -> int:
-    """Claim and finish jobs until none is claimable; returns the jobs finished."""
+async def run_jobs(db: KernelDB, org: str, worker: str, *, stale_ms: int = STALE_MS, batch: int | None = None, max_jobs: int | None = None, stop: asyncio.Event | None = None) -> int:
+    """Claim and finish jobs until none is claimable or ``stop`` is set (checked before each claim and each batch); returns the jobs finished."""
     done = 0
-    while max_jobs is None or done < max_jobs:
+    while (max_jobs is None or done < max_jobs) and not _stopped(stop):
         job = await claim(db, org, worker, stale_ms=stale_ms)
         if job is None:
             return done
         try:
-            if await run_job(db, org, job, worker, batch=batch, stale_ms=stale_ms):
+            if await run_job(db, org, job, worker, batch=batch, stale_ms=stale_ms, stop=stop):
                 done += 1
         except Exception:
             logger.exception("kg restamp job %s failed; it is claimed again after %s ms", job.id, stale_ms)

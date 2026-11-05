@@ -400,3 +400,38 @@ async def test_a_connector_job_whose_pages_reach_another_connector_takes_its_loc
     assert await jobs(pg_db, org) == []
     for app in ("app1", "app2"):
         assert await dry_diffs(p, org, app) == []
+
+
+async def test_a_stopped_worker_returns_between_batches_while_jobs_keep_coming_and_what_it_left_is_still_hidden(pg_db) -> None:
+    import asyncio
+    import time
+    p, org = prov(pg_db), new_org()
+    await fat(p, org, 30)
+    await drain_org(pg_db, org)
+    running = True
+
+    async def producer() -> None:
+        # a steady producer: the folder narrows and widens again and again, each change reaching its 30 records, each projected at once
+        flip = False
+        while running:
+            await update_node(p, org, "records", "F", accessRule="OPEN" if flip else "RESTRICTED")
+            await drain_org(pg_db, org)
+            flip = not flip
+
+    async def orgs() -> list[str]:
+        return [org]
+    worker = KgWorker(pg_db, orgs, poll_s=0.05, batch=1)
+    task = asyncio.get_running_loop().create_task(producer())
+    worker.start()
+    await asyncio.sleep(2)
+    t0 = time.monotonic()
+    await asyncio.wait_for(worker.stop(), 30)
+    stopped_in = time.monotonic() - t0
+    running = False
+    await asyncio.wait_for(task, 30)
+    assert stopped_in < 10, stopped_in                                  # a batch of one record, not the queue
+    left_marks, left_jobs = await marks(p, org), await jobs(pg_db, org)
+    assert (left_marks == 0) or left_jobs                                # whatever it left hidden has a job that will restamp it
+    await no_stale_visible(p, pg_db, org)
+    assert await restamp.run_jobs(pg_db, org, "w2", batch=50) >= 0
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
