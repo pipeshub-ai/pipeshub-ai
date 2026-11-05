@@ -1077,24 +1077,30 @@ async def test_a_connector_whose_app_document_is_missing_is_not_closed_for_a_mar
     assert not apps.docs["c1"].get("scopeProjectionClosed") and not [e for e in apps.log if e[2] == "scopeProjectionClosed"]
 
 
-async def test_a_closing_step_that_fails_is_tried_again(monkeypatch) -> None:
+async def test_a_closing_step_that_may_have_been_applied_is_not_tried_again(monkeypatch) -> None:
+    """An exception from the closing increment proves nothing (a timeout can arrive after the store applied it): a second try would count a write
+    that is still running as closed. Two overlapping writes: A's close is applied and then raises; the connector must stay not current."""
     from app.core import org_context
+    from app.services.permissions.currency import app_is_current
 
     provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
-    monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
-    tries = {"n": 0}
+    apps = _AppDocs(provider, ["c1"])
+    plain = provider.increment_node_field.side_effect
 
-    def fail(kind: str, key: str) -> bool:
-        if kind == "increment:scopeProjectionClosed":
-            tries["n"] += 1
-            return tries["n"] < 3
-        return False
+    async def applies_then_raises(key, collection, field, *args, **kwargs):
+        value = await plain(key, collection, field, *args, **kwargs)
+        if field == "scopeProjectionClosed":
+            raise TimeoutError("applied, but the answer never came")
+        return value
 
-    apps = _AppDocs(provider, ["c1"], fail=fail)
+    provider.increment_node_field = AsyncMock(side_effect=applies_then_raises)
+    apps.docs["c1"]["scopeProjectionOpened"] = 1                                    # B opened earlier and is still running
     with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")):
-        async with store_provider.transaction() as tx:
+        async with store_provider.transaction() as tx:                              # A
             await _Scratch.via_local_alias(tx, "r1")
-    assert tries["n"] == 3 and apps.docs["c1"]["scopeProjectionClosed"] == 1
+    doc = apps.docs["c1"]
+    assert doc["scopeProjectionOpened"] == 2 and doc["scopeProjectionClosed"] == 1          # applied once, not retried
+    assert not app_is_current(_recorded_pass(doc))                                          # B is still open
 
 
 async def test_two_blocks_writing_at_once_each_count_and_the_connector_is_current_only_when_both_have_closed(monkeypatch) -> None:

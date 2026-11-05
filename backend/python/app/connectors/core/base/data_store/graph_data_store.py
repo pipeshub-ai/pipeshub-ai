@@ -1598,21 +1598,18 @@ class GraphDataStore(DataStoreProvider):
         await self._close_opened(tx_store)
 
     async def _close_opened(self, tx_store: "GraphTransactionStore") -> None:
-        """Count the connectors this block opened as closed, those whose unsafe mark has been written. A closing step that never lands (logged)
-        leaves the connector opened, which is not current: the fail-closed side."""
+        """Count the connectors this block opened as closed, those whose unsafe mark has been written. Tried once: an exception proves nothing (a timeout
+        can arrive after the provider applied the increment), and a second increment of an applied one would count a write that is still running as
+        closed. A closing step with an unknown or negative outcome (logged) leaves the connector opened, which is not current: the fail-closed side."""
         for connector_id in sorted((tx_store.opened & tx_store.marked) - tx_store.closed):
-            for attempt in range(_MARK_ATTEMPTS):
-                try:
-                    if await self.graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, CLOSED_KEY) is not None:
-                        tx_store.closed.add(connector_id)
-                        break
-                except Exception:
-                    pass
-                if attempt + 1 < _MARK_ATTEMPTS:
-                    await asyncio.sleep(0.2 * (attempt + 1))
-            else:
-                self.logger.error("could not close the unclassified write on connector %s: it stays not current until the next pass is run "
-                                  "with --close-open-mark", connector_id)
+            try:
+                if await self.graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, CLOSED_KEY) is not None:
+                    tx_store.closed.add(connector_id)
+                    continue
+            except Exception:
+                pass
+            self.logger.error("could not close the unclassified write on connector %s: it stays not current until the next pass is run "
+                              "with --close-open-mark", connector_id)
 
     async def _mark_unsafe_after_failed_block(self, tx_store: "GraphTransactionStore") -> None:
         """A block that failed without an explicit transaction left its earlier statements committed: the connectors a structural (or an
