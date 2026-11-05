@@ -51,6 +51,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     GROUP_PAGE_SIZE,
     ISSUE_SEARCH_FIELDS,
     USER_PAGE_SIZE,
+    IncompleteSyncError,
     JiraConnector,
 )
 from app.models.entities import (
@@ -620,7 +621,12 @@ class TestRunSync:
         connector._sync_all_project_issues.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_run_sync_notifies_when_any_project_fails(self):
+    @pytest.mark.parametrize(
+        ("status", "raises"),
+        [(None, True), (500, True), (429, True), (403, False), (404, False)],
+    )
+    async def test_run_sync_notifies_when_any_project_fails(self, status, raises):
+        # A read that may pass next time fails the run; a lasting answer (403, 404) is kept as stored.
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.site_url = "https://company.atlassian.net"
@@ -647,6 +653,7 @@ class TestRunSync:
             "updated_count": 1,
             "failed_count": 1,
             "failed_project_keys": ["KAN"],
+            "failed_project_statuses": {} if status is None else {"KAN": status},
         })
         connector._update_issues_sync_checkpoint = AsyncMock()
         connector._handle_issue_deletions = AsyncMock()
@@ -656,7 +663,11 @@ class TestRunSync:
             new_callable=AsyncMock,
             return_value=(None, None),
         ):
-            await connector.run_sync()
+            if raises:
+                with pytest.raises(IncompleteSyncError, match="KAN"):
+                    await connector.run_sync()
+            else:
+                await connector.run_sync()
 
         connector.notify.assert_awaited_once()
         notify_kwargs = connector.notify.await_args.kwargs

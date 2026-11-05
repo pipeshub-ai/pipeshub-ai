@@ -336,6 +336,10 @@ def _may_parent_a_story(fields: dict[str, Any]) -> bool:
     return not issue_type.get("subtask") and not (isinstance(level, int) and level <= 0)
 
 
+class IncompleteSyncError(RuntimeError):
+    """A sync that finished without writing every project it read: the caller must not treat it as a success."""
+
+
 @ConnectorBuilder("Jira")\
     .in_group(AppGroups.ATLASSIAN.value)\
     .with_description("Sync issues from Jira Cloud")\
@@ -1040,6 +1044,20 @@ class JiraConnector(BaseConnector):
                         "Retry sync; check Jira access if it keeps failing."
                     ),
                 )
+
+            # A refusal (403) or a missing project (400, 404) is the account's lasting answer, already notified and kept
+            # as stored: failing every run for it would hide the others. A read that may pass next time leaves the graph
+            # without that project's newest issues, so this run must not look like a success.
+            transient = [k for k in failed_keys
+                         if failed_statuses.get(k) is None or (failed_statuses[k] != HttpStatusCode.FORBIDDEN.value
+                                                               and is_inconclusive_status(failed_statuses[k]))]
+            if transient:
+                incomplete = IncompleteSyncError(
+                    f"Jira sync incomplete: {len(transient)} project(s) failed to sync issues: "
+                    f"{', '.join(transient[:10])}{f', and {len(transient) - 10} more' if len(transient) > 10 else ''}"
+                )
+                incomplete._notification_sent = True  # the notification above already said it
+                raise incomplete
 
             self.logger.info(
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
