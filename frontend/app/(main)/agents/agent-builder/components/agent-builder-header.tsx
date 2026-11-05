@@ -65,6 +65,8 @@ export function AgentBuilderHeader(props: {
   createdBy?: string | null;
   onShare?: () => void;
   hideShareControls?: boolean;
+  /** The convert tooltip leaves out organization-wide sharing, for builds that share service agents with chosen people instead. */
+  hideOrgAccess?: boolean;
 }) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -98,6 +100,7 @@ export function AgentBuilderHeader(props: {
     createdBy = null,
     onShare,
     hideShareControls = false,
+    hideOrgAccess = false,
     sharePermissionDenied = false,
   } = props;
 
@@ -393,8 +396,12 @@ export function AgentBuilderHeader(props: {
           <Tooltip
             content={
               editing
-                ? t('agentBuilder.convertToServiceAgentTooltip')
-                : t('agentBuilder.convertToServiceAgentTooltipNewAgent')
+                ? t(hideOrgAccess ? 'agentBuilder.convertToServiceAgentTooltipNoOrg' : 'agentBuilder.convertToServiceAgentTooltip')
+                : t(
+                    hideOrgAccess
+                      ? 'agentBuilder.convertToServiceAgentTooltipNewAgentNoOrg'
+                      : 'agentBuilder.convertToServiceAgentTooltipNewAgent'
+                  )
             }
           >
             <Button

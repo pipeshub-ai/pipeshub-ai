@@ -50144,8 +50144,10 @@ paths:
         **Permissions**
 
         The authenticated user must have `can_edit` on the agent (typically the
-        owner). Service-account and `shareWithOrg` transitions follow additional
-        Python business rules.
+        owner). Turning on `shareWithOrg` also needs `can_share`. Turning a
+        regular agent into a service-account agent (`isServiceAccount: true`)
+        is limited to the agent's owner or an organization administrator,
+        because a service-account agent is shared with the whole organization.
 
         **Success response**
 
@@ -50189,7 +50191,11 @@ paths:
           description: |
             `HTTP_FORBIDDEN`: the OAuth access token lacks the `agent:write` scope,
             or the caller can see the agent (for example one shared with the
-            organization) but is not its owner, so may not edit it.
+            organization) but is not its owner, so may not edit it. Also returned
+            when an editor without `can_share` turns on `shareWithOrg`, when an
+            editor who is neither the owner nor an administrator sets
+            `isServiceAccount: true`, and when someone other than an
+            administrator changes `serviceAccountUserId`.
           content:
             application/json:
               schema:
@@ -50220,6 +50226,16 @@ paths:
             Unexpected AI-backend or gateway failure.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The change needs the caller's organization role (setting
+            `isServiceAccount: true` as a non-owner, or changing
+            `serviceAccountUserId`) and the role could not be confirmed just
+            now. Nothing was saved; retry.
           content:
             application/json:
               schema:

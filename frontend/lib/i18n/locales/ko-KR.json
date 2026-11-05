@@ -4827,6 +4827,8 @@
     "serviceAgentBadgeTooltip": "이 서비스 에이전트는 자체 툴셋 자격 증명을 사용합니다. 지식 검색은 만든 사람의 접근 권한으로 이루어지므로, 사용하는 모든 사람이 만든 사람이 읽을 수 있는 범위의 결과를 보게 됩니다.",
     "convertToServiceAgentTooltip": "영구적: 에이전트 수준 툴셋, 조직 전체에 공유, 지식 검색은 만든 사람의 접근 권한으로 수행됩니다. 되돌릴 수 없습니다.",
     "convertToServiceAgentTooltipNewAgent": "이 에이전트를 서비스 에이전트로 만듭니다: 에이전트 수준 툴셋, 조직 전체에 공유, 지식 검색은 본인의 접근 권한으로 수행됩니다.",
+    "convertToServiceAgentTooltipNoOrg": "영구적: 에이전트 수준 툴셋, 지식 검색은 만든 사람의 접근 권한으로 수행됩니다. 접근 권한은 공유 버튼으로 관리하세요. 되돌릴 수 없습니다.",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "이 에이전트를 서비스 에이전트로 만듭니다: 에이전트 수준 툴셋, 지식 검색은 본인의 접근 권한으로 수행됩니다. 접근 권한은 공유 버튼으로 관리하세요.",
     "agentActionsMenuAria": "에이전트 메뉴",
     "agentMenuCreateAsServiceAgent": "서비스 에이전트로 생성",
     "agentMenuConvertToServiceAgent": "서비스 에이전트로 전환",

@@ -4985,6 +4985,8 @@
     "serviceAgentBadgeTooltip": "Tento servisní agent používá vlastní přihlašovací údaje sad nástrojů. Ve znalostech vyhledává s přístupem svého autora, takže všichni, kdo ho používají, vidí výsledky z toho, co může číst autor.",
     "convertToServiceAgentTooltip": "Trvalé: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s přístupem autora. Nelze vrátit zpět.",
     "convertToServiceAgentTooltipNewAgent": "Vytvoří tohoto agenta jako servisního agenta: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s vaším přístupem.",
+    "convertToServiceAgentTooltipNoOrg": "Trvalé: sady nástrojů na úrovni agenta a vyhledávání ve znalostech s přístupem autora. Pomocí tlačítka Sdílet určete, kdo k němu má přístup. Nelze vrátit zpět.",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "Vytvoří tohoto agenta jako servisního agenta: sady nástrojů na úrovni agenta a vyhledávání ve znalostech s vaším přístupem. Pomocí tlačítka Sdílet určete, kdo k němu má přístup.",
     "agentActionsMenuAria": "Nabídka agenta",
     "agentMenuCreateAsServiceAgent": "Vytvořit jako servisního agenta",
     "agentMenuConvertToServiceAgent": "Převést na servisního agenta",

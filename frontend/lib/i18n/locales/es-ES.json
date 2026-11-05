@@ -4820,6 +4820,8 @@
     "serviceAgentBadgeTooltip": "Este agente de servicio usa sus propias credenciales de conjunto de herramientas. Busca en el conocimiento con el acceso de quien lo creó, por lo que todos los que lo usan ven resultados de lo que esa persona puede leer.",
     "convertToServiceAgentTooltip": "Permanente: conjuntos de herramientas a nivel de agente, compartido con toda la organización y búsqueda de conocimiento con el acceso de quien lo creó. No se puede deshacer.",
     "convertToServiceAgentTooltipNewAgent": "Crea este agente como agente de servicio: conjuntos de herramientas a nivel de agente, compartido con toda la organización y búsqueda de conocimiento con tu acceso.",
+    "convertToServiceAgentTooltipNoOrg": "Permanente: conjuntos de herramientas a nivel de agente y búsqueda de conocimiento con el acceso de quien lo creó. Use el botón Compartir para controlar quién puede acceder. No se puede deshacer.",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "Crea este agente como agente de servicio: conjuntos de herramientas a nivel de agente y búsqueda de conocimiento con tu acceso. Use el botón Compartir para controlar quién puede acceder.",
     "agentActionsMenuAria": "Menú del agente",
     "agentMenuCreateAsServiceAgent": "Crear como agente de servicio",
     "agentMenuConvertToServiceAgent": "Convertir a agente de servicio",
