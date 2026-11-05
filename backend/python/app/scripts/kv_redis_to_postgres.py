@@ -90,17 +90,16 @@ async def copy_kv(
         written += 1
         changed += existing[k] != now[0]
     recopied = 0
-    for k in live:  # a key a service changed during the copy
+    for k in keys:  # every scanned key: one a service changed, or wrote again after it was gone, during the copy
         now = await _read(src, k)
         if now and await dst.get_key(k) != now[0]:
             await dst.create_key(k, now[0], overwrite=True, ttl=now[1])
             recopied += 1
     different = 0
-    for k in live:
+    for k in keys:  # PostgreSQL must now hold exactly what Redis holds for each scanned key
         now = await _read(src, k)
-        if now and await dst.get_key(k) != now[0]:
+        if await dst.get_key(k) != (now[0] if now else None):
             different += 1
-    different += sum([await dst.get_key(k) is not None for k in keys if await _read(src, k) is None])  # expired, yet still live in PostgreSQL
     return summary | {"written": written, "changed": changed, "unchanged": written - changed, "expired_during_copy": expired_late,
                       "removed_expired": removed,
                       "recopied": recopied, "different_after": different}

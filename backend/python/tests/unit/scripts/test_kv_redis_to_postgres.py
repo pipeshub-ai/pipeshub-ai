@@ -158,3 +158,22 @@ async def test_a_copy_of_a_key_redis_no_longer_has_is_a_conflict_until_overwrite
     out = await copy_kv(src, dst, overwrite=True)
     assert "/services/old" not in dst.rows
     assert out["removed_expired"] == 1 and out["different_after"] == 0
+
+
+async def test_a_key_written_again_after_it_was_gone_is_copied(redis) -> None:
+    src = _src(redis)
+    listed = await src.get_all_keys()
+
+    async def with_a_gone_key() -> list[str]:
+        return [*listed, "/services/back"]  # listed by the scan, absent at the first read
+
+    class WrittenAgainDuringTheCopy(FakePg):
+        async def create_key(self, key, value, overwrite=True, ttl=None) -> bool:
+            await redis.set("pipeshub:kv:/services/back", b"enc-back")
+            return await super().create_key(key, value, overwrite, ttl)
+
+    src.get_all_keys = with_a_gone_key
+    dst = WrittenAgainDuringTheCopy()
+    out = await copy_kv(src, dst)
+    assert dst.rows["/services/back"] == b"enc-back"
+    assert out["different_after"] == 0
