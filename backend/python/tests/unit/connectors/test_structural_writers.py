@@ -217,10 +217,172 @@ async def test_the_connector_is_found_before_a_delete_removes_the_node() -> None
     assert seen == [{"c1"}]
 
 
+async def test_the_transaction_bumps_each_touched_connector_once_before_it_commits(monkeypatch) -> None:
+    order: list[str] = []
+    provider = MagicMock()
+    provider.logger = MagicMock()
+    provider.get_document = AsyncMock(return_value={"connectorId": "c1"})
+    provider.get_nodes_by_field_in = _by_field_in
+    provider.begin_transaction = AsyncMock(return_value="t")
+    provider.opens_explicit_transaction = MagicMock(return_value=True)
+    provider.commit_transaction = AsyncMock(side_effect=lambda t: order.append("commit"))
+    provider.delete_single_record = AsyncMock()
+    provider.is_write_conflict = MagicMock(return_value=False)
+
+    async def bump(tx, connector) -> int:
+        order.append(f"bump:{connector}")
+        return 1
+
+    from app.services.permissions import structure_generation
+
+    monkeypatch.setattr(structure_generation, "bump_generation_in", bump)
+    async with GraphDataStore(MagicMock(), provider).transaction() as tx:
+        await tx.delete_single_record("r1")
+        await tx.delete_single_record("r2")
+    assert order == ["bump:c1", "commit"]
+    order.clear()
+    async with GraphDataStore(MagicMock(), provider).transaction() as tx:  # nothing structural: no bump
+        pass
+    assert order == ["commit"]
 
 
+async def test_a_failed_bump_rolls_back_and_a_conflict_is_transient(monkeypatch) -> None:
+    from app.services.permissions.structure_generation import ScopeGenerationConflict
+
+    provider = MagicMock()
+    provider.logger = MagicMock()
+    provider.get_document = AsyncMock(return_value={"connectorId": "c1"})
+    provider.get_nodes_by_field_in = _by_field_in
+    provider.begin_transaction = AsyncMock(return_value="t")
+    provider.opens_explicit_transaction = MagicMock(return_value=True)
+    provider.rollback_transaction = AsyncMock()
+    provider.commit_transaction = AsyncMock()
+    provider.delete_single_record = AsyncMock()
+    provider.is_write_conflict = MagicMock(return_value=False)
+    provider.is_transient_error = MagicMock(return_value=False)
+
+    async def bump(tx, connector) -> int:
+        raise ScopeGenerationConflict("x")
+
+    from app.services.permissions import structure_generation
+
+    monkeypatch.setattr(structure_generation, "bump_generation_in", bump)
+    store = GraphDataStore(MagicMock(), provider)
+    with pytest.raises(ScopeGenerationConflict) as err:
+        async with store.transaction() as tx:
+            await tx.delete_single_record("r1")
+    provider.rollback_transaction.assert_awaited()
+    provider.commit_transaction.assert_not_awaited()
+    assert store.is_transient_error(err.value) is True  # so retry_on_deadlock runs the block again
 
 
+async def test_without_explicit_transactions_a_failed_bump_marks_the_connector_unsafe(monkeypatch) -> None:
+    provider = MagicMock()
+    provider.logger = MagicMock()
+    provider.get_document = AsyncMock(return_value={"connectorId": "c1"})
+    provider.get_nodes_by_field_in = _by_field_in
+    provider.begin_transaction = AsyncMock(return_value="t")
+    provider.opens_explicit_transaction = MagicMock(return_value=False)  # NEO4J_EXPLICIT_TRANSACTIONS=false
+    provider.rollback_transaction = AsyncMock()
+    provider.update_node = AsyncMock()
+    provider.delete_single_record = AsyncMock()
+    provider.is_write_conflict = MagicMock(return_value=False)
+
+    async def bump(tx, connector) -> int:
+        raise RuntimeError("down")
+
+    from app.services.permissions import structure_generation
+
+    monkeypatch.setattr(structure_generation, "bump_generation_in", bump)
+    with pytest.raises(RuntimeError):
+        async with GraphDataStore(MagicMock(), provider).transaction() as tx:
+            await tx.delete_single_record("r1")
+    provider.update_node.assert_awaited_with("c1", "apps", {"scopeProjectionUnsafe": True}, None)  # on its own: it must survive the failure
+
+
+def _block_provider(explicit: bool) -> MagicMock:
+    provider = MagicMock()
+    provider.logger = MagicMock()
+    provider.get_document = AsyncMock(return_value={"connectorId": "c1"})
+    provider.get_nodes_by_field_in = _by_field_in
+    provider.begin_transaction = AsyncMock(return_value="t")
+    provider.opens_explicit_transaction = MagicMock(return_value=explicit)
+    provider.rollback_transaction = AsyncMock()
+    provider.update_node = AsyncMock()
+    provider.delete_single_record = AsyncMock()
+    provider.is_write_conflict = MagicMock(return_value=False)
+    return provider
+
+
+async def test_a_block_that_fails_after_a_structural_write_without_a_transaction_marks_the_connector_unsafe() -> None:
+    """The write already committed, the bump is never reached: the connector must not stay trusted."""
+    provider = _block_provider(explicit=False)
+    with pytest.raises(RuntimeError):
+        async with GraphDataStore(MagicMock(), provider).transaction() as tx:
+            await tx.delete_single_record("r1")
+            raise RuntimeError("connection reset after the first statement")
+    provider.update_node.assert_awaited_with("c1", "apps", {"scopeProjectionUnsafe": True}, None)
+
+
+async def test_a_block_that_fails_in_a_real_transaction_marks_nothing_because_the_rollback_undoes_it() -> None:
+    provider = _block_provider(explicit=True)
+    with pytest.raises(RuntimeError):
+        async with GraphDataStore(MagicMock(), provider).transaction() as tx:
+            await tx.delete_single_record("r1")
+            raise RuntimeError("boom")
+    provider.update_node.assert_not_awaited()
+    provider.rollback_transaction.assert_awaited()
+
+
+async def test_a_failed_block_with_no_structural_write_marks_nothing() -> None:
+    provider = _block_provider(explicit=False)
+    with pytest.raises(RuntimeError):
+        async with GraphDataStore(MagicMock(), provider).transaction():
+            raise RuntimeError("boom")
+    provider.update_node.assert_not_awaited()
+
+
+def test_a_conflict_on_the_counter_is_transient_only_when_the_block_ran_in_a_real_transaction() -> None:
+    from app.services.permissions.structure_generation import ScopeGenerationConflict
+
+    for explicit, expected in ((True, True), (False, False)):
+        provider = _block_provider(explicit=explicit)
+        provider.is_transient_error = MagicMock(return_value=False)
+        assert GraphDataStore(MagicMock(), provider).is_transient_error(ScopeGenerationConflict("x")) is expected
+
+
+async def test_the_parent_end_read_understands_the_generic_edge_shape_of_edges_to_a_node() -> None:
+    """Neo4j answers `get_edges_to_node` with from_id / from_collection, not `_from`."""
+    store, provider = _store()
+
+    class Provider:
+        logger = provider.logger
+        get_document = provider.get_document
+
+        @staticmethod
+        async def get_nodes_by_field_in(collection, field, values, *a, **k) -> list[dict]:  # only the child end has a connector
+            return [{"_key": v, "connectorId": "c9" if v == "r9" else None} for v in values]
+
+        async def get_structure_of_nodes(self, collection, ids, **k) -> dict:
+            return {i: frozenset() for i in ids}
+
+        async def get_edges_to_node(self, *a, **k) -> list[dict]:
+            return [{"from_id": "r9", "from_collection": R, "to_id": "r1", "to_collection": R}]
+
+        delete_edges_to = AsyncMock()
+
+    store.graph_provider = Provider()
+    await store.delete_edges_to("r1", R, CollectionNames.INHERIT_PERMISSIONS.value)  # r1 is the parent end: r9 inherits from it
+    assert store.structural_connectors == {"c9"}  # the connector of the other end, found from the generic shape
+
+
+async def test_the_default_increment_answers_none_when_the_node_goes_away_between_the_read_and_the_write() -> None:
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+    node = SimpleNamespace(get_document=AsyncMock(return_value={"n": 4}), update_node=AsyncMock(return_value=False))
+    assert await IGraphDBProvider.increment_node_field(node, "k", "apps", "n") is None
+    node.update_node = AsyncMock(return_value=True)
+    assert await IGraphDBProvider.increment_node_field(node, "k", "apps", "n") == 5
 
 
 async def test_an_upsert_that_changes_the_access_rule_of_an_existing_record_is_structural() -> None:
@@ -333,6 +495,23 @@ async def test_reads_and_classified_writers_pass_through_the_proxy() -> None:
     provider.delete_single_record.assert_awaited_once()
 
 
+async def test_in_production_an_unclassified_write_marks_the_connectors_the_transaction_saw_unsafe(monkeypatch) -> None:
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    provider = MagicMock()
+    provider.logger = MagicMock()
+    provider.get_document = AsyncMock(return_value={"connectorId": "c1"})
+    provider.get_nodes_by_field_in = _by_field_in
+    provider.begin_transaction = AsyncMock(return_value="t")
+    provider.opens_explicit_transaction = MagicMock(return_value=True)
+    provider.commit_transaction = AsyncMock()
+    provider.update_node = AsyncMock()
+    provider.batch_create_edges = AsyncMock()
+    store_provider = GraphDataStore(MagicMock(), provider)
+    async with store_provider.transaction() as tx:
+        await tx._connector_of_node(R, "r1")  # the transaction has seen c1
+        await _Scratch.via_local_alias(tx, "r1")  # an unclassified write: let through, but remembered
+    provider.batch_create_edges.assert_awaited()
+    provider.update_node.assert_awaited_with("c1", "apps", {"scopeProjectionUnsafe": True}, "t")  # in the block's own transaction: no wait on its locks
 
 
 async def test_a_failed_lookup_in_a_wrapper_fails_the_block_instead_of_looking_like_a_new_node() -> None:
@@ -354,6 +533,70 @@ async def test_a_failed_lookup_in_a_wrapper_fails_the_block_instead_of_looking_l
 # hand: every public method of `IGraphDBProvider` that is not a read and whose Neo4j or ArangoDB implementation writes (CREATE, MERGE,
 # DELETE, UPSERT, UPDATE ...) over a hierarchy, group, inherit or full-sync edge collection, plus every writer the store classifies.
 _APP = pathlib.Path(__file__).resolve().parents[3] / "app"
+_MARKS = "marks the connector dirty after the write (note_structure_change / mark_scope_dirty)"
+_OUTSIDE_THE_STORE: dict[tuple[str, str], str] = {
+    # deletes an uploaded record through the provider: structural, so it moves the generation itself afterwards
+    ("app/connectors/api/router.py", "delete_record"): _MARKS,
+    # a full sync removes hierarchy, group, inherit and grant edges of the nodes it did not see: the generation moves afterwards
+    ("app/connectors/core/sync/sync_runner.py", "unlink_nodes_missed_by_full_sync"): _MARKS,
+    # removes record groups kept for the trash on connectors it cannot name: every connector of the organisation moves afterwards
+    ("app/connectors/services/trash_purge.py", "purge_trash_kept_record_groups"): "marks every connector of the organisation (note_org_structure_change)",
+    # one-off start-up migrations that write hierarchy or group edges for every connector: all connectors move afterwards
+    ("app/migrations/hierarchy_backfill_migration.py", "backfill_hierarchy"): "marks every connector (note_org_structure_change)",
+    ("app/migrations/redundant_group_edges_migration.py", "drop_redundant_group_edges"): "marks every connector (note_org_structure_change)",
+    # removes the connector (an app) and its whole subtree: the app document goes, so there is no generation left to be current
+    # and its points are purged by the connector-deletion events
+    ("app/connectors/services/event_service.py", "delete_connector_instance"): "deletes the connector itself, and with it the generation",
+    # the same for a knowledge base, which is an app
+    ("app/connectors/sources/localKB/handlers/kb_service.py", "delete_connector_instance"): "deletes the knowledge base (an app) itself, as above",
+    # hard-deletes records that are already in the trash: the soft delete moved the generation and removed their points
+    ("app/connectors/services/trash_purge.py", "purge_trashed_records"): "removes records already soft-deleted (that moved the generation)",
+    # a push that finds its knowledge base being deleted removes the record it created a moment earlier in the same request;
+    # that record was never indexed, so no point or stamp exists for it
+    ("app/connectors/sources/localKB/push/service.py", "delete_nodes_and_edges"): "removes a record created in this request, never indexed: no stamp",
+    # legacy knowledge bases become apps, and the old hub app goes: they have no stamps before they are apps
+    ("app/migrations/kb_apps_migration.py", "migrate_legacy_kb_to_app"): "a legacy knowledge base becomes an app: no stamp can exist before",
+    ("app/migrations/kb_apps_migration.py", "delete_kb_hub_app"): "removes an old hub app, which holds no records",
+    # moves legacy edges to the current representation, link edges to recordLinks, and a user-to-app edge: the hierarchy is unchanged
+    ("app/migrations/node_relation_migration.py", "migrate_legacy_relation_edge"): "the same edge in the current representation",
+    ("app/migrations/record_link_migration.py", "split_link_edges"): "moves link relations to recordLinks, never PARENT_CHILD or ATTACHMENT",
+    ("app/migrations/nextcloud_user_app_edges_migration.py", "delete_edge"): "a user-to-app edge, not a record or group",
+    # copies the taxonomy relations (categories, departments, topics) of a record to its duplicate
+    # rolls back / deletes conversation attachments: records created by the chat upload, which have no connector and are never stamped
+    ("app/api/routes/chatbot.py", "delete_nodes_and_edges"): "conversation attachments: records with no connector and no stamp",
+    # teams: a user-to-team permission edge, and a team node
+    ("app/api/routes/entity.py", "batch_create_edges"): "user-to-team permission edges: a team is not a record or group",
+    ("app/api/routes/entity.py", "delete_nodes"): "a team node",
+    # agent templates, tools, toolsets, knowledge links: the collection is a variable holding agent resources, never records or groups
+    ("app/api/routes/agent.py", "delete_nodes"): "agent resources, not records or record groups (the collection is a variable)",
+    ("app/api/routes/agent.py", "delete_all_edges_for_node"): "edges of agent resources (servers, toolsets, templates, skills), never a record or group",
+    ("app/modules/code_graph/block_projection.py", "delete_edges_touching_nodes"): "edges of code blocks, not records",
+    ("app/modules/code_graph/edge_builder.py", "delete_edges_by_source_keys"): "code-block relations, not the hierarchy",
+    ("app/api/routes/agent.py", "batch_create_edges"): "agent, toolset, tool and knowledge-link edges, and an agent's own permission edges",
+    ("app/api/routes/chatbot.py", "batch_create_edges"): "permission and is-of-type edges of conversation attachments and conversations: no connector, never stamped",
+    ("app/api/routes/chatbot.py", "batch_delete_edges"): "permission edges of conversations, as above",
+    ("app/api/routes/chatbot.py", "delete_nodes"): "the files node of a deleted attachment",
+    # the organisation-to-app edge of a new connector instance
+    ("app/connectors/core/registry/connector_registry.py", "update_node"): "the permissionModel of a connector instance (an app), not of a record group",
+    ("app/connectors/core/registry/connector_registry.py", "batch_create_edges"): "the organisation-to-app edge of a new connector instance",
+    # the text is a docstring that names batch_create_edges; the edges it describes are permission and type edges
+    ("app/agents/agent_loop/artifact_store.py", "batch_create_edges"): "a docstring; the edges are permission and is-of-type edges",
+    # re-points the incoming link relations (foreign keys) of a stand-in table record, read from the recordLinks collection
+    ("app/connectors/core/sql/graph_links.py", "batch_upsert_node_relations"): "link relations (foreign keys), never PARENT_CHILD or ATTACHMENT",
+    # relations between code blocks (CONTAINS, DEFINES, METHOD, CALLS ...) in the blocks collection, never the record hierarchy
+    ("app/modules/code_graph/block_projection.py", "batch_upsert_node_relations"): "code-block relations, never PARENT_CHILD or ATTACHMENT",
+    ("app/modules/code_graph/block_projection.py", "delete_nodes"): "stale code blocks",
+    ("app/modules/code_graph/edge_builder.py", "batch_upsert_node_relations"): "code-block relations, never PARENT_CHILD or ATTACHMENT",
+    # the mapping rows of virtual records to stored documents: not records or groups
+    ("app/modules/indexing/run.py", "delete_nodes"): "virtual-record mapping rows",
+    ("app/modules/indexing/stored_content_cleanup.py", "delete_nodes"): "virtual-record mapping rows",
+    ("app/services/vector_db/membership.py", "delete_nodes"): "virtual-record mapping rows",
+    # a user's belongsTo edge to the organisation (user to org), not a record or a record group
+    ("app/services/messaging/kafka/handlers/entity.py", "batch_create_edges"): "a user's belongsTo edge to the organisation",
+    # example scripts of a connector family, never run by the service
+    ("app/connectors/sources/google/drive/team/example.py", "batch_create_edges"): "an example script, not run by the service",
+    ("app/connectors/sources/google/gmail/team/example.py", "batch_create_edges"): "an example script, not run by the service",
+}
 
 
 def _public_provider_methods() -> set[str]:
@@ -426,10 +669,35 @@ def test_no_method_the_scan_thinks_writes_edges_is_classified_a_read_or_harmless
     assert set(_SCAN_REVIEWED) <= _scan_flags(), "remove the reviewed entries the scan no longer flags"
 
 
+def _calls(names: set[str]) -> dict[tuple[str, str], list[tuple[int, str]]]:
+    """Calls of these provider methods outside the store, the providers and the scripts, with the text of each call."""
+    call = re.compile(r"\b(?:graph_provider|provider|graph)\.(" + "|".join(sorted(names)) + r")\(")
+    found: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    for path in sorted(_APP.rglob("*.py")):
+        rel = "app/" + path.relative_to(_APP).as_posix()
+        if rel.startswith(("app/services/graph_db/", "app/scripts/")) or rel.endswith("data_store/graph_data_store.py"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        for m in call.finditer(text):
+            i, depth = m.end(), 1
+            while i < len(text) and depth:
+                depth += (text[i] == "(") - (text[i] == ")")
+                i += 1
+            found.setdefault((rel, m.group(1)), []).append((text.count("\n", 0, m.start()) + 1, text[m.start():i]))
+    return found
 
 
+_RULE_FIELD_NAMES = ("accessRule", "permissionModel", "isDeleted", "isPlaceholder", "externalParentId")
 
 
+def _structural_calls_outside_the_store() -> dict[tuple[str, str], list[int]]:
+    found = {k: [line for line, _t in v] for k, v in _calls(set(classes.STRUCTURAL)).items()}
+    # a generic node patch that carries a field the projector reads (the literal name of one)
+    for k, v in _calls(set(classes.PATCH)).items():
+        lines = [line for line, text in v if any(f in text for f in _RULE_FIELD_NAMES)]
+        if lines:
+            found[k] = lines
+    return found
 
 
 async def test_a_user_losing_access_to_a_connector_moves_that_connector() -> None:
@@ -459,12 +727,38 @@ def test_the_classes_hold_the_writers_that_were_missed() -> None:
             "delete_connector_instance", "link_record_to_group", "execute_query"} <= classes.STRUCTURAL
 
 
+def test_no_structural_provider_write_outside_the_store_is_unlisted() -> None:
+    unlisted = {k: v for k, v in _structural_calls_outside_the_store().items() if k not in _OUTSIDE_THE_STORE}
+    assert not unlisted, f"route these through GraphTransactionStore, or move the generation and list them with a reason: {unlisted}"
 
 
+def test_a_listed_caller_that_claims_to_mark_the_connector_does() -> None:
+    for (rel, _name), reason in _OUTSIDE_THE_STORE.items():
+        if reason.startswith("marks"):
+            text = (_APP.parent / rel).read_text(encoding="utf-8")
+            assert "note_structure_change(" in text or "note_org_structure_change(" in text or "mark_scope_dirty(" in text, rel
 
 
+def test_every_listed_caller_still_exists() -> None:
+    assert set(_OUTSIDE_THE_STORE) <= set(_structural_calls_outside_the_store()), "remove the entries of callers that are gone"
 
 
+async def test_mark_scope_dirty_moves_the_generation_then_falls_back_to_unsafe_then_raises(monkeypatch) -> None:
+    from app.services.permissions import structure_generation as sg
+
+    monkeypatch.setattr(sg.asyncio, "sleep", AsyncMock())
+    provider = MagicMock()
+    provider.increment_node_field = AsyncMock(return_value=6)
+    provider.update_node = AsyncMock(return_value=True)
+    await sg.mark_scope_dirty(provider, "c1")
+    assert provider.increment_node_field.await_args.args[:3] == ("c1", "apps", "scopeProjectionGeneration")
+    await sg.mark_scope_dirty(provider, None)  # no connector: nothing to move
+    provider.increment_node_field.side_effect = RuntimeError("down")
+    await sg.mark_scope_dirty(provider, "c1")  # three failed bumps, then the unsafe mark lands
+    assert provider.update_node.await_args.args[2] == {"scopeProjectionUnsafe": True}
+    provider.update_node.side_effect = RuntimeError("down")
+    with pytest.raises(RuntimeError):
+        await sg.mark_scope_dirty(provider, "c1")
 
 
 # ---- the setting is off: the store does exactly what it did before ---------------------------------------------------------------
@@ -518,7 +812,7 @@ async def test_with_the_setting_off_the_store_makes_exactly_the_calls_it_made_be
     assert not provider.update_node.await_count
 
 
-async def test_with_the_setting_on_the_same_sync_reads_the_structure(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_with_the_setting_on_the_same_sync_reads_and_bumps(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _recording_provider()
     provider.get_structure_of_nodes = AsyncMock(side_effect=[{"r1": frozenset()}, {"r1": frozenset({("belongsTo", "r1", "g1")})}] * 20)
     await _a_sync_through_the_store(provider)
@@ -534,5 +828,42 @@ async def test_the_setting_is_read_when_the_block_opens(monkeypatch: pytest.Monk
     assert (off.tracked, on.tracked) == (False, True)
 
 
+@pytest.mark.parametrize("runner", ["execute_in_transaction", "execute_idempotent_in_transaction"])
+async def test_both_retrying_runners_run_a_block_again_after_a_lost_race_for_the_generation(monkeypatch: pytest.MonkeyPatch, runner: str) -> None:
+    from app.connectors.core.base.data_store import graph_data_store as module
+    from app.services.permissions.structure_generation import ScopeGenerationConflict
+
+    monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+    provider = _recording_provider()
+    provider.is_transient_error = MagicMock(return_value=False)  # the provider itself calls nothing transient
+    store = GraphDataStore(MagicMock(), provider)
+    calls = {"n": 0}
+
+    async def block(tx) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ScopeGenerationConflict("another writer moved the generation first")
+        return "done"
+
+    assert await getattr(store, runner)(block) == "done"
+    assert calls["n"] == 2
 
 
+@pytest.mark.parametrize(("outcome", "marked"), [((0, True), False), ((3, True), True), ((0, False), True), (RuntimeError("down"), True)])
+async def test_a_full_sync_moves_the_generation_when_it_removed_edges_or_may_have(monkeypatch: pytest.MonkeyPatch, outcome: object, marked: bool) -> None:
+    import logging
+
+    from app.connectors.core.sync import sync_runner
+    from app.connectors.core.sync.full_sync_coverage import (
+        FullSyncCoverage,
+        FullSyncSeen,
+    )
+
+    seen = FullSyncSeen()
+    seen.add("records", "r1")
+    provider = MagicMock()
+    provider.unlink_nodes_missed_by_full_sync = AsyncMock(side_effect=outcome) if isinstance(outcome, Exception) else AsyncMock(return_value=outcome)
+    provider.increment_node_field = AsyncMock(return_value=2)
+    connector = SimpleNamespace(full_sync_coverage=FullSyncCoverage, data_entities_processor=None)
+    await sync_runner._unlink_what_full_sync_missed(connector, "c1", provider, logging.getLogger("t"), seen)
+    assert provider.increment_node_field.await_count == (1 if marked else 0)

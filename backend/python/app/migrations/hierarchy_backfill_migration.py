@@ -2,6 +2,7 @@ from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.permissions.structure_generation import note_org_structure_change
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -43,6 +44,7 @@ class HierarchyBackfillMigrationService:
             return {"success": False, "added": {}, "error": str(e)}
 
         added = (result or {}).get("added", {})
+        await note_org_structure_change(self.graph_provider, None, self.logger)  # hierarchy edges written outside the transaction store
         try:
             await self.config_service.set_config(
                 self.MIGRATION_FLAG_KEY,
