@@ -20,6 +20,7 @@ import { ProjectService } from '../../projects/services/project.service';
 import { ProjectDto } from '../../projects/types/project.interfaces';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { CONVERSATION_STATUS } from '../constants/constants';
+import { refuseIfDraining } from '../../../libs/repositories/drain';
 import { buildAiChatRequest, ChatTarget } from '../utils/ai-chat-payload';
 import {
   completeTurn,
@@ -32,7 +33,11 @@ import {
   projectCallerFromRequest,
   resolveProjectLink,
 } from '../utils/project-context';
-import { buildUserQueryMessage, extractModelInfo } from '../utils/utils';
+import {
+  buildUserQueryMessage,
+  extractModelInfo,
+  searchDegradedMeta,
+} from '../utils/utils';
 import { hydrateScopedRequestAsUser } from '../utils/scoped-request';
 
 const logger = Logger.getInstance({ service: 'Non-streaming chat' });
@@ -85,6 +90,7 @@ const nonStreamingTurn =
     res: Response,
     next: NextFunction,
   ): Promise<void> => {
+    if (await refuseIfDraining(res)) return;
     const startTime = Date.now();
     const requestId = req.context?.requestId;
     try {
@@ -188,6 +194,7 @@ const nonStreamingTurn =
         requestId,
         timestamp: new Date().toISOString(),
         duration: Date.now() - startTime,
+        ...searchDegradedMeta(turn),
       };
       if (mode === 'create') {
         res

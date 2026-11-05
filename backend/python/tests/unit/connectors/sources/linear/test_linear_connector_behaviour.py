@@ -80,6 +80,8 @@ def _make_connector() -> LinearConnector:
         ("get_records_in_record_group", []),
         ("get_nodes_by_filters", []),
         ("on_new_app_users", None),
+        ("get_all_app_users", []),
+        ("withdraw_app_user_access", None),
         ("on_new_user_groups", None),
         ("on_new_record_groups", None),
         ("on_new_records", None),
@@ -1129,6 +1131,88 @@ class TestRunSync:
         assert workspace_members == [alice]
         assert second_group is team_group
         assert team_members == [alice, guest]
+
+    @pytest.mark.asyncio
+    async def test_a_stored_user_missing_from_the_user_list_loses_the_connector(self) -> None:
+        connector = _make_connector()
+        alice, guest, _ = self._prepare(connector)
+        gone = AppUser(
+            app_name=Connectors.LINEAR, connector_id=CONNECTOR_ID, source_user_id="u3",
+            org_id="org-1", email="gone@test.com", full_name="Gone", is_active=True)
+        processor = connector.data_entities_processor
+        processor.get_all_app_users = AsyncMock(return_value=[alice, guest, gone])
+
+        await self._run(connector)
+
+        processor.withdraw_app_user_access.assert_awaited_once_with(CONNECTOR_ID, [gone])
+
+    @pytest.mark.asyncio
+    async def test_everyone_stored_is_withdrawn_when_a_complete_read_lists_nobody_eligible(self) -> None:
+        connector = _make_connector()
+        alice, guest, _ = self._prepare(connector)
+        connector._fetch_users = AsyncMock(return_value=[])
+        processor = connector.data_entities_processor
+        processor.get_all_app_users = AsyncMock(return_value=[alice, guest])
+
+        await self._run(connector)
+
+        processor.on_new_app_users.assert_not_awaited()
+        processor.withdraw_app_user_access.assert_awaited_once_with(CONNECTOR_ID, [alice, guest])
+
+    @pytest.mark.asyncio
+    async def test_the_old_node_of_an_account_whose_email_changed_loses_the_connector(self) -> None:
+        connector = _make_connector()
+        alice, guest, _ = self._prepare(connector)
+        old_node = AppUser(
+            app_name=Connectors.LINEAR, connector_id=CONNECTOR_ID, source_user_id="u1",
+            org_id="org-1", email="alice.old@test.com", full_name="Alice", is_active=True)
+        processor = connector.data_entities_processor
+        processor.get_all_app_users = AsyncMock(return_value=[old_node, alice, guest])
+
+        await self._run(connector)
+
+        processor.withdraw_app_user_access.assert_awaited_once_with(CONNECTOR_ID, [old_node])
+
+    @pytest.mark.asyncio
+    async def test_nobody_is_withdrawn_while_everyone_is_listed(self) -> None:
+        connector = _make_connector()
+        alice, guest, _ = self._prepare(connector)
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[alice, guest])
+
+        await self._run(connector)
+
+        connector.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_stored_user_list_withdraws_nobody_and_stops_the_sync(self) -> None:
+        connector = _make_connector()
+        self._prepare(connector)
+        processor = connector.data_entities_processor
+        processor.get_all_app_users = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(RuntimeError):
+            await self._run(connector)
+
+        processor.withdraw_app_user_access.assert_not_awaited()
+        connector._fetch_teams.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_user_flagged_inactive_is_not_listed_and_a_reactivated_one_is(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        users = [
+            {"id": "u1", "email": "alice@test.com", "active": True},
+            {"id": "u2", "email": "bob@test.com", "active": False},
+        ]
+
+        async def pages(*_: object, **__: object) -> AsyncIterator[tuple]:
+            yield users, None, None
+
+        connector._api.pages = pages
+        assert [u.source_user_id for u in await connector._fetch_users()] == ["u1"]
+
+        users[1]["active"] = True
+        assert [u.source_user_id for u in await connector._fetch_users()] == ["u1", "u2"]
 
     @pytest.mark.asyncio
     async def test_steps_run_in_order_with_the_synced_teams(self) -> None:

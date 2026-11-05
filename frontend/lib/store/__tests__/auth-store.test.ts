@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const isElectronMock = vi.fn();
 const clearElectronLogoutServerStateMock = vi.fn();
@@ -170,5 +170,65 @@ describe('signing out ends the session on the server', () => {
     useAuthStore.getState().logout();
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('signing out drops what was cached for this user', () => {
+  let tokenAtReset: string | null | undefined;
+  const reset = vi.fn();
+  let stop: () => void = () => {};
+  const originalLocation = window.location;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    // jsdom cannot navigate; a plain object takes the web path's `href = '/login'` quietly.
+    Object.defineProperty(window, 'location', { value: { href: 'http://localhost/chat/' }, configurable: true });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
+    const { onSessionEnd } = await import('@/lib/api/session-cache');
+    const { useAuthStore } = await import('../auth-store');
+    tokenAtReset = undefined;
+    stop = onSessionEnd(() => {
+      tokenAtReset = useAuthStore.getState().accessToken;
+      reset();
+    });
+    useAuthStore.getState().setTokens('access', 'refresh');
+  });
+
+  afterEach(() => {
+    stop();
+    Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
+  });
+
+  it('when the session expires, after the tokens are gone', async () => {
+    const { useAuthStore } = await import('../auth-store');
+
+    useAuthStore.getState().logout();
+
+    expect(reset).toHaveBeenCalledTimes(1);
+    expect(tokenAtReset).toBeNull();
+  });
+
+  it.each([
+    ['web', false],
+    ['Electron', true],
+  ])('on %s, after a refresh failure or a forced logout', async (_name, electron) => {
+    isElectronMock.mockReturnValue(electron);
+    const { logoutAndRedirect } = await import('../auth-store');
+
+    logoutAndRedirect();
+
+    expect(reset).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['web', false],
+    ['Electron', true],
+  ])('on %s, from the workspace menu', async (_name, electron) => {
+    isElectronMock.mockReturnValue(electron);
+    const { logoutFromWorkspaceMenu } = await import('../auth-store');
+
+    logoutFromWorkspaceMenu();
+
+    expect(reset).toHaveBeenCalledTimes(1);
   });
 });

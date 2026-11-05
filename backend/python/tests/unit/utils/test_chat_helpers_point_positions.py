@@ -168,3 +168,47 @@ async def test_sql_row_past_the_stored_rows_is_still_included_from_the_point() -
         {"v1": graph_record("r1", recordType="SQL_TABLE")},
     )
     assert "row 7 from the point" in [row["content"] for row in table["content"][1]]
+
+
+def _grouped_table_record() -> dict[str, Any]:
+    rows = [
+        {"id": f"row-{i}", "index": i, "type": "table_row", "parent_index": 0,
+         "data": {"row_natural_language_text": f"row {i}"}}
+        for i in range(6)
+    ]
+    table = {"id": "table-0", "index": 0, "type": "table", "data": {"table_summary": "Offices"},
+             "table_metadata": {"num_of_cells": 4},
+             "children": {"block_ranges": [{"start": 0, "end": 5}]}}
+    return blob("v1", rows, [table])
+
+
+async def _grouped(hits: list[dict]) -> list[dict]:
+    store = InMemoryBlobStore({"v1": _grouped_table_record()}, recon={"v1": RECON_DOWN})
+    (table,), _ = await flatten(store, hits, {"v1": graph_record("r1")})
+    return table["content"][1]
+
+
+async def test_grouped_row_point_cites_every_row_it_lists() -> None:
+    rows = await _grouped([hit("v1", 1, blockId="row-1", rowBlockIds=["row-1", "row-2", "row-3"], score=0.7)])
+    assert [(r["block_index"], r["content"], r["score"]) for r in rows] == [
+        (1, "row 1", 0.7), (2, "row 2", 0.7), (3, "row 3", 0.7),
+    ]
+
+
+async def test_row_ids_no_longer_in_the_record_are_dropped() -> None:
+    rows = await _grouped([hit("v1", 1, blockId="row-1", rowBlockIds=["row-1", "gone", "row-2"])])
+    assert [r["block_index"] for r in rows] == [1, 2]
+
+
+async def test_two_grouped_points_do_not_repeat_a_row_and_keep_the_best_score() -> None:
+    rows = await _grouped([
+        hit("v1", 0, blockId="row-0", rowBlockIds=["row-0", "row-1"], score=0.4),
+        hit("v1", 1, blockId="row-1", rowBlockIds=["row-1", "row-2"], score=0.9),
+        hit("v1", 0, blockId="row-0", rowBlockIds=["row-0", "row-1"], score=0.6),
+    ])
+    assert [(r["block_index"], r["score"]) for r in rows] == [(0, 0.6), (1, 0.9), (2, 0.9)]
+
+
+async def test_row_point_without_row_ids_is_still_one_row() -> None:
+    rows = await _grouped([hit("v1", 4, blockId="row-4")])
+    assert [r["block_index"] for r in rows] == [4]

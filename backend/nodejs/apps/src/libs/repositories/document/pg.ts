@@ -36,6 +36,10 @@ import type {
   UpdateOptions,
 } from './types';
 import { DocumentBusy, ENVELOPE_PREFIXES } from './types';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importDocumentDocs } from './pg-import';
+import { kernelTx } from '../pg';
+import type { Tx } from '../uow';
 
 interface Row {
   id: string;
@@ -382,7 +386,15 @@ async function insert(
   return rows[0] ? docOf(rows[0]) : null;
 }
 
-export class PgDocumentRepository implements DocumentRepository {
+export class PgDocumentRepository implements DocumentRepository, Importable {
+  /** The migration copy: `documents` as they were stored (see ./pg-import.ts). */
+  importBatch(
+    _collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importDocumentDocs(kernelTx(tx), docs);
+  }
   async get(orgId: string, id: string): Promise<DocumentRow | null> {
     return this.read(orgId, id, false);
   }

@@ -23,6 +23,10 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.core.base.data_processor.storage_cleanup import (
+    StorageCleanupHelper,
+    StorageHandoverError,
+)
 from app.connectors.services.event_service import EventService
 from tests.unit.connectors.services.coordinator_stub import installed_stub
 
@@ -798,3 +802,113 @@ class TestReconciler:
         assert await self._reconciler(FakeGraph(), config).tick() == "retrying"
         assert config.kv[key]["attempts"] == 2
         assert config.kv[key]["nextAttemptAt"] == self.NOW + retry_delay_ms(1)
+
+
+class TestRecordDelete:
+    """Deleting one record hands the shared copy filed under it to a survivor.
+
+    Before this, only a whole connector's delete handed copies over, so the copy
+    stayed under the deleted record's folder and connector.
+    """
+
+    @staticmethod
+    def _helper(graph: FakeGraph, node: FakeNode) -> StorageCleanupHelper:
+        helper = StorageCleanupHelper(MagicMock(), graph, FakeConfig(node.endpoint))
+
+        async def current(org_id: str, vrid: str) -> str | None:
+            doc = next((d for d in node.docs.values() if d["documentName"] == f"record_{vrid}"), None)
+            return node.path(doc["_id"]) if doc else None
+
+        helper.current_content_path = current
+        return helper
+
+    async def _delete(
+        self, graph: FakeGraph, node: FakeNode, key: str, *, still_listed: bool = False,
+        unreadable_path_for: str | None = None,
+    ) -> bool:
+        """``still_listed`` keeps the deleted record in the graph, the way a
+        lagging read still shows it; ``unreadable_path_for`` makes that
+        holder's storage path unreadable."""
+        record = graph.records[key] if still_listed else graph.records.pop(key)
+        helper = self._helper(graph, node)
+        if unreadable_path_for:
+            read_path = helper._owner_storage_path
+
+            async def path_for(holder: dict) -> str | None:
+                return None if holder.get("id") == unreadable_path_for else await read_path(holder)
+
+            helper._owner_storage_path = path_for
+        try:
+            return await helper.hand_over_after_record_delete(
+                ORG, record["connectorId"], "v-shared", deleted_record_id=key
+            )
+        finally:
+            await helper.close()
+
+    async def test_the_copy_moves_under_the_survivor_in_another_knowledge_base(self, node) -> None:
+        graph, docs = _world(node)
+
+        assert await self._delete(graph, node, "a1") is True
+
+        for key in ("shared_record", "shared_meta"):
+            assert node.path(docs[key]) == "records/conn-b/Drive/Report"
+            assert node.tag(node.docs[docs[key]]) == "conn-b"
+        assert node.path(docs["own"]) == "records/conn-a/Notes"
+
+    async def test_a_survivor_in_the_same_knowledge_base_gets_the_copy(self, node) -> None:
+        graph, docs = _world(node)
+        graph.add("a3", "conn-a", "v-shared", name="Copy")
+
+        assert await self._delete(graph, node, "a1") is True
+
+        assert node.path(docs["shared_record"]) == "records/conn-a/Copy"
+        assert node.tag(node.docs[docs["shared_record"]]) == "conn-a"
+
+    async def test_deleting_a_record_the_copy_is_not_filed_under_leaves_it_alone(self, node) -> None:
+        graph, docs = _world(node)
+
+        assert await self._delete(graph, node, "b1") is False
+
+        assert node.path(docs["shared_record"]) == "records/conn-a/Report"
+        assert node.tag(node.docs[docs["shared_record"]]) == "conn-a"
+
+    async def test_nothing_moves_once_no_record_holds_the_content(self, node) -> None:
+        graph, docs = _world(node)
+        graph.records.pop("b1")
+
+        assert await self._delete(graph, node, "a1") is False
+
+        assert node.path(docs["shared_record"]) == "records/conn-a/Report"
+
+    async def test_a_copy_in_the_flat_layout_is_left_to_the_migration(self, node) -> None:
+        graph, docs = _world(node)
+        node.docs[docs["shared_record"]]["documentPath"] = f"{ORG}/PipesHub/records/v-shared"
+
+        assert await self._delete(graph, node, "a1") is False
+
+        assert node.path(docs["shared_record"]) == "records/v-shared"
+
+    async def test_a_move_that_storage_refuses_raises(self, node) -> None:
+        graph, docs = _world(node)
+        node.fail_relocate.add("v-shared")
+
+        with pytest.raises(StorageHandoverError):
+            await self._delete(graph, node, "a1")
+
+        assert node.path(docs["shared_record"]) == "records/conn-a/Report"
+
+    async def test_the_deleted_record_still_listed_by_a_lagging_read_is_not_a_holder(self, node) -> None:
+        graph, docs = _world(node)
+
+        assert await self._delete(graph, node, "a1", still_listed=True) is True
+
+        assert node.path(docs["shared_record"]) == "records/conn-b/Drive/Report"
+
+    async def test_a_holder_whose_path_cannot_be_read_stops_the_move(self, node) -> None:
+        graph, docs = _world(node)
+        graph.add("a3", "conn-a", "v-shared", name="Copy")
+
+        with pytest.raises(StorageHandoverError):
+            await self._delete(graph, node, "a1", unreadable_path_for="a3")
+
+        assert node.path(docs["shared_record"]) == "records/conn-a/Report"

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.modules.named_entities.domain.config import NamedEntityBudgets
-from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_kinds
+from app.modules.named_entities.domain.kinds import (
+    EntityKind,
+    default_enabled_kinds,
+    semantic_kinds,
+)
 from app.modules.named_entities.domain.models import (
     ExtractionStats,
     NamedEntityExtraction,
@@ -42,6 +47,8 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
     from app.modules.named_entities.mentions import RawMention
     from app.modules.named_entities.strategies.agent.transport import SlottedTransport
+
+logger = logging.getLogger(__name__)
 
 _MAX_RECORD_CHARS = 1_000_000
 _COMPLETED = {"deterministic", "finish_ok", "single_call", "empty"}
@@ -185,6 +192,7 @@ class NamedEntityExtractor:
                 windows_total=model.windows_total,
                 windows_run=model.windows_run,
                 windows_failed=model.windows_failed,
+                windows_unavailable=model.windows_unavailable,
                 chars_truncated=chars_truncated,
                 rejected_reasons=dict(model.rejected_reasons),
                 extract_ms=int((time.perf_counter() - started) * 1000),
@@ -219,3 +227,31 @@ async def indexing_llm(
     cache = family_cache_strategy(llm, family=PROMPT_FAMILY, org_id=org_id, shard_key=shard_key, model_name=model)
     transport = LangChainTransport(llm, model_name=model, cache_strategy=cache)
     return llm, SlottedTransport(transport), provider, model
+
+
+async def indexing_llm_or_none(
+    config_service: ConfigurationService,
+    enabled: frozenset[EntityKind],
+    *,
+    org_id: str = "",
+    shard_key: str = "",
+) -> tuple[BaseChatModel | None, SlottedTransport | None, str, str, frozenset[EntityKind]]:
+    """``indexing_llm`` and the kinds this run looks for. With no model configured only the
+    deterministic kinds are looked for, so the run is complete; a model that cannot be built
+    now leaves ``llm`` None, the run ends ``llm_error``, and the entities stage retries it.
+
+    "No model" is decided by the rule the entities stage fingerprints (``indexing_model_identity``),
+    read so that a config store that cannot be read is an error, never "no model": a run settled
+    without names under a fingerprint that names a model is never run again."""
+    from app.utils.llm import indexing_model_identity, load_ai_models
+
+    try:
+        if indexing_model_identity(await load_ai_models(config_service, raise_on_error=True)) == "none":
+            return None, None, "indexing", "indexing", enabled - semantic_kinds(enabled)
+        llm, transport, provider, model = await indexing_llm(config_service, org_id=org_id, shard_key=shard_key)
+    except Exception as exc:
+        logger.warning(
+            "Named-entity model unavailable for org '%s'; keeping deterministic spans: %s", org_id, type(exc).__name__
+        )
+        return None, None, "indexing", "indexing", enabled
+    return llm, transport, provider, model, enabled

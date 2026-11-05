@@ -116,6 +116,10 @@ trustProxy: ""
 # Each replica counts on its own, so N replicas allow up to N times this.
 maxAuthRequestsPerMinute: 10
 
+# Limit on password-reset, sign-in-code and email-change requests about one email
+# address, per minute, across all clients and replicas (shared through Redis).
+addressRateLimitPerMinute: 60
+
 ingress:
   enabled: false
   className: "" # Fill

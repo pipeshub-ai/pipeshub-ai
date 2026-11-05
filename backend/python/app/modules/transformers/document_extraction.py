@@ -28,6 +28,7 @@ from app.modules.parsers.code_parser.classification_policy import (
     code_classification_skip_reason,
 )
 from app.modules.parsers.code_parser.models import FILLER_KINDS
+from app.modules.parsers.push_origin import record_is_push_origin
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.llm_gateway.gateway import (
@@ -454,6 +455,7 @@ class DocumentExtraction(Transformer):
                 record_name=record.record_name,
                 record_type=record.record_type.value,
                 block_groups=record.block_containers.block_groups,
+                allow_remote_image_uri=not record_is_push_origin(record),
             )
         except LLMNotConfiguredError as e:
             self.logger.info("⏭️ Extraction skipped for record %s: %s", record.id, e)
@@ -469,7 +471,7 @@ class DocumentExtraction(Transformer):
         self.logger.debug("🎯 Document extraction completed successfully")
 
     def _prepare_content(
-        self, blocks: list[Block], *, is_multimodal_llm: bool, context_length: int,
+        self, blocks: list[Block], *, is_multimodal_llm: bool, context_length: int, allow_remote_image_uri: bool,
     ) -> list[dict]:
         MAX_TOKENS = int(context_length * CONTENT_TOKEN_RATIO)
         MAX_IMAGES = 50
@@ -507,7 +509,10 @@ class DocumentExtraction(Transformer):
                             continue
 
                         if image_data.startswith(("http://", "https://")):
-                            pass  # remote URLs are validated server-side
+                            # The provider fetches this URL itself, so pushed content never sends one.
+                            if not allow_remote_image_uri:
+                                self.logger.warning("⚠️ Skipping a remote image URL for this content")
+                                continue
                         elif image_data.startswith(SUPPORTED_LLM_IMAGE_PREFIXES):
                             # Relabels bytes whose declared type is wrong, which providers reject.
                             result = to_llm_image_format(image_data, max_long_edge_px=MAX_IMAGE_DIMENSION)
@@ -640,6 +645,9 @@ class DocumentExtraction(Transformer):
             departments or [dept.value for dept in DepartmentNames],
             record_name,
             record_type,
+            # Blocks arrive over the wire without their record. Pushed content was
+            # asserted inline before it was stored, so none of it carries a remote URL.
+            allow_remote_image_uri=True,
         )
 
     async def extract_metadata(
@@ -648,6 +656,8 @@ class DocumentExtraction(Transformer):
         org_id: str,
         record_name: str = "",
         record_type: str = "",
+        *,
+        allow_remote_image_uri: bool,
     ) -> SemanticMetadata | None:
         """Extract metadata from document content, reading the org's departments."""
         self.logger.debug("🎯 Extracting departments for org_id: %s", org_id)
@@ -658,6 +668,7 @@ class DocumentExtraction(Transformer):
             departments or [dept.value for dept in DepartmentNames],
             record_name,
             record_type,
+            allow_remote_image_uri=allow_remote_image_uri,
         )
 
     async def _classify_blocks(
@@ -667,6 +678,8 @@ class DocumentExtraction(Transformer):
         departments: list[str],
         record_name: str,
         record_type: str,
+        *,
+        allow_remote_image_uri: bool,
     ) -> SemanticMetadata | None:
         """Classify *blocks*; ``None`` means there was nothing to classify.
 
@@ -684,6 +697,7 @@ class DocumentExtraction(Transformer):
         content = await asyncio.to_thread(
             self._prepare_content,
             blocks, is_multimodal_llm=bool(config.get("isMultimodal")), context_length=context_length,
+            allow_remote_image_uri=allow_remote_image_uri,
         )
         if len(content) == 0:
             self.logger.info("No content to process in document extraction")
@@ -810,12 +824,17 @@ class DocumentExtraction(Transformer):
         record_name: str = "",
         record_type: str = "",
         block_groups: list[BlockGroup] | None = None,
+        *,
+        allow_remote_image_uri: bool,
     ) -> SemanticMetadata | None:
         self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
         code = await self._classify_code(blocks, block_groups, record_type)
         if code is not _NOT_CODE:
             return code
-        return await self.extract_metadata(blocks, org_id, record_name=record_name, record_type=record_type)
+        return await self.extract_metadata(
+            blocks, org_id, record_name=record_name, record_type=record_type,
+            allow_remote_image_uri=allow_remote_image_uri,
+        )
 
     async def _classify_code(
         self, blocks: list[Block], block_groups: list[BlockGroup] | None, record_type: str

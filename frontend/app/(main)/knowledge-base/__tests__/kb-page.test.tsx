@@ -7,6 +7,7 @@ import { useUploadStore } from '@/lib/store/upload-store';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
 import KnowledgeBasePage from '../page';
@@ -612,6 +613,23 @@ describe('Knowledge base page — inside a collection', () => {
 
     await waitFor(() => expect(api.hub.loadFolderData).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole('row', { name: 'spec.pdf' })).toBeTruthy();
+  });
+
+  it('loads the members of an open collection once, even as the tree fills in', async () => {
+    await openEngineering();
+    await waitFor(() => expect(share.getSharedMembers).toHaveBeenCalledTimes(1));
+
+    // What the sidebar tree's children fetch does once it lands.
+    act(() => {
+      useKnowledgeBaseStore.getState().addNodes([
+        hubNode({ id: 'folder-late', name: 'Late folder', nodeType: 'folder', parentId: 'kb-eng' }),
+      ]);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(share.getSharedMembers).toHaveBeenCalledTimes(1);
   });
 
   it('sends a user whose access was removed back to the collections list', async () => {
@@ -1438,6 +1456,46 @@ describe('Knowledge base page — uploading', () => {
       const failed = useUploadStore.getState().items.filter((i) => i.status === 'failed');
       expect(failed.map((i) => i.name).sort()).toEqual(['one.txt', 'two.txt']);
     });
+  });
+
+  it('stops at sign-out: the batch in flight is cancelled and no further batch is sent', async () => {
+    await openEngineering();
+    const folder = (name: string) => {
+      const file = fileOfSize(`${name}.txt`, 10);
+      return { id: name, name, size: 10, type: 'folder' as const, filesWithPaths: [{ file, relativePath: file.name }] };
+    };
+    // Two top-level folders: two batches, sent one after the other.
+    upload.items = [folder('Reports'), folder('Slides')];
+    const signals: AbortSignal[] = [];
+    api.kb.streamUpload.mockImplementation(
+      (_kb: string, _folder: string | null, _files: File[], _meta: unknown, opts: { signal: AbortSignal }) => {
+        signals.push(opts.signal);
+        return new Promise<void>((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      },
+    );
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+    await waitFor(() => expect(api.kb.streamUpload).toHaveBeenCalledTimes(1));
+
+    useToastStore.setState({ toasts: [] });
+    act(() => clearSessionCache());
+    // Installed on the reset store, before the cancelled upload's code resumes.
+    const finalizeSession = vi.fn();
+    useUploadStore.setState({ finalizeSession });
+
+    await waitFor(() => expect(signals[0].aborted).toBe(true));
+    // The second folder's batch would have been sent by now had the loop kept going.
+    await act(async () => {
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    expect(api.kb.streamUpload).toHaveBeenCalledTimes(1);
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(useUploadStore.getState().items).toEqual([]);
+    expect(useToastStore.getState().toasts.filter((t) => t.variant === 'error')).toEqual([]);
+    useUploadStore.setState(useUploadStore.getInitialState(), true);
   });
 });
 

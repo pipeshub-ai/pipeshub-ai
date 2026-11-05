@@ -37,9 +37,9 @@ def test_threads_times_lanes_within_cpus(cpus: int, heavy: int) -> None:
 
 @pytest.mark.parametrize(
     ("cpus", "heavy", "lanes", "threads"),
-    [(1, 1, 1, 1), (2, 1, 1, 2), (4, 3, 1, 4), (4, 4, 2, 2), (8, 6, 3, 2), (16, 14, 7, 2), (64, 62, 31, 2)],
+    [(1, 1, 1, 1), (2, 1, 1, 1), (4, 3, 1, 2), (4, 4, 2, 1), (8, 6, 3, 2), (16, 14, 7, 2), (64, 62, 31, 2)],
 )
-def test_placeholder_threads_rule_rows(cpus: int, heavy: int, lanes: int, threads: int) -> None:
+def test_plan_threads_follow_the_measured_table_then_the_clamp(cpus: int, heavy: int, lanes: int, threads: int) -> None:
     plan = plan_lanes(cpus=cpus, heavy=heavy)
     assert (plan.lanes, plan.threads_per_lane) == (lanes, threads)
 
@@ -103,3 +103,26 @@ def test_health_block_opens_nothing(tmp_path, monkeypatch: pytest.MonkeyPatch) -
     assert block["mode"] == "off"
     assert calls == []
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("cpus", "lanes", "threads"),
+    [(1, 1, 1), (2, 1, 1), (2, 2, 1), (4, 1, 2), (4, 2, 1), (4, 4, 1), (8, 4, 2)],
+)
+def test_threads_rule_is_the_measured_table(cpus: int, lanes: int, threads: int) -> None:
+    from app.services.resource_governor.lanes import threads_rule
+
+    assert threads_rule(cpus, lanes) == threads
+
+
+def test_threads_rule_invariant_over_every_cpu_count() -> None:
+    from app.services.resource_governor.lanes import THREADS_RULE, threads_rule
+
+    for cpus in range(1, 129):
+        for lanes in range(1, min(cpus, 64) + 1):
+            threads = threads_rule(cpus, lanes)
+            assert 1 <= threads <= 4
+            assert lanes * threads <= cpus, (cpus, lanes, threads)
+    # Rows outside the table take the clamp.
+    assert (16, 7) not in THREADS_RULE and threads_rule(16, 7) == 2
+    assert threads_rule(8, 3) == 2 and threads_rule(64, 8) == 4

@@ -3,20 +3,29 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.models.record_metadata import MetadataSchema, PropertyDefinition
+from app.modules.record_metadata.projection import (
+    default_union_cache,
+    projection_enabled,
+)
 from app.modules.record_metadata.schemas import (
     MAX_SCHEMA_VERSIONS,
     MetadataSchemaError,
     MetadataSchemaRegistry,
+    SchemaRuleError,
+    check_new_schema,
 )
 
 from .admission import Admission
 from .contract import PushRefusal
+from .image_admission import ImageAdmission
+from .materialiser import Materialiser
 from .spool import Spool, default_root, sweep
 from .worker import PushWorker
 
@@ -38,6 +47,32 @@ class PushRuntime:
     worker: PushWorker
     spool: Spool
     admission: Admission
+    # Both are made on first use and start no process until the first image task.
+    _materialiser: Materialiser | None = None
+    _materialiser_failed: bool = False
+    _image_admission: ImageAdmission | None = None
+
+    @property
+    def materialiser(self) -> Materialiser | None:
+        """None when ``KB_PUSH_SIGNED_URL_ORIGINS`` is malformed: pushes with images then answer 503, every other push is untouched."""
+        if self._materialiser is None and not self._materialiser_failed:
+            try:
+                self._materialiser = Materialiser(listed_origins=_signed_url_origins())
+            except ValueError as e:
+                self._materialiser_failed = True
+                logger.error("KB_PUSH_SIGNED_URL_ORIGINS is not usable, so pushes with storage images are refused: %s", e)
+        return self._materialiser
+
+    @property
+    def image_admission(self) -> ImageAdmission:
+        if self._image_admission is None:
+            self._image_admission = ImageAdmission()
+        return self._image_admission
+
+
+def _signed_url_origins() -> list[str]:
+    """``KB_PUSH_SIGNED_URL_ORIGINS``: comma-separated https origins of an operator's S3-compatible endpoint."""
+    return [o.strip() for o in os.environ.get("KB_PUSH_SIGNED_URL_ORIGINS", "").split(",") if o.strip()]
 
 
 def runtime_for(app: FastAPI) -> PushRuntime:
@@ -131,7 +166,16 @@ async def put_schema(registry: MetadataSchemaRegistry, org_id: str, kb_id: str, 
     definitions = definitions_from(body)
     try:
         last, _ = await registry._scan(org_id, kb_id)
+        if projection_enabled():
+            # The registration rules go live with the projection (the flag), so with it off a request is
+            # answered exactly as before them.
+            try:
+                check_new_schema(await registry.versions(org_id, kb_id), definitions)
+            except SchemaRuleError as e:
+                raise PushRefusal(422, e.code, str(e), "properties", extra={"property": e.property}) from None
         schema = await registry.register(org_id, kb_id, definitions)
+        # This process learns the new union now; other processes learn it within the cache's TTL.
+        default_union_cache().invalidate(org_id, kb_id)
     except MetadataSchemaError as e:
         if f"{MAX_SCHEMA_VERSIONS} schema versions" in str(e):
             raise PushRefusal(409, "SCHEMA_VERSION_LIMIT", "This knowledge base has reached its schema version limit.") from None

@@ -92,6 +92,7 @@ class ExtractionStats(BaseModel):
     windows_total: int = 0
     windows_run: int = 0
     windows_failed: int = 0
+    windows_unavailable: int = 0
     chars_truncated: bool = False
     rejected_reasons: dict[str, int] = Field(default_factory=dict)
     extract_ms: int = 0
@@ -200,3 +201,9 @@ def read_stored_extraction(payload: object) -> NamedEntityExtraction | None:
             ",".join(coerced) or "-",
         )
     return extraction.model_copy(update={"entities": entities, "stats": stats, "status": status})
+
+
+def model_failed(extraction: NamedEntityExtraction) -> bool:
+    """A model call failed, so the names of some text are missing. The entities stage
+    runs the record again rather than settle on what the deterministic recognizers found."""
+    return extraction.termination_reason == "llm_error" or extraction.stats.windows_failed > 0

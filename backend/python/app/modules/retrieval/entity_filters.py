@@ -45,6 +45,10 @@ class EntityFilterHit:
     record_type: str = ""
     # Last source modification (else last update), for newest-first listings.
     sort_ts: int = 0
+    # A date listing's tier: 0 when the record names a date in the asked window (one that
+    # starts in it and is no longer than it), 1 when its dates only span it (a year-long
+    # contract on a one-day question).
+    rank: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +244,9 @@ def _part(part: Any, name: str) -> str:  # noqa: ANN401
         return f"an amount {span}" if span else f"an amount in{cur}" if cur else "any amount"
     if binds.get("quantityMin") is not None:
         unit = f" {_quoted(binds['dimension'])}" if binds.get("dimension") else ""
+        if binds.get("dimension") == "time":
+            span = _span(binds["quantityMin"], binds["quantityMax"], lambda v: f"{_digits(v)} seconds")
+            return f"a duration {span}" if span else "any duration"
         span = _span(binds["quantityMin"], binds["quantityMax"], lambda v: f"{_digits(v)}{unit}")
         return f"a quantity {span}" if span else f"a quantity in{unit}" if unit else "any quantity"
     if binds.get("percentMin") is not None:

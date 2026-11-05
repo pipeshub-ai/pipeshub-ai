@@ -6,8 +6,17 @@ from __future__ import annotations
 import re
 
 from app.modules.named_entities.domain.config import NamedEntityBudgets
-from app.modules.named_entities.domain.kinds import EntityKind
+from app.modules.named_entities.domain.kinds import EntityKind, EntitySource, spec_for
 from app.modules.named_entities.domain.models import NamedEntity
+
+
+def _cap_rank(entity: NamedEntity) -> tuple[int, int, int]:
+    """Names first, then everything else by where it first appears. Extraction order puts
+    the deterministic hits first, longest span first, so a table of amounts would otherwise
+    spend the caps before any name the model found, and its dates before any amount."""
+    spec = spec_for(entity.kind)
+    first = min(((m.block_index, m.char_start) for m in entity.mentions), default=(0, 0))
+    return (0 if spec is not None and spec.source is EntitySource.SEMANTIC else 1, *first)
 
 
 def apply_caps(
@@ -16,9 +25,11 @@ def apply_caps(
     enabled: frozenset[EntityKind],
 ) -> tuple[list[NamedEntity], int]:
     dropped = 0
-    kept: list[NamedEntity] = []
+    kept: list[int] = []
     per_block: dict[int, int] = {}
-    for entity in entities:
+    # Ranked to spend the caps, returned in document order.
+    for at in sorted(range(len(entities)), key=lambda i: (*_cap_rank(entities[i]), i)):
+        entity = entities[at]
         if entity.kind not in enabled:
             dropped += 1
             continue
@@ -40,8 +51,8 @@ def apply_caps(
             continue
         entity.mentions = mentions
         entity.display_name = entity.display_name[: budgets.max_text_chars]
-        kept.append(entity)
-    return kept, dropped
+        kept.append(at)
+    return [entities[at] for at in sorted(kept)], dropped
 
 
 # Kinds that name one specific thing. A common noun ("purchase order"), a

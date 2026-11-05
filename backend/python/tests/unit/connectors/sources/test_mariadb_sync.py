@@ -28,6 +28,7 @@ from app.sources.external.mariadb.mariadb_ import (
     ForeignKeyInfo,
 )
 from app.sources.external.mariadb.profiling import TableProfile
+from tests.support.data_store import runs_in_its_transaction
 
 
 def ok(data) -> MariaDBResponse:
@@ -253,6 +254,7 @@ class World:
 
         provider = MagicMock()
         provider.transaction = MagicMock(side_effect=lambda: Tx())
+        runs_in_its_transaction(provider)
         self.connector.data_store_provider = provider
         self.connector.data_entities_processor.get_typed_records_by_ids = AsyncMock(
             side_effect=lambda ids, **_: {r.id: r for r in store.records.values() if r.id in ids}

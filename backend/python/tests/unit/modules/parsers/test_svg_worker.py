@@ -95,7 +95,7 @@ async def test_without_a_pool_the_async_path_uses_a_bounded_child() -> None:
 async def test_a_hostile_data_uri_is_skipped_and_the_rest_still_render() -> None:
     hostile = "data:image/svg+xml;base64," + _b64(f'<svg {NS}><g id="a"><use href=" #a"/></g></svg>')
     good = "data:image/svg+xml;base64," + _b64(GOOD)
-    result = await ImageParser.urls_to_base64([hostile, good])
+    result = await ImageParser.urls_to_base64([hostile, good], allow_remote_fetch=True)
     assert result[0] is None
     assert result[1] is not None
     assert result[1].startswith("data:image/png;base64,")

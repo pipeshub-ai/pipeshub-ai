@@ -9,7 +9,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.core.registry.filters import IndexingFilterKey
 from app.connectors.sources.notion.connector import (
     NotionConnector,
     _DatabaseUnavailable,
@@ -19,6 +21,7 @@ from app.connectors.sources.notion.connector import (
 from app.models.blocks import BlocksContainer
 from app.models.entities import RecordType
 from app.sources.client.notion.notion import NotionRESTClientViaOAuth
+from tests.support.data_store import runs_in_its_transaction
 from tests.unit.connectors.sources.test_notion_connector import (
     _make_api_response,
     _make_connector,
@@ -80,6 +83,137 @@ async def test_recheck_picks_up_a_new_comment_and_prunes_a_deleted_one() -> None
     records = await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True)
     assert records[0][0].external_revision_id == OLD
     conn.data_entities_processor.on_record_deleted.assert_awaited_once_with("rid-ca_c1_file")
+
+
+@pytest.mark.asyncio
+async def test_recheck_leaves_a_page_whose_comments_did_not_change_unsaved() -> None:
+    stored_rev = _with_comment_digest(OLD, {"p1": [(_comment("c1"), "p1")]})
+    conn = _connector_with(MagicMock())
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=_stored("p1", revision=stored_rev))
+    conn.data_entities_processor.on_new_records = AsyncMock()
+    conn._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {"p1": [(_comment("c1"), "p1")]}))
+    conn._extract_comment_attachment_file_records = AsyncMock(return_value=[])
+
+    await conn._recheck_page_comments({"p1": _page("p1")}, {"p1"})
+    conn._fetch_page_attachments_and_comments.assert_awaited_once()
+    conn.data_entities_processor.on_new_records.assert_not_awaited()
+    assert conn.pages_sync_point.update_sync_point.await_args.args[1] == {"after": "p1"}
+    assert not conn._sync_incomplete
+
+    conn._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {}))
+    conn._walked_pages = set()
+    await conn._recheck_page_comments({"p1": _page("p1")}, {"p1"})
+    assert [r.external_revision_id for r in _saved(conn)] == [OLD]
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_keeps_the_page_and_its_files_in_a_full_sync() -> None:
+    comments = {"p1": [(_comment("c1"), "p1")]}
+    conn = _connector_with(MagicMock())
+    proc = conn.data_entities_processor
+    proc.get_record_by_external_id = AsyncMock(return_value=_stored("p1", revision=_with_comment_digest(OLD, comments)))
+    proc.get_records_by_parent = AsyncMock(return_value=[_stored("ca_c1_file", RecordType.FILE)])
+    proc.full_sync_running = MagicMock(return_value=True)
+    proc.note_kept_records = MagicMock()
+    conn._fetch_page_attachments_and_comments = AsyncMock(return_value=([], comments))
+    conn._extract_comment_attachment_file_records = AsyncMock(return_value=[_stored("ca_c1_file", RecordType.FILE)])
+
+    assert await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True) is None
+    kept = {i for call in proc.note_kept_records.call_args_list for i in call.args[1]}
+    assert {"rid-p1", "rid-ca_c1_file"} <= kept
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_saves_a_file_a_failed_batch_never_stored() -> None:
+    comments = {"p1": [(_comment("c1"), "p1")]}
+    conn = _connector_with(MagicMock())
+    proc = conn.data_entities_processor
+    proc.get_record_by_external_id = AsyncMock(return_value=_stored("p1", revision=_with_comment_digest(OLD, comments)))
+    missing = _stored("ca_c1_file", RecordType.FILE)
+    conn._fetch_page_attachments_and_comments = AsyncMock(return_value=([], comments))
+    conn._extract_comment_attachment_file_records = AsyncMock(return_value=[missing])
+
+    records = await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True)
+    assert records is not None and missing in [r for r, _ in records]
+
+
+def _unchanged_recheck(stored_files: list[Any], fetched_files: list[Any]) -> NotionConnector:
+    comments = {"p1": [(_comment("c1"), "p1")]}
+    conn = _connector_with(MagicMock())
+    proc = conn.data_entities_processor
+    proc.get_record_by_external_id = AsyncMock(return_value=_stored("p1", revision=_with_comment_digest(OLD, comments)))
+    proc.get_records_by_parent = AsyncMock(return_value=stored_files)
+    conn._fetch_page_attachments_and_comments = AsyncMock(return_value=([], comments))
+    conn._extract_comment_attachment_file_records = AsyncMock(return_value=fetched_files)
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_saves_a_file_a_failed_batch_left_stale() -> None:
+    edited = _stored("ca_c1_file", RecordType.FILE, revision="2026-01-02T00:00:00.000Z")
+    conn = _unchanged_recheck([_stored("ca_c1_file", RecordType.FILE)], [edited])
+    records = await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True)
+    assert records is not None and edited in [r for r, _ in records]
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_saves_a_page_whose_indexing_was_turned_back_on() -> None:
+    conn = _unchanged_recheck([], [])
+    stored_page = conn.data_entities_processor.get_record_by_external_id.return_value
+    stored_page.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+    conn.indexing_filters = MagicMock()
+    conn.indexing_filters.is_enabled = MagicMock(return_value=True)
+    assert await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True) is not None
+
+
+def _indexing_off_for(conn: NotionConnector, key: IndexingFilterKey) -> None:
+    conn.indexing_filters = MagicMock()
+    conn.indexing_filters.is_enabled = MagicMock(side_effect=lambda k: k != key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [ProgressStatus.NOT_STARTED, ProgressStatus.QUEUED])
+async def test_an_unchanged_recheck_saves_a_page_whose_indexing_was_turned_off(status: ProgressStatus) -> None:
+    conn = _unchanged_recheck([], [])
+    conn.data_entities_processor.get_record_by_external_id.return_value.indexing_status = status.value
+    _indexing_off_for(conn, IndexingFilterKey.PAGES)
+    records = await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True)
+    assert records is not None
+    assert records[0][0].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_saves_a_waiting_file_whose_indexing_was_turned_off() -> None:
+    waiting = _stored("ca_c1_file", RecordType.FILE)
+    waiting.indexing_status = ProgressStatus.NOT_STARTED.value
+    fetched = _stored("ca_c1_file", RecordType.FILE)
+    conn = _unchanged_recheck([waiting], [fetched])
+    _indexing_off_for(conn, IndexingFilterKey.FILES)
+    records = await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True)
+    assert records is not None and fetched in [r for r, _ in records]
+    assert fetched.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [ProgressStatus.AUTO_INDEX_OFF, ProgressStatus.COMPLETED, ProgressStatus.FAILED, ProgressStatus.IN_PROGRESS],
+)
+async def test_an_unchanged_recheck_with_indexing_off_leaves_a_page_indexing_has_reached_unsaved(
+    status: ProgressStatus,
+) -> None:
+    conn = _unchanged_recheck([], [])
+    conn.data_entities_processor.get_record_by_external_id.return_value.indexing_status = status.value
+    _indexing_off_for(conn, IndexingFilterKey.PAGES)
+    assert await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True) is None
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_still_removes_a_file_gone_within_the_minute() -> None:
+    conn = _unchanged_recheck([_stored("ca_c1_file", RecordType.FILE), _stored("gone_file", RecordType.FILE)],
+                              [_stored("ca_c1_file", RecordType.FILE)])
+    assert await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True) is None
+    conn.data_entities_processor.on_record_deleted.assert_awaited_once_with("rid-gone_file")
 
 
 @pytest.mark.asyncio
@@ -199,7 +333,7 @@ async def test_member_without_email_keeps_access_while_a_departed_user_loses_it(
     async def transaction() -> AsyncIterator[MagicMock]:
         yield tx
 
-    conn.data_entities_processor.data_store_provider.transaction = transaction
+    runs_in_its_transaction(conn.data_entities_processor.data_store_provider).transaction = transaction
     await conn._remove_departed_workspace_users(["here@example.com"], ["u-hidden"])
     assert [c.args[0] for c in tx.delete_edge.await_args_list] == ["key-u-left"]
 

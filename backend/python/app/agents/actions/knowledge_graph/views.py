@@ -41,7 +41,7 @@ _TRUNCATION_LINE = "... (output truncated — use page= to continue)"
 # Kept out of the system prompt: only a turn that lists records needs it. A real
 # id from the listing as the example is what gets a small model to cite at all.
 CITE_NOTE = (
-    "Cite a fact this listing states about a record (its name, dates, status) with that "
+    "Cite a fact this listing states about a record (its name, dates, status, or a value it matched) with that "
     "row's cite id, e.g. [source]({ref}). It backs only what the listing shows, never what "
     "the record says: read the record first for that."
 )

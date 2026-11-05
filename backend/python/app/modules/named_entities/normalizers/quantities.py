@@ -36,6 +36,12 @@ _UNITS: dict[str, tuple[str, str, Decimal]] = {
     "mib": ("data_size", "B", Decimal(2) ** 20),
     "gib": ("data_size", "B", Decimal(2) ** 30),
     "tib": ("data_size", "B", Decimal(2) ** 40),
+    # shortcut: "mWh" reads as megawatt-hours (casefolded); milliwatt-hours are rare in business text.
+    "wh": ("energy", "J", Decimal(3600)),
+    "kwh": ("energy", "J", Decimal(3600) * 10**3),
+    "mwh": ("energy", "J", Decimal(3600) * 10**6),
+    "gwh": ("energy", "J", Decimal(3600) * 10**9),
+    "twh": ("energy", "J", Decimal(3600) * 10**12),
 }
 # Thousands are grouped with commas only; a decimal comma ("1,5 %") is not read.
 _N = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
@@ -43,7 +49,7 @@ _TOKENS = re.compile(rf"^(?P<n>{_N})\s?(?P<scale>[kKmM]?)\s?tokens?$")
 _TOKEN_SCALE = {"": Decimal(1), "k": Decimal(10) ** 3, "m": Decimal(10) ** 6}
 _QTY = re.compile(
     rf"^(?P<n>{_N})(?P<gap>\s*)(?P<u>km/h|km|m|cm|mm|kg|g|lbs|lb|mi|ft|mph|kph|celsius|fahrenheit|c|f"
-    r"|kib|mib|gib|tib|kb|mb|gb|tb|pb)$",
+    r"|kib|mib|gib|tib|kb|mb|gb|tb|pb|wh|kwh|mwh|gwh|twh)$",
     re.IGNORECASE,
 )
 _AGE = re.compile(r"^(?P<n>\d{1,3})[\-\s]?years?[\-\s]?old$", re.IGNORECASE)
