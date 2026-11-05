@@ -217,12 +217,16 @@ app_schema = {
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
             # app.services.permissions.structure_generation: moves with every structural write of the connector
             "scopeProjectionGeneration": {"type": ["number", "null"]},  # incremented in AQL, which computes in doubles
-            "scopeProjectionUnsafe": {"type": ["boolean", "null"]},
+            "scopeProjectionUnsafe": {"type": ["boolean", "number", "null"]},  # a mark: true (older code) or a time
+            "scopeProjectionOpened": {"type": ["number", "null"]},  # writes started that could not be undone, and finished (see unclosed_writes)
+            "scopeProjectionClosed": {"type": ["number", "null"]},
             # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
             "scopeBackfillState": {"type": ["string", "null"]},
             "scopeBackfillAfter": {"type": ["string", "null"]},
             "scopeBackfillVersion": {"type": ["integer", "null"]},
             "scopeBackfillGeneration": {"type": ["integer", "null"]},
+            "scopeBackfillStructureGeneration": {"type": ["number", "null"]},  # what the pass read first
+            "scopeBackfillUnsafe": {"type": ["boolean", "number", "null"]},
             "scopeBackfillRecords": {"type": ["integer", "null"]},
             "scopeBackfillStale": {"type": ["integer", "null"]},
             "scopeBackfillError": {"type": ["string", "null"]},
