@@ -24,7 +24,7 @@ Return ONLY the extracted and converted text. No preamble, no explanations, no c
 
 prompt_for_document_extraction = """
 # Task:
-You are processing a document of an individual or an enterprise. Your task is to classify the document departments, categories, subcategories, languages, and topics, to list the organizations it names, and to write a summary that a retrieval system will use to decide whether this document is relevant to a user's query.
+You are processing a document of an individual or an organisation. Your task is to classify the document departments, categories, subcategories, languages, and topics, to list the organizations it names, and to write a summary that a retrieval system will use to decide whether this document is relevant to a user's query.
 Instructions must be strictly followed.
 
 # File Metadata:

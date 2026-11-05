@@ -1,5 +1,5 @@
 """Organisations a document names (KG-13 slice 3b) resolve through the same
-tiers as taxonomy: their key against the tenant's organisations, then the
+tiers as taxonomy: their key against the org's organisations, then the
 nearest organisation points and the record's one model call. The record then
 links to each with an EXTRACTED edge, replacing only its own."""
 from __future__ import annotations
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
     from app.modules.entity_resolution.models import EntityResolution
 
-ORG = "acme-tenant"
+ORG = "acme-org"
 ORGS = CollectionNames.ORGS.value
 
 
@@ -28,7 +28,7 @@ async def _resolve(make_resolver, ctx_factory, metadata, **ctx: object) -> tuple
     return context, await make_resolver().resolve(context)
 
 
-async def test_a_new_name_becomes_a_new_organisation_of_the_tenant(make_resolver, ctx_factory, metadata_factory) -> None:
+async def test_a_new_name_becomes_a_new_organisation_of_the_org(make_resolver, ctx_factory, metadata_factory) -> None:
     meta = metadata_factory(organizations=["Globex Corp."])
     _, resolution = await _resolve(make_resolver, ctx_factory, meta)
     (entity,) = resolution.entries.values()
@@ -48,18 +48,18 @@ async def test_a_name_finds_the_account_by_its_key(make_resolver, ctx_factory, m
     assert resolution.get(entity.kind.collection, "GLOBEX corp") is entity
 
 
-async def test_the_tenant_and_the_source_app_are_not_organisations_of_the_record(
+async def test_the_org_and_the_source_app_are_not_organisations_of_the_record(
     make_resolver, ctx_factory, metadata_factory, fake_graph,
 ) -> None:
-    fake_graph.tenant_names[ORG] = "Northwind Analytics"
+    fake_graph.org_names[ORG] = "Northwind Analytics"
     meta = metadata_factory(organizations=["Northwind", "Slack", "Initech"])
     _, resolution = await _resolve(make_resolver, ctx_factory, meta, connector_name=Connectors.SLACK)
     assert [e.name for e in resolution.entries.values()] == ["Initech"]
 
 
-async def test_a_failed_tenant_lookup_still_resolves(make_resolver, ctx_factory, metadata_factory, fake_graph) -> None:
-    fake_graph.tenant_names[ORG] = "Northwind"
-    fake_graph.fail_tenant_lookup = True
+async def test_a_failed_org_lookup_still_resolves(make_resolver, ctx_factory, metadata_factory, fake_graph) -> None:
+    fake_graph.org_names[ORG] = "Northwind"
+    fake_graph.fail_org_lookup = True
     _, resolution = await _resolve(make_resolver, ctx_factory, metadata_factory(organizations=["Initech"]))
     assert [e.name for e in resolution.entries.values()] == ["Initech"]
 
@@ -79,13 +79,13 @@ async def test_a_spelling_the_key_misses_is_offered_to_the_model(
     assert items[0]["kind"] == "organization"
 
 
-async def test_another_tenants_organisation_is_never_offered(
+async def test_another_orgs_organisation_is_never_offered(
     make_resolver, ctx_factory, metadata_factory, fake_store, fake_graph, scripted_model,
 ) -> None:
     await fake_store.upsert_entities_batch([EntityRecord.for_linked(
         EntityType.ORGANIZATION, "theirs", "Globex Holdings", ORG, "conn-sf", None,
     )])
-    fake_graph.nodes[(ORGS, "theirs")]["parentOrgId"] = "another-tenant"
+    fake_graph.nodes[(ORGS, "theirs")]["parentOrgId"] = "another-org"
     model = scripted_model()
     _, resolution = await _resolve(make_resolver, ctx_factory, metadata_factory(organizations=["Globex"]))
     assert [e.is_new for e in resolution.entries.values()] == [True]

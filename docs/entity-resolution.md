@@ -210,18 +210,18 @@ stored copy is rewritten.
 
 The classification call also lists the organisations a document names
 (KG-13 slice 3b): one more field, at most 10, no extra model call. Before
-resolution, names are dropped when they are the tenant itself (its full name
+resolution, names are dropped when they are the org itself (its full name
 or its leading words), the application the record came from (a Slack message
 naming "Slack"), or a generic word ("the client").
 
 - Names resolve with the record's taxonomy, through the same tiers, against
-  the tenant's external organisations: CRM accounts and organisations made by
+  the org's external organisations: CRM accounts and organisations made by
   earlier extractions. The key is `organization_key` (case, punctuation and
   legal suffixes ignored), stored as `normalizedName` on external
   organisations. Spellings of one organisation share a key, so new names alone
   never cost a model call. The model is told that a parent or subsidiary is a
   different organisation.
-- A name that matches nothing becomes an external organisation of the tenant
+- A name that matches nothing becomes an external organisation of the org
   in `organizations` (`isExternal`, `parentOrgId`, a deterministic key). A
   Salesforce account synced later with the same name or key takes the node
   over, and when an account and such a node share a key, the account wins.
@@ -230,7 +230,7 @@ naming "Slack"), or a generic word ("the client").
   record's EXTRACTED edges; a connector sync replaces only INFERRED ones (an
   edge without an origin counts as INFERRED).
 - An organisation is searchable once a connector knows it (a record group's
-  `dealOf`, a tenant's `prospect` or `customer` edge, or an INFERRED record
+  `dealOf`, an org's `prospect` or `customer` edge, or an INFERRED record
   edge) or once 2 live records name it (`MIN_EXTRACTED_RECORDS`). Below that it
   has no entity point; the rebuild deletes one that drops below.
 - Organisation edges are written after the record's transaction and a failure
@@ -266,7 +266,7 @@ naming "Slack"), or a generic word ("the client").
     duplicates are not listed under the organisation or counted;
   - a failed write of a record's organisation links is logged, not retried;
     the next extraction of the record writes them.
-- Measured on 40 hand-labelled documents (`tests/evals/organization_extraction`):
+- Measured on 40 hand-labelled documents:
   precision 98.8%, recall 97.6% after filtering, on the indexing model at low
   reasoning effort.
 

@@ -1284,8 +1284,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 taxonomy_collection, ["mergedInto"], sparse=True,
             )
 
-        # An organisation a document names is looked up by its tenant and key
-        # once per record (find_organizations); tenant orgs have no key.
+        # An organisation a document names is looked up by its org and key
+        # once per record (find_organizations); the org itself has no key.
         await self.http_client.ensure_persistent_index(
             CollectionNames.ORGS.value, ["parentOrgId", "normalizedName"], sparse=True,
         )
@@ -1865,7 +1865,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The (orgId, _key) index gives the org's keys in order from the cursor
         # (the first page after ""), so a page stops at the limit; the planner
         # otherwise sorts the org's records of these types, or walks every
-        # tenant's keys in the primary index. A soft hint: without the index
+        # org's keys in the primary index. A soft hint: without the index
         # the query still answers, only slower.
         rows = await self.http_client.execute_aql(
             f"""
@@ -21676,7 +21676,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         A traversal streams, so a caller's LIMIT stops it early; the node
         lookup is a loop rather than a ternary, which AQL would hoist and
-        evaluate for another tenant's node too."""
+        evaluate for another org's node too."""
         collection, scope, _ = self._LINKED_ENTITY_NODES[entity_type]
         return f"""FOR n IN {collection}
                         FILTER n._key == {key} AND {scope}
@@ -22445,7 +22445,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "@edges": TAXONOMY_EDGE_COLLECTIONS[collection],
                 "org_id": org_id,
                 # Never null: a constant-true filter lets the optimizer sort
-                # by walking every tenant's nodes in _key order.
+                # by walking every org's nodes in _key order.
                 "after_key": after_key or "",
                 "limit": max(1, int(limit)),
             },
@@ -22484,7 +22484,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See :meth:`IGraphDBProvider.create_organization_if_absent`."""
         key = node.get("id") or node.get("_key")
         if not org_id or not key or not node.get("name"):
-            raise ValueError("an extracted organisation needs a tenant, an id and a name")
+            raise ValueError("an extracted organisation needs an org, an id and a name")
         now = get_epoch_timestamp_in_ms()
         doc = {
             "_key": key, "name": node["name"], "normalizedName": node.get("normalizedName"),

@@ -4824,7 +4824,6 @@ class SalesforceConnector(BaseConnector):
                         if parent_org_id is None or o.get("parentOrgId") == parent_org_id
                     }
                     external_keys = set(external_org_key_by_name.values())
-                    tenant_id = parent_org_id or self.data_entities_processor.org_id
                     delete_tasks = []
                     for org, rg, _, _ in orgs_with_edges:
                         existing_key = external_org_key_by_name.get(org.name)
@@ -4833,7 +4832,7 @@ class SalesforceConnector(BaseConnector):
                             # account (KG-13 3b): the account takes it over, so
                             # those records link to it. Only extraction's own
                             # deterministic key, never another account's.
-                            extracted = extracted_organization_id(tenant_id, org.name)
+                            extracted = extracted_organization_id(parent_org_id or org_id, org.name)
                             existing_key = extracted if extracted in external_keys else None
                         if existing_key is not None:
                             org.id = existing_key

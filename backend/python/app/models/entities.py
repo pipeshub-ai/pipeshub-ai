@@ -3356,7 +3356,7 @@ class Org(BaseModel):
     ownership_type: str | None = Field(default=None, description="Ownership type: public, private, subsidiary, government, other")
     phone: str | None = Field(default=None, description="Organization phone number")
     duns_id: str | None = Field(default=None, description="DUNS number (Data Universal Numbering System)")
-    parent_org_id: str | None = Field(default=None, description="The tenant an external organisation belongs to")
+    parent_org_id: str | None = Field(default=None, description="The org an external organisation belongs to")
 
     def to_arango_org(self) -> dict[str, Any]:
         """Convert Org model to ArangoDB document format. Output matches orgs_schema (no extra fields)."""

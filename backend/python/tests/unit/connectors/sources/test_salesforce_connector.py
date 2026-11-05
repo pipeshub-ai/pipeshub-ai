@@ -7842,12 +7842,12 @@ class TestSyncAccountsRemaining:
         from app.modules.entity_resolution.keys import taxonomy_node_key
 
         connector = _make_connector()
-        tenant = connector.data_entities_processor.org_id
-        extracted = taxonomy_node_key(tenant, "organizations", "globex")
+        org = connector.data_entities_processor.org_id
+        extracted = taxonomy_node_key(org, "organizations", "globex")
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_all_orgs = AsyncMock(side_effect=[
-            [{"name": "Globex Corp", "_key": extracted, "isExternal": True, "parentOrgId": tenant}],
-            [{"name": "Globex Corp", "id": extracted, "isExternal": True, "parentOrgId": tenant}],
+            [{"name": "Globex Corp", "_key": extracted, "isExternal": True, "parentOrgId": org}],
+            [{"name": "Globex Corp", "id": extracted, "isExternal": True, "parentOrgId": org}],
         ])
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.delete_edges_from = AsyncMock()
@@ -7871,11 +7871,11 @@ class TestSyncAccountsRemaining:
         from app.modules.entity_resolution.keys import taxonomy_node_key
 
         connector = _make_connector()
-        tenant = connector.data_entities_processor.org_id
-        extracted = taxonomy_node_key(tenant, "organizations", "globex")
+        org = connector.data_entities_processor.org_id
+        extracted = taxonomy_node_key(org, "organizations", "globex")
         rows = [
-            {"name": "Globex Corporation", "_key": "acc-1", "id": "acc-1", "isExternal": True, "parentOrgId": tenant},
-            {"name": "Globex Corporation", "_key": extracted, "id": extracted, "isExternal": True, "parentOrgId": tenant},
+            {"name": "Globex Corporation", "_key": "acc-1", "id": "acc-1", "isExternal": True, "parentOrgId": org},
+            {"name": "Globex Corporation", "_key": extracted, "id": extracted, "isExternal": True, "parentOrgId": org},
         ]
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_all_orgs = AsyncMock(return_value=rows)
@@ -7897,10 +7897,10 @@ class TestSyncAccountsRemaining:
         """Only a node extraction made is adopted by key: "Acme Inc" and an
         existing "Acme LLC" account are separate CRM accounts."""
         connector = _make_connector()
-        tenant = connector.data_entities_processor.org_id
+        org = connector.data_entities_processor.org_id
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_all_orgs = AsyncMock(return_value=[
-            {"name": "Acme LLC", "_key": "acc-llc", "id": "acc-llc", "isExternal": True, "parentOrgId": tenant},
+            {"name": "Acme LLC", "_key": "acc-llc", "id": "acc-llc", "isExternal": True, "parentOrgId": org},
         ])
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.delete_edges_from = AsyncMock()
@@ -9606,9 +9606,9 @@ class TestCoverageFinalPush:
         assert len(result) == 1
 
 
-def test_an_account_records_the_tenant_it_belongs_to() -> None:
-    """KG-13: an account is an organisation entity of its tenant only; the
-    tenant is what scopes it in search and in name matching."""
+def test_an_account_records_the_org_it_belongs_to() -> None:
+    """KG-13: an account is an organisation entity of its org only; the
+    org is what scopes it in search and in name matching."""
     connector = _make_connector()
     connector.data_entities_processor.org_id = "org-1"
     account = connector._create_org(name="Acme", is_external=True)

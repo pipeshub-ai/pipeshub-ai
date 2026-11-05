@@ -25,8 +25,8 @@ if TYPE_CHECKING:
 # searchable: one mention is too often a stray name (KG-13, decided 2026-10-02).
 MIN_EXTRACTED_RECORDS = 2
 
-# Indexing names a tenant this until its owner registers a real name.
-PLACEHOLDER_TENANT_NAME = "Individual Account"
+# Indexing names an org this until its owner registers a real name.
+PLACEHOLDER_ORG_NAME = "Individual Account"
 
 _LEGAL_SUFFIXES = frozenset({
     "inc", "incorporated", "llc", "llp", "lp", "ltd", "limited", "plc", "corp", "corporation",
@@ -71,9 +71,9 @@ def organization_key(name: str) -> str:
     return " ".join(words)
 
 
-def extracted_organization_id(tenant_id: str, name: str) -> str:
-    """The key extraction gives the tenant's organisation named ``name``."""
-    return taxonomy_node_key(tenant_id, CollectionNames.ORGS.value, organization_key(name))
+def extracted_organization_id(org_id: str, name: str) -> str:
+    """The key extraction gives the org's organisation named ``name``."""
+    return taxonomy_node_key(org_id, CollectionNames.ORGS.value, organization_key(name))
 
 
 def accounts_last(rows: list[dict]) -> list[dict]:
@@ -82,8 +82,8 @@ def accounts_last(rows: list[dict]) -> list[dict]:
     the two share a name."""
     def extracted(row: dict) -> bool:
         key = row.get("_key") or row.get("id")
-        tenant = row.get("parentOrgId")
-        return bool(key and tenant and key == extracted_organization_id(tenant, row.get("name") or ""))
+        org_id = row.get("parentOrgId")
+        return bool(key and org_id and key == extracted_organization_id(org_id, row.get("name") or ""))
 
     return sorted(rows, key=lambda row: not extracted(row))
 
@@ -99,13 +99,13 @@ def _app_names(connector_name: str) -> frozenset[str]:
     return _APP_NAMES.get(name, frozenset({name}) if name else frozenset())
 
 
-def usable_organization_names(names: list[str], *, tenant_name: str, connector_name: str) -> list[str]:
-    """``names`` worth resolving, in order and once per key: not the tenant
+def usable_organization_names(names: list[str], *, org_name: str, connector_name: str) -> list[str]:
+    """``names`` worth resolving, in order and once per key: not the org
     itself, not the application the record came from, not a generic word."""
-    tenant = "" if tenant_name == PLACEHOLDER_TENANT_NAME else organization_key(tenant_name or "")
+    org = "" if org_name == PLACEHOLDER_ORG_NAME else organization_key(org_name or "")
     # Its leading words too: documents call "Northwind Analytics" "Northwind".
-    tenant_words = tenant.split()
-    tenant_forms = {" ".join(tenant_words[:n]) for n in range(1, len(tenant_words) + 1)}
+    org_words = org.split()
+    org_forms = {" ".join(org_words[:n]) for n in range(1, len(org_words) + 1)}
     app = {organization_key(n) for n in _app_names(connector_name)}
     seen: set[str] = set()
     kept: list[str] = []
@@ -115,7 +115,7 @@ def usable_organization_names(names: list[str], *, tenant_name: str, connector_n
         if not is_acceptable_name(normalize_name(name)) or not key or key in seen:
             continue
         seen.add(key)
-        if key in tenant_forms or key in app or normalize_name(name) in _GENERIC or key in _GENERIC:
+        if key in org_forms or key in app or normalize_name(name) in _GENERIC or key in _GENERIC:
             continue
         kept.append(name)
     return kept
@@ -123,7 +123,7 @@ def usable_organization_names(names: list[str], *, tenant_name: str, connector_n
 
 async def searchable_organizations(graph: IGraphDBProvider, org_id: str, keys: list[str]) -> set[str]:
     """The ``keys`` that belong in the entity index: organisations of the
-    tenant a connector knows, or that enough live records name."""
+    org a connector knows, or that enough live records name."""
     reach = await graph.get_organization_record_reach(org_id, keys, record_cap=MIN_EXTRACTED_RECORDS)
     return {
         key for key, r in reach.items()

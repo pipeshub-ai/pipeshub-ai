@@ -8803,7 +8803,7 @@ class IGraphDBProvider(ABC):
         keys: list[str],
         transaction: str | None = None,
     ) -> list[dict[str, Any]]:
-        """External organisations of tenant ``org_id`` (CRM accounts and
+        """External organisations of org ``org_id`` (CRM accounts and
         extracted ones) whose ``normalizedName`` is one of ``keys``.
 
         Returns:
@@ -8818,7 +8818,7 @@ class IGraphDBProvider(ABC):
         node: dict[str, Any],
         transaction: str | None = None,
     ) -> None:
-        """Create an extracted organisation of tenant ``org_id`` unless a node
+        """Create an extracted organisation of org ``org_id`` unless a node
         with ``node["id"]`` exists; an existing node is left as it is.
 
         ``node`` carries ``id``, ``name`` and ``normalizedName``; the node is
@@ -8854,10 +8854,10 @@ class IGraphDBProvider(ABC):
         *,
         record_cap: int | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """For each of ``keys`` that is an external organisation of tenant
+        """For each of ``keys`` that is an external organisation of org
         ``org_id``: how many live records of the org name it (EXTRACTED
         edges), and whether a connector knows it (a record group's ``dealOf``
-        edge, a tenant's ``prospect``/``customer`` edge, or an INFERRED
+        edge, an org's ``prospect``/``customer`` edge, or an INFERRED
         record edge). Trashed records count for neither. With
         ``record_cap``, counting stops there: deciding the searchability
         threshold need not walk every record of a much-named organisation.

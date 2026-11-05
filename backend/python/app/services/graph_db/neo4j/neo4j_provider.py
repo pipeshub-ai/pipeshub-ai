@@ -1185,7 +1185,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"FOR (n:{taxonomy_label}) ON (n.mergedInto)"
             )
 
-        # An organisation a document names is looked up by its tenant and key
+        # An organisation a document names is looked up by its org and key
         # once per record (find_organizations).
         indexes.append(
             "CREATE INDEX organization_parent_normalized_name IF NOT EXISTS "
@@ -22462,10 +22462,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             (collection_to_label(CollectionNames.ORGS.value),),
         ),
     }
-    # How a node ``e`` of each tenant-owned entity type is matched to $org_id.
+    # How a node ``e`` of each org-owned entity type is matched to $org_id.
     # An external organisation (a CRM account) carries the org it belongs to as
     # parentOrgId; the org itself is never an entity.
-    _ENTITY_TENANT_SCOPE = {
+    _ENTITY_ORG_SCOPE = {
         KnowledgeGraphEntityType.RECORD_GROUP.value: "e.orgId = $org_id",
         KnowledgeGraphEntityType.PERSON.value: "e.orgId = $org_id",
         KnowledgeGraphEntityType.ORGANIZATION.value: "e.isExternal = true AND e.parentOrgId = $org_id",
@@ -22696,8 +22696,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               }}
               WITH *"""
         relationship, entity_match = self._entity_node_match(entity_type)
-        if entity_type in self._ENTITY_TENANT_SCOPE:
-            entity_match += f"\n              WHERE {self._ENTITY_TENANT_SCOPE[entity_type]}"
+        if entity_type in self._ENTITY_ORG_SCOPE:
+            entity_match += f"\n              WHERE {self._ENTITY_ORG_SCOPE[entity_type]}"
         return f"""{entity_match}
               MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)"""
 
@@ -22856,7 +22856,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self.client.execute_query(
             f"""
             MATCH (:Record {{id: $record_id}})-[:{relationship}]{self._candidate_arrow(entity_type)}(e:{label})
-            WHERE {self._ENTITY_TENANT_SCOPE[entity_type]}
+            WHERE {self._ENTITY_ORG_SCOPE[entity_type]}
             WITH DISTINCT e
             RETURN e.id AS id, {fields}
             ORDER BY id
@@ -22878,7 +22878,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (:{collection_to_label(CollectionNames.RECORD_GROUPS.value)} {{id: $group_id}})
                   -[:{edge_collection_to_relationship(CollectionNames.DEAL_OF.value)}]->
                   (e:{collection_to_label(CollectionNames.ORGS.value)})
-            WHERE {self._ENTITY_TENANT_SCOPE[KnowledgeGraphEntityType.ORGANIZATION.value]}
+            WHERE {self._ENTITY_ORG_SCOPE[KnowledgeGraphEntityType.ORGANIZATION.value]}
             RETURN e.id AS id
             ORDER BY id
             LIMIT 1
@@ -23082,8 +23082,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         results: dict[tuple[str, str], dict[str, list[str]]] = {}
         for ref_type, ref_ids in ids_by_type.items():
             relationship, entity_match = self._entity_node_match(ref_type)
-            if ref_type in self._ENTITY_TENANT_SCOPE:
-                entity_match += f"\n              WHERE {self._ENTITY_TENANT_SCOPE[ref_type]}"
+            if ref_type in self._ENTITY_ORG_SCOPE:
+                entity_match += f"\n              WHERE {self._ENTITY_ORG_SCOPE[ref_type]}"
             # The aggregating CALL yields one row per ref even when nothing links.
             query = f"""
             UNWIND $refs AS ref
@@ -23399,7 +23399,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See :meth:`IGraphDBProvider.create_organization_if_absent`."""
         key = node.get("id") or node.get("_key")
         if not org_id or not key or not node.get("name"):
-            raise ValueError("an extracted organisation needs a tenant, an id and a name")
+            raise ValueError("an extracted organisation needs an org, an id and a name")
         now = get_epoch_timestamp_in_ms()
         label = collection_to_label(CollectionNames.ORGS.value)
         await self.client.execute_query(

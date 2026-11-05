@@ -83,9 +83,9 @@ MERGE_CALL_TIMEOUT_SECONDS = 60.0
 # top 3 every time (tests/evals/entity_resolution, KG-12).
 MERGE_CANDIDATES = 3
 
-# How long a tenant's name is reused to filter the tenant out of the
+# How long an org's name is reused to filter the org out of the
 # organisations its own documents name.
-TENANT_NAME_TTL_SECONDS = 600.0
+ORG_NAME_TTL_SECONDS = 600.0
 
 
 class EntityResolver:
@@ -114,7 +114,7 @@ class EntityResolver:
         # Keyed by org: each org can configure its own model for this role.
         self._llms: dict[str, BaseChatModel] = {}
         self._llm_lock = asyncio.Lock()
-        self._tenant_names: dict[str, tuple[str, float]] = {}
+        self._org_names: dict[str, tuple[str, float]] = {}
 
     # ------------------------------------------------------------------
     # Entry point
@@ -365,29 +365,29 @@ class EntityResolver:
 
     async def _organization_names(self, org_id: str, record: object, metadata: SemanticMetadata) -> list[str]:
         """The organisations ``metadata`` names that are worth resolving: not
-        the tenant itself, not the application the record came from."""
+        the org itself, not the application the record came from."""
         names = list(getattr(metadata, "organizations", None) or [])
         if not names:
             return []
         connector = getattr(record, "connector_name", None)
         return usable_organization_names(
-            names, tenant_name=await self._tenant_name(org_id),
+            names, org_name=await self._org_name(org_id),
             connector_name=str(getattr(connector, "value", connector) or ""),
         )
 
-    async def _tenant_name(self, org_id: str) -> str:
-        cached = self._tenant_names.get(org_id)
-        if cached is not None and time.monotonic() - cached[1] < TENANT_NAME_TTL_SECONDS:
+    async def _org_name(self, org_id: str) -> str:
+        cached = self._org_names.get(org_id)
+        if cached is not None and time.monotonic() - cached[1] < ORG_NAME_TTL_SECONDS:
             return cached[0]
         try:
             doc = await self.graph_provider.get_document(org_id, ORGANIZATION.collection)
         except Exception:
-            # Unfiltered for this record: at worst the tenant becomes one of
+            # Unfiltered for this record: at worst the org becomes one of
             # its own organisations, which the next lookup stops.
-            self.logger.warning("entity_resolution: tenant name lookup failed for org %s", org_id, exc_info=True)
+            self.logger.warning("entity_resolution: org name lookup failed for org %s", org_id, exc_info=True)
             return ""
         name = str((doc or {}).get("name") or "")
-        self._tenant_names[org_id] = (name, time.monotonic())
+        self._org_names[org_id] = (name, time.monotonic())
         return name
 
     # ---- tier 0 ------------------------------------------------------
@@ -528,8 +528,8 @@ class EntityResolver:
             stats,
         )
         if collection == ORGANIZATION.collection:
-            # The tenant's external organisations; the tenant org itself and
-            # other tenants' accounts share the collection.
+            # The org's external organisations; the org itself and
+            # other orgs' accounts share the collection.
             live = {
                 str(row.get("id") or row.get("_key"))
                 for row in rows or []

@@ -53,14 +53,14 @@ async def _records(provider: Any, org: str, *keys: str) -> None:  # noqa: ANN401
     ])
 
 
-async def test_an_extracted_organisation_is_created_once_for_its_tenant_and_found_by_key(backend) -> None:  # noqa: F811
+async def test_an_extracted_organisation_is_created_once_for_its_org_and_found_by_key(backend) -> None:  # noqa: F811
     provider, org = backend
     await provider.ensure_schema()
     await provider.batch_upsert_nodes([{"id": org, "accountType": "enterprise", "isActive": True}], ORGS)
     node = {"id": f"{org}-x-globex", "name": "Globex Corporation", "normalizedName": "globex"}
     await provider.create_organization_if_absent(org, node)
     await provider.create_organization_if_absent(org, {**node, "name": "Globex"})  # a no-op
-    # A Salesforce account carrying its key, and another tenant's namesake.
+    # A Salesforce account carrying its key, and another org's namesake.
     await provider.batch_upsert_nodes([
         {**_account(org, "acme", "Acme Corp", parent=org), "normalizedName": "acme"},
         {**_account(org, "theirs", "Globex", parent=f"{org}-other"), "normalizedName": "globex"},

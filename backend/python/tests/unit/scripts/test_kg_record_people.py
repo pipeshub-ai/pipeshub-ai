@@ -241,7 +241,7 @@ async def test_a_failed_account_lookup_fails_the_page() -> None:
     assert _lines(out)[-1]["total"]["failed_pages"] == 1
 
 
-async def test_apply_keys_the_tenants_accounts_for_extracted_names() -> None:
+async def test_apply_keys_the_orgs_accounts_for_extracted_names() -> None:
     """Accounts synced before KG-13 3b carry no normalizedName, so names in
     documents could not find them."""
     graph, out = _graph([]), io.StringIO()
