@@ -1349,17 +1349,29 @@ def _grep_search_regexes(command: str) -> list[regex.Pattern[str]]:
     return list({rx.pattern.lower(): rx for rx in regexes}.values())[:_MAX_RANK_ALTERNATIVES]
 
 
-def _grep_stage_regexes(command: str) -> list[list[regex.Pattern[str]]]:
-    """The compiled alternatives of each non-inverted grep stage, one list per stage."""
+def _grep_stage_regexes(command: str, *, exact: bool = False) -> list[list[regex.Pattern[str]]]:
+    """The compiled alternatives of each non-inverted grep stage, one list per stage.
+
+    Ranking matches them case-insensitively; *exact* keeps each stage's own
+    ``-i``, ``-w`` and ``-x``, for a caller that decides with them whether text matched.
+    """
     groups: list[list[regex.Pattern[str]]] = []
     for stage_text in _split_pipeline_stages(command):
         stage = grep_stage(stage_text)
         if stage is None or stage.inverted:
             continue
-        groups.append([
+        compiled = [
             rx for pattern in stage.patterns
-            for rx in _compile_alternatives(pattern, fixed=stage.fixed, extended=stage.extended)
-        ])
+            for rx in _compile_alternatives(
+                pattern, fixed=stage.fixed, extended=stage.extended,
+                ignore_case=stage.ignore_case if exact else True,
+            )
+        ]
+        if exact and stage.line:
+            compiled = [regex.compile(rf"^(?:{rx.pattern})$", rx.flags | regex.MULTILINE) for rx in compiled]
+        elif exact and stage.word:
+            compiled = [regex.compile(rf"(?<!\w)(?:{rx.pattern})(?!\w)", rx.flags) for rx in compiled]
+        groups.append(compiled)
     return groups
 
 
@@ -2132,7 +2144,7 @@ class StoragePatternMatch:
             # a record the user may read.
             ranked = await asyncio.to_thread(
                 _keep_text_matches, [r for r in ranked if r[2] > 0], run_dir,
-                _grep_stage_regexes(command), max_results,
+                _grep_stage_regexes(command, exact=True), max_results,
             )
         return ranked, accessible, len(candidates)
 
@@ -2182,7 +2194,7 @@ class StoragePatternMatch:
         stage_regexes: list[list[regex.Pattern[str]]] = []
         if content_owner:
             ranked = [r for r in ranked if r[2] > 0]
-            stage_regexes = _grep_stage_regexes(command)
+            stage_regexes = _grep_stage_regexes(command, exact=True)
 
         accessible: dict[str, str] = {}
         selected: list[tuple[str, str, int, int, str]] = []

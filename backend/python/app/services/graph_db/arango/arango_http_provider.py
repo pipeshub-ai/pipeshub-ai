@@ -25704,6 +25704,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         scope_connector_ids: list[str],
         org_id: str,
         transaction: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, SharedContentCount]:
         if not scope_connector_ids or not org_id:
             return {}
@@ -25733,6 +25734,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query,
             {"scope_ids": sorted(set(scope_connector_ids)), "org_id": org_id},
             transaction,
+            **({"max_runtime": timeout_seconds} if timeout_seconds is not None else {}),
         )
         return {
             row["cid"]: SharedContentCount(shared=int(row["shared"]), records=int(row["records"] or 0))

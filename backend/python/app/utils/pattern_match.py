@@ -985,7 +985,9 @@ async def content_owner_connector_ids(
         return cached
     try:
         shares = await asyncio.wait_for(
-            graph_provider.get_content_owner_connector_ids(list(scope_ids), org_id),
+            graph_provider.get_content_owner_connector_ids(
+                list(scope_ids), org_id, timeout_seconds=_CONTENT_OWNER_LOOKUP_TIMEOUT,
+            ),
             timeout=_CONTENT_OWNER_LOOKUP_TIMEOUT,
         )
     except asyncio.TimeoutError:

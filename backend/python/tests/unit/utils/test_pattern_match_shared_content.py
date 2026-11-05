@@ -17,7 +17,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agents.actions.storage_search.storage_search import StoragePatternMatch
+from app.agents.actions.storage_search.storage_search import (
+    StoragePatternMatch,
+    _grep_stage_regexes,
+)
 from app.services.graph_db.interface.graph_db_provider import SharedContentCount
 from app.utils import pattern_match
 from app.utils.pattern_match import (
@@ -73,7 +76,7 @@ class TestContentOwnerConnectorIds:
         graph = _graph({OWNER: SharedContentCount(shared=5, records=10)})
 
         with patch.object(pattern_match, "_CONTENT_OWNER_LOOKUP_TIMEOUT", 0.01):
-            async def _slow(*_args: object) -> dict:
+            async def _slow(*_args: object, **_kwargs: object) -> dict:
                 await asyncio.sleep(1)
                 return {}
 
@@ -92,6 +95,9 @@ class TestContentOwnerConnectorIds:
 
         assert await content_owner_connector_ids(graph, "org", SCOPE, MagicMock()) == [OWNER]
         assert graph.get_content_owner_connector_ids.await_args.args == (list(SCOPE), "org")
+        assert graph.get_content_owner_connector_ids.await_args.kwargs == {
+            "timeout_seconds": pattern_match._CONTENT_OWNER_LOOKUP_TIMEOUT,
+        }, "the server stops the query when the search stops waiting"
 
     @pytest.mark.asyncio
     async def test_at_most_five_most_shared_first(self) -> None:
@@ -241,6 +247,11 @@ class TestFindRecordsInOtherStorage:
     VR_TEXT = "11111111-0000-0000-0000-000000000000"
     VR_NAME = "22222222-0000-0000-0000-000000000000"
 
+    @pytest.fixture(autouse=True)
+    def _runs_without_landlock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Confined where the kernel has Landlock; elsewhere find_records would refuse to run.
+        monkeypatch.setenv("STORAGE_SEARCH_ALLOW_UNCONFINED", "true")
+
     @pytest.fixture
     def owner_dir(self, tmp_path: Path) -> str:
         (tmp_path / f"record_{self.VR_TEXT}.json").write_text(
@@ -332,6 +343,54 @@ class TestFindRecordsInOtherStorage:
 
         scopes = [c.kwargs["scope_connector_ids"] for c in graph.filter_accessible_virtual_record_ids.await_args_list]
         assert scopes == [None, frozenset(SCOPE)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("name", "text", "command"), [
+        ("Depot Lease", "the lease renewal is due", 'grep -rl "Lease" .'),       # case-sensitive stage
+        ("lease", "leaseholder notes for April", 'grep -rliw "lease" .'),      # -w: whole word only
+    ])
+    async def test_the_text_must_match_each_stage_as_its_flags_say(
+        self, tmp_path: Path, name: str, text: str, command: str,
+    ) -> None:
+        (tmp_path / f"record_{self.VR_TEXT}.json").write_text(_stored(name, text))
+        tool = self._tool(self._graph({self.VR_TEXT: "rid-text"}), str(tmp_path))
+
+        ok, output = await tool.find_records(
+            OWNER, command, scope_connector_ids=frozenset(SCOPE), content_owner=True,
+        )
+
+        assert ok
+        assert json.loads(output)["records"] == [], "only the stored name matched the command as written"
+
+    def test_a_whole_line_stage_needs_a_whole_line(self) -> None:
+        (stage,) = _grep_stage_regexes('grep -rlix "lease" .', exact=True)
+        assert stage[0].search("notes\nLease\nend")
+        assert not stage[0].search("the lease is due")
+
+    @pytest.mark.asyncio
+    async def test_a_case_sensitive_stage_keeps_a_text_match(self, tmp_path: Path) -> None:
+        (tmp_path / f"record_{self.VR_TEXT}.json").write_text(_stored("depot", "the Lease renewal is due"))
+        tool = self._tool(self._graph({self.VR_TEXT: "rid-text"}), str(tmp_path))
+
+        ok, output = await tool.find_records(
+            OWNER, 'grep -rl "Lease" .', scope_connector_ids=frozenset(SCOPE), content_owner=True,
+        )
+
+        assert ok
+        assert [r["record_id"] for r in json.loads(output)["records"]] == ["rid-text"]
+
+    @pytest.mark.asyncio
+    async def test_a_readable_view_holds_only_records_of_the_scope(self, owner_dir: str) -> None:
+        graph = self._graph({self.VR_TEXT: "rid-text"})
+        tool = self._tool(graph, owner_dir)
+
+        await tool.find_records(
+            OWNER, 'grep -rli "lease" .', readable_only=True,
+            scope_connector_ids=frozenset(SCOPE), content_owner=True,
+        )
+
+        scopes = {c.kwargs["scope_connector_ids"] for c in graph.filter_accessible_virtual_record_ids.await_args_list}
+        assert scopes == {frozenset(SCOPE)}, "the view and the hits are checked against the scope alike"
 
     @pytest.mark.asyncio
     async def test_an_unavailable_permission_check_fails_closed(self, owner_dir: str) -> None:

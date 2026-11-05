@@ -4760,20 +4760,27 @@ class IGraphDBProvider(ABC):
         scope_connector_ids: list[str],
         org_id: str,
         transaction: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, SharedContentCount]:
         """Connectors outside *scope_connector_ids* holding content that live
         records of the scope share, keyed by connector id.
 
         Deduplicated content is stored once, under whichever connector indexed
         it first, so a file search over the scope's own storage cannot see it;
-        these connectors' storage can. Only a hint for where to look: it says
-        nothing about who may read a record, and a caller must adjudicate every
-        hit against the scope as usual. Both sides are bounded by ``org_id``,
-        since a virtual record id is not unique across orgs. A connector's own
-        copies count whether or not they are live: the stored file stays where
-        the first holder wrote it.
+        one of these connectors' storage holds it. Which one is recorded only
+        by the storage service, so every holder is listed. Only a hint for
+        where to look: it says nothing about who may read a record, and a
+        caller must adjudicate every hit against the scope as usual. Both sides
+        are bounded by ``org_id``, since a virtual record id is not unique
+        across orgs. A connector's own copies count whether or not they are
+        live: the stored file stays where the first holder wrote it.
 
-        Raises on failure, so a caller cannot mistake it for "nothing shared".
+        Args:
+            timeout_seconds: Optional server-side query limit, so a caller that
+                stops waiting does not leave the query running.
+
+        Raises on failure, including the timeout, so a caller cannot mistake it
+        for "nothing shared".
         """
         raise NotImplementedError
 

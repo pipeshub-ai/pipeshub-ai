@@ -59,6 +59,18 @@ async def test_the_query_is_bounded_by_org_scope_and_liveness(make, live) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("make", "option"), [(_neo4j, "timeout"), (_arango, "max_runtime")])
+async def test_the_server_stops_the_query_at_the_callers_limit(make, option) -> None:
+    run = AsyncMock(return_value=[])
+
+    await make(run).get_content_owner_connector_ids(["kb-handbook"], "org-1", timeout_seconds=4.0)
+    await make(run).get_content_owner_connector_ids(["kb-handbook"], "org-1")
+
+    assert run.await_args_list[0].kwargs[option] == 4.0
+    assert option not in run.await_args_list[1].kwargs
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("make", [_neo4j, _arango])
 async def test_rows_without_a_connector_are_dropped(make) -> None:
     result = await make(AsyncMock(return_value=ROWS)).get_content_owner_connector_ids(["kb-handbook"], "org-1")

@@ -122,6 +122,11 @@ def _graph(readable: set[str] | None = None) -> MagicMock:
 
 @needs_grep
 class TestFindRecordsRankingTheWholeOutput:
+    @pytest.fixture(autouse=True)
+    def _runs_without_landlock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Confined where the kernel has Landlock; elsewhere find_records would refuse to run.
+        monkeypatch.setenv("STORAGE_SEARCH_ALLOW_UNCONFINED", "true")
+
     @pytest.mark.asyncio
     async def test_a_cut_output_is_narrowed_by_the_rarest_term(self, tmp_path: Path) -> None:
         for i in range(60):
