@@ -306,7 +306,7 @@ class ToolFreeChatModel:
         if not is_reasoning_off_rejection(exc):
             return None
         if used is not self.llm:
-            # A call in flight at the same time already floored it.
+            # Another call in flight floored it already.
             return self.llm, False
         floored = floor_disabled_reasoning(used)
         if floored is None:
