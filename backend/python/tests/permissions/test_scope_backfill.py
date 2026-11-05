@@ -323,7 +323,7 @@ async def test_a_page_written_again_after_a_failure_is_not_counted_twice() -> No
 
     async def save_once_failing(a: str, p: scope_backfill.Progress) -> None:
         saves["n"] += 1
-        if saves["n"] == 1:
+        if saves["n"] == 2:                      # the first save is the unfinished checkpoint of a fresh start; the second is the first page's
             raise RuntimeError("checkpoint store down")
         await real_save(a, p)
 
@@ -369,3 +369,108 @@ async def test_a_checkpoint_that_cannot_be_read_fails_the_run_and_leaves_the_sav
         await job.run_connector(ORG, app)
     monkeypatch.setattr(loaded.graph, "get_document", real)
     assert loaded.graph.app_docs[app] == saved  # the saved cursor was not overwritten by a fresh start
+
+
+# ---- currency: the pass records the structure generation it started from, read before any record ----
+
+from app.services.permissions.currency import StampCurrency, app_is_current  # noqa: E402
+from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY  # noqa: E402
+
+
+async def test_a_finished_pass_records_the_structure_generation_it_read_first_and_the_connector_is_current() -> None:
+    vdb, loaded, job, app = await setup()
+    loaded.graph.app_docs[app] = {"_key": app, GENERATION_KEY: 7}
+    p = await job.run_connector(ORG, app)
+    assert p.state == DONE and p.structure_generation == 7
+    assert loaded.graph.app_docs[app]["scopeBackfillStructureGeneration"] == 7
+    assert app_is_current(loaded.graph.app_docs[app]) and await StampCurrency(loaded.graph).current([app, "other"]) == {app}
+
+
+async def test_a_structural_change_during_the_pass_leaves_the_connector_not_current_until_the_pass_is_run_again() -> None:
+    vdb, loaded, job, app = await setup(page_size=3)
+    real_nodes, bumped = loaded.graph.stamps.nodes, {"done": False}
+
+    async def bump_while_reading(org: str, ids: frozenset[str]) -> dict:
+        if not bumped["done"]:
+            bumped["done"] = True
+            loaded.graph.app_docs.setdefault(app, {"_key": app})[GENERATION_KEY] = 1       # the change commits after the pass read the generation
+        return await real_nodes(org, ids)
+
+    loaded.graph.stamps.nodes = bump_while_reading  # type: ignore[method-assign]
+    p = await job.run_connector(ORG, app, max_pages=1000)
+    assert p.state == DONE and p.structure_generation == 0
+    assert not app_is_current(loaded.graph.app_docs[app])                  # done, but from before the change
+    again = await job.run_connector(ORG, app, max_pages=1000)               # a finished checkpoint of an older generation is not "nothing to do"
+    assert again.state == DONE and again.structure_generation == 1 and again.records > 0
+    assert app_is_current(loaded.graph.app_docs[app])
+
+
+async def test_a_change_after_the_pass_makes_the_connector_not_current_at_once_and_a_new_pass_makes_it_current() -> None:
+    vdb, loaded, job, app = await setup()
+    await job.run_connector(ORG, app)
+    assert app_is_current(loaded.graph.app_docs[app])
+    loaded.graph.app_docs[app][GENERATION_KEY] = 1                            # a structural write bumps it in its own transaction
+    assert not app_is_current(loaded.graph.app_docs[app]) and await StampCurrency(loaded.graph).current([app]) == frozenset()
+    await job.run_connector(ORG, app)
+    assert app_is_current(loaded.graph.app_docs[app])
+
+
+async def test_an_unsafe_mark_keeps_the_connector_not_current_and_only_a_pass_that_starts_after_it_clears_it() -> None:
+    vdb, loaded, job, app = await setup()
+    await job.run_connector(ORG, app)
+    loaded.graph.app_docs[app][UNSAFE_KEY] = True                              # a change that could not move the generation
+    assert not app_is_current(loaded.graph.app_docs[app])
+    await job.run_connector(ORG, app)                                           # a DONE checkpoint does not hide the mark
+    assert not loaded.graph.app_docs[app][UNSAFE_KEY] and app_is_current(loaded.graph.app_docs[app])
+
+
+async def test_a_mark_set_during_the_pass_is_not_cleared_by_it() -> None:
+    vdb, loaded, job, app = await setup(page_size=3)
+    loaded.graph.app_docs[app] = {"_key": app, UNSAFE_KEY: True}
+    real_nodes, marked = loaded.graph.stamps.nodes, {"done": False}
+
+    async def mark_while_reading(org: str, ids: frozenset[str]) -> dict:
+        if not marked["done"]:
+            marked["done"] = True
+            loaded.graph.app_docs[app][UNSAFE_KEY] = True                      # after the pass cleared the earlier mark
+        return await real_nodes(org, ids)
+
+    loaded.graph.stamps.nodes = mark_while_reading  # type: ignore[method-assign]
+    p = await job.run_connector(ORG, app, max_pages=1000)
+    assert p.state == DONE and loaded.graph.app_docs[app][UNSAFE_KEY] and not app_is_current(loaded.graph.app_docs[app])
+
+
+async def test_the_unfinished_checkpoint_is_saved_before_the_unsafe_mark_is_cleared() -> None:
+    vdb, loaded, job, app = await setup()
+    await job.run_connector(ORG, app)
+    loaded.graph.app_docs[app][UNSAFE_KEY] = True
+    order: list[str] = []
+    real_save, real_update = job._checkpoints.save, loaded.graph.update_node
+
+    async def save(a: str, p: scope_backfill.Progress) -> None:
+        order.append(f"save:{p.state}")
+        await real_save(a, p)
+
+    async def update(key: str, collection: str, updates: dict, *args: object) -> bool:
+        if UNSAFE_KEY in updates:
+            order.append("clear")
+        return await real_update(key, collection, updates, *args)
+
+    job._checkpoints.save = save  # type: ignore[method-assign]
+    loaded.graph.update_node = update  # type: ignore[method-assign]
+    await job.run_connector(ORG, app)
+    assert order.index("save:running") < order.index("clear")
+    # a crash between the two leaves the mark on a connector that is no longer DONE: never a finished older pass with no mark
+    loaded.graph.app_docs[app][UNSAFE_KEY] = True
+    loaded.graph.app_docs[app]["scopeBackfillState"] = DONE
+
+    async def killed_on_clear(key: str, collection: str, updates: dict, *args: object) -> bool:
+        if UNSAFE_KEY in updates:
+            raise Killed
+        return await real_update(key, collection, updates, *args)
+
+    loaded.graph.update_node = killed_on_clear  # type: ignore[method-assign]
+    with pytest.raises(Killed):
+        await job.run_connector(ORG, app)
+    doc = loaded.graph.app_docs[app]
+    assert doc[UNSAFE_KEY] and doc["scopeBackfillState"] == RUNNING and not app_is_current(doc)

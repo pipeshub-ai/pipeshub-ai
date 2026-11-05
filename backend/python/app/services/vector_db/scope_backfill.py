@@ -40,6 +40,7 @@ from app.services.permissions.scope_fields import (
     ScopeFields,
     current_scope_generation,
 )
+from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY
 from app.services.vector_db.membership import (
     STALE_SCOPE,
     resolve_virtual_record_state,
@@ -83,17 +84,21 @@ class Progress:
     after: str | None = None
     version: int = SCOPE_FIELDS_VERSION
     generation: int = 0
+    #: The connector's structure generation (`structure_generation.GENERATION_KEY`) as the pass read it BEFORE it read any record: the
+    #: stamps it writes are current only while the connector still holds this generation (`permissions.currency`). -1: not recorded.
+    structure_generation: int = -1
     records: int = 0
     stale: int = 0
     error: str | None = None
 
     def line(self) -> str:
-        return f"{self.state}  version={self.version} generation={self.generation} records={self.records} stale={self.stale} after={self.after or '-'}" + (
+        return f"{self.state}  version={self.version} generation={self.generation} structure={self.structure_generation} records={self.records} stale={self.stale} after={self.after or '-'}" + (
             f" error={self.error}" if self.error else "")
 
 
 _KEYS = {"state": "scopeBackfillState", "after": "scopeBackfillAfter", "version": "scopeBackfillVersion",
-         "generation": "scopeBackfillGeneration", "records": "scopeBackfillRecords", "stale": "scopeBackfillStale", "error": "scopeBackfillError"}
+         "generation": "scopeBackfillGeneration", "structure_generation": "scopeBackfillStructureGeneration", "records": "scopeBackfillRecords", "stale": "scopeBackfillStale", "error": "scopeBackfillError"}
+BACKFILL_KEYS = _KEYS      # the names the checkpoint is kept under on the app document (read by `permissions.currency`)
 
 
 class AppDocCheckpoints:
@@ -108,6 +113,7 @@ class AppDocCheckpoints:
             return None
         return Progress(str(doc[_KEYS["state"]]), doc.get(_KEYS["after"]), int(doc.get(_KEYS["version"]) or 0),
                         int(doc.get(_KEYS["generation"]) if doc.get(_KEYS["generation"]) is not None else -1),
+                        int(doc[_KEYS["structure_generation"]]) if doc.get(_KEYS["structure_generation"]) is not None else -1,
                         int(doc.get(_KEYS["records"]) or 0), int(doc.get(_KEYS["stale"]) or 0), doc.get(_KEYS["error"]))
 
     async def save(self, app_id: str, p: Progress) -> None:
@@ -135,10 +141,20 @@ class ScopeBackfill:
             if not (await stamps.app(org_id, app_id)).connector_type:
                 raise UnknownConnector(f"{app_id} is not a connector of this organisation")
             p = await self._checkpoints.load(app_id)
-            # a checkpoint of another field version or another scope generation says nothing about the points now: start over
+            # What the connector's structure was BEFORE any record is read: a change that commits after this moves the generation, so the
+            # connector is not current for stamps written from a graph that may predate it (see `permissions.currency`).
+            app = await self._graph.get_document(app_id, CollectionNames.APPS.value, raise_on_error=True) or {}
+            structure, unsafe = int(app.get(GENERATION_KEY) or 0), bool(app.get(UNSAFE_KEY))
+            # a checkpoint of another field version, scope generation or structure generation says nothing about the points now (a connector
+            # marked unsafe too: the mark is cleared only by a pass that starts after it): start over
             generation = current_scope_generation()
-            if p is None or restart or p.version != SCOPE_FIELDS_VERSION or p.generation != generation:
-                p = Progress(generation=generation)
+            if p is None or restart or p.version != SCOPE_FIELDS_VERSION or p.generation != generation or p.structure_generation != structure or unsafe:
+                p = Progress(generation=generation, structure_generation=structure)
+                # The unfinished checkpoint is saved BEFORE the unsafe mark is cleared: a crash in between leaves the mark, never a finished
+                # pass from an older generation with no mark.
+                await self._checkpoints.save(app_id, p)
+                if unsafe and not await self._graph.update_node(app_id, CollectionNames.APPS.value, {UNSAFE_KEY: False}):
+                    raise RuntimeError("the unsafe mark of the connector was not cleared")
             if p.state == DONE:
                 return p
             p.state, p.error = RUNNING, None

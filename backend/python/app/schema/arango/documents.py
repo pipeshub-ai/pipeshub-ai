@@ -218,6 +218,7 @@ app_schema = {
             "scopeBackfillAfter": {"type": ["string", "null"]},
             "scopeBackfillVersion": {"type": ["integer", "null"]},
             "scopeBackfillGeneration": {"type": ["integer", "null"]},
+            "scopeBackfillStructureGeneration": {"type": ["number", "null"]},  # a copy of scopeProjectionGeneration, which is a double
             "scopeBackfillRecords": {"type": ["integer", "null"]},
             "scopeBackfillStale": {"type": ["integer", "null"]},
             "scopeBackfillError": {"type": ["string", "null"]},
