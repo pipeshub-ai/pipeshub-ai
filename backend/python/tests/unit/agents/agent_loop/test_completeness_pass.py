@@ -126,3 +126,5 @@ def test_scope_guard_keeps_other_scopes_to_one_line(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("ANSWER_SCOPE_GUARD", "true")
     on = render_request()
     assert on.startswith(off) and "another scope gives at most one attributed sentence" in on
+    # A same-scope record that corrects the cited one may still change the answer.
+    assert "says it corrects, updates or replaces the record the answer cites" in on

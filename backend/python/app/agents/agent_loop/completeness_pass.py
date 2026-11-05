@@ -45,9 +45,10 @@ _SCOPE_GUARD_CLAUSE = (
     " Take added specifics only from records about the item and scope the question asks about (the same customer, "
     "tier, product, version line or process). A record about another scope gives at most one attributed sentence: "
     "do not merge its steps, approvals, thresholds or schedules into the answer. Where a record gives a different "
-    "value for an item the answer already states, keep the answer's value and name the other in one line as what "
-    "it is (another name for it, drift in an implementation, an earlier value, or one that applies only in a "
-    "narrower case), not as a second requirement."
+    "value for an item the answer already states, keep the answer's value unless that record covers the same scope "
+    "and says it corrects, updates or replaces the record the answer cites; then give its value and name the cited "
+    "one as the earlier value. Otherwise name the other in one line as what it is (another name for it, drift in an "
+    "implementation, an earlier value, or one that applies only in a narrower case), not as a second requirement."
 )
 
 

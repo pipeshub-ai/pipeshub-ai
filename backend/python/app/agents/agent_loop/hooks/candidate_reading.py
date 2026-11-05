@@ -18,7 +18,7 @@ from app.agent_loop_lib.core.messages import AssistantMessage, UserMessage
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
 from app.agents.agent_loop.answer_rules import answer_scope_guard_enabled
 from app.agents.agent_loop.candidate_reading import TopCandidate, unread_top_candidates
-from app.agents.agent_loop.coverage.evidence import collect_evidence
+from app.agents.agent_loop.coverage.evidence import collect_evidence, record_ref
 from app.agents.agent_loop.coverage.opening import framing_exempt
 from app.agents.agent_loop.hooks.coverage_gate import RESTATE_THE_ANSWER
 from app.modules.agents.context.tool_surface import ToolSurfaces
@@ -84,7 +84,7 @@ def _eligible(ctx: "ModelResponseContext") -> bool:
 def _label(context: "AgentContext", candidate: TopCandidate) -> str:
     shortener = get_record_id_shortener_if_enabled(context.tool_state)
     shown_id = shortener.shorten_if_known(candidate.record_id) if shortener is not None else candidate.record_id
-    return f"{candidate.name} (record {shown_id})"
+    return record_ref(shown_id, candidate.name)
 
 
 def read_top_candidates(context: "AgentContext") -> "Middleware[ModelResponseContext]":
