@@ -14,6 +14,7 @@ from app.services.vector_db.const.const import (
     SCOPE_INTEGER_INDEXES,
     SCOPE_KEYWORD_INDEXES,
 )
+from app.services.vector_db.filters import ScopeFilter
 from app.services.vector_db.models import (
     FieldCondition,
     FilterExpression,
@@ -21,7 +22,6 @@ from app.services.vector_db.models import (
     SparseVector,
     VectorPoint,
 )
-from app.services.vector_db.filters import ScopeFilter
 from tests.integration.vector_db.conftest import make_collection
 from tests.integration.vector_db.helpers import (
     make_collection_config,
@@ -31,8 +31,8 @@ from tests.integration.vector_db.helpers import (
 from tests.integration.vector_db.scope_world import (
     ADMIT_CASES,
     EVERYTHING,
-    TERMS,
     GENERATION,
+    TERMS,
     TRUST_CASES,
     VERSION,
     WORLD,
