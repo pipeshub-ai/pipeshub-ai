@@ -24,6 +24,7 @@ from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
+from app.core import org_context
 from app.exceptions.graph_db_exceptions import GraphWriteError
 from app.models.entities import (
     AppMetadata,
@@ -38,6 +39,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db import edge_effects
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
@@ -227,7 +229,8 @@ _CLASSIFIED_SCOPE: contextvars.ContextVar[str | None] = contextvars.ContextVar("
 _READ_PREFIXES = ("get_", "find_", "read_", "is_", "opens_", "has_", "count_", "list_", "filter_")
 _WRITE_WORDS = ("or_create", "or_insert", "or_update", "and_create", "and_delete", "and_update", "and_set", "upsert", "ensure",
                 "create", "delete", "remove", "insert", "replace")
-_RAW_ACCESS = frozenset({"client", "http_client", "execute_query", "execute_aql", "execute"})
+_RAW_CLIENTS = frozenset({"client", "http_client"})
+_RAW_ACCESS = _RAW_CLIENTS | {"execute_query", "execute_aql", "execute"}
 _warned: set[str] = set()
 
 
@@ -240,11 +243,15 @@ def _is_read(name: str) -> bool:
 
 
 class _GuardedProvider:
-    __slots__ = ("_provider", "_on_unclassified")
+    __slots__ = ("_provider", "_on_unclassified", "_before_unclassified")
 
-    def __init__(self, provider: IGraphDBProvider, on_unclassified: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self, provider: IGraphDBProvider, on_unclassified: Callable[[], None] | None = None,
+        before_unclassified: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         object.__setattr__(self, "_provider", provider)
         object.__setattr__(self, "_on_unclassified", on_unclassified)
+        object.__setattr__(self, "_before_unclassified", before_unclassified)
 
     def __getattr__(self, name: str):  # noqa: ANN204
         attr = getattr(self._provider, name)
@@ -252,14 +259,25 @@ class _GuardedProvider:
             return attr
         if name not in _RAW_ACCESS and _CLASSIFIED_SCOPE.get() is not None:
             return attr
-        if os.environ.get("PYTEST_CURRENT_TEST"):
+        if os.environ.get("PYTEST_CURRENT_TEST") or name in _RAW_CLIENTS or not callable(attr):
+            # the raw client (`client`, `http_client`) cannot be wrapped to mark the organisation's connectors before its first write,
+            # and nothing reaches it through a transaction store: it is refused, in production too
             raise UnclassifiedProviderWrite(f"graph_provider.{name} is reached outside a classified store method")
         if self._on_unclassified is not None:
             self._on_unclassified()  # fail closed: the connectors this transaction saw are marked unsafe when it ends
         if name not in _warned:
             _warned.add(name)
             logging.getLogger(__name__).error("graph_provider.%s reached outside a classified store method", name)
-        return attr
+        before = self._before_unclassified
+        if before is None or not callable(attr):
+            return attr
+
+        async def after_marking(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            await before()  # may refuse: then the write never reaches the provider
+            result = attr(*args, **kwargs)
+            return await result if inspect.isawaitable(result) else result
+
+        return after_marking
 
     def __setattr__(self, name: str, value: object) -> None:
         setattr(self._provider, name, value)
@@ -272,10 +290,12 @@ class GraphTransactionStore(TransactionStore):
 
     def __init__(self, graph_provider: IGraphDBProvider, txn: str, *, explicit: bool = False) -> None:
         self.unclassified_write = False
+        self._org_marked_for_unclassified = False
         # The structure bookkeeping (the guarded provider, the reads before and after a structural write, the bump) exists only while the
         # scope fields are on: with them off the store reaches the provider directly and makes no query it did not make before.
         self.tracked = scope_fields_enabled()
-        self.graph_provider = _GuardedProvider(graph_provider, self._note_unclassified) if self.tracked else graph_provider
+        self.graph_provider = (
+            _GuardedProvider(graph_provider, self._note_unclassified, self._mark_org_before_unclassified_write) if self.tracked else graph_provider)
         self.txn = txn  # Transaction ID (string) for HTTP provider
         self.explicit = explicit  # the block runs in one real transaction
         self.logger = graph_provider.logger
@@ -294,7 +314,24 @@ class GraphTransactionStore(TransactionStore):
         self.new_nodes: set[tuple[str, str]] = set()
 
     def _note_unclassified(self) -> None:
+        # Before the write is forwarded: with no organisation it could not be charged to one at the end, and outside an explicit
+        # transaction it would already be committed with nothing to mark or roll back. It is refused instead (`MissingOrgContext`).
+        org_context.current()
         self.unclassified_write = True
+
+    async def _mark_org_before_unclassified_write(self) -> None:
+        """Outside an explicit transaction an unclassified write commits as it runs and cannot be undone, and which connector it touches
+        is not known: every connector of the organisation is marked unsafe first, and the write is refused (the error propagates) when
+        the lookup or a mark fails. In an explicit transaction the rollback undoes it, and the marks are written when the block ends."""
+        if self.explicit or self._org_marked_for_unclassified:
+            return
+        org_id = org_context.current().org_id
+        apps = await self.graph_provider._provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
+        seen = {c for c in self._connector_of.values() if c} | self.structural_connectors
+        ids = seen | {str(k) for a in apps if (k := a.get("_key") or a.get("id"))}
+        for connector_id in sorted(ids):
+            await self.graph_provider._provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, None)
+        self._org_marked_for_unclassified = True
 
     async def _connector_of_node(self, collection: str, node_id: str) -> str | None:
         return (await self._connectors_of([(collection, node_id)])).get((collection, node_id))
@@ -1318,7 +1355,7 @@ class GraphTransactionStore(TransactionStore):
             )
 
     async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str) -> bool:
-        return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
+        return bool(await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn))
 
     async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
         await self.graph_provider.create_edges_if_absent(edges, collection, transaction=self.txn)
@@ -1544,6 +1581,18 @@ class GraphDataStore(DataStoreProvider):
         for connector_id in sorted(connector_ids):
             await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, transaction)
 
+    async def _mark_unsafe_after_unclassified_write(self, tx_store: "GraphTransactionStore") -> None:
+        """A write nobody classified reached the provider, and which connector it touched is not known (the proxy sees a method
+        name, not a target): every connector of the organisation this block runs for may have changed structurally, so none of their
+        stamps is current. The connectors the transaction saw are marked first, then the organisation's, also when the block never
+        resolved a connector. The organisation comes from the ambient context, resolved here and not inside any ``try``: with none the
+        block fails (``MissingOrgContext``), because it cannot say what it changed and must not commit as if it were harmless."""
+        seen = {c for c in tx_store._connector_of.values() if c} | tx_store.structural_connectors
+        await self._mark_unsafe(tx_store, seen)
+        org_id = org_context.current().org_id
+        apps = await self.graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
+        await self._mark_unsafe(tx_store, {str(k) for a in apps if (k := a.get("_key") or a.get("id"))} - seen)
+
     async def _mark_unsafe_after_failed_block(self, tx_store: "GraphTransactionStore") -> None:
         """A block that failed without an explicit transaction left its earlier statements committed: the connectors a structural (or an
         unclassified) write touched changed with no bump, so their stamps are marked unsafe. In an explicit transaction the rollback
@@ -1552,6 +1601,10 @@ class GraphDataStore(DataStoreProvider):
             return
         connectors = set(tx_store.structural_connectors)
         if tx_store.unclassified_write:
+            try:  # the whole organisation, as when the block completes
+                await self._mark_unsafe_after_unclassified_write(tx_store)
+            except Exception:
+                self.logger.error("could not mark the connectors of the organisation scope-unsafe after a failed block")
             connectors |= {c for c in tx_store._connector_of.values() if c}
         for connector_id in sorted(connectors):
             try:
@@ -1563,9 +1616,7 @@ class GraphDataStore(DataStoreProvider):
         if not tx_store.tracked:
             return
         if tx_store.unclassified_write:
-            # A write nobody classified reached the provider: whichever connectors this transaction saw may have changed. (A block that
-            # never resolved a connector marks nothing here: that case is the whole-organisation fallback, a later change.)
-            await self._mark_unsafe(tx_store, {c for c in tx_store._connector_of.values() if c} | tx_store.structural_connectors)
+            await self._mark_unsafe_after_unclassified_write(tx_store)
         touched = sorted(tx_store.structural_connectors)
         if not touched:
             return
@@ -1793,10 +1844,13 @@ def _wrap_structural(name: str, targets: Callable[[dict], list[tuple[str, str | 
         candidates = [t for t in nodes if t not in self.new_nodes]
         existing = await self._connectors_of(candidates)
         before = await self._structures_of(list(existing))
-        result = await original(self, *args, **kwargs)
+        # The providers report the edges their statements really created. An edge another transaction removed after the read above
+        # and this write put back looks unchanged to the comparison, but it was created.
+        with edge_effects.track(_STRUCTURAL_EDGES) as created:
+            result = await original(self, *args, **kwargs)
         after = await self._structures_of(list(existing))
         for t, connector in existing.items():
-            if after[t] != before[t]:
+            if t[1] in created or after[t] != before[t]:
                 self.structural_connectors.add(connector)
         return result
 

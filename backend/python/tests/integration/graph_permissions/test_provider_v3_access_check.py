@@ -24,6 +24,8 @@ from .test_provider_v3_scope_arms import (
     _visible,
 )
 
+pytestmark = pytest.mark.integration
+
 ITEM = {"record_type": "FILE", "connector_id": APP}
 
 # The listing hides these below a hideChildren group; the access check does not.
@@ -35,6 +37,8 @@ LINK_ONLY = "v3-linked-strict"
 # APP but name another connector or none -- fixture-only shapes -- so the check
 # fails closed where the listing, walking from APP, shows them.
 NAMES_NO_GATED_APP = {"v3-foreign-dec", "v3-noconn-dec"}
+# The placeholders of the graph the check admits when they are asked by id.
+ADMITTED_PLACEHOLDERS = {"v3-dec-placeholder"}
 
 
 USER_U_ID = "user-u-id"
@@ -135,7 +139,12 @@ async def test_the_check_is_the_listing_up_to_decisions_81_56_82(
     assert LINK_ONLY not in listing                  # a link is not hierarchy
     expected = ((listing | BELOW_HIDE_CHILDREN | {APP, KB_APP, OWN_ATTACHMENT})
                 - NAMES_NO_GATED_APP)
-    assert await _check(provider, _node_ids(access_graph)) == expected
+    check = await provider.check_access(USER_U, ORG, node_ids=_node_ids(access_graph))
+    # A placeholder asked by id is admitted (and flagged) where the listing never lists it: browsing reaches it
+    # as a stub, and the routes that serve a record refuse it. Any other id the check admits must be in the listing.
+    assert check.placeholder_ids == ADMITTED_PLACEHOLDERS
+    assert check.node_ids - check.placeholder_ids == expected
+    assert not ADMITTED_PLACEHOLDERS & listing
 
 
 async def test_hide_children_does_not_hide_access(access_graph, neo4j_provider, provider) -> None:
@@ -205,13 +214,15 @@ async def test_membership_opens_only_a_declared_group(access_graph, provider) ->
 
 async def test_record_details_follow_the_check(access_graph, provider) -> None:
     """Record details and content are gated by the batch check:
-    details come back exactly for the records the check admits."""
+    details come back exactly for the records the check admits, except a
+    placeholder, which is listed but refused like an unreadable record."""
     records = [n["id"] for n in access_graph["nodes"] if n["kind"] == "Record"]
-    admitted = await _check(provider, records)
-    assert admitted and set(records) - admitted
+    check = await provider.check_access(USER_U, ORG, node_ids=records)
+    admitted = set(check.node_ids)
+    assert admitted and set(records) - admitted and check.placeholder_ids & admitted
     for record_id in records:
         details = await provider.check_record_access_with_details(USER_U_ID, ORG, record_id)
-        assert (details is not None) == (record_id in admitted), record_id
+        assert (details is not None) == (record_id in admitted - check.placeholder_ids), record_id
 
 
 async def test_details_of_a_record_admitted_without_a_role_read_as_reader(access_graph, provider) -> None:

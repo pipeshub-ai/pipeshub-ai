@@ -59,13 +59,17 @@ function partitionsSetExplicitly(): boolean {
  * fairness problem to solve.
  */
 export function buildRequiredTopics(): TopicDefinition[] {
+  // Title events are keyed by record id, and the priority lane carries the same events as
+  // record-events, so all three spread over partitions the same way.
+  const keyed = (topic: BrokerTopic): boolean =>
+    topic === BrokerTopic.RECORD_EVENTS ||
+    topic === BrokerTopic.RECORD_EVENTS_PRIORITY ||
+    topic === BrokerTopic.RECORD_TITLE_EVENTS;
   return Object.values(BrokerTopic).map((topic) => ({
     topic,
-    numPartitions:
-      topic === BrokerTopic.RECORD_EVENTS ? configuredPartitions() : 1,
+    numPartitions: keyed(topic) ? configuredPartitions() : 1,
     replicationFactor: 1,
-    growExisting:
-      topic === BrokerTopic.RECORD_EVENTS && partitionsSetExplicitly(),
+    growExisting: keyed(topic) && partitionsSetExplicitly(),
   }));
 }
 

@@ -487,3 +487,48 @@ class TestNoReadableMatch:
         assert reply == unknown and json.loads(reply[1])["message"] == "No accessible entities matched"
         assert "Globex" not in reply[1] and "t-globex" not in reply[1]
 
+
+class TestRecordHitsWhoseContentIsNotIndexed:
+    """A record found by name is labelled when search cannot read its text yet."""
+
+    @staticmethod
+    def _record_hit(status: str | None, *, indexed: bool, key: str = "r1") -> EntityHit:
+        return replace(
+            _hit(key, "record", records=[_row(key)]), indexing_status=status, indexed=indexed,
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unindexed_record_carries_its_status_and_the_note(self, patched) -> None:
+        patched[1].return_value = [self._record_hit("QUEUED", indexed=False)]
+        ok, text = await execute_search_entities(_state(), "plan", entity_types=["record"])
+        (item,) = json.loads(text)["results"]
+        assert ok and item["indexingStatus"] == "QUEUED"
+        assert "content is not indexed yet (status: QUEUED)" in item["note"]
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_automatic_indexing_off_is_found_with_the_note(self, patched) -> None:
+        patched[1].return_value = [self._record_hit("AUTO_INDEX_OFF", indexed=False)]
+        _, text = await execute_search_entities(_state(), "plan", entity_types=["record"])
+        (item,) = json.loads(text)["results"]
+        assert "automatic indexing is off" in item["note"]
+
+    @pytest.mark.asyncio
+    async def test_an_indexed_record_is_unchanged(self, patched) -> None:
+        patched[1].return_value = [self._record_hit("COMPLETED", indexed=True)]
+        _, text = await execute_search_entities(_state(), "plan", entity_types=["record"])
+        (item,) = json.loads(text)["results"]
+        assert "note" not in item and "indexingStatus" not in item
+
+    @pytest.mark.asyncio
+    async def test_a_missing_status_does_not_crash(self, patched) -> None:
+        patched[1].return_value = [self._record_hit(None, indexed=False)]
+        _, text = await execute_search_entities(_state(), "plan", entity_types=["record"])
+        (item,) = json.loads(text)["results"]
+        assert "status: unknown" in item["note"]
+
+    @pytest.mark.asyncio
+    async def test_the_record_is_remembered_so_it_can_be_fetched(self, patched) -> None:
+        patched[1].return_value = [self._record_hit("QUEUED", indexed=False)]
+        state = _state()
+        await execute_search_entities(state, "plan", entity_types=["record"])
+        assert "r1" in state["known_record_ids"]
