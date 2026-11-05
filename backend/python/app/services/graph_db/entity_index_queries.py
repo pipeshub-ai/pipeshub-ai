@@ -40,6 +40,9 @@ class EntityIndexSource:
     name_field: str
     # Read when name_field is missing, as on the index path.
     name_fallback: str | None = None
+    # A whitespace-only name falls back too (people: ``name.strip() or email``);
+    # groups keep ``groupName or name``, which a blank groupName does not pass.
+    blank_name_falls_back: bool = False
     fields: tuple[str, ...] = ()
     list_fields: tuple[str, ...] = ()
     canonical_only: bool = False
@@ -72,7 +75,9 @@ ENTITY_INDEX_SOURCES: dict[str, EntityIndexSource] = {
             CollectionNames.DEPARTMENTS.value, "orgId", "departmentName", include_global=True,
         ),
         # Named as on the index path (SinkOrchestrator._sync_record_linked_entities).
-        EntityIndexSource(CollectionNames.USERS.value, "orgId", "fullName", name_fallback="email"),
+        EntityIndexSource(
+            CollectionNames.USERS.value, "orgId", "fullName", name_fallback="email", blank_name_falls_back=True,
+        ),
         EntityIndexSource(
             CollectionNames.ORGS.value, "parentOrgId", "name", required_true=("isExternal",),
         ),
@@ -138,6 +143,15 @@ def build_entity_index_candidate_cypher(collection: str, *, with_sweep: bool) ->
     """
 
 
+def _aql_name(spec: EntityIndexSource) -> str:
+    name, fallback = f"n.{spec.name_field}", f"n.{spec.name_fallback}"
+    if not spec.name_fallback:
+        return name
+    if spec.blank_name_falls_back:
+        return f'TRIM({name}) != "" ? {name} : {fallback}'
+    return f"{name} || {fallback}"
+
+
 def build_entity_index_source_page_aql(source: str, *, has_after_key: bool) -> str:
     spec = entity_index_source(source)
     scope = f"n.{spec.scope_field} == @scope_id"
@@ -152,8 +166,7 @@ def build_entity_index_source_page_aql(source: str, *, has_after_key: bool) -> s
     projection = ", ".join(
         [
             "_key: n._key",
-            f"name: n.{spec.name_field} || n.{spec.name_fallback}"
-            if spec.name_fallback else f"name: n.{spec.name_field}",
+            f"name: {_aql_name(spec)}",
             *(f"{f}: n.{f}" for f in spec.fields),
             *(f"{f}: n.{f} || []" for f in spec.list_fields),
         ]
@@ -166,6 +179,12 @@ def build_entity_index_source_page_aql(source: str, *, has_after_key: bool) -> s
         LIMIT @limit
         RETURN {{ {projection} }}
     """
+
+
+def _name_test(spec: EntityIndexSource) -> str:
+    if spec.blank_name_falls_back:
+        return f"trim(coalesce(toStringOrNull(n.{spec.name_field}), ''))"
+    return f"coalesce(n.{spec.name_field}, '')"
 
 
 def build_entity_index_source_page_cypher(source: str, *, has_after_key: bool) -> str:
@@ -187,7 +206,7 @@ def build_entity_index_source_page_cypher(source: str, *, has_after_key: bool) -
         [
             "n.id AS _key",
             # An empty name falls back too, as AQL's ``||`` does.
-            f"CASE WHEN coalesce(n.{spec.name_field}, '') <> '' THEN n.{spec.name_field} "
+            f"CASE WHEN {_name_test(spec)} <> '' THEN n.{spec.name_field} "
             f"ELSE n.{spec.name_fallback} END AS name"
             if spec.name_fallback else f"n.{spec.name_field} AS name",
             *(f"n.{f} AS {f}" for f in spec.fields),

@@ -236,6 +236,25 @@ async def test_a_person_lists_the_records_naming_them_in_either_direction(backen
     assert [(p["id"], p["email"]) for p in people] == [(f"{org}-bob", f"bob@{org}.test")]
     assert await provider.get_record_people(f"{org}-case", f"{org}-x") == []
 
+    # A record of another org that names a member of this one names nobody here.
+    try:
+        await _foreign_record_names_nobody(provider, org)
+    finally:
+        await _cleanup(provider, f"{org}-x", disconnect=False)
+
+
+async def _foreign_record_names_nobody(provider: Neo4jProvider | ArangoHTTPProvider, org: str) -> None:
+    await provider.batch_upsert_records([TicketRecord(
+        id=f"{org}-foreign", org_id=f"{org}-x", external_record_id=f"{org}-foreign", record_name="Case 2",
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_MAIL, connector_id=f"{org}-x-conn",
+        record_type=RecordType.CASE, version=1, source_created_at=1000, source_updated_at=1000,
+        indexing_status="COMPLETED",
+    )])
+    await provider.batch_create_entity_relations([{
+        "_from": f"records/{org}-foreign", "_to": f"users/{org}-bob", "edgeType": "ASSIGNED_TO", "createdAtTimestamp": 1,
+    }])
+    assert await provider.get_record_people(f"{org}-foreign", org) == []
+
 
 async def test_the_rebuild_reads_people_and_their_membership(backend) -> None:
     """The B-1 rebuild projects people already linked before slice 2: users
@@ -246,6 +265,8 @@ async def test_the_rebuild_reads_people_and_their_membership(backend) -> None:
     await _seed(provider, org)
     await provider.batch_upsert_nodes([{
         "id": f"{org}-cat", "userId": f"{org}-cat", "orgId": org, "email": f"cat@{org}.test", "fullName": "",
+    }, {
+        "id": f"{org}-dan", "userId": f"{org}-dan", "orgId": org, "email": f"dan@{org}.test", "fullName": "  ",
     }], CollectionNames.USERS.value)
     await backfill(provider, GraphDataStore(logger, provider), org, apply=True, logger=logger, out=io.StringIO())
     await provider.batch_create_entity_relations([{
@@ -255,6 +276,7 @@ async def test_the_rebuild_reads_people_and_their_membership(backend) -> None:
     rows = await provider.page_entity_index_source(CollectionNames.USERS.value, org, None, 10)
     assert [(r["_key"], r["name"]) for r in rows] == [
         (f"{org}-ann", "Ann"), (f"{org}-bob", "Bob"), (f"{org}-cat", f"cat@{org}.test"),
+        (f"{org}-dan", f"dan@{org}.test"),  # a blank name falls back, as on the index path
     ]
     assert await provider.page_entity_index_source(CollectionNames.USERS.value, org, f"{org}-ann", 10) == rows[1:]
 
