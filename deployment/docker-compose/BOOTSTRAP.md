@@ -37,6 +37,8 @@ kb:write
 kb:upload
 user:read
 connector:read
+connector:write
+connector:sync
 code:read
 ```
 

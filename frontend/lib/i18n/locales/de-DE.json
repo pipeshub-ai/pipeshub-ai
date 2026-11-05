@@ -1487,7 +1487,8 @@
       "internalSearch": "Interne Suche",
       "webSearch": "Websuche",
       "internalAndWebSearch": "Interne + Websuche"
-    }
+    },
+    "searchDegraded": "Die Ergebnisse sind möglicherweise unvollständig."
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -3370,6 +3371,7 @@
         "disconnected": "Erfolgreich getrennt",
         "disconnectError": "Trennen fehlgeschlagen",
         "credentialsSaveError": "Server gespeichert, aber die Anmeldedaten konnten nicht gespeichert werden. Sie können sie später über \"Verwalten\" hinzufügen.",
+        "logoSaveError": "Server gespeichert, aber das Logo konnte nicht gespeichert werden. Sie können es unter „Verwalten“ erneut versuchen.",
         "credentialsSaved": "Anmeldedaten gespeichert",
         "credentialsReset": "MCP-Server aktualisiert. Gespeicherte Anmeldedaten wurden entfernt, da sich die Verbindung geändert hat. Verbinden Sie sich erneut, um ihn zu verwenden.",
         "oauthTimedOut": "Die Anmeldung hat zu lange gedauert und wurde abgebrochen. Versuchen Sie es erneut.",
@@ -3384,6 +3386,16 @@
       "form": {
         "name": "Name",
         "description": "Beschreibung",
+        "logo": "Logo",
+        "logoHint": "PNG, JPEG, WebP, GIF oder SVG, bis 2 MB. Ein quadratisches Bild sieht am besten aus.",
+        "logoUpload": "Logo hochladen",
+        "logoChange": "Logo ändern",
+        "logoRemove": "Entfernen",
+        "logoErrors": {
+          "type": "Verwenden Sie ein PNG-, JPEG-, WebP-, GIF- oder SVG-Bild.",
+          "size": "Verwenden Sie ein Bild mit höchstens 2 MB.",
+          "unreadable": "Dieses Bild konnte nicht gelesen werden. Versuchen Sie eine andere Datei."
+        },
         "transport": "Transport",
         "command": "Befehl",
         "args": "Argumente",
@@ -4266,6 +4278,16 @@
       },
       "scopeCount_one": "{{count}} Berechtigungsbereich",
       "scopeCount_other": "{{count}} Berechtigungsbereiche"
+    },
+    "agentSignIns": {
+      "title": "Agent-Anmeldungen",
+      "subtitle": "Agenten, die Sie genehmigt haben, in Ihrem Namen zu handeln. Widerrufen Sie eine, damit sie keinen neuen Zugriff mehr erhält.",
+      "columnApproved": "Genehmigt",
+      "revoke": "Widerrufen",
+      "revokeAria": "Agent-Anmeldung {{id}} widerrufen",
+      "revokedTitle": "Agent-Anmeldung widerrufen",
+      "errorTitle": "Die Agent-Anmeldung konnte nicht widerrufen werden",
+      "loadError": "Die Agent-Anmeldungen konnten nicht geladen werden"
     },
     "skills": {
       "title": "Skills",
@@ -5257,7 +5279,9 @@
     "notGrantedHeading": "Diese Anwendung hat auch diese Berechtigungen angefordert. Die Einstellungen der Anwendung erlauben sie nicht, daher erhält sie sie nicht:",
     "notGrantedOwnerHint": "Die Person, die diese Anwendung erstellt hat, kann sie unter Arbeitsbereich-Einstellungen → Entwicklereinstellungen → OAuth 2.0 Apps hinzufügen.",
     "notGrantedOfflineAccess": "Die Anwendung bleibt nicht angemeldet. Sie müssen sich erneut anmelden, wenn die Sitzung endet.",
-    "unreviewedApp": "Diese Anwendung hat sich selbst registriert. Sie wurde von keinem Administrator geprüft."
+    "unreviewedApp": "Diese Anwendung hat sich selbst registriert. Sie wurde von keinem Administrator geprüft.",
+    "clientIdHost": "Identifiziert durch {{host}}",
+    "redirectTo": "Leitet Sie zurück zu {{uri}}"
   },
   "auth": {
     "titleSection": {
@@ -5438,6 +5462,19 @@
     "skipAll": "Alle überspringen",
     "expired": "Diese Frage ist abgelaufen. Antworten Sie im Chat, um fortzufahren.",
     "repliedInChat": "Sie haben im Chat geantwortet."
+  },
+  "agentClaim": {
+    "title": "Agent verbinden",
+    "intro": "Ein Agent gibt an, in Ihrem Auftrag zu arbeiten. Genehmigen Sie ihn nur, wenn Sie ihn beauftragt haben und der Code mit dem übereinstimmt, den er Ihnen gezeigt hat.",
+    "scopesHeading": "Dieser Agent darf:",
+    "codeLabel": "Geben Sie den 6-stelligen Code ein, den der Agent angezeigt hat",
+    "approve": "Genehmigen",
+    "loading": "Anfrage wird geprüft…",
+    "missingLink": "Diesem Link fehlt das Claim-Token. Bitten Sie den Agenten um einen neuen.",
+    "doneTitle": "Agent verbunden",
+    "doneLine": "Der Agent kann nun fortfahren. Sie können dieses Fenster schließen.",
+    "deniedTitle": "Anfrage abgelehnt",
+    "deniedLine": "Der Agent hat keinen Zugriff erhalten."
   },
   "oauthDevice": {
     "title": "Gerät verbinden",

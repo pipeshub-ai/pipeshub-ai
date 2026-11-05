@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { immer } from 'zustand/middleware/immer';
 import { devtools } from 'zustand/middleware';
 import type { SlackBotConfig, AgentOption, PanelView } from './types';
@@ -123,3 +124,5 @@ export const useBotsStore = create<BotsState & BotsActions>()(
     { name: 'bots-store' }
   )
 );
+
+resetStoreOnSessionEnd(useBotsStore);

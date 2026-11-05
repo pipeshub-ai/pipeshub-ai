@@ -111,6 +111,9 @@ def _norm_key(kind: EntityKind, display: str, value: TypedValue | None) -> str:
     if isinstance(value, DurationValue):
         return f"duration:{value.iso}"
     if isinstance(value, MoneyValue):
+        if value.amount_high is not None:
+            # A range never shares its low end's key with that exact amount.
+            return f"money:{value.currency}:{_number(value.amount)}..{_number(value.amount_high)}"
         return f"money:{value.currency}:{_number(value.amount)}"
     if isinstance(value, PercentValue):
         return f"pct:{_number(value.value)}"

@@ -38,6 +38,11 @@ from connectors.servicenow.constants import (
     persona_user_name,
 )
 from connectors.servicenow.servicenow_helpers import Persona
+from connectors.servicenow.sim_world import (  # noqa: F401 - fixtures of the servicenow_sim suite
+    servicenow_sim,
+    servicenow_sim_people,
+    servicenow_world,
+)
 from connectors.servicenow.servicenow_seed import (
     ServiceNowError,
     ServiceNowRest,

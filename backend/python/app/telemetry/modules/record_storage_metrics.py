@@ -88,6 +88,20 @@ def record_retention(kind: str, outcome: str, count: int = 1) -> None:
         RETENTION.inc(kind, outcome, value=float(count))
 
 
+# job: the recovery pass (queued_sweep, stranded_republish, orphan_mapping_sweep, duplicate_reconcile, named_entity_persist_retry);
+# outcome: failed (one organisation's part failed; the later ones ran) or no_org_row (a retry row naming no organisation, cleared).
+RECOVERY_ORG_PASS = METRICS_BACKEND.counter(
+    "pipeshub_recovery_org_pass_total",
+    "Recovery passes that failed for one organisation, and retry rows with no organisation that were cleared, by job and outcome",
+    ["job", "outcome"],
+)
+
+
+def record_recovery_org_pass(job: str, outcome: str, count: int = 1) -> None:
+    if count:
+        RECOVERY_ORG_PASS.inc(job, outcome, value=float(count))
+
+
 # trigger: not_found (the gateway answered 404), signed_url (a 403 or 404 on a URL
 # signed in this call), ranged (a failed ranged download).
 # outcome: served (the mapping named a new document and it was read), unchanged
@@ -135,3 +149,29 @@ RETIRE_MARK = METRICS_BACKEND.counter(
 
 def record_retire_mark(outcome: str) -> None:
     RETIRE_MARK.inc(outcome)
+
+
+# outcome: written, current (nothing to write), no_union (the scope projects no property), no_stamp (the
+# record has no usable source stamp), failed:<reason> (values unreadable or untrusted; nothing written),
+# fenced_by_generation / superseded / content_changed / contention (a newer writer or version won; the
+# sweep converges the record), error (an unexpected exception, swallowed so indexing completes).
+PROPERTY_PROJECTIONS = METRICS_BACKEND.counter(
+    "pipeshub_record_property_projections_total",
+    "Record property projections written at index time, by outcome",
+    ["outcome"],
+)
+
+
+def record_property_projection(outcome: str) -> None:
+    PROPERTY_PROJECTIONS.inc(outcome)
+
+
+PROPERTY_VALUES_DROPPED = METRICS_BACKEND.counter(
+    "pipeshub_record_property_values_dropped_total",
+    "Property values not projected because they do not fit their property's stored form",
+    [],
+)
+
+
+def record_property_value_dropped() -> None:
+    PROPERTY_VALUES_DROPPED.inc()

@@ -10,6 +10,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphTransactio
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.services.graph_db.taxonomy import TAXONOMY_COLLECTIONS, subcategory_level
+from tests.unit.services.graph_db.test_neo4j_write_conflict_retry import _client, _ran
 
 TOPICS = CollectionNames.TOPICS.value
 SUB2 = CollectionNames.SUBCATEGORIES2.value
@@ -405,13 +406,12 @@ def _neo4j_error(code: str) -> Exception:
 
 
 async def test_neo4j_hierarchy_edge_retries_a_deadlock(monkeypatch) -> None:
-    monkeypatch.setattr("app.services.graph_db.neo4j.neo4j_provider.asyncio.sleep", AsyncMock())
+    """The client sends the MERGE again; nothing of the deadlocked one landed."""
+    monkeypatch.setattr("app.services.graph_db.neo4j.neo4j_client.asyncio.sleep", AsyncMock())
     p = _neo4j()
-    p.client.execute_query = AsyncMock(
-        side_effect=[_neo4j_error("Neo.TransientError.Transaction.DeadlockDetected"), []],
-    )
+    p.client, sessions = _client([_neo4j_error("Neo.TransientError.Transaction.DeadlockDetected")])
     await p.ensure_taxonomy_hierarchy_edge(CollectionNames.SUBCATEGORIES1.value, "s1", "c1")
-    assert p.client.execute_query.await_count == 2
+    assert _ran(sessions) == 2
 
 
 async def test_neo4j_hierarchy_edge_does_not_retry_other_transient_errors() -> None:

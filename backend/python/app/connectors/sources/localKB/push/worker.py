@@ -22,7 +22,7 @@ import multiprocessing
 import re
 import signal
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .contract import PushRefusal
@@ -63,11 +63,20 @@ class Validated:
     blocks_sha: str
     digest: str
     stored_path: str
-    size: int
-    content_rev: str
+    size: int | None
+    content_rev: str | None
     warnings: int
     block_count: int
     group_count: int
+    #: ``storage://`` images: distinct ids in first-occurrence order and how often each occurs.
+    refs: list[tuple[str, int]] = field(default_factory=list)
+    #: With refs, ``stored_path`` holds sentinels and ``size``/``content_rev`` stay None until materialised;
+    #: ``digest`` is then the digest without the images' fingerprint (the parent adds it).
+    image_nonce: str | None = None
+
+    @property
+    def needs_materialising(self) -> bool:
+        return bool(self.refs)
 
 
 def _refusal_dict(r: PushRefusal) -> dict[str, Any]:
@@ -93,7 +102,13 @@ def validate_body(body: bytes, *, schema_id: str | None, schema: dict[str, Any] 
     )
 
     from . import contract as C
-    from .images import check_blocks_images
+    from .images import (
+        PLACEHOLDER_PNG,
+        check_blocks_images,
+        new_nonce,
+        sentinel,
+        swap_uris,
+    )
     from .structure import structure_pass
 
     schema_obj = MetadataSchema.model_validate(schema) if schema is not None else None
@@ -114,15 +129,21 @@ def validate_body(body: bytes, *, schema_id: str | None, schema: dict[str, Any] 
             raise PushRefusal(422, e.code, str(e), e.property, extra={"code": "ENVELOPE_INVALID", "property": e.property}) from None
         properties = C.canonical_properties(used_schema, {k: v.value for k, v in checked.values.items()})
 
-    check_blocks_images(env.blocks)
+    refs = check_blocks_images(env.blocks)
+    # The digest and the dedup key see the references as sent; the validator sees a valid image in their place.
+    blocks_sha = C.blocks_digest(C.canonical_blocks(env.blocks))
+    if refs.order:
+        swap_uris(refs, dict.fromkeys(refs.order, PLACEHOLDER_PNG))
     try:
         warnings = BlockContainerValidator().validate(env.blocks)
     except BlockContainerValidationError as e:
         issues = [{"location": i.location, "type": i.code, "message": i.message} for i in e.errors[:C.MAX_ISSUES]]
         raise PushRefusal(422, "BLOCKS_INVALID", "The blocks are invalid.", issues[0]["location"], issues, {"code": "BLOCKS_INVALID"}) from None
 
-    canon = C.canonical_blocks(env.blocks)
-    blocks_sha = C.blocks_digest(canon)
+    nonce = None
+    if refs.order:
+        nonce = new_nonce()  # drawn after the parse, so no body text can contain it
+        swap_uris(refs, {ref: sentinel(nonce, i) for i, ref in enumerate(refs.order)})
     stored = C.stored_bytes(env.blocks, properties)
     with open(out_path, "wb") as f:
         f.write(stored)
@@ -136,11 +157,13 @@ def validate_body(body: bytes, *, schema_id: str | None, schema: dict[str, Any] 
         blocks_sha=blocks_sha,
         digest=C.request_digest(blocks_sha, properties),
         stored_path=out_path,
-        size=len(stored),
-        content_rev=C.content_rev(stored),
+        size=None if refs.order else len(stored),
+        content_rev=None if refs.order else C.content_rev(stored),
         warnings=len([w for w in warnings if w.severity == Severity.WARNING]),
         block_count=len(env.blocks.blocks or []),
         group_count=len(env.blocks.block_groups or []),
+        refs=[(r, refs.counts[r]) for r in refs.order],
+        image_nonce=nonce,
     )
 
 

@@ -370,6 +370,8 @@ export const DefaultMcpScopes = [
   'agent:read',
   'agent:execute',
   'connector:read',
+  'connector:write',
+  'connector:sync',
   'code:read',
   'project:read',
   'project:write',
@@ -397,6 +399,10 @@ export const AgentMcpScopes = [
   'kb:upload',
   'user:read',
   'connector:read',
+  // Lets an agent add a web source (pipeshub_add_web_source): create the
+  // connector, save its start URL and start the crawl.
+  'connector:write',
+  'connector:sync',
   'code:read',
 ] as const;
 
@@ -419,6 +425,8 @@ export const McpToolScopes = [
   'kb:write',
   'kb:upload',
   'connector:read',
+  'connector:write',
+  'connector:sync',
   'config:read',
   'user:read',
   'team:read',

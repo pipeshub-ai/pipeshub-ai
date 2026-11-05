@@ -8,6 +8,10 @@ import { stripNul } from '../nul';
 import { assertOrg, inPreOrgUnit, inUnit, oidOf } from '../pg-util';
 import { recordBeforeOrg } from '../activity/pg';
 import type { CredentialDto } from '../credential/types';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { kernelTx } from '../pg';
+import type { Tx } from '../uow';
+import { importCredentialDocs } from './credentials-import';
 import type { IdentityPort, PreOrgActivity } from './types';
 
 interface CredentialRow {
@@ -47,7 +51,16 @@ function credential(r: CredentialRow, orgId: string): CredentialDto {
   return c as unknown as CredentialDto;
 }
 
-export class PgIdentityPort implements IdentityPort {
+export class PgIdentityPort implements IdentityPort, Importable {
+  /** The migration copy: `userCredentials` documents (see ./credentials-import). */
+  importBatch(
+    collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importCredentialDocs(kernelTx(tx), collection, docs);
+  }
+
   // ---- before an organisation is bound ------------------------------------------------------------------------------------
 
   async oldestOrgId(): Promise<string | null> {

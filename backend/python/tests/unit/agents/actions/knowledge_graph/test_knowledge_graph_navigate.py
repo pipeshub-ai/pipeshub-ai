@@ -1422,6 +1422,36 @@ class TestNavigateDepthSingleQuery:
         assert captured.get("created_at") is not None
         assert captured["created_at"]["gte"] is not None
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("created_before", "lte"), [
+        ("2026-03-29", None),
+        ("2026-03-28", 1774742399999),
+    ], ids=["the-agents-today", "before-today"])
+    async def test_an_upper_bound_at_the_agents_today_is_not_applied(
+        self, created_before: str, lte: int | None,
+    ) -> None:
+        state = self._state_on_epic()
+        state.update(current_time="2026-03-29T09:30:00Z", timezone="UTC")
+        state["graph_provider"].get_node_depths_batch = AsyncMock(return_value={})
+        captured = {}
+
+        async def capture_get_nodes(self_inner, **kwargs) -> MagicMock:
+            captured.update(kwargs)
+            mock_resp = _make_knowledge_hub_response(items=[], total=0)
+            mock_resp.typed_records = None
+            return mock_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            success, _text = await KnowledgeGraph(state=state).navigate(
+                node_id="epic1", created_after="2026-01-01", created_before=created_before,
+            )
+
+        assert success
+        assert captured["created_at"] == {"gte": 1767225600000, "lte": lte}
+
 
 class TestDepth2ContextEnrichment:
     """depth>1 rows get enriched with `Record.to_llm_context()` metadata via

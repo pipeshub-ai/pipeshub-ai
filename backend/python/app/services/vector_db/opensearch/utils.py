@@ -1,15 +1,15 @@
 from typing import Any, Dict, List
 
+from app.services.permissions.scope_fields import SCOPE_KEYS
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
 )
-from app.services.vector_db.filters import canonical_filter_key
+from app.services.vector_db.filters import build_generic_conditions
 from app.services.vector_db.models import (
     FieldCondition,
     FilterExpression,
-    FilterValue,
     HybridSearchRequest,
     SearchResult,
     VectorPoint,
@@ -52,28 +52,7 @@ class OpenSearchUtils:
         Keys are automatically prefixed with ``metadata.`` except top-level
         membership arrays (``connectorIds``, ``recordGroupIds``).
         """
-        conditions: List[FieldCondition] = []
-        for key, value in filters.items():
-            if value is None:
-                continue
-            field_key = canonical_filter_key(key)
-            if isinstance(value, (list, tuple)):
-                filtered = [v for v in value if v is not None]
-                if filtered:
-                    conditions.append(
-                        FieldCondition(key=field_key, values=filtered)
-                    )
-            elif OpenSearchUtils._is_valid_value(value):
-                conditions.append(FieldCondition(key=field_key, value=value))
-        return conditions
-
-    @staticmethod
-    def _is_valid_value(value: FilterValue) -> bool:
-        if value is None:
-            return False
-        if isinstance(value, str) and not value.strip():
-            return False
-        return True
+        return build_generic_conditions(filters)
 
     @staticmethod
     def filter_expression_to_bool_query(expr: FilterExpression) -> Dict[str, Any]:
@@ -228,6 +207,9 @@ class OpenSearchUtils:
                 point.payload.get(ROOT_RECORD_GROUP_IDS_FIELD) or []
             ),
         }
+        for key in SCOPE_KEYS:  # only when the writer stamped them: an absent key must not blank a stamped point
+            if key in point.payload:
+                doc[key] = point.payload[key]
         if point.dense_vector is not None:
             doc["dense_embedding"] = point.dense_vector
         return doc

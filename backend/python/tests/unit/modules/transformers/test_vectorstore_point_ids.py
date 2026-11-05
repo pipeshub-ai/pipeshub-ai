@@ -122,7 +122,7 @@ def _reconciling_store() -> tuple[VectorStore, MagicMock]:
     store._ensure_collection = AsyncMock(return_value="records")
     store._cleanup_orphaned_embeddings_if_needed = AsyncMock()
     store._resync_membership_after_write = AsyncMock()
-    store.delete_blocks_by_ids = AsyncMock(side_effect=lambda ids, *_: calls.delete(set(ids)))
+    store.delete_blocks_by_ids = AsyncMock(side_effect=lambda ids, *_, **__: calls.delete(set(ids)))
     store._process_document_chunks = AsyncMock(
         side_effect=lambda docs, *_: calls.upsert({d.metadata["blockId"] for d in docs})
     )

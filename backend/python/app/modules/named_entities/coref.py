@@ -21,11 +21,25 @@ if TYPE_CHECKING:
 
 # Words that, after a short form, describe the same organization rather than a
 # part of it: "Lumora" is "Lumora Systems", but "Google" is not "Google Cloud".
+# Trade words that name the business, not a unit: "Pinecrest" is "Pinecrest Hospitality".
 _ORGANIZATION_DESIGNATORS = frozenset({
     "holdings", "holding", "group", "systems", "system", "technologies", "technology", "solutions",
     "industries", "international", "global", "enterprises", "enterprise", "partners", "labs",
     "corporation", "company", "worldwide",
+    "hospitality", "construction", "utilities", "farms", "foods", "authority", "aviation", "airlines",
+    "lines", "transit", "transport", "collective", "property", "properties", "district", "manufacturing",
 })
+# Trade words that also name a parent's division or spin-off ("Siemens Energy", "GE Capital",
+# "Uber Freight"): the short form joins only when the record names the full form first,
+# which is how a company is introduced; a parent named first ("Siemens ... spun off
+# Siemens Energy") stays apart.
+_DIVISION_WORDS = frozenset({
+    "energy", "services", "capital", "retail", "logistics", "freight", "consulting", "management",
+    "communications", "telecom", "telecommunications", "health", "healthcare", "medical",
+})
+# A product named without its brand keeps at least this many words: "Edge Pro" is
+# "Lumora Edge Pro", but "Teams" is too common to be "Microsoft Teams" alone.
+_MIN_UNBRANDED_PRODUCT_WORDS = 2
 _MIN_ACRONYM = 2
 _MAX_ACRONYM = 6
 
@@ -40,6 +54,7 @@ def link_short_forms(entities: list[NamedEntity]) -> list[NamedEntity]:
         (EntityKind.PERSON, _person_with_initial),
         (EntityKind.PERSON, _person_full_form),
         (EntityKind.ORGANIZATION, _organization_full_form),
+        (EntityKind.PRODUCT, _product_full_form),
     )
     for kind, full_of in passes:
         # Longest first: "Lumora Systems" joins "Lumora Systems Group" before
@@ -56,6 +71,11 @@ def link_short_forms(entities: list[NamedEntity]) -> list[NamedEntity]:
                 target.mentions.sort(key=lambda m: (m.block_index, m.char_start))
                 folded.add(id(entity))
     return [e for e in entities if id(e) not in folded]
+
+
+def _first(entity: NamedEntity) -> tuple[int, int]:
+    """Where the record first writes it: mentions are not in document order here."""
+    return min(((m.block_index, m.char_start) for m in entity.mentions), default=(0, 0))
 
 
 def _tokens(entity: NamedEntity) -> list[str]:
@@ -93,9 +113,11 @@ def _organization_full_form(entity: NamedEntity, others: list[NamedEntity]) -> N
     def extends(full: NamedEntity) -> bool:
         words = _tokens(full)
         rest = words[len(tokens):]
-        return len(words) > len(tokens) and words[: len(tokens)] == tokens and all(
-            word in _ORGANIZATION_DESIGNATORS for word in rest
-        )
+        if len(words) <= len(tokens) or words[: len(tokens)] != tokens:
+            return False
+        if all(word in _ORGANIZATION_DESIGNATORS for word in rest):
+            return True
+        return all(word in _ORGANIZATION_DESIGNATORS or word in _DIVISION_WORDS for word in rest) and _first(full) < _first(entity)
 
     def abbreviates(full: NamedEntity) -> bool:
         # "P&G" is "Procter & Gamble": the ampersand is not an initial.
@@ -111,3 +133,11 @@ def _organization_full_form(entity: NamedEntity, others: list[NamedEntity]) -> N
 
     # One target across both rules: "NL" beside "NL Systems" and "Northwind Logistics" stays apart.
     return _only(others, lambda full: extends(full) or abbreviates(full))
+
+
+def _product_full_form(entity: NamedEntity, others: list[NamedEntity]) -> NamedEntity | None:
+    """"Edge Pro" is the one "<brand> Edge Pro" the record names in full."""
+    tokens = _tokens(entity)
+    if len(tokens) < _MIN_UNBRANDED_PRODUCT_WORDS:
+        return None
+    return _only(others, lambda full: len(words := _tokens(full)) == len(tokens) + 1 and words[1:] == tokens)

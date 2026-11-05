@@ -208,7 +208,9 @@ class DoclingHtmlParser:
 
         if images:
             urls_to_convert = [image["url"] for image in images]
-            base64_urls = await ImageParser.urls_to_base64(urls_to_convert)
+            base64_urls = await ImageParser.urls_to_base64(
+                urls_to_convert, allow_remote_fetch=True  # file bytes, not a pushed blocks document
+            )
 
             for i, image in enumerate(images):
                 if base64_urls[i]:
