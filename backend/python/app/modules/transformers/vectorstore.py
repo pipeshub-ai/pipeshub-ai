@@ -44,7 +44,7 @@ from app.exceptions.indexing_exceptions import (
     VectorStoreError,
 )
 from app.exceptions.non_retryable import NonRetryableError
-from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
+from app.models.blocks import Block, BlocksContainer, BlockSubType, BlockType, SemanticMetadata
 from app.models.entities import Record
 from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.section_paths import (
@@ -1113,10 +1113,10 @@ def _build_chunked_text_documents(
     covers more than one, every block in ``spanBlockIds``/``spanBlockIndices``
     so retrieval can show and cite them all.
 
-    A block longer than the maximum is a chunk of its own, embedded whole and,
-    in place of one point per sentence, in overlapping windows the size of a
-    chunk; a block over the model's window is embedded in windows only. Any
-    point longer than the window is cut to it.
+    A code block is a point of its own. A block longer than the maximum is a
+    chunk of its own, embedded whole and, in place of one point per sentence,
+    in overlapping windows the size of a chunk; a block over the model's window
+    is embedded in windows only. Any point longer than the window is cut to it.
 
     CPU-bound, like ``_build_text_documents``.
     """
@@ -1141,6 +1141,10 @@ def _build_chunked_text_documents(
         if not block_text.strip():
             continue
         words = _word_count(block_text)
+        if getattr(block, "sub_type", None) == BlockSubType.CODE:
+            flush()
+            chunks.append((block, block_text, [block], None))
+            continue
         opener = opens_section(block)
         headings = block_heading_path(block)
         if pending:

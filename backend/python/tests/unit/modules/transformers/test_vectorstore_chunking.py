@@ -108,6 +108,18 @@ async def test_a_heading_starts_a_chunk_that_holds_its_section() -> None:
     assert _spans(capture.points) == [[0], [1, 2, 3], [4, 5]]
 
 
+@pytest.mark.asyncio
+async def test_a_code_block_ends_the_chunk_and_is_a_point_of_its_own() -> None:
+    vs, capture = _capturing_vectorstore()
+    code = Block(index=1, type=BlockType.TEXT, sub_type=BlockSubType.CODE, format=DataFormat.CODE,
+                 data="def water(tray):\n    tray.mist()")
+    blocks = [_text_block(0, _words(4)), code, _text_block(2, _words(4)), _text_block(3, _words(4))]
+
+    await _index(vs, blocks)
+
+    assert _spans(capture.points) == [[0], [1], [2, 3]]
+
+
 def test_a_chunk_longer_than_the_model_window_is_cut_to_it() -> None:
     blocks = [_text_block(i, _words(12)) for i in range(3)]
     window = _Window(limit=10, count=lambda texts: [len(t.split()) for t in texts])
