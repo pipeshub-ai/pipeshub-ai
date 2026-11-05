@@ -465,7 +465,8 @@ port_owned_by_project() {
 
 # Check if a Docker volume (by exact name) exists.
 volume_exists() {
-  docker volume ls --format '{{.Name}}' 2>/dev/null | grep -qx "$1"
+  # an exact lookup, not `volume ls | grep -q`: under pipefail grep's early exit can SIGPIPE docker and read as "absent"
+  docker volume inspect "$1" >/dev/null 2>&1
 }
 
 # Check if a TCP port is bound on localhost.
