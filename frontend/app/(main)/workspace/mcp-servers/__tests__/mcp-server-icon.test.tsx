@@ -18,6 +18,7 @@ function logo(ui: React.ReactElement): string | null {
 describe('McpServerIcon', () => {
   it("shows a catalog server's own logo", () => {
     expect(logo(<McpServerIcon typeId="atlassian_rovo" name="Atlassian Rovo" />)).toBe('atlassian icon');
+    expect(logo(<McpServerIcon typeId="stripe" name="Stripe" />)).toBe('stripe icon');
   });
 
   it("shows Microsoft Learn's own logo, not the broad Microsoft match", () => {
