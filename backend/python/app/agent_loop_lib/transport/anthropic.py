@@ -53,6 +53,9 @@ _STOP_REASON_MAP: dict[str | None, StopReason] = {
     "end_turn": StopReason.END_TURN,
     "tool_use": StopReason.TOOL_USE,
     "max_tokens": StopReason.MAX_TOKENS,
+    # The response was cut off because the context window filled up; like
+    # max_tokens, the output is incomplete and must not read as a clean end.
+    "model_context_window_exceeded": StopReason.MAX_TOKENS,
     "stop_sequence": StopReason.STOP_SEQUENCE,
 }
 
@@ -343,7 +346,7 @@ class AnthropicTransport(LLMTransport):
         # block's input may be empty or partial (the API can't return
         # half-generated JSON). Surface it so the turn loop can recover
         # instead of executing a tool call with silently-missing arguments.
-        truncated = getattr(response, "stop_reason", None) == "max_tokens"
+        truncated = getattr(response, "stop_reason", None) in ("max_tokens", "model_context_window_exceeded")
 
         return AssistantMessage(
             content=text,
