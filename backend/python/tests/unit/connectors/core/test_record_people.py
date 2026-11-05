@@ -329,7 +329,7 @@ def test_hidden_email_ticket_fields_survive_a_graph_round_trip() -> None:
 
 class TestEmailLookupsStayInTheOrg:
     """An address is not unique across orgs: unscoped, the lookup could answer
-    with another tenant's user, which is refused, and this org's member
+    with another org's user, which is refused, and this org's member
     would never be read."""
 
     async def test_the_email_lookup_is_scoped_to_the_records_org(self) -> None:
