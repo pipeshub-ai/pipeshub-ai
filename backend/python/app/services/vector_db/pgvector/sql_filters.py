@@ -43,6 +43,7 @@ MEMBERSHIP = {
     "aclScope": (5, "acl_scope"),
 }
 # the scalar scope fields of a group: point_groups column. They are stored on the group, not in the payload, so a payload lookup would never find them.
+SCOPE_LISTS = frozenset({"pathIds", "aclScope"})
 SCOPE_COLUMNS = {"scopeStamp": "scope_stamp", "scopeFieldsVersion": "scope_version", "scopeGeneration": "scope_generation"}
 
 
@@ -125,8 +126,12 @@ class _Builder:
             raise ValueError(f"values_count_lte is only defined for the membership arrays, not '{key}'")
         self.needs_group = True
         column = MEMBERSHIP[key][1]
+        count = f"cardinality(coalesce(g.{column}, '{{}}')) <= {self.bind(int(bound), 'int')}"
+        if key in SCOPE_LISTS:
+            # a scope list is empty only in a group that was stamped; NULL means never stamped, which is not "no entries"
+            return f"(g.scope_version IS NOT NULL AND {count})"
         # an absent group row holds the bound, like an absent array on a point
-        return f"cardinality(coalesce(g.{column}, '{{}}')) <= {self.bind(int(bound), 'int')}"
+        return count
 
 
 def compile_filter(expr: FilterExpression, *, first_param: int, org_param: int = 1, coll_param: int = 2) -> Compiled:
