@@ -229,7 +229,8 @@ _CLASSIFIED_SCOPE: contextvars.ContextVar[str | None] = contextvars.ContextVar("
 _READ_PREFIXES = ("get_", "find_", "read_", "is_", "opens_", "has_", "count_", "list_", "filter_")
 _WRITE_WORDS = ("or_create", "or_insert", "or_update", "and_create", "and_delete", "and_update", "and_set", "upsert", "ensure",
                 "create", "delete", "remove", "insert", "replace")
-_RAW_ACCESS = frozenset({"client", "http_client", "execute_query", "execute_aql", "execute"})
+_RAW_CLIENTS = frozenset({"client", "http_client"})
+_RAW_ACCESS = _RAW_CLIENTS | {"execute_query", "execute_aql", "execute"}
 _warned: set[str] = set()
 
 
@@ -258,7 +259,9 @@ class _GuardedProvider:
             return attr
         if name not in _RAW_ACCESS and _CLASSIFIED_SCOPE.get() is not None:
             return attr
-        if os.environ.get("PYTEST_CURRENT_TEST"):
+        if os.environ.get("PYTEST_CURRENT_TEST") or name in _RAW_CLIENTS or not callable(attr):
+            # the raw client (`client`, `http_client`) cannot be wrapped to mark the organisation's connectors before its first write,
+            # and nothing reaches it through a transaction store: it is refused, in production too
             raise UnclassifiedProviderWrite(f"graph_provider.{name} is reached outside a classified store method")
         if self._on_unclassified is not None:
             self._on_unclassified()  # fail closed: the connectors this transaction saw are marked unsafe when it ends

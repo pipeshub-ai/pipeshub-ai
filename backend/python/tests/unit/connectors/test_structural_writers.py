@@ -592,6 +592,25 @@ async def test_outside_a_transaction_every_connector_of_the_organisation_is_mark
     assert all(c.args[3] is None for c in provider.update_node.await_args_list)  # on their own: they survive the failure
 
 
+async def test_in_production_the_raw_client_is_refused_not_returned_unmarked(monkeypatch) -> None:
+    """`graph_provider.client.execute_query(...)` would reach the database without the organisation's connectors marked first."""
+    from app.connectors.core.base.data_store.graph_data_store import (
+        UnclassifiedProviderWrite,
+    )
+    from app.core import org_context
+
+    provider, store_provider = _production_store(monkeypatch, doc={"connectorId": "c1"}, org_apps=[{"_key": "c1"}], explicit=False)
+    provider.client = MagicMock()
+    provider.http_client = MagicMock()
+    with org_context.bind(org_context.OrgContext("o1", None, "service", "test", "-")):
+        async with store_provider.transaction() as tx:
+            for name in ("client", "http_client"):
+                with pytest.raises(UnclassifiedProviderWrite):
+                    getattr(tx.graph_provider, name)
+    provider.client.execute_query.assert_not_called()
+    provider.update_node.assert_not_awaited()  # nothing was reached, so nothing needed marking
+
+
 async def test_a_failed_lookup_in_a_wrapper_fails_the_block_instead_of_looking_like_a_new_node() -> None:
     provider = MagicMock()
     provider.logger = MagicMock()
