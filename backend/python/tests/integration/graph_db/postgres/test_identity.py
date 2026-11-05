@@ -249,7 +249,7 @@ async def test_what_identity_writes_feeds_the_access_check(w: World) -> None:
 
 
 CALLS = [
-    ("get_user_by_user_id", ("u",)), ("get_user_by_email", ("a@b.c",)), ("get_org_apps", ("o",)), ("get_account_type", ("o",)), ("get_users", ("o",)),
+    ("get_user_by_user_id", ("u",)), ("get_user_by_email", ("a@b.c",)), ("get_users_by_emails", (["a@b.c"],)), ("get_org_apps", ("o",)), ("get_account_type", ("o",)), ("get_users", ("o",)),
     ("get_organization_users", ("o",)), ("find_users", ("o", "x")), ("get_graph_user_keys_by_mongo_user_ids", (["u"],)), ("get_user_by_source_id", ("s", "c")),
     ("get_app_users", ("o", "c")), ("batch_upsert_app_users", ([app_user("a@b.c", "k")],)), ("get_user_group_by_external_id", ("c", "e")),
     ("get_user_groups", ("c", "o")), ("get_user_directory_groups", ("u", "o")), ("get_app_role_by_external_id", ("c", "e")),
