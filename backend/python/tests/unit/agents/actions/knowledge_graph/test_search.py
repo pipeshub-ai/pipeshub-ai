@@ -1216,6 +1216,32 @@ class TestKeywordSearchBudget:
         assert waited.await_args.kwargs["wait_budget"] == expected
 
 
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_cut_off_keyword_search_is_not_waited_for_again(self, mock_parse, monkeypatch) -> None:
+        """Once the capped wait gave up and the task's short cleanup grace ran
+        out, the search returns without waiting on that cleanup a second time."""
+        monkeypatch.setattr("app.utils.pattern_match.KEYWORD_SEARCH_CLEANUP_GRACE_SECS", 0.05)
+        cleanup_may_finish = asyncio.Event()
+
+        async def _slow_to_stop(**_kwargs: object) -> list[dict]:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                await cleanup_may_finish.wait()
+                raise
+            return []
+
+        state = _entity_search_state(_empty_retrieval())
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        try:
+            with patch(f"{search_mod}.run_pattern_match_with_llm_grep", new=_slow_to_stop):
+                await asyncio.wait_for(execute_search(state, "roadmap", keyword_wait_s=0.05), timeout=3)
+        finally:
+            cleanup_may_finish.set()
+            await asyncio.sleep(0)
+
+
 class TestUnknownEntityIds:
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
