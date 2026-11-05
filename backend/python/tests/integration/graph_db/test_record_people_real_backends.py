@@ -146,7 +146,7 @@ async def test_neo4j_backfill_pages_walk_the_id_order_without_sorting(backend) -
 
 async def test_arango_backfill_pages_seek_the_orgs_keys_without_sorting(backend) -> None:
     """Review: no index served "this org's records in key order", so a page
-    either sorted the org's records or walked every tenant's keys. An
+    either sorted the org's records or walked every org's keys. An
     (orgId, _key) index, hinted, gives the order within the org."""
     from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
@@ -182,7 +182,7 @@ async def test_arango_backfill_pages_seek_the_orgs_keys_without_sorting(backend)
 
 
 async def test_an_address_another_org_also_uses_still_links_this_orgs_member(backend) -> None:
-    """Unscoped, the lookup could answer with the other tenant's user (written
+    """Unscoped, the lookup could answer with the other org's user (written
     first), which is refused, and this org's member would get no edge."""
     from app.connectors.core.base.data_processor.record_people import link_record_people
 
