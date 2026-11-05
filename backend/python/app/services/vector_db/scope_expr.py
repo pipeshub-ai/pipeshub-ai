@@ -172,6 +172,8 @@ MAX_IDS = {"Qdrant": 50_000, "OpenSearch": 60_000, "Redis": 20_000}
 def check_size(flt: ScopeFilter, store: str) -> None:
     from app.services.vector_db.filters import ScopeFilterTooLarge
 
+    if flt.trusts_nothing:  # admits nothing and no list is ever written: a size that cannot be sent is no reason to refuse
+        return
     limit = MAX_IDS[store]
     for name in ("current", "open_apps", "readable_groups", "readable_scopes", "excluded", "pending", "blocked", "reach"):
         if len(getattr(flt, name)) > limit:

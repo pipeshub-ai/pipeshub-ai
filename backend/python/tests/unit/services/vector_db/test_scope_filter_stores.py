@@ -200,6 +200,18 @@ async def test_a_list_past_the_stores_limit_is_refused_not_cut(store, limit) -> 
     await sr.captured(store, [scoped("dense_only", flt(excluded=frozenset(list(big)[:limit])))])         # exactly the limit is fine
 
 
+@pytest.mark.parametrize("store", STORES)
+@pytest.mark.parametrize("nothing", [{"current": frozenset()}, {"generation": -1}], ids=["no_current_connector", "unavailable_generation"])
+async def test_a_filter_that_trusts_nothing_matches_nothing_whatever_its_lists_hold(store, nothing) -> None:
+    """The lists of such a filter are never written, so a list past the limit or an id with capitals is no reason to refuse it (a refusal makes
+    the caller drop the scope filter and search without it, which admits what the rule refuses)."""
+    limit = {"qdrant": 50_000, "opensearch": 60_000, "redis": 20_000}[store]
+    for lists in ({"readable_groups": frozenset(f"id{i}" for i in range(limit + 1)), "excluded": frozenset(f"x{i}" for i in range(limit + 1))},
+                  {"readable_groups": frozenset({"Grp"}), "excluded": frozenset({"X\x01"})}):
+        sent = await sr.captured(store, [scoped("dense_only", flt(**nothing, **lists))])
+        assert sent and "id1" not in json.dumps(sent) and "Grp" not in json.dumps(sent)           # nothing of the lists was written
+
+
 def test_redis_drops_and_counts_what_the_exact_rule_refuses_and_keeps_the_rest(monkeypatch: pytest.MonkeyPatch) -> None:
     import dataclasses
 
