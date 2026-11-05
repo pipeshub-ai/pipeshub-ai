@@ -5210,7 +5210,7 @@ class TestExternalCollaboratorBrowse:
     def test_a_membership_edge_passes_the_connector_gate(self, provider):
         """An external collaborator holds no permission on the App, only the
         USER_APP_RELATION edge the sync writes; without it the listing is empty."""
-        assert "(grantee)-[:PERMISSION|USER_APP_RELATION]->(gatedApp:App)" in provider._kh_gate_cypher()
+        assert "(grantee)-[gateRel:PERMISSION|USER_APP_RELATION]->(gatedApp:App)" in provider._kh_gate_cypher()
 
     def test_candidates_include_group_role_team_grants(self, provider):
         """Access via a group must count, or the reaper and browse disagree about who

@@ -334,6 +334,11 @@ export function isProcessedError(error: unknown): error is ProcessedError {
   );
 }
 
+/** The thing asked for no longer exists or is no longer the caller's to see (403 or 404). */
+export function isGoneError(error: unknown): boolean {
+  return isProcessedError(error) && (error.statusCode === 403 || error.statusCode === 404);
+}
+
 /** Retrieval `Status.ACCESSIBLE_RECORDS_NOT_FOUND` — search ran but no docs in scope. */
 export const SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS = 'accessible_records_not_found';
 

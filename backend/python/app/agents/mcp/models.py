@@ -94,6 +94,12 @@ class MCPServerTemplate(MCPCamelModel):
 
     # SSE / Streamable HTTP
     default_url: Optional[str] = None
+    # The admin types the server URL. Every other catalog entry locks `default_url`.
+    # Transport, command and args stay locked either way.
+    url_editable: bool = False
+    # The setup form always asks for a client ID and secret, even when the provider
+    # advertises a registration endpoint that rejects anonymous clients.
+    require_oauth_client: bool = False
 
     # OAuth
     authorization_url: Optional[str] = None
@@ -189,6 +195,16 @@ class MCPServerInstanceConfig(MCPCamelModel):
     # gateway's 90 s MCP proxy timeout: a discovery that needs a token refresh connects twice.
     connect_timeout_seconds: Optional[float] = Field(default=None, ge=1, le=45)
     call_timeout_seconds: Optional[float] = Field(default=None, ge=1, le=600)
+
+
+MAX_LOGO_UPLOAD_BYTES = 1024 * 1024
+
+
+class MCPServerLogoPayload(MCPCamelModel):
+    """Request body for setting a custom server's logo: the image as a base64 data URL."""
+
+    # Base64 is 4/3 of the bytes; the `data:image/...;base64,` prefix is short.
+    logo: str = Field(max_length=MAX_LOGO_UPLOAD_BYTES * 4 // 3 + 64)
 
 
 class MCPServerConfig(MCPCamelModel):

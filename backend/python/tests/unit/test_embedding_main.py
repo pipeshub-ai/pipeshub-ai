@@ -2,9 +2,11 @@
 
 import asyncio
 import base64
+import gc
 import struct
 import threading
 import time
+import warnings
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.embedding_main import (
+    MAX_EMBEDDING_REQUEST_BYTES,
     DownloadStatus,
     EncodeGate,
     EncodePriority,
@@ -56,6 +59,8 @@ def _no_settings_lookup_at_startup() -> Iterator[None]:
 def client():
     mock_manager = MagicMock(spec=ModelManager)
     mock_manager.list_loaded_models.return_value = [DEFAULT_EMBEDDING_MODEL]
+    mock_manager.max_seq_length.return_value = 512
+    mock_manager.prompt_tokens.return_value = 0
     mock_manager.encode = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
 
     mock_manager.warmup = AsyncMock()
@@ -80,6 +85,24 @@ class TestEmbeddingServerRoutes:
         body = response.json()
         assert body["object"] == "list"
         assert body["data"][0]["id"] == DEFAULT_EMBEDDING_MODEL
+        assert body["data"][0]["max_seq_length"] == 512
+
+    def test_tokenize_returns_the_counts(self, client) -> None:
+        test_client, mock_manager = client
+        mock_manager.count_tokens = AsyncMock(return_value=[3, 7])
+        response = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a", "b"]})
+        assert response.status_code == 200
+        assert response.json()["counts"] == [3, 7]
+
+    def test_tokenize_rejects_too_many_items_or_characters(self, client) -> None:
+        import app.embedding_main as em
+
+        test_client, mock_manager = client
+        mock_manager.count_tokens = AsyncMock(return_value=[1])
+        too_many = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a"] * (em.TOKENIZE_MAX_ITEMS + 1)})
+        too_long = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": "a" * (em.TOKENIZE_MAX_CHARS + 1)})
+        assert (too_many.status_code, too_long.status_code) == (413, 413)
+        mock_manager.count_tokens.assert_not_awaited()
 
     def test_create_embeddings_single_input(self, client):
         test_client, mock_manager = client
@@ -126,6 +149,26 @@ class TestEmbeddingServerRoutes:
             json={"model": DEFAULT_EMBEDDING_MODEL, "input": []},
         )
         assert response.status_code == 400
+
+    def test_create_embeddings_too_many_inputs_is_413(self, client: tuple) -> None:
+        test_client, mock_manager = client
+        with patch("app.embedding_main.MAX_EMBEDDING_INPUTS", 3):
+            response = test_client.post(
+                "/v1/embeddings",
+                json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a"] * 4},
+            )
+        assert response.status_code == 413
+        mock_manager.encode.assert_not_called()
+
+    def test_create_embeddings_oversized_body_is_413(self, client: tuple) -> None:
+        test_client, mock_manager = client
+        big = "x" * (MAX_EMBEDDING_REQUEST_BYTES + 1)
+        response = test_client.post(
+            "/v1/embeddings",
+            json={"model": DEFAULT_EMBEDDING_MODEL, "input": big},
+        )
+        assert response.status_code == 413
+        mock_manager.encode.assert_not_called()
 
     def test_create_embeddings_base64_format(self, client):
         test_client, mock_manager = client
@@ -294,6 +337,52 @@ class TestModelManager:
         manager = ModelManager()
         manager._models = {"model-a": MagicMock(), "model-b": MagicMock()}
         assert sorted(manager.list_loaded_models()) == ["model-a", "model-b"]
+
+    @pytest.mark.asyncio
+    async def test_count_tokens_uses_the_models_own_tokenizer(self) -> None:
+        class Model:
+            def tokenizer(self, texts: list[str], add_special_tokens: bool, truncation: bool) -> dict:
+                assert add_special_tokens and truncation is False
+                return {"input_ids": [list(range(len(t))) for t in texts]}
+
+        manager = ModelManager()
+        manager._models = {"m": Model()}
+        gate = MagicMock()
+        gate.slot = MagicMock(side_effect=AssertionError("counting must not take an encode slot"))
+        manager._encode_gate = gate
+        assert await manager.count_tokens("m", ["ab", "abcde"]) == [2, 5]
+        gate.slot.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_count_tokens_includes_the_default_prompt_encode_would_add(self) -> None:
+        seen: list[list[str]] = []
+
+        class Model:
+            default_prompt_name = "query"
+            prompts = {"query": "search: "}
+
+            def tokenizer(self, texts: list[str], add_special_tokens: bool, truncation: bool = False) -> dict:
+                seen.append(texts)
+                return {"input_ids": [list(range(len(t))) for t in texts]}
+
+        manager = ModelManager()
+        manager._models = {"m": Model()}
+        assert await manager.count_tokens("m", ["ab"]) == [10]  # "search: ab"
+        assert manager.prompt_tokens("m") == 8
+
+    def test_a_model_without_a_default_prompt_adds_no_tokens(self) -> None:
+        manager = ModelManager()
+        manager._models = {"m": MagicMock(default_prompt_name=None, prompts={"query": "x"}), "n": MagicMock(spec=[])}
+        assert manager.prompt_tokens("m") == 0
+        assert manager.prompt_tokens("n") == 0
+        assert manager.prompt_tokens("not-loaded") == 0
+
+    def test_max_seq_length_reads_the_loaded_model(self) -> None:
+        manager = ModelManager()
+        manager._models = {"a": MagicMock(max_seq_length=384), "b": MagicMock(max_seq_length=None)}
+        assert manager.max_seq_length("a") == 384
+        assert manager.max_seq_length("b") is None
+        assert manager.max_seq_length("not-loaded") is None
 
     @pytest.mark.asyncio
     async def test_get_model_returns_cached_without_loading(self):
@@ -1352,3 +1441,422 @@ class TestSingleCopyPerModel:
                 )
         assert response.status_code == 403
         mock_manager.encode.assert_not_awaited()
+
+
+class TestTokenizerRace:
+    """Counting must not change what a concurrent encode does.
+
+    Fast tokenizers keep truncation state on the instance, and a call with
+    ``truncation=False`` rewrites it while it runs. When counting shared the
+    model's tokenizer, some concurrent encodes came back untruncated.
+    """
+
+    MAX_LEN = 32
+    VOCAB_WORDS = 50
+    TEXT = " ".join(f"w{i % 50}" for i in range(400))
+
+    @classmethod
+    def _model(cls, *, specials: bool = False) -> MagicMock:
+        from tokenizers import Tokenizer, models, pre_tokenizers, processors
+        from transformers import PreTrainedTokenizerFast
+
+        vocab = {"[UNK]": 0, **{f"w{i}": i + 1 for i in range(cls.VOCAB_WORDS)}}
+        vocab["[CLS]"] = len(vocab)
+        vocab["[SEP]"] = len(vocab)
+        backend = Tokenizer(models.WordLevel(vocab, unk_token="[UNK]"))
+        backend.pre_tokenizer = pre_tokenizers.Whitespace()
+        if specials:
+            backend.post_processor = processors.TemplateProcessing(
+                single="[CLS] $A [SEP]",
+                special_tokens=[("[CLS]", vocab["[CLS]"]), ("[SEP]", vocab["[SEP]"])],
+            )
+        model = MagicMock()
+        model.tokenizer = PreTrainedTokenizerFast(tokenizer_object=backend, unk_token="[UNK]")
+        model.default_prompt_name = None
+        model.prompts = {}
+        return model
+
+    def _run(self, *, encoders: int, count: bool, rounds: int = 400) -> tuple[int, int, list[int]]:
+        model = self._model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        texts = [self.TEXT] * 4
+        stop = threading.Event()
+        untruncated = [0]
+        encodes = [0]
+        guard = threading.Lock()
+
+        def encoder() -> None:
+            while not stop.is_set():
+                out = model.tokenizer(
+                    texts, truncation=True, max_length=self.MAX_LEN, add_special_tokens=True,
+                )["input_ids"]
+                bad = sum(1 for ids in out if len(ids) > self.MAX_LEN)
+                with guard:
+                    encodes[0] += 1
+                    untruncated[0] += bad
+
+        threads = [threading.Thread(target=encoder) for _ in range(encoders)]
+        for t in threads:
+            t.start()
+        counts: list[int] = []
+        try:
+            if count:
+                async def counting() -> None:
+                    for _ in range(rounds):
+                        counts[:] = await manager.count_tokens("m", ["w1 w2 w3"] * 2 + [self.TEXT] * 30)
+                asyncio.run(counting())
+            else:
+                time.sleep(0.5)
+        finally:
+            stop.set()
+            for t in threads:
+                t.join()
+        return untruncated[0], encodes[0], counts
+
+    def test_counting_never_leaves_an_encode_untruncated(self) -> None:
+        untruncated, encodes, counts = self._run(encoders=2, count=True)
+        assert encodes > 0
+        assert untruncated == 0
+        # Counting itself stays untruncated and exact: 3, 3, then the full text, 30 times.
+        assert counts == [3, 3] + [400] * 30
+
+    def test_control_encoders_alone_are_never_untruncated(self) -> None:
+        untruncated, encodes, _ = self._run(encoders=3, count=False)
+        assert encodes > 0
+        assert untruncated == 0
+
+    @pytest.mark.asyncio
+    async def test_concurrent_counts_agree(self) -> None:
+        manager = ModelManager()
+        manager._models = {"m": self._model()}
+        results = await asyncio.gather(*(
+            manager.count_tokens("m", [self.TEXT, "w1 w2"]) for _ in range(16)
+        ))
+        assert all(r == [400, 2] for r in results)
+
+    @pytest.mark.asyncio
+    async def test_counting_tokenizer_is_private_and_reused(self) -> None:
+        model = self._model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        counter = await manager._counter("m", model)
+        assert counter.tokenizer is not model.tokenizer
+        assert await manager._counter("m", model) is counter
+        # A reloaded model gets a fresh copy rather than the evicted model's.
+        other = self._model()
+        assert (await manager._counter("m", other)).tokenizer is not counter.tokenizer
+
+    @pytest.mark.asyncio
+    async def test_eviction_drops_the_counting_tokenizer(self) -> None:
+        model = self._model()
+        manager = ModelManager(idle_seconds=1.0)
+        manager._models = {"m": model}
+        manager._last_used = {"m": 0.0}
+        await manager._counter("m", model)
+        assert manager.reap_idle(now=100.0) == ["m"]
+        assert manager._counters == {}
+
+    @pytest.mark.asyncio
+    async def test_counting_falls_back_when_the_tokenizer_cannot_be_copied(self) -> None:
+        model = self._model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        fallback = self._model().tokenizer
+        with patch("copy.deepcopy", side_effect=TypeError("no copy")), patch(
+            "transformers.AutoTokenizer.from_pretrained", return_value=fallback,
+        ) as load:
+            assert await manager.count_tokens("m", ["w1 w2"]) == [2]
+        load.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_prompt_tokens_use_the_private_tokenizer_and_skip_special_tokens(self) -> None:
+        model = self._model(specials=True)
+        model.default_prompt_name = "q"
+        model.prompts = {"q": "w1 w2"}
+        manager = ModelManager()
+        manager._models = {"m": model}
+        await manager._counter("m", model)
+        assert manager.prompt_tokens("m") == 2  # no [CLS]/[SEP]
+        assert manager._counters["m"].tokenizer is not model.tokenizer
+
+    @pytest.mark.asyncio
+    async def test_counts_include_special_tokens(self) -> None:
+        model = self._model(specials=True)
+        manager = ModelManager()
+        manager._models = {"m": model}
+        assert await manager.count_tokens("m", ["w1 w2"]) == [4]
+
+    @pytest.mark.asyncio
+    async def test_counts_on_the_private_tokenizer_do_not_overlap(self) -> None:
+        class Spy:
+            active = 0
+            peak = 0
+
+            def __call__(self, texts: list[str], **_: object) -> dict:
+                Spy.active += 1
+                Spy.peak = max(Spy.peak, Spy.active)
+                time.sleep(0.02)
+                Spy.active -= 1
+                return {"input_ids": [[1] for _ in texts]}
+
+        model = MagicMock()
+        model.tokenizer = Spy()
+        model.default_prompt_name = None
+        manager = ModelManager()
+        manager._models = {"m": model}
+        await asyncio.gather(*(manager.count_tokens("m", ["a"]) for _ in range(6)))
+        assert Spy.peak == 1
+
+    @staticmethod
+    def _slow_model(delay: float) -> MagicMock:
+        class Slow:
+            def __call__(self, texts: list[str], **_: object) -> dict:
+                time.sleep(delay)
+                return {"input_ids": [[1, 2] for _ in texts]}
+
+        model = MagicMock()
+        model.tokenizer = Slow()
+        model.default_prompt_name = "q"
+        model.prompts = {"q": "p"}
+        model.encode = lambda texts, **_: np.zeros((len(texts), 4))
+        return model
+
+    @pytest.mark.asyncio
+    async def test_queued_counts_do_not_starve_a_query_encode(self) -> None:
+        manager = ModelManager()
+        model = self._slow_model(0.05)
+        manager._models = {"m": model}
+        await manager._counter("m", model)  # built when the model loads
+        flood = [asyncio.create_task(manager.count_tokens("m", ["a"])) for _ in range(64)]
+        await asyncio.sleep(0.2)
+        start = time.perf_counter()
+        await manager.encode("m", ["q"], priority=EncodePriority.QUERY)
+        waited = time.perf_counter() - start
+        for t in flood:
+            t.cancel()
+        await asyncio.gather(*flood, return_exceptions=True)
+        assert waited < 0.5
+
+    @pytest.mark.asyncio
+    async def test_models_listing_does_not_wait_for_queued_counts(self) -> None:
+        manager = ModelManager()
+        model = self._slow_model(0.3)
+        manager._models = {"m": model}
+        await manager._counter("m", model)  # built when the model loads
+        flood = [asyncio.create_task(manager.count_tokens("m", ["a"])) for _ in range(4)]
+        await asyncio.sleep(0.1)
+        start = time.perf_counter()
+        assert manager.prompt_tokens("m") == 2
+        waited = time.perf_counter() - start
+        for t in flood:
+            t.cancel()
+        await asyncio.gather(*flood, return_exceptions=True)
+        assert waited < 0.05
+
+    @pytest.mark.asyncio
+    async def test_copying_a_tokenizer_does_not_block_the_event_loop(self) -> None:
+        class SlowCopy:
+            def __deepcopy__(self, memo: dict) -> "SlowCopy":
+                time.sleep(0.4)
+                return SlowCopy()
+
+            def __call__(self, texts: list[str], **_: object) -> dict:
+                return {"input_ids": [[1] for _ in texts]}
+
+        model = MagicMock()
+        model.tokenizer = SlowCopy()
+        model.default_prompt_name = None
+        manager = ModelManager()
+        manager._models = {"m": model}
+        gaps: list[float] = []
+
+        async def ticker() -> None:
+            last = time.perf_counter()
+            while True:
+                await asyncio.sleep(0.01)
+                now = time.perf_counter()
+                gaps.append(now - last)
+                last = now
+
+        task = asyncio.create_task(ticker())
+        assert await manager.count_tokens("m", ["a"]) == [1]
+        task.cancel()
+        assert max(gaps) < 0.2
+
+    @pytest.mark.asyncio
+    async def test_without_any_private_tokenizer_counting_degrades_to_the_shared_one(self) -> None:
+        model = self._model(specials=True)
+        model.default_prompt_name = "q"
+        model.prompts = {"q": "w1 "}
+        manager = ModelManager()
+        manager._models = {"m": model}
+        slots: list[object] = []
+        real_slot = manager._encode_gate.slot
+
+        def slot(priority: object):  # noqa: ANN202
+            slots.append(priority)
+            return real_slot(priority)
+
+        manager._encode_gate.slot = slot  # ty: ignore[invalid-assignment]
+        with patch("copy.deepcopy", side_effect=TypeError("no copy")), patch(
+            "transformers.AutoTokenizer.from_pretrained", side_effect=OSError("not cached"),
+        ), patch("app.embedding_main.logger") as log:
+            assert await manager.count_tokens("m", ["w2"]) == [4]
+            assert await manager.count_tokens("m", ["w2"]) == [4]
+            assert manager.prompt_tokens("m") == 1
+        assert slots == [EncodePriority.BULK] * 2
+        assert log.warning.call_count == 1  # once per model, not per call
+
+    @staticmethod
+    def _spy_model(delay: float) -> tuple[MagicMock, type]:
+        class Spy:
+            copies = 0
+            active = 0
+            peak = 0
+            copy_threads: list[int] = []
+            copy_gate: threading.Event | None = None  # a test may hold the copy until it releases this
+
+            def __deepcopy__(self, memo: dict) -> "Spy":
+                Spy.copies += 1
+                Spy.copy_threads.append(threading.get_ident())
+                if Spy.copy_gate is not None:
+                    Spy.copy_gate.wait(30)
+                time.sleep(0.1)
+                return Spy()
+
+            def __call__(self, texts: list[str], **_: object) -> dict:
+                Spy.active += 1
+                Spy.peak = max(Spy.peak, Spy.active)
+                time.sleep(delay)
+                Spy.active -= 1
+                return {"input_ids": [[1] for _ in texts]}
+
+        model = MagicMock()
+        model.tokenizer = Spy()
+        model.default_prompt_name = None
+        return model, Spy
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_counts_share_one_build(self) -> None:
+        model, spy = self._spy_model(0.0)
+        manager = ModelManager()
+        manager._models = {"m": model}
+        results = await asyncio.gather(*(manager.count_tokens("m", ["a"]) for _ in range(16)))
+        assert all(r == [1] for r in results)
+        assert spy.copies == 1
+
+    @pytest.mark.asyncio
+    async def test_a_waiter_that_leaves_does_not_cancel_the_shared_build(self) -> None:
+        model, spy = self._spy_model(0.0)
+        manager = ModelManager()
+        manager._models = {"m": model}
+        first = asyncio.create_task(manager.count_tokens("m", ["a"]))
+        second = asyncio.create_task(manager.count_tokens("m", ["a"]))
+        await asyncio.sleep(0.02)
+        first.cancel()
+        assert await second == [1]
+        assert spy.copies == 1
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_count_keeps_the_lock_until_its_thread_ends(self) -> None:
+        model, spy = self._spy_model(0.3)
+        manager = ModelManager()
+        manager._models = {"m": model}
+        counter = await manager._counter("m", model)
+        spy.peak = 0
+        first = asyncio.create_task(manager.count_tokens("m", ["a"]))
+        await asyncio.sleep(0.1)  # its thread is inside the tokenizer
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        assert counter.lock.locked()
+        assert await manager.count_tokens("m", ["a"]) == [1]
+        assert spy.peak == 1
+        assert not counter.lock.locked()
+
+    @pytest.mark.asyncio
+    async def test_a_model_loads_even_if_counting_cannot_be_prepared(self) -> None:
+        manager = ModelManager(device="cpu")
+        loaded = self._model()
+        with patch("sentence_transformers.SentenceTransformer", return_value=loaded), patch.object(
+            manager, "_build_counter", side_effect=RuntimeError("boom"),
+        ), patch("app.embedding_main.logger") as log:
+            assert await manager.get_model("m") is loaded
+        assert manager._counters == {}
+        log.warning.assert_called_once()
+        # The first count retries, and succeeds once the tokenizer can be prepared.
+        manager._build_counter = ModelManager._build_counter.__get__(manager)  # ty: ignore[invalid-assignment]
+        assert await manager.count_tokens("m", ["w1 w2"]) == [2]
+
+    @staticmethod
+    def _prompted_model(delay: float = 0.0) -> tuple[MagicMock, type]:
+        model, spy = TestTokenizerRace._spy_model(delay)
+        model.default_prompt_name = "q"
+        model.prompts = {"q": "p"}
+        return model, spy
+
+    @pytest.mark.asyncio
+    async def test_listing_without_a_counter_returns_at_once_and_builds_in_the_background(self) -> None:
+        model, spy = self._prompted_model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        # The copy is held until released. Returning 0 while it is still held proves the call did not wait for
+        # it; a watchdog thread releases it if a wait blocks the loop, so a regression fails instead of hanging.
+        spy.copy_gate = threading.Event()
+        watchdog = threading.Timer(5, spy.copy_gate.set)
+        watchdog.start()
+        try:
+            assert manager.prompt_tokens("m") == 0  # not known yet
+            assert not spy.copy_gate.is_set(), "prompt_tokens waited for the counter build"
+        finally:
+            watchdog.cancel()
+            spy.copy_gate.set()
+        for _ in range(500):  # bounded poll for the background build, 10 s
+            if manager.prompt_tokens("m") == 1:
+                break
+            await asyncio.sleep(0.02)
+        assert manager.prompt_tokens("m") == 1  # known once the build is done
+        # The copy ran, and not on the loop: where it ran is checked, not how long the listing took.
+        assert spy.copy_threads
+        assert threading.get_ident() not in spy.copy_threads
+
+    @pytest.mark.asyncio
+    async def test_listing_without_a_counter_survives_a_failing_build(self) -> None:
+        model = MagicMock()
+        model.default_prompt_name = "q"
+        model.prompts = {"q": "p"}
+        manager = ModelManager()
+        manager._models = {"m": model}
+        with patch.object(manager, "_build_counter", side_effect=RuntimeError("boom")), patch(
+            "app.embedding_main.logger",
+        ) as log:
+            assert manager.prompt_tokens("m") == 0
+            assert manager.prompt_tokens("m") == 0
+            await asyncio.sleep(0.1)
+            assert manager.prompt_tokens("m") == 0  # tries again, still does not raise
+            await asyncio.sleep(0.1)
+        assert log.warning.called
+
+    @pytest.mark.asyncio
+    async def test_listing_and_counting_share_one_build(self) -> None:
+        model, spy = self._prompted_model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        counts = [asyncio.create_task(manager.count_tokens("m", ["a"])) for _ in range(8)]
+        await asyncio.sleep(0.02)  # the build is in flight
+        manager.prompt_tokens("m")
+        manager.prompt_tokens("m")
+        results = await asyncio.gather(*counts)
+        assert all(r == [1] for r in results)
+        assert spy.copies == 1
+
+    def test_listing_without_a_running_loop_does_not_build(self) -> None:
+        model, spy = self._prompted_model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert manager.prompt_tokens("m") == 0
+            gc.collect()
+        assert spy.copies == 0
+        assert not [w for w in caught if "never awaited" in str(w.message)]

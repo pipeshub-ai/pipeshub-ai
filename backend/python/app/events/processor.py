@@ -49,7 +49,14 @@ from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_fil
 from app.modules.parsers.markdown.image_references import extract_and_replace_images
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
+from app.connectors.sources.localKB.push.contract import PUSH_ORIGIN_FIELD
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+from app.modules.parsers.lightweight_group_parsers import lightweight_group_parsers
+from app.modules.parsers.push_origin import (
+    assert_images_inline,
+    content_is_push_origin,
+    record_is_push_origin,
+)
 from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
@@ -135,6 +142,10 @@ def convert_record_dict_to_record(record_dict: dict[str, Any]) -> Record:
         md5_hash=record_dict.get("md5Checksum"),
         record_group_id=record_dict.get("recordGroupId"),
         external_record_group_id=record_dict.get("externalGroupId"),
+        # A named-entity persist retry rebuilds the record from its document and finds the
+        # stored extraction by this.
+        virtual_record_id=record_dict.get("virtualRecordId"),
+        push_origin=record_dict.get(PUSH_ORIGIN_FIELD) is True,
     )
 
 class Processor:
@@ -803,24 +814,30 @@ class Processor:
             # Convert dict to BlocksContainer
             block_containers = BlocksContainer(**blocks_dict)
 
-            # Process BlockGroups with requires_processing=True via markdown parser
-            block_containers = await self._process_blockgroups(
-                block_containers, recordName
-            )
-
-            # Signal parsing complete after blocks are processed
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
-
-            # Enhance TABLE BlockGroups with LLM summaries and row descriptions
-            await enhance_tables_with_llm(block_containers, self.config_service, self.logger)
-
-            # Get record from database
+            # Read before the groups are processed: the record's own push marker
+            # decides whether a remote image may be fetched. A failed read raises,
+            # so it is retried and never indexes the images away.
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
 
             if record is None:
                 raise RecordDeletedError(recordId)
+
+            push_origin = content_is_push_origin(blocks_dict) or record_is_push_origin(record)
+
+            # Process BlockGroups with requires_processing=True via markdown parser
+            block_containers = await self._process_blockgroups(
+                block_containers, recordName, allow_remote_fetch=not push_origin
+            )
+            if push_origin:
+                assert_images_inline(block_containers)
+
+            # Signal parsing complete after blocks are processed
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            # Enhance TABLE BlockGroups with LLM summaries and row descriptions
+            await enhance_tables_with_llm(block_containers, self.config_service, self.logger)
 
             # Convert to Record entity and attach blocks
             record = self._convert_record(record)
@@ -866,8 +883,18 @@ class Processor:
 
         return block_groups_with_index, block_groups_without_index
 
+    def _group_parsers(self, *, allow_remote_fetch: bool) -> tuple[Any, Any]:
+        """The markdown and HTML parsers for block-group content.
+
+        Pushed content always takes the lightweight classes, so a Docling backend
+        never sees it.
+        """
+        if allow_remote_fetch:
+            return self.parsers.get(ExtensionTypes.MD.value), self.parsers.get(ExtensionTypes.HTML.value)
+        return lightweight_group_parsers(logger=self.logger, config_service=self.config_service)
+
     async def _process_blockgroup_images(
-        self, markdown_data: str, block_group_index: int
+        self, markdown_data: str, block_group_index: int, *, allow_remote_fetch: bool
     ) -> Tuple[str, Dict[str, str]]:
         """
         Extract images from markdown and convert URLs to base64.
@@ -882,7 +909,7 @@ class Processor:
         caption_map: Dict[str, str] = {}
         modified_markdown = markdown_data
 
-        md_parser = self.parsers.get(ExtensionTypes.MD.value)
+        md_parser, _ = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
         image_parser = self.parsers.get(ExtensionTypes.PNG.value)
 
         if md_parser and image_parser:
@@ -895,7 +922,9 @@ class Processor:
                 urls_to_convert = [image["url"] for image in images]
 
                 # Convert URLs to base64
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                base64_urls = await image_parser.urls_to_base64(
+                    urls_to_convert, allow_remote_fetch=allow_remote_fetch
+                )
 
                 # Create caption map with base64 URLs
                 for i, image in enumerate(images):
@@ -914,6 +943,8 @@ class Processor:
         block_group: BlockGroup,
         record_name: str,
         md_parser: MarkdownParser,
+        *,
+        allow_remote_fetch: bool,
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
         Process a single block group's markdown into blocks.
@@ -938,7 +969,7 @@ class Processor:
 
         # Extract and replace images from markdown, then convert URLs to base64
         modified_markdown, caption_map = await self._process_blockgroup_images(
-            markdown_data, block_group.index
+            markdown_data, block_group.index, allow_remote_fetch=allow_remote_fetch
         )
 
         self.logger.debug(
@@ -962,6 +993,8 @@ class Processor:
         self,
         block_group: BlockGroup,
         record_name: str,
+        *,
+        allow_remote_fetch: bool,
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
         Process a single block group's HTML data into blocks.
@@ -976,7 +1009,7 @@ class Processor:
                 f"BlockGroup {block_group.index} has no valid HTML data"
             )
 
-        html_parser = self.parsers.get(ExtensionTypes.HTML.value)
+        _, html_parser = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
         if not html_parser:
             raise ValueError("HTML parser is not configured")
         html_content = html_parser.clean_html(html_data)
@@ -990,7 +1023,9 @@ class Processor:
             image_parser = self.parsers.get(ExtensionTypes.PNG.value)
             if image_parser:
                 urls_to_convert = [image["url"] for image in images]
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                base64_urls = await image_parser.urls_to_base64(
+                    urls_to_convert, allow_remote_fetch=allow_remote_fetch
+                )
                 for i, image in enumerate(images):
                     if base64_urls[i]:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
@@ -1246,7 +1281,7 @@ class Processor:
         )
 
     async def _process_blockgroups(
-        self, block_containers: BlocksContainer, record_name: str
+        self, block_containers: BlocksContainer, record_name: str, *, allow_remote_fetch: bool
     ) -> BlocksContainer:
         """
         Process BlockGroups with requires_processing=True via the markdown parser.
@@ -1259,6 +1294,7 @@ class Processor:
         Args:
             block_containers: BlocksContainer to process
             record_name: Name of the record (for parser context)
+            allow_remote_fetch: False for pushed content: a remote image is left out, never fetched
 
         Returns:
             BlocksContainer with processed blocks merged in
@@ -1290,7 +1326,7 @@ class Processor:
         processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]] = {}
         initial_block_count = len(block_containers.blocks)
 
-        md_parser = self.parsers.get(ExtensionTypes.MD.value)
+        md_parser, _ = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
         if md_parser is None:
             raise ValueError("Markdown parser is not configured")
 
@@ -1298,11 +1334,11 @@ class Processor:
             try:
                 if block_group.format == DataFormat.HTML:
                     new_block_groups, new_blocks = await self._process_single_blockgroup_html(
-                        block_group, record_name
+                        block_group, record_name, allow_remote_fetch=allow_remote_fetch
                     )
                 else:
                     new_block_groups, new_blocks = await self._process_single_blockgroup(
-                        block_group, record_name, md_parser
+                        block_group, record_name, md_parser, allow_remote_fetch=allow_remote_fetch
                     )
 
                 # Store results for later merging
@@ -1621,7 +1657,8 @@ class Processor:
             if images:
                 image_parser = self.parsers[ExtensionTypes.PNG.value]
                 urls_to_convert = [image["url"] for image in images]
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                # An HTML file a connector synced: never a pushed blocks document.
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
 
                 for i, image in enumerate(images):
                     if base64_urls[i]:
@@ -1780,7 +1817,8 @@ class Processor:
             # Convert URLs to base64 if there are any images
             if urls_to_convert:
                 image_parser = self.parsers[ExtensionTypes.PNG.value]
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                # A markdown file a connector synced: never a pushed blocks document.
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
 
                 # Create caption map with base64 URLs
                 for i, image in enumerate(images):

@@ -49,6 +49,14 @@ class TestHeaderDates:
         assert dates == DocumentDates(created_ms=_day(2025, 5, 3), modified_ms=_day(2025, 5, 3))
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("written", ["31-Dec-2025", "2025/12/31", "31.12.2025"])
+    async def test_a_numeric_or_day_mon_year_date_line_dates_it(self, written: str) -> None:
+        """dateparser read these too, but marked them as anchored to the record, so a
+        header written this way never dated the document."""
+        dates = await _dates("Minutes", f"Date: {written}", "Body.")
+        assert dates == DocumentDates(created_ms=_day(2025, 12, 31), modified_ms=_day(2025, 12, 31))
+
+    @pytest.mark.asyncio
     async def test_an_emails_date_line_dates_it(self) -> None:
         dates = await _dates(
             "Fwd: Question about token accounting discrepancy",

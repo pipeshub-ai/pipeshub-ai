@@ -2798,6 +2798,9 @@ export const createAIModelsConfig =
         const aiResponseData =
           (await aiServiceCommand.execute()) as AIServiceResponse;
 
+        if (isEmbeddingInUseRefusal(aiResponseData)) {
+          throw new BadRequestError(embeddingRefusalMessage(aiResponseData));
+        }
         throwUnlessHealthy(
           aiResponseData,
           'Failed to do health check of embedding configuration, check credentials again',
@@ -3293,12 +3296,24 @@ const isEmbeddingInUseRefusal = (
 ): boolean =>
   response?.statusCode === 400 && response.data?.status === 'not healthy';
 
+// A vector store that cannot change model in place (pgvector) says so with its
+// own text; delete-and-re-embed would not help there, so that text is shown.
+export const embeddingRefusalMessage = (
+  response: AIServiceResponse | undefined,
+): string => {
+  const data = response?.data as { code?: string; error?: unknown } | undefined;
+  return data?.code === 'embedding_change_unsupported' &&
+    typeof data.error === 'string'
+    ? data.error
+    : EMBEDDING_MODEL_IN_USE_MESSAGE;
+};
+
 const takeoverRefusalMessage = (
   takeover: AIServiceResponse,
   fallback: string,
 ): string =>
   isEmbeddingInUseRefusal(takeover)
-    ? EMBEDDING_MODEL_IN_USE_MESSAGE
+    ? embeddingRefusalMessage(takeover)
     : healthCheckFailureMessage(takeover.data, fallback);
 
 const healthCheckFailureMessage = (data: unknown, fallback: string): string => {
@@ -3385,7 +3400,7 @@ export const addAIModelProvider =
         const errData: any = aiResponseData?.data ?? {};
         const reasonMessage =
           modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
-            ? EMBEDDING_MODEL_IN_USE_MESSAGE
+            ? embeddingRefusalMessage(aiResponseData)
             : ((errData && (errData.message ?? errData.error?.message)) ??
               `Failed to do health check of ${modelType} configuration, check credentials again`);
 
@@ -3628,7 +3643,7 @@ export const updateAIModelProvider =
         const errData: any = aiResponseData?.data ?? {};
         const reasonMessage =
           modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
-            ? EMBEDDING_MODEL_IN_USE_MESSAGE
+            ? embeddingRefusalMessage(aiResponseData)
             : ((errData && (errData.message ?? errData.error?.message)) ??
               `Failed to do health check of ${modelType} configuration, check credentials again`);
 
@@ -3882,7 +3897,7 @@ export const deleteAIModelProvider =
           appConfig,
         );
         if (isEmbeddingInUseRefusal(takeover)) {
-          throw new BadRequestError(EMBEDDING_MODEL_IN_USE_MESSAGE);
+          throw new BadRequestError(embeddingRefusalMessage(takeover));
         }
         if (!takeover.data || takeover.statusCode !== 200) {
           res.status(takeover.statusCode).json({

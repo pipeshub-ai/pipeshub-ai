@@ -5,6 +5,7 @@ import { isElectron } from '@/lib/electron';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { allowChatDraftWrites, discardAllChatDrafts } from '@/lib/storage/chat-drafts';
 import { allowChatUnreadWrites, discardAllChatUnread } from '@/lib/storage/chat-unread';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import {
   clearElectronLogoutServerState,
   persistElectronServerUrlOnLogin,
@@ -124,6 +125,7 @@ export const useAuthStore = create<AuthStore>()(
           state.user = null;
           state.isAuthenticated = false;
         });
+        clearSessionCache();
       },
 
       setHydrated: (value) =>

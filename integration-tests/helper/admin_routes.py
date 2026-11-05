@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import ast
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -37,7 +37,9 @@ ADMIN_MIDDLEWARES = frozenset({"userAdminCheck", "adminValidator"})
 _METHODS = ("get", "post", "put", "patch", "delete")
 _ROUTE_CALL = re.compile(r"\brouter\s*\.\s*(get|post|put|patch|delete|use)\s*\(")
 _FACTORY = re.compile(r"export\s+(?:function\s+|const\s+)(create\w+Router)\b")
-_MOUNT = re.compile(r"\bapp\.use\(\s*'([^']+)'\s*,\s*(create\w+Router)\s*\(", re.S)
+# The prefix is a string literal or the name of a string constant.
+_MOUNT = re.compile(r"\bapp\.use\(\s*(?:'([^']+)'|([A-Z][A-Z0-9_]*))\s*,\s*(create\w+Router)\s*\(", re.S)
+_PATH_CONST = re.compile(r"\b(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*'([^']+)'\s*;")
 _CONST_ARRAY = re.compile(r"\bconst\s+(\w+)\s*=\s*\[")
 _STRING = re.compile(r"""^\s*(['"`])(.*?)\1\s*$""", re.S)
 
@@ -109,14 +111,27 @@ def _sources(node_src: Path) -> list[Path]:
     ]
 
 
+def _path_constants(sources: list[Path]) -> dict[str, str]:
+    """String constants a mount can name as its prefix. A name given two
+    values in different files is left out, so its mounts stay unread."""
+    values: dict[str, set[str]] = {}
+    for path in sources:
+        for match in _PATH_CONST.finditer(_strip_comments(path.read_text(encoding="utf-8"))):
+            values.setdefault(match.group(1), set()).add(match.group(2))
+    return {name: next(iter(found)) for name, found in values.items() if len(found) == 1}
+
+
 def router_mounts(node_src: Path = NODE_SRC) -> dict[str, set[str]]:
     """Router factory name -> every prefix the app mounts it at.
 
     Most routers are mounted in ``app.ts``, but a module may mount its own on
-    the app it is handed, so every source file is read.
+    the app it is handed, so every source file is read. A prefix may be a
+    string constant; one that cannot be resolved is not recorded.
     """
+    sources = _sources(node_src)
+    constants = _path_constants(sources)
     mounts: dict[str, set[str]] = {}
-    for path in _sources(node_src):
+    for path in sources:
         text = path.read_text(encoding="utf-8")
         if "app.use(" not in text:
             continue
@@ -127,7 +142,9 @@ def router_mounts(node_src: Path = NODE_SRC) -> dict[str, set[str]]:
             # in a doc comment is skipped here instead.
             if line.startswith(("*", "//", "/*")):
                 continue
-            mounts.setdefault(match.group(2), set()).add(match.group(1))
+            prefix = match.group(1) or constants.get(match.group(2))
+            if prefix is not None:
+                mounts.setdefault(match.group(3), set()).add(prefix)
     return mounts
 
 
@@ -136,8 +153,24 @@ def _join(prefix: str, path: str) -> str:
     return joined or "/"
 
 
-def admin_routes_in_file(path: Path, prefix: str) -> list[DiscoveredRoute]:
+def _source(path: Path) -> str:
+    return str(path.relative_to(REPO)) if path.is_relative_to(REPO) else str(path)
+
+
+def _factory_spans(text: str) -> list[tuple[str, int, int]]:
+    """Each router factory in *text*, from where it starts to where the next one does."""
+    starts = [(m.group(1), m.start()) for m in _FACTORY.finditer(text)]
+    ends = [start for _, start in starts[1:]] + [len(text)]
+    return [(name, start, end) for (name, start), end in zip(starts, ends)]
+
+
+def admin_routes_in_file(
+    path: Path, prefix: str, span: tuple[int, int] | None = None,
+) -> list[DiscoveredRoute]:
+    """The admin routes in *path* (only those between *span*'s offsets, when
+    given), joined to *prefix*."""
     text = _strip_comments(path.read_text(encoding="utf-8"))
+    start, end = span if span is not None else (0, len(text))
     # Middleware lists spread into a route (``...guard``), by the const name.
     lists = {m.group(1): _call_arguments(text, m.end() - 1) for m in _CONST_ARRAY.finditer(text)}
 
@@ -152,7 +185,7 @@ def admin_routes_in_file(path: Path, prefix: str) -> list[DiscoveredRoute]:
     # Express applies router.use() middleware to the routes registered after it.
     admin_from_here = False
     used_before: list[str] = []
-    for match in _ROUTE_CALL.finditer(text):
+    for match in _ROUTE_CALL.finditer(text, start, end):
         method = match.group(1)
         args = spread(_call_arguments(text, match.end() - 1))
         if method == "use":
@@ -182,7 +215,7 @@ def admin_routes_in_file(path: Path, prefix: str) -> list[DiscoveredRoute]:
         found.append(DiscoveredRoute(
             method=method.upper(),
             path=_join(prefix, literal.group(2)),
-            source=str(path.relative_to(REPO)) if path.is_relative_to(REPO) else str(path),
+            source=_source(path),
             before_admin=before,
             after_admin=tuple(_middleware_name(a) for a in after),
         ))
@@ -198,18 +231,22 @@ def discover_admin_routes(node_src: Path = NODE_SRC) -> list[DiscoveredRoute]:
         text = path.read_text(encoding="utf-8")
         if not any(name in text for name in ADMIN_MIDDLEWARES):
             continue
-        factories = _FACTORY.findall(text)
-        if not factories or not _ROUTE_CALL.search(text):
-            continue
-        prefixes = set().union(*(mounts.get(f, set()) for f in factories))
-        if len(prefixes) != 1:
-            unmounted.append(f"{path.relative_to(REPO)} (factories {factories})")
-            continue
-        routes.extend(admin_routes_in_file(path, prefixes.pop()))
+        # Each router has its own prefix, so a file holding several is read router by router.
+        for factory, start, end in _factory_spans(_strip_comments(text)):
+            found = admin_routes_in_file(path, "", (start, end))
+            if not found:
+                continue
+            prefixes = mounts.get(factory, set())
+            if len(prefixes) != 1:
+                unmounted.append(f"{_source(path)} ({factory})")
+                continue
+            prefix = next(iter(prefixes))
+            routes.extend(replace(route, path=_join(prefix, route.path)) for route in found)
     if unmounted:
         raise AssertionError(
-            "Router files that use an admin middleware but whose mount prefix "
-            "could not be read from the source: " + ", ".join(unmounted)
+            "Admin routers whose mount prefix could not be read from the source "
+            "(mounted with no literal or resolvable constant, or at more than one prefix): "
+            + ", ".join(unmounted)
         )
     return routes
 

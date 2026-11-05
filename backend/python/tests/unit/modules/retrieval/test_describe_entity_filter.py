@@ -42,6 +42,10 @@ from app.modules.retrieval.entity_filters import describe_entity_filter
     ({"amount": {"min": 1234567, "max": 1234568}}, "an amount from 1,234,567 to 1,234,568"),
     ({"amount": {"min": 50000.5}}, "an amount of at least 50,000.5"),
     ({"quantity": {"min": 5, "dimension": "kg"}}, 'a quantity of at least 5 "kg"'),
+    ({"quantity": {"min": 0.2, "dimension": "time"}}, "a duration of at least 0.2 seconds"),
+    ({"quantity": {"dimension": "time"}}, "any duration"),
+    # A client-built filter's 0 to 0 still means exactly 0.
+    ({"amount": {"min": 0, "max": 0, "currency": "USD"}}, "an amount from 0 USD to 0 USD"),
     # The API takes percentages as fractions.
     ({"percent": {"min": 0.1, "max": 0.5}}, "a percentage from 10% to 50%"),
     ({"percent": {"max": 0.125}}, "a percentage of at most 12.5%"),

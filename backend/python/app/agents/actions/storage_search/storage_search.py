@@ -1694,8 +1694,12 @@ def _keep_text_matches(
     return kept
 
 
-def _list_stored_files(connector_dir: str) -> list[tuple[str, str]] | None:
+def _list_stored_files(
+    connector_dir: str, allowed_vrids: frozenset[str] | None = None,
+) -> list[tuple[str, str]] | None:
     """(relative path, virtualRecordId) of every stored record file, or None past the cap.
+
+    With *allowed_vrids* only those records are listed (an empty set lists none).
 
     Only regular files: a symlink under records/ would point the view outside it.
     """
@@ -1703,7 +1707,7 @@ def _list_stored_files(connector_dir: str) -> list[tuple[str, str]] | None:
     for root, _dirs, files in os.walk(connector_dir):
         for name in files:
             m = _STORED_FILE_RE.match(name)
-            if not m:
+            if not m or (allowed_vrids is not None and m.group(1) not in allowed_vrids):
                 continue
             path = os.path.join(root, name)
             try:
@@ -1981,15 +1985,19 @@ class StoragePatternMatch:
         logger.debug("[_check_accessible_vrids] map=%s", accessible)
         return accessible or {}
 
-    async def _build_accessible_view(self, connector_dir: str) -> tuple[str | None, str | None]:
+    async def _build_accessible_view(
+        self, connector_dir: str, allowed_vrids: frozenset[str] | None = None,
+        scope_connector_ids: frozenset[str] | None = None,
+    ) -> tuple[str | None, str | None]:
         """Return (view_dir, error): hard links to only the readable records of *connector_dir*.
 
         Used for every connector, APP_LEVEL ones included: reaching a connector
         does not make its soft-deleted, failed or still-indexing records
         readable, and raw output cannot be traced back to the file it came
-        from. The caller must remove view_dir.
+        from. *scope_connector_ids* narrows "readable" as in
+        ``_check_accessible_vrids``. The caller must remove view_dir.
         """
-        files = await asyncio.to_thread(_list_stored_files, connector_dir)
+        files = await asyncio.to_thread(_list_stored_files, connector_dir, allowed_vrids)
         if files is None:
             return None, (
                 f"Error: this connector holds more than {_MAX_VIEW_FILES} record files, "
@@ -2000,7 +2008,9 @@ class StoragePatternMatch:
         vrids = sorted({vrid for _, vrid in files})
         accessible: set[str] = set()
         for start in range(0, len(vrids), _VIEW_ACCESS_CHECK_BATCH):
-            checked = await self._check_accessible_vrids(vrids[start:start + _VIEW_ACCESS_CHECK_BATCH])
+            checked = await self._check_accessible_vrids(
+                vrids[start:start + _VIEW_ACCESS_CHECK_BATCH], scope_connector_ids=scope_connector_ids,
+            )
             if checked is None:
                 return None, (
                     "Error: cannot verify record access (permission service "
@@ -2468,6 +2478,7 @@ class StoragePatternMatch:
         max_output_lines: int | None = None,
         *,
         readable_only: bool = False,
+        allowed_vrids: frozenset[str] | None = None,
         scope_connector_ids: frozenset[str] | None = None,
         content_owner: bool = False,
         rank_all_output: bool = False,
@@ -2481,13 +2492,15 @@ class StoragePatternMatch:
         *readable_only* greps a view holding only the records the caller may
         read, so the output limits can
         only be reached by readable files and say nothing about the others.
+        *allowed_vrids* limits that view to those records (with *readable_only*).
         Where no view can be made (more than ``_MAX_VIEW_FILES`` files, or the
         access check is down) nothing is run and the answer is always "cut".
         Elsewhere (*readable_only* off) the output limits
         are not reported, only a constant hint that results may be incomplete.
 
         *scope_connector_ids* narrows which record a hit may name, as in
-        ``_check_accessible_vrids``. *content_owner* marks a directory outside
+        ``_check_accessible_vrids``, and which records a *readable_only* view
+        holds. *content_owner* marks a directory outside
         that scope which stores content records of the scope share: a hit there
         counts only when the record's own text matched every grep stage, never
         the stored name or metadata, which belong to the record that stored it.
@@ -2539,7 +2552,9 @@ class StoragePatternMatch:
         run_dir = connector_dir
         view_dir: str | None = None
         if readable_only:
-            view_dir, view_err = await self._build_accessible_view(connector_dir)
+            view_dir, view_err = await self._build_accessible_view(
+                connector_dir, allowed_vrids, scope_connector_ids,
+            )
             if view_dir is None:
                 # Grepping the whole connector instead would answer "does any
                 # record, readable or not, contain this", so nothing is run and

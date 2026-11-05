@@ -2015,7 +2015,7 @@ class TestValidatePatternMatchCommand:
         'grep -rci "deploy\\|deployment\\|ci.cd\\|pipeline" .',
         'grep -rliZ "invoice\\|billing" . | xargs -0 grep -Hci "recurring\\|subscri"',
         'grep -rliZ "hierarch" . | xargs -0 grep -liZ "storage" | xargs -0 grep -Hci "pattern"',
-        'grep "$HOME" .',
+        'grep -r "$HOME" .',
         'rg -i "term" .',
         'egrep -rci "term" .',
         'fgrep -rci "term" .',
@@ -2060,6 +2060,8 @@ class TestValidatePatternMatchCommand:
         'grep -rli "x" "."',
         'grep -rli "x" . .',
         'grep -rli "x"',
+        'grep -rl "invoice" . | grep -l "overdue"',  # filters file names, not contents
+        'grep -l "invoice" .',  # not recursive: '.' is read as a file
     ])
     def test_rejects_everything_else(self, cmd):
         ok, reason = validate_pattern_match_command(cmd)

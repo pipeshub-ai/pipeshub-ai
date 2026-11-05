@@ -318,8 +318,22 @@ class TestAcrossProcesses:
                         tickets.append(t)
             assert budgets[0].stats()["ledger"] == "degraded"
             assert budgets[0].stats()["slots"] == "shared"
+            # No process owns a pool here, so no standby: the plan's lanes bound the domain.
             assert len(tickets) <= 3
             assert budgets[0].held_count()[1] == len(tickets) <= 3
+            for t in tickets:
+                t.release(started=False)
+            for b in budgets:
+                b.register_presence()
+                b._live_cache = None
+            # Three pool owners: lanes + (live - 1) = 5 workers, no more.
+            tickets = []
+            for _ in range(8):
+                for b in budgets:
+                    t = b.admit_spawn(0)
+                    if t is not None:
+                        tickets.append(t)
+            assert budgets[0].held_count()[1] == len(tickets) <= 5
         finally:
             for b in budgets:
                 b.close()
@@ -352,7 +366,10 @@ class TestAcrossProcesses:
             for p in procs:
                 first_line(p)
             budget = LaneBudget.open(plan(8), lane_dir, memory_reader=Mem(None, None))
-            assert budget._live_processes() == 4
+            assert budget.live_processes() == 3  # opening the budget does not make this process a pool owner
+            budget.register_presence()
+            budget._live_cache = None
+            assert budget.live_processes() == 4
             procs[0].kill()
             procs[0].wait(timeout=5)
             budget._live_cache = None
@@ -373,6 +390,7 @@ class TestAcrossProcesses:
             fd = os.open(lane_dir / "ledger.lock", os.O_RDWR | os.O_CREAT, 0o600)
             fcntl.flock(fd, fcntl.LOCK_EX)
             budget = LaneBudget.open(plan(8), lane_dir, memory_reader=Mem(None, None), fallback_seconds=0.0)
+            budget.register_presence()
             try:
                 budget.admit_spawn(0)
                 assert budget.cap() == 2  # 8 lanes over four live processes
@@ -715,7 +733,8 @@ class TestModes:
             stats = budget.stats()
             assert stats["slots"] == "shared" and stats["ledger"] == "ok"
             (directory,) = [p for p in tmp_path.iterdir() if p.name.startswith("pipeshub-cpu-lanes-v1-64")]
-            assert {"run", "resident", "ledger", "ledger.lock", "presence"} <= {p.name for p in directory.iterdir()}
+            assert {"run", "resident", "ledger", "ledger.lock"} <= {p.name for p in directory.iterdir()}
+            assert "presence" not in {p.name for p in directory.iterdir()}  # taken by the first pool, not by open()
         finally:
             budget.close()
 

@@ -17,6 +17,9 @@ from tests.support.vector_db import (
 # ---------------------------------------------------------------------------
 
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _make_pipeline():
     """Create an IndexingPipeline with all dependencies mocked."""
     with patch(

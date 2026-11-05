@@ -33,17 +33,23 @@ from app.models.blocks import BlocksContainer  # noqa: TC001  # pydantic field t
 from app.modules.named_entities.domain.config import (
     NamedEntityBudgets,  # noqa: TC001  # pydantic field type
 )
-from app.modules.named_entities.domain.kinds import EntityKind
+from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_kinds
 from app.modules.transformers.document_extraction import (
     ExtractionLLMError,
 )
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
+from app.utils.env_utils import env_positive_int
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 logger = logging.getLogger(__name__)
 
 require_classify_token = require_service_token(TokenScopes.DOCUMENT_CLASSIFY)
+
+# A block container for a very large document is tens of MB of JSON. The cap
+# is above that and below what would exhaust the process when parsed.
+MAX_CLASSIFY_REQUEST_BYTES = env_positive_int("EXTRACTION_MAX_REQUEST_BYTES", 128 * 1024 * 1024)
+CLASSIFY_PATH = "/api/v1/extract/classify"
 
 # On the router, not the app, so the checks hold wherever this router is included.
 router = APIRouter(
@@ -230,7 +236,7 @@ async def extract_entities(
         from app.modules.named_entities.extractor import (
             NamedEntityExtractor,
             NamedEntityRequest,
-            indexing_llm,
+            indexing_llm_or_none,
         )
 
         enabled = None
@@ -249,16 +255,12 @@ async def extract_entities(
             fallback_service="extraction",
             config_service=config_service,
         ):
-            llm = transport = None
-            provider = model = "indexing"
-            try:
-                llm, transport, provider, model = await indexing_llm(
-                    config_service, org_id=org_id, shard_key=body.record_name,
-                )
-            except Exception as exc:
-                # As in-process extraction does: without a model the deterministic
-                # entities still count, and the record is PARTIAL, not failed.
-                logger.warning("Named-entity model unavailable for org '%s': %s", org_id, type(exc).__name__)
+            llm, transport, provider, model, enabled = await indexing_llm_or_none(
+                config_service,
+                enabled if enabled is not None else default_enabled_kinds(),
+                org_id=org_id,
+                shard_key=body.record_name,
+            )
             extraction = await NamedEntityExtractor().extract(
                 NamedEntityRequest(
                     blocks=body.block_container.blocks,

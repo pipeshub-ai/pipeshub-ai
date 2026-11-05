@@ -17,6 +17,9 @@ import type {
   OutboxRepository,
   OutboxStatus,
 } from './types';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importOutboxDocs } from './pg-import';
+import { kernelTx } from '../pg';
 
 interface Row {
   id: string;
@@ -68,7 +71,15 @@ function inJobs<T>(fn: (k: PgKernelTx) => Promise<T>): Promise<T> {
 const idOf = (id: string): string | undefined =>
   /^\d{1,18}$/.test(id) ? id : undefined;
 
-export class PgOutboxRepository implements OutboxRepository {
+export class PgOutboxRepository implements OutboxRepository, Importable {
+  /** The migration copy: documents as they were stored (see ./pg-import.ts). */
+  importBatch(
+    _collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importOutboxDocs(kernelTx(tx), docs);
+  }
   async append(event: NewOutboxEvent, tx?: Tx): Promise<void> {
     await inUnit(tx, { write: true }, async (k) => {
       if (!k.orgId)
