@@ -10,12 +10,14 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[5] / "deployment" / "process_m
 SHOW = 'printf "%s|%s|%s" "${PG_RUNTIME_SERVICE-}" "${PG_CORE_URL-}" "${PG_POOL_MAX-}"'
 
 
-def _env_after(service: str, env: dict[str, str]) -> str:
+def _env_after(service: str, env: dict[str, str], show: str = SHOW) -> str:
     """The process env after use_own_pg_login, run alone (the script itself starts its monitor loop when sourced)."""
-    fn = re.search(r"^use_own_pg_login\(\) \{\n.*?^\}\n", SCRIPT.read_text(), re.S | re.M)
-    assert fn, "use_own_pg_login not found in process_monitor.sh"
+    text = SCRIPT.read_text()
+    fn = re.search(r"^use_own_pg_login\(\) \{\n.*?^\}\n", text, re.S | re.M)
+    hide = re.search(r"^export -n PG_CORE_QUERY_URL .*$", text, re.M)
+    assert fn and hide, "use_own_pg_login or the export -n line not found in process_monitor.sh"
     out = subprocess.run(
-        ["bash", "-c", f"{fn.group(0)}\nuse_own_pg_login {service}\n{SHOW}"],
+        ["bash", "-c", f"{hide.group(0)}\n{fn.group(0)}\n(use_own_pg_login {service}; {show})"],
         env={"PATH": "/usr/bin:/bin", **env}, capture_output=True, text=True, check=True,
     )
     return out.stdout
@@ -38,6 +40,13 @@ def test_a_process_with_its_own_login_uses_it_as_its_role_with_its_pool_size() -
 
 def test_its_own_login_without_a_pool_size_keeps_the_shared_pool_size() -> None:
     assert _env_after("indexing", {**SHARED, "PG_CORE_INDEXING_URL": "postgresql://idx"}) == "indexing|postgresql://idx|10"
+
+
+def test_a_child_inherits_only_its_own_login() -> None:
+    env = {**SHARED, "PG_CORE_QUERY_URL": "postgresql://query", "PG_CORE_INDEXING_URL": "postgresql://idx"}
+    # what the started process sees: env(1) lists exported variables only
+    seen = _env_after("query", env, show="env | grep ^PG_CORE_ | sort")
+    assert seen.split() == ["PG_CORE_URL=postgresql://query"]
 
 
 def test_each_python_service_start_line_uses_it() -> None:
