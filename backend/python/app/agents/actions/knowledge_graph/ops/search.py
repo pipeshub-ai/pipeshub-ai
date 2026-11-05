@@ -21,6 +21,7 @@ from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_ID_FILTER_KEY_CACHE_KEY,
     RECORD_SCOPED_ENTITY_CACHE_KEY,
+    load_entity_access_context,
     merge_filter_groups,
 )
 from app.agents.actions.knowledge_graph.ops.entity_records import (
@@ -45,7 +46,11 @@ from app.agents.actions.knowledge_graph.ops.results import (
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, search_scope
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
-from app.modules.agents.qna.chat_state import remember_shown_results
+from app.core.org_context import spawn_in_request
+from app.modules.agents.qna.chat_state import (
+    remember_record_ids,
+    remember_shown_results,
+)
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.manifest import ManifestSource, manifest_registry
 from app.modules.retrieval.context.ordering import relevance_ordered_context
@@ -63,6 +68,7 @@ from app.modules.retrieval.context.targeted import (
 )
 from app.modules.retrieval.context.units import unit_children
 from app.modules.retrieval.entity_permissions import (
+    SEARCH_DEADLINE_SECONDS,
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
 )
@@ -74,6 +80,11 @@ from app.modules.retrieval.result_merging import (
 )
 from app.modules.retrieval.selection_scope import connection_sources_of
 from app.modules.retrieval.switches import duplicate_block_elision_enabled
+from app.modules.retrieval.title_hits import (
+    UnindexedMatch,
+    find_unindexed_matches,
+    render_title_block,
+)
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import (
@@ -426,9 +437,38 @@ def _entity_notes(
     return "".join(f"{note}\n\n" for note in notes)
 
 
-def _search_gap_notes(*, failed_sources: int, search_incomplete: str | None) -> str:
+TITLE_LOOKUP_GAP_NOTE = (
+    "Note: the lookup of records by name did not finish, so a record whose content is not "
+    "indexed yet may exist even though none is listed here."
+)
+# The entity search keeps its own 4 s deadline; this only stops a lookup that hangs past it.
+_TITLE_LOOKUP_TIMEOUT_SECONDS = SEARCH_DEADLINE_SECONDS + 2.0
+
+
+async def _unindexed_title_matches(
+    state: "ChatState", query: str, source_ids: list[str] | None, log: logging.Logger,
+) -> list[UnindexedMatch] | None:
+    """Records matching ``query`` by name whose content is not indexed yet, found
+    with the access context and scope the entity tools use. None when the lookup
+    failed or timed out: the content answer stands without it."""
+    try:
+        context = await load_entity_access_context(state, source_ids)
+        return await asyncio.wait_for(
+            find_unindexed_matches(state["entity_vector_store"], state["graph_provider"], context, query),
+            timeout=_TITLE_LOOKUP_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        log.warning("knowledgegraph__search: the lookup of records by name failed", exc_info=True)
+        return None
+
+
+def _search_gap_notes(
+    *, failed_sources: int, search_incomplete: str | None, titles_failed: bool = False,
+) -> str:
     """Notes for a search that returned results but did not cover everything."""
     notes: list[str] = []
+    if titles_failed:
+        notes.append(TITLE_LOOKUP_GAP_NOTE)
     if failed_sources:
         notes.append(
             f"Note: {failed_sources} of the sources you named could not be searched; "
@@ -622,6 +662,8 @@ async def _execute_search(
     pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
     # The same search without its date bounds (``ops/outside_dates``).
     outside_dates_task: asyncio.Task[Any] | None = None
+    # Records matching by name whose content is not indexed yet (None: failed).
+    title_task: asyncio.Task[list[UnindexedMatch] | None] | None = None
     grep_coverage = PatternMatchCoverage()
     try:
         logger_instance = state.get("logger", logger)
@@ -728,6 +770,8 @@ async def _execute_search(
             virtual_record_ids_from_tool = scoped
 
         outside_dates: list[OutsideDatesRecord] = []
+        unindexed: list[UnindexedMatch] = []
+        title_lookup_failed = False
 
         def _outside_dates_text() -> str:
             """The records the date bounds left out, listed for the model."""
@@ -770,6 +814,8 @@ async def _execute_search(
                 scope_truncated=entity_scope_truncated,
                 entities_skipped=entities_skipped,
             )
+            if title_lookup_failed:
+                notes += f"{TITLE_LOOKUP_GAP_NOTE}\n\n"
             if notes:
                 message = f"{message}\n\n{notes.strip()}"
             coverage_note = render_pattern_match_coverage_note(grep_coverage)
@@ -782,6 +828,31 @@ async def _execute_search(
                 "results": [],
                 "result_count": 0,
             })
+
+        def _remember_by_name(shown: list[UnindexedMatch]) -> None:
+            """A record shown by name only is one the model may now pass to fetch."""
+            remember_record_ids(state, [m.record_id for m in shown], names={m.record_id: m.name for m in shown})
+            note_retrieved_by(state, "entity", [(m.virtual_record_id, m.record_id, m.name) for m in shown])
+
+        def _no_content_result() -> str:
+            """``_empty_result``, unless records matched by name: those are an answer too."""
+            if not unindexed:
+                return _empty_result()
+            max_chars = search_max_chars() if targeted_retrieval_enabled() else DEFAULT_MAX_RESULT_CHARS
+            head = (
+                preamble
+                + _search_gap_notes(failed_sources=failed_sources, search_incomplete=search_incomplete)
+                + "No content blocks matched, but "
+                + (f"{len(unindexed)} records match" if len(unindexed) != 1 else "1 record matches")
+                + " by name.\n\n"
+            )
+            block, shown = render_title_block(
+                unindexed, max_chars - len(head), get_record_id_shortener_if_enabled(state),
+            )
+            if not shown:
+                return _empty_result()
+            _remember_by_name(shown)
+            return head + block
 
         # Retrieval treats this key as a control flag, not a filter: with it, an
         # empty scope searches nothing instead of everything the user can reach.
@@ -820,6 +891,15 @@ async def _execute_search(
                     retrieval_service=retrieval_service,
                 )
             )
+
+        # Titles are not scoped by entity or date, so a search that is would show
+        # records outside it. Runs beside the content search, so it adds no wait.
+        if state.get("entity_vector_store") is not None and not entity_scoped and not time_range:
+            title_task = spawn_in_request(_unindexed_title_matches(
+                state, query,
+                [*narrowed_scope.app_ids, *narrowed_scope.kb_ids] if narrowed_scope is not None else None,
+                logger_instance,
+            ))
 
         is_service_account = bool(state.get("is_service_account", False))
         fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
@@ -1034,8 +1114,13 @@ async def _execute_search(
                 log=logger_instance,
             )
 
+        if title_task is not None:
+            found_by_name = await title_task
+            title_lookup_failed = found_by_name is None
+            unindexed = found_by_name or []
+
         if not search_results and not raw_pattern_records:
-            return _empty_result()
+            return _no_content_result()
 
         blob_store = BlobStorage(
             logger=logger_instance,
@@ -1105,7 +1190,7 @@ async def _execute_search(
         # Grep hits can all be dropped by the merge (permissions, time range);
         # that is still an empty search and must answer like one.
         if not knowledge.ranked and not pm_record_entries:
-            return _empty_result()
+            return _no_content_result()
 
         # TARGETED_RETRIEVAL: a smaller result, a few passages per record, and
         # what an earlier search of this request showed giving way to new text.
@@ -1163,9 +1248,10 @@ async def _execute_search(
 
         pm_shown, pm_hint = keyword_hint(Selection(ranked=knowledge.ranked))
         if not has_semantic_blocks and not pm_shown:
-            return _empty_result()
+            return _no_content_result()
         entity_notes = _search_gap_notes(
             failed_sources=failed_sources, search_incomplete=search_incomplete,
+            titles_failed=title_lookup_failed,
         ) + _entity_notes(
             unknown_entity_ids=unknown_entity_ids,
             filter_dropped=entity_filter_dropped,
@@ -1285,8 +1371,19 @@ async def _execute_search(
             + rendered.text
             + compose_result_tail(shown_records, candidate_suffix)
             + pm_hint
-            + outside_dates_text
         )
+        if unindexed:
+            # After the content, in what the content leaves of the result size, and
+            # not for a record the content already shows.
+            _, content_record_ids = shown_ids(final_results, shown_records)
+            by_name_only = [m for m in unindexed if m.record_id not in content_record_ids]
+            block, shown_by_name = render_title_block(
+                by_name_only, result_max_chars - len(text) - len(outside_dates_text), record_id_shortener,
+            )
+            if shown_by_name:
+                text += block
+                _remember_by_name(shown_by_name)
+        text += outside_dates_text
         if rendered.manifest is not None:
             manifest_registry(state).register(text, rendered.manifest.shifted(len(result_frame.summary)))
         return tool_output(text, rendered.images, state)
@@ -1299,3 +1396,4 @@ async def _execute_search(
         # No-op once awaited; stops the grep + LLM call when semantic search fails.
         await cancel_task_if_running(pattern_match_task)
         await cancel_task_if_running(outside_dates_task)
+        await cancel_task_if_running(title_task)

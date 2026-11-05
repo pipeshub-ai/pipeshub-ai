@@ -779,7 +779,11 @@ class KnowledgeGraph:
             "  • Returns a RANKED SAMPLE, not a complete list. Other records may match.\n"
             "  • Returns a few blocks per record, not all blocks. Full content requires "
             "fetch_record.\n"
-            "  • Does not return every record that has the words — it is top-k by relevance.\n\n"
+            "  • Does not return every record that has the words — it is top-k by relevance.\n"
+            "  • A record whose content is not indexed yet has no text to search. When its name "
+            "matches the query it is listed after the content blocks, in a block of its own, "
+            "labelled 'content not indexed yet': use its name and link, and say its content "
+            "could not be read.\n\n"
             "When to combine with other tools:\n"
             "  - Call navigate() on any returned Record ID to see its children, siblings, "
             "or linked records that search structurally cannot surface.\n"
@@ -963,7 +967,8 @@ class KnowledgeGraph:
             "  - search(query=..., entity_ids=[...]) searches content inside a "
             "department/category/subcategory/topic/language or record_group entity.\n"
             "  - A 'record' result's entityId is a Record ID: pass it straight to "
-            "fetch_record or navigate."
+            "fetch_record or navigate. A record result with a 'note' exists but its content is "
+            "not indexed yet: it cannot be read."
         ),
         parameters=[
             ToolParameter(

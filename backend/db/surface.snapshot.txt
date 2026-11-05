@@ -1661,7 +1661,6 @@ policy identity.org_auth_config org_scope cmd=* permissive=true roles=pipeshub_a
 policy identity.org_auth_config restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.org_logos backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.org_logos import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
-policy identity.org_logos jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.org_logos org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.org_logos restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.orgs backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
@@ -1672,37 +1671,30 @@ policy identity.orgs restore_insert cmd=a permissive=true roles=pipeshub_restore
 policy identity.orgs vetted_read cmd=r permissive=true roles=pipeshub_vetted_identity using=true check=-
 policy identity.slug_counters backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.slug_counters import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
-policy identity.slug_counters jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.slug_counters org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.slug_counters restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.used_reset_links backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.used_reset_links import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
-policy identity.used_reset_links jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.used_reset_links org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.used_reset_links restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_activities backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.user_activities import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
-policy identity.user_activities jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.user_activities org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_activities restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_credentials backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.user_credentials import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
-policy identity.user_credentials jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.user_credentials org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_credentials restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_group_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.user_group_members import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
-policy identity.user_group_members jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.user_group_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_group_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_groups backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.user_groups import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
-policy identity.user_groups jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.user_groups org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_groups restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_pictures backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.user_pictures import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
-policy identity.user_pictures jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.user_pictures org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_pictures restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.users backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
@@ -2134,10 +2126,7 @@ relacl identity.org_auth_config pipeshub_import DELETE grantable=false
 relacl identity.org_auth_config pipeshub_import INSERT grantable=false
 relacl identity.org_auth_config pipeshub_import SELECT grantable=false
 relacl identity.org_auth_config pipeshub_import UPDATE grantable=false
-relacl identity.org_auth_config pipeshub_jobs DELETE grantable=false
-relacl identity.org_auth_config pipeshub_jobs INSERT grantable=false
 relacl identity.org_auth_config pipeshub_jobs SELECT grantable=false
-relacl identity.org_auth_config pipeshub_jobs UPDATE grantable=false
 relacl identity.org_auth_config pipeshub_node DELETE grantable=false
 relacl identity.org_auth_config pipeshub_node INSERT grantable=false
 relacl identity.org_auth_config pipeshub_node SELECT grantable=false
@@ -2148,10 +2137,6 @@ relacl identity.org_logos pipeshub_import DELETE grantable=false
 relacl identity.org_logos pipeshub_import INSERT grantable=false
 relacl identity.org_logos pipeshub_import SELECT grantable=false
 relacl identity.org_logos pipeshub_import UPDATE grantable=false
-relacl identity.org_logos pipeshub_jobs DELETE grantable=false
-relacl identity.org_logos pipeshub_jobs INSERT grantable=false
-relacl identity.org_logos pipeshub_jobs SELECT grantable=false
-relacl identity.org_logos pipeshub_jobs UPDATE grantable=false
 relacl identity.org_logos pipeshub_node DELETE grantable=false
 relacl identity.org_logos pipeshub_node INSERT grantable=false
 relacl identity.org_logos pipeshub_node SELECT grantable=false
@@ -2163,10 +2148,7 @@ relacl identity.orgs pipeshub_import DELETE grantable=false
 relacl identity.orgs pipeshub_import INSERT grantable=false
 relacl identity.orgs pipeshub_import SELECT grantable=false
 relacl identity.orgs pipeshub_import UPDATE grantable=false
-relacl identity.orgs pipeshub_jobs DELETE grantable=false
-relacl identity.orgs pipeshub_jobs INSERT grantable=false
 relacl identity.orgs pipeshub_jobs SELECT grantable=false
-relacl identity.orgs pipeshub_jobs UPDATE grantable=false
 relacl identity.orgs pipeshub_node DELETE grantable=false
 relacl identity.orgs pipeshub_node INSERT grantable=false
 relacl identity.orgs pipeshub_node SELECT grantable=false
@@ -2178,10 +2160,6 @@ relacl identity.slug_counters pipeshub_import DELETE grantable=false
 relacl identity.slug_counters pipeshub_import INSERT grantable=false
 relacl identity.slug_counters pipeshub_import SELECT grantable=false
 relacl identity.slug_counters pipeshub_import UPDATE grantable=false
-relacl identity.slug_counters pipeshub_jobs DELETE grantable=false
-relacl identity.slug_counters pipeshub_jobs INSERT grantable=false
-relacl identity.slug_counters pipeshub_jobs SELECT grantable=false
-relacl identity.slug_counters pipeshub_jobs UPDATE grantable=false
 relacl identity.slug_counters pipeshub_node DELETE grantable=false
 relacl identity.slug_counters pipeshub_node INSERT grantable=false
 relacl identity.slug_counters pipeshub_node SELECT grantable=false
@@ -2192,10 +2170,6 @@ relacl identity.used_reset_links pipeshub_import DELETE grantable=false
 relacl identity.used_reset_links pipeshub_import INSERT grantable=false
 relacl identity.used_reset_links pipeshub_import SELECT grantable=false
 relacl identity.used_reset_links pipeshub_import UPDATE grantable=false
-relacl identity.used_reset_links pipeshub_jobs DELETE grantable=false
-relacl identity.used_reset_links pipeshub_jobs INSERT grantable=false
-relacl identity.used_reset_links pipeshub_jobs SELECT grantable=false
-relacl identity.used_reset_links pipeshub_jobs UPDATE grantable=false
 relacl identity.used_reset_links pipeshub_node DELETE grantable=false
 relacl identity.used_reset_links pipeshub_node INSERT grantable=false
 relacl identity.used_reset_links pipeshub_node SELECT grantable=false
@@ -2206,10 +2180,6 @@ relacl identity.user_activities pipeshub_import DELETE grantable=false
 relacl identity.user_activities pipeshub_import INSERT grantable=false
 relacl identity.user_activities pipeshub_import SELECT grantable=false
 relacl identity.user_activities pipeshub_import UPDATE grantable=false
-relacl identity.user_activities pipeshub_jobs DELETE grantable=false
-relacl identity.user_activities pipeshub_jobs INSERT grantable=false
-relacl identity.user_activities pipeshub_jobs SELECT grantable=false
-relacl identity.user_activities pipeshub_jobs UPDATE grantable=false
 relacl identity.user_activities pipeshub_node DELETE grantable=false
 relacl identity.user_activities pipeshub_node INSERT grantable=false
 relacl identity.user_activities pipeshub_node SELECT grantable=false
@@ -2220,10 +2190,6 @@ relacl identity.user_credentials pipeshub_import DELETE grantable=false
 relacl identity.user_credentials pipeshub_import INSERT grantable=false
 relacl identity.user_credentials pipeshub_import SELECT grantable=false
 relacl identity.user_credentials pipeshub_import UPDATE grantable=false
-relacl identity.user_credentials pipeshub_jobs DELETE grantable=false
-relacl identity.user_credentials pipeshub_jobs INSERT grantable=false
-relacl identity.user_credentials pipeshub_jobs SELECT grantable=false
-relacl identity.user_credentials pipeshub_jobs UPDATE grantable=false
 relacl identity.user_credentials pipeshub_node DELETE grantable=false
 relacl identity.user_credentials pipeshub_node INSERT grantable=false
 relacl identity.user_credentials pipeshub_node SELECT grantable=false
@@ -2234,10 +2200,6 @@ relacl identity.user_group_members pipeshub_import DELETE grantable=false
 relacl identity.user_group_members pipeshub_import INSERT grantable=false
 relacl identity.user_group_members pipeshub_import SELECT grantable=false
 relacl identity.user_group_members pipeshub_import UPDATE grantable=false
-relacl identity.user_group_members pipeshub_jobs DELETE grantable=false
-relacl identity.user_group_members pipeshub_jobs INSERT grantable=false
-relacl identity.user_group_members pipeshub_jobs SELECT grantable=false
-relacl identity.user_group_members pipeshub_jobs UPDATE grantable=false
 relacl identity.user_group_members pipeshub_node DELETE grantable=false
 relacl identity.user_group_members pipeshub_node INSERT grantable=false
 relacl identity.user_group_members pipeshub_node SELECT grantable=false
@@ -2248,10 +2210,6 @@ relacl identity.user_groups pipeshub_import DELETE grantable=false
 relacl identity.user_groups pipeshub_import INSERT grantable=false
 relacl identity.user_groups pipeshub_import SELECT grantable=false
 relacl identity.user_groups pipeshub_import UPDATE grantable=false
-relacl identity.user_groups pipeshub_jobs DELETE grantable=false
-relacl identity.user_groups pipeshub_jobs INSERT grantable=false
-relacl identity.user_groups pipeshub_jobs SELECT grantable=false
-relacl identity.user_groups pipeshub_jobs UPDATE grantable=false
 relacl identity.user_groups pipeshub_node DELETE grantable=false
 relacl identity.user_groups pipeshub_node INSERT grantable=false
 relacl identity.user_groups pipeshub_node SELECT grantable=false
@@ -2262,10 +2220,6 @@ relacl identity.user_pictures pipeshub_import DELETE grantable=false
 relacl identity.user_pictures pipeshub_import INSERT grantable=false
 relacl identity.user_pictures pipeshub_import SELECT grantable=false
 relacl identity.user_pictures pipeshub_import UPDATE grantable=false
-relacl identity.user_pictures pipeshub_jobs DELETE grantable=false
-relacl identity.user_pictures pipeshub_jobs INSERT grantable=false
-relacl identity.user_pictures pipeshub_jobs SELECT grantable=false
-relacl identity.user_pictures pipeshub_jobs UPDATE grantable=false
 relacl identity.user_pictures pipeshub_node DELETE grantable=false
 relacl identity.user_pictures pipeshub_node INSERT grantable=false
 relacl identity.user_pictures pipeshub_node SELECT grantable=false
@@ -2276,10 +2230,7 @@ relacl identity.users pipeshub_import DELETE grantable=false
 relacl identity.users pipeshub_import INSERT grantable=false
 relacl identity.users pipeshub_import SELECT grantable=false
 relacl identity.users pipeshub_import UPDATE grantable=false
-relacl identity.users pipeshub_jobs DELETE grantable=false
-relacl identity.users pipeshub_jobs INSERT grantable=false
 relacl identity.users pipeshub_jobs SELECT grantable=false
-relacl identity.users pipeshub_jobs UPDATE grantable=false
 relacl identity.users pipeshub_node DELETE grantable=false
 relacl identity.users pipeshub_node INSERT grantable=false
 relacl identity.users pipeshub_node SELECT grantable=false
