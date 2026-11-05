@@ -34,6 +34,8 @@ PLAN_TIMEOUT_S = 20.0
 # The plan runs beside the prefetch; once the prefetch is back, it gets this
 # long more before the turn starts without it.
 _PLAN_GRACE_S = 5.0
+# These searches run before the first turn, like the plan.
+FACET_SEARCH_TIMEOUT_S = 20.0
 
 FACET_CONTEXT_INTRO = (
     "More internal knowledge base context, from searches for parts of the question the context above "
@@ -93,7 +95,7 @@ async def search_uncovered_facets(context: "AgentContext", plan: FacetPlan | Non
     for query in queries:
         state.note_searched(query)
     state.bump("facet_searches", len(queries))
-    results = await run_targeted_searches(context, queries, purpose="facet")
+    results = await run_targeted_searches(context, queries, purpose="facet", timeout=FACET_SEARCH_TIMEOUT_S)
     if not any(result.text for result in results):
         return None
     return f"{FACET_CONTEXT_INTRO}\n{render_results([r for r in results if r.text])}"
@@ -102,6 +104,7 @@ async def search_uncovered_facets(context: "AgentContext", plan: FacetPlan | Non
 __all__ = [
     "COVERAGE_USAGE_SOURCE",
     "FACET_CONTEXT_INTRO",
+    "FACET_SEARCH_TIMEOUT_S",
     "finish_facet_plan",
     "search_uncovered_facets",
     "start_facet_plan",
