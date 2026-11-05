@@ -189,6 +189,35 @@ class TestToolCallPreambleClearing:
         assert sink.events == []
 
 
+class TestReplySentBackForAnotherTry:
+    """A POST_MODEL hook can send a text-only reply back (`recovery_message`),
+    and the next turn starts over. That reply was already on screen."""
+
+    async def test_the_old_reply_is_cleared_when_the_next_turn_calls_a_tool(self) -> None:
+        streamer, sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Which warehouse do you mean?"}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_END))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TOOL_CALL_START, {"tool": "knowledgegraph__search"}))
+
+        assert sink.events[-1]["data"]["accumulated"] == ""
+        assert len(sink.events) == 2
+
+    async def test_the_old_reply_is_replaced_when_the_next_turn_answers_in_text(self) -> None:
+        streamer, sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "First draft."}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Second draft."}))
+        await streamer.on_event(_event(EventType.TOOL_CALL_START, {"tool": "knowledgegraph__search"}))
+        await streamer.on_event(_event(EventType.TOOL_CALL_START, {"tool": "knowledgegraph__fetch_record"}))
+
+        assert [e["data"]["accumulated"] for e in sink.events] == ["First draft.", "Second draft.", ""]
+
+
 class TestStreamedAnswerTracking:
     async def test_agent_complete_records_terminal_turn_text(self) -> None:
         streamer, _sink = _make_streamer()
