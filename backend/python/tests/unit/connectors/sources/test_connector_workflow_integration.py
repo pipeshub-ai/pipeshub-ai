@@ -451,6 +451,12 @@ class MockTransactionStore:
     def is_transient_error(self, error: BaseException) -> bool:
         return False
 
+    async def get_users_by_emails(
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, User]:
+        found = {e.lower(): await self.get_user_by_email(e, org_id=org_id) for e in emails}
+        return {e: u for e, u in found.items() if u is not None}
+
     async def get_user_by_email(
         self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
     ) -> User | None:

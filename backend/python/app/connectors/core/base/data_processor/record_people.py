@@ -80,9 +80,9 @@ class PersonLink:
 
 
 class PeopleStore(Protocol):
-    async def get_user_by_email(
-        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
-    ) -> User | None: ...
+    async def get_users_by_emails(
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, User]: ...
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False,
     ) -> User | None: ...
@@ -231,11 +231,21 @@ class _PersonResolver:
         self._store = store
         self._must_propagate = must_propagate or (lambda _exc: False)
         self._resolved: dict[tuple[str, str], tuple[str, str] | None] = {}
+        self._members: dict[str, User] = {}
         self.failed = 0
 
     @staticmethod
     def identity(link: PersonLink) -> tuple[str, str]:
         return (link.source_id or "", _address(link.email) or "")
+
+    async def prefetch(self, links: list[PersonLink]) -> None:
+        """Look up the record's members by email in one call, not one per
+        address. A failed read raises, like every other read here."""
+        addresses = list(dict.fromkeys(a for link in links if (a := _address(link.email))))
+        if addresses:
+            self._members = await self._store.get_users_by_emails(
+                addresses[:MAX_PERSON_LOOKUPS], raise_on_error=True, org_id=self._record.org_id,
+            )
 
     @property
     def lookups(self) -> int:
@@ -263,7 +273,7 @@ class _PersonResolver:
                 source_id, self._record.connector_id, raise_on_error=True,
             )
         if user is None and email:
-            user = await self._store.get_user_by_email(email, raise_on_error=True, org_id=self._record.org_id)
+            user = self._members.get(email)
         if user is None or not user.id:
             return None
         user_org = getattr(user, "org_id", None)
@@ -352,6 +362,8 @@ async def link_record_people(
             logger.warning("Could not clear %s edges of record %s: %s", target, record.id, exc)
 
     resolver = _PersonResolver(record, store, propagate)
+    if links:
+        await resolver.prefetch(links)
     seen: set[tuple[str, str, str]] = set()
     edges: list[dict] = []
     now = get_epoch_timestamp_in_ms()

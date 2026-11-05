@@ -38,8 +38,8 @@ SOURCE_MEMBERS = {"src-ann": "u-ann", "src-dan": "u-dan"}
 
 def _store() -> MagicMock:
     store = MagicMock()
-    store.get_user_by_email = AsyncMock(
-        side_effect=lambda email, **_: SimpleNamespace(id=MEMBERS[email]) if email in MEMBERS else None,
+    store.get_users_by_emails = AsyncMock(
+        side_effect=lambda emails, **_: {e: SimpleNamespace(id=MEMBERS[e]) for e in emails if e in MEMBERS},
     )
     store.get_user_by_source_id = AsyncMock(
         side_effect=lambda sid, connector_id, **_: SimpleNamespace(id=SOURCE_MEMBERS[sid]) if sid in SOURCE_MEMBERS else None,
@@ -90,7 +90,18 @@ class TestMail:
             store, logging.getLogger("t"),
         )
         assert sorted(_edges(store)) == [("users/u-ann", "AUTHORED_BY"), ("users/u-bob", "ADDRESSED_TO")]
-        assert store.get_user_by_email.await_count == 2
+        store.get_users_by_emails.assert_awaited_once()
+        assert store.get_users_by_emails.await_args.args[0] == ["ann@acme.com", "bob@acme.com"]
+
+
+class TestOneLookupPerRecord:
+    async def test_a_mail_to_many_addresses_makes_one_lookup(self) -> None:
+        store = _store()
+        mail = _mail(from_email="ann@acme.com", to_emails=[f"x{i}@else.com" for i in range(40)], cc_emails=["Bob@Acme.com"])
+        await link_record_people(mail, store, logging.getLogger("t"))
+        store.get_users_by_emails.assert_awaited_once()
+        assert len(store.get_users_by_emails.await_args.args[0]) == 42
+        assert _edges(store) == {("users/u-ann", "AUTHORED_BY"), ("users/u-bob", "ADDRESSED_TO")}
 
 
 class TestOtherRecordTypes:
@@ -174,9 +185,7 @@ class TestWriteBehaviour:
         import pytest
 
         store = _store()
-        store.get_user_by_email.side_effect = lambda email, **_: (
-            (_ for _ in ()).throw(RuntimeError("db")) if email == "bob@acme.com" else SimpleNamespace(id=MEMBERS[email])
-        )
+        store.get_users_by_emails.side_effect = RuntimeError("db")
         with pytest.raises(RuntimeError, match="db"):
             await link_record_people(
                 _mail(from_email="ann@acme.com", to_emails=["bob@acme.com"]), store, logging.getLogger("t"),
@@ -186,7 +195,7 @@ class TestWriteBehaviour:
     async def test_member_reads_ask_to_raise_and_the_email_read_is_scoped_to_the_org(self) -> None:
         store = _store()
         await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
-        store.get_user_by_email.assert_awaited_once_with("ann@acme.com", raise_on_error=True, org_id="org-1")
+        store.get_users_by_emails.assert_awaited_once_with(["ann@acme.com"], raise_on_error=True, org_id="org-1")
 
     async def test_another_orgs_user_with_the_address_does_not_hide_this_orgs_member(self) -> None:
         """The same address in a second org must not decide the answer: the
@@ -194,7 +203,9 @@ class TestWriteBehaviour:
         store = _store()
         users = {("org-2", "ann@acme.com"): SimpleNamespace(id="u-other", org_id="org-2"),
                  ("org-1", "ann@acme.com"): SimpleNamespace(id="u-ann", org_id="org-1")}
-        store.get_user_by_email.side_effect = lambda email, org_id=None, **_: users.get((org_id, email))
+        store.get_users_by_emails.side_effect = lambda emails, org_id=None, **_: {
+            e: users[(org_id, e)] for e in emails if (org_id, e) in users
+        }
         await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
         assert _edges(store) == {("users/u-ann", "AUTHORED_BY")}
 
@@ -219,7 +230,7 @@ class TestReviewFixes:
 
     async def test_a_user_of_another_org_is_never_linked(self) -> None:
         store = _store()
-        store.get_user_by_email.side_effect = lambda email, **_: SimpleNamespace(id="u-x", org_id="org-2")
+        store.get_users_by_emails.side_effect = lambda emails, **_: {e: SimpleNamespace(id="u-x", org_id="org-2") for e in emails}
         await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
         # The lookup answered, so the record's edges were replaced: it is the
         # org check, not a failed lookup, that wrote none.
@@ -231,7 +242,7 @@ class TestReviewFixes:
         store = _store()
         mail = _mail(from_email="ann@acme.com", to_emails=[f"x{i}@else.com" for i in range(50)])
         await link_record_people(mail, store, logging.getLogger("t"))
-        assert store.get_user_by_email.await_count == 3
+        assert store.get_users_by_emails.await_args.args[0] == ["ann@acme.com", "x0@else.com", "x1@else.com"]
 
     async def test_a_rejected_new_edge_type_does_not_fail_the_record(self, caplog) -> None:
         """During a rolling deploy an old pod can restore an edge-type enum
@@ -464,7 +475,9 @@ class TestReviewFixesAuthorship:
         """Email lookups are not org-scoped: if they answer with another org's
         user, this org's member must not be recorded as an outside person."""
         store = _person_store()
-        store.get_user_by_email = AsyncMock(return_value=SimpleNamespace(id="u-x", org_id="org-2"))
+        store.get_users_by_emails = AsyncMock(
+            side_effect=lambda emails, **_: {e: SimpleNamespace(id="u-x", org_id="org-2") for e in emails},
+        )
         await link_record_people(_file(authored_by=SourcePerson(email="ann@acme.com")), store, logging.getLogger("t"))
         store.batch_create_entity_relations.assert_not_awaited()
         store.upsert_person_by_email.assert_not_awaited()
@@ -514,7 +527,7 @@ class TestEmailLookupsStayInTheOrg:
 
         await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
 
-        assert store.get_user_by_email.await_args.kwargs["org_id"] == BASE["org_id"]
+        assert store.get_users_by_emails.await_args.kwargs["org_id"] == BASE["org_id"]
         assert _edges(store) == {("users/u-ann", "AUTHORED_BY")}
 
 
@@ -530,7 +543,7 @@ class TestPlaceholders:
         assert await link_record_people(stub, store, logging.getLogger("t")) == 0
 
         store.delete_edges_between_collections.assert_not_awaited()
-        store.get_user_by_email.assert_not_awaited()
+        store.get_users_by_emails.assert_not_awaited()
 
 
 class TestABugIsNotAFailedLookup:
@@ -539,7 +552,7 @@ class TestABugIsNotAFailedLookup:
     seen to be wrong, in production or in a test whose stub did not match."""
 
     @pytest.mark.parametrize("error", [TypeError("unexpected keyword argument 'org_id'"), AttributeError("x")])
-    @pytest.mark.parametrize("failing", ["get_user_by_email", "delete_edges_between_collections", "batch_create_entity_relations"])
+    @pytest.mark.parametrize("failing", ["get_users_by_emails", "delete_edges_between_collections", "batch_create_entity_relations"])
     async def test_a_programming_error_is_raised(self, failing: str, error: Exception) -> None:
         store = _store()
         getattr(store, failing).side_effect = error
