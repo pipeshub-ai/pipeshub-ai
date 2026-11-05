@@ -75,13 +75,19 @@ export function QuoteSelectionLayer({ enabled, children }: QuoteSelectionLayerPr
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') hide();
     };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') return;
+      requestAnimationFrame(showFromSelection);
+    };
     const onScroll = () => hide();
     document.addEventListener('pointerup', onPointerUp);
     document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
     document.addEventListener('scroll', onScroll, true);
     return () => {
       document.removeEventListener('pointerup', onPointerUp);
       document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('keyup', onKeyUp);
       document.removeEventListener('scroll', onScroll, true);
     };
   }, [enabled, hide, showFromSelection]);

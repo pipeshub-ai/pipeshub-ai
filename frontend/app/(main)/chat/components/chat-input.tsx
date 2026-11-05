@@ -56,7 +56,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { getUserIdFromToken } from '@/lib/utils/jwt';
 import { useComposerDraft } from '@/chat/hooks/use-composer-draft';
-import { buildDraftKey } from '@/chat/utils/composer-draft';
+import { buildDraftKey, loadDraft } from '@/chat/utils/composer-draft';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
 import { PastedTextChip } from '@/chat/components/pasted-text-chip';
 import { TextPreviewDialog } from '@/chat/components/text-preview-dialog';
@@ -949,14 +949,30 @@ export function ChatInput({
     if (!excerpt) return;
     dismissExpansionPanels();
     if (expandable) setIsExpanded(true);
+    const leavingAction = Boolean(activeMessageAction);
     leaveEditFiles(false);
     setActiveMessageAction(null);
     setRegenModelOverride(null);
     useChatStore.getState().setRegenAnswers(null);
+    if (leavingAction) {
+      const key = persistDraft
+        ? buildDraftKey({ userId: draftUserId, convId: draftConvId, agentId })
+        : null;
+      setMessage(key ? loadDraft(key) : '');
+    }
     setQuotedExcerpt(excerpt);
     setQuotedExcerptTruncated(Boolean(truncated));
     setTimeout(() => textareaRef.current?.focus(), 0);
-  }, [dismissExpansionPanels, expandable, leaveEditFiles]);
+  }, [
+    activeMessageAction,
+    agentId,
+    dismissExpansionPanels,
+    draftConvId,
+    draftUserId,
+    expandable,
+    leaveEditFiles,
+    persistDraft,
+  ]);
 
   const handleDismissQuote = useCallback(() => {
     setQuotedExcerpt(null);

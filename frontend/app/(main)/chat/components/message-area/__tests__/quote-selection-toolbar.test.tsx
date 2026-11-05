@@ -112,6 +112,20 @@ describe('QuoteSelectionLayer', () => {
     expect(screen.queryByTestId('quote-selection-toolbar')).toBeNull();
   });
 
+  it('shows Quote after a keyboard selection inside a finished answer', () => {
+    render(
+      <Theme>
+        <QuoteSelectionLayer enabled>
+          <p>The SLA is 99.9 percent.</p>
+        </QuoteSelectionLayer>
+      </Theme>,
+    );
+    const root = screen.getByTestId('answer-quotable');
+    mockSelection('The SLA is 99.9 percent.', root);
+    fireEvent.keyUp(document, { key: 'ArrowRight', shiftKey: true });
+    expect(screen.getByTestId('quote-selection-toolbar')).toBeTruthy();
+  });
+
   it('hides Quote on Escape', () => {
     render(
       <Theme>

@@ -1569,6 +1569,25 @@ describe('ChatInput — keeping an unsent message', () => {
     expect(loadDraft(KEY_NEW)).toBe('A question for a new chat');
   });
 
+  it('puts the unsent draft back when Quote leaves edit mode', () => {
+    openConversation('conv-1');
+    renderInput({ persistDraft: true });
+    type('typed follow-up');
+    pause();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+      });
+    });
+    expect(composer().value).toBe('Original question');
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    expect(composer().value).toBe('typed follow-up');
+    expect(screen.getByTestId('quoted-excerpt-chip').textContent).toContain('the SLA is 99.9%');
+  });
+
   it('puts the quote chip back with the typed follow-up', () => {
     openConversation('conv-1');
     const first = renderInput({ persistDraft: true });
@@ -2065,6 +2084,28 @@ describe('ChatInput — quote selected text', () => {
     });
     expect(screen.queryByTestId('quoted-excerpt-chip')).toBeNull();
     expect(screen.getByText('Regenerate response')).toBeTruthy();
+  });
+
+  it('does not keep the edited question as the quote follow-up', () => {
+    const { onSend } = renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+      });
+    });
+    expect(composer().value).toBe('Original question');
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    expect(screen.queryByText('Edit query')).toBeNull();
+    expect(composer().value).toBe('');
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith(
+      formatQuotedSelection('the SLA is 99.9%', ''),
+      undefined,
+      undefined,
+    );
   });
 
   it('restores a stored quote when editing that question', () => {

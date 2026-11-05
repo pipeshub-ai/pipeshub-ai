@@ -310,6 +310,12 @@ describe('Enterprise Search Utils', () => {
       expect(conversationTitleFromQuery('  Plain question  ')).to.equal('Plain question')
     })
 
+    it('is not the raw content prefix, so an edit title must use the helper', () => {
+      const query = 'Quoted excerpt:\n"""\nthe SLA is 99.9%\n"""\n\nWhat does this cover?'
+      expect(conversationTitleFromQuery(query)).to.equal('What does this cover?')
+      expect(conversationTitleFromQuery(query)).to.not.equal(query.slice(0, 100))
+    })
+
     it('uses the same quote markers as the frontend helper', () => {
       const frontend = fs.readFileSync(
         path.resolve(process.cwd(), '../../../frontend/app/(main)/chat/utils/quoted-selection.ts'),
