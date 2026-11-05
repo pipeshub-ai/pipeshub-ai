@@ -104,6 +104,25 @@ class KgWriter:
                 "$10::boolean[], $11::smallint[], $12::boolean[])", *[[r[c] for r in part] for c in STAMP_COLS])
         return n
 
+    async def fence_rows(self, rows: list[tuple[int, int, str, int]], job: int | None) -> int:
+        """Mark records that kg holds as hidden until restamp job ``job`` stamps them (None: lift the mark): rows are (sk, coll code, id, kind code). The writer is an upsert, so the
+        caller passes rows it has read from kg.records: a key kg holds no row for would get a row of nothing but a key."""
+        n = 0
+        for part in _chunks(sorted(rows)):
+            n += await self.tx.fetchval("/* pipeshub:kg.w_fence_rows */ SELECT kg.w_fence_rows($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::bigint[])",
+                                        [r[0] for r in part], [r[1] for r in part], [r[2] for r in part], [r[3] for r in part], [job] * len(part))
+        return n
+
+    async def queue_add(self, job: int, app_sk: int, kind: str, reason: str, *, fenced: bool, now_ms: int) -> bool:
+        return await self.tx.fetchval("/* pipeshub:kg.w_queue_add */ SELECT kg.w_queue_add($1, $2, $3, $4, $5, $6)", job, app_sk, kind, reason, fenced, now_ms)
+
+    async def queue_touch(self, job: int, seen: int, worker: str, now_ms: int, attempts: int, cursor: str | None) -> bool:
+        """Claim or heartbeat a job if nobody has touched it since ``seen`` (compare and set on the heartbeat): False means another worker took it."""
+        return await self.tx.fetchval("/* pipeshub:kg.w_queue_touch */ SELECT kg.w_queue_touch($1, $2, $3, $4, $5, $6)", job, seen, worker, now_ms, attempts, cursor)
+
+    async def queue_done(self, job: int) -> bool:
+        return await self.tx.fetchval("/* pipeshub:kg.w_queue_done */ SELECT kg.w_queue_done($1)", job)
+
     async def changes_ack(self) -> int:
         """This transaction's own rows of kg.graph_changes."""
         return await self.tx.fetchval("/* pipeshub:kg.w_changes_ack */ SELECT kg.w_changes_ack()")
