@@ -259,7 +259,8 @@ describe('error.middleware.utils: a failed axios call is logged without its requ
   }
 
   // A fake OAuth token endpoint that refuses every call.
-  const answers: Record<string, (res: http.ServerResponse) => void> = {
+  // A Map, so a request path such as `/__proto__` cannot reach Object.prototype.
+  const answers = new Map(Object.entries<(res: http.ServerResponse) => void>({
     '/token': (res) => {
       res.writeHead(400, { 'content-type': 'application/json', 'set-cookie': 'sid=RESP-BODY-333' })
       res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'Bad', echoed: 'RESP-BODY-333' }))
@@ -280,7 +281,7 @@ describe('error.middleware.utils: a failed axios call is logged without its requ
       res.writeHead(400, { 'content-type': 'text/plain' })
       res.end('refresh_token RESP-BODY-333 was rejected')
     },
-  }
+  }))
   let server: http.Server
   let base: string
 
@@ -291,7 +292,7 @@ describe('error.middleware.utils: a failed axios call is logged without its requ
         const path = (req.url ?? '').split('?')[0]
         // A request that never gets an answer, without depending on the host's network.
         if (path === '/hang-up') return req.socket.destroy()
-        ;(answers[path] ?? answers['/token'])(res)
+        ;(answers.get(path) ?? answers.get('/token')!)(res)
       })
     })
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
