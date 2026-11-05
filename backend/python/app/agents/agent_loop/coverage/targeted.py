@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 # Small enough that a round of them costs less than one search the model makes.
 TARGETED_RESULT_CHARS = 16_000
+# Of each search's timeout, the most it waits for keyword matches once the
+# semantic results are in; otherwise a slow grep could time out the whole search.
+_KEYWORD_WAIT_SHARE = 0.25
 
 
 @dataclass(frozen=True)
@@ -62,7 +65,10 @@ async def run_targeted_searches(
     async def _one(query: str) -> TargetedResult:
         try:
             output = await asyncio.wait_for(
-                execute_search(cast("ChatState", context.tool_state), query, max_result_chars=max_chars),
+                execute_search(
+                    cast("ChatState", context.tool_state), query,
+                    max_result_chars=max_chars, keyword_wait_s=timeout * _KEYWORD_WAIT_SHARE,
+                ),
                 timeout=timeout,
             )
         except Exception as exc:
@@ -80,6 +86,7 @@ async def run_targeted_searches(
 
 
 def render_results(results: list[TargetedResult]) -> str:
+    """The searches as one text block for a request to the model."""
     blocks: list[str] = []
     for result in results:
         body = result.text or "No records found."

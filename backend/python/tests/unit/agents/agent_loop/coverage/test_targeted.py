@@ -28,6 +28,8 @@ async def test_results_are_rendered_and_an_empty_or_failed_search_counts_as_noth
 
     assert [r.text is not None for r in results] == [True, False, False]
     assert all(call.kwargs["max_result_chars"] == TARGETED_RESULT_CHARS for call in execute.await_args_list)
+    # The keyword phase gets a share of the timeout, so a slow grep cannot lose the semantic results.
+    assert all(call.kwargs["keyword_wait_s"] == 1.25 for call in execute.await_args_list)
     assert all(call.args[0] is context.tool_state for call in execute.await_args_list)
     assert render_results(results[:2]).endswith('Search "empty":\nNo records found.')
 
