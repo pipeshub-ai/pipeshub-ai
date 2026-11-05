@@ -1117,9 +1117,12 @@ class IGraphDBProvider(ABC):
         edges: list[dict],
         collection: str,
         transaction: str | None = None,
-    ) -> bool:
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
-        Batch create edges/relationships between nodes.
+        Batch create edges/relationships between nodes. With ``count_created`` it returns how many edges the call created
+        (a found edge that was only rewritten is not one) instead of True; ``edge_effects.note_created`` gets their end ids either way.
 
         Args:
             edges (List[Dict]): List of edges in generic format:
@@ -1144,8 +1147,10 @@ class IGraphDBProvider(ABC):
         edges: list[dict],
         collection: str,
         transaction: str | None = None,
-    ) -> None:
-        """Create the edges that are not there and leave the ones that are untouched.
+        *,
+        count_created: bool = False,
+    ) -> int | None:
+        """Create the edges that are not there and leave the ones that are untouched. With ``count_created`` it returns how many it created.
 
         The create-only counterpart of :meth:`batch_create_edges`, which replaces an
         existing edge's properties. For a repair or a re-run that must not reset what
@@ -1159,7 +1164,9 @@ class IGraphDBProvider(ABC):
         self,
         edges: list[dict],
         transaction: str | None = None,
-    ) -> bool:
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
         Batch upsert record relation edges.
 
@@ -1171,9 +1178,11 @@ class IGraphDBProvider(ABC):
             edges: Edge documents with _from, _to, relationshipType and
                 optionally constraintName
             transaction: Optional transaction ID
+            count_created: return how many edges the call created instead of True (Neo4j and ArangoDB; the
+                PostgreSQL store raises NotImplementedError for True)
 
         Returns:
-            bool: True if successful
+            bool | int: True if successful, or the number of edges created when ``count_created``
 
         Raises:
             Exception: propagated from the database on failure

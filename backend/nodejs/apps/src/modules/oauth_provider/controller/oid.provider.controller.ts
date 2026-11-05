@@ -22,6 +22,7 @@ import {
   JWT_BEARER_GRANT,
 } from '../constants/agent-auth.constants';
 import { AgentMcpScopes, mcpDiscoveryScopes } from '../config/scopes.config';
+import { cimdEnabled } from '../services/client_metadata_document';
 import { renderAuthMd } from '../utils/auth-md';
 
 /**
@@ -132,6 +133,7 @@ export class OIDCProviderController {
       introspection_endpoint: `${baseUrl}/introspect`,
       jwks_uri: `${backendUrl}/.well-known/jwks.json`,
       ...(dcrEnabled ? { registration_endpoint: `${baseUrl}/register` } : {}),
+      ...(cimdEnabled() ? { client_id_metadata_document_supported: true } : {}),
       ...(deviceEnabled
         ? { device_authorization_endpoint: `${baseUrl}/device_authorization` }
         : {}),
@@ -248,7 +250,7 @@ export class OIDCProviderController {
       : null;
 
     const metadata: OAuthProtectedResourceMetadata = {
-      resource: `${backendUrl}/mcp`,
+      resource: this.oauthTokenService.mcpResource,
       authorization_servers: [backendUrl],
       scopes_supported: mcpDiscoveryScopes(this.appConfig.mcpScopes),
       bearer_methods_supported: ['header'],

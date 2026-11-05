@@ -167,6 +167,7 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
+from app.services.graph_db import edge_effects
 from app.services.graph_db.arango.arango_http_client import (
     ARANGO_CONFLICT,
     ARANGO_UNIQUE_CONSTRAINT_VIOLATED,
@@ -779,6 +780,13 @@ PURGE_WALK_INDEX = "records_org_deleted_at"
 _PURGE_WALK_FIELDS = ("orgId", "deletedAtTimestamp", "_key")
 # Waiting this long for the purge's exclusive locks means syncs are busy; the next tick tries again.
 _PURGE_LOCK_TIMEOUT_SECONDS = 30
+
+
+def _created_ends(results: list | None, collection: str) -> list:
+    """The `[_from, _to]` pairs an UPSERT reported as created in `collection` (it returns null for an edge it found), reported to `edge_effects`."""
+    made = [r for r in (results or []) if r]
+    edge_effects.note_created((str(end).split("/", 1)[-1] for pair in made for end in pair), collection)
+    return made
 
 
 # Stage states removed per statement, as records are: a connector can hold millions.
@@ -3869,8 +3877,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         edges: list[dict],
         collection: str,
-        transaction: str | None = None
-    ) -> bool:
+        transaction: str | None = None,
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
         Batch create edges - FULLY ASYNC.
 
@@ -3880,13 +3890,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             edges: List of edge documents in generic format (from_id, from_collection, to_id, to_collection)
             collection: Edge collection name
             transaction: Optional transaction ID
+            count_created: return how many edges this call created (an existing one that was only rewritten is not counted)
+                instead of True. Whatever the flag, `edge_effects.note_created` gets the ids at the ends of the created edges.
 
         Returns:
-            bool: True if successful
+            bool: True if successful (the created count with ``count_created``)
         """
+        report = count_created or edge_effects.tracking()  # only then does the statement say which edges it created
         try:
             if not edges:
-                return True
+                return 0 if count_created else True
 
             self.logger.debug(f"🚀 Batch creating edges: {collection}")
 
@@ -3894,19 +3907,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             arango_edges = self._translate_edges_to_arango(edges)
 
             if collection != CollectionNames.NODE_RELATIONS.value:
-                batch_query = """
+                batch_query = f"""
                 FOR edge IN @edges
-                    UPSERT { _from: edge._from, _to: edge._to }
+                    UPSERT {{ _from: edge._from, _to: edge._to }}
                     INSERT edge
                     UPDATE edge
                     IN @@collection
-                    RETURN NEW
+                    {"RETURN OLD == null ? [NEW._from, NEW._to] : null" if report else "RETURN NEW"}
                 """
                 results = await self.http_client.execute_aql(
                     batch_query, {"edges": arango_edges, "@collection": collection}, txn_id=transaction,
                 )
-                self.logger.debug(f"✅ Successfully created {len(results)} edges in collection '{collection}'.")
-                return True
+                made = _created_ends(results, collection) if report else results or []
+                self.logger.debug(f"✅ Successfully created {len(made)} edges in collection '{collection}'.")
+                return len(made) if count_created else True
 
             # A link goes to recordLinks and is keyed on its type too, so a BLOCKS
             # and a RELATED between one pair are two edges. A hierarchy write never
@@ -3914,35 +3928,38 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # which it would otherwise overwrite.
             links = [e for e in arango_edges if self._is_link(e)]
             hierarchy = [e for e in arango_edges if not self._is_link(e)]
+            created = 0
             if hierarchy:
-                await self.http_client.execute_aql(
-                    """
+                done = await self.http_client.execute_aql(
+                    f"""
                     FOR edge IN @edges
                         UPSERT FILTER CURRENT._from == edge._from AND CURRENT._to == edge._to
                             AND (CURRENT.relationshipType == null OR CURRENT.relationshipType IN @hierarchy)
                         INSERT edge
                         UPDATE edge
                         IN @@collection
-                        RETURN 1
+                        {"RETURN OLD == null ? [NEW._from, NEW._to] : null" if report else "RETURN 1"}
                     """,
                     {"edges": hierarchy, "hierarchy": sorted(HIERARCHY_RELATION_TYPES), "@collection": collection},
                     txn_id=transaction,
                 )
+                created += len(_created_ends(done, collection)) if report else 0
             if links:
-                await self.http_client.execute_aql(
-                    """
+                done = await self.http_client.execute_aql(
+                    f"""
                     FOR edge IN @edges
-                        UPSERT { _from: edge._from, _to: edge._to, relationshipType: edge.relationshipType }
+                        UPSERT {{ _from: edge._from, _to: edge._to, relationshipType: edge.relationshipType }}
                         INSERT edge
                         UPDATE edge
                         IN @@links
-                        RETURN 1
+                        {"RETURN OLD == null ? [NEW._from, NEW._to] : null" if report else "RETURN 1"}
                     """,
                     {"edges": links, "@links": CollectionNames.RECORD_LINKS.value},
                     txn_id=transaction,
                 )
+                created += len(_created_ends(done, CollectionNames.RECORD_LINKS.value)) if report else 0
             self.logger.debug(f"✅ Created {len(hierarchy)} hierarchy edge(s) and {len(links)} link(s).")
-            return True
+            return created if count_created else True
 
         except Exception as e:
             self.logger.error(f"❌ Batch edge creation failed: {str(e)}")
@@ -3952,31 +3969,38 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         edges: list[dict],
         collection: str,
-        transaction: str | None = None
-    ) -> None:
+        transaction: str | None = None,
+        *,
+        count_created: bool = False,
+    ) -> int | None:
         """Create the edges that are not there; an existing edge keeps its document.
 
         Not batch_create_edges: that does ``UPDATE edge``, which would reset a live
         edge (a sync state, a role) when a repair re-runs over it.
+        With ``count_created`` it returns how many edges this call created.
         """
+        report = count_created or edge_effects.tracking()
         try:
             if not edges:
-                return
+                return 0 if count_created else None
 
             arango_edges = self._translate_edges_to_arango(edges)
 
-            query = """
+            query = f"""
             FOR edge IN @edges
-                UPSERT { _from: edge._from, _to: edge._to }
+                UPSERT {{ _from: edge._from, _to: edge._to }}
                 INSERT edge
-                UPDATE {}
+                UPDATE {{}}
                 IN @@collection
+                {"RETURN OLD == null ? [NEW._from, NEW._to] : null" if report else ""}
             """
-            await self.http_client.execute_aql(
+            done = await self.http_client.execute_aql(
                 query,
                 {"edges": arango_edges, "@collection": collection},
                 txn_id=transaction
             )
+            made = _created_ends(done, collection) if report else []
+            return len(made) if count_created else None
 
         except Exception as e:
             self.logger.error(f"❌ Create edges if absent failed: {str(e)}")
@@ -4042,10 +4066,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def batch_upsert_node_relations(
         self,
         edges: list[dict],
-        transaction: Optional[str] = None
-    ) -> bool:
+        transaction: Optional[str] = None,
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
-        Batch upsert record relation edges - FULLY ASYNC.
+        Batch upsert record relation edges - FULLY ASYNC. With ``count_created`` it returns how many edges the call created.
 
         Uses UPSERT to avoid duplicates - matches on _from, _to, relationshipType, and constraintName.
         This allows multiple edges between the same record pair with different
@@ -4059,20 +4085,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             bool: True if successful
         """
+        report = count_created or edge_effects.tracking()
         try:
             if not edges:
-                return True
+                return 0 if count_created else True
 
             self.logger.debug("🚀 Batch upserting record relation edges")
 
             arango_edges = self._translate_edges_to_arango(edges)
-            batch_query = """
+            batch_query = f"""
             FOR edge IN @edges
-                UPSERT { _from: edge._from, _to: edge._to, relationshipType: edge.relationshipType, constraintName: edge.constraintName }
+                UPSERT {{ _from: edge._from, _to: edge._to, relationshipType: edge.relationshipType, constraintName: edge.constraintName }}
                 INSERT edge
                 UPDATE UNSET(edge, "createdAtTimestamp")
                 IN @@collection
-                RETURN NEW
+                {"RETURN OLD == null ? [NEW._from, NEW._to] : null" if report else "RETURN NEW"}
             """
             # Links go to their own collection, with the same key.
             upserted = 0
@@ -4084,10 +4111,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     results = await self.http_client.execute_aql(
                         batch_query, {"edges": group, "@collection": target}, txn_id=transaction,
                     )
-                    upserted += len(results or [])
+                    upserted += len(_created_ends(results, target)) if report else len(results or [])
 
-            self.logger.debug(f"✅ Successfully upserted {upserted} record relation edges.")
-            return True
+            self.logger.debug(f"✅ Created {upserted} record relation edges.")
+            return upserted if count_created else True
 
         except Exception as e:
             self.logger.error(f"❌ Batch record relation upsert failed: {str(e)}")
@@ -21339,7 +21366,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         "_key", "recordName", "recordType", "connectorId", "virtualRecordId",
         "webUrl", "hideWeburl", "sourceLastModifiedTimestamp", "updatedAtTimestamp",
         "connectorName", "origin", "createdAtTimestamp", "sourceCreatedAtTimestamp",
-        SOURCE_TIMESTAMP_ORIGIN_FIELD,
+        SOURCE_TIMESTAMP_ORIGIN_FIELD, "indexingStatus", HAS_INDEXED_COPY, "mimeType",
     )
 
     async def _get_taxonomy_entities_for_record_via_edge(
@@ -21583,7 +21610,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR ref IN @refs
                 LET rec = DOCUMENT(CONCAT("{records}/", ref.id))
                 LET ok = rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
-                    AND {aql_searchable_record("rec", "completed")}
                     AND rec.connectorId IN ref.connectorIds
                     {record_type_check}
                 RETURN {{id: ref.id, rows: (ok AND @offset == 0) ? [{projection}] : []}}
@@ -21625,7 +21651,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             window = f"""
                 LET one = DOCUMENT(CONCAT("{records}/", ref.id))
                 LET win = (one != null AND @offset == 0 AND one.orgId == @org_id
-                    AND one.isDeleted != true AND {aql_searchable_record("one", "completed")}
+                    AND one.isDeleted != true
                     AND one.connectorId IN ref.connectorIds {record_type_check}
                     AND {self._entity_within_aql("one")}) ? [one] : []
                 LET capped = false"""
@@ -21768,12 +21794,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             bind_vars: dict[str, Any] = {
                 "org_id": org_id,
                 "limit": limit,
-                "completed": ProgressStatus.COMPLETED.value,
                 "users_col": CollectionNames.USERS.value,
                 "user_key": user_key,
                 "app_level_connector_ids": list(app_level_connector_ids),
                 "within": within_param(within),
             }
+            if ref_type != EntityType.RECORD.value:
+                bind_vars["completed"] = ProgressStatus.COMPLETED.value
             if record_types:
                 bind_vars["record_types"] = list(record_types)
             query = self._permitted_entity_records_aql(ref_type, filter_record_types=bool(record_types))
@@ -21970,12 +21997,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "refs": query_refs,
                 "org_id": org_id,
                 "offset": max(0, offset),
-                # Search only returns indexed records; listing others offers
-                # records whose content cannot be read.
-                "completed": ProgressStatus.COMPLETED.value,
             }
             # Arango rejects bind vars the query does not reference.
             if ref_type != EntityType.RECORD.value:
+                # A record found by its own name is shown whether or not its
+                # content is indexed; a taxonomy or group listing offers only
+                # records whose content can be read.
+                bind_vars["completed"] = ProgressStatus.COMPLETED.value
                 bind_vars["limit"] = max(1, limit_per_entity)
                 bind_vars["scan_cap"] = ENTITY_CANDIDATE_SCAN_CAP
             if record_types:
@@ -22716,9 +22744,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }}
         """
         try:
-            if not org_id or node_id not in (await self.check_access(
+            if not org_id:
+                return None
+            checked = await self.check_access(
                 user_key, org_id, node_ids=[node_id], transaction=transaction,
-            )).node_ids:
+            )
+            if node_id not in checked.node_ids:
                 return None
             rows = await self.http_client.execute_aql(
                 query,
@@ -22728,6 +22759,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not rows or not rows[0] or not rows[0].get("result"):
                 return None
             result = dict(rows[0]["result"])
+            # Browsing lists a placeholder; a caller that hands the node out as something to open tells it by this.
+            result["isPlaceholder"] = node_id in checked.placeholder_ids
             kb_id = rows[0].get("kbId")
             result["userRole"] = (
                 await self.get_user_kb_permission(kb_id, user_key, transaction=transaction)
@@ -23052,9 +23085,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # access was granted (role, collection, folder) for the details, and
             # finds nothing for access through inheritance or a declaration.
             user_key = user.get("_key") or user.get("id")
-            if not user_key or record_id not in (await self.check_access(
+            if not user_key:
+                return None
+            checked = await self.check_access(
                 user_key, org_id, node_ids=[record_id], transaction=transaction,
-            )).node_ids:
+            )
+            # A placeholder is reachable for browsing, but it is not a readable record: it is refused here
+            # exactly like a record the user cannot read.
+            if record_id not in checked.node_ids or record_id in checked.placeholder_ids:
                 return None
 
             # Build app record filter for connector records

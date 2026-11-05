@@ -73,8 +73,12 @@ class HierarchyMixin(PgBase):
     async def _rows(self, sql: str, *args: Any, transaction: str | None = None) -> list:  # noqa: ANN401
         return await self._q(lambda tx: tx.fetch(sql, *args), transaction)
 
-    async def create_edges_if_absent(self, edges: list[dict], collection: str, transaction: str | None = None) -> None:
+    async def create_edges_if_absent(
+        self, edges: list[dict], collection: str, transaction: str | None = None, *, count_created: bool = False
+    ) -> None:
         """Create the edges that are not there (both ends must exist); an existing edge keeps its properties."""
+        if count_created:  # this store does not report which edges a write created; the store's before/after comparison covers it
+            raise NotImplementedError("create_edges_if_absent(count_created=True) is not supported on the PostgreSQL graph store")
         if not edges:
             return
         org = current_org_id()

@@ -75,10 +75,14 @@ class _Producer:
         self.events: list[dict] = []
 
     async def send_message(self, topic: str, message: dict, key: str | None = None) -> bool:
+        if topic == "record-title-events":
+            return True
         self.events.append(message)
         return True
 
     async def send_messages(self, topic: str, messages: list) -> list[bool]:
+        if topic == "record-title-events":
+            return [True] * len(messages)
         self.events.extend(m for _key, m in messages)
         return [True] * len(messages)
 

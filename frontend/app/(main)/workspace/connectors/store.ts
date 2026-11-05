@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { immer } from 'zustand/middleware/immer';
 import { devtools } from 'zustand/middleware';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import type {
   Connector,
   ConnectorScope,
@@ -509,10 +510,13 @@ export const useConnectorsStore = create<ConnectorsState>()(
           }
         }),
 
-      bumpCatalogRefresh: () =>
+      bumpCatalogRefresh: () => {
         set((s) => {
           s.catalogRefreshToken += 1;
-        }),
+        });
+        revalidateSwrNamespace(SWR_NS.teamConnectorLists);
+        revalidateSwrNamespace(SWR_NS.connectorConfigs);
+      },
 
       bumpOAuthAuthorizeUiEpoch: () =>
         set((s) => {
@@ -898,10 +902,10 @@ export const useConnectorsStore = create<ConnectorsState>()(
           delete s.localSyncStatuses[connectorId];
         }),
 
+      // Configs stay, keyed by instance: reopening a type page within the SWR window shows them with no request.
       clearInstanceData: () =>
         set((s) => {
           s.instances = [];
-          s.instanceConfigs = {};
           s.instanceStats = {};
           s.localSyncStatuses = {};
         }),

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 # collection -> the small code kg.graph_changes and kg.node_keys store (kg.coll_code)
+MAX_ID = 256            # the longest node id the vetted writers take (w_nodes_upsert); a node with a longer one is not part of the typed tables (it is as if it were not there)
 COLL_CODE = {"apps": 1, "recordGroups": 2, "records": 3, "users": 4, "groups": 5, "roles": 6, "teams": 7, "organizations": 8}
 CODE_COLL = {v: k for k, v in COLL_CODE.items()}
 RECORD_COLLS = ("apps", "recordGroups", "records")          # the nodes that have a kg.records row; kind = position + 1
@@ -20,7 +21,7 @@ HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")
 EDGE_COLLS = ("permission", "belongsTo", "nodeRelations", "inheritPermissions", "userAppRelation", "authenticatedAs")
 LINK_HIERARCHY, LINK_GROUP = 1, 2                            # kg.links.kind
 UAR = "@uar"                                                 # gtype of a userAppRelation row in kg.scope_members (a permission edge's gtype is its type)
-CODE_EPOCH = 2                                               # kg.projection_state.code_epoch this code writes after a verified backfill
+CODE_EPOCH = 3                                               # kg.projection_state.code_epoch this code writes after a verified backfill
 
 Key = tuple[str, str]                                        # (collection, id)
 
@@ -138,6 +139,7 @@ class Derived:
     grant_holders: set[int] = field(default_factory=set)                     # sks whose grants-by were derived
     closure: dict[tuple[int, int, int], str] = field(default_factory=dict)   # (user_sk, principal_sk, app_sk) -> via
     closure_users: set[int] = field(default_factory=set)
+    cross_apps: set[int] = field(default_factory=set)                        # sks of connectors that a derived record shares a hierarchy parent or a group with (another connector's node)
 
 
 def listing_ts(doc: dict, source: str, ingest: str) -> int | None:
@@ -182,6 +184,21 @@ def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
     }
 
 
+def _cross_apps(k: Key, snap: Snapshot) -> set[int]:
+    """The connectors of ``k`` and of every hierarchy parent and group of it that belongs to another connector: a change to one can outdate the rows of the other."""
+    own = app_id_of(k, snap.nodes[k])
+    if own is None or ("apps", own) not in snap.sk:
+        return set()
+    out: set[int] = set()
+    ends = [e.frm for e in snap.edges_to.get(k, []) if hierarchy_edge(e) and e.frm[0] in RECORD_COLLS]
+    ends += [e.to for e in snap.edges_from.get(k, []) if e.coll == "belongsTo" and e.to_coll == "recordGroups"]
+    for q in ends:
+        other = app_id_of(q, snap.nodes[q]) if snap.exists(q) else None
+        if other is not None and other != own and ("apps", other) in snap.sk:
+            out |= {snap.sk[("apps", own)], snap.sk[("apps", other)]}
+    return out
+
+
 def derive(focus: set[Key], snap: Snapshot) -> Derived:
     """Everything kg holds for ``focus`` (one of each slice per node, see :class:`Derived`)."""
     if not snap.org:
@@ -200,6 +217,7 @@ def derive(focus: set[Key], snap: Snapshot) -> Derived:
                 continue
             row = record_row(k, snap.nodes[k], snap)
             d.records[sk] = {c: v for c, v in row.items() if not c.startswith("_")}
+            d.cross_apps |= _cross_apps(k, snap)
             d.link_children.add(sk)
             d.links |= {(p, LINK_HIERARCHY, sk) for p in row["_parents"]} | {(g, LINK_GROUP, sk) for g in row["_groups"]}
             d.grant_nodes.add(sk)

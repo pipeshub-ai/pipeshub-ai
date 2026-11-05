@@ -100,4 +100,25 @@ describe('search response meta', () => {
 
     expect(queryByRole('status')).toBeNull();
   });
+
+  it('lists name-only matches instead of the empty state', () => {
+    useChatStore.setState({
+      searchQuery: 'q',
+      searchError: null,
+      searchResponseMeta: {
+        searchResponse: {
+          searchResults: [],
+          unindexedMatches: [{ recordId: 'r 1', recordName: 'Project Falcon', connector: 'Confluence' }],
+        },
+      },
+      isSearching: false,
+    });
+
+    const { getByText, queryByText, container } = render(<Theme><SearchResultsView /></Theme>);
+
+    expect(getByText('Project Falcon')).toBeTruthy();
+    expect(getByText('chat.matchedByName')).toBeTruthy();
+    expect(queryByText('chat.noResultsFor')).toBeNull();
+    expect(container.querySelector('a')?.getAttribute('href')).toBe('/record/r%201/');
+  });
 });

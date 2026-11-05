@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Avatar,
@@ -19,7 +19,8 @@ import {
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { PermissionLockIcon } from '@/config';
 import { useTranslation } from 'react-i18next';
-import { UsersApi } from '@/app/(main)/workspace/users/api';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { userDisplayName } from '@/lib/utils/formatters';
 import { useIsBelowDesktop, useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
 import { ServiceAgentIdentityControl } from './service-agent-identity-control';
@@ -102,33 +103,9 @@ export function AgentBuilderHeader(props: {
   } = props;
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
-  const [creatorName, setCreatorName] = useState<string | null>(null);
-  const [creatorAvatarUrl, setCreatorAvatarUrl] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    if (!createdBy) {
-      setCreatorName(null);
-      setCreatorAvatarUrl(undefined);
-      return;
-    }
-    let cancelled = false;
-    UsersApi.getUsersByIds([createdBy])
-      .then((users) => {
-        if (cancelled) return;
-        const user = users[0];
-        setCreatorName(user?.name?.trim() || user?.email?.trim() || null);
-        setCreatorAvatarUrl(user?.profilePicture ?? undefined);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setCreatorName(null);
-          setCreatorAvatarUrl(undefined);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [createdBy]);
+  const creator = useUserDirectoryEntry(createdBy);
+  const creatorName = userDisplayName(creator);
+  const creatorAvatarUrl = creator?.profilePicture;
 
   const showDeleteOption = Boolean(editing && canDeleteAgent && onRequestDeleteAgent);
   const showConvertOption = Boolean(!isServiceAccount && onEnableServiceAccount);
