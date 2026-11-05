@@ -2237,6 +2237,16 @@
       "scopeCount_many": "{{count}} rozsahu",
       "scopeCount_other": "{{count}} rozsahů"
     },
+    "agentSignIns": {
+      "title": "Přihlášení agentů",
+      "subtitle": "Agenti, kterým jste schválili jednat vaším jménem. Zrušte některého, aby už nezískal nový přístup.",
+      "columnApproved": "Schváleno",
+      "revoke": "Zrušit",
+      "revokeAria": "Zrušit přihlášení agenta {{id}}",
+      "revokedTitle": "Přihlášení agenta bylo zrušeno",
+      "errorTitle": "Přihlášení agenta se nepodařilo zrušit",
+      "loadError": "Přihlášení agentů se nepodařilo načíst"
+    },
     "aiModels": {
       "title": "Modely AI",
       "subtitle": "Nakonfigurujte a spravujte modely AI od různých poskytovatelů",
@@ -5493,6 +5503,19 @@
       "invalid_client": "Hodnota client_id neodpovídá žádné registrované OAuth aplikaci. Ověřte ID klienta v konfiguraci své aplikace.",
       "server_error": "Na serveru došlo k neočekávané chybě. Zkuste to prosím znovu později."
     }
+  },
+  "agentClaim": {
+    "title": "Připojit agenta",
+    "intro": "Agent tvrdí, že pracuje pro vás. Schvalte ho jen tehdy, pokud jste o to požádali vy a kód odpovídá tomu, který vám ukázal.",
+    "scopesHeading": "Tento agent bude moci:",
+    "codeLabel": "Zadejte šestimístný kód, který agent zobrazil",
+    "approve": "Schválit",
+    "loading": "Kontroluje se požadavek…",
+    "missingLink": "Tomuto odkazu chybí token pro převzetí. Požádejte agenta o nový.",
+    "doneTitle": "Agent připojen",
+    "doneLine": "Agent nyní může pokračovat. Toto okno lze zavřít.",
+    "deniedTitle": "Požadavek zamítnut",
+    "deniedLine": "Agent nezískal přístup."
   },
   "oauthDevice": {
     "title": "Připojit zařízení",

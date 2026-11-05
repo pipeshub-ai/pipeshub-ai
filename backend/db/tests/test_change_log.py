@@ -85,7 +85,7 @@ def test_every_role_that_can_write_a_triggered_table_can_write_the_log(rdb):
     with connect(cluster, name) as c:
         tables = [r[0] for r in c.execute("SELECT DISTINCT tgrelid::regclass::text FROM pg_trigger WHERE tgname = 'docstore_change_log' AND NOT tgisinternal "
                                           "AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = tgrelid)")]
-        assert len(tables) == 30
+        assert len(tables) == 31
         skipped = {"pipeshub_import", "pipeshub_restore", "pipeshub_owner", "pipeshub_migrate"}
         for t in tables:
             for (role,) in c.execute("SELECT rolname FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%%' AND rolname <> ALL(%s) AND ("
