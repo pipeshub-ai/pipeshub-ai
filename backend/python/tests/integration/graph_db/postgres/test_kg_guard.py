@@ -96,7 +96,19 @@ class Rogue(PgBase):
         await self._q(lambda tx: tx.execute("/* pipeshub:test.update_node */ UPDATE graph.nodes SET doc = doc WHERE org_id = $1 AND coll = 'persons'", org), None, write=True)
 
 
+class RogueInTxn(PgBase):
+    """The same two writers, each able to run in a caller's explicit transaction."""
+
+    async def sneak_a_node_in(self, org: str, transaction: str | None = None) -> None:
+        await self._q(lambda tx: tx.execute("/* pipeshub:test.sneak */ INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'persons', 'p1', '{}'::jsonb) ON CONFLICT DO NOTHING", org),
+                      transaction, write=True)
+
+    async def update_node(self, org: str, transaction: str | None = None) -> None:           # the name of a classified method
+        await self._q(lambda tx: tx.execute("/* pipeshub:test.update_node */ UPDATE graph.nodes SET doc = doc WHERE org_id = $1 AND coll = 'persons'", org), transaction, write=True)
+
+
 instrument_writers(Rogue)
+instrument_writers(RogueInTxn)
 
 
 async def test_an_unclassified_writer_raises_in_strict_mode(pg_db, monkeypatch) -> None:
@@ -287,3 +299,24 @@ async def test_a_unit_that_wrote_the_graph_in_a_form_the_text_test_misses_is_sti
         await p._q(go, None, write=True)
     assert await log_rows(p, org) == 0                                  # projected and acknowledged in the writer's own transaction
     assert "merged1" in (await held(p, org))["records"]
+
+
+@pytest.mark.parametrize("first", ["update_node", "sneak_a_node_in"])
+async def test_each_call_of_an_explicit_transaction_is_judged_by_its_own_writer_not_the_first_calls(pg_db, monkeypatch, first: str) -> None:
+    """The transaction's task keeps the context of the call that opened it; the writer of every later call has to be carried to it."""
+    monkeypatch.setenv("PG_KG_GUARD", "strict")
+    org = new_org()
+    p = RogueInTxn(None, pg_db)
+    with ctx(org):
+        tid = await p.begin_transaction([], [])
+        try:
+            if first == "update_node":
+                await p.update_node(org, transaction=tid)                                    # classified: the task starts under its name
+                with pytest.raises(UnclassifiedProviderWrite, match="sneak_a_node_in"):
+                    await p.sneak_a_node_in(org, transaction=tid)                            # an unclassified writer does not ride on it
+            else:
+                with pytest.raises(UnclassifiedProviderWrite, match="sneak_a_node_in"):
+                    await p.sneak_a_node_in(org, transaction=tid)                            # unclassified: the task starts under its name
+                await p.update_node(org, transaction=tid)                                    # a classified writer is not refused for it
+        finally:
+            await p.rollback_transaction(tid)
