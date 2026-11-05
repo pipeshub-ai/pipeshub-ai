@@ -48,10 +48,16 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.services.permissions.metrics import SCOPE_PREFILTER_CAPPED, SCOPE_PREFILTER_DROPPED
+from app.services.permissions.metrics import (
+    SCOPE_PREFILTER_CAPPED,
+    SCOPE_PREFILTER_DROPPED,
+)
 from app.services.permissions.scope_fields import PATH_IDS_FIELD
 from app.services.vector_db import scope_expr as sx
-from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD, SCOPE_KEYWORD_INDEXES
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    SCOPE_KEYWORD_INDEXES,
+)
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
     ScopeFilterTooLarge,
