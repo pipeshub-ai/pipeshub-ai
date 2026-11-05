@@ -542,18 +542,40 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.create_record_groups_relation(child_id, parent_id, transaction=self.txn)
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> Optional[User]:
         # Every record in a batch carries the same owner, so this is the same
         # lookup a hundred times over. Users are not created inside a record
         # transaction, so the answer cannot go stale within it.
-        key = ("user_email", email)
+        key = ("user_email", email, org_id)
         if key in self._memo:
             return self._memo[key]  # type: ignore[return-value]
+        scope = {"org_id": org_id} if org_id is not None else {}
         value = await self.graph_provider.get_user_by_email(
-            email, transaction=self.txn, raise_on_error=raise_on_error
+            email, transaction=self.txn, raise_on_error=raise_on_error, **scope
         )
         self._memo_put(key, value)
         return value
+
+    async def get_users_by_emails(
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, User]:
+        """The members for ``emails`` (lowercased keys), one provider call for the addresses the memo lacks."""
+        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        keys = {e: ("user_email", e, org_id) for e in wanted}
+        found = {e: self._memo[k] for e, k in keys.items() if k in self._memo}
+        missing = [e for e in wanted if e not in found]
+        if missing:
+            scope = {"org_id": org_id} if org_id is not None else {}
+            got = await self.graph_provider.get_users_by_emails(
+                missing, transaction=self.txn, raise_on_error=raise_on_error, **scope
+            )
+            for e in missing:
+                self._memo_put(keys[e], got.get(e))
+                if got.get(e) is not None:
+                    found[e] = got[e]
+        return found
 
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
