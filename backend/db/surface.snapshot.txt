@@ -128,6 +128,7 @@ column conversation.chat_sessions.conversation_errors type=jsonb notnull=true id
 column conversation.chat_sessions.conversation_source type=text notnull=false identity= generated= default=-
 column conversation.chat_sessions.created_at type=timestamp with time zone notnull=true identity= generated= default=-
 column conversation.chat_sessions.deleted_by type=conversation.oid24 notnull=false identity= generated= default=-
+column conversation.chat_sessions.expires_at type=timestamp with time zone notnull=false identity= generated= default=-
 column conversation.chat_sessions.fail_reason type=text notnull=false identity= generated= default=-
 column conversation.chat_sessions.id type=conversation.oid24 notnull=true identity= generated= default=-
 column conversation.chat_sessions.initiator type=conversation.oid24 notnull=true identity= generated= default=-
@@ -135,6 +136,7 @@ column conversation.chat_sessions.is_archived type=boolean notnull=true identity
 column conversation.chat_sessions.is_deleted type=boolean notnull=true identity= generated= default=false
 column conversation.chat_sessions.is_pinned type=boolean notnull=true identity= generated= default=false
 column conversation.chat_sessions.is_shared type=boolean notnull=true identity= generated= default=false
+column conversation.chat_sessions.is_temporary type=boolean notnull=true identity= generated= default=false
 column conversation.chat_sessions.last_activity_at type=timestamp with time zone notnull=false identity= generated= default=-
 column conversation.chat_sessions.metadata type=jsonb notnull=false identity= generated= default=-
 column conversation.chat_sessions.model_info type=jsonb notnull=true identity= generated= default='{"chatMode": "quick"}'::jsonb
@@ -1372,6 +1374,7 @@ index conversation.chat_sessions_owner_pinned on conversation.chat_sessions uniq
 index conversation.chat_sessions_pkey on conversation.chat_sessions unique=true exclusion=false valid=true def=c5ecb987ec552e0c6250883db8a9ed69
 index conversation.chat_sessions_project_list on conversation.chat_sessions unique=false exclusion=false valid=true def=e6aa89c83bfacc3695d51defa474ff8d
 index conversation.chat_sessions_project_visible on conversation.chat_sessions unique=false exclusion=false valid=true def=650bb0e6fa607a916f66ed8dc0042578
+index conversation.chat_sessions_temporary_expiry on conversation.chat_sessions unique=false exclusion=false valid=true def=09b7bea8772146fc959c02d65b6f1391
 index conversation.citations_by_record on conversation.citations unique=false exclusion=false valid=true def=f9f27dd2a2aaa58c3648b3cd80feb917
 index conversation.citations_pkey on conversation.citations unique=true exclusion=false valid=true def=8f02c27f26f0949a121c4e016e775334
 index conversation.semantic_search_members_by_user on conversation.semantic_search_members unique=false exclusion=false valid=true def=fd291ddc6642d1c25a3c67a3f93aae05
