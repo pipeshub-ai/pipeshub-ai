@@ -791,7 +791,9 @@ class TestReadPathRoundTrips:
         assert sorted(r["id"] for r in refs) == ["t1", "t2"]
 
     @pytest.mark.asyncio
-    async def test_a_slow_probe_round_is_cut_at_the_deadline(self, monkeypatch) -> None:
+    async def test_a_slow_probe_round_is_cut_at_the_deadline_and_reads_as_no_match(self, monkeypatch) -> None:
+        """Only hits not yet found readable keep a probe round running, so a timeout there
+        must not read differently from no hits at all."""
         import asyncio
 
         monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.2)
@@ -806,9 +808,7 @@ class TestReadPathRoundTrips:
         graph.get_permitted_entity_records = AsyncMock(side_effect=_slow)
         started = asyncio.get_running_loop().time()
 
-        with pytest.raises(ep.EntitySearchTimedOut):
-            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
-
+        assert await search_entities_for_user(store, graph, _context(), "q", top_k=5) == []
         assert asyncio.get_running_loop().time() - started < 2
 
     @pytest.mark.asyncio
@@ -847,9 +847,7 @@ class TestReadPathRoundTrips:
         store = _store([_hit("t1", "topic", 0.9)])
         graph = _graph(candidates=_slow_round)
 
-        with pytest.raises(ep.EntitySearchTimedOut):
-            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
-
+        assert await search_entities_for_user(store, graph, _context(), "q", top_k=5) == []
         assert graph.get_permitted_entity_records.await_count == 1
 
     @pytest.mark.asyncio

@@ -1509,7 +1509,8 @@
       "internalSearch": "Búsqueda interna",
       "webSearch": "Búsqueda web",
       "internalAndWebSearch": "Búsqueda interna + web"
-    }
+    },
+    "searchDegraded": "Es posible que los resultados estén incompletos."
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -3404,6 +3405,7 @@
         "disconnected": "Desconectado correctamente",
         "disconnectError": "No se pudo desconectar",
         "credentialsSaveError": "Servidor guardado, pero no se pudieron guardar las credenciales. Puedes añadirlas más tarde desde Gestionar.",
+        "logoSaveError": "Servidor guardado, pero no se pudo guardar su logotipo. Puedes volver a intentarlo desde Gestionar.",
         "credentialsSaved": "Credenciales guardadas",
         "credentialsReset": "Servidor MCP actualizado. Se eliminaron las credenciales guardadas porque la conexión cambió; vuelve a conectarte para usarlo.",
         "oauthTimedOut": "El inicio de sesión tardó demasiado y se detuvo. Inténtalo de nuevo.",
@@ -3418,6 +3420,16 @@
       "form": {
         "name": "Nombre",
         "description": "Descripción",
+        "logo": "Logotipo",
+        "logoHint": "PNG, JPEG, WebP, GIF o SVG, hasta 2 MB. Una imagen cuadrada se ve mejor.",
+        "logoUpload": "Subir logotipo",
+        "logoChange": "Cambiar logotipo",
+        "logoRemove": "Quitar",
+        "logoErrors": {
+          "type": "Usa una imagen PNG, JPEG, WebP, GIF o SVG.",
+          "size": "Usa una imagen de 2 MB o menos.",
+          "unreadable": "No se pudo leer esta imagen. Prueba con otro archivo."
+        },
         "transport": "Transporte",
         "command": "Comando",
         "args": "Argumentos",
@@ -4306,6 +4318,16 @@
       "scopeCount_one": "{{count}} ámbito",
       "scopeCount_other": "{{count}} ámbitos",
       "scopeCount_many": "{{count}} de ámbitos"
+    },
+    "agentSignIns": {
+      "title": "Inicios de sesión de agentes",
+      "subtitle": "Agentes que aprobó para actuar en su nombre. Revoque uno para que deje de obtener acceso nuevo.",
+      "columnApproved": "Aprobado",
+      "revoke": "Revocar",
+      "revokeAria": "Revocar el inicio de sesión de agente {{id}}",
+      "revokedTitle": "Inicio de sesión de agente revocado",
+      "errorTitle": "No se pudo revocar el inicio de sesión de agente",
+      "loadError": "No se pudieron cargar los inicios de sesión de agentes"
     },
     "common": {
       "loadingUsers": "Cargando usuarios...",
@@ -5596,6 +5618,19 @@
     "description": "Elija qué indexar para \"{{name}}\".",
     "thisItemOnly": "Solo este elemento",
     "withChildren": "Este elemento y todo su contenido"
+  },
+  "agentClaim": {
+    "title": "Conectar un agente",
+    "intro": "Un agente dice que trabaja para ti. Apruébalo solo si se lo pediste y el código coincide con el que te mostró.",
+    "scopesHeading": "Este agente podrá:",
+    "codeLabel": "Introduce el código de 6 dígitos que mostró el agente",
+    "approve": "Aprobar",
+    "loading": "Comprobando la solicitud…",
+    "missingLink": "Este enlace no incluye el token de reclamación. Pide uno nuevo al agente.",
+    "doneTitle": "Agente conectado",
+    "doneLine": "El agente ya puede continuar. Puedes cerrar esta ventana.",
+    "deniedTitle": "Solicitud denegada",
+    "deniedLine": "No se concedió acceso al agente."
   },
   "oauthDevice": {
     "title": "Conectar un dispositivo",

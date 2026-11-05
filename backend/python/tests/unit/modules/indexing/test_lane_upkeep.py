@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+from app.core.org_context import current_or_system
+
 pytest.importorskip("fakeredis.aioredis")
 pytest.importorskip("lupa")
 
@@ -42,6 +44,8 @@ class _Graph:
         self.fail_apps = False
         # Connectors a paged scan of apps misses although they exist.
         self.hidden_from_scan: set[str] = set()
+        # Connectors no organisation's own read can see (a row naming none, or an organisation created since the list was read): found by key under a system scope only.
+        self.system_only: set[str] = set()
         self.fail_reads = False
 
     def add(self, connector_id: str, *, scope: str = "team", kind: str = "SLACK") -> None:
@@ -60,7 +64,7 @@ class _Graph:
         if self.fail_apps:
             raise ConnectionError("graph unavailable")
         rows = sorted(
-            (d for d in self.apps.values() if d["_key"] not in self.hidden_from_scan),
+            (d for d in self.apps.values() if d["_key"] not in self.hidden_from_scan and d["_key"] not in self.system_only),
             key=lambda d: d["_key"],
         )
         return rows[skip : skip + limit]
@@ -68,6 +72,8 @@ class _Graph:
     async def get_document(self, key: str, collection: str, **_kwargs: object) -> dict[str, Any] | None:
         if self.fail_reads:
             raise ConnectionError("graph unavailable")
+        if key in self.system_only and current_or_system().kind != "system":
+            return None
         return self.apps.get(key) if collection == "apps" else None
 
 
@@ -97,6 +103,7 @@ async def _upkeep(
         graph_provider=graph,  # type: ignore[arg-type]
         backlog=backlog if backlog is not None else LaneBacklog(TOPIC, {}),
         logger=logging.getLogger("test_lane_upkeep"),
+        org_ids=["org-1"],
     )
 
 
@@ -152,6 +159,19 @@ class TestKeepingTheMapInStepWithTheGraph:
         await _upkeep(provider, graph)
 
         assert (await _map(provider))["slack-1"].is_live
+
+    async def test_a_connector_only_a_system_scope_existence_check_finds_keeps_its_lane(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph
+    ) -> None:
+        """A connector of an organisation created after the list was read, or whose row names none: absence from the per-organisation reads
+        frees nothing."""
+        graph.add("slack-new")
+        await _assignments(provider).lane_for("slack-new")
+        graph.system_only = {"slack-new"}
+
+        await _upkeep(provider, graph)
+
+        assert (await _map(provider))["slack-new"].is_live
 
     async def test_a_connector_whose_read_fails_keeps_its_lane(
         self, provider: FakeRedisConnectionProvider, graph: _Graph
@@ -265,6 +285,7 @@ class TestTheLaneView:
             graph_provider=graph,  # type: ignore[arg-type]
             backlog=None,
             logger=logging.getLogger("t"),
+            org_ids=["org-1"],
         )
 
         assert report.as_dict()["backlogRead"] is False

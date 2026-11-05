@@ -763,7 +763,7 @@ class TestPendingDuplicateReconcile:
         )
         rows = await provider.get_records_pending_duplicate_reconcile(due_before_ms=5000, limit=100)
         mine = [r for r in rows if r["_key"].startswith(org_id)]
-        assert mine == [{"_key": f"{org_id}-old", "duplicateReconcileAttempts": None,
+        assert mine == [{"_key": f"{org_id}-old", "orgId": org_id, "duplicateReconcileAttempts": None,
                          "duplicateReconcileDueAt": 1000}]
         await _assert_fenced_clear(provider, f"{org_id}-old")
 
@@ -790,7 +790,7 @@ class TestPendingDuplicateReconcile:
         )
         rows = await provider.get_records_pending_duplicate_reconcile(due_before_ms=5000, limit=100)
         mine = [r for r in rows if r["_key"].startswith(org_id)]
-        assert mine == [{"_key": f"{org_id}-old", "duplicateReconcileAttempts": None,
+        assert mine == [{"_key": f"{org_id}-old", "orgId": org_id, "duplicateReconcileAttempts": None,
                          "duplicateReconcileDueAt": 1000}]
         await _assert_fenced_clear(provider, f"{org_id}-old")
 

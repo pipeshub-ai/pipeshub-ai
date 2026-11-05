@@ -9,7 +9,11 @@ import {
 } from '../middlewares/userAuthentication.middleware';
 import { attachContainerMiddleware } from '../middlewares/attachContainer.middleware';
 import { AuthSessionRequest } from '../middlewares/types';
-import { UserAccountController } from '../controller/userAccount.controller';
+import {
+  PASSWORD_RESET_REQUESTED,
+  SIGN_IN_CODE_REQUESTED,
+  UserAccountController,
+} from '../controller/userAccount.controller';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
@@ -19,6 +23,12 @@ import {
   createInitAuthRateLimiter,
 } from '../../../libs/middlewares/rate-limit.middleware';
 import { Logger } from '../../../libs/services/logger.service';
+import type { RedisService } from '../../../libs/services/redis.service';
+import {
+  addressRateLimitPerMinute,
+  createEmailRateLimiter,
+  lazyRedisCounter,
+} from '../../../libs/middlewares/email-rate-limit.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import {
   AUTH_APP_CONFIG_RELOADER,
@@ -164,6 +174,19 @@ export function createUserAccountRouter(container: Container) {
     '/login/otp/generate',
     authIpRateLimiter,
     authRateLimiter,
+    createEmailRateLimiter(
+      lazyRedisCounter(() => container.get<RedisService>('RedisService')),
+      container.get<Logger>('Logger'),
+      {
+        prefix: 'otp-request',
+        maxPerMinute: addressRateLimitPerMinute(),
+        emailOf: (req) => (req.body as { email?: string } | undefined)?.email,
+        // the answer a request gets whether or not the address has an account
+        onLimit: (res) => {
+          res.status(200).send(SIGN_IN_CODE_REQUESTED);
+        },
+      },
+    ),
     ValidationMiddleware.validate(otpGenerationValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
@@ -290,6 +313,19 @@ export function createUserAccountRouter(container: Container) {
     '/password/forgot',
     authIpRateLimiter,
     authRateLimiter,
+    createEmailRateLimiter(
+      lazyRedisCounter(() => container.get<RedisService>('RedisService')),
+      container.get<Logger>('Logger'),
+      {
+        prefix: 'password-forgot',
+        maxPerMinute: addressRateLimitPerMinute(),
+        emailOf: (req) => (req.body as { email?: string } | undefined)?.email,
+        // the answer a request gets whether or not the address has an account
+        onLimit: (res) => {
+          res.status(200).send(PASSWORD_RESET_REQUESTED);
+        },
+      },
+    ),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
@@ -325,6 +361,17 @@ export function createUserAccountRouter(container: Container) {
   router.put(
     '/validateEmailChange',
     authMiddleware.scopedTokenValidator(TokenScopes.VALIDATE_EMAIL),
+    createEmailRateLimiter(
+      lazyRedisCounter(() => container.get<RedisService>('RedisService')),
+      container.get<Logger>('Logger'),
+      {
+        prefix: 'email-change',
+        maxPerMinute: addressRateLimitPerMinute(),
+        emailOf: (req) =>
+          (req as AuthenticatedServiceRequest).tokenPayload?.newEmail as
+            string | undefined,
+      },
+    ),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(

@@ -86,6 +86,7 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.modules.retrieval import degraded_notice
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.modules.retrieval.selection_scope import (
     SelectionNotReadyError,
@@ -350,6 +351,7 @@ async def _run_no_tools_degradation(
         yield create_sse_event("error", {"error": f"Stream error: {exc}"})
 
 
+@degraded_notice.scoped
 @per_turn_lookups  # knowledge-hub access is asked about by several stages of a turn
 async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's call-site symmetry
     query_info: dict[str, Any],

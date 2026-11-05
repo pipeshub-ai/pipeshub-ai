@@ -94,7 +94,7 @@ def cluster(request, tmp_path_factory) -> Iterator[Cluster]:
         major = int(subprocess.run([f"{b}/postgres", "--version"], capture_output=True, text=True).stdout.split()[2].split(".")[0])
         c = Cluster(b, root, port, major)
         c.psql("postgres", "CREATE DATABASE tpl")
-        _py("db.bootstrap_roles", {"PG_ADMIN_URL": f"postgresql://postgres@127.0.0.1:{port}/tpl", "PG_BOOTSTRAP_EXTENSIONS": "pg_trgm"})
+        _py("db.bootstrap_roles", {"PG_ADMIN_URL": f"postgresql://postgres@127.0.0.1:{port}/tpl", "PG_BOOTSTRAP_EXTENSIONS": "vector,pg_trgm"})
         _py("db.migrate", {"PG_MIGRATE_URL": f"postgresql+psycopg://pipeshub_migrate@127.0.0.1:{port}/tpl"})
         c.psql("tpl", file=HERE / "fixture.sql")
         yield c
