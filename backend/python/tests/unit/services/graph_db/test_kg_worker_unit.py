@@ -123,7 +123,10 @@ async def test_stop_does_not_wait_for_a_drain_that_a_steady_writer_keeps_going(m
 class _NoUow:
     """The gauges are not under test: a unit of work that opens and does nothing."""
 
+    opened = 0
+
     def uow(self) -> object:
+        _NoUow.opened += 1
         class Unit:
             async def __aenter__(self) -> object:
                 return object()
@@ -131,3 +134,50 @@ class _NoUow:
             async def __aexit__(self, *_a: object) -> None:
                 return None
         return Unit()
+
+
+async def test_the_drainers_own_loop_stops_between_pages_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = {"started": 0, "finished": 0}
+
+    async def one_page(_db: object, _org: str, *, limit: int) -> int:
+        pages["started"] += 1
+        await asyncio.sleep(0.01)
+        pages["finished"] += 1
+        return 1
+
+    async def orgs() -> list[str]:
+        return ["org-a", "org-b"]
+    monkeypatch.setattr(drainer, "drain", one_page)
+    stop = asyncio.Event()
+    task = asyncio.create_task(drainer.run(None, orgs, idle_s=0.01, stop=stop))       # type: ignore[arg-type]
+    try:
+        assert await until(lambda: pages["finished"] >= 3), "the drain never started"
+        stop.set()
+        await asyncio.wait_for(task, 5.0)
+        assert pages["started"] == pages["finished"]
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+async def test_no_unit_is_opened_for_the_gauges_once_the_worker_is_stopping(monkeypatch: pytest.MonkeyPatch) -> None:
+    published = {"n": 0}
+    _NoUow.opened = 0
+    holder: dict[str, KgWorker] = {}
+
+    async def stop_during_the_page(_db: object, _org: str, *, limit: int) -> int:
+        holder["w"]._stop.set()                         # the stop arrives while a page is running
+        await asyncio.sleep(0.01)
+        return 1
+
+    async def orgs() -> list[str]:
+        return ["org-a"]
+
+    async def publish(_tx: object, _org: str) -> None:
+        published["n"] += 1
+    monkeypatch.setattr(drainer, "drain", stop_during_the_page)
+    monkeypatch.setattr(legacy, "publish", publish)
+    w = KgWorker(_NoUow(), orgs, dsn=None, poll_s=0.05)  # type: ignore[arg-type]
+    holder["w"] = w
+    await w.run_once()
+    assert published["n"] == 0 and _NoUow.opened == 0
