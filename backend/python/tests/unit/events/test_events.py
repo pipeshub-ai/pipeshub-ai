@@ -1833,7 +1833,7 @@ class TestOnEventUpdateEvent:
         assert len(call_kwargs["virtual_record_id"]) == 36
 
     @pytest.mark.asyncio
-    async def test_a_twin_in_the_trash_isolates_the_update_rather_than_rewriting_its_content(self):
+    async def test_a_twin_in_the_trash_isolates_the_update_rather_than_rewriting_its_content(self) -> None:
         """A restore reads the VRID's stored content, so rewriting it in place
         would bring the twin back holding this record's new content."""
         ep, _, processor, gp = _make_event_processor()
@@ -1843,7 +1843,7 @@ class TestOnEventUpdateEvent:
             "virtualRecordId": "shared-vrid",
         }
 
-        async def holders(_vrid, *, visibility=RecordVisibility.LIVE, **_kwargs):
+        async def holders(_vrid, *, visibility=RecordVisibility.LIVE, **_kwargs) -> list[str]:
             return ["rec-1", "rec-trashed"] if visibility == RecordVisibility.ALL else ["rec-1"]
 
         gp.get_records_by_virtual_record_id = AsyncMock(side_effect=holders)
@@ -1863,7 +1863,7 @@ class TestOnEventUpdateEvent:
         assert processor.process_sql_structured_data.call_args[1]["virtual_record_id"] != "shared-vrid"
 
     @pytest.mark.asyncio
-    async def test_a_failed_read_of_who_shares_the_vrid_fails_the_update_and_writes_nothing(self):
+    async def test_a_failed_read_of_who_shares_the_vrid_fails_the_update_and_writes_nothing(self) -> None:
         """Answered as [] it reads as "only this record", and the update would
         rewrite content another record is serving."""
         ep, _, processor, gp = _make_event_processor()
@@ -1873,7 +1873,7 @@ class TestOnEventUpdateEvent:
             "virtualRecordId": "shared-vrid",
         }
 
-        async def unreadable(_vrid, *, raise_on_error=False, **_kwargs):
+        async def unreadable(_vrid, *, raise_on_error=False, **_kwargs) -> list[str]:
             if raise_on_error:
                 raise ConnectionError("graph unavailable")
             return []

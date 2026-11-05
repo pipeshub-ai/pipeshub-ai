@@ -159,8 +159,8 @@ class TestSharedVridIsNeverDeleted:
         assert gp.get_records_by_virtual_record_id.await_args.kwargs["raise_on_error"] is True
 
     @pytest.mark.asyncio
-    async def test_a_record_in_the_trash_keeps_everything_for_its_restore(self):
-        async def holders(_vrid, *, visibility=RecordVisibility.LIVE, **_kwargs):
+    async def test_a_record_in_the_trash_keeps_everything_for_its_restore(self) -> None:
+        async def holders(_vrid, *, visibility=RecordVisibility.LIVE, **_kwargs) -> list[str]:
             return ["rec-trashed"] if visibility == RecordVisibility.ALL else []
 
         gp = AsyncMock()
