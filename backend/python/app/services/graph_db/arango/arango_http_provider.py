@@ -21835,7 +21835,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self.http_client.execute_aql(
             f"""
             FOR rec IN {CollectionNames.RECORDS.value}
-                FILTER rec._key == @record_id
+                FILTER rec._key == @record_id AND rec.orgId == @org_id
                 FOR n IN 1..1 ANY rec {CollectionNames.ENTITY_RELATIONS.value}
                     OPTIONS {{order: "bfs", uniqueVertices: "global"}}
                     FILTER n != null AND IS_SAME_COLLECTION("{collection}", n) AND {scope}

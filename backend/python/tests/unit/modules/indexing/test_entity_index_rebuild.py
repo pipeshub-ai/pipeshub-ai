@@ -287,8 +287,23 @@ class TestMarker:
     def test_people_rerun_the_org_pass_only(self) -> None:
         """People joined the org pass: orgs already done project them, and no
         connector is re-scanned for it."""
-        assert ORG_PASS_VERSION >= 3  # 2: people; 3: organisations
+        assert ORG_PASS_VERSION >= 4  # 2: the marker orgs carried before the split; 3: people; 4: organisations
         assert ENTITY_INDEX_VERSION == 2  # its own bump (unindexed and trashed records), not people
+
+    async def test_an_org_done_before_people_reruns_and_projects_them(self) -> None:
+        """An org whose pass completed under the shared v2 marker (before the
+        org pass had its own version), and was swept just now, still re-runs."""
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[ORGS]["org-1"] = _org(**{
+            EntityIndexState.STATE: entity_index_marker(FP, version=2), EntityIndexState.SWEPT_AT: NOW,
+        })
+        graph.sources[(USERS, "org-1")] = [{"_key": "u1", "name": "Ann Lee"}]
+        graph.membership[("person", "u1")] = {"connectorIds": ["c1"], "recordGroupIds": []}
+        outcomes = await _run_until_idle(_rebuilder(graph, store))
+
+        assert "taxonomy" in outcomes
+        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == ORG_MARKER
+        assert [(e.entity_type, e.entity_id) for e in store.written()] == [(EntityType.PERSON, "u1")]
 
     def test_marker_changes_with_the_fingerprint(self) -> None:
         assert entity_index_marker("a:b:3") != entity_index_marker("a:b:4")

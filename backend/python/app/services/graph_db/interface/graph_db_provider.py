@@ -8489,7 +8489,7 @@ class IGraphDBProvider(ABC):
 
     @abstractmethod
     async def get_record_people(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
-        """Members of ``org_id`` linked to the record by an ``entityRelations``
+        """Members of ``org_id`` linked to the record, itself of ``org_id``, by an ``entityRelations``
         edge in either direction (record -> user from ``record_people``,
         user -> record from message mentions), each once:
         ``{"id", "name", "email"}``. ``name`` is the user's full name or

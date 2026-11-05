@@ -105,7 +105,7 @@ async def test_apply_has_the_entity_index_project_the_orgs_people_again() -> Non
         return await fn(tx_store)
 
     data_store.execute_idempotent_in_transaction = AsyncMock(side_effect=_run)
-    await backfill(graph, data_store, "org-1", apply=True, logger=logging.getLogger("t"), out=io.StringIO())
+    assert await backfill(graph, data_store, "org-1", apply=True, logger=logging.getLogger("t"), out=io.StringIO()) == 0
     graph.update_node.assert_awaited_once_with(
         "org-1", "organizations", {EntityIndexState.STATE: None, EntityIndexState.TARGET: None},
     )
