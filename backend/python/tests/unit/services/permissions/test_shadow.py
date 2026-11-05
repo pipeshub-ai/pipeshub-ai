@@ -21,7 +21,7 @@ from app.services.permissions.scope_fields import (
     set_resolved_generation,
 )
 from app.services.permissions.scopes import ViewerScopes
-from app.services.permissions.shadow import ShadowComparator
+from app.services.permissions.shadow import ShadowComparator, ShadowIncomplete
 from app.services.permissions.wiring import build_shadow_comparator
 from app.services.vector_db.filters import ScopeFilter, ScopeFilterTooLarge
 
@@ -241,3 +241,74 @@ def test_the_comparator_exists_only_in_shadow_mode(monkeypatch: pytest.MonkeyPat
     g.permission_hierarchy_view.assert_not_called()                     # nothing is built, nothing queried
     monkeypatch.setenv(ENV_ACL_FILTER_MODE, "shadow")
     assert isinstance(build_shadow_comparator(g), ShadowComparator)
+
+
+async def test_a_partly_failed_shadow_search_is_skipped_as_an_error_not_counted_as_recall_loss(_generation_and_metrics) -> None:
+    async def run_scoped(flt: ScopeFilter) -> list[dict]:
+        raise ShadowIncomplete
+
+    assert await comparator().compare(ORG, USER, {"a", "b"}, {"a", "b"}, run_scoped, AsyncMock()) == {}
+    assert _generation_and_metrics.skipped.total("error") == 1 and _generation_and_metrics.compared.total("recall_loss") == 0
+
+
+async def test_without_a_user_nothing_is_resolved_or_compared(_generation_and_metrics) -> None:
+    c = comparator()
+    c.submit(ORG, "", {"a"}, {"a"}, AsyncMock(), AsyncMock())
+    assert _generation_and_metrics.skipped.total("no_user") == 1 and not c._inflight
+    c._scopes.scopes.assert_not_called()
+
+
+async def test_a_cancelled_comparison_is_counted_as_cancelled(_generation_and_metrics) -> None:
+    started = asyncio.Event()
+
+    async def run_scoped(flt: ScopeFilter) -> list[dict]:
+        started.set()
+        await asyncio.sleep(60)
+        return []
+
+    c = comparator(sample_rate=1.0)
+    c.submit(ORG, USER, {"a"}, {"a"}, run_scoped, AsyncMock())
+    await started.wait()
+    [task] = c._inflight
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert _generation_and_metrics.skipped.total("cancelled") == 1
+
+
+@pytest.mark.parametrize(("name", "bad"), [
+    ("ACL_SHADOW_SAMPLE", "often"), ("ACL_SHADOW_SAMPLE", "-1"), ("ACL_SHADOW_SAMPLE", "5"), ("ACL_SHADOW_SAMPLE", "nan"),
+    ("ACL_SHADOW_MAX_INFLIGHT", "0"), ("ACL_SHADOW_MAX_INFLIGHT", "-2"), ("ACL_SHADOW_MAX_INFLIGHT", "1.5"), ("ACL_SHADOW_MAX_INFLIGHT", "x"),
+    ("ACL_SHADOW_STEP_TIMEOUT_S", "0"), ("ACL_SHADOW_STEP_TIMEOUT_S", "-1"), ("ACL_SHADOW_STEP_TIMEOUT_S", "nan"), ("ACL_SHADOW_STEP_TIMEOUT_S", "soon"),
+    ("ACL_SHADOW_MAX_APPS", "0"), ("ACL_SHADOW_MAX_APPS", "many"),
+])
+def test_an_invalid_setting_stops_start_up_naming_the_setting(monkeypatch: pytest.MonkeyPatch, name: str, bad: str) -> None:
+    monkeypatch.setenv(ENV_ACL_FILTER_MODE, "shadow")
+    monkeypatch.setenv(name, bad)
+    with pytest.raises(ValueError, match=name):
+        build_shadow_comparator(MagicMock())
+    monkeypatch.setenv(ENV_ACL_FILTER_MODE, "legacy")
+    assert build_shadow_comparator(MagicMock()) is None                 # outside shadow mode the settings are not read
+
+
+def test_valid_settings_are_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(ENV_ACL_FILTER_MODE, "shadow")
+    for name, value in (("ACL_SHADOW_SAMPLE", "0"), ("ACL_SHADOW_MAX_INFLIGHT", "2"), ("ACL_SHADOW_STEP_TIMEOUT_S", "1.5"), ("ACL_SHADOW_MAX_APPS", "7")):
+        monkeypatch.setenv(name, value)
+    c = build_shadow_comparator(MagicMock())
+    assert (c._rate, c._max_inflight, c._timeout, c._max_apps) == (0.0, 2, 1.5, 7)
+
+
+async def test_the_viewer_scope_cache_registered_after_the_comparator_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.cache import invalidation_hooks as hooks
+
+    monkeypatch.setenv(ENV_ACL_FILTER_MODE, "shadow")
+    hooks.reset_viewer_scope_version()
+    c = build_shadow_comparator(MagicMock())                             # built first, as a service constructor may be
+    with pytest.raises(ViewerScopesUnavailable, match="no_cache"):
+        await c._scopes.scopes(ORG, USER)
+    cache = MagicMock()
+    cache.version = AsyncMock(return_value=None)
+    monkeypatch.setitem(hooks._scope_cache, "cache", cache)              # then register_viewer_scope_version runs
+    with pytest.raises(ViewerScopesUnavailable, match="bypass"):         # the cache is consulted now
+        await c._scopes.scopes(ORG, USER)
+    cache.version.assert_awaited()

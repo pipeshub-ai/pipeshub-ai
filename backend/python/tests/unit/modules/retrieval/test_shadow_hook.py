@@ -6,12 +6,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 import app.modules.retrieval.retrieval_service as mod
 from app.modules.retrieval.retrieval_service import (
     _SHADOW_SCOPE_FILTER,
     RetrievalService,
     _QueryPlan,
 )
+from app.services.permissions.shadow import ShadowIncomplete
 from app.services.vector_db.filters import ScopeFilter
 
 
@@ -40,7 +43,6 @@ async def test_the_comparator_runs_the_same_search_with_the_filter_and_a_plan_of
 
     async def search(queries, filter, limit, org_id, user_id, *, plan=None, record_cut=None) -> list:  # noqa: A002
         seen.update(queries=queries, filter=filter, limit=limit, org=org_id, plan=plan, scope=_SHADOW_SCOPE_FILTER.get())
-        plan.failed_collections.append("shadow-only")
         return [{"metadata": {"virtualRecordId": "v1"}}]
 
     s._execute_parallel_searches = search
@@ -104,3 +106,30 @@ def test_no_comparator_is_built_unless_the_mode_is_shadow(monkeypatch) -> None:
     s.logger = MagicMock()
     assert s._build_shadow(MagicMock()) is None
     assert mod.RetrievalService._shadow is None                         # the class default: an instance built without __init__ has none either
+
+
+async def test_a_shadow_search_that_lost_a_collection_is_not_comparable() -> None:
+    shadow = MagicMock()
+    s = service(shadow)
+    real_plan = _QueryPlan(dense=[[0.1]], collections=["c"])
+
+    async def search(queries, filter, limit, org_id, user_id, *, plan=None, record_cut=None) -> list:  # noqa: A002
+        plan.failed_collections.append("c")
+        return []
+
+    s._execute_parallel_searches = search
+    submit(s, real_plan, {"v1"}, {"v1": "r1"})
+    run_scoped = shadow.submit.call_args.args[4]
+    with pytest.raises(ShadowIncomplete):
+        await run_scoped(flt())
+    assert real_plan.failed_collections == []                           # the real plan does not see it
+
+
+@pytest.mark.parametrize("name", ["ACL_SHADOW_SAMPLE", "ACL_SHADOW_MAX_INFLIGHT"])
+def test_an_invalid_setting_stops_the_service_at_start_up_instead_of_being_swallowed(monkeypatch, name) -> None:
+    monkeypatch.setenv("ACL_FILTER_MODE", "shadow")
+    monkeypatch.setenv(name, "oops")
+    s = RetrievalService.__new__(RetrievalService)
+    s.logger = MagicMock()
+    with pytest.raises(ValueError, match=name):
+        s._build_shadow(MagicMock())

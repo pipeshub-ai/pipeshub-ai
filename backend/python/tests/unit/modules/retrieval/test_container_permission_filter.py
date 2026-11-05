@@ -14,6 +14,7 @@ The flag is forced by patching the module constant, not the environment — it i
 read once at import.
 """
 
+import contextlib
 import math
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1446,6 +1447,34 @@ class TestTheShadowComparisonDoesNotChangeTheAnswer:
         assert recording.submit.called
         org, user, returned, admitted, *_ = recording.submit.call_args.args
         assert (org, returned, admitted) == ("o1", {"v-allowed", "v-denied"}, {"v-allowed"})           # it sees what the real path saw, as copies
+
+    @pytest.mark.asyncio
+    async def test_a_search_that_asks_twice_hands_the_comparator_one_search_from_the_kept_attempt(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        shadow = MagicMock()
+        retrieval_service._should_requery = MagicMock(side_effect=[True, False])
+        await self._answer(retrieval_service, mock_graph_provider, mock_vector_db_service, shadow)
+        assert mock_graph_provider.check_access.await_count == 2             # two attempts ...
+        assert shadow.submit.call_count == 1                                 # ... one comparison
+
+    @pytest.mark.asyncio
+    async def test_no_comparison_is_started_when_the_access_check_was_unavailable(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        shadow = MagicMock()
+        retrieval_service._shadow = shadow
+        mock_vector_db_service.supports_scope_filter = True
+        mock_graph_provider.get_accessible_containers = AsyncMock(return_value=_containers(record_group_ids_verify=frozenset({"rg"})))
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[_hit("v-allowed")])
+        mock_graph_provider.check_access = AsyncMock(side_effect=PermissionVerificationUnavailableError("down"))
+        with contextlib.suppress(Exception):
+            await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+        shadow.submit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_without_a_comparator_nothing_is_started_or_logged(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        retrieval_service._submit_shadow = MagicMock()
+        retrieval_service.logger = MagicMock()
+        await self._answer(retrieval_service, mock_graph_provider, mock_vector_db_service, None)
+        retrieval_service._submit_shadow.assert_not_called()
+        assert not [c for c in retrieval_service.logger.method_calls if "shadow" in str(c).lower()]
 
     @pytest.mark.asyncio
     async def test_a_store_that_cannot_translate_the_filter_is_never_asked_to_compare(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
