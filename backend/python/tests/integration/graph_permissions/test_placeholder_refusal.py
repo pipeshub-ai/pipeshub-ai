@@ -46,6 +46,7 @@ STUB, REAL = "ph-stub", "ph-real"
 
 
 def _graph() -> tuple[list, list]:
+    """Graph."""
     ticket = {"record_type": "TICKET", "connector_id": APP}
     nodes = [
         _node("User", U, userId="ph-u-ext", email="ph-u@example.com", fullName="U", isActive=True),
@@ -67,6 +68,7 @@ def _graph() -> tuple[list, list]:
 
 @pytest.fixture(scope="module")
 async def graph(neo4j_provider, arango_provider, neo4j_settings, arango_settings) -> None:
+    """Graph."""
     nodes, edges = _graph()
     await load_into_neo4j(neo4j_settings, nodes, edges)
     await load_into_arango(arango_settings, *arango_shape(nodes, edges))
@@ -74,10 +76,12 @@ async def graph(neo4j_provider, arango_provider, neo4j_settings, arango_settings
 
 @pytest.fixture(params=["neo4j", "arango"])
 def provider(request: pytest.FixtureRequest) -> object:
+    """Provider."""
     return request.getfixturevalue(f"{request.param}_provider")
 
 
 def _request(user_ext: str) -> SimpleNamespace:
+    """Request."""
     container = MagicMock()
     container.logger.return_value = MagicMock()
     return SimpleNamespace(
@@ -87,12 +91,14 @@ def _request(user_ext: str) -> SimpleNamespace:
 
 
 async def _refusal(call) -> tuple[int, object]:
+    """Refusal."""
     with pytest.raises(HTTPException) as refused:
         await call
     return refused.value.status_code, refused.value.detail
 
 
 async def test_the_stub_is_listed_as_reachable_but_not_as_readable(graph, provider) -> None:
+    """The stub is listed as reachable but not as readable."""
     check = await provider.check_access(U, ORG, node_ids=[STUB, REAL])
     assert check.node_ids == {STUB, REAL} and check.placeholder_ids == {STUB}  # browsing keeps listing it
     assert await accessible_node_ids(provider, {STUB, REAL}, "ph-u-ext", ORG) == {REAL}
@@ -100,6 +106,7 @@ async def test_the_stub_is_listed_as_reachable_but_not_as_readable(graph, provid
 
 
 async def test_the_record_check_refuses_the_stub_and_serves_the_real_record(graph, provider) -> None:
+    """The record check refuses the stub and serves the real record."""
     assert await provider.check_record_access_with_details("ph-u-ext", ORG, STUB) is None
     assert await provider.check_record_access_with_details("ph-w-ext", ORG, STUB) is None
     details = await provider.check_record_access_with_details("ph-u-ext", ORG, REAL)
@@ -108,6 +115,7 @@ async def test_the_record_check_refuses_the_stub_and_serves_the_real_record(grap
 
 async def test_the_record_routes_refuse_the_stub_like_an_unreadable_record(graph, provider) -> None:
     # The unreadable record is the real one, asked by the viewer who has no grant.
+    """The record routes refuse the stub like an unreadable record."""
     for route in (
         lambda who, rid: connector_router.get_record_by_id(rid, _request(who), graph_provider=provider),
         lambda who, rid: connector_router.get_record_content(rid, _request(who), graph_provider=provider),

@@ -26,19 +26,23 @@ RECORD_ID = "0b6f1a52-3f0c-4a6e-9a55-6a2f5c0e7d11"
 
 
 def _node_access(placeholder: bool) -> AsyncMock:
+    """Node access."""
     async def access(node_id: str, **_: object) -> dict[str, Any]:
+        """Access."""
         return {"id": node_id, "nodeType": "record", "isPlaceholder": placeholder}
 
     return AsyncMock(side_effect=access)
 
 
 def _identifier_and_rows(path: str) -> tuple[str, list[dict[str, Any]]]:
+    """Identifier and rows."""
     if path == "record id":
         return RECORD_ID, [{**PP_8, "_key": RECORD_ID}]
     return ("PP-8" if path == "issue key" else f"{SITE}/browse/PP-8"), [PP_8]
 
 
 def _provider(make_provider: MakeProvider, path: str, *, placeholder: bool):  # noqa: ANN202
+    """Provider."""
     identifier, rows = _identifier_and_rows(path)
     provider = make_provider(rows)
     provider.get_knowledge_hub_node_access = _node_access(placeholder)
@@ -50,6 +54,7 @@ def _provider(make_provider: MakeProvider, path: str, *, placeholder: bool):  # 
 @pytest.mark.parametrize("make_provider", PROVIDERS, ids=["neo4j", "arango"])
 @pytest.mark.parametrize("path", ["record id", "address", "issue key"])
 async def test_a_placeholder_is_no_readable_match(make_provider: MakeProvider, path: str) -> None:
+    """A placeholder is no readable match."""
     identifier, provider = _provider(make_provider, path, placeholder=True)
 
     result = await _resolver(provider).resolve_many([identifier])
@@ -61,6 +66,7 @@ async def test_a_placeholder_is_no_readable_match(make_provider: MakeProvider, p
 @pytest.mark.parametrize("make_provider", PROVIDERS, ids=["neo4j", "arango"])
 @pytest.mark.parametrize("path", ["record id", "address", "issue key"])
 async def test_a_real_record_is_still_a_match(make_provider: MakeProvider, path: str) -> None:
+    """A real record is still a match."""
     identifier, provider = _provider(make_provider, path, placeholder=False)
 
     result = await _resolver(provider).resolve_many([identifier])

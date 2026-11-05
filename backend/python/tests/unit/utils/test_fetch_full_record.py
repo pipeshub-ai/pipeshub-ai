@@ -122,6 +122,7 @@ class TestEnrichSqlTableWithFkRelations:
         """The access check passes every table for a caller with an identity, as for an admin.
         A test about the access check patches its own."""
         def check(_provider, ids, user_id, org_id, **_) -> set[str]:
+            """Check."""
             return set(ids) if user_id and org_id else set()
 
         with patch("app.utils.fetch_full_record.accessible_node_ids", AsyncMock(side_effect=check)):

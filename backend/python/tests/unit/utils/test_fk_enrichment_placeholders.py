@@ -10,6 +10,7 @@ from app.utils.chat_helpers import enrich_virtual_record_id_to_result_with_fk_ch
 
 
 def _graph() -> AsyncMock:
+    """Graph."""
     graph = AsyncMock()
     graph.get_child_record_ids_by_relation_type = AsyncMock(
         side_effect=lambda rid, _rel: [{"record_id": "t-real"}, {"record_id": "t-stub"}] if rid == "t-hit" else [],
@@ -21,12 +22,14 @@ def _graph() -> AsyncMock:
 
 @pytest.mark.asyncio
 async def test_a_placeholder_table_is_named_but_its_content_is_never_resolved() -> None:
+    """A placeholder table is named but its content is never resolved."""
     records = {"v": {"record_type": "SQL_TABLE", "id": "t-hit"}}
     flattened = [{"virtual_record_id": "v"}]
     graph = _graph()
     seen: list[set[str]] = []
 
     async def readable(_graph: object, ids: set[str], _user: str, _org: str, **_kw: object) -> set[str]:
+        """Readable."""
         seen.append(set(ids))
         return set(ids) - {"t-stub"}  # a placeholder is left out unless the caller only names records
 
