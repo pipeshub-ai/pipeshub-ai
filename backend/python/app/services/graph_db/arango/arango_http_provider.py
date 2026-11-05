@@ -1844,7 +1844,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The (orgId, _key) index gives the org's keys in order from the cursor
         # (the first page after ""), so a page stops at the limit; the planner
         # otherwise sorts the org's records of these types, or walks every
-        # tenant's keys in the primary index. A soft hint: without the index
+        # org's keys in the primary index. A soft hint: without the index
         # the query still answers, only slower.
         rows = await self.http_client.execute_aql(
             f"""
@@ -21560,7 +21560,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         A traversal streams, so a caller's LIMIT stops it early; the node
         lookup is a loop rather than a ternary, which AQL would hoist and
-        evaluate for another tenant's node too."""
+        evaluate for another org's node too."""
         collection, scope, _ = self._LINKED_ENTITY_NODES[entity_type]
         return f"""FOR n IN {collection}
                         FILTER n._key == {key} AND {scope}
