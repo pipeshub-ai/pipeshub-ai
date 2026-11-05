@@ -1477,6 +1477,8 @@
     },
     "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
     "noResultsFor": "No results found for “{{query}}”",
+    "matchedByName": "Matched by name",
+    "contentNotIndexedYet": "Content not indexed yet",
     "removeSelectedSource": "Remove {{name}}",
     "diagramSourceCopied": "Diagram source copied",
     "diagramImageCopied": "Diagram image copied",

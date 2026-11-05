@@ -56,6 +56,7 @@ def _request(*, access: bool = True) -> tuple[SimpleNamespace, MagicMock, MagicM
         graph_provider=AsyncMock(return_value=graph),
         blob_store=AsyncMock(return_value=MagicMock()),
         retrieval_service=AsyncMock(return_value=retrieval),
+        redis_provider=AsyncMock(return_value=None),
     )
     request = SimpleNamespace(app=SimpleNamespace(container=container), state=SimpleNamespace(user=USER))
     return request, graph, retrieval
@@ -225,6 +226,67 @@ class TestRecordMode:
 
         assert body["content"].startswith("Record ID: r-1")
         assert body["complete"] is True
+
+    async def test_a_record_still_being_prepared_says_so_and_is_marked(self) -> None:
+        request, _, _ = _request()
+        fetch = AsyncMock(return_value={
+            "ok": False,
+            "not_indexed_records": {
+                "r-1": {"status": "QUEUED", "context": "Record ID: r-1", "preparing": "waiting"},
+            },
+        })
+
+        with patch.object(route, "_fetch_multiple_records_impl", fetch):
+            body = await _read(request)
+
+        assert body["preparing"] is True
+        assert "Content being prepared" in body["content"]
+        # The note is the whole answer for now: there is no later block to ask for.
+        assert body["complete"] is True and body["nextStartBlock"] is None
+
+    async def test_an_unindexed_record_that_is_not_being_prepared_is_not_marked(self) -> None:
+        request, _, _ = _request()
+        fetch = AsyncMock(return_value={
+            "ok": False,
+            "not_indexed_records": {"r-1": {"status": "FAILED", "context": "Record ID: r-1"}},
+        })
+
+        with patch.object(route, "_fetch_multiple_records_impl", fetch):
+            body = await _read(request)
+
+        assert "preparing" not in body
+
+    async def test_the_first_page_may_start_a_parse_and_a_later_page_never_does(self) -> None:
+        request, _, _ = _request()
+        fetch = AsyncMock(return_value={"ok": False, "not_indexed_records": {}})
+
+        with patch.object(route, "_fetch_multiple_records_impl", fetch):
+            await _read(request)
+            await _read(request, start_block=0)
+            await _read(request, start_block=40)
+
+        first, zero, later = (call.kwargs["parse_now"] for call in fetch.await_args_list)
+        assert first is not None and zero is not None and later is None
+
+    async def test_no_access_starts_no_parse(self) -> None:
+        request, _, _ = _request(access=False)
+        fetch = AsyncMock()
+
+        with patch.object(route, "_fetch_multiple_records_impl", fetch), pytest.raises(HTTPException) as err:
+            await _read(request)
+
+        assert err.value.status_code == 403
+        fetch.assert_not_awaited()
+
+    async def test_hidden_demo_data_starts_no_parse(self) -> None:
+        request, _, _ = _request()
+        fetch = AsyncMock()
+
+        with patch.object(route, "is_hidden_demo_record", AsyncMock(return_value=True)),                 patch.object(route, "_fetch_multiple_records_impl", fetch), pytest.raises(HTTPException) as err:
+            await _read(request)
+
+        assert err.value.status_code == 404
+        fetch.assert_not_awaited()
 
 
 class TestThreadMode:
