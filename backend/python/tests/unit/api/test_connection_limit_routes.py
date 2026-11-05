@@ -84,6 +84,7 @@ def _request(limit: dict | None = LIMIT, graph: AsyncMock | None = None) -> Magi
     request = MagicMock()
     request.state.user = user
     request.app.state.graph_provider = graph
+    request.app.container.redis_provider = AsyncMock(return_value=None)
     return request
 
 
