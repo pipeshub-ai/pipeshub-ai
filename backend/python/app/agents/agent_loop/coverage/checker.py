@@ -5,7 +5,7 @@ look for it; it never rewrites the answer.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -81,15 +81,17 @@ class AdmissionGap(BaseModel):
 
 
 class CheckerReport(BaseModel):
-    facets: list[FacetVerdict] = Field(default_factory=list)
-    unread_references: list[ReferenceGap] = Field(default_factory=list)
-    admissions: list[AdmissionGap] = Field(default_factory=list)
-    conflicts: list[Conflict] = Field(default_factory=list)
+    facets: list[FacetVerdict] = Field(default_factory=list[FacetVerdict])
+    unread_references: list[ReferenceGap] = Field(default_factory=list[ReferenceGap])
+    admissions: list[AdmissionGap] = Field(default_factory=list[AdmissionGap])
+    conflicts: list[Conflict] = Field(default_factory=list[Conflict])
 
 
 def _items(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
     value = payload.get(key)
-    return [item for item in value if isinstance(item, dict)][:_MAX_ITEMS] if isinstance(value, list) else []
+    if not isinstance(value, list):
+        return []
+    return [cast("dict[str, Any]", item) for item in cast("list[object]", value) if isinstance(item, dict)][:_MAX_ITEMS]
 
 
 def _str(value: object) -> str:
@@ -97,11 +99,8 @@ def _str(value: object) -> str:
 
 
 def _labels(value: object) -> list[str]:
-    if isinstance(value, str):
-        value = [value]
-    if not isinstance(value, list):
-        return []
-    return [label.strip().upper() for label in value if isinstance(label, str) and label.strip()]
+    items: list[object] = [value] if isinstance(value, str) else cast("list[object]", value) if isinstance(value, list) else []
+    return [label.strip().upper() for label in items if isinstance(label, str) and label.strip()]
 
 
 def _bool(value: object, default: bool) -> bool:  # noqa: FBT001
@@ -120,7 +119,7 @@ def parse_checker_report(payload: dict[str, Any] | None) -> CheckerReport | None
     ):
         return None
     try:
-        conflicts = []
+        conflicts: list[Conflict] = []
         for raw in _items(payload, "conflicts"):
             values = [
                 ConflictValue(

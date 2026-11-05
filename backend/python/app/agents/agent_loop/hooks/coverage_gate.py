@@ -102,8 +102,8 @@ def render_gap_request(decision: GateDecision, results_text: str) -> str:
 class _Draft:
     text: str
     evidence: Evidence
-    cited_record_ids: list[str] = field(default_factory=list)
-    cited_blocks: dict[str, list[int]] = field(default_factory=dict)
+    cited_record_ids: list[str] = field(default_factory=list[str])
+    cited_blocks: dict[str, list[int]] = field(default_factory=dict[str, list[int]])
 
 
 def _read_draft(context: "AgentContext", text: str) -> _Draft:
@@ -124,10 +124,10 @@ def _short(rulings: list[str]) -> list[str]:
 def _agent_queries(ctx: "ModelResponseContext") -> list[str]:
     if ctx.scope is None:
         return []
-    queries = []
+    queries: list[str] = []
     for turn in ctx.scope.run.turns:
         for call in turn.tool_calls:
-            query = call.arguments.get("query") if isinstance(call.arguments, dict) else None
+            query = call.arguments.get("query")
             if call.name.endswith(_SEARCH_TOOL_SUFFIX) and isinstance(query, str) and query.strip():
                 queries.append(query.strip())
     return queries

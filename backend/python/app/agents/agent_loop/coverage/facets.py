@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
@@ -57,13 +57,13 @@ class Facet(BaseModel):
     id: str
     kind: FacetKind
     text: str
-    terms: list[str] = Field(default_factory=list)
+    terms: list[str] = Field(default_factory=list[str])
     query: str = ""
 
 
 class FacetPlan(BaseModel):
     anchor: str = ""
-    facets: list[Facet] = Field(default_factory=list)
+    facets: list[Facet] = Field(default_factory=list[Facet])
 
     @property
     def document_types(self) -> list[str]:
@@ -81,10 +81,15 @@ def _clean(value: object) -> str:
     return " ".join(str(value).split())[:_MAX_FIELD_CHARS] if isinstance(value, (str, int, float)) else ""
 
 
-def _kind(value: object) -> str | None:
+def _kind(value: object) -> FacetKind | None:
     raw = _clean(value).lower().replace("-", "_").replace(" ", "_")
     raw = _KIND_ALIASES.get(raw, raw)
-    return raw if raw in _KINDS else None
+    return cast("FacetKind", raw) if raw in _KINDS else None
+
+
+def _terms(value: object) -> list[str]:
+    raw: list[object] = [value] if isinstance(value, str) else cast("list[object]", value) if isinstance(value, list) else []
+    return [term for term in (_clean(item) for item in raw) if term][:_MAX_TERMS]
 
 
 def parse_facet_plan(payload: dict[str, Any] | None) -> FacetPlan | None:
@@ -98,19 +103,16 @@ def parse_facet_plan(payload: dict[str, Any] | None) -> FacetPlan | None:
     anchor = _clean(payload.get("anchor"))
     facets: list[Facet] = []
     seen: set[str] = set()
-    for raw in raw_facets:
-        if not isinstance(raw, dict):
+    for item in cast("list[object]", raw_facets):
+        if not isinstance(item, dict):
             continue
+        raw = cast("dict[str, Any]", item)
         kind, text = _kind(raw.get("kind")), _clean(raw.get("text"))
         if kind is None or not text or text.lower() in seen:
             continue
         seen.add(text.lower())
-        terms_raw = raw.get("terms")
-        if isinstance(terms_raw, str):
-            terms_raw = [terms_raw]
-        terms = [t for t in (_clean(term) for term in terms_raw or []) if t][:_MAX_TERMS]
         query = _clean(raw.get("query")) or " ".join(part for part in (anchor, text) if part)
-        facets.append(Facet(id=f"f{len(facets) + 1}", kind=kind, text=text, terms=terms, query=query))
+        facets.append(Facet(id=f"f{len(facets) + 1}", kind=kind, text=text, terms=_terms(raw.get("terms")), query=query))
         if len(facets) >= MAX_FACETS:
             break
     if not facets:

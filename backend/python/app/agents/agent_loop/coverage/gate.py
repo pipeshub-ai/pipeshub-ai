@@ -56,10 +56,10 @@ class Gap:
 
 @dataclass
 class GateDecision:
-    gaps: list[Gap] = field(default_factory=list)
-    rulings: list[str] = field(default_factory=list)
+    gaps: list[Gap] = field(default_factory=list[Gap])
+    rulings: list[str] = field(default_factory=list[str])
     checked: bool = False
-    signals: dict[str, int] = field(default_factory=dict)
+    signals: dict[str, int] = field(default_factory=dict[str, int])
 
     @property
     def covered(self) -> bool:

@@ -654,7 +654,7 @@ def cited_blocks(text: str, ref_to_url: Mapping[str, str] | None) -> dict[str, l
     for ref in _CITED_REF_RE.findall(text):
         url = ref_to_url.get(ref)
         record_id = _extract_record_id_from_url(url) if url else None
-        if not record_id:
+        if not url or not record_id:
             continue
         indices = blocks.setdefault(record_id, [])
         index = _extract_block_index_from_url(url)

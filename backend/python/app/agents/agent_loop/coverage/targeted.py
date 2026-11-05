@@ -8,12 +8,13 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.agents.agent_loop.retrieval_ledger import emit_retrieval_context
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
+    from app.modules.agents.qna.chat_state import ChatState
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class TargetedResult:
 
 def _result_text(output: Any) -> str | None:  # noqa: ANN401 - str or a list of parts
     if isinstance(output, list):
-        text = "".join(getattr(part, "text", "") or "" for part in output)
+        text = "".join(str(getattr(part, "text", "") or "") for part in cast("list[object]", output))
     elif isinstance(output, str):
         text = output
     else:
@@ -39,10 +40,10 @@ def _result_text(output: Any) -> str | None:  # noqa: ANN401 - str or a list of 
     if text.lstrip().startswith("{"):
         # The tool answers an empty or failed search with a JSON status.
         try:
-            payload = json.loads(text)
+            payload: object = json.loads(text)
         except ValueError:
             return text
-        if isinstance(payload, dict) and not payload.get("results"):
+        if isinstance(payload, dict) and not cast("dict[str, Any]", payload).get("results"):
             return None
     return text if text.strip() else None
 
@@ -61,7 +62,8 @@ async def run_targeted_searches(
     async def _one(query: str) -> TargetedResult:
         try:
             output = await asyncio.wait_for(
-                execute_search(context.tool_state, query, max_result_chars=max_chars), timeout=timeout,
+                execute_search(cast("ChatState", context.tool_state), query, max_result_chars=max_chars),
+                timeout=timeout,
             )
         except Exception as exc:
             logger.warning("coverage_loop: %s search failed: %r", purpose, exc)
@@ -78,7 +80,7 @@ async def run_targeted_searches(
 
 
 def render_results(results: list[TargetedResult]) -> str:
-    blocks = []
+    blocks: list[str] = []
     for result in results:
         body = result.text or "No records found."
         blocks.append(f'Search "{result.query}":\n{body}')
