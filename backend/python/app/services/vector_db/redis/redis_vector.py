@@ -42,18 +42,29 @@ import asyncio
 import contextlib
 import re
 import time
+from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.permissions.metrics import (
+    SCOPE_PREFILTER_CAPPED,
+    SCOPE_PREFILTER_DROPPED,
+)
+from app.services.permissions.scope_fields import PATH_IDS_FIELD
+from app.services.vector_db import scope_expr as sx
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    SCOPE_KEYWORD_INDEXES,
+)
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
+    ScopeFilterTooLarge,
     build_generic_conditions,
     forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
-    reject_scope_filter,
     require_filter_org,
     split_values_count_conditions,
 )
@@ -90,6 +101,8 @@ from app.services.vector_db.redis.utils import (
     parse_ft_search_reply,
     parse_search_rows,
     redisearch_any_term_query,
+    refuse_unsafe_ids,
+    scope_query,
     vector_point_to_hash_fields,
     vector_to_bytes,
     within_values_count,
@@ -100,8 +113,12 @@ from app.utils.loop_local import LoopLocal
 if TYPE_CHECKING:
     import redis.asyncio as aioredis
     from app.services.redis.connection_provider import RedisClient
+    from app.services.vector_db.filters import ScopeFilter
 
 logger = create_logger("redis_vector_service")
+
+#: The most candidates a scoped Redis search asks for while it looks for ``limit`` points that pass the exact rule.
+MAX_SCOPE_CANDIDATES = 1000
 
 _REDIS_CAPABILITIES = VectorDBCapabilities(
     supports_sparse_vectors=False,
@@ -528,12 +545,15 @@ class RedisVectorService(IVectorDBService):
         self._assert_connected()
         idx = self._index_name(collection_name)
         redis_alias = field_name.replace(".", "_")
-        field_type = "TAG" if field_schema.get("type") == "keyword" else "TEXT"
+        field_type = {"keyword": "TAG", "integer": "NUMERIC"}.get(field_schema.get("type"), "TEXT")
         try:
+            # The scope fields are new in this release line: tags that tell `X` from `x`, so an exclusion can be carried by the query. (The membership
+            # tags created with the index in older releases cannot be changed and keep matching without case.)
+            case = ["CASESENSITIVE"] if field_type == "TAG" and field_name in {name for name, _ in SCOPE_KEYWORD_INDEXES} else []
             await self.client.execute_command(  # type: ignore
                 "FT.ALTER", idx,
                 "SCHEMA", "ADD",
-                redis_alias, field_type,
+                redis_alias, field_type, *case,
             )
         except Exception as e:
             err = str(e).lower()
@@ -1089,7 +1109,6 @@ class RedisVectorService(IVectorDBService):
         requests: list[HybridSearchRequest],
     ) -> list[list[SearchResult]]:
         self._assert_connected()
-        reject_scope_filter(requests, "Redis")
         idx = self._index_name(collection_name)
         # Bound the fan-out: one request per agent source means a wide query
         # would otherwise issue unbounded concurrent FT.HYBRID commands.
@@ -1111,7 +1130,36 @@ class RedisVectorService(IVectorDBService):
         collection_name: str,
         req: HybridSearchRequest,
     ) -> list[SearchResult]:
-        """Execute one FT.HYBRID query and return SearchResult list.
+        """One search; with a scope filter, until ``req.limit`` points pass the exact rule or the candidates run out.
+
+        The query is already narrowed by the scope filter, but a tag query compares without case (and the connectors it excludes were read just
+        before): a point it returns that the exact rule refuses is dropped (:meth:`_exact_scope`). Dropping after the limit was applied would
+        leave fewer than ``limit`` points although the next candidates are valid, so a search that lost points asks for twice as many, up to
+        ``MAX_SCOPE_CANDIDATES``, and keeps the first ``limit`` that pass."""
+        if req.scope_filter is None:
+            return await self._search_once(idx, collection_name, req, req.limit)
+        asked = req.limit
+        while True:
+            found = await self._search_once(idx, collection_name, req, asked)
+            kept = self._exact_scope(req, found, count=False)
+            if len(kept) >= req.limit or len(found) < asked or asked >= MAX_SCOPE_CANDIDATES:
+                if len(kept) != len(found):      # counted once, on the answer that is returned, not on every widening
+                    SCOPE_PREFILTER_DROPPED.inc("redis", value=len(found) - len(kept))
+                if len(kept) < req.limit and len(found) >= asked:      # the candidates ran into the cap, not out: an answer that may be short
+                    SCOPE_PREFILTER_CAPPED.inc("redis")
+                    logger.warning("scoped Redis search asked for %d candidates, %d passed the exact rule, %d wanted: the answer may be short",
+                                   asked, len(kept), req.limit)
+                return kept[: req.limit]
+            asked = min(asked * 2, MAX_SCOPE_CANDIDATES)
+
+    async def _search_once(
+        self,
+        idx: str,
+        collection_name: str,
+        req: HybridSearchRequest,
+        limit: int,
+    ) -> list[SearchResult]:
+        """Execute one FT.HYBRID query for ``limit`` points and return SearchResult list.
 
         When ``dense_query`` is None the caller expects text-only search
         (e.g. no embedding model configured).  All other errors propagate so
@@ -1124,16 +1172,19 @@ class RedisVectorService(IVectorDBService):
         filter_query = ""
         if req.filter is not None and not req.filter.is_empty():
             filter_query = filter_expression_to_redis_query(req.filter)
+        if req.scope_filter is not None:
+            scope = await self._scope_query(idx, req.scope_filter)
+            filter_query = scope if filter_query in ("", "*") else f"({filter_query}) {scope}"      # ANDed with the request's own filter, never in its place
 
         text_query = redisearch_any_term_query(req.text_query or "")
         search_query = _combine_text_and_filter(text_query, filter_query)
 
         if req.dense_query is None:
             # Dense vector required for FT.HYBRID; use text-only FT.SEARCH
-            return await self._text_only_search(idx, search_query, req.limit)
+            return await self._text_only_search(idx, search_query, limit)
 
         vec_bytes = vector_to_bytes(req.dense_query, self._dense_dtype)
-        k = req.limit
+        k = limit
         window = max(k * 2, 20)
 
         # FT.HYBRID <idx>
@@ -1176,7 +1227,7 @@ class RedisVectorService(IVectorDBService):
         if not key_score_pairs:
             return []
 
-        if not req.with_payload:
+        if not req.with_payload and req.scope_filter is None:
             return [
                 SearchResult(
                     id=key.rsplit(":", 1)[-1] if ":" in key else key,
@@ -1200,6 +1251,58 @@ class RedisVectorService(IVectorDBService):
             results.append(SearchResult(id=point_id, score=score, payload=payload))
 
         return results
+
+    @staticmethod
+    def _exact_scope(req: HybridSearchRequest, results: list[SearchResult], *, count: bool = True) -> list[SearchResult]:
+        """What the scope filter admits, decided again on the points themselves with the exact rule (case-sensitive ids, the connectors the point
+        holds now). The query already narrowed the search, but a tag query compares without case and the connectors it excludes were read just
+        before the search: a point it let through that the rule refuses is dropped and counted, so the answer never holds more than the rule admits."""
+        if req.scope_filter is None:
+            return results
+        node = sx.admits(req.scope_filter)
+        kept = [r for r in results if sx.evaluate(node, r.payload)]
+        if count and len(kept) != len(results):
+            SCOPE_PREFILTER_DROPPED.inc("redis", value=len(results) - len(kept))
+        return kept if req.with_payload else [replace(r, payload={}) for r in kept]
+
+    async def _scope_query(self, idx: str, flt: ScopeFilter) -> str:
+        """The scope filter as an FT query. "Every connector is current" needs the connectors the index holds that are not (RediSearch can only
+        exclude values): they are read with ``FT.TAGVALS`` just before the search. A connector that first appears in between could be missed; the
+        post-check still applies."""
+        sx.check_size(flt, "Redis")
+        refuse_unsafe_ids(flt)
+        node = sx.admits(flt)
+        # With a case-sensitive ``pathIds`` the query carries the excluded scopes. Without it they are left out and enforced by the exact check on
+        # the points the query returns: a case-insensitive tag query would drop a point that stores ``X`` for an excluded ``x``.
+        if PATH_IDS_FIELD not in await self._case_sensitive_fields(idx):      # an index from before the scope tags were case-sensitive
+            node = sx.relax(node, [sx.Has(PATH_IDS_FIELD, tuple(sorted(flt.excluded)))])
+        outside: dict[str, tuple[str, ...]] = {}
+        if node != sx.FALSE:
+            held = await self.client.execute_command("FT.TAGVALS", idx, CONNECTOR_IDS_FIELD)  # type: ignore
+            stale = tuple(sorted({v.decode() if isinstance(v, bytes) else str(v) for v in held} - set(flt.current)))
+            if len(stale) > sx.MAX_IDS["Redis"]:
+                raise ScopeFilterTooLarge(f"Redis: the index holds more than {sx.MAX_IDS['Redis']} connectors outside the filter")
+            outside[CONNECTOR_IDS_FIELD] = stale
+        return scope_query(node, outside)
+
+    async def _case_sensitive_fields(self, idx: str) -> frozenset[str]:
+        """The TAG fields of the index declared ``CASESENSITIVE`` (read from ``FT.INFO``, kept for a minute; unreadable means none)."""
+        cache: dict[str, tuple[float, frozenset[str]]] = self.__dict__.setdefault("_case_fields", {})
+        hit = cache.get(idx)
+        now = time.monotonic()
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        found: set[str] = set()
+        try:
+            attributes = _parse_ft_info(await self.client.execute_command("FT.INFO", idx)).get("attributes") or []  # type: ignore
+            for attribute in attributes:
+                tokens = [t.decode() if isinstance(t, bytes) else str(t) for t in attribute]
+                if "CASESENSITIVE" in tokens and "identifier" in tokens:
+                    found.add(tokens[tokens.index("identifier") + 1])
+        except Exception:
+            found = set()
+        cache[idx] = (now + 60.0, frozenset(found))
+        return cache[idx][1]
 
     async def _text_only_search(
         self, idx: str, query: str, limit: int

@@ -6,12 +6,13 @@ import json
 import logging
 import sys
 import types
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.testclient import TestClient
 
 from app.services.messaging.config import MessageBrokerType
 from tests.support.host_header import POISONED_HOSTS, request_with_host
@@ -1413,6 +1414,171 @@ class TestAuthenticateRequestsMiddleware:
 
         mock_auth.assert_not_awaited()
         mock_call_next.assert_awaited_once_with(request)
+
+    async def test_route_cancellation_is_not_logged_as_a_crash(self) -> None:
+        """CancelledError (client disconnect, shutdown) is a BaseException: re-raised, not logged."""
+        from app.connectors_main import app, authenticate_requests
+
+        request = request_with_host("/api/v1/x")
+        mock_call_next = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_logger = MagicMock()
+        app.container = MagicMock()
+        app.container.logger.return_value = mock_logger
+
+        with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, return_value=request):
+            with pytest.raises(asyncio.CancelledError):
+                await authenticate_requests(request, mock_call_next)
+
+        mock_logger.exception.assert_not_called()
+        mock_logger.error.assert_not_called()
+
+
+class TestAuthenticateRequestsThroughStarlette:
+    """The real middleware on a minimal app, so call_next has Starlette's semantics.
+
+    raise_server_exceptions=True makes any exception that escapes the middleware fail the test:
+    an escape is what uvicorn would log a second time.
+    """
+
+    LOGGER_NAME = "tests.connectors_main.auth_mw"
+    CRASH_LOG = "Unhandled exception while processing"
+
+    @pytest.fixture
+    def client_and_auth(self, caplog: pytest.LogCaptureFixture) -> Iterator[tuple[TestClient, AsyncMock, list[str]]]:
+        import app.connectors_main as cm
+        from app.api.middlewares.request_context import RequestContextMiddleware
+
+        routes_run: list[str] = []
+        mini = FastAPI()
+        mini.middleware("http")(cm.authenticate_requests)
+        mini.add_middleware(RequestContextMiddleware)  # same order as connectors_main
+
+        @mini.get("/api/v1/boom")
+        async def boom() -> None:
+            raise RuntimeError("route exploded")
+
+        @mini.get("/api/v1/conflict")
+        async def conflict() -> None:
+            raise HTTPException(status_code=409, detail="already exists")
+
+        @mini.get("/api/v1/ok")
+        async def ok() -> dict[str, str]:
+            routes_run.append("ok")
+            return {"status": "ok"}
+
+        @mini.get("/api/v1/stream")
+        async def stream() -> StreamingResponse:
+            async def body() -> AsyncIterator[bytes]:
+                yield b"first"
+                raise RuntimeError("mid-stream")
+
+            return StreamingResponse(body())
+
+        @mini.get("/health")
+        async def health() -> dict[str, str]:
+            return {"status": "healthy"}
+
+        caplog.set_level(logging.DEBUG, logger=self.LOGGER_NAME)
+        container = MagicMock()
+        container.logger.return_value = logging.getLogger(self.LOGGER_NAME)
+        with patch.object(cm.app, "container", container, create=True), patch(
+            "app.connectors_main.authMiddleware", new_callable=AsyncMock, side_effect=lambda request: request
+        ) as auth:
+            with TestClient(mini, raise_server_exceptions=True) as test_client:
+                yield test_client, auth, routes_run
+
+    def _records(self, caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name == self.LOGGER_NAME and r.levelno >= logging.WARNING]
+
+    def test_route_crash_is_logged_once_as_a_route_crash_not_auth(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, _, _ = client_and_auth
+
+        response = client.get("/api/v1/boom", headers={"x-request-id": "rid-123"})
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+        records = self._records(caplog)
+        assert not [r for r in records if "authentication" in r.getMessage().lower()]
+        assert len(records) == 1
+        (record,) = records
+        assert record.levelno == logging.ERROR
+        assert record.getMessage() == f"{self.CRASH_LOG} GET /api/v1/boom"
+        assert record.exc_info is not None
+        assert record.exc_info[0] is RuntimeError and str(record.exc_info[1]) == "route exploded"
+        assert record.request_id.startswith("rid-123")
+
+    def test_auth_crash_is_logged_as_auth_error_and_route_never_runs(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, routes_run = client_and_auth
+        auth.side_effect = RuntimeError("auth bug")
+
+        response = client.get("/api/v1/ok")
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+        records = self._records(caplog)
+        assert len(records) == 1
+        assert records[0].levelno == logging.ERROR
+        assert "Unexpected error during authentication for /api/v1/ok" in records[0].getMessage()
+        assert records[0].exc_info is not None
+        assert not [r for r in records if self.CRASH_LOG in r.getMessage()]
+        assert routes_run == []
+
+    def test_auth_rejection_is_logged_as_auth_failure_and_keeps_its_status(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, routes_run = client_and_auth
+        auth.side_effect = HTTPException(status_code=401, detail="Not authenticated")
+
+        response = client.get("/api/v1/ok")
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "Not authenticated"}
+        records = self._records(caplog)
+        assert len(records) == 1
+        assert records[0].levelno == logging.WARNING
+        assert "Authentication failed for /api/v1/ok" in records[0].getMessage()
+        assert routes_run == []
+
+    def test_excluded_path_skips_auth(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, _ = client_and_auth
+
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        auth.assert_not_awaited()
+        assert self._records(caplog) == []
+
+    def test_route_http_exception_passes_through_unchanged(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, _, _ = client_and_auth
+
+        response = client.get("/api/v1/conflict")
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "already exists"}
+        assert self._records(caplog) == []
+
+    def test_successful_route_is_untouched(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, routes_run = client_and_auth
+
+        response = client.get("/api/v1/ok")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+        auth.assert_awaited_once()
+        assert routes_run == ["ok"]
+        assert self._records(caplog) == []
+
+    def test_stream_body_crash_is_never_blamed_on_auth(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        """A mid-stream error must never be logged as an auth error.
+
+        The route-crash half pins the current limit: a StreamingResponse body runs after dispatch returns, so this
+        middleware cannot see its errors. Update that half when stream errors are logged with request context.
+        """
+        client, _, _ = client_and_auth
+
+        with pytest.raises(RuntimeError, match="mid-stream"):
+            client.get("/api/v1/stream")
+
+        messages = [r.getMessage() for r in self._records(caplog)]
+        assert not [m for m in messages if "authentication" in m.lower() or self.CRASH_LOG in m]
 
 
 # ---------------------------------------------------------------------------

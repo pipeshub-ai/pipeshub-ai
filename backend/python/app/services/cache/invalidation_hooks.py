@@ -31,6 +31,7 @@ __all__ = [
     "init_accessible_records_invalidator",
     "get_accessible_records_invalidator",
     "reset_accessible_records_invalidator",
+    "get_viewer_scope_cache",
     "init_viewer_scope_version",
     "reset_viewer_scope_version",
     "notify_connector_sync_completed",
@@ -70,6 +71,10 @@ def reset_accessible_records_invalidator() -> None:
 def init_viewer_scope_version(cache: "ViewerScopeCache") -> None:
     """Register the cache whose ACL version the permission events below bump."""
     _scope_cache["cache"] = cache
+
+
+def get_viewer_scope_cache() -> "ViewerScopeCache | None":
+    return _scope_cache["cache"]
 
 
 def reset_viewer_scope_version() -> None:

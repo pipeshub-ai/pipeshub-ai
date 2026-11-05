@@ -5,14 +5,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.services.vector_db.filters import (
     ScopeFilter,
     ScopeFilterTooLarge,
-    reject_scope_filter,
 )
 from app.services.vector_db.models import HybridSearchRequest
 from app.services.vector_db.pgvector import scope_filter as scope_sql
@@ -87,24 +85,3 @@ def test_the_sorted_lists_are_computed_once_per_filter(monkeypatch: pytest.Monke
     first = f.lists()
     assert len(calls) == 5 and f.lists() is first and scope_sql.predicate(f, 12) and len(calls) == 5   # later calls (statement, key, args) sort nothing
     assert first == (["c1"], ["c1"], ["g1"], ["c1", "g1", "s1"], ["x1"])
-
-
-@pytest.mark.parametrize("store", ["Qdrant", "OpenSearch", "Redis"])
-def test_a_store_that_cannot_translate_the_filter_refuses_the_request(store: str) -> None:
-    with pytest.raises(NotImplementedError):
-        reject_scope_filter([HybridSearchRequest(), HybridSearchRequest(scope_filter=flt())], store)
-    reject_scope_filter([HybridSearchRequest()], store)
-
-
-@pytest.mark.asyncio
-async def test_the_other_providers_call_the_refusal_before_they_search() -> None:
-    from app.services.vector_db.opensearch.opensearch import OpenSearchService
-    from app.services.vector_db.qdrant.qdrant import QdrantService
-    from app.services.vector_db.redis.redis_vector import RedisVectorService
-
-    for cls in (QdrantService, OpenSearchService, RedisVectorService):
-        svc = cls.__new__(cls)
-        svc._assert_connected = AsyncMock() if cls is OpenSearchService else MagicMock()          # type: ignore[method-assign]
-        svc.client = MagicMock()
-        with pytest.raises(NotImplementedError):
-            await svc.query_nearest_points("c", [HybridSearchRequest(dense_query=[1.0], scope_filter=flt())])
