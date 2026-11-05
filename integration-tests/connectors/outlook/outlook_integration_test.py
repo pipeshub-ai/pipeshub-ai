@@ -745,7 +745,8 @@ class TestReindex:
         # the sync's own indexing of this mail is queued or running can be dropped and
         # never fetch the edit.
         async def _indexing_settled() -> bool:
-            return (await _index_mark(ctx, before.id))[1] not in _INDEXING_UNSETTLED
+            status = (await _index_mark(ctx, before.id))[1]
+            return status is not None and status not in _INDEXING_UNSETTLED
 
         await _await_condition(
             _indexing_settled, "reindex-update mail's own indexing finished", timeout=C.REINDEX_TIMEOUT,
