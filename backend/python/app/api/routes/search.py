@@ -51,7 +51,7 @@ from app.modules.retrieval.filter_schema import (
     validate_request_filters,
 )
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.retrieval.selection_scope import within_connection
+from app.modules.retrieval.selection_scope import limits_rows, resolve_request_scopes, within_connection
 from app.modules.retrieval.title_hits import UnindexedMatch, find_unindexed_matches
 from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
@@ -535,12 +535,21 @@ async def _unindexed_matches(
         store = await load_entity_vector_store(container, logger, org_id)
         if store is None:
             return []
+        source_ids = [*(filter_groups.get("apps") or []), *(filter_groups.get("kb") or [])]
+        if limits_rows(filter_groups):
+            # Apps a selection or limit reaches only through folders or records
+            # are not in ``apps``; without them a strict scope reaches nothing.
+            found = await graph_provider.get_user_by_user_id(user_id=user_id)
+            user_key = (found.get("_key") or found.get("id")) if found else None
+            if user_key:
+                _, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, filter_groups)
+                source_ids += [c for sc in scopes for c in sorted(sc.connector_ids - sc.app_ids)]
         context = await get_entity_access_context(
             None,
             graph_provider,
             org_id=org_id,
             user_id=user_id,
-            source_ids=[*(filter_groups.get("apps") or []), *(filter_groups.get("kb") or [])],
+            source_ids=source_ids,
             strict=bool(filter_groups.get(STRICT_SCOPE_FILTER_KEY)),
             exclude_app_ids=await demo_exclusions_for_run(graph_provider, container.config_service(), user, logger),
             filters=filter_groups,

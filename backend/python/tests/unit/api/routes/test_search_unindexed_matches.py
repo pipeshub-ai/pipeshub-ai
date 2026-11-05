@@ -21,6 +21,7 @@ from app.agents.actions.knowledge_graph.ops.outside_dates import (
 )
 from app.api.routes import search as search_route
 from app.api.routes.search import RetrieveQuery, SearchQuery, retrieve, search
+from app.modules.retrieval.selection_scope import SelectionScope
 from app.modules.retrieval.title_hits import UnindexedMatch
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.not_indexed import not_indexed_note
@@ -215,11 +216,14 @@ class TestTheLookupItself:
         }
         return mocks, context
 
-    async def _run(self, filter_groups: dict, mocks: dict[str, Any]) -> Any:  # noqa: ANN401
+    async def _run(self, filter_groups: dict, mocks: dict[str, Any], scopes: Any = None) -> Any:  # noqa: ANN401
         request = _request({"userId": "user1", "orgId": "org1"})
-        with patch.multiple(ROUTE, **mocks):
+        graph = MagicMock(name="graph")
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        resolved = AsyncMock(return_value=(None, scopes or []))
+        with patch.multiple(ROUTE, **mocks), patch(f"{ROUTE}.resolve_request_scopes", resolved):
             return await search_route._unindexed_matches(
-                request, MagicMock(name="graph"), filter_groups, "quarterly planning", MagicMock(),
+                request, graph, filter_groups, "quarterly planning", MagicMock(),
             )
 
     @pytest.mark.asyncio
@@ -251,3 +255,31 @@ class TestTheLookupItself:
         mocks, _ = self._patches()
         mocks[failing].side_effect = RuntimeError("down")
         assert await self._run({}, mocks) is None
+
+    @pytest.mark.asyncio
+    async def test_a_selection_only_scope_reaches_its_apps_and_keeps_the_limit(self) -> None:
+        """A limit naming only folders has no ``apps``; its apps still make the context."""
+        mocks, _ = self._patches()
+        scope = SelectionScope(groups={"g1": "conf-1"}, records={"r9": ("vr9", "jira-1")})
+        filter_groups = {"connectionRecordGroups": ["g1"], "connectionRecords": ["r9"], STRICT_SCOPE_FILTER_KEY: True}
+
+        await self._run(filter_groups, mocks, scopes=[scope])
+
+        kwargs = mocks["get_entity_access_context"].await_args.kwargs
+        assert sorted(kwargs["source_ids"]) == ["conf-1", "jira-1"]
+        assert kwargs["strict"] is True
+        assert kwargs["filters"] is filter_groups  # the context still narrows to the selection
+
+    @pytest.mark.asyncio
+    async def test_an_unresolvable_selection_fails_closed(self) -> None:
+        mocks, _ = self._patches()
+        graph = MagicMock()
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        with patch.multiple(ROUTE, **mocks), patch(
+            f"{ROUTE}.resolve_request_scopes", AsyncMock(side_effect=RuntimeError("down")),
+        ):
+            found = await search_route._unindexed_matches(
+                _request(), graph, {"recordGroups": ["g1"], STRICT_SCOPE_FILTER_KEY: True}, "q", MagicMock(),
+            )
+        assert found is None
+        mocks["find_unindexed_matches"].assert_not_awaited()
