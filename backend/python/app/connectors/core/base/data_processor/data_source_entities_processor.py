@@ -3252,11 +3252,14 @@ class DataSourceEntitiesProcessor:
                     written = []
                     for item in batch_slice:
                         try:
-                            written.append(
-                                await self._write_records_slice([item], narrowed_connectors, replace_permissions=replace_permissions)
-                            )
+                            one = await self._write_records_slice([item], narrowed_connectors, replace_permissions=replace_permissions)
                         except SchemaValidationError as e:
                             self._quarantine_record(item[0], e)
+                            continue
+                        # This record's transaction has committed: its post-commit work runs now,
+                        # before the next record is written, so an error on a later record (a
+                        # deadlock, say) cannot leave it unpublished with a re-run finding it unchanged.
+                        await self._after_slice_committed(*one)
                 # Before the next slice starts: a re-run finds this slice's records
                 # unchanged and would redo none of it. A slice that rolled back
                 # does not get here.

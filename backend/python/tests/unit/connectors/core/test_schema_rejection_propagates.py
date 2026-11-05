@@ -14,7 +14,9 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.schema.node_validator import SchemaValidationError
 
-REJECTION = SchemaValidationError("records", "at 'x': unknown key")
+def _rejection() -> SchemaValidationError:
+    """A fresh error per use: ``schema_reported`` is set on the instance once it has been counted."""
+    return SchemaValidationError("records", "at 'x': unknown key")
 
 
 def _processor(tx_store: MagicMock) -> DataSourceEntitiesProcessor:
@@ -39,7 +41,7 @@ def test_a_schema_rejection_must_propagate_and_is_logged_at_error_and_counted(ca
             "app.connectors.core.base.data_processor.data_source_entities_processor.record_schema_rejection"
         ) as counted,
     ):
-        assert proc._must_propagate(REJECTION, MagicMock(explicit=False)) is True
+        assert proc._must_propagate(_rejection(), MagicMock(explicit=False)) is True
 
     counted.assert_called_once_with("records")
     assert [r.levelno for r in caplog.records] == [logging.ERROR]
@@ -53,7 +55,7 @@ def test_an_ordinary_error_outside_an_explicit_transaction_is_still_swallowed() 
 
 async def test_a_group_delete_rejected_by_the_schema_raises_instead_of_returning_false() -> None:
     tx = AsyncMock()
-    tx.get_record_group_by_external_id = AsyncMock(side_effect=REJECTION)
+    tx.get_record_group_by_external_id = AsyncMock(side_effect=_rejection())
     proc = _processor(tx)
 
     with (
@@ -166,11 +168,20 @@ async def test_a_non_schema_error_still_rolls_the_slice_back_and_propagates() ->
     proc._after_slice_committed.assert_not_awaited()
 
 
+async def test_a_later_records_error_in_the_fallback_does_not_strand_the_earlier_ones() -> None:
+    # Each fallback record commits in its own transaction: its post-commit work must already have run
+    # when a later record fails (a deadlock, say), or the retry finds it unchanged and never redoes it.
+    proc, _ = _slice_processor({"rec-1"}, other_error=("rec-3", RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await proc.on_new_records(_records(5))
+
+    assert _published(proc) == ["rec-0", "rec-2"]
+
+
 async def test_a_schema_error_raised_by_a_helper_outside_the_slice_loop_is_reported_once() -> None:
     proc, _ = _slice_processor(set())
-    proc._after_slice_committed = AsyncMock(side_effect=REJECTION)
-    error = SchemaValidationError("records", "late")
-    proc._after_slice_committed.side_effect = error
+    proc._after_slice_committed = AsyncMock(side_effect=SchemaValidationError("records", "late"))
 
     with (
         patch(
@@ -216,7 +227,7 @@ async def test_the_status_reset_writes_only_the_status() -> None:
 async def test_the_status_reset_lets_a_schema_rejection_through_but_swallows_other_errors() -> None:
     tx = AsyncMock()
     tx.get_record_by_key = AsyncMock(return_value={"indexingStatus": "NOT_STARTED"})
-    tx.batch_update_nodes = AsyncMock(side_effect=REJECTION)
+    tx.batch_update_nodes = AsyncMock(side_effect=_rejection())
     proc = _processor(tx)
     with pytest.raises(SchemaValidationError):
         await proc._reset_indexing_status_to_queued("r1", tx)

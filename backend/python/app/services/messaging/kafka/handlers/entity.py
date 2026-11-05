@@ -697,7 +697,6 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"📥 Processing app disabled event: {payload}")
 
             # Set apps as inactive
-            app_updates = []
             for app_name in apps:
                 app_doc = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value
@@ -705,21 +704,16 @@ class EntityEventService(BaseEventService):
                 if not app_doc:
                     self.logger.error(f"App not found: {app_name}")
                     return False
-                app_data = {
-                    "id": connector_id,
-                    "name": app_doc.get("name", app_doc.get("_key", connector_id)),
-                    "type": app_doc.get("type"),
-                    "appGroup": app_doc.get("appGroup"),
-                    "isActive": False,
-                    "createdAtTimestamp": app_doc.get("createdAtTimestamp"),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
-                app_updates.append(app_data)
 
-            # Update apps in database
-            await self.graph_provider.batch_upsert_nodes(
-                app_updates, CollectionNames.APPS.value
-            )
+            # Update apps in database. Only the two fields that change: rebuilding the
+            # whole document from the stored one would write None for a field a legacy
+            # app lacks, which the schema (rightly) rejects.
+            for _ in apps:
+                await self.graph_provider.update_node(
+                    connector_id,
+                    CollectionNames.APPS.value,
+                    {"isActive": False, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+                )
             await notify_principals_changed(org_id)  # before the (slow) cleanup below; see process_event
 
             # Stop any running sync/reindex and wait for it to unwind, bounded:

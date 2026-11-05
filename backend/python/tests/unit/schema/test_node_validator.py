@@ -257,7 +257,7 @@ class TestValidateNodeUpdate:
             with pytest.raises(SchemaValidationError):
                 validator.validate_node_update("testCol", {"name": 123})
 
-    def test_allows_additional_properties(self):
+    def test_rejects_additional_properties(self):
         """Updates enforce additionalProperties:false, as ArangoDB does."""
         schema = {
             "type": "object",
