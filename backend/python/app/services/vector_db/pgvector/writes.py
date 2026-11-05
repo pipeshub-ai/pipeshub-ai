@@ -453,14 +453,39 @@ async def group_keys_of_ids(tx: Tx, org: str, collection_id: int, ids: list[uuid
     return [r["group_key"] for r in rows]
 
 
+_PG_INT = (-(2**31), 2**31 - 1)
+
+
+def _stamp_int(payload: dict[str, Any], key: str) -> int:
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, int) or not _PG_INT[0] <= value <= _PG_INT[1]:
+        raise PgVectorError(f"{key} must be an integer in the range of a PostgreSQL integer, not {value!r}")
+    return value
+
+
+def _stamp_ids(payload: dict[str, Any], key: str) -> list[str]:
+    value = payload[key]
+    if not isinstance(value, (list, tuple)) or any(not isinstance(v, str) for v in value):
+        raise PgVectorError(f"{key} must be a list of strings, not {value!r}")
+    return list(value)
+
+
+def scope_row(payload: dict[str, Any]) -> dict[str, Any]:
+    """The scope fields of a payload: none when it carries no scope key, else all five, well-typed (a non-empty string stamp, integer
+    version and generation within PostgreSQL's range, lists of strings), or ``PgVectorError`` naming the field and nothing is stored. A
+    partial stamp is refused rather than completed with a default: a default would be read as a stamp of the current meaning."""
+    present = [k for k in SCOPE_KEYS if k in payload]
+    if not present:
+        return {}
+    if len(present) != len(SCOPE_KEYS):
+        raise PgVectorError(f"the scope fields are written together; missing {sorted(set(SCOPE_KEYS) - set(present))}")
+    stamp = payload[SCOPE_STAMP_FIELD]
+    if not isinstance(stamp, str) or not stamp:
+        raise PgVectorError(f"{SCOPE_STAMP_FIELD} must be a non-empty string, not {stamp!r}")
+    return {SCOPE_STAMP_FIELD: stamp, PATH_IDS_FIELD: _stamp_ids(payload, PATH_IDS_FIELD), ACL_SCOPE_FIELD: _stamp_ids(payload, ACL_SCOPE_FIELD),
+            SCOPE_VERSION_FIELD: _stamp_int(payload, SCOPE_VERSION_FIELD), SCOPE_GENERATION_FIELD: _stamp_int(payload, SCOPE_GENERATION_FIELD)}
+
+
 def membership_of(payload: dict[str, Any]) -> dict[str, Any]:
-    """The group-level part of a payload: the membership arrays it carries and, when it carries a stamp, the scope fields (a stamp is
-    all of them or none: a lone path list would pair with an older stamp). A value that is not what the field is (a version that is
-    not a number) raises, so a malformed stamp is refused rather than stored."""
-    row: dict[str, Any] = {k: _ids(payload[k]) for k in MEMBERSHIP_KEYS if k in payload}
-    if SCOPE_STAMP_FIELD in payload:
-        generation = payload.get(SCOPE_GENERATION_FIELD)
-        row.update({PATH_IDS_FIELD: _ids(payload.get(PATH_IDS_FIELD)), ACL_SCOPE_FIELD: _ids(payload.get(ACL_SCOPE_FIELD)),
-                    SCOPE_STAMP_FIELD: str(payload[SCOPE_STAMP_FIELD]), SCOPE_VERSION_FIELD: int(payload.get(SCOPE_VERSION_FIELD) or 0),
-                    SCOPE_GENERATION_FIELD: -1 if generation is None else int(generation)})
-    return row
+    """The group-level part of a payload: the membership arrays it carries and its scope fields (``scope_row``)."""
+    return {**{k: _ids(payload[k]) for k in MEMBERSHIP_KEYS if k in payload}, **scope_row(payload)}

@@ -119,8 +119,6 @@ CREATE TABLE retrieval.point_text (
   PRIMARY KEY (org_id, point_sk)) PARTITION BY LIST (org_id);
 
 -- Membership is per group (one row per vrid, not per chunk). computed_at is the compare-and-set fence.
--- The permission scope fields of the group sit beside it (NULL: never stamped, which is not "container"); the id lists are mirrored as
--- group_members rows of kinds 4 (path) and 5 (override scope), so a filter probes them with the index that serves kinds 1-3.
 CREATE TABLE retrieval.point_groups (
   org_id                 text NOT NULL,
   collection_id          smallint NOT NULL,
@@ -129,18 +127,13 @@ CREATE TABLE retrieval.point_groups (
   record_group_ids       text[] NOT NULL DEFAULT '{}',
   root_record_group_ids  text[] NOT NULL DEFAULT '{}',
   computed_at            timestamptz NOT NULL,
-  path_ids               text[],
-  acl_scope              text[],
-  scope_stamp            text,
-  scope_version          integer,
-  scope_generation       integer,
   PRIMARY KEY (org_id, collection_id, group_key)) PARTITION BY LIST (org_id);
 
 CREATE TABLE retrieval.group_members (
   org_id        text NOT NULL,
   collection_id smallint NOT NULL,
   group_key     text NOT NULL,
-  kind          smallint NOT NULL CHECK (kind IN (1, 2, 3, 4, 5)),     -- 1 connector, 2 record group, 3 root record group, 4 path id, 5 override scope
+  kind          smallint NOT NULL CHECK (kind IN (1, 2, 3)),     -- 1 connector, 2 record group, 3 root record group
   member_id     text NOT NULL,
   PRIMARY KEY (org_id, collection_id, group_key, kind, member_id)) PARTITION BY LIST (org_id);
 CREATE INDEX group_members_member ON retrieval.group_members (org_id, collection_id, kind, member_id, group_key);

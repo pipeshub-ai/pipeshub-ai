@@ -184,14 +184,44 @@ def test_a_stamped_point_stores_the_scope_fields_with_its_group_and_not_in_its_p
     assert not any(k in b.payloads[0] for k in STAMP)                  # group-level only: one row per record, not per chunk
 
 
-def test_a_stamp_is_all_the_scope_fields_or_none_of_them() -> None:
-    assert writes.membership_of({"pathIds": ["x"]}) == {}                # a lone list would pair with an older stamp: it is not a stamp
-    assert writes.membership_of({"scopeStamp": "container"}) == {"pathIds": [], "aclScope": [], "scopeStamp": "container",
-                                                                 "scopeFieldsVersion": 0, "scopeGeneration": -1}
-    with pytest.raises(ValueError):                                      # a malformed stamp is refused, not stored
-        writes.membership_of({**STAMP, "scopeFieldsVersion": "five"})
-    with pytest.raises(ValueError):
-        writes.membership_of({**STAMP, "scopeGeneration": "x"})
+def test_a_payload_without_scope_keys_has_no_scope_row() -> None:
+    assert writes.membership_of({"connectorIds": ["c"]}) == {"connectorIds": ["c"]}
+    assert writes.membership_of(STAMP) == {"scopeStamp": "union", "pathIds": ["s1", "p1"], "aclScope": ["s1"], "scopeFieldsVersion": 5, "scopeGeneration": 3}
+    stale = {"scopeStamp": "legacy", "pathIds": [], "aclScope": [], "scopeFieldsVersion": 0, "scopeGeneration": 0}       # the stale marker is a whole stamp
+    assert writes.membership_of(stale)["scopeFieldsVersion"] == 0
+    assert writes.membership_of({**STAMP, "scopeGeneration": -2})["scopeGeneration"] == -2                           # a process that could not read it
+
+
+@pytest.mark.parametrize("key", sorted(STAMP))
+def test_a_stamp_missing_any_field_is_refused_not_completed_with_a_default(key: str) -> None:
+    partial = {k: v for k, v in STAMP.items() if k != key}
+    with pytest.raises(PgVectorError, match=key):
+        writes.membership_of(partial)
+    with pytest.raises(PgVectorError):
+        writes.prepare([pt(1, **partial)])                      # and the write is refused whole: nothing is stored
+
+
+def test_a_lone_scope_list_is_refused_not_dropped() -> None:
+    with pytest.raises(PgVectorError, match="scopeStamp"):
+        writes.membership_of({"pathIds": ["x"]})
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("scopeStamp", None), ("scopeStamp", ""), ("scopeStamp", 3), ("scopeStamp", ["union"]),
+    ("scopeFieldsVersion", None), ("scopeFieldsVersion", True), ("scopeFieldsVersion", 1.9), ("scopeFieldsVersion", "5"),
+    ("scopeFieldsVersion", 2**31), ("scopeFieldsVersion", -(2**31) - 1),
+    ("scopeGeneration", None), ("scopeGeneration", False), ("scopeGeneration", 3.0), ("scopeGeneration", "x"), ("scopeGeneration", 3 * 10**10),
+    ("pathIds", None), ("pathIds", {"a": 1}), ("pathIds", "abc"), ("pathIds", [1, 2]), ("pathIds", ["a", None]), ("pathIds", [["a"]]),
+    ("aclScope", None), ("aclScope", {"a": 1}), ("aclScope", "abc"), ("aclScope", [True]),
+])
+def test_a_scope_field_of_the_wrong_type_or_range_is_refused_naming_the_field(key: str, value: object) -> None:
+    with pytest.raises(PgVectorError, match=key):
+        writes.membership_of({**STAMP, key: value})
+
+
+def test_the_edges_of_a_valid_stamp_are_accepted() -> None:
+    row = writes.membership_of({**STAMP, "scopeFieldsVersion": 2**31 - 1, "scopeGeneration": -(2**31), "pathIds": ("a", "b"), "aclScope": []})
+    assert row["scopeFieldsVersion"] == 2**31 - 1 and row["scopeGeneration"] == -(2**31) and row["pathIds"] == ["a", "b"] and row["aclScope"] == []
 
 
 @pytest.mark.asyncio

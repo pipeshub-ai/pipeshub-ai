@@ -368,3 +368,28 @@ async def test_a_payload_merge_replaces_the_stamp_whole_behind_the_fence_and_a_m
     assert [tuple(r) for r in await sql(store, MEMBERS_OF_R1, A)] == [(1, "c1")]          # the old path and scope members are gone with the lists
     await store.set_payload("records", {"connectorIds": ["c2"]}, flt(A, virtualRecordId="r1"), computed_at=now + timedelta(seconds=9))
     assert (await sql(store, SCOPE_ROW, A))[0][2] == "container"                           # a write that carries no stamp leaves it
+
+
+async def test_an_upsert_that_carries_a_stamp_but_no_membership_leaves_an_existing_group_alone_and_a_merge_writes_it(store) -> None:
+    """On purpose: an upsert with no membership never replaces a group row that exists (it must not erase what the membership sync wrote),
+    so a stamp that rides with it is not written either; a payload merge states what it carries and is written."""
+    now = datetime.now(UTC)
+    await store.upsert_points("records", [point(A, "p1", conn=["c1"])], computed_at=now)
+    stamp_only = point(A, "p2")
+    stamp_only.payload.update(STAMP)
+    await store.upsert_points("records", [stamp_only], computed_at=now + timedelta(seconds=5))
+    assert (await sql(store, SCOPE_ROW, A))[0][2] is None
+    await store.set_payload("records", STAMP, flt(A, virtualRecordId="r1"), computed_at=now + timedelta(seconds=9))
+    assert (await sql(store, SCOPE_ROW, A))[0][2] == "union"
+
+
+async def test_a_malformed_stamp_is_refused_and_nothing_of_the_write_is_stored(store) -> None:
+    bad = point(A, "p1", conn=["c1"])
+    bad.payload.update({**STAMP, "scopeFieldsVersion": True})
+    with pytest.raises(PgVectorError, match="scopeFieldsVersion"):
+        await store.upsert_points("records", [bad])
+    assert await sql(store, "SELECT 1 FROM retrieval.point_groups WHERE org_id = $1", A) == []
+    await store.upsert_points("records", [point(A, "p1", conn=["c1"])])
+    with pytest.raises(PgVectorError, match="pathIds"):
+        await store.set_payload("records", {**STAMP, "pathIds": {"a": 1}}, flt(A, virtualRecordId="r1"))
+    assert (await sql(store, SCOPE_ROW, A))[0][2] is None
