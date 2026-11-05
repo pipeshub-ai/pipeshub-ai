@@ -122,6 +122,8 @@ def _filter_org(expr: FilterExpression) -> str:
 
 
 class PgVectorService(IVectorDBService):
+    supports_scope_filter = True
+
     def __init__(self, config: ConfigurationService | PgVectorConfig) -> None:
         self.config_service = config
         self._cfg: PgVectorConfig | None = None
