@@ -230,3 +230,21 @@ def test_assert_hard_delete_record_org_is_removed_everywhere(module: str) -> Non
 
 def test_router_no_longer_calls_the_unscoped_provider_delete() -> None:
     assert "delete_records_and_relations" not in inspect.getsource(router_mod)
+
+
+@pytest.mark.asyncio
+async def test_a_kb_upload_without_a_connector_id_moves_the_generation_of_its_kb(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neither the delete result nor the record names a connector: the KB the access check found is the one to mark."""
+    noted: list[object] = []
+
+    async def note(graph_provider: object, connector_id: object, logger: object = None) -> None:
+        noted.append(connector_id)
+
+    monkeypatch.setattr(router_mod, "note_structure_change", note)
+    access = {**KB_ACCESS, "knowledgeBase": {"id": "kb-9"}}
+    provider = _provider(access, {"success": True, "eventData": None})
+    await _call(provider, AsyncMock())
+    assert noted == ["kb-9"]
+    noted.clear()
+    await _call(_provider({"record": {**KB_ACCESS["record"], "connectorId": "kb-1"}, "knowledgeBase": {"id": "kb-9"}}), AsyncMock())
+    assert noted == ["kb-1"]  # the record's own connector still wins

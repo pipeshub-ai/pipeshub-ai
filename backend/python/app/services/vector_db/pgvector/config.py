@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 
 from app.core.db import DbConfig
+from app.core.db.config import warn_if_plaintext_remote
 from app.services.vector_db.pgvector.tuning import Tuning, parse_flag
 
 _LOGIN = re.compile(r"^pipeshub_(node|connectors|indexing|query)_login$")
@@ -55,9 +56,11 @@ class PgVectorConfig:
                 "pgvector: ignoring 'dsn' under /services/pgvector; this process's PGVECTOR_DSN (its own login) is used"
             )
         dsn = env_dsn or data.get("dsn") or ""
+        warn_if_plaintext_remote("PGVECTOR_DSN", dsn)
         # The jobs login comes from the process's environment only: every process can read the config store, so a value there would
         # hand the jobs credential to a process that was started without it.
         jobs_dsn = os.getenv("PGVECTOR_JOBS_DSN") or ""
+        warn_if_plaintext_remote("PGVECTOR_JOBS_DSN", jobs_dsn)
         if data.get("jobs_dsn"):
             logging.getLogger(__name__).warning(
                 "pgvector: ignoring 'jobs_dsn' under /services/pgvector; the jobs login is read from PGVECTOR_JOBS_DSN only"

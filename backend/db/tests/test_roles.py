@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from db import bootstrap_roles, surface
 
 from .conftest import run_migrate
@@ -20,6 +22,24 @@ def test_bootstrap_is_idempotent_and_creates_no_privileged_role(bare_db):
         assert c.execute("SELECT rolcanlogin FROM pg_roles WHERE rolname = 'pipeshub_restore'").fetchone()[0] is False
         assert c.execute("SELECT rolpassword IS NOT NULL FROM pg_authid WHERE rolname = 'pipeshub_jobs'").fetchone()[0] is True
         assert c.execute("SELECT NOT has_database_privilege('pipeshub_query', current_database(), 'TEMP')").fetchone()[0]
+
+
+def test_bootstrap_refuses_a_login_without_password_unless_waived(bare_db):
+    cluster, name = bare_db
+    with cluster.admin(name) as c:
+        with pytest.raises(bootstrap_roles.MissingPassword, match="PG_NODE_PASSWORD.*PG_BOOTSTRAP_ALLOW_NO_PASSWORD"):
+            bootstrap_roles.bootstrap(c, [], {"pipeshub_jobs": "pw"}, allow_no_password=False)
+        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname = 'pipeshub_jobs'").fetchone()[0] == 0   # nothing was created
+        all_pw = dict.fromkeys(bootstrap_roles.PASSWORD_VARS, "pw")
+        assert "pipeshub_node_login" in bootstrap_roles.bootstrap(c, [], all_pw, allow_no_password=False)         # passwords: as before
+        assert bootstrap_roles.bootstrap(c, [], allow_no_password=False) == []                                    # existing roles are not asked again
+
+
+def test_bootstrap_waiver_creates_a_login_without_password(bare_db):
+    cluster, name = bare_db
+    with cluster.admin(name) as c:
+        bootstrap_roles.bootstrap(c, [], allow_no_password=True)
+        assert c.execute("SELECT rolpassword IS NULL FROM pg_authid WHERE rolname = 'pipeshub_node_login'").fetchone()[0]
 
 
 def test_migrate_without_createrole_names_the_bootstrap_when_roles_are_missing(db):

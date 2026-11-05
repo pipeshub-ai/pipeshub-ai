@@ -32,6 +32,7 @@ from app.modules.retrieval.selection_scope import (
     row_limit_key,
 )
 from app.modules.transformers.entity_vectorstore import EntitySearchPass
+from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.common.utils import (
     PERSON_EDGES_FROM_USER,
     PERSON_EDGES_TO_USER,
@@ -161,6 +162,11 @@ class EntityHit:
     filter_name: str = ""
     kind: str = ""
     """A named entity's kind (person, organization, ...); empty for other types."""
+    indexing_status: str | None = None
+    """A record hit's ``indexingStatus`` as the graph row has it; None for other types."""
+    indexed: bool = True
+    """False for a record hit whose content search cannot read yet. A graph row
+    without the status key (an older provider) counts as indexed."""
 
     @property
     def graph_filter_name(self) -> str:
@@ -596,7 +602,11 @@ async def search_entities_for_user(
     readable record spells yet, all within ``SEARCH_DEADLINE_SECONDS``, extended
     so the probes get at least ``PROBE_MIN_SECONDS`` after the vector request.
     Raises ``EntitySearchTimedOut`` when time ran out before any match was
-    confirmed and named.
+    named and a match the user can reach was left undecided or unnamed: the
+    access check of the record groups the user reaches did not finish, or an
+    entity a readable record was found for was not named in time. Probe rounds
+    that ran out answer as no match, since only hits not yet found readable keep
+    them running.
     """
     started = time.monotonic()
     deadline = started + SEARCH_DEADLINE_SECONDS
@@ -661,6 +671,7 @@ async def search_entities_for_user(
             ),
             filter_name=_stored_name(probe),
             kind=str(probe.hit.get("kind") or ""),
+            **_record_indexing(probe),
         )
         for probe in kept_probes
         if (probe.entity_type, probe.entity_id) in shown_names
@@ -671,8 +682,12 @@ async def search_entities_for_user(
         context.org_id, "; ".join(stats), len(probes), rounds, len(kept), timed_out,
         int((time.monotonic() - started) * 1000),
     )
-    if (timed_out or naming_timed_out) and not kept:
-        raise EntitySearchTimedOut("Entity search timed out before confirming access to any match")
+    # No round ran: the check of the record groups the user reaches stopped first.
+    reachable_group_undecided = timed_out and rounds == 0 and any(
+        p.entity_type == RECORD_GROUP_ENTITY_TYPE and p.entity_id in context.record_group_ids for p in probes
+    )
+    if not kept and ((naming_timed_out and kept_probes) or reachable_group_undecided):
+        raise EntitySearchTimedOut("Entity search timed out before naming a match the user can reach")
     return kept[:top_k]
 
 
@@ -702,6 +717,16 @@ def spellings_on(rows: Iterable[dict[str, Any]]) -> dict[str, str]:
         entity_id: min(spellings.items(), key=lambda item: (-item[1], -len(item[0]), item[0]))[0]
         for entity_id, spellings in counts.items()
     }
+
+
+def _record_indexing(probe: _Probe) -> dict[str, Any]:
+    """``EntityHit``'s indexing fields from the graph row of a record hit."""
+    if probe.entity_type != RECORD_ENTITY_TYPE or not probe.permitted:
+        return {}
+    row = probe.permitted[0]
+    if "indexingStatus" not in row:
+        return {}
+    return {"indexing_status": row.get("indexingStatus"), "indexed": is_searchable_record(row)}
 
 
 def _stored_name(probe: _Probe) -> str:

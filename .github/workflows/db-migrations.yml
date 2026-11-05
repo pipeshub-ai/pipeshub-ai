@@ -33,7 +33,7 @@ jobs:
             suites: ''
           - shard: integration
             files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py
-            min_tests: 55
+            min_tests: 56
             suites: ''
           - shard: graph
             files: tests/test_graph.py tests/test_retrieval.py
@@ -61,8 +61,8 @@ jobs:
             suites: ''
           - shard: kg
             files: tests/test_kg_schema.py tests/test_kg_writers.py tests/test_kg_downgrade.py
-            min_tests: 218
-            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=208 --expect-suite tests.test_kg_downgrade=2'
+            min_tests: 221
+            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=208 --expect-suite tests.test_kg_downgrade=5'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -110,6 +110,7 @@ jobs:
         env:
           PG_ADMIN_URL: postgresql://postgres@127.0.0.1:5432/ci_catalog
           PG_BOOTSTRAP_EXTENSIONS: vector,pg_trgm
+          PG_BOOTSTRAP_ALLOW_NO_PASSWORD: '1'   # the CI server trusts local logins
           PG_MIGRATE_URL: postgresql+psycopg://pipeshub_migrate@127.0.0.1:5432/ci_catalog
         run: |
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE ci_catalog'

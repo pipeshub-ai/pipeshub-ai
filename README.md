@@ -6,7 +6,7 @@
 
 <p>Permission-aware search and cited answers across Slack, Google Drive, Jira, Confluence, GitHub and 50+ apps, for your people and for agents through MCP. Self-hosted or PipesHub Cloud.</p>
 
-<p><strong>#1 of 39 systems on <a href="https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard">EnterpriseRAG-Bench</a></strong>, ahead of OpenAI File Search, Amazon Q, Azure AI Search and Vertex AI Search. <a href="#benchmarks">All benchmarks →</a></p>
+<p><strong>#1 of 39 systems on <a href="https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard">EnterpriseRAG-Bench</a></strong>, ahead of OpenAI File Search, Amazon Q, Azure AI Search and Vertex AI Search. <a href="#benchmarks">All benchmarks →</a> · <a href="#how-pipeshub-works">How it works →</a></p>
 
 <p>
   <a href="https://www.pipeshub.com/">Website</a> ·
@@ -46,11 +46,11 @@
 
 </div>
 
-<h2 id="about-pipeshub">Give your AI agents a real understanding of your company</h2>
+<h2 id="about-pipeshub">PipesHub - Explainable & Extensible</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> turns everything your company knows into a permission-aware workspace that AI agents explore the way coding agents explore a repository. Agents search it, `grep` it, walk its folders and knowledge graph, read only what they need, and cite the exact block each answer came from.
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
 
-Connect Slack, Google Drive, GitHub, Microsoft 365, Jira, Notion, Postgres and 25+ other systems. Use the built-in chat, deep research and agents, or give the same context to Claude Code, Cursor, Codex and your own agents over MCP and the SDKs. Self-hosted, Apache 2.0, bring your own model.
+Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
 
 > [!TIP]
 > Deploy with a single command:
@@ -64,38 +64,13 @@ Connect Slack, Google Drive, GitHub, Microsoft 365, Jira, Notion, Postgres and 2
   <strong><a href="https://youtu.be/VgyND38QZ7w">▶ Watch the 2½-minute demo</a></strong>: Claude Code answering from Jira, Slack, GitHub and Drive, with each person's permissions
 </p>
 
-## Benchmarks
+### How PipesHub works
 
-How PipesHub performs, and how each test was run.
-
-| Benchmark | What it measures | Result | Details |
-|---|---|---|---|
-| **EnterpriseRAG-Bench** (independent, run by Onyx) | 500 questions over 500,000+ company documents | **#1 of 39 systems (93.24).** OpenAI File Search 61.03, Amazon Q 48.96, Azure AI Search 48.42, Vertex AI Search 41.87 | [Leaderboard](https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard) |
-| **Google FRAMES** (824 questions) | Answers that need facts from several documents | **92.7%**, against 78.9% for the best of 18 standard RAG pipelines | [Write-up](https://pipeshub.com/blog/agentic-rag-vs-traditional-rag-frames-benchmark) |
-| **Company index vs. per-app MCP connectors** | The same Claude agent on 100 work questions, searching each app through its own connector or through PipesHub | Facts found: Haiku 55% → 80%, Sonnet 65% → 89%, Opus 85% → 92%; 27–45% faster and 27–32% cheaper per answer | [Write-up](https://pipeshub.com/blog/do-ai-agents-need-a-company-index) |
-| **Code graph accuracy** (vs. Graphify, codebase-memory-mcp, CodeGraphContext) | How accurately each tool maps relationships in code across 9 repositories | Highest accuracy (F1 score) on 8 of 9 repositories | [Write-up](https://pipeshub.com/blog/code-graph-benchmark) |
-
-Leaderboard standing as of 3 November 2026 ([leaderboard data at that date](https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard/blob/cb64107947e363787d5670733404bdd2aa1cb630/data/final_display_data/leaderboard.csv)). The FRAMES, connector and code-graph tests were run by the PipesHub team. The connector test used questions about our own internal work; we will publish a version on public data.
-
-## Why a context layer?
-
-Agents usually fail on company knowledge because of their context, not their model. Top-k chunk retrieval hands the agent a handful of fragments and drops where each one lives, what it links to, who may see it, and where it came from.
-
-Coding agents got good once they could `ls`, `grep` and read a repository instead of being handed pasted snippets. PipesHub gives agents the same over your company's data.
-
-| | Top-k chunk RAG | PipesHub |
-| --- | --- | --- |
-| **What the agent sees first** | A few text chunks | Each record's name, location, metadata and summary, plus the blocks that matched |
-| **How it digs further** | It can't: one retrieval per question | Hybrid search, `grep`/`find` over records, folder navigation and knowledge-graph lookups, in a loop |
-| **Structure** | Lost at chunking | Every source becomes Blocks: sections, tables with rows and cells, threads, code, SQL tables with their schema |
-| **Permissions** | Often approximated at index time | Checked against the source system's permissions for the requesting user, on every tool call |
-| **Citations** | Per chunk, if any | Per block: the page, table cell, row, slide or line, with invented citations removed |
-
-## How it works
+PipesHub builds a **unified context layer** across documents, conversations, structured data, wikis, tickets and code. Connectors sync each source along with its permissions. The indexing pipeline parses, chunks and embeds the content, and links records, people and entities in a knowledge graph.
 
 ```mermaid
 flowchart LR
-  subgraph Sources["40+ connectors"]
+  subgraph Sources["50+ connectors"]
     S1["Drive · SharePoint · Box · S3"]
     S2["Slack · Gmail · Outlook"]
     S3["Jira · Confluence · Notion · GitHub"]
@@ -105,7 +80,7 @@ flowchart LR
     B["Blocks: one representation for documents, tables, threads, code and SQL"]
     H["Hierarchy: app, space, folder, record, block"]
     G["Knowledge graph: entities and typed relations"]
-    T["Agent tools: search, grep, navigate, entities, fetch record"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
     P{{"Permission check on every call"}}
   end
   subgraph Consumers["Agents"]
@@ -122,50 +97,52 @@ flowchart LR
   P --> Consumers
 ```
 
-Every source becomes **Blocks**, one representation that keeps tables, threads and code intact and remembers the exact page, cell or line each block came from. Every indexed document is stored as plain text, so when blob storage is local, agents can `grep` a PDF, Word file or slide deck just like a text file (records over 20 MB are skipped; see [current limitations](docs/context-layer.md#current-limitations)). The Blocks are organized two ways: by the **folder structure** of each source system, and in a **knowledge graph** of people, projects and customers. Agents explore both with **tools that reveal detail step by step**: a search first shows each record's name, summary and matching passages, and the agent digs deeper (grep, browse folders, follow entities, read the full record) only when it needs to. **Every tool call is checked against the source system's permissions** for the person the agent acts for.
+Questions are answered by an **agent loop**, not a single retrieve-then-generate pass. The agent plans, calls tools, reads the results and keeps going until it has the evidence:
 
-**[Read how the context layer works →](docs/context-layer.md)** It covers the Block format, the hierarchy and graph, every agent tool and the code it lives in, permission enforcement, the agent loop, and current limitations.
+- **Hybrid search** — semantic and keyword retrieval, so it matches both meaning and exact terms.
+- **Grep / pattern matching** — exact identifiers, error strings, ticket keys and code symbols.
+- **Knowledge-graph navigation** — follows links between documents, people, tickets, pull requests and threads.
+- **Document reading** — opens the full source instead of trusting a single matched chunk.
 
-## What you can build with PipesHub
+Every tool call is filtered by the asking user's permissions, and every answer cites the blocks it came from.
 
-One context layer, many products on top of it. Use the built-in apps as they are, or build your own over MCP and the SDKs.
-
-| Build | What PipesHub gives you | Start here |
+| | Top-k chunk RAG | PipesHub |
 | --- | --- | --- |
-| **Agentic RAG pipelines** | Retrieval tools an agent calls in a loop (hybrid search, `grep`, navigation, entity lookups, full-record reads), with permission checks and block-level citations already done | [SDK starter](https://github.com/pipeshub-ai/examples/tree/main/sdk-starter) · [MCP](#use-it-from-claude-code-cursor-or-codex) |
-| **Enterprise search** | One search box across 40+ connectors that shows each person only what they may see, with cited answers | Built in · [example](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
-| **Workplace AI assistant** | Chat and deep research over company knowledge, plus web search and voice input | Built in |
-| **Context for coding agents** | Claude Code, Cursor and Codex answer from design docs, tickets, incidents and chat threads, not only the code | [example](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
-| **No-code agents and workflow builders** | A visual drag-and-drop builder that wires company knowledge to actions in Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk and 20 more tools. Or build your own workflow product on the same API, so every step gets permission-aware context. | Built in · [Build headless](#can-i-use-pipeshub-headless-without-its-ui) |
-| **Customer support copilots** | Answers drawn from past tickets, runbooks and docs (ServiceNow, Zammad, Jira, Confluence), with actions back in the ticketing tool | Built in · SDKs |
-| **Sales and account intelligence** | Salesforce accounts, contacts and deals in the knowledge graph, searchable alongside the emails, documents and chats about the same customers | Built in |
-| **Questions over your databases** | Postgres, MariaDB and Snowflake tables indexed with their schemas and foreign keys, plus sandboxes that run SQL and Python for analysis | Built in |
-| **Reports, charts and dashboards** | Agents write and run code in a sandbox and return the result as a shareable artifact | Built in |
-| **Engineering knowledge search** | Code, pull requests and commits from GitHub and GitLab, linked to the tickets and docs around them | Built in |
-| **Your own apps on company knowledge** | Python, TypeScript and Go SDKs, "Sign in with PipesHub" so each user searches as themselves, and an upload API for documents no connector covers | [examples](https://github.com/pipeshub-ai/examples) |
-| **Legal and contract (CLM) apps** | Ask questions across contracts in Drive, SharePoint, Box or uploaded files. Answers cite the exact clause or page, and each person sees only the contracts they're allowed to. | [Build headless](#can-i-use-pipeshub-headless-without-its-ui) |
-| **Private, on-prem AI** | Everything above, self-hosted, on any LLM provider or local models via Ollama, with data kept in your infrastructure | [Deploy](#-deployment-guide) |
+| **What the agent sees first** | A few text chunks | Each record's name, location, metadata and summary, plus the blocks that matched |
+| **How it digs further** | It can't: one retrieval per question | Hybrid search, `grep`/`find` over records, folder navigation and knowledge-graph lookups, in a loop |
+| **Structure** | Lost at chunking | Every source becomes Blocks: sections, tables with rows and cells, threads, code, SQL tables with their schema |
+| **Permissions** | Often approximated at index time | Checked against the source system's permissions for the requesting user, on every tool call |
+| **Citations** | Per chunk, if any | Per block: the page, table cell, row, slide or line, with invented citations removed |
 
-## Use it from Claude Code, Cursor or Codex
+## Benchmarks
 
-**[Give your coding assistant secure access to your company's knowledge →](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp)**
+How PipesHub performs, and how each test was run.
 
-About ten minutes once PipesHub is running with data indexed. Mint a Personal Access Token (no admin needed), connect your assistant (one command for Claude Code, one config file for Cursor or Codex), and ask *"why was the retry logic in the billing worker changed?"* It answers from the incident postmortem, the pull request, the chat thread and the design doc, each cited, and only if you're allowed to see them.
+| Benchmark | What it measures | Result | Details |
+|---|---|---|---|
+| **EnterpriseRAG-Bench** (independent, run by Onyx) | 500 questions over 500,000+ company documents | **#1 of 39 systems (93.24).** OpenAI File Search 61.03, Amazon Q 48.96, Azure AI Search 48.42, Vertex AI Search 41.87 | [Leaderboard](https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard) |
+| **Google FRAMES** (824 questions) | Answers that need facts from several documents | **92.7%**, against 78.9% for the best of 18 standard RAG pipelines | [Write-up](https://pipeshub.com/blog/agentic-rag-vs-traditional-rag-frames-benchmark) |
+| **Company index vs. per-app MCP connectors** | The same Claude agent on 100 work questions, searching each app through its own connector or through PipesHub | Facts found: Haiku 55% → 80%, Sonnet 65% → 89%, Opus 85% → 92%; 27–45% faster and 27–32% cheaper per answer | [Write-up](https://pipeshub.com/blog/do-ai-agents-need-a-company-index) |
+| **Code graph accuracy** (vs. Graphify, codebase-memory-mcp, CodeGraphContext) | How accurately each tool maps relationships in code across 9 repositories | Highest accuracy (F1 score) on 8 of 9 repositories | [Write-up](https://pipeshub.com/blog/code-graph-benchmark) |
 
-Over MCP, assistants get PipesHub's search, chat, record reading and folder navigation today. `grep` and entity lookups are coming to MCP next.
+Leaderboard standing as of 3 November 2026 ([leaderboard data at that date](https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard/blob/cb64107947e363787d5670733404bdd2aa1cb630/data/final_display_data/leaderboard.csv)). The FRAMES, connector and code-graph tests were run by the PipesHub team. The connector test used questions about our own internal work; we will publish a version on public data.
+
+## What can you build with PipesHub?
+
+Don't just use PipesHub — build on it.
+
+**[Give Claude Code, Cursor, or Codex secure access to your company's knowledge →](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp)**
+About ten minutes once PipesHub is running with data indexed. Mint a Personal Access Token (no admin needed), connect your assistant (one command for Claude Code, one config file for Cursor or Codex), and ask *"why was the retry logic in the billing worker changed?"* — it answers from the incident postmortem, the pull request, the chat thread, and the design doc, each cited, and only if you're allowed to see them.
 
 Want the same retrieval inside your own code, or behind a search box for your team? The [SDK starter and search example](https://github.com/pipeshub-ai/examples) cover both. Built something? [Show us](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
 ## PipesHub in Action
 
-### Citations
-<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
-
 ### Connectors
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Connector%20Setup%20and%20Query%20with%20Connectors.gif" alt="Connectors" width="100%"/>
 
-<details>
-<summary><b>More demos: all records, knowledge search</b></summary>
+### Citations
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
 
 ### All Records
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/All%20Records%20Demo.gif" alt="All Records" width="100%"/>
@@ -173,23 +150,26 @@ Want the same retrieval inside your own code, or behind a search box for your te
 ### Knowledge Search
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Knowledge%20Search%20Demo.gif" alt="Knowledge Search" width="100%"/>
 
-</details>
-
 ## Features
 
-**Context for agents**
+**Answers you can trust**
 
-- 🗂️ **Explorable, not just searchable:** Hybrid search, `grep` over every indexed document, PDFs and Office files included (local blob storage only, records under 20 MB; [limits](docs/context-layer.md#current-limitations)), folder navigation and knowledge-graph lookups, all as agent tools.
-- 🔒 **Permission-aware at every step:** Every tool call is checked against the source system's permissions for the person the agent acts for.
-- 📝 **Block-level citations:** Answers cite the page, table cell, row, slide or line they came from.
-- 🧱 **Structured, semi-structured and unstructured in one layer:** Documents, spreadsheets, tickets, chat threads, code and SQL tables all become Blocks.
+- 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
+- 🔒 **Permission-Aware Search:** Enforces source-level access controls so users only see what they're authorized to.
+- 🧠 **Bring Your Own Model, Fully Self-Hostable:** Any LLM provider, deployed in your VPC — data never leaves your infrastructure.
 
 **Connected to your systems**
 
-- 🔌 **40+ connectors:** Google Workspace, Microsoft 365, Slack, Jira, Confluence, Notion, GitHub, GitLab, Salesforce, ServiceNow, Postgres, Snowflake and more, with real-time and scheduled sync.
-- 🕸️ **Knowledge graph:** Entities and relations extracted at indexing time and used at answer time.
-- 🎙️ **Multimodal:** Images, diagrams and scanned files, plus voice input.
-- 🧠 **Bring your own model, fully self-hosted:** Any LLM provider or a local model, deployed in your own infrastructure.
+- 🔌 **Enterprise Connectors:** 50+ connectors with real-time and scheduled indexing out of the box.
+- 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
+- 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
+
+**What you can build**
+
+- 🔍 **Unified Search, Deep Research, and Agents:** Search, Q&A, deep research, web search, and AI agents on one context layer.
+- 🤖 **No-Code Agents and Actions:** Build agents visually and execute actions across enterprise tools.
+- 📊 **Artifacts and Code Execution:** Generate reports, charts, and dashboards in a safe execution sandbox.
+- 🛠️ **Developer-First and Extensible:** APIs, SDKs, MCP tools, custom connectors, and independently scalable services.
 
 ## PipesHub Cloud
 
@@ -251,12 +231,21 @@ cd pipeshub-ai
 ./install.sh
 ```
 
-From a clone, `./install.sh` asks whether to pull prebuilt images or build them from source;
-`./install.sh --build` builds from source without asking. The one-command installer above always uses prebuilt images.
+Building local images from source requires this cloned-repo path (`./install.sh --build`);
+the one-command installer above always uses prebuilt images.
 
-> **Advanced options:** installer flags (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), CI environment variables, slim vs. full deployment types, manual Compose profile usage, and local source builds are covered in [Advanced Deployment Options](deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
+#### Installer options
 
-## Build on PipesHub: MCP and SDKs
+| Flag | Description |
+|------|-------------|
+| `-y` / `--yes` | Accept all defaults; skip interactive prompts (CI-friendly) |
+| `--version TAG` | Pin a specific image tag, e.g. `--version 0.7.0` |
+| `--reconfigure` | Re-run the wizard and overwrite an existing `.env` |
+| `--print-env-only` | Write `.env` and print the compose command without starting containers |
+
+> **Advanced options:** CI environment variables, slim vs. full deployment types, manual Compose profile usage, and local source builds are covered in [Advanced Deployment Options](deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
+
+## Build with PipesHub
 
 The built-in search experience is one way to use PipesHub. The same connected,
 permission-filtered context is available to your own agents and applications —
@@ -279,7 +268,24 @@ Use PipesHub with any MCP-compatible client to bring your enterprise context int
 
 **Repository:** [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)
 
-Using [Omnigent](https://omnigent.ai)? See [`integrations/omnigent/`](integrations/omnigent/) for three ways to connect, from a web-UI attach to a scripted connect kit.
+#### Connecting an Omnigent agent
+
+First, mint a long-lived credential: **workspace → Developer settings →
+Personal Access Tokens → New token**. Pick an expiry (30/90/365 days, or
+never) — this runs as *you*, so results respect your own per-user
+permissions, unlike an OAuth app's client-credentials flow.
+
+Three ways to connect, from least to most setup:
+
+1. **Attach in the Omnigent web UI (fastest, no clone).** Open a session's
+   info panel → Manage MCP Servers → add PipesHub's URL and an
+   `Authorization: Bearer <token>` header → restart the session.
+2. **Run the packaged example agent.** A ready-made agent bundle (tuned
+   prompt + instructions) ships with Omnigent:
+   `PIPESHUB_MCP_URL=... PIPESHUB_MCP_TOKEN=... omnigent run examples/pipeshub/`.
+3. **Use the connect kit** in [`integrations/omnigent/`](integrations/omnigent/)
+   (`setup.sh` / `run.sh`) for CI, service accounts, or password/OAuth
+   client-credentials auth instead of a personal token.
 
 ### SDKs
 
@@ -293,14 +299,14 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 
 > Need an SDK in another language? Reach out to us at developer@pipeshub.com
 
-## RoadMap
+## Roadmap
 
 <p>We ship in the open. Here's what's done and what's next:</p>
 
 <ul>
 <li>✅ 🤖 <strong>Workplace AI agents</strong>: first-class no-code agent builder</li>
 <li>✅ 🔗 <strong>MCP (Model Context Protocol)</strong> support, both server and client</li>
-<li>✅ 🧰 <strong>Developers SDKs</strong></li>
+<li>✅ 🧰 <strong>Developer SDKs</strong></li>
 <li>✅ 🔍 <strong>Code search</strong> across GitHub and GitLab</li>
 <li>⬜ 👤 <strong>Personalized search</strong> based on team, role, and history</li>
 <li>✅ ☸️ <strong>Production Kubernetes</strong> deployment with HA defaults</li>
@@ -313,53 +319,105 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 ## 👥 Contributing
 
 Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
+
+Contributing with a coding agent (Claude Code, Cursor, Codex, Copilot, Gemini CLI)? [AGENTS.md](AGENTS.md) gives it the repo layout, test commands and the conventions reviewers check.
+
 <h3>Where to go for what</h3>
 
 <table>
-
+<tbody>
 <tr><td>Ask a question or get help</td><td><a href="https://discord.com/invite/K5RskzJBm2">Discord</a></td></tr>
 <tr><td>Report a bug or request a feature</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
 <tr><td>Report a security issue</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">Report Security Issue</a></td></tr>
 <tr><td>Read the docs</td><td><a href="https://docs.pipeshub.com/">Pipeshub Docs</a></td></tr>
 <tr><td>See what changed in each release</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CHANGELOG.md">Changelog</a></td></tr>
+</tbody>
 </table>
 
 ## FAQ
 
 ### What is PipesHub?
 
-PipesHub is the open-source context layer for AI agents. It turns the knowledge stored across your company's business systems into a permission-aware workspace that agents can search, `grep`, navigate and cite.
+PipesHub is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
 
 It connects systems such as Slack, Google Drive, GitHub, Microsoft 365 and Notion, then makes what they hold available in two ways: permission-aware search with citations for your team, and trusted context for your AI agents through APIs, SDKs and MCP. Agents get the same governed view of your company's knowledge that a person would, with the same access controls applied, so they can answer from real company data instead of guessing across tools. You can use the built-in search experience, or build your own agents, workflows and applications on top of it.
 
-### Can I use PipesHub headless, without its UI?
-
-Yes. The PipesHub web app uses the same API you can call yourself, so anything you do in the UI you can also do in code: connect sources, upload files, manage users and permissions, search, chat, and build and run agents.
-
-- **REST API:** an [OpenAPI spec](backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) with about 470 endpoints. Browse it at `/api/v1/docs` on your instance.
-- **SDKs:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) and [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
-- **MCP:** for Claude Code, Cursor, Codex and other MCP clients. It covers a subset: search, chat (also with an existing agent), reading, downloading and navigating records, people and source lookups, and code-graph tools. Connecting sources, managing users and building agents need the REST API or an SDK.
-
-Choose how your code signs in:
-- **Personal access token or OAuth:** acts as one person and sees only what that person can see.
-- **Service account:** for background jobs, with its own permissions.
-- **OAuth app:** lets each user of your app sign in as themselves ("Sign in with PipesHub").
-
-Teams use this to build their own products on PipesHub, such as workflow builders, legal and contract-management (CLM) tools, support consoles and internal agents, without showing the PipesHub UI.
-
 ### How is PipesHub different from other workplace AI tools?
 
-Most tools hand an AI model a few retrieved text chunks. PipesHub gives agents tools to explore your company's knowledge the way a coding agent explores a repository: hybrid search, `grep` over records, folder navigation and knowledge-graph lookups, each checked against the requesting user's permissions in the source system. Every source becomes Blocks, so answers cite the exact page, table cell, row or slide. It is fully open source (Apache 2.0) and self-hostable. With a local model (for example through Ollama) your data never leaves your infrastructure; with a hosted LLM provider, the passages an answer is built from are sent to that provider. See [Why a context layer?](#why-a-context-layer)
+PipesHub is fully open-source (Apache 2.0) and self-hostable — your data never leaves your infrastructure. It features permission-aware search that enforces source-level access controls, and delivers explainable answers with precise block citations to original documents.
+
+Answers come from an agent loop that combines hybrid search, grep, knowledge-graph navigation and full-document reading, instead of a single retrieve-then-generate pass. See [How PipesHub works](#how-pipeshub-works).
 
 ### What connectors does PipesHub support?
 
-PipesHub has 40+ connectors across 30+ systems, with real-time and scheduled indexing. See the [connectors overview](https://docs.pipeshub.com/connectors/overview).
+PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. See the [connectors overview](https://docs.pipeshub.com/connectors/overview).
+
+### What file formats can PipesHub index?
+
+PDF (including scans), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, plain text, and images. Audio and video can be stored but are not indexed yet. Storage accepts a wider set of MIME types — see [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
+
+### How do I deploy PipesHub?
+
+```bash
+curl -fsSL https://get.pipeshub.com/install | bash
+```
+
+This writes Compose files into `./pipeshub` and starts the interactive installer. Open **http://localhost:3000** when it finishes. Use HTTPS for cloud deployments — HTTP may cause frontend security blocks.
+
+Developers building from source should clone the repository and run `./install.sh` (or `./install.sh --build`) from the repo root. See the [Deployment Guide](#-deployment-guide).
 
 ### What LLM providers does PipesHub support?
 
 PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models.
 
-**More questions:** file formats, tech stack, the knowledge graph, multimodal support and troubleshooting are answered in the [full FAQ](docs/FAQ.md).
+### What is the tech stack?
+
+PipesHub has three parts:
+
+- **Web app** (Next.js) — search, chat, and admin in the browser.
+- **API** (Node.js) — accounts, permissions, knowledge bases, and files.
+- **Python services** — connectors sync your sources; indexing parses documents; query answers with citations.
+
+Those services call **AI models you bring**. An **embedding model** turns parsed text into vectors for search. An **LLM** writes the cited answer. Use any provider or a local model (Ollama); a local embedding server is the default.
+
+Data sits in a knowledge graph (Neo4j by default, or ArangoDB), a vector store (Qdrant), and MongoDB. Redis is the cache. Files live on disk or object storage. Services hand work to each other over Redis on a local machine, or Kafka in a larger deployment. See the [system overview](https://docs.pipeshub.com/system-overview).
+
+### What is the Knowledge Graph Retrieval feature?
+
+PipesHub uses graph-backed retrieval that captures relationships across enterprise data. It uses Neo4j or ArangoDB as the graph database, combined with a vector store (Qdrant by default) for semantic search. The agent can follow graph links between documents, people, tickets and code during a question, not only at indexing time.
+
+### Does PipesHub have an MCP server?
+
+Yes. PipesHub provides an MCP server for integration with any MCP-compatible client. Repository: [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/).
+
+### What SDKs are available?
+
+PipesHub provides SDKs for:
+- **Python**: [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python)
+- **TypeScript**: [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript)
+- **Go**: [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go)
+
+### Can I build AI agents without coding?
+
+Yes. PipesHub has a no-code agent builder. You can build agents visually and execute actions across enterprise tools without writing code.
+
+### What is the multimodal support?
+
+PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and pdfplumber for document parsing, or a multimodal LLM (VLM) for scanned PDF OCR.
+
+### How do I troubleshoot deployment issues?
+
+1. Ensure HTTPS is configured for cloud deployments
+2. Check Docker compose logs: `docker compose logs`
+3. Verify environment variables in env.template
+4. Consult [docs.pipeshub.com](https://docs.pipeshub.com/) for detailed guides
+
+### Where can I get help?
+
+- [Discord](https://discord.com/invite/K5RskzJBm2) — Ask questions and get help
+- [GitHub Issues](https://github.com/pipeshub-ai/pipeshub-ai/issues) — Report bugs or request features
+- [PipesHub Docs](https://docs.pipeshub.com/) — Read the documentation
+
 
 <hr>
 <div align="center">

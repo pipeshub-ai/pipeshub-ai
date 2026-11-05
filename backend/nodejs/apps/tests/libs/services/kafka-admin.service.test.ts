@@ -47,7 +47,10 @@ describe('KafkaAdminService', () => {
     it('should have partition and replication config', () => {
       for (const topic of REQUIRED_KAFKA_TOPICS) {
         expect(topic.numPartitions).to.equal(
-          topic.topic === 'record-events' ? 32 : 1,
+          topic.topic === 'record-events' ||
+            topic.topic === 'record-title-events'
+            ? 32
+            : 1,
         );
         expect(topic.replicationFactor).to.equal(1);
       }

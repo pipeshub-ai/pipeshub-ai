@@ -465,7 +465,8 @@ port_owned_by_project() {
 
 # Check if a Docker volume (by exact name) exists.
 volume_exists() {
-  docker volume ls --format '{{.Name}}' 2>/dev/null | grep -qx "$1"
+  # an exact lookup, not `volume ls | grep -q`: under pipefail grep's early exit can SIGPIPE docker and read as "absent"
+  docker volume inspect "$1" >/dev/null 2>&1
 }
 
 # Check if a TCP port is bound on localhost.
@@ -946,7 +947,7 @@ if ! ${SKIP_WIZARD:-false}; then
   # ── 5. EXISTING VOLUME DETECTION ────────────────────────────────────────────
   header "Existing data detection"
 
-  DETECTED_ARANGO=false; DETECTED_NEO4J=false; DETECTED_ETCD=false
+  DETECTED_ARANGO=false; DETECTED_NEO4J=false; DETECTED_ETCD=false; DETECTED_KAFKA=false
 
   if volume_exists "${PROJECT_NAME}_arango_data"; then
     DETECTED_ARANGO=true
@@ -960,6 +961,10 @@ if ! ${SKIP_WIZARD:-false}; then
     DETECTED_ETCD=true
     success "Found existing etcd volume: ${PROJECT_NAME}_etcd_data"
   fi
+  if volume_exists "${PROJECT_NAME}_kafka_data" || volume_exists "${PROJECT_NAME}_zookeeper_data"; then
+    DETECTED_KAFKA=true
+    success "Found existing Kafka volume: ${PROJECT_NAME}_kafka_data"
+  fi
   if ! $DETECTED_ARANGO && ! $DETECTED_NEO4J; then
     info "No existing graph database volumes found — starting fresh."
   fi
@@ -971,8 +976,8 @@ if ! ${SKIP_WIZARD:-false}; then
   printf "  ${GREEN}[1] Slim${RESET}  — Smaller image (model downloads on first use), fewer containers.\n"
   printf "         Broker: Redis Streams  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: yes\n"
   printf "         Recommended for: laptops, low-resource servers.\n\n"
-  printf "  [2] Full  — Larger image with the embedding model bundled; uses Kafka.\n"
-  printf "         Broker: Kafka  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: yes\n"
+  printf "  [2] Full  — Larger image with the embedding model bundled.\n"
+  printf "         Broker: Redis Streams (Kafka kept if already installed)  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: yes\n"
   printf "         Recommended for: production servers, air-gapped deployments.\n\n"
   printf "  [3] Eval  — Slim image without the coding-sandbox pull or Slack bot.\n"
   printf "         Broker: Redis Streams  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: no\n"
@@ -987,7 +992,7 @@ if ! ${SKIP_WIZARD:-false}; then
   fi
 
   case "$DEPLOY_TYPE" in
-    full) DEFAULT_IMAGE_TAG="latest"; DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="kafka"; DEFAULT_KV="redis" ;;
+    full) DEFAULT_IMAGE_TAG="latest"; DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="redis"; DEFAULT_KV="redis" ;;
     eval) DEFAULT_IMAGE_TAG="slim";   DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="redis"; DEFAULT_KV="redis" ;;
     *)    DEPLOY_TYPE="slim"
           DEFAULT_IMAGE_TAG="slim";   DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="redis"; DEFAULT_KV="redis" ;;
@@ -998,6 +1003,9 @@ if ! ${SKIP_WIZARD:-false}; then
     DEFAULT_GRAPH="arango"; info "Defaulting graph DB to ArangoDB to reuse existing data volume."
   elif $DETECTED_NEO4J && ! $DETECTED_ARANGO; then
     DEFAULT_GRAPH="neo4j";  info "Defaulting graph DB to Neo4j to reuse existing data volume."
+  fi
+  if $DETECTED_KAFKA; then
+    DEFAULT_BROKER="kafka"; info "Keeping Kafka to reuse the existing broker volume."
   fi
   if $DETECTED_ETCD; then
     DEFAULT_KV="etcd"; info "Defaulting KV store to etcd to reuse existing data volume."

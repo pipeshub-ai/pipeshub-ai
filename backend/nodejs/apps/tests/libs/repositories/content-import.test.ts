@@ -147,6 +147,20 @@ describe('content importers: documents become rows', () => {
     expect(st2.skipped[0]!.reason).to.contain('no organisation')
   })
 
+  it('agent registrations: held by the install organisation, approved scopes kept, those past their retention left out', async () => {
+    const future = new Date(Date.now() + 3600_000).toISOString()
+    const d = { _id: I, claimEmail: 'a@example.test', claimTokenHash: 'c', attemptTokenHash: 'a', userCodeHash: 'u', attemptExpiresAt: future, expiresAt: future, purgeAt: future, status: 'claimed', claimedUserId: U, claimedOrgId: O, approvedScopes: ['org:read'] }
+    const withOrg = capture((sql) => (sql.includes('import.install_org') ? [{ org_id: O }] : []))
+    const st = await importOAuthTokenDocs(withOrg.tx, 'oauthAgentRegistrations', [d, { ...d, _id: U, purgeAt: '2000-01-01T00:00:00.000Z' }, { ...d, _id: U, claimTokenHash: 1 }, { ...d, _id: O, approvedScopes: undefined, status: undefined }])
+    const rows = withOrg.writes['oauth.agent_registrations']!
+    expect(rows[0]).to.include({ org_id: O, status: 'claimed', failed_attempts: 0, claimed_user_id: U, claimed_org_id: O })
+    expect(rows[0]!.approved_scopes).to.deep.equal(['org:read'])
+    expect(rows[1]).to.include({ status: 'pending', approved_scopes: null })
+    expect(st.skipped.map((s) => s.reason)).to.deep.equal(['agent registration is past its retention', 'agent registration without a usable _id, hash, email or expiry'])
+    const none = capture()
+    expect((await importOAuthTokenDocs(none.tx, 'oauthAgentRegistrations', [d])).skipped[0]!.reason).to.contain('no organisation')
+  })
+
   it('outbox: ids keep the creation order, published events are history, publishing becomes pending', async () => {
     expect(outboxIdOf('00000000' + '0'.repeat(16))).to.equal('0')
     const hex = (sec: number, counter: string) => (1577836800 + sec).toString(16).padStart(8, '0') + '0'.repeat(10) + counter

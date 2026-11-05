@@ -132,11 +132,14 @@ class TestMCPRegistry:
         assert zoom.token_url == "https://zoom.us/oauth/token"
         assert set(zoom.default_scopes) == {
             "meeting:read:search",
-            "meeting:write:meeting",
             "meeting:read:assets",
-            "meeting:update:meeting",
-            "meeting:delete:meeting",
-            "meeting:update:in_meeting_controls",
+            "agentic_search:read:search",
+            "cloud_recording:read:list_user_recordings",
+            "cloud_recording:read:content",
+            "docs:read:export",
+            "docs:write:import",
+            "hub:read:content",
+            "hub:write:content",
         }
 
     def test_auto_discover_templates_are_well_formed(self) -> None:

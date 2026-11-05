@@ -34,14 +34,33 @@ from app.api.middlewares.auth import (
     deny_service_tokens,
     require_scopes,
 )
+from app.api.routes.chatbot import load_entity_vector_store
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
+from app.core.org_context import current_org_id, spawn_in_request
 from app.edition_config import resolve_llm_for_search
 from app.exceptions.fastapi_responses import Status
-from app.modules.retrieval.filter_schema import validate_request_filters
+from app.modules.demo_data.chat import demo_exclusions_for_run
+from app.modules.retrieval.entity_permissions import (
+    SEARCH_DEADLINE_SECONDS as ENTITY_SEARCH_DEADLINE_SECONDS,
+)
+from app.modules.retrieval.entity_permissions import get_entity_access_context
+from app.modules.retrieval.filter_schema import (
+    ENTITY_FILTERS_KEY,
+    TAXONOMY_FILTER_KEYS,
+    validate_request_filters,
+)
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.retrieval.selection_scope import within_connection
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.modules.retrieval.selection_scope import (
+    limits_rows,
+    resolve_request_scopes,
+    within_connection,
+)
+from app.modules.retrieval.title_hits import UnindexedMatch, find_unindexed_matches
+from app.services.graph_db.interface.graph_db_provider import (
+    STRICT_SCOPE_FILTER_KEY,
+    IGraphDBProvider,
+)
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
@@ -499,6 +518,76 @@ async def _with_search_without_dates(
     return _with_outside_dates(results, unbounded, time_range)
 
 
+# Said with the matches a search found only by name, when no content matched.
+_ONLY_BY_NAME_MESSAGE = (
+    "No indexed content matched; {n} record(s) matched by name only, content not indexed yet. "
+    "They are in unindexedMatches."
+)
+
+
+async def _unindexed_matches(
+    request: Request, graph_provider: IGraphDBProvider, filter_groups: dict[str, Any], query: str, logger: "Logger",
+) -> list[UnindexedMatch] | None:
+    """Records matching the query by name whose content is not indexed yet,
+    for the caller's sources and limits. None when the lookup failed: the
+    search answers without it."""
+    user = request.state.user
+    user_id = user.get("userId")
+    try:
+        org_id = current_org_id()
+        container = request.app.container
+        store = await load_entity_vector_store(container, logger, org_id)
+        if store is None:
+            return []
+        source_ids = [*(filter_groups.get("apps") or []), *(filter_groups.get("kb") or [])]
+        if limits_rows(filter_groups):
+            # Apps a selection or limit reaches only through folders or records
+            # are not in ``apps``; without them a strict scope reaches nothing.
+            found = await graph_provider.get_user_by_user_id(user_id=user_id)
+            user_key = (found.get("_key") or found.get("id")) if found else None
+            if user_key:
+                _, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, filter_groups)
+                source_ids += [c for sc in scopes for c in sorted(sc.connector_ids - sc.app_ids)]
+        context = await get_entity_access_context(
+            None,
+            graph_provider,
+            org_id=org_id,
+            user_id=user_id,
+            source_ids=source_ids,
+            strict=bool(filter_groups.get(STRICT_SCOPE_FILTER_KEY)),
+            exclude_app_ids=await demo_exclusions_for_run(graph_provider, container.config_service(), user, logger),
+            filters=filter_groups,
+        )
+        return await asyncio.wait_for(
+            find_unindexed_matches(store, graph_provider, context, query),
+            timeout=ENTITY_SEARCH_DEADLINE_SECONDS + 2.0,
+        )
+    except Exception:
+        logger.warning("Search: the lookup of records by name failed", exc_info=True)
+        return None
+
+
+def _with_unindexed_matches(results: dict[str, Any], matches: list[UnindexedMatch]) -> dict[str, Any]:
+    """The results with an ``unindexedMatches`` field: the records found by name
+    only, apart from the passages and without a record the passages already cite.
+    A search that found no indexed content (404, or an empty 200) answers a 200 success instead, as a search
+    with matches outside its dates does."""
+    if results.get("status_code") not in (200, 404):
+        return results
+    _, shown_record_ids = shown_ids(results.get("searchResults") or [], results.get("virtual_to_record_map"))
+    shown_record_ids |= {r.get("_key") for r in results.get("records") or [] if isinstance(r, dict)}
+    by_name = [m for m in matches if m.record_id not in shown_record_ids]
+    if not by_name:
+        return results
+    payload = {**results, "unindexedMatches": [m.payload() for m in by_name]}
+    if results.get("status_code") == 404 or (
+        results.get("status") == Status.EMPTY_RESPONSE.value and not results.get("searchResults")
+    ):
+        n = len(by_name)
+        payload.update(status="success", status_code=200, message=_ONLY_BY_NAME_MESSAGE.format(n=n))
+    return payload
+
+
 @router.post("/search", dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_WRITE))])
 @inject
 async def search(
@@ -521,6 +610,7 @@ async def search(
     deadline = search_deadline_seconds()
     guard = asyncio.timeout(deadline)
     stages: dict[str, list[float]] = {}
+    by_name_task: asyncio.Future[list[UnindexedMatch] | None] | None = None
     try:
         with collect_spans() as stages, deadline_after(deadline):
             async with guard, call_scope(
@@ -547,6 +637,14 @@ async def search(
                         time_range=bounds,
                     )
 
+                # Names are not matched by date or entity filters, so a search with
+                # either would list records outside it. Runs beside the content search.
+                if span is None and not time_range and not any(
+                    filter_groups.get(key) for key in (ENTITY_FILTERS_KEY, *TAXONOMY_FILTER_KEYS)
+                ):
+                    by_name_task = spawn_in_request(
+                        _unindexed_matches(request, graph_provider, filter_groups, body.query, logger)
+                    )
                 if span is None:
                     searched = run_search(time_range, limit)
                 else:
@@ -561,6 +659,8 @@ async def search(
                 if span is None:
                     # A timeline's ``limit`` is per period, so only a ranked search is cut.
                     results = _apply_result_limit(results, limit, body.query)
+                if by_name_task is not None and (matches := await by_name_task):
+                    results = _with_unindexed_matches(results, matches)
                 await hide_record_parents_outside_connection(
                     request, graph_provider, request.state.user.get("orgId"), request.state.user.get("userId"), results,
                 )
@@ -601,6 +701,9 @@ async def search(
     except Exception as e:
         logger.error("Search failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=action_failed("run this search")) from e
+    finally:
+        if by_name_task is not None and not by_name_task.done():
+            by_name_task.cancel()
 
 
 @router.get("/health", dependencies=[Depends(deny_service_tokens)])
