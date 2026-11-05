@@ -1581,7 +1581,9 @@ esac
 # Byte size in Neo4j's setting syntax (plain bytes, or k/m/g/t with an optional
 # B or iB suffix, any case; all binary) -> bytes. Returns 1 if not recognised.
 _parse_neo4j_bytes() {
-  local v="${1,,}" n unit
+  local v n unit
+  # tr, not ${1,,}: the installer supports bash 3.2 (macOS), which lacks it.
+  v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   [[ "$v" =~ ^([0-9]+)([kmgt]?)(ib|b)?$ ]] || return 1
   n="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[2]}"
   case "$unit" in
