@@ -283,8 +283,6 @@ def render_preamble(
     lines.extend(_line(result, linking.names, counts.get(result.mention.name, "0")) for result in linking.results)
     if match_all and scope.virtual_record_ids:
         lines.append(_together_line(scope, shortener))
-    if linking.timed_out:
-        lines.append("Note: access checks were cut short for this call, so results may be incomplete; retry.")
     if scope.note:
         lines.append(f"Note: {scope.note.strip()}")
     lines.extend(f"Note: {note}" for note in notes)

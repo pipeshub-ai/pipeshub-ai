@@ -79,7 +79,7 @@ HARMLESS = frozenset("""
     delete_blocks_for_records delete_dangling_named_entity_mentions delete_dangling_named_entity_values
     delete_orphan_named_entities delete_sync_points_by_connector_id delete_team_member_edges disconnect
     ensure_all_team_with_users ensure_app_membership ensure_nodes ensure_pipeline_schema ensure_schema
-    ensure_taxonomy_hierarchy_edge ensure_team_app_edge kb_exists kh_scope_enabled
+    ensure_taxonomy_hierarchy_edge ensure_team_app_edge increment_node_field kb_exists kh_scope_enabled
     kh_scope_forget kh_scope_mark_changed kh_scope_mark_stale kh_scope_reset_syncing kh_scope_restamp_stale kh_scope_stamp
     kh_scope_sync_ended mark_orphan_named_entities migrate_agent_hub_knowledge migrate_person_to_user move_taxonomy_edges
     name_knowledge_hub_parents normalize_folder_mime_types organization_exists page_entity_index_source
