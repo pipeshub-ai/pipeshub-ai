@@ -122,7 +122,7 @@ class _ScopeFilterContract:
             for never in ("unstamped", "legacy", "unknown_stamp", "old_version", "old_generation", "new_generation", "other_connector",
                           "mixed_connectors", "no_connector", "unavailable_stamp"):
                 assert never not in got, never
-            assert {"container", "container_other", "union", "union_hidden", "intersection", "intersection_hidden", "override"} == got
+            assert {"container", "container_other", "union", "union_hidden", "intersection", "intersection_hidden", "override", "override_pathed"} == got
 
     async def test_a_path_through_an_excluded_scope_is_hidden_whatever_else_the_viewer_reads(self, loaded) -> None:
         for leg in LEGS:

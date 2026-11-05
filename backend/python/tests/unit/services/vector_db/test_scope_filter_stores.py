@@ -63,16 +63,21 @@ def pg_rule(f: ScopeFilter, p: dict) -> bool:
         return False
     groups, reach = f.readable_groups, f.readable_groups | f.readable_scopes | f.open_apps
     path, acl = set(p.get("pathIds") or []), set(p.get("aclScope") or [])
+    if path & f.pending:                                                   # a subtree being rewritten, whatever the stamp
+        return False
+    blocked = bool(c & f.blocked)
     return bool(
-        (stamp == "container" and (set(p.get("recordGroupIds") or []) & groups or set(p.get("rootRecordGroupIds") or []) & groups or c & f.open_apps))
-        or (stamp in ("container", "union", "intersection", "override") and acl & reach)
+        (stamp == "container" and not blocked and (set(p.get("recordGroupIds") or []) & groups or set(p.get("rootRecordGroupIds") or []) & groups
+                                                    or c & f.open_apps))
+        or (stamp in ("container", "union", "intersection", "override") and acl & reach and (stamp != "container" or not blocked))
         or (stamp in ("union", "intersection") and path & reach and not path & f.excluded))
 
 
 def random_world(rng: random.Random) -> tuple[ScopeFilter, list[dict]]:
     ids = ["a", "b", "c", "d"]
     pick = lambda: frozenset(rng.sample(ids, rng.randint(0, 3)))  # noqa: E731
-    f = ScopeFilter(pick() or frozenset({"a"}), pick(), pick(), pick(), pick(), rng.choice([5, 5, 5, 4]), rng.choice([3, 3, 3, 2, -1]))
+    f = ScopeFilter(pick() or frozenset({"a"}), pick(), pick(), pick(), pick(), rng.choice([5, 5, 5, 4]), rng.choice([3, 3, 3, 2, -1]),
+                    pick() if rng.random() < 0.5 else frozenset(), pick() if rng.random() < 0.4 else frozenset())
     stamps = ["container", "union", "intersection", "override", "legacy", "weird", None]
     points = []
     for _ in range(40):
@@ -89,7 +94,7 @@ def random_world(rng: random.Random) -> tuple[ScopeFilter, list[dict]]:
 def test_the_tree_admits_exactly_what_the_pgvector_rule_admits_on_random_worlds() -> None:
     rng = random.Random(7)
     admitted = 0
-    for _ in range(1500):
+    for _ in range(4000):
         f, points = random_world(rng)
         node = sx.admits(f)
         for p in points:
@@ -315,3 +320,63 @@ async def test_redis_looks_further_when_the_exact_rule_drops_what_the_query_let_
     never = dataclasses.replace(req, scope_filter=None)
     asked.clear()
     assert [r.id for r in await svc._run_single_hybrid_query("idx", "c", never)] == ["capital"] and asked == [1]       # no scope filter: one search, as before
+
+
+def tree_fields(node: sx.Node) -> list[tuple[str, str]]:
+    """(kind, field) of every node of the tree."""
+    out: list[tuple[str, str]] = []
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if isinstance(n, (sx.Has, sx.Is, sx.Within)):
+            out.append((type(n).__name__, n.field))
+        elif isinstance(n, (sx.All, sx.Some)):
+            stack.extend(n.parts)
+        else:
+            stack.append(n.part)
+    return out
+
+
+def test_with_nothing_pending_and_nothing_blocked_the_tree_has_no_pending_or_blocked_term() -> None:
+    node = sx.admits(flt())
+    nots = []
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if isinstance(n, sx.Not):
+            nots.append(n.part)
+            stack.append(n.part)
+        elif isinstance(n, (sx.All, sx.Some)):
+            stack.extend(n.parts)
+    assert nots == [sx.Has("pathIds", ("x1",))]                                  # only the excluded scopes of a path rule, as before
+    assert sx.evaluate(sx.admits(flt(pending=frozenset({"p"}))), {"connectorIds": ["c1"], "scopeFieldsVersion": VERSION, "scopeGeneration": GENERATION,
+                                                                  "scopeStamp": "container", "recordGroupIds": ["g1"], "pathIds": ["p"]}) is False
+
+
+async def test_each_store_hides_a_pending_subtree_and_a_blocked_connector_in_its_own_language() -> None:
+    f = flt(pending=frozenset({"pend1"}), blocked=frozenset({"blk9"}))
+    [q] = await sr.captured("qdrant", [scoped("no_filter", f)])
+    text = json.dumps(q["filter"])
+    assert text.count("pend1") == 1 and text.count("blk9") == 2 and '"must_not"' in text           # the container rule and the own-id rule
+    [o] = await sr.captured("opensearch", [scoped("dense_only", f)])         # one leg, so each term appears once per rule
+    text = json.dumps(o)
+    assert text.count("pend1") == 1 and text.count("blk9") == 2
+    cmds = await sr.captured("redis", [scoped("no_filter", f)], tagvals=[b"c1"])
+    knn = redis_filters(cmds)[1]
+    assert "-(@pathIds:{pend1})" in knn and knn.count("-(@connectorIds:{blk9})") == 2
+    clean = await sr.captured("redis", [scoped("no_filter", flt())], tagvals=[b"c1"])
+    assert "pend1" not in redis_filters(clean)[1] and "pathIds:{pend1" not in redis_filters(clean)[1]
+
+
+async def test_redis_refuses_pending_and_blocked_ids_with_capitals() -> None:
+    for kw in ({"pending": frozenset({"P1"})}, {"blocked": frozenset({"C9"})}):
+        with pytest.raises(ScopeFilterUnsupported):
+            await sr.captured("redis", [scoped("dense_only", flt(**kw))])
+
+
+@pytest.mark.parametrize(("store", "limit"), [("qdrant", 50_000), ("opensearch", 60_000), ("redis", 20_000)])
+async def test_the_pending_and_blocked_lists_have_the_stores_limit_too(store, limit) -> None:
+    big = frozenset(f"id{i}" for i in range(limit + 1))
+    for kw in ("pending", "blocked"):
+        with pytest.raises(ScopeFilterTooLarge):
+            await sr.captured(store, [scoped("dense_only", flt(**{kw: big}))])

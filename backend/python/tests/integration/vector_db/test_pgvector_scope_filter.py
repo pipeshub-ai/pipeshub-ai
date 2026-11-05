@@ -99,7 +99,7 @@ async def test_what_cannot_be_trusted_is_never_admitted_even_when_the_viewer_rea
     for never in ("unstamped", "legacy", "unknown_stamp", "old_version", "old_generation", "new_generation", "other_connector",
                   "mixed_connectors", "no_connector", "unavailable_stamp"):
         assert never not in got, never
-    assert {"container", "container_other", "union", "union_hidden", "intersection", "intersection_hidden", "override"} == got
+    assert {"container", "container_other", "union", "union_hidden", "intersection", "intersection_hidden", "override", "override_pathed"} == got
 
 
 @LEGS
