@@ -434,28 +434,39 @@ def test_html_extractors_do_linear_work_on_crafted_input(parser_class, unit) -> 
 
 _DEADLINE_SCRIPT = textwrap.dedent(
     """
-    import faulthandler, sys
-    sys.path.insert(0, {tests!r})
-    from test_image_references import _ADVERSARIAL, _HTML_UNITS, _SHARED_TAILS
-    from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
-    from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
-    from app.modules.parsers.markdown.image_references import extract_and_replace_images
+    import faulthandler, sys, traceback
 
-    scans = [(name, extract_and_replace_images, unit * (65536 // len(unit))) for name, unit in _ADVERSARIAL.items()]
-    # Openers that all share one closing tail: their only other check is the count of work.
-    scans += [("tail " + tail, extract_and_replace_images, "![" * 32000 + tail) for tail in _SHARED_TAILS]
-    for parser_class in (SelectolaxHtmlParser, DoclingHtmlParser):
-        parser = parser_class.__new__(parser_class)
-        scans += [
-            (parser_class.__name__ + " " + unit, parser.extract_and_replace_images, unit * (65536 // len(unit)))
-            for unit in _HTML_UNITS
-        ]
-    for name, scan, text in scans:
-        # A regular expression that backtracks inside one call cannot be interrupted or counted; the watchdog thread ends the
-        # process, naming where it was, long before the test runner's own timeout.
-        faulthandler.dump_traceback_later({deadline}, exit=True)
-        scan(text)
-        faulthandler.cancel_dump_traceback_later()
+    def main():
+        sys.path.insert(0, {tests_root!r})
+        import conftest  # the mocks pytest installs before Docling's native code is touched (tests/conftest.py)
+
+        sys.path.insert(0, {tests!r})
+        from test_image_references import _ADVERSARIAL, _HTML_UNITS, _SHARED_TAILS
+        from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
+        from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
+        from app.modules.parsers.markdown.image_references import extract_and_replace_images
+
+        scans = [(name, extract_and_replace_images, unit * (65536 // len(unit))) for name, unit in _ADVERSARIAL.items()]
+        # Openers that all share one closing tail: their only other check is the count of work.
+        scans += [("tail " + tail, extract_and_replace_images, "![" * 32000 + tail) for tail in _SHARED_TAILS]
+        for parser_class in (SelectolaxHtmlParser, DoclingHtmlParser):
+            parser = parser_class.__new__(parser_class)
+            scans += [
+                (parser_class.__name__ + " " + unit, parser.extract_and_replace_images, unit * (65536 // len(unit)))
+                for unit in _HTML_UNITS
+            ]
+        for name, scan, text in scans:
+            # A regular expression that backtracks inside one call cannot be interrupted or counted; the watchdog thread ends the
+            # process, naming where it was, long before the test runner's own timeout.
+            faulthandler.dump_traceback_later({deadline}, exit=True)
+            scan(text)
+            faulthandler.cancel_dump_traceback_later()
+
+    try:
+        main()
+    except BaseException:
+        traceback.print_exc()
+        sys.exit(2)  # not the watchdog (which ends the process with 1): the child could not run the scans
     """
 )
 
@@ -463,11 +474,17 @@ _DEADLINE_SCRIPT = textwrap.dedent(
 def test_no_crafted_input_makes_a_single_scan_run_away() -> None:
     """The work counts above cannot see a pattern that backtracks inside one call. Each family's largest input, and each shared-tail input, is scanned once in a
     child process under a deadline of seconds where a scan takes milliseconds: only a real blow-up misses it."""
-    script = _DEADLINE_SCRIPT.format(tests=str(Path(__file__).parent), deadline=3)
+    script = _DEADLINE_SCRIPT.format(
+        tests=str(Path(__file__).parent), tests_root=str(Path(__file__).parents[3]), deadline=3
+    )
     run = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True, cwd=Path(__file__).parents[4], timeout=120, check=False,
     )
-    assert run.returncode == 0, run.stderr[-1500:]
+    if run.returncode == 0:
+        return
+    if run.returncode == 1 and "Timeout (" in run.stderr:
+        pytest.fail("a scan ran past the deadline:\n" + run.stderr[-1500:])
+    pytest.fail(f"the child process failed (exit {run.returncode}) before or while it ran the scans, not at the deadline:\n" + run.stderr[-1500:])
 
 
 def test_many_real_images_keep_the_tag_scan_complete() -> None:
