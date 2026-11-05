@@ -23,13 +23,17 @@ const speech = vi.hoisted(() => ({
   onError: null as null | ((error: string) => void),
 }));
 const device = vi.hoisted(() => ({ isMobile: false }));
-const mentionField = vi.hoisted(() => ({ rendered: vi.fn<(mentionsOff: boolean | undefined) => void>() }));
+const mentionField = vi.hoisted(() => ({
+  rendered: vi.fn<(mentionsOff: boolean | undefined) => void>(),
+  setMentions: null as null | ((mentions: import('@/chat/utils/node-mentions').MentionNode[]) => void),
+}));
 
 vi.mock('@/chat/components/mention-composer-field', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/chat/components/mention-composer-field')>();
   type FieldProps = Omit<React.ComponentProps<typeof actual.MentionComposerField>, 'ref'>;
   const Spy = React.forwardRef<HTMLTextAreaElement, FieldProps>(function MentionComposerFieldSpy(props, ref) {
     mentionField.rendered(props.mentionsOff);
+    mentionField.setMentions = props.onMentionsChange;
     return <actual.MentionComposerField {...props} ref={ref} />;
   });
   return { ...actual, MentionComposerField: Spy };
@@ -139,6 +143,7 @@ import { loadDraft, saveDraft } from '@/chat/utils/composer-draft';
 import { allowChatDraftWrites, discardAllChatDrafts } from '@/lib/storage/chat-drafts';
 import type { AttachmentRef } from '@/chat/types';
 import { formatQuotedSelection } from '@/chat/utils/quoted-selection';
+import { insertMention, type MentionNode } from '@/chat/utils/node-mentions';
 
 const initialChatState = useChatStore.getState();
 
@@ -2084,6 +2089,63 @@ describe('ChatInput — quote selected text', () => {
     });
     expect(screen.queryByTestId('quoted-excerpt-chip')).toBeNull();
     expect(screen.getByText('Regenerate response')).toBeTruthy();
+  });
+
+  it('keeps the original follow-up when Edit is switched to Regenerate before Quote', () => {
+    const { onSend } = renderInput();
+    type('typed follow-up');
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+      });
+    });
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', {
+        messageId: 'msg-7',
+        text: 'Which vendors renewed?',
+      });
+    });
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    expect(composer().value).toBe('typed follow-up');
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith(
+      formatQuotedSelection('the SLA is 99.9%', 'typed follow-up'),
+      undefined,
+      undefined,
+    );
+  });
+
+  it('restores @mention metadata with the follow-up when Quote leaves edit', () => {
+    const { onSend } = renderInput();
+    const node: MentionNode = {
+      id: 'q3',
+      name: 'Q3 Report',
+      nodeType: 'record',
+      connector: 'KB',
+    };
+    const drafted = `${insertMention('', 0, 0, node)}please`;
+    type(drafted);
+    act(() => {
+      mentionField.setMentions?.([node]);
+    });
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+      });
+    });
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith(
+      formatQuotedSelection('the SLA is 99.9%', 'Q3 Report please'),
+      undefined,
+      [node],
+    );
   });
 
   it('keeps a just-typed follow-up when Quote leaves edit before the draft saves', () => {

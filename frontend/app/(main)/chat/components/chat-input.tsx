@@ -899,7 +899,12 @@ export function ChatInput({
   // Regenerate: closes all panels, sets activeMessageAction, and pre-fills the
   // textarea with the original question text (dispatched from message-actions.tsx
   // as { messageId, text: question }).
-  const textBeforeActionRef = useRef('');
+  const draftBeforeActionRef = useRef<{ text: string; mentions: MentionNode[] } | null>(null);
+
+  const stashDraftBeforeAction = useCallback(() => {
+    if (activeMessageAction) return;
+    draftBeforeActionRef.current = { text: message, mentions };
+  }, [activeMessageAction, mentions, message]);
 
   const applyQuotedPayload = useCallback((text: string | undefined | null, quotedFromPayload?: string) => {
     const parsed = parseQuotedSelection(text ?? '');
@@ -917,10 +922,10 @@ export function ChatInput({
     setRegenModelOverride(null);
     leaveEditFiles(false);
     useChatStore.getState().setRegenAnswers(null);
-    textBeforeActionRef.current = message;
+    stashDraftBeforeAction();
     setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
     setMessage(applyQuotedPayload(text));
-  }, [applyQuotedPayload, dismissExpansionPanels, leaveEditFiles, message]);
+  }, [applyQuotedPayload, dismissExpansionPanels, leaveEditFiles, stashDraftBeforeAction]);
 
   // Edit query: same as regenerate but the textarea is editable so the user can
   // amend the question before resending. Also focuses the textarea immediately.
@@ -940,11 +945,11 @@ export function ChatInput({
     setRegenModelOverride(null);
     useChatStore.getState().setRegenAnswers(null);
     enterEditFiles(attachments ?? []);
-    textBeforeActionRef.current = message;
+    stashDraftBeforeAction();
     setActiveMessageAction({ type: 'editQuery', messageId, text, appliedFilters, attachments });
     setMessage(applyQuotedPayload(text));
     setTimeout(() => textareaRef.current?.focus(), 0);
-  }, [applyQuotedPayload, dismissExpansionPanels, enterEditFiles, message]);
+  }, [applyQuotedPayload, dismissExpansionPanels, enterEditFiles, stashDraftBeforeAction]);
 
   const handleShowQuoteBar = useCallback((payload?: unknown) => {
     if (typeof payload !== 'object' || payload === null) return;
@@ -959,8 +964,10 @@ export function ChatInput({
     setRegenModelOverride(null);
     useChatStore.getState().setRegenAnswers(null);
     if (leavingAction) {
-      setMessage(textBeforeActionRef.current);
-      textBeforeActionRef.current = '';
+      const saved = draftBeforeActionRef.current;
+      draftBeforeActionRef.current = null;
+      setMessage(saved?.text ?? '');
+      setMentions(saved?.mentions ?? []);
     }
     setQuotedExcerpt(excerpt);
     setQuotedExcerptTruncated(Boolean(truncated));
@@ -980,8 +987,9 @@ export function ChatInput({
     setQuotedExcerpt(null);
     setQuotedExcerptTruncated(false);
     useChatStore.getState().setRegenAnswers(null);
-    textBeforeActionRef.current = '';
+    draftBeforeActionRef.current = null;
     setMessage('');
+    setMentions([]);
   }, [leaveEditFiles]);
 
   // While the bar is open, the reply's question card can be answered again (ChatResponse reads this).
