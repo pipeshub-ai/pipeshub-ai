@@ -117,6 +117,9 @@ def test_a_downgrade_refuses_when_a_dropped_writer_left_its_rows_behind(db):
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         _drop_one_writer_by_hand(c)
+    r = run_migrate(url, "downgrade", "kg_0002", PG_MIGRATE_ALLOW_DOWNGRADE="1")      # the later revisions take their own writers back first, each in its own step
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
         pins = c.execute("SELECT count(*) FROM kernel.vetted_write_pins").fetchone()[0]
     r = run_migrate(url, "downgrade", "kg_0001", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode != 0 and "no longer exists" in r.stdout, r.stdout
