@@ -69,10 +69,10 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-HEADS = {"kernel": (17, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
+HEADS = {"kernel": (17, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (4, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
          "graph": (2, 0), "kg": (4, 0), "retrieval": (1, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"platform_0004", "content_0003", "oauth_0004", "platform_data_0004", "kg_0004", "retrieval_0001"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
+REVISION_HEADS = {"platform_0004", "identity_0004", "content_0003", "oauth_0004", "platform_data_0004", "kg_0004", "retrieval_0001"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
 
 
 def test_fresh_install(db):
@@ -485,6 +485,29 @@ def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrade
     with connect(cluster, name) as c:
         assert c.execute("SELECT to_regclass('platform.jobs')").fetchone()[0] is None
         assert c.execute("SELECT count(*) FROM kernel.rls_registry WHERE rel::oid NOT IN (SELECT oid FROM pg_class)").fetchone()[0] == 0
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    assert epochs(cluster, name) == HEADS
+
+
+def test_the_jobs_role_has_nothing_on_the_identity_tables_and_the_revision_round_trips(db):
+    cluster, name = db
+    url = cluster.url(name, MIGRATE)
+    assert run_migrate(url).returncode == 0
+    grants = "SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'"
+    policies = "SELECT count(*) FROM pg_policies WHERE schemaname = 'identity' AND policyname = 'jobs_all'"
+    with connect(cluster, name) as c:
+        assert c.execute(grants).fetchone()[0] == 0 and c.execute(policies).fetchone()[0] == 0
+        assert not c.execute("SELECT has_schema_privilege('pipeshub_jobs', 'identity', 'USAGE')").fetchone()[0]
+        c.execute("SET ROLE pipeshub_jobs")
+        for sql in ("SELECT 1 FROM identity.user_credentials", "UPDATE identity.user_credentials SET wrong_count = 0"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute(sql)
+    r = run_migrate(url, "downgrade", "identity_0003", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute(grants).fetchone()[0] == 11 * 4 and c.execute(policies).fetchone()[0] == 11
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
