@@ -41,7 +41,7 @@ vi.mock('@/lib/api/api-error', () => ({
 }));
 
 // One `t` for every render, as i18next gives; a new one each render re-runs the page's load effect.
-const t = (key: string) => {
+const t = (key: string, opts?: Record<string, string>) => {
   const parts = key.split('.');
   let cur: unknown = en;
   for (const part of parts) {
@@ -50,7 +50,9 @@ const t = (key: string) => {
     }
     cur = (cur as Record<string, unknown>)[part];
   }
-  return typeof cur === 'string' ? cur : key;
+  return typeof cur === 'string'
+    ? cur.replace(/\{\{(\w+)\}\}/g, (_, name: string) => opts?.[name] ?? '')
+    : key;
 };
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t }),
@@ -70,12 +72,13 @@ function consentResponse(
   notGrantedScopes: Scope[],
   isDynamic = false,
   scopes: Scope[] = [{ name: 'kb:read', description: 'Read knowledge bases', category: 'Knowledge Base' }],
+  clientIdHost?: string,
 ) {
   return {
     data: {
       requiresConsent: true,
       consentData: {
-        app: { name: 'Claude', isDynamic },
+        app: { name: 'Claude', isDynamic, clientIdHost },
         scopes,
         notGrantedScopes,
         user: { email: 'u@e.com' },
@@ -120,6 +123,27 @@ describe('OAuthAuthorizeView not-granted scopes', () => {
 
     expect(await screen.findByText(NOT_GRANTED_HEADING)).toBeTruthy();
     expect(screen.queryByText(OWNER_HINT)).toBeNull();
+  });
+
+  it('names the host of a metadata document client, since the app picks its own name', async () => {
+    get.mockResolvedValue(consentResponse([], true, undefined, 'claude.ai'));
+
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    expect(await screen.findByText('Identified by claude.ai')).toBeTruthy();
+    expect(screen.getByText(en.oauthConsent.unreviewedApp)).toBeTruthy();
+  });
+
+  it('shows the full redirect URI, so a changed loopback port is visible', async () => {
+    const response = consentResponse([]);
+    response.data.consentData.redirectUri = 'http://127.0.0.1:49237/callback';
+    get.mockResolvedValue(response);
+
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    expect(
+      await screen.findByText('Sends you back to http://127.0.0.1:49237/callback'),
+    ).toBeTruthy();
   });
 
   it('shows no not-granted section when every requested scope is granted', async () => {

@@ -258,9 +258,11 @@ services:
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
       - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
-      # RFC 7591 DCR is off unless "true". RFC 8628 device grant is on unless "false".
+      # RFC 7591 DCR is off unless "true". RFC 8628 device grant and client ID metadata documents are on unless "false".
       - PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}
+      - PIPESHUB_ENABLE_CIMD=${PIPESHUB_ENABLE_CIMD:-}
       - PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}
+      - MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS:-}
 
       # ML threading
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}

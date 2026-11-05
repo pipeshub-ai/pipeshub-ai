@@ -35,6 +35,10 @@ export interface OAuthTokenPayload {
   act?: { sub: string };
   /** Absent when the app may see everything its user can. */
   knowledgeLimit?: KnowledgeLimit;
+  /** Access tokens: the resource (RFC 8707) the token is for, when its client named one. */
+  aud?: string;
+  /** Refresh tokens: the resource the access tokens it mints are for. */
+  resource?: string;
   /** The agent registration this token was issued under; revoking the token revokes the registration. */
   agent_registration_id?: string;
 }
@@ -79,6 +83,8 @@ export interface GenerateTokensOptions {
    * the app's current limit.
    */
   grantedKnowledgeLimit?: KnowledgeLimit | null;
+  /** The resource (RFC 8707) the tokens are for; see `OAuthTokenService.audienceFor`. */
+  audience?: string;
 }
 
 // Token Response (RFC 6749 compliant)
@@ -103,6 +109,8 @@ export interface AuthorizeRequest {
   code_challenge?: string;
   code_challenge_method?: 'S256';
   nonce?: string;
+  /** RFC 8707: checked here so the client hears of an unknown resource before consent. */
+  resource?: string | string[];
 }
 
 // Token Request Parameters
@@ -132,6 +140,8 @@ export interface TokenRequest {
   subject_token_type?: string;
   /** The person the caller wants to act as, by user id or email address. */
   requested_subject?: string;
+  /** RFC 8707: the resource the token is for (repeatable in a form body). */
+  resource?: string | string[];
 }
 
 // Revoke Request
@@ -263,6 +273,8 @@ export interface ConsentData {
     homepageUrl?: string;
     privacyPolicyUrl?: string;
     isDynamic?: boolean;
+    /** Host of a client metadata document client id: the only part of the app's identity it cannot choose. */
+    clientIdHost?: string;
     /** What the app's creator let it see; absent for everything the user can. */
     knowledgeLimit?: KnowledgeLimit;
   };
@@ -325,6 +337,8 @@ export interface OpenIDConfiguration {
   introspection_endpoint: string;
   jwks_uri: string;
   registration_endpoint?: string;
+  /** draft-ietf-oauth-client-id-metadata-document: an https URL may be used as client_id. */
+  client_id_metadata_document_supported?: boolean;
   device_authorization_endpoint?: string;
   /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
   pipeshub_device_client_id?: string;
