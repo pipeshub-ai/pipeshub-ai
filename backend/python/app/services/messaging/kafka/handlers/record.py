@@ -55,6 +55,18 @@ from app.modules.indexing.connector_off_events import (
     resuming_enrichment as record_resuming_enrichment,
 )
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
+from app.modules.indexing.parse_now_marker import (
+    PARSE_NOW_REV,
+    PARSE_NOW_STATUS,
+    ParseNowRun,
+    ParseNowStatus,
+    begin_run,
+    current_run,
+    end_run,
+    marker_fields,
+    shape_status_write,
+    store_only_active,
+)
 from app.modules.indexing.rate_limit_deferral import (
     cleared_deferral,
     deferral_updates,
@@ -62,9 +74,19 @@ from app.modules.indexing.rate_limit_deferral import (
     plan_deferral,
     rate_limit_retry_after,
 )
+from app.modules.pipeline.parse_now import (
+    ELIGIBLE_STATUSES as PARSE_NOW_ELIGIBLE_STATUSES,
+)
+from app.modules.pipeline.parse_now import (
+    is_folder_record,
+    terminal_marker_status,
+)
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
-from app.services.graph_db.common.record_visibility import is_live_record
+from app.services.graph_db.common.record_visibility import (
+    is_live_record,
+    is_searchable_record,
+)
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
@@ -137,6 +159,25 @@ def _seconds_from_env(name: str, default: float) -> float:
         return default
 
 
+# Records whose statuses a parse-now must leave as they are: it stores the content and does not index.
+_STORE_ONLY_STATUSES = frozenset({ProgressStatus.AUTO_INDEX_OFF.value})
+
+
+def _event_org(record: dict, payload: dict) -> str | None:
+    """The org the event names, when it is the record's own; else None."""
+    org_id = payload.get("orgId")
+    return org_id if org_id and record.get("orgId") == org_id else None
+
+
+def is_parse_now(event_type: str | None, payload: dict) -> bool:
+    """Whether the event asks for the record's content to be parsed and stored now (see parse_now_marker)."""
+    return (
+        event_type == EventTypes.REINDEX_RECORD.value
+        and payload.get("parseNow") is True
+        and not payload.get("vectorDbOnly")
+    )
+
+
 def stored_documents_retry_delay_seconds(reschedules: int) -> float:
     """Delay before a rescheduled deleteStoredDocuments is picked up again: 15s doubling to 5 min."""
     base = _seconds_from_env("STORED_DOCUMENTS_RETRY_DELAY_SECONDS", 15.0)
@@ -149,6 +190,9 @@ def stored_documents_give_up_seconds() -> float:
     Files storage could not remove are retried without a limit.
     """
     return _seconds_from_env("STORED_DOCUMENTS_GIVE_UP_SECONDS", 24 * 3600.0)
+
+
+_PARSE_NOW_NO_ACCESS = "the requesting user cannot access the record"
 
 
 class RecordEventHandler(BaseEventService):
@@ -334,6 +378,12 @@ class RecordEventHandler(BaseEventService):
                 )
                 return
 
+            if is_parse_now(message.eventType, payload):
+                # The reader waits on the marker; the record's own status is not touched.
+                if _event_org(record, payload):
+                    await self._mark_parse_now(record_id, record, ParseNowStatus.FAILED, reason=RETRIES_EXHAUSTED)
+                return
+
             current_status = record.get("indexingStatus")
             # An in-flight record nobody holds: the delivery that was processing it ran out of attempts, nothing will
             # finish it, and the stale scan would hand it back with a fresh retry budget, for ever.
@@ -453,6 +503,54 @@ class RecordEventHandler(BaseEventService):
         self.logger.error("Record %s marked FAILED: stale recovery gave up on it", record_id)
         # Retried transient failures, not the file: the next copy gets its turn.
         await self._trigger_next_queued_duplicate(record_id, record.get("virtualRecordId"))
+
+    async def _mark_parse_now(
+        self, record_id: str, record: dict, status: ParseNowStatus, *, reason: str | None = None
+    ) -> None:
+        """Write the parse-now marker for a status that is not STORED. Never raises, and never
+        replaces a STORED marker of the revision the record is on, nor a permanent outcome
+        (password, file type, empty, needs a model) with FAILED."""
+        rev = record.get("contentRev")
+        if record.get(PARSE_NOW_STATUS) == ParseNowStatus.STORED.value and record.get(PARSE_NOW_REV) == rev:
+            return
+        # The abandon hook runs after a terminal error already wrote its own marker.
+        if status is ParseNowStatus.FAILED and terminal_marker_status(record) is not None:
+            return
+        try:
+            await self.event_processor.graph_provider.update_node(
+                record_id, CollectionNames.RECORDS.value, marker_fields(status, rev, reason),
+            )
+        except Exception as exc:
+            self.logger.warning("Could not write parse-now status %s of record %s: %s", status.value, record_id, exc)
+
+    async def _parse_now_refusal(self, record: dict, payload: dict) -> tuple[str, bool] | None:
+        """Why a parse-now event is not run, as (reason, whether it is just redundant); None to run it.
+
+        Everything the producer checked is checked again here: the event travels through a broker, and
+        a record can be moved, trashed or have its access revoked before it is read.
+        """
+        record_id = str(payload.get("recordId"))
+        org_id = _event_org(record, payload)
+        if not org_id:
+            return "the record is not in the organisation named by the event", False
+        if is_searchable_record(record):
+            return "the record is already readable", True
+        if record.get("indexingStatus") not in PARSE_NOW_ELIGIBLE_STATUSES:
+            return f"the record's status {record.get('indexingStatus')} is not one to parse on demand", False
+        rev = record.get("contentRev")
+        if rev and record.get(PARSE_NOW_STATUS) == ParseNowStatus.STORED.value and record.get(PARSE_NOW_REV) == rev:
+            return "the record's content is already stored at its current revision", True
+        if is_folder_record(record, payload.get("mimeType")):
+            return "a folder has no content to parse", False
+        user_id = payload.get("requestedByUserId")
+        if not user_id:
+            return "the event names no requesting user", False
+        access = await self.event_processor.graph_provider.check_record_access_with_details(
+            str(user_id), str(org_id), record_id
+        )
+        if not access:
+            return _PARSE_NOW_NO_ACCESS, False
+        return None
 
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
@@ -1437,6 +1535,13 @@ class RecordEventHandler(BaseEventService):
         # fails: the record is already searchable and its stage state records the outcome.
         stage_redrive = False
         in_trash = False
+        # A parse-now run, and whether it stores only: see parse_now_marker. A refused one is
+        # drained without touching the record, like one in the trash.
+        parse_now = False
+        store_only = False
+        parse_now_refused = False
+        # Nothing of an earlier delivery's run survives into this one.
+        end_run()
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -1617,6 +1722,7 @@ class RecordEventHandler(BaseEventService):
             mime_type = payload.get("mimeType", "unknown")
             virtual_record_id = payload.get("virtualRecordId")
             message_id = f"{event_type}-{record_id}"
+            parse_now = is_parse_now(event_type, payload)
 
             if not record_id:
                 # As above: malformed payload, surfaced via the dead-letter queue
@@ -1767,7 +1873,10 @@ class RecordEventHandler(BaseEventService):
 
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
-            if clears_embeddings_first(event_type, payload):
+            if parse_now:
+                # Parsing to read, not to index: nothing is taken out of the vector store.
+                pass
+            elif clears_embeddings_first(event_type, payload):
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
                     [virtual_record_id], org_id=payload.get("orgId") or None
                 )
@@ -1851,6 +1960,9 @@ class RecordEventHandler(BaseEventService):
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} is inactive."
                         )
+                        if parse_now:
+                            # The reader is waiting on the marker, which no run will ever write.
+                            await self._mark_parse_now(record_id, record, ParseNowStatus.FAILED, reason=CONNECTOR_OFF)
                         # Update status to MANUAL_INDEXING and reson to connector is inactive
                         await self.__update_document_status(
                             record_id=record_id,
@@ -1863,6 +1975,39 @@ class RecordEventHandler(BaseEventService):
                         return
 
 
+
+            if parse_now:
+                refusal = await self._parse_now_refusal(record, payload)
+                if refusal is not None:
+                    reason, redundant = refusal
+                    (self.logger.info if redundant else self.logger.warning)(
+                        "Not parsing record %s now: %s", record_id, reason
+                    )
+                    # Final: a reader that sent this must not wait for a marker. An event from another
+                    # org or from a user without access is not one a reader sent: it writes nothing.
+                    if (
+                        not redundant
+                        and _event_org(record, payload)
+                        and payload.get("requestedByUserId")
+                        and reason != _PARSE_NOW_NO_ACCESS
+                    ):
+                        await self._mark_parse_now(record_id, record, ParseNowStatus.FAILED, reason=reason)
+                    record = None
+                    parse_now_refused = True
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
+                # Automatic indexing off: the content is stored and the record left exactly as it is.
+                store_only = record.get("indexingStatus") in _STORE_ONLY_STATUSES
+                # The event names the record and little else.
+                for field in ("recordName", "origin", "version", "filePath"):
+                    if payload.get(field) is None and record.get(field) is not None:
+                        payload[field] = record[field]
+                if extension in (None, "", "unknown") and record.get("extension"):
+                    extension = payload["extension"] = record["extension"]
+                begin_run(ParseNowRun(store_only=store_only, content_rev=record.get("contentRev")))
+                # A marker left by an earlier attempt must not read as this one's outcome.
+                await self._mark_parse_now(record_id, record, ParseNowStatus.IN_PROGRESS)
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:
@@ -2159,7 +2304,8 @@ class RecordEventHandler(BaseEventService):
                                 route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
                             )
                     except Exception as fetch_exc:
-                        if resuming_enrichment or not await self._defer_rate_limited_record(
+                        # A reader is waiting: a deferral of hours is the ordinary retry's job to refuse.
+                        if resuming_enrichment or parse_now or not await self._defer_rate_limited_record(
                             fetch_exc, record_id=record_id, record=record, source=source_name
                         ):
                             raise
@@ -2260,6 +2406,17 @@ class RecordEventHandler(BaseEventService):
                 # duplicates, index notifications); its stage state records the outcome.
                 pass
             elif error_occurred and record_id:
+                if parse_now and current_run() is None:
+                    # Failed before the run began: its writes are still shaped, so a store-only
+                    # record keeps its own status. A record that cannot be read is treated as one.
+                    try:
+                        early = await self.event_processor.graph_provider.get_document(
+                            record_id, CollectionNames.RECORDS.value
+                        )
+                    except Exception:
+                        early = None
+                    store_only = early is None or early.get("indexingStatus") in _STORE_ONLY_STATUSES
+                    begin_run(ParseNowRun(store_only=store_only, content_rev=(early or {}).get("contentRev")))
                 # Only update DB status to FAILED if this is the final failure
                 # (terminal error or dead-letter after max retries)
                 is_final = payload.get("is_final_failure")
@@ -2299,7 +2456,7 @@ class RecordEventHandler(BaseEventService):
                     self.logger.info(
                         f"Record {record_id} was deleted while it was being indexed; nothing to do"
                     )
-                elif is_final and await self._enrichment_still_cut_short(
+                elif is_final and not store_only and await self._enrichment_still_cut_short(
                     record_id, unreadable=resuming_enrichment,
                 ):
                     # Indexed, by this attempt or an earlier one, so its vectors
@@ -2360,7 +2517,7 @@ class RecordEventHandler(BaseEventService):
                         if last_exception is not None:
                             raise last_exception from status_exc
                         raise
-                    if record is not None:
+                    if record is not None and not store_only:
                         virtual_record_id = record.get("virtualRecordId")
                         
                         # Decide duplicate handling based on error type
@@ -2383,7 +2540,7 @@ class RecordEventHandler(BaseEventService):
                                 f"triggering next queued duplicate"
                             )
                             await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
-                    else:
+                    elif record is None:
                         self.logger.warning(f"Record {record_id} not found, skipping duplicate handling")
                 else:
                     # Clear IN_PROGRESS so the record stops counting against
@@ -2399,6 +2556,9 @@ class RecordEventHandler(BaseEventService):
                         )
                         updates: dict = {}
                         if current:
+                            if store_only:
+                                # Its own statuses were never touched; only the marker goes back in line.
+                                updates["indexingStatus"] = ProgressStatus.QUEUED.value
                             if current.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
                                 updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
                             if current.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value:
@@ -2410,7 +2570,7 @@ class RecordEventHandler(BaseEventService):
                             updates["reason"] = RETRY_SCHEDULED
                             updates["processingStartedAt"] = None
                             updated = await self.event_processor.graph_provider.update_node(
-                                record_id, CollectionNames.RECORDS.value, updates
+                                record_id, CollectionNames.RECORDS.value, shape_status_write(updates)
                             )
                             reverted = True
                     except Exception as revert_exc:
@@ -2435,7 +2595,7 @@ class RecordEventHandler(BaseEventService):
                         self.logger.info(
                             f"🔄 Record {record_id} failed but will retry, not updating status to FAILED yet"
                         )
-            elif record is not None and event_type != EventTypes.DELETE_RECORD.value:
+            elif record is not None and event_type != EventTypes.DELETE_RECORD.value and not store_only:
                 # Update queued duplicates for ALL record types (not just FILE)
                 await self._release_queued_copies(record_id)
 
@@ -2445,8 +2605,11 @@ class RecordEventHandler(BaseEventService):
             # stays IN_PROGRESS for redelivery, so the repo is not drained and
             # this would be graph I/O during an unwind. Skipped for a record in
             # the trash too, which is drained like a missing one.
-            if not cancelled and not in_trash:
+            if not cancelled and not in_trash and not parse_now_refused and not store_only:
                 await self._request_code_edge_build_if_repo_drained(record_id, record)
+
+            # Last, so every status write above is shaped by the run.
+            end_run()
 
     async def __update_document_status(
         self,
@@ -2479,13 +2642,13 @@ class RecordEventHandler(BaseEventService):
             if reason:
                 updates["reason"] = reason
             # Each of these statuses ends a record's wait on a rate limit.
-            if is_deferred(record):
+            if is_deferred(record) and not store_only_active():
                 updates.update(cleared_deferral())
 
             success = await self.event_processor.graph_provider.update_node(
                 record_id,
                 CollectionNames.RECORDS.value,
-                updates,
+                shape_status_write(updates),
             )
             if not success:
                 self.logger.warning(

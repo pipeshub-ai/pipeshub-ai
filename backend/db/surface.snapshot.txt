@@ -1211,6 +1211,7 @@ func kg.w_nodes_upsert(smallint[],text[]) owner=pipeshub_vetted_kg secdef=true l
 func kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=2e71bdff7589756a237e177947d0fdcf ext=-
 func kg.w_records_delete(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=ffd03e3d4587772a450530f01b8e3a1d ext=-
 func kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=302660cdf71b21314a58ad2e3c8c3f43 ext=-
+func kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=150c9e5325bf9842791427147713828d ext=-
 func platform.docstore_log_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp body=b3deca7d471ac77b2002c7f13ea80663 ext=-
 func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
@@ -1285,6 +1286,7 @@ funcacl kg.w_nodes_upsert(smallint[],text[]) pipeshub_connectors EXECUTE
 funcacl kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) pipeshub_connectors EXECUTE
 funcacl kg.w_records_delete(bigint[]) pipeshub_connectors EXECUTE
 funcacl kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) pipeshub_connectors EXECUTE
+funcacl kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[]) pipeshub_connectors EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_import EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_jobs EXECUTE
 funcacl platform.job_finish(bigint,text) pipeshub_owner EXECUTE
@@ -1608,6 +1610,7 @@ pin kg.w_nodes_upsert(smallint[],text[]) kg.node_keys upsert key=- set= txn=- ma
 pin kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) kg.projection_state upsert key=- set=code_epoch,mode,verify_digest,backfill_cursor,verified_at txn=- max=5000
 pin kg.w_records_delete(bigint[]) kg.records delete key=sk set=- txn=- max=5000
 pin kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) kg.records upsert key=- set=coll,id,kind,app_sk,group_sk,parent_sk,rule,model,vrid,name,name_key,updated_ms,created_ms,size_bytes,record_type,origin,external_id,deleted,placeholder,granted txn=- max=5000
+pin kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[]) kg.records upsert key=- set=path,class_id,self_lit,seed,own_grant,under_deleted,legacy_reason,leaf txn=- max=5000
 policy content.documents backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy content.documents import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy content.documents org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
