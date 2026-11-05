@@ -1618,6 +1618,7 @@ class RetrievalService:
                         plan=candidate_plan,
                         user_key=user_key,
                         scopes=scopes,
+                        compare=False,
                     )
                     if degraded:
                         return [], {}
@@ -2074,8 +2075,12 @@ class RetrievalService:
         plan: "_QueryPlan | None" = None,
         user_key: str | None = None,
         scopes: Sequence[SelectionScope] = (),
+        compare: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
         """Search under a container filter, then resolve what the user may read.
+
+        ``compare``: hand the finished search to the shadow comparison (when it is on). The deeper read for source diversity passes False: it
+        is the same search read at a greater depth, and one search is compared once.
 
         Returns ``(results, accessible_map, verification_degraded)``. The third
         element is what stops a graph outage being reported as an empty corpus.
@@ -2224,7 +2229,7 @@ class RetrievalService:
             )
 
         plan.failed_collections = best_failed
-        if best_shadow is not None and self._shadow is not None and plan.dense is not None and self.vector_db_service.supports_scope_filter:
+        if compare and best_shadow is not None and self._shadow is not None and plan.dense is not None and self.vector_db_service.supports_scope_filter:
             self._submit_shadow(queries, filter, best_shadow[0], org_id, user_id, user_key, scope_connector_ids, scopes, plan, best_shadow[1], best_shadow[2])
         # Over-fetching is a means, not a promise: drop the headroom this path
         # added, best-scoring first, or by record under the record cut.

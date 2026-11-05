@@ -1477,6 +1477,25 @@ class TestTheShadowComparisonDoesNotChangeTheAnswer:
         assert not [c for c in retrieval_service.logger.method_calls if "shadow" in str(c).lower()]
 
     @pytest.mark.asyncio
+    async def test_the_deeper_read_for_source_diversity_is_not_compared_again(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
+        shadow = MagicMock()
+        mock_vector_db_service.supports_scope_filter = True
+        retrieval_service._shadow = shadow
+        containers = _containers(record_group_ids_verify=frozenset({"rg"}))
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[_hit("v-allowed")])
+        mock_graph_provider.check_access = AsyncMock(return_value=AccessCheck(records_by_vrid={"v-allowed": "r-allowed"}))
+        plan = mod._QueryPlan(dense=[[0.1]], collections=["c"])
+        # the page's own search: one comparison
+        await retrieval_service._search_and_adjudicate(["q"], "F", 10, "o1", "u1", containers, allow_requery=True, scope_connector_ids=None,
+                                                        plan=plan, user_key="user-key")
+        assert shadow.submit.call_count == 1
+        # the same search read deeper for source diversity: none more
+        await retrieval_service._diversity_candidates(
+            ["q"], "F", 40, "o1", "u1", plan, containers=containers, enumerated=None, by_record_ids=AsyncMock(), record_ids_first=False,
+            record_cut=None, allow_requery=True, user_key="user-key", scope_connector_ids=None, scopes=())
+        assert shadow.submit.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_a_store_that_cannot_translate_the_filter_is_never_asked_to_compare(self, retrieval_service, mock_graph_provider, mock_vector_db_service) -> None:
         shadow = MagicMock()
         mock_vector_db_service.supports_scope_filter = False
