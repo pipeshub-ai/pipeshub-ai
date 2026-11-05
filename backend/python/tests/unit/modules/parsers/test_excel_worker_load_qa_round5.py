@@ -168,10 +168,18 @@ def test_an_operator_who_lowers_the_heavy_parse_working_set_is_still_honoured(mo
     assert policy_mod.heavy_memory_cap(snap) == int(31 / 0.5)  # 32 GiB limit, 1 GiB resident
 
 
+def _require_cpu_limit_handler() -> None:
+    # With no handler installed (no RLIMIT_CPU, setup failed, not the main thread) SIGXCPU kills the process.
+    handler = signal.getsignal(signal.SIGXCPU)
+    if not callable(handler):
+        pytest.skip("the CPU-limit handler is not installed here")
+
+
 def test_a_cpu_limit_swallowed_by_a_bare_except_in_openpyxl_is_still_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
     # openpyxl's descriptors.base._convert has a bare `except:` that turns whatever interrupts it into a
     # TypeError; the SIGXCPU handler's exception landing there must not be reported as a loader failure
     def extract(_data: bytes) -> None:
+        _require_cpu_limit_handler()
         try:
             signal.raise_signal(signal.SIGXCPU)
         except:  # noqa: E722 - the clause under test
@@ -190,6 +198,7 @@ def test_a_cpu_limit_swallowed_silently_does_not_return_a_model(monkeypatch: pyt
 
     def extract(data: bytes) -> workbook_model.WorkbookModel:
         model = real_extract(data)  # a valid model, so only the fired limit can stop the load
+        _require_cpu_limit_handler()
         with contextlib.suppress(BaseException):  # a swallowed interrupt, as in openpyxl
             signal.raise_signal(signal.SIGXCPU)
         return model
