@@ -36,6 +36,7 @@ from app.web.search.duckduckgo_html import (
     unwrap_result_link,
 )
 from app.web.search.exa import ExaSearch
+from app.web.search.keenable import KeenableSearch
 from app.web.search.serper import SerperSearch
 from app.web.search.tavily import TavilySearch
 
@@ -260,6 +261,10 @@ class TestApiProviders:
         with pytest.raises(RateLimited) as info:
             await TavilySearch({"apiKey": "k"}, client(respond(429, {}, {"Retry-After": "2"}))).search("q", deadline())
         assert info.value.retry_after_s == 2.0
+
+    async def test_keenable_reply_without_results_is_upstream_error(self) -> None:
+        with pytest.raises(UpstreamError):
+            await KeenableSearch({}, client(respond(200, {}))).search("q", deadline())
 
     async def test_non_json_body(self) -> None:
         with pytest.raises(UpstreamError):

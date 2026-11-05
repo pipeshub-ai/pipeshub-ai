@@ -18071,11 +18071,12 @@ components:
     # Web Search Schemas
     WebSearchProviderType:
       type: string
-      enum: [duckduckgo, serper, tavily, exa, brave, searxng, firecrawl, crawl4ai]
+      enum: [duckduckgo, serper, tavily, exa, brave, searxng, firecrawl, crawl4ai, keenable]
       description: >-
         Supported web search provider. crawl4ai only reads pages (it backs up the built-in page reader)
         and cannot be the default; firecrawl both searches and reads pages. searxng, firecrawl and
-        crawl4ai take a baseUrl; firecrawl defaults to its cloud API.
+        crawl4ai take a baseUrl; firecrawl defaults to its cloud API. keenable works without an
+        apiKey (keyless public endpoint) and uses the keyed endpoint when one is set.
     WebSearchSettingsUpdate:
       type: object
       description: Web search global settings
