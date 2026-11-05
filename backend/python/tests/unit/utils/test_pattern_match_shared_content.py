@@ -72,6 +72,14 @@ class TestContentOwnerConnectorIds:
         assert graph.get_content_owner_connector_ids.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_a_store_without_the_lookup_is_not_asked_again(self) -> None:
+        graph = _graph(NotImplementedError("not on this store"))
+
+        assert await content_owner_connector_ids(graph, "org", SCOPE, MagicMock()) == []
+        assert await content_owner_connector_ids(graph, "org", SCOPE, MagicMock()) == []
+        assert graph.get_content_owner_connector_ids.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_a_slow_lookup_is_given_up_and_not_repeated(self) -> None:
         graph = _graph({OWNER: SharedContentCount(shared=5, records=10)})
 

@@ -998,6 +998,10 @@ async def content_owner_connector_ids(
         )
         _content_owner_cache[key] = []
         return []
+    except NotImplementedError:
+        logger_instance.info("pattern_match: this graph store cannot find shared content, not grepping outside the scope")
+        _content_owner_cache[key] = []
+        return []
     except Exception:
         logger_instance.warning("pattern_match: shared-content lookup failed", exc_info=True)
         return []
