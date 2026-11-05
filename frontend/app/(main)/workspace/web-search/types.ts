@@ -10,7 +10,8 @@ export type WebSearchProviderType =
   | 'brave'
   | 'searxng'
   | 'firecrawl'
-  | 'crawl4ai';
+  | 'crawl4ai'
+  | 'keenable';
 
 export const DUCKDUCKGO_PROVIDER_ID: WebSearchProviderType = 'duckduckgo';
 
@@ -182,6 +183,17 @@ export const WEB_SEARCH_PROVIDER_META: WebSearchProviderMeta[] = [
       },
       apiKeyField('Firecrawl', 'https://www.firecrawl.dev/app/api-keys', false),
     ],
+  },
+  {
+    type: 'keenable',
+    label: 'Keenable',
+    description: 'Web search API; works without a key, a key raises rate limits',
+    icon: 'travel_explore',
+    iconType: 'material',
+    configurable: true,
+    docUrl: 'https://keenable.ai',
+    searches: true,
+    fields: [apiKeyField('Keenable', 'https://keenable.ai', false)],
   },
   {
     type: 'crawl4ai',
