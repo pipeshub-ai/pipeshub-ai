@@ -24,6 +24,18 @@ SCOPE_STAMP_FAILED = METRICS_BACKEND.counter(
     "Scope fields that could not be computed (the point is left without them and keeps the legacy filter), by where",
     ["where"],
 )
+SCOPE_PREFILTER_DROPPED = METRICS_BACKEND.counter(
+    "pipeshub_scope_prefilter_dropped_total",
+    "Points a store's scope pre-filter returned that the exact rule refuses (Redis compares tags without case and reads the connectors it excludes "
+    "just before searching), dropped before the answer is returned, by store",
+    ["store"],
+)
+SCOPE_PREFILTER_CAPPED = METRICS_BACKEND.counter(
+    "pipeshub_scope_prefilter_capped_total",
+    "Scoped searches that asked for the most candidates a store allows and still found fewer valid points than the limit (the candidates the query "
+    "let through were refused by the exact rule), by store",
+    ["store"],
+)
 SHADOW_COMPARED = METRICS_BACKEND.counter(
     "pipeshub_acl_shadow_total",
     "Records compared by the shadow scope filter, by outcome: agree (the filtered search and the post-check both admit), over_admit (the filtered "
