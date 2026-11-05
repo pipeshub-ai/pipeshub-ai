@@ -12,13 +12,20 @@ from app.utils.logger import create_logger
 logger = create_logger("reconciliation_service")
 
 
-def _content_hash(data: Any, title: str | None, headings: list[str] | None = None) -> str:  # noqa: ANN401 - block data is any JSON value
-    """A block's data hash; with a title or headings, of them and the data together."""
+def _content_hash(
+    data: Any,  # noqa: ANN401 - block data is any JSON value
+    title: str | None,
+    headings: list[str] | None = None,
+    record_title: str | None = None,
+) -> str:
+    """A block's data hash; with a title, headings or record title, of them and the data together."""
     hashed = data
-    if title is not None or headings:
+    if title is not None or headings or record_title is not None:
         hashed = {"data": data, "title": title}
         if headings:
             hashed["headings"] = headings
+        if record_title is not None:
+            hashed["record_title"] = record_title
     payload = json.dumps(hashed, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest() + ":" + hashlib.md5(payload).hexdigest()
 
@@ -66,9 +73,15 @@ class ReconciliationService:
     def __init__(self, service_logger=None) -> None:
         self.logger = service_logger or logger
 
-    def build_metadata(self, block_containers: BlocksContainer) -> ReconciliationMetadata:
+    def build_metadata(
+        self, block_containers: BlocksContainer, record_title: str | None = None
+    ) -> ReconciliationMetadata:
         """
         Build reconciliation metadata from a BlocksContainer.
+
+        ``record_title`` is the title text and table rows are embedded under
+        (section paths on): a block's hash covers it, so a reindex after the
+        title changes, or after the switch is turned on, embeds them again.
 
         Block groups are processed first, then blocks. Within each group the
         iteration order matches the container's list order, so the per-hash
@@ -97,8 +110,9 @@ class ReconciliationService:
             title = titles.get(block.parent_index) if block.type == BlockType.TABLE_ROW else None
             # Blocks are embedded under their headings too, so a renamed heading re-embeds them.
             headings = block_heading_path(block)
-            if title is not None or headings or block.content_hash is None:
-                block.content_hash = _content_hash(block.data, title, headings)
+            under = record_title if block.type in (BlockType.TEXT, BlockType.TABLE_ROW) else None
+            if title is not None or headings or under is not None or block.content_hash is None:
+                block.content_hash = _content_hash(block.data, title, headings, under)
             if block.content_hash:
                 hash_to_block_ids.setdefault(block.content_hash, []).append(block.id)
                 block_id_to_index[block.id] = i

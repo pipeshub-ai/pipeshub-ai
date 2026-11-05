@@ -610,7 +610,7 @@ def _opening_line(text_blocks: list[object]) -> str:
     return line
 
 
-def _record_title(record: Optional["Record"], block_containers: BlocksContainer) -> str:
+def embedding_title(record: Optional["Record"], block_containers: BlocksContainer) -> str:
     """What a record's text is embedded under as its title.
 
     The title the document gives itself comes first, then the record's name (a
@@ -936,7 +936,7 @@ class VectorStore(Transformer):
         # A changed row's heading may be an unchanged block left out below.
         titles = table_titles(block_containers.blocks, block_containers.block_groups)
         record_title = (
-            _record_title(record, block_containers) if section_paths_enabled() else None
+            embedding_title(record, block_containers) if section_paths_enabled() else None
         )
 
         if (
@@ -1972,7 +1972,7 @@ class VectorStore(Transformer):
         if not section_paths_enabled():
             record_title = None
         elif record_title is None:
-            record_title = _record_title(record, block_containers)
+            record_title = embedding_title(record, block_containers)
 
         tokens = await self._bind_membership(virtual_record_id, record)
         try:
