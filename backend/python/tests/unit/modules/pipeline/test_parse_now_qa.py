@@ -84,19 +84,27 @@ async def test_slow_broker_then_slow_graph_never_exceeds_the_one_budget(monkeypa
 
 
 async def test_a_graph_read_that_hangs_during_the_wait_is_cut_at_the_deadline() -> None:
+    entered, cancelled, finished = asyncio.Event(), asyncio.Event(), []
+
     class Hang(_Docs):
         async def __call__(self, document_key, collection="", **kw) -> object:
             if self.reads.get(document_key, 0) >= 1:
-                await asyncio.sleep(3600)
+                entered.set()
+                try:
+                    await asyncio.Event().wait()  # never set: only the deadline can end this read
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+                finished.append(document_key)
             return await super().__call__(document_key, collection, **kw)
 
     docs = Hang({"r0": [_row("QUEUED")]})
     asker = _asker(AsyncMock(return_value=True), wait=0.3)
 
-    t0 = time.monotonic()
-    result = await _fetch(["r0"], graph_provider=_provider(docs), parse_now=asker)
+    # no wall-clock bound: without the deadline this read never ends, so the outer timeout (far above any runner delay) fails the test
+    result = await asyncio.wait_for(_fetch(["r0"], graph_provider=_provider(docs), parse_now=asker), 30)
 
-    assert time.monotonic() - t0 < 0.8
+    assert entered.is_set() and cancelled.is_set() and not finished  # the hung read was cut, and nothing completed past the deadline
     assert result["unavailable_reasons"]["r0"] == "content_being_prepared"
 
 
