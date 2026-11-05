@@ -79,6 +79,16 @@ def test_too_large_a_list_is_refused_not_truncated() -> None:
         flt(readable_groups=frozenset(str(i) for i in range(100_001))).lists()
 
 
+def test_the_sorted_lists_are_computed_once_per_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    f = flt()
+    calls: list[int] = []
+    real = sorted
+    monkeypatch.setattr("builtins.sorted", lambda x, *a, **k: (calls.append(1), real(x, *a, **k))[1])
+    first = f.lists()
+    assert len(calls) == 5 and f.lists() is first and scope_sql.predicate(f, 12) and len(calls) == 5   # later calls (statement, key, args) sort nothing
+    assert first == (["c1"], ["c1"], ["g1"], ["c1", "g1", "s1"], ["x1"])
+
+
 @pytest.mark.parametrize("store", ["Qdrant", "OpenSearch", "Redis"])
 def test_a_store_that_cannot_translate_the_filter_refuses_the_request(store: str) -> None:
     with pytest.raises(NotImplementedError):
