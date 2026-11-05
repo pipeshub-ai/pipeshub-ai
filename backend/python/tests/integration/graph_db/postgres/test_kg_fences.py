@@ -468,3 +468,46 @@ async def test_a_rows_job_whose_records_reach_another_connector_takes_its_lock_a
     assert await marks(p, org) == 0 and await jobs(pg_db, org) == []
     for app in ("app1", "app2"):
         assert await dry_diffs(p, org, app) == []
+
+
+async def test_hiding_records_of_no_connector_asks_for_the_whole_organisation_before_it_writes(pg_db) -> None:
+    from app.services.graph_db.postgres.kg.locks import NeedLocks
+    p, org = prov(pg_db), new_org()
+    await fat(p, org, 2)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "orphan", "recordName": "orphan", "orgId": org, "recordType": "FILE", "origin": "UPLOAD"}], "records")      # no connectorId
+    await drain_org(pg_db, org)
+
+    async def go(tx) -> tuple:
+        no_app = await tx.fetchval("SELECT count(*) FROM kg.records r JOIN kg.node_keys k ON k.org_id = r.org_id AND k.sk = r.sk WHERE r.org_id = $1 AND k.id = 'orphan' AND r.app_sk IS NULL", org)
+        try:
+            await restamp.enqueue_rows(tx, org, {("records", "orphan")}, "reach", locked={"app1"})
+        except NeedLocks as e:
+            return no_app, e.wide
+        return no_app, None
+    assert await run_in(pg_db, org, go, write=True) == (1, True)                         # a record of no connector has no lock of its own: the unit asks for the organisation's
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == []
+
+
+async def test_a_batch_slower_than_the_staleness_keeps_its_claim_by_heartbeat(pg_db, monkeypatch) -> None:
+    import asyncio
+
+    from app.services.graph_db.postgres.kg import stamp as stamp_mod
+    p, org = prov(pg_db), new_org()
+    await fat(p, org, 4)
+    await drain_org(pg_db, org)
+    await narrow(p, org)
+    await drain_org(pg_db, org)
+    real = stamp_mod.stamp_keys
+
+    async def slow(*a: object, **k: object) -> object:
+        await asyncio.sleep(1.5)                                  # five times the staleness below
+        return await real(*a, **k)
+    monkeypatch.setattr(stamp_mod, "stamp_keys", slow)
+    job = await restamp.claim(pg_db, org, "w1", stale_ms=300)
+    assert job is not None
+    task = asyncio.get_running_loop().create_task(restamp.run_batch(pg_db, org, job, "w1", batch=50, stale_ms=300))
+    await asyncio.sleep(0.9)
+    assert await restamp.claim(pg_db, org, "w2", stale_ms=300) is None                     # w1's heartbeat has kept the claim fresh while its batch runs
+    done, _ = await asyncio.wait_for(task, 30)
+    assert done and await marks(p, org) == 0
