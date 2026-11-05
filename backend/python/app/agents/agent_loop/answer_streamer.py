@@ -243,6 +243,9 @@ class TerminalAnswerStreamer:
         terminal tool instead of continuing it, so the carried-over text is
         not part of the answer."""
         if not self._carried:
+            # Nothing of this turn is on screen yet, but a reply sent back may be.
+            if self._stale_on_screen and not self._buffer:
+                await self._clear_preamble()
             return
         self._buffer = self._buffer[self._carried:]
         self._carried = 0
