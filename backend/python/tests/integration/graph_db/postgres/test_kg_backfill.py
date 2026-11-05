@@ -86,6 +86,24 @@ async def test_a_backfill_copies_a_connector_and_flips_it_to_shadow_with_its_dig
     assert again.flipped and again.batches == 0 and again.result.digest == out.result.digest
 
 
+async def test_a_connector_copied_after_its_neighbour_takes_the_neighbours_parent_out_of_leaf(pg_db) -> None:
+    """f2 (first connector) is the parent of x1 (second). The first connector is copied and stamped while kg holds no row for x1, so f2 is stamped a leaf; copying the second
+    connector must restamp f2, which its own restamp does not cover."""
+    p, org = await fresh_world(pg_db)
+    await add_edge(p, org, ("records", "f2"), ("records", "x1"), "nodeRelations", relationshipType="PARENT_CHILD")
+
+    async def clear(tx) -> None:
+        await KgWriter(tx).changes_delete([r["id"] for r in await tx.fetch("SELECT id FROM kg.graph_changes WHERE org_id = $1", org)])
+    await run_in(pg_db, org, clear, write=True)
+
+    async def leaf(tx) -> bool:
+        return (await tx.fetchrow("SELECT r.leaf FROM kg.records r JOIN kg.node_keys n ON n.org_id = r.org_id AND n.sk = r.sk WHERE r.org_id = $1 AND n.id = 'f2'", org))["leaf"]
+    await bf.backfill(pg_db, org, "app1", page=3)
+    assert await run_in(pg_db, org, leaf) is True                          # kg holds no child of f2 yet
+    await bf.backfill(pg_db, org, "app2", page=3)
+    assert await run_in(pg_db, org, leaf) is False
+
+
 async def test_a_backfill_that_is_cut_resumes_at_its_last_committed_batch(pg_db, monkeypatch) -> None:
     p, org = await fresh_world(pg_db)
     part = await bf.backfill(pg_db, org, "app1", page=2, max_batches=1)

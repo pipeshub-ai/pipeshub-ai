@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.services.graph_db.postgres.kg import stampgraph
-from app.services.graph_db.postgres.kg.dependents import held_keys
+from app.services.graph_db.postgres.kg.dependents import held_apps, held_keys, parents_of
 from app.services.graph_db.postgres.kg.locks import NeedLocks
 from app.services.graph_db.postgres.kg.model import (
     CODE_COLL,
@@ -349,6 +349,8 @@ async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int
     keys = {(r["coll"], r["id"]) for r in rows}
     if not dry:      # a record kg holds no row for is not given one of nothing but stamps: its own projection writes the row
         keys = await held_keys(tx, org, keys)
+        # A parent in another connector gained this page's child, which kg may not have held when that connector was stamped: its ``leaf`` is restamped now, under its lock (NeedLocks asks for it).
+        keys |= {k for k, a in (await held_apps(tx, org, await parents_of(tx, org, keys))).items() if a != app_id}
     await stamp_keys(tx, org, keys, st, app_sks=app_sks, facts=facts, dry=dry, locked=locked)
     return stampgraph.nk(rows[-1]["coll"], rows[-1]["id"])
 
