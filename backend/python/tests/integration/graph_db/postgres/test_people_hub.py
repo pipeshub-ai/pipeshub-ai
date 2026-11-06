@@ -233,15 +233,16 @@ async def test_a_merge_that_fails_part_way_leaves_everything_as_it_was_and_goes_
 
     async def flaky(edges: list, collection: str, transaction: str | None = None, **kw: object) -> bool:
         calls["n"] += 1
-        if collection == "permission":
+        if collection == "userAppRelation":          # after the permissions have been moved
             raise RuntimeError("store down")
         return await real(edges, collection, transaction, **kw)
     monkeypatch.setattr(w.p, "batch_create_edges", flaky)
     with pytest.raises(RuntimeError):
         await w.p.apply_verified_user_email(LOGIN, w.org, "new@x.io")
     assert calls["n"] >= 1
-    assert await w.p.get_document("stub1", "users") is not None and await role(w, "login", "r") == "READER"
-    assert len(await w.p.get_edges_from_node("users/login", "userAppRelation")) == 0          # the moves before the failure were rolled back with it
+    assert await w.p.get_document("stub1", "users") is not None and await role(w, "login", "r") == "READER"          # the permissions moved before the failure went back with it
+    assert await role(w, "login", "only_stub") is None
+    assert len(await w.p.get_edges_from_node("users/login", "userAppRelation")) == 0
     assert (await w.p.get_document("login", "users"))["email"] == "old@x.io"
     monkeypatch.setattr(w.p, "batch_create_edges", real)
     assert (await w.p.apply_verified_user_email(LOGIN, w.org, "new@x.io"))["mergedStubKeys"]

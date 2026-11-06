@@ -786,8 +786,8 @@ class IdentityMixin(PgBase):
         return {"email": email, "mergedStubKeys": stubs, "connectorIds": connector_ids}
 
     async def _absorb_user_stub(self, keep_key: str, stub_key: str, tid: str) -> None:
-        """Moves the stub's edges to the login user, then removes the stub. Edges between the two are dropped with the stub; stub edges that share an
-        identity (the other end and the edge's key) collapse into one; one the login already has stays, except that a stronger permission role replaces it."""
+        """Moves the stub's edges to the login user, then removes the stub. Edges between the two are dropped with the stub; an edge the login already has (same other end and
+        key) stays, except that a stronger permission role replaces it."""
         def rank(e: dict) -> int:
             return PERMISSION_ROLE_RANK.get(str(e.get("role") or "").upper(), 0)
 
@@ -800,15 +800,10 @@ class IdentityMixin(PgBase):
                     far = (e["from_collection"], e["from_id"]) if incoming else (e["to_collection"], e["to_id"])
                     return (*far, _ekey(coll, e))
                 held = {ident(e): e for e in await read(f"users/{keep_key}", coll, tid, raise_on_error=True)}
-                best: dict[tuple, dict] = {}
                 for e in await read(f"users/{stub_key}", coll, tid, raise_on_error=True):
                     k = ident(e)
-                    if k[1] in (stub_key, keep_key) or (k in best and not (coll == "permission" and rank(e) > rank(best[k]))):
-                        continue
-                    best[k] = e
-                for k, e in best.items():
                     have = held.get(k)
-                    if have is not None and not (coll == "permission" and rank(e) > rank(have)):
+                    if k[1] in (stub_key, keep_key) or (have is not None and not (coll == "permission" and rank(e) > rank(have))):
                         continue
                     props = {k2: v for k2, v in {**(have or {}), **e}.items() if k2 not in ("_from", "_to", "_key", "from_id", "to_id", "from_collection", "to_collection")}
                     ends = {"from_collection": k[0], "from_id": k[1], "to_collection": "users", "to_id": keep_key} if incoming else {
