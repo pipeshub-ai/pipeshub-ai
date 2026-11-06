@@ -224,7 +224,7 @@ async def test_degrees_with_the_real_row_limit_ignore_many_hidden_rows(monkeypat
     g = hub(60)
     for i in range(60):
         call(g, "k_caller", f"h{i:03d}")
-    for i in range(4):
+    for _ in range(4):
         call(g, "k_caller", "k_target")
     out = await _degrees(g, [g.blocks["k_caller"], g.blocks["k_panel"]], ["CALLS"], ORG, RecordAccess(g, ORG, USER))
     assert out == ({"k_caller": 4}, False)

@@ -65,8 +65,8 @@ async def test_the_postgres_cursor_ends_with_the_edge_key() -> None:
         def __init__(self) -> None:
             self.logger = MagicMock()
 
-        async def _q(self, fn, transaction=None):  # noqa: ANN001, ANN201
-            return await fn(Tx())
+        async def _q(self, fn: object, transaction: object = None) -> list:
+            return await fn(Tx())  # type: ignore[operator]
 
     with bind(OrgContext("org-1", None, "job", "job:test", "t")):
         await P().get_neighbors_for_nodes_by_relationship_types(["a"], "blocks", ["CALLS"], "outbound", after="")
