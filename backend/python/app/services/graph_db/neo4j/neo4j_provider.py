@@ -3843,7 +3843,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 labels = row.get("labels") or []
                 key = row.get("key")
                 if labels and key:
-                    result.append(f"{label_to_collection(labels[0])}/{key}")
+                    result.append(f"{collection_of_labels(labels) or label_to_collection(labels[0])}/{key}")
             return result
         except Exception as e:
             self.logger.error(f"❌ Get edges by target keys failed: {str(e)}")
@@ -4144,7 +4144,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for row in results or []:
                 labels = row.get("labels") or []
                 neighbours.append({
-                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "collection": (collection_of_labels(labels) or label_to_collection(labels[0])) if labels else "",
                     "key": row.get("key"),
                     "relationshipType": row.get("relationshipType"),
                     "sourceLineNumber": row.get("sourceLineNumber"),
@@ -4236,7 +4236,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 neighbours.append({
                     **({"cursor": row.get("cursor")} if paged else {}),
                     "anchorKey": row.get("anchorKey"),
-                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "collection": (collection_of_labels(labels) or label_to_collection(labels[0])) if labels else "",
                     "key": row.get("key"),
                     "direction": row.get("direction"),
                     "relationshipType": row.get("relationshipType"),

@@ -74,3 +74,14 @@ async def test_the_postgres_cursor_ends_with_the_edge_key() -> None:
     with bind(OrgContext("org-1", None, "job", "job:test", "t")):
         await P().get_neighbors_for_nodes_by_relationship_types(["a"], "blocks", ["CALLS"], "outbound", after="")
     assert "e.edge_coll, e.ekey) COLLATE" in seen[0]
+
+
+# labels() has no order: a record that also carries an auxiliary label (KhInherits) must still read as a record.
+@pytest.mark.parametrize("after", [None, ""])
+async def test_a_neighbour_with_an_auxiliary_first_label_keeps_its_collection(after) -> None:
+    p, run = _neo4j()
+    run.return_value = [{"cursor": "c1", "anchorKey": "a", "labels": ["KhInherits", "Record"], "key": "r"}]
+    rows = await p.get_neighbors_for_nodes_by_relationship_types(["a"], "blocks", ["CALLS"], "inbound", after=after)
+    assert rows[0]["collection"] == "records"
+    single = await p.get_neighbors_by_relationship_types("a", "blocks", ["CALLS"], "inbound")
+    assert single[0]["collection"] == "records"
