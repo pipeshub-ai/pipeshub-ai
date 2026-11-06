@@ -136,8 +136,11 @@ export function classifyError(errorOrStatus: unknown): ErrorClass {
 /**
  * The class of a request that failed with `error` and was answered
  * `answeredStatus`. It always agrees with that status: a 500 (or a failure
- * after a 2xx was sent) is ours (`internal`) unless its cause says an upstream
- * failed; any other status decides by itself.
+ * after a 2xx was sent) is ours (`internal`) unless our own code wrapped an
+ * upstream failure on purpose (a BaseError with that cause). A driver or
+ * library error nobody handled stays `internal`, even when a refused
+ * connection sits in its chain (our own database down): it needs a human.
+ * Any other status decides by itself.
  */
 export function classifyRequestError(
   error: unknown,
@@ -145,7 +148,9 @@ export function classifyRequestError(
 ): ErrorClass {
   const fromError = classifyError(error);
   if (answeredStatus === 500 || answeredStatus < 400) {
-    return UPSTREAM_CLASSES.has(fromError) ? fromError : 'internal';
+    return error instanceof BaseError && UPSTREAM_CLASSES.has(fromError)
+      ? fromError
+      : 'internal';
   }
   return fromError === 'cancelled'
     ? 'cancelled'

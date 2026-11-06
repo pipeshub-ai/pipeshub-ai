@@ -18,6 +18,7 @@ import { RedisServiceNotInitializedError } from '../../../src/libs/errors/redis.
 import { ConnectionError } from '../../../src/libs/errors/database.errors'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../src/libs/errors/backend-error'
 import { Logger } from '../../../src/libs/services/logger.service'
+import { MongoNetworkError, MongoServerSelectionError } from 'mongodb'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -506,6 +507,25 @@ describe('ErrorMiddleware', () => {
       const fields = loggerWarnStub.firstCall.args[1]
       expect(fields).to.include({ status: 503, error_class: 'unavailable', error_type: 'ServiceUnavailableError' })
       expect(fields.error.cause).to.equal(original)
+    })
+
+    it('logs our own database being down as one ERROR with the stack, not as an unreachable upstream', () => {
+      const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:27017'), { code: 'ECONNREFUSED' })
+      const network = new MongoNetworkError('connect ECONNREFUSED 127.0.0.1:27017', { cause: refused })
+      const mongoDown = new MongoServerSelectionError('connect ECONNREFUSED 127.0.0.1:27017', { error: network } as never)
+      const res = createMockResponse()
+
+      handler(mongoDown, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+      expect(loggerWarnStub.called).to.be.false
+      expect(loggerErrorStub.calledOnce).to.be.true
+      expect(loggerErrorStub.firstCall.args[1]).to.include({
+        status: 500,
+        error_class: 'internal',
+        error_type: 'MongoServerSelectionError',
+        error: mongoDown,
+      })
     })
 
     it('logs a timed-out call as timeout at warn', () => {

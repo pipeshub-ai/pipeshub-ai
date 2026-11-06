@@ -16,6 +16,7 @@ import {
   UnauthorizedError,
 } from '../../../src/libs/errors/http.errors'
 import { withCause } from '../../../src/libs/errors/base.error'
+import { MongoNetworkError, MongoServerSelectionError } from 'mongodb'
 
 const axiosAnswered = (status: number): AxiosError =>
   new AxiosError(`Request failed with status code ${status}`, 'ERR_BAD_RESPONSE', undefined, {}, {
@@ -29,6 +30,13 @@ const fetchRefused = (): TypeError =>
   Object.assign(new TypeError('fetch failed'), {
     cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8000'), { code: 'ECONNREFUSED' }),
   })
+
+/** What the driver throws when our own Mongo is down: MongoServerSelectionError -> MongoNetworkError -> ECONNREFUSED. */
+const mongoDown = (): MongoServerSelectionError => {
+  const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:27017'), { code: 'ECONNREFUSED' })
+  const network = new MongoNetworkError('connect ECONNREFUSED 127.0.0.1:27017', { cause: refused })
+  return new MongoServerSelectionError('connect ECONNREFUSED 127.0.0.1:27017', { error: network } as never)
+}
 
 describe('error-class', () => {
   describe('classifyError(status): the table shared with Python', () => {
@@ -110,6 +118,14 @@ describe('error-class', () => {
     it('a 500 of ours takes an upstream class from its cause', () => {
       expect(classifyRequestError(withCause(new InternalServerError('x'), axiosAnswered(502)), 500)).to.equal('upstream_5xx')
       expect(classifyRequestError(withCause(new InternalServerError('x'), fetchRefused()), 500)).to.equal('unavailable')
+    })
+
+    it('a driver error nobody wrapped is ours, even with ECONNREFUSED in its chain (our own database down)', () => {
+      expect(classifyError(mongoDown())).to.equal('unavailable')
+      expect(classifyRequestError(mongoDown(), 500)).to.equal('internal')
+      expect(classifyRequestError(fetchRefused(), 500)).to.equal('internal')
+      expect(classifyRequestError(new DOMException('timed out', 'TimeoutError'), 500)).to.equal('internal')
+      expect(classifyRequestError(withCause(new InternalServerError('x'), mongoDown()), 500)).to.equal('unavailable')
     })
 
     it('any other status decides by itself; a failure after a 2xx is ours', () => {
