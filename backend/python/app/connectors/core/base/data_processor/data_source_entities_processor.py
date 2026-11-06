@@ -2258,6 +2258,13 @@ class DataSourceEntitiesProcessor:
         if record.external_revision_id != existing_record.external_revision_id:
             return False
         stored = existing_record.indexing_status
+        if (
+            stored == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+            and DataSourceEntitiesProcessor._file_type_changed(record, existing_record)
+        ):
+            # The type can become supported with the revision unchanged (an object
+            # store's MD5 does not move): the outcome was for the old type.
+            return False
         if stored == ProgressStatus.QUEUED.value:
             return record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
         return stored in INDEXING_OUTCOME_STATUSES or stored in INDEXING_PENDING_STATUSES

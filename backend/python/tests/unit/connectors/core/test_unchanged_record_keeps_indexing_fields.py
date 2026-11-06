@@ -24,6 +24,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     INDEXING_PENDING_STATUSES,
     INDEXING_REOPENED_STATUSES,
     DataSourceEntitiesProcessor,
+    _requests_index_event,
 )
 from app.models.entities import FileRecord, Record, RecordType
 
@@ -183,3 +184,22 @@ async def test_changed_password_protected_record_starts_clean() -> None:
 
     assert processed.indexing_status != ProgressStatus.PASSWORD_PROTECTED.value
     assert processed.md5_hash is None
+
+
+@pytest.mark.parametrize(
+    ("asked", "expected"),
+    [
+        (None, ProgressStatus.NOT_STARTED.value),
+        (ProgressStatus.AUTO_INDEX_OFF.value, ProgressStatus.AUTO_INDEX_OFF.value),
+    ],
+)
+async def test_unchanged_unsupported_record_that_gains_a_supported_type_is_reopened(
+    asked: str | None, expected: str
+) -> None:
+    stored = _stored(ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, mime_type="application/octet-stream")
+    incoming = _incoming(status=asked)
+    incoming.mime_type = "application/pdf"
+    processed, _ = await _processor()._process_record(incoming, [], _store(stored))
+
+    assert processed.indexing_status == expected
+    assert _requests_index_event(processed) is (expected == ProgressStatus.NOT_STARTED.value)
