@@ -34,7 +34,7 @@ _MAX_ERROR_TEXT_CHARS = 500
 
 class MCPOAuthError(Exception):
     """Raised when a token exchange/refresh request fails. `error_code` is the RFC 6749 `error`
-    the provider sent, when it sent one; `status` is the token endpoint's HTTP status, when it answered."""
+    the provider sent, when it sent one; `status` is the token endpoint's HTTP status, when it answered with an error."""
 
     def __init__(self, message: str = "", *, error_code: Optional[str] = None, status: Optional[int] = None) -> None:
         super().__init__(message)
