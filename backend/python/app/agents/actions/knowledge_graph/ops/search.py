@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
@@ -45,6 +45,10 @@ from app.agents.actions.knowledge_graph.ops.results import (
 )
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, search_scope
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+from app.agents.agent_loop.candidate_reading import (
+    candidate_reading_enabled,
+    note_search_ranks,
+)
 from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
 from app.core.org_context import spawn_in_request
 from app.modules.agents.qna.chat_state import (
@@ -104,6 +108,7 @@ from app.utils.pattern_match import (
     grep_hits_within,
     merge_pattern_match_results,
     pattern_match_wait_budget,
+    release_task,
     render_pattern_match_coverage_note,
     render_pattern_match_hint,
     run_pattern_match_with_llm_grep,
@@ -531,6 +536,8 @@ async def execute_search(
     entity_ids: list[str] | None = None,
     scope_virtual_record_ids: list[str] | None = None,
     preamble: str = "",
+    max_result_chars: int | None = None,
+    keyword_wait_s: float | None = None,
 ) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope (see
     `_execute_search`).
@@ -540,9 +547,14 @@ async def execute_search(
     empty one searches nothing, and grep, which knows no such scope, stays off.
     ``preamble`` opens the result: the rendered text, where it counts toward
     the result size, or the ``entities`` field of a JSON result.
+    ``max_result_chars`` sizes the result below the request's own cap, for a
+    search run in code beside others. ``keyword_wait_s`` caps how long it waits
+    for keyword matches after the semantic results, whatever the request or
+    ``HIGH_ACCURACY_MODE`` asks, for a caller bounded by a timeout of its own.
 
-    Without a scope, dates over a span longer than a month run the timeline
-    tool's search instead (``ops/timeline.automatic_timeline_search``).
+    Without a scope or a size, dates over a span longer than a month run the
+    timeline tool's search instead (``ops/timeline.automatic_timeline_search``),
+    whose result is sized to the request's cap.
 
     With dates, the same search also runs once without them, and its best
     matches written outside the dates are listed after the results
@@ -561,7 +573,7 @@ async def execute_search(
             created_after=created_after, created_before=created_before,
             modified_after=modified_after, modified_before=modified_before,
         )
-    if scope_virtual_record_ids is None:
+    if scope_virtual_record_ids is None and max_result_chars is None:
         from app.agents.actions.knowledge_graph.ops.timeline import (
             automatic_timeline_search,
         )
@@ -579,8 +591,17 @@ async def execute_search(
         created_after=created_after, created_before=created_before,
         modified_after=modified_after, modified_before=modified_before,
         entity_ids=entity_ids, scope_virtual_record_ids=scope_virtual_record_ids, preamble=preamble,
+        max_result_chars=max_result_chars, keyword_wait_s=keyword_wait_s,
     )
     return with_json_preamble(result, preamble)
+
+
+def _keyword_wait(requested: str | None, cap: float | None) -> float | None:
+    """The request's keyword wait (``pattern_match_wait_budget``), no longer than ``cap``."""
+    wait = pattern_match_wait_budget(requested)
+    if cap is None:
+        return wait
+    return cap if wait is None else min(wait, cap)
 
 
 def with_json_preamble(result: str | list[Part], preamble: str) -> str | list[Part]:
@@ -609,6 +630,8 @@ async def _execute_search(
     entity_ids: list[str] | None = None,
     scope_virtual_record_ids: list[str] | None = None,
     preamble: str = "",
+    max_result_chars: int | None = None,
+    keyword_wait_s: float | None = None,
 ) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope.
 
@@ -658,6 +681,9 @@ async def _execute_search(
 
     # Declared outside the try so the finally can always cancel them.
     pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
+    # Set once `await_pattern_match` has had it: that wait already gave it a
+    # bounded grace to stop, which the finally must not extend.
+    pattern_match_waited = False
     # The same search without its date bounds (``ops/outside_dates``).
     outside_dates_task: asyncio.Task[Any] | None = None
     # Records matching by name whose content is not indexed yet (None: failed).
@@ -1090,9 +1116,10 @@ async def _execute_search(
 
         raw_pattern_records: list[dict[str, Any]] = []
         if pattern_match_task is not None:
+            pattern_match_waited = True
             raw_pattern_records = await await_pattern_match(
                 pattern_match_task, logger_instance, run_timer=state.get("_run_timer"),
-                wait_budget=pattern_match_wait_budget(state.get("keyword_search_budget")),
+                wait_budget=_keyword_wait(state.get("keyword_search_budget"), keyword_wait_s),
                 found_so_far=grep_found,
                 coverage=grep_coverage,
             )
@@ -1194,6 +1221,9 @@ async def _execute_search(
         # what an earlier search of this request showed giving way to new text.
         targeted = targeted_retrieval_enabled()
         result_max_chars = search_max_chars() if targeted else DEFAULT_MAX_RESULT_CHARS
+        if max_result_chars:
+            # Smaller, never larger: the request's cap would cut the rest mid-record.
+            result_max_chars = min(max_result_chars, result_max_chars)
         per_record = passages_per_record(adjusted_limit) if targeted else 0
         passage_cap: PassageCap | None = None
         if targeted and knowledge.ranked:
@@ -1360,6 +1390,8 @@ async def _execute_search(
         state["fetch_plan"] = result_frame.plan
 
         _note_provenance(state, final_results, shown_records, raw_pattern_records)
+        if candidate_reading_enabled():
+            note_search_ranks(cast("dict[str, Any]", state), final_results, shown_records)
         remember_shown_results(state, [*final_results, *pm_shown], shown_records)
         if targeted:
             remember_shown(state, final_results)
@@ -1388,6 +1420,9 @@ async def _execute_search(
         return json.dumps({"status": "error", "message": f"Search error: {exc}"})
     finally:
         # No-op once awaited; stops the grep + LLM call when semantic search fails.
-        await cancel_task_if_running(pattern_match_task)
+        if pattern_match_waited:
+            release_task(pattern_match_task)
+        else:
+            await cancel_task_if_running(pattern_match_task)
         await cancel_task_if_running(outside_dates_task)
         await cancel_task_if_running(title_task)

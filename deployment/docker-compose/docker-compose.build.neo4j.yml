@@ -189,6 +189,26 @@ services:
       - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
+      # Opt-in only: an enterprise-search answer is checked for evidence of
+      # every part of the question, and gaps are searched, before it is final.
+      - COVERAGE_LOOP=${COVERAGE_LOOP:-}
+      - COVERAGE_LOOP_FACETS=${COVERAGE_LOOP_FACETS:-}
+      - COVERAGE_LOOP_GATE=${COVERAGE_LOOP_GATE:-}
+      - COVERAGE_LOOP_ADJUDICATION=${COVERAGE_LOOP_ADJUDICATION:-}
+      - COVERAGE_LOOP_PROMPT=${COVERAGE_LOOP_PROMPT:-}
+      - COVERAGE_LOOP_FACET_SEARCHES=${COVERAGE_LOOP_FACET_SEARCHES:-}
+      - COVERAGE_LOOP_GATE_ROUNDS=${COVERAGE_LOOP_GATE_ROUNDS:-}
+      - COVERAGE_LOOP_GATE_SEARCHES=${COVERAGE_LOOP_GATE_SEARCHES:-}
+      - COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S=${COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S:-}
+      # Opt-in only, with COVERAGE_LOOP: a cited answer that opens with a limitation
+      # or disputes the question's wording goes back once to lead with the answer.
+      - ANSWER_OPENING_CHECK=${ANSWER_OPENING_CHECK:-}
+      - ANSWER_OPENING_CHECK_DISPUTE=${ANSWER_OPENING_CHECK_DISPUTE:-}
+      # Opt-in only: before an enterprise-search answer is final, send it back once
+      # to add the specifics its records give, and to read top search results it skipped.
+      - ANSWER_COMPLETENESS_PASS=${ANSWER_COMPLETENESS_PASS:-}
+      - ANSWER_CANDIDATE_READING=${ANSWER_CANDIDATE_READING:-}
+      - ANSWER_SCOPE_GUARD=${ANSWER_SCOPE_GUARD:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}

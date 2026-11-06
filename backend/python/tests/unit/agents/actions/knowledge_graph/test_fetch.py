@@ -539,3 +539,11 @@ class TestFetchTraceForTheOptInFrame:
         ctx = await self._fetch()
 
         assert "fetch_render_outcomes" not in ctx.tool_state
+
+    @pytest.mark.asyncio
+    async def test_the_coverage_gate_also_keeps_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("COVERAGE_LOOP", "true")
+        ctx = await self._fetch()
+
+        [outcome] = ctx.tool_state["fetch_render_outcomes"]["rec-1"]
+        assert outcome["shownBlocks"] == [0, 1, 2]

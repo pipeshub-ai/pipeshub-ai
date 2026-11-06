@@ -15,15 +15,22 @@ is the same for every question and stays inside the cached prompt prefix.
   search turns per question.
 - MULTI_STEP_ANSWER_RULES: every prompt that grants knowledge retrieval
   gets rules for questions that chain several lookups.
+
+ANSWER_SCOPE_GUARD is the exception: off unless "true", whatever
+HIGH_ACCURACY_MODE says. The steps after a draft (candidate reading, the
+completeness pass) then take added specifics only from records about the
+asked scope, and other records add one attributed line, never a competing
+requirement.
 """
 
 from __future__ import annotations
 
-from app.utils.env_utils import accuracy_feature_enabled
+from app.utils.env_utils import accuracy_feature_enabled, env_bool
 
 ANSWER_COMPOSITION_RULES_ENV_VAR = "ANSWER_COMPOSITION_RULES"
 THOROUGH_RETRIEVAL_ENV_VAR = "THOROUGH_RETRIEVAL"
 MULTI_STEP_ANSWER_RULES_ENV_VAR = "MULTI_STEP_ANSWER_RULES"
+ANSWER_SCOPE_GUARD_ENV_VAR = "ANSWER_SCOPE_GUARD"
 
 # Set by `chat_modes.bridge` for an enterprise-search chat under
 # THOROUGH_RETRIEVAL, so the fetch policy in Finding Information agrees with
@@ -55,6 +62,10 @@ def answer_composition_rules_enabled() -> bool:
 
 def thorough_retrieval_enabled() -> bool:
     return accuracy_feature_enabled(THOROUGH_RETRIEVAL_ENV_VAR)
+
+
+def answer_scope_guard_enabled() -> bool:
+    return env_bool(ANSWER_SCOPE_GUARD_ENV_VAR, False)
 
 
 def multi_step_answer_rules() -> str | None:
