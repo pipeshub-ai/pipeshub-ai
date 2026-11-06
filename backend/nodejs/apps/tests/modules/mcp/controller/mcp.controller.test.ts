@@ -472,6 +472,61 @@ describe('MCP Controller — handleMCPRequest', () => {
     })
   })
 
+  describe('MCP Apps for Google clients', () => {
+    let createOpts: any
+
+    beforeEach(() => {
+      createOpts = undefined
+      mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
+        createOpts = opts
+        return { server: { registerTool: () => undefined, connect: sinon.stub().resolves(), server: {} } }
+      })
+    })
+
+    const serveWith = async (headers: Record<string, string>, body: unknown = { jsonrpc: '2.0', id: 1, method: 'ping' }) => {
+      const req = createMockRequest({ headers: { authorization: 'Bearer t', ...headers }, body })
+      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+    }
+
+    it('shows MCP Apps to a Google client, whose initialize does not declare them', async () => {
+      await serveWith({ 'user-agent': 'Google' })
+      expect(createOpts.apps).to.equal(true)
+
+      await serveWith({ 'user-agent': 'Google/1.0' })
+      expect(createOpts.apps).to.equal(true)
+    })
+
+    it("leaves every other client to its initialize's capabilities", async () => {
+      for (const userAgent of ['claude-code/2.1.0', 'Googlebot/2.1', 'Google-Extended', 'Mozilla/5.0 (compatible; Google)']) {
+        await serveWith({ 'user-agent': userAgent })
+        expect(createOpts.apps, userAgent).to.equal(undefined)
+      }
+      await serveWith({})
+      expect(createOpts.apps, 'no User-Agent').to.equal(undefined)
+    })
+
+    it('logs what a client declares at initialize, never its token', async () => {
+      const info = sinon.stub(Logger.prototype, 'info')
+      const params = {
+        protocolVersion: '2025-11-25',
+        clientInfo: { name: 'google-adk', version: '2.12.0' },
+        capabilities: {},
+      }
+      await serveWith({ 'user-agent': 'Google' }, { jsonrpc: '2.0', id: 1, method: 'initialize', params })
+
+      const entry = info.getCalls().find((c) => c.args[0] === 'MCP initialize')
+      expect(entry, 'initialize entry').to.exist
+      expect(entry!.args[1]).to.deep.include({ ...params, userAgent: 'Google' })
+      expect(JSON.stringify(entry!.args[1])).not.to.contain('Bearer')
+    })
+
+    it('does not log other requests as initialize', async () => {
+      const info = sinon.stub(Logger.prototype, 'info')
+      await serveWith({ 'user-agent': 'Google' }, { jsonrpc: '2.0', id: 1, method: 'tools/list' })
+      expect(info.getCalls().some((c) => c.args[0] === 'MCP initialize')).to.equal(false)
+    })
+  })
+
   describe('loopback calls and disconnects', () => {
     it("marks the tools' API calls with a relay header bound to the caller's token", async () => {
       let capturedOpts: any
@@ -1006,9 +1061,9 @@ describe('MCP Controller — handleMCPRequest', () => {
       }))
       await handle(appConfig)(req, res as any, next)
 
-      expect(infoStub.calledOnce).to.be.true
-      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
-      expect(infoStub.firstCall.args[1]).to.deep.equal({
+      const completed = infoStub.getCalls().filter((c: sinon.SinonSpyCall) => c.args[0] === 'MCP request completed')
+      expect(completed).to.have.length(1)
+      expect(completed[0].args[1]).to.deep.equal({
         method: 'initialize',
         requestId: 'pilot-1',
       })

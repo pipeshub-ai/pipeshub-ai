@@ -121,6 +121,36 @@ function mcpToolCallProps(
   };
 }
 
+/**
+ * Google's MCP clients (Gemini) render MCP Apps views, but their initialize
+ * declares no `io.modelcontextprotocol/ui` capability, so the package's own
+ * check would hide the citation viewer from them. Google documents
+ * `User-Agent: Google` on every request they send. Undefined leaves the
+ * decision to the client's initialize.
+ */
+export function mcpAppsOverride(
+  headers: AuthenticatedUserRequest['headers'],
+): true | undefined {
+  const userAgent = headers['user-agent']?.trim();
+  return userAgent === 'Google' || userAgent?.startsWith('Google/')
+    ? true
+    : undefined;
+}
+
+/** What a client said about itself at initialize, to see which MCP features it declares. */
+function logInitialize(req: AuthenticatedUserRequest): void {
+  const body = req.body as
+    { method?: unknown; params?: Record<string, unknown> } | undefined;
+  if (body?.method !== 'initialize') return;
+  logger.info('MCP initialize', {
+    clientInfo: body.params?.clientInfo,
+    protocolVersion: body.params?.protocolVersion,
+    capabilities: body.params?.capabilities,
+    userAgent: req.headers['user-agent'],
+    requestId: req.context?.requestId,
+  });
+}
+
 /** Whether this request can reach a code tool: initialize (whose instructions
  *  name the code tools), a listing, or a call to one. Anything else skips the
  *  repo check the code tools would cost. */
@@ -291,6 +321,7 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
           error: logger.error.bind(logger),
         },
         dynamic: false,
+        apps: mcpAppsOverride(req.headers),
         scopes: mcpToolScopes(req.user),
         // Tools are listed only when the token holds every scope they need.
         grantedOAuthScopes: held,
@@ -358,6 +389,7 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
         });
       });
       await mcpServer.connect(transport);
+      logInitialize(req);
       const connectedProps = mcpConnectedProps(req);
       const toolCallProps = mcpToolCallProps(req);
       await transport.handleRequest(req, res, req.body);
