@@ -434,6 +434,9 @@ async def _convert_in_thread(
     processor: "DoclingProcessor", lease: _Held, doc_name: str, raw: bytes, page_range: tuple[int, int] | None
 ) -> DoclingDocument:
     try:
+        await ensure_docling()
+        from docling.datamodel.base_models import DocumentStream
+
         source = DocumentStream(name=doc_name, stream=BytesIO(raw))
     except BaseException:
         lease.release()
@@ -503,16 +506,26 @@ async def _convert_in_executor(
 
 
 class DoclingProcessor():
+    # Set only to replace the shared converter on one instance; instances made without
+    # ``__init__`` still read it.
+    _converter: "DocumentConverter | None" = None
+
     def __init__(self, logger: logging.Logger, config: object) -> None:
         self.logger = logger
         self.config = config
 
     @property
     def converter(self) -> "DocumentConverter":
-        """The shared converter, built on first use. Imports ``docling``: call it from a
-        worker thread, or after ``await ensure_docling()``."""
+        """The shared converter, built on first use, unless one was set on this instance.
+        Imports ``docling``: call it from a worker thread, or after ``await ensure_docling()``."""
+        if self._converter is not None:
+            return self._converter
         require_off_loop()
         return _get_converter()
+
+    @converter.setter
+    def converter(self, value: "DocumentConverter") -> None:
+        self._converter = value
 
     async def parse_document(
         self,
