@@ -144,7 +144,7 @@ async def test_one_tick_of_the_job_pages_syncs_and_advances_in_each_apps_own_org
     pipeline = SimpleNamespace(sync_vector_membership=sync, orgs_holding_points=lambda _v: [])
     token = org_context.push(None)
     try:
-        for _ in range(30):      # apps other tests left behind are walked first
+        for _ in range(500):      # apps other tests left behind are walked first
             await run_vector_membership_backfill_tick(logger=logging.getLogger("t"), graph_provider=pg_provider, pipeline=pipeline, lock=_Lock(), page_size=2, vrid_pause_ms=0)
             if len(synced) == 6:
                 break
