@@ -269,6 +269,10 @@ async def test_a_filter_too_broad_to_list_is_truncated_and_a_narrow_one_within_i
     assert await hits(w, ["Beta"], NamedEntityQuery(kinds=["org"]), limit=3) == (["r1"], False)
     await put(w, *(f"X{i}" for i in range(4)))
     assert await hits(w, None, NamedEntityQuery(kinds=["org"]), limit=3) == ([], True)                      # more entities of the kind than can be listed
+    await w.p.create_named_entities_if_absent([w.ne(f"P{i}", kind="person") for i in range(5)])
+    await w.mention("r0", "P0")
+    assert await hits(w, None, NamedEntityQuery(kinds=["person"]), limit=3) == ([], True)                  # five nodes of the kind, though one record mentions them
+    assert await hits(w, None, NamedEntityQuery(kinds=["person"]), limit=5) == (["r0"], False)
     await put(w, "G")
     for g in ("ghost1", "ghost2", "ghost3"):
         await w.mention(g, "G")
