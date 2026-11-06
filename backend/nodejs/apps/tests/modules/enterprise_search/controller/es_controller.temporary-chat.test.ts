@@ -429,8 +429,8 @@ describe('es_controller temporary chat', () => {
       'Bearer t',
     )
     expect(fetchStub.calledOnce).to.equal(true)
-    expect(String(fetchStub.firstCall.args[0])).to.include(
-      '/api/v1/chat/attachments/att-1',
+    expect(fetchStub.firstCall.args[0]).to.equal(
+      'http://ai.test/api/v1/chat/attachments/att-1',
     )
   })
 
