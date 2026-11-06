@@ -675,6 +675,8 @@ async def test_a_project_is_readable_through_every_team_it_belongs_to(env: _Env)
     sec = ws.team("SEC", visibility="private", members=[p["sync"], p["alice"]])
     legal = ws.team("LEGAL", visibility="private", members=[p["sync"], p["bob"]])
     plan = ws.upload("plan.pdf", b"%PDF plan")
+    # Audit and Review are in two private teams, which Linear's docs do not spell out: the
+    # union of both teams' readers is expected, by our reading of linear.app/docs/private-teams.
     for name, teams, lead in (("Launch", [sec, eng], None), ("Launch again", [eng, sec], None),
                               ("Audit", [legal, sec], None), ("Review", [sec, legal], legal)):
         ws.project(name, teams, lead=lead, content=f"[plan.pdf]({plan})",
@@ -701,6 +703,22 @@ async def test_a_project_that_leaves_a_team_is_withdrawn_from_it(env: _Env) -> N
     await env.assert_matches_linear()
 
     audit.teams, audit.updated_at = [legal], ws.tick()
+    await env.sync()
+    await env.assert_matches_linear()
+
+
+async def test_a_team_taken_off_a_project_loses_it_even_when_the_project_is_not_marked_updated(env: _Env) -> None:
+    """A team change need not move the project's updatedAt; the next sync still withdraws it."""
+    p = await _people(env, "alice", "bob")
+    ws = env.ws
+    sec = ws.team("SEC", visibility="private", members=[p["sync"], p["alice"]])
+    legal = ws.team("LEGAL", visibility="private", members=[p["sync"], p["bob"]])
+    audit = ws.project("Audit", [sec, legal], lead=sec, documents=[Document("Audit doc", "text")],
+                       links=[Link("Audit deck", "https://deck.example/a")])
+    await env.sync()
+    await env.assert_matches_linear()
+
+    audit.teams = [sec]
     await env.sync()
     await env.assert_matches_linear()
 
