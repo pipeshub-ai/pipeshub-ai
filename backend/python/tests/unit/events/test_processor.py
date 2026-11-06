@@ -416,7 +416,7 @@ class TestProcessImage:
         ],
     )
     @pytest.mark.asyncio
-    async def test_non_multimodal_never_leaves_a_parse_in_progress(self, parsing_before, parsing_written):
+    async def test_non_multimodal_never_leaves_a_parse_in_progress(self, parsing_before, parsing_written) -> None:
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {
             "_key": "rec-1",
