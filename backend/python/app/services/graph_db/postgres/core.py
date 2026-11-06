@@ -18,7 +18,7 @@ from app.services.graph_db.postgres.base import (
     _edge_scope,
     _ekey,
     _field,
-    _hot_values,
+    _hot,
     _j,
     _node,
 )
@@ -28,6 +28,29 @@ def _system_apps(collection: str) -> bool:
     """A system context reading the ``apps`` collection: the schedule sweep lists connector instances across orgs, through the vetted
     ``graph.system_app*`` functions. Any other collection still needs a single org."""
     return current_or_system().kind == "system" and collection == "apps"
+
+
+# The vetted reads of graph_0003 (a lookup by record, by connector and name, or by code file path): one page after an id, ascending. Each takes its
+# leading arguments from ``_hot``, then the filter keys and JSON values, whether a null filter also matches an absent key, the id to continue after
+# and the page size.
+_HOT_SQL = {
+    "blocks_by_record": "/* pipeshub:graph.blocks_by_record */ SELECT node_id, doc FROM graph.blocks_by_record($1, $2::text[], $3::jsonb[], $4, $5, $6)",
+    "blocks_by_name": "/* pipeshub:graph.blocks_by_name */ SELECT node_id, doc FROM graph.blocks_by_name($1, $2, $3::text[], $4::jsonb[], $5, $6, $7)",
+    "code_files_by_path": "/* pipeshub:graph.code_files_by_path */ SELECT node_id, doc FROM graph.code_files_by_path($1, $2::text[], $3::jsonb[], $4, $5, $6)",
+}
+_HOT_PAGE = 1000
+
+
+async def _hot_rows(tx: Tx, hot: tuple[str, tuple[str, ...]], keys: list[str], vals: list[str], after: str, limit: int | None, *, null_absent: bool) -> list:
+    """The documents the vetted read returns, ascending by id after ``after``: ``limit`` of them, or all of them when None (page by page, in this unit)."""
+    fn, lead = hot
+    rows: list = []
+    while True:
+        page = await tx.fetch(_HOT_SQL[fn], *lead, keys, vals, null_absent, after, _HOT_PAGE if limit is None else limit)
+        rows += page
+        if limit is not None or len(page) < _HOT_PAGE:
+            return rows
+        after = page[-1]["node_id"]
 
 
 class CoreMixin(PgBase):
@@ -57,7 +80,7 @@ class CoreMixin(PgBase):
     async def get_documents_paginated(self, collection: str, skip: int = 0, limit: int = 50, filters: dict[str, Any] | None = None,
                                       sort_field: str | None = None, transaction: str | None = None, *, raise_on_error: bool = False,
                                       after_key: str | None = None, return_fields: list[str] | None = None) -> list[dict]:
-        """A keyset or offset page; ``return_fields`` projects, and a literal predicate on the indexed keys of ``_HOT`` lets the planner use them."""
+        """A keyset or offset page; ``return_fields`` projects, and a lookup by an indexed key goes through the vetted read of ``_hot``."""
         key_sort = sort_field in (None, "_key", "id")
         if after_key is not None and not key_sort:
             raise ValueError("after_key continues an order by key; with another sort_field use skip and limit")
@@ -65,19 +88,19 @@ class CoreMixin(PgBase):
             return await self._system_apps_page(skip, limit, filters, after_key, return_fields)
         org = current_org_id()          # before the unit opens: a system scope reads no other collection
         keys, vals = [_field(k) for k in (filters or {})], [_j(v) for v in (filters or {}).values()]
-        hot = _hot_values(collection, filters)
-        if key_sort:      # the primary-key order: the limit stops the scan
+        hot = _hot(collection, filters)
+        if key_sort and hot and 0 < skip + limit <= _HOT_PAGE:      # served by the vetted read; the skipped rows are dropped here
+            rows = (await self._q(lambda tx: _hot_rows(tx, hot, keys, vals, after_key or "", skip + limit, null_absent=False), transaction))[skip:]
+        elif key_sort:      # the primary-key order: the limit stops the scan
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_documents_paginated */ SELECT n.doc FROM graph.nodes n
                 WHERE n.org_id = $1 AND n.coll = $2 AND ($3::text IS NULL OR n.id > $3)
                   AND NOT EXISTS (SELECT 1 FROM unnest($6::text[], $7::text[]) f(k, v) WHERE n.doc->f.k IS DISTINCT FROM f.v::jsonb)
-                  AND ($8::text IS NULL OR n.doc->>'recordId' = $8) AND ($9::text IS NULL OR n.doc->>'nameFolded' = $9) AND ($10::text IS NULL OR n.doc->>'filePath' = $10)
-                ORDER BY n.id OFFSET $4 LIMIT $5""", org, collection, after_key, skip, limit, keys, vals, *hot), transaction)
+                ORDER BY n.id OFFSET $4 LIMIT $5""", org, collection, after_key, skip, limit, keys, vals), transaction)
         else:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_documents_paginated_by_field */ SELECT n.doc FROM graph.nodes n
                 WHERE n.org_id = $1 AND n.coll = $2
                   AND NOT EXISTS (SELECT 1 FROM unnest($6::text[], $7::text[]) f(k, v) WHERE n.doc->f.k IS DISTINCT FROM f.v::jsonb)
-                  AND ($8::text IS NULL OR n.doc->>'recordId' = $8) AND ($9::text IS NULL OR n.doc->>'nameFolded' = $9) AND ($10::text IS NULL OR n.doc->>'filePath' = $10)
-                ORDER BY n.doc->>$3, n.id OFFSET $4 LIMIT $5""", org, collection, sort_field, skip, limit, keys, vals, *hot), transaction)
+                ORDER BY n.doc->>$3, n.id OFFSET $4 LIMIT $5""", org, collection, sort_field, skip, limit, keys, vals), transaction)
         docs = [_arango(_doc(r["doc"]), collection) for r in rows]
         return [{f: d.get(f) for f in return_fields} for d in docs] if return_fields else docs
 
@@ -190,16 +213,19 @@ class CoreMixin(PgBase):
 
     async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
                                    transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict]:
-        """A null filter matches an absent or null field; the indexed keys of ``_HOT`` get a literal predicate."""
+        """A null filter matches an absent or null field; a lookup by an indexed key goes through the vetted read of ``_hot``."""
         org = current_org_id()
         keys, vals = list(filters), [_j(v) for v in filters.values()]
-        hot = _hot_values(collection, filters)
+        hot = _hot(collection, filters)
+        fields = [_field(k) for k in keys]
         try:
-            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_nodes_by_filters */ SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
-                AND NOT EXISTS (SELECT 1 FROM unnest($3::text[], $4::text[]) f(k, v)
-                    WHERE CASE WHEN f.v = 'null' THEN coalesce(n.doc->f.k, 'null'::jsonb) <> 'null'::jsonb ELSE n.doc->f.k IS DISTINCT FROM f.v::jsonb END)
-                AND ($5::text IS NULL OR n.doc->>'recordId' = $5) AND ($6::text IS NULL OR n.doc->>'nameFolded' = $6) AND ($7::text IS NULL OR n.doc->>'filePath' = $7)""",
-                                                  org, collection, [_field(k) for k in keys], vals, *hot), transaction)
+            if hot:
+                rows = await self._q(lambda tx: _hot_rows(tx, hot, fields, vals, "", None, null_absent=True), transaction)
+            else:
+                rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_nodes_by_filters */ SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
+                    AND NOT EXISTS (SELECT 1 FROM unnest($3::text[], $4::text[]) f(k, v)
+                        WHERE CASE WHEN f.v = 'null' THEN coalesce(n.doc->f.k, 'null'::jsonb) <> 'null'::jsonb ELSE n.doc->f.k IS DISTINCT FROM f.v::jsonb END)""",
+                                                      org, collection, fields, vals), transaction)
         except Exception:
             if raise_on_error:
                 raise

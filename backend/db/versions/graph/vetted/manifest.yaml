@@ -57,3 +57,83 @@ functions:
     content_ok: true
     body: |
       RETURN QUERY SELECT n.org_id, n.id, n.doc::text FROM graph.nodes n WHERE n.coll = 'apps' AND n.id = p_id ORDER BY n.org_id LIMIT 1;
+
+# ---- the code graph's hot lookups -------------------------------------------------------------------------------------------------
+# A document read by a key of its document that has an expression index (graph_0001). Row-level security hides those indexes from
+# the services' own role (the `->>` operator is not leakproof, so the planner may use only `org_id`), so the read goes through a function
+# that applies the org itself. The org comes from app.org_id; the extra filters (p_keys, p_vals: the document key and its JSON value) are
+# applied as the provider's own statement applies them, and p_null_absent selects its rule that a null value also matches an absent key.
+# A page continues after p_after (ids ascending), so a read of every match pages by the last id.
+
+  # The blocks of one record (index nodes_block_record).
+  - name: graph.blocks_by_record
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_record_id, type: text, length: [1, 200]}
+      - {name: p_keys, type: "text[]", max_items: 32, item_not_null: true, item_length: [1, 200]}
+      - {name: p_vals, type: "jsonb[]", max_items: 32, item_not_null: true}
+      - {name: p_null_absent, type: boolean}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'recordId' = p_record_id AND n.id > p_after
+          AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
+            WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
+        ORDER BY n.id LIMIT p_limit;
+
+  # The blocks of one connector with one folded name (index nodes_block_name).
+  - name: graph.blocks_by_name
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_name_folded, type: text, length: [1, 1000]}
+      - {name: p_keys, type: "text[]", max_items: 32, item_not_null: true, item_length: [1, 200]}
+      - {name: p_vals, type: "jsonb[]", max_items: 32, item_not_null: true}
+      - {name: p_null_absent, type: boolean}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'nameFolded' = p_name_folded AND n.id > p_after
+          AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
+            WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
+        ORDER BY n.id LIMIT p_limit;
+
+  # The code files of one path (index nodes_codefile_path).
+  - name: graph.code_files_by_path
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_path, type: text, length: [1, 2000]}
+      - {name: p_keys, type: "text[]", max_items: 32, item_not_null: true, item_length: [1, 200]}
+      - {name: p_vals, type: "jsonb[]", max_items: 32, item_not_null: true}
+      - {name: p_null_absent, type: boolean}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND n.doc->>'filePath' = p_path AND n.id > p_after
+          AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
+            WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
+        ORDER BY n.id LIMIT p_limit;
