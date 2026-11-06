@@ -119,7 +119,8 @@ class CoreMixin(PgBase):
                 if to_skip:
                     to_skip -= 1
                     continue
-                docs.append(_arango(_doc(json.loads(r["node_json"])), "apps"))
+                # the partition is the app's org: a legacy instance whose document has no orgId still names it
+                docs.append({**_arango(_doc(json.loads(r["node_json"])), "apps"), "orgId": r[0]})      # r[0]: the row's org_id
             if len(rows) < want:
                 break
             after, after_org = rows[-1][1], rows[-1][0]      # (app_id, org_id) of the last row: the cursor
