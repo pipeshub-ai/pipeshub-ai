@@ -1,10 +1,17 @@
 import winston from 'winston';
+import axios from 'axios';
 import { Request } from 'express';
 import { injectable } from 'inversify';
 import path from 'path';
 import { threadId } from 'worker_threads';
-import { currentDisplayId, getRequestContext } from '../context/request-context';
 import {
+  currentDisplayId,
+  getRequestContext,
+  LOG_CONTEXT_KEYS,
+} from '../context/request-context';
+import { BaseError } from '../errors/base.error';
+import {
+  axiosErrorForLog,
   redactHeadersForLog,
   redactLogMetadata,
   redactQueryForLog,
@@ -99,32 +106,103 @@ export interface LoggerConfig {
   additionalMeta?: Record<string, any>;
 }
 
+const DEFAULT_SERVICE = 'default-service';
+
+/** Shown in the text line as ` | k=v`, in this order, when the record has them. */
+const TEXT_FIELD_KEYS = ['org_id', 'user_id', ...LOG_CONTEXT_KEYS] as const;
+
+/**
+ * The text-line value rule shared with the Python side (docs/logging.md): bare
+ * when it is only these characters, else a JSON string, so an id taken from a
+ * URL can never start a new line or a fake field. The empty string is `""`.
+ */
+const BARE_TEXT_VALUE = /^[A-Za-z0-9._:@/-]+$/;
+
+export function formatTextValue(value: string | number | boolean): string {
+  const text = String(value);
+  return BARE_TEXT_VALUE.test(text) ? text : JSON.stringify(text);
+}
+
+/** null and undefined are left out of the text line. */
+function textFields(info: Record<string, unknown>): string {
+  const pairs = TEXT_FIELD_KEYS.filter((key) => info[key] != null).map(
+    (key) => `${key}=${formatTextValue(info[key] as string | number | boolean)}`,
+  );
+  return pairs.length > 0 ? ` | ${pairs.join(' ')}` : '';
+}
+
+/** Request id, thread, identity (as the provider shows it) and bound ids, or nothing outside a context. */
+function logContextFields(): Record<string, unknown> {
+  const store = getRequestContext();
+  if (!store) return {};
+  const fields: Record<string, unknown> = {
+    request_id: currentDisplayId(),
+    thread_id: threadId,
+    ...store.logFields,
+  };
+  const provider = getProvider();
+  if (provider.logIdentity) {
+    const shown = provider.logIdentity({
+      ...(store.orgId && { org_id: store.orgId }),
+      ...(store.userId && { user_id: store.userId }),
+    });
+    if (shown.org_id) fields.org_id = shown.org_id;
+    if (shown.user_id) fields.user_id = shown.user_id;
+  } else if (store.orgId && provider.hashOrgId) {
+    const orgHash = provider.hashOrgId(store.orgId);
+    if (orgHash) fields.organization_id_hash = orgHash;
+  }
+  return fields;
+}
+
+/**
+ * One `Logger` per service name, all sharing the root's winston logger and
+ * transports. A named logger is `Object.create(root)`, the same technique as
+ * winston's own `child()`, so it inherits every method: a stub on
+ * `Logger.prototype` or on the root instance sees calls from every module.
+ * Its own `defaultMeta` carries the service; the level stays process-wide.
+ */
 @injectable()
 export class Logger {
   private static instance: Logger;
   private logger: winston.Logger = {} as winston.Logger;
   private defaultMeta: Record<string, any> = {};
+  private children = new Map<string, Logger>();
 
   constructor(config?: LoggerConfig) {
     if (!Logger.instance) {
-      this.defaultMeta = {
-        service_tier: 'nodejs_service',
-        service: config?.service || 'default-service',
-        ...config?.additionalMeta,
-      };
-
+      this.defaultMeta = { service: DEFAULT_SERVICE };
       this.logger = this.initializeLogger(config);
       Logger.instance = this;
-    } else if (config) {
-      this.updateDefaultMeta({
-        service: config.service,
-        ...config.additionalMeta,
-      });
-      if (config.level) {
-        this.logger.level = config.level;
-      }
     }
-    return Logger.instance;
+    // Not through getInstance: tests stub that, and `new Logger` must keep working under the stub.
+    return Logger.forService(config);
+  }
+
+  /** The root for a nameless call, else the one logger for `config.service`. */
+  private static forService(config?: LoggerConfig): Logger {
+    const root = Logger.instance;
+    if (config?.level) {
+      root.logger.level = config.level;
+    }
+    const logger =
+      !config?.service || config.service === DEFAULT_SERVICE
+        ? root
+        : root.named(config.service);
+    if (config?.additionalMeta) {
+      logger.updateDefaultMeta(config.additionalMeta);
+    }
+    return logger;
+  }
+
+  private named(service: string): Logger {
+    let logger = this.children.get(service);
+    if (!logger) {
+      logger = Object.create(this) as Logger;
+      logger.defaultMeta = { service };
+      this.children.set(service, logger);
+    }
+    return logger;
   }
 
   private initializeLogger(config?: LoggerConfig): winston.Logger {
@@ -135,7 +213,7 @@ export class Logger {
       winston.format.errors({ stack: true }),
       winston.format.printf((info) => {
         const { message, metadata, stack, filename, line, request_id, thread_id } = info;
-        const serviceTier = info.service_tier || 'nodejs_service';
+        const service = info.service || DEFAULT_SERVICE;
 
         const ts =
           typeof info.timestamp === 'string'
@@ -163,7 +241,7 @@ export class Logger {
         const traceInfo =
           request_id !== undefined ? `[req:${request_id} thr:${thread_id}] ` : '';
 
-        return `${ts} - ${serviceTier} - ${levelStr} - ${traceInfo}${fileInfo} - ${message}${metaString}${stackString}`;
+        return `${ts} - ${service} - ${levelStr} - ${traceInfo}${fileInfo} - ${message}${textFields(info)}${metaString}${stackString}`;
       })
     );
 
@@ -192,7 +270,8 @@ export class Logger {
       levels: customLevels.levels,
       level: config?.level || getLogLevel(),
       format: logFormat,
-      defaultMeta: this.defaultMeta,
+      // Not `service`: winston's defaultMeta overrides the record, and each named logger sets its own.
+      defaultMeta: { service_tier: 'nodejs_service' },
       transports,
     });
   }
@@ -215,12 +294,7 @@ export class Logger {
     }
 
     if (obj instanceof Error) {
-      return {
-        name: obj.name,
-        message: redactSecretsInText(obj.message),
-        stack:
-          obj.stack === undefined ? undefined : redactSecretsInText(obj.stack),
-      };
+      return this.serializeError(obj, seen);
     }
     // Dates and Mongo ids have no own keys worth walking; JSON shows them through toJSON.
     const { toJSON } = obj as { toJSON?: unknown };
@@ -248,30 +322,57 @@ export class Logger {
     return sanitized;
   }
 
+  /**
+   * What an error says about why it happened, never what it carried: an axios
+   * error through the shared allowlist (no config, request or body); any other
+   * error by name, code and message, plus status and metadata for our own
+   * errors. `cause` is followed through the same walk, so a cycle prints
+   * `[Circular]` (as does an object met twice).
+   */
+  private serializeError(
+    error: Error,
+    seen: WeakSet<object>,
+  ): Record<string, unknown> {
+    const { code, cause } = error as { code?: unknown; cause?: unknown };
+    const out: Record<string, unknown> = axios.isAxiosError(error)
+      ? axiosErrorForLog(error, true)
+      : {
+          name: error.name,
+          ...((typeof code === 'string' || typeof code === 'number') && {
+            code,
+          }),
+          ...(error instanceof BaseError && {
+            statusCode: error.statusCode,
+            metadata: this.sanitizeForLogging(error.metadata, seen),
+          }),
+          message:
+            typeof error.message === 'string'
+              ? redactSecretsInText(error.message)
+              : undefined,
+          stack:
+            error.stack === undefined
+              ? undefined
+              : redactSecretsInText(error.stack),
+        };
+    if (cause !== undefined) {
+      out.cause = this.sanitizeForLogging(cause, seen);
+    }
+    return out;
+  }
+
   static getInstance(config?: LoggerConfig): Logger {
     if (!Logger.instance) {
-      Logger.instance = new Logger(
-        config ?? { service: 'default-service', level: getLogLevel() },
-      );
-    } else if (config) {
-      Logger.instance.updateDefaultMeta({
-        service: config.service,
-        ...config.additionalMeta,
-      });
-      if (config.level) {
-        Logger.instance.logger.level = config.level;
-      }
+      new Logger({ service: DEFAULT_SERVICE, level: getLogLevel() });
     }
-    return Logger.instance;
+    return Logger.forService(config);
   }
-  
 
+  /** Adds to this logger's own metadata only; its service is fixed by the name it was created with. */
   updateDefaultMeta(metadata: Record<string, any>): void {
     this.defaultMeta = {
       ...this.defaultMeta,
       ...metadata,
     };
-    this.logger.defaultMeta = this.defaultMeta;
   }
 
   private getCallerInfo(): { filename: string, line: number } {
@@ -318,15 +419,6 @@ export class Logger {
       return;
     }
     const callerInfo = this.getCallerInfo();
-    // Read at emit time; omitted entirely when there is no context.
-    const store = getRequestContext();
-    const traceMeta: Record<string, unknown> = store
-      ? { request_id: currentDisplayId(), thread_id: threadId }
-      : {};
-    if (store?.orgId) {
-      const orgHash = getProvider().hashOrgId(store.orgId);
-      if (orgHash) traceMeta.organization_id_hash = orgHash;
-    }
     // Redact here, not in the printf format: the file transports append
     // winston's json() after it, and json() re-serialises `info` from scratch,
     // so anything only cleaned inside printf still reaches the log file raw.
@@ -334,7 +426,9 @@ export class Logger {
       level,
       message,
       metadata: meta === undefined ? undefined : this.sanitizeForLogging(meta),
-      ...traceMeta,
+      ...this.defaultMeta,
+      // Read at emit time; omitted entirely when there is no context.
+      ...logContextFields(),
       ...callerInfo,
     });
   }

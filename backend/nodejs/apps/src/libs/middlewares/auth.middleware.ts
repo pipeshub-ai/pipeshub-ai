@@ -21,7 +21,7 @@ import { assertDelegationStillHolds } from '../../modules/oauth_provider/service
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
-import { setContextOrgId } from '../context/request-context';
+import { setContextIdentity } from '../context/request-context';
 import { MCP_PATH } from './rate-limit.middleware';
 
 const CLIENT_NAME_HEADER = 'client-name';
@@ -122,15 +122,16 @@ export class AuthMiddleware {
   ): Promise<void> {
     const decoded = await this.tokenService.verifyToken(token);
     req.user = decoded;
-    // Context middleware runs before auth, so this is the first point the org is known.
-    setContextOrgId(decoded.orgId);
+    // Context middleware runs before auth, so this is the first point the org is known. Bound before the session
+    // check on purpose: the signature is valid, so a refused session's 401 still says whose it was.
+    setContextIdentity({ orgId: decoded.orgId, userId: decoded.userId });
 
     const refusal = await findSessionRefusal(decoded, this.logger);
     if (refusal) {
       throw new UnauthorizedError(refusal);
     }
 
-    this.logger.debug('User authenticated', decoded);
+    this.logger.debug('User authenticated');
   }
 
   /**
@@ -315,7 +316,7 @@ export class AuthMiddleware {
       oauthScopes: tokenScopes,
       oauthAudience: payload.aud,
     };
-    setContextOrgId(orgId);
+    setContextIdentity({ orgId, userId });
     // The web app's client name lets an agent run wait for a person to approve a tool call.
     // An OAuth or personal access token is a program, not the web app, so it can't claim it.
     if (
@@ -352,11 +353,9 @@ export class AuthMiddleware {
 
         const userId = decoded?.userId as string | undefined;
         const orgId = decoded?.orgId as string | undefined;
-        setContextOrgId(orgId);
+        setContextIdentity({ orgId, userId });
 
-        this.logger.debug(
-          `userId: ${userId}, orgId: ${orgId}, scope: ${scope}`,
-        );
+        this.logger.debug('Scoped token verified', { scope });
 
         if (
           userId &&
@@ -387,7 +386,7 @@ export class AuthMiddleware {
           }
         }
 
-        this.logger.debug('User authenticated', decoded);
+        this.logger.debug('User authenticated');
         // Pre-org flows (login lookups, mail) mint scoped tokens without an orgId; they stay unbound.
         if (orgId) {
           runWithOrgContext(

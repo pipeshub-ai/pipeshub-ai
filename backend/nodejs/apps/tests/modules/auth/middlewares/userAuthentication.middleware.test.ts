@@ -8,6 +8,11 @@ import {
   NotFoundError,
   UnauthorizedError,
 } from '../../../../src/libs/errors/http.errors';
+import {
+  RequestContextStore,
+  getRequestContext,
+  runWithRequestContext,
+} from '../../../../src/libs/context/request-context';
 
 describe('userAuthentication middlewares', () => {
   let container: Container;
@@ -104,6 +109,30 @@ describe('userAuthentication middlewares', () => {
       expect(req.sessionInfo).to.deep.equal(sessionData);
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args).to.have.lengthOf(0);
+    });
+
+    it('puts a matched session account on the log context', async () => {
+      container
+        .bind<SessionService>('SessionService')
+        .toConstantValue({ getSession: sinon.stub().resolves({ userId: 'user1', orgId: 'org1' }) } as any);
+      let seen: RequestContextStore | undefined;
+      next.callsFake(() => { seen = getRequestContext(); });
+      await runWithRequestContext({ rootId: 'r1' }, () =>
+        authSessionMiddleware({ container, headers: { 'x-session-token': 't' } } as any, {} as any, next),
+      );
+      expect(seen).to.include({ orgId: 'org1', userId: 'user1' });
+    });
+
+    it('binds no identity before the address is matched', async () => {
+      container
+        .bind<SessionService>('SessionService')
+        .toConstantValue({ getSession: sinon.stub().resolves({ userId: 'NOT_FOUND', orgId: 'org1' }) } as any);
+      let seen: RequestContextStore | undefined;
+      next.callsFake(() => { seen = getRequestContext(); });
+      await runWithRequestContext({ rootId: 'r1' }, () =>
+        authSessionMiddleware({ container, headers: { 'x-session-token': 't' } } as any, {} as any, next),
+      );
+      expect(seen).to.deep.equal({ rootId: 'r1' });
     });
   });
 });

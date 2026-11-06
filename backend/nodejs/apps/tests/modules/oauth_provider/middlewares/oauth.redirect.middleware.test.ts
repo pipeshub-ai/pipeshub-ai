@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
+import { RequestContextStore, getRequestContext, runWithRequestContext } from '../../../../src/libs/context/request-context'
 import { createOAuthRedirectMiddleware } from '../../../../src/modules/oauth_provider/middlewares/oauth.redirect.middleware'
 import * as sessionUtils from '../../../../src/libs/utils/user-session.utils'
 
@@ -68,6 +69,21 @@ describe('OAuthRedirectMiddleware', () => {
       await mw({ headers: { authorization: 'Bearer valid-token' }, query: {} } as any, mockRes, next)
 
       expect(bound).to.equal('o1')
+    })
+
+    it('should put the token org and user on the log context, never the email', async () => {
+      mockTokenService.verifyToken.resolves({ userId: 'u1', orgId: 'o1', email: 'u@e.com' })
+      let seen: RequestContextStore | undefined
+      const next = sinon.stub().callsFake(() => {
+        seen = getRequestContext()
+      })
+      const mw = createOAuthRedirectMiddleware(mockTokenService, mockLogger, 'http://frontend:3000')
+
+      await runWithRequestContext({ rootId: 'r1' }, () =>
+        mw({ headers: { authorization: 'Bearer valid-token' }, query: {} } as any, mockRes, next),
+      )
+
+      expect(seen).to.deep.equal({ rootId: 'r1', orgId: 'o1', userId: 'u1' })
     })
 
     it('should redirect when token is expired/invalid', async () => {
