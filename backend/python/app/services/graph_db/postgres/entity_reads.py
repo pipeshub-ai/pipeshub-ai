@@ -4,8 +4,7 @@ The answers are those of ``Neo4jProvider`` (``app.modules.named_entities.graph_o
 document's ``orgId`` with the org argument, so any other org reads nothing. A failed read raises: no method answers "empty" for "failed".
 The record sets of ``get_records_for_named_entities`` depend only on the records they are given (``within``) and on live records of the org; an
 empty ``within`` matches nothing.
-Every statement is a literal with bound parameters. A number is read only from a JSON number, so a malformed value never matches and never
-raises.
+Every statement is a literal with bound parameters. A number is read only from a JSON number, so a malformed value never matches (one too large for float8 would raise).
 """
 from __future__ import annotations
 
