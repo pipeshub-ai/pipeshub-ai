@@ -43,6 +43,20 @@ async def world(w: World) -> None:
     await grant(w, "gm", "recordGroups", "rg2")
     await w.member("gm", "grp")
     await w.edge("permission", ("groups", "grp"), ("recordGroups", "rg"), type="GROUP", role="WRITER")
+    # a granted record whose group does not inherit (hierarchy only): only the grant opens it, and what inherits below it
+    await w.nodes("recordGroups", {"_key": "rgr", "connectorId": APP})
+    await w.edge("nodeRelations", ("apps", APP), ("recordGroups", "rgr"), relationshipType="PARENT_CHILD")
+    await w.nodes("records", vr("sp"), vr("sp_child"), vr("sp_loose"))
+    await w.edge("nodeRelations", ("recordGroups", "rgr"), ("records", "sp"), relationshipType="PARENT_CHILD")
+    await w.child(("records", "sp"), ("records", "sp_child"))
+    await w.child(("records", "sp"), ("records", "sp_loose"), inherits=False)
+    await grant(w, "v", "records", "sp")
+    # a group that declares its own scope, granted to gm, with a record that only belongs to it
+    await w.nodes("recordGroups", {"_key": "decl", "connectorId": APP, "permissionModel": "RECORD_GROUP_LEVEL"})
+    await w.child(("apps", APP), ("recordGroups", "decl"), inherits=False)
+    await w.nodes("records", vr("inDecl"))
+    await w.edge("belongsTo", ("records", "inDecl"), ("recordGroups", "decl"))
+    await grant(w, "gm", "recordGroups", "decl")
     # collections
     await w.nodes("apps", {"_key": "kb1", "type": "KB", "name": "KB1"}, {"_key": "kb2", "type": "KB", "isHidden": True}, {"_key": "kb3", "type": "KB"})
     for kb, k in (("kb1", "k1"), ("kb2", "k2"), ("kb3", "k3")):
@@ -55,7 +69,7 @@ async def world(w: World) -> None:
 
 
 VIEWERS = ("u", "v", "gm", "tm", "kbu", "nogate")
-RECORDS = ("open1", "open2", "shut", "trashed", "unindexed", "stub", "inRg2", "dup1", "dup2", "k1", "k2", "k3")
+RECORDS = ("open1", "open2", "shut", "trashed", "unindexed", "stub", "inRg2", "dup1", "dup2", "k1", "k2", "k3", "sp", "sp_child", "sp_loose", "inDecl")
 
 
 async def admitted(w: World, key: str) -> set[str]:
@@ -100,7 +114,7 @@ async def test_the_scope_filters_narrow_and_never_widen(w: World) -> None:
     assert set((await p.get_accessible_virtual_record_ids("uid-kbu", w.org, {"strictScope": False})).values()) == {"k1"}
     assert await p.get_accessible_virtual_record_ids("uid-kbu", w.org, exclude_app_ids=frozenset({"kb1"})) == {}
     gm = await p.get_accessible_virtual_record_ids("uid-gm", w.org, {"apps": [APP]})
-    assert set(gm.values()) == {"open1", "open2", "inRg2", "dup1"}
+    assert set(gm.values()) == {"open1", "open2", "inRg2", "dup1", "inDecl"}
     assert await p.get_accessible_virtual_record_ids("uid-gm", w.org, {"apps": ["kb1"]}) == {}                       # a collection gm is not in
     assert await p.get_accessible_virtual_record_ids("uid-nogate", w.org) == {}
     assert await p.get_accessible_virtual_record_ids("uid-nobody", w.org) == {}
@@ -292,3 +306,96 @@ async def test_other_orgs_see_none_of_this(w: World) -> None:
         assert await w.p.get_accessible_virtual_record_ids("uid-gm", other) == {}
         assert await w.p.check_record_access_with_details("uid-gm", other, "open1") is None
         assert await w.p.get_knowledge_hub_context_permissions("gm", other, "rg", parent_type="recordGroup") == LOW
+
+
+# ---- what the scope read walks, and the cases the cross-check must also hold on --------------------------------------------------------
+
+async def test_the_scope_read_looks_only_at_what_the_user_can_reach(w: World) -> None:
+    await world(w)
+    await w.nodes("recordGroups", {"_key": "big", "connectorId": APP})
+    await w.child(("apps", APP), ("recordGroups", "big"))
+    hidden = [vr(f"hid{i}", accessRule="RESTRICTED") for i in range(1000)]
+    loose = [vr(f"loose{i}") for i in range(1000)]            # no edge to anything: nothing reaches them
+    await w.nodes("records", *hidden, *loose, vr("mine1"), vr("mine2"), vr("mine3"))
+    await w.p.batch_create_edges([{"from_collection": "recordGroups", "from_id": "big", "to_collection": "records", "to_id": r["_key"], "relationshipType": "PARENT_CHILD"}
+                                  for r in (*hidden, vr("mine1"), vr("mine2"), vr("mine3"))], "nodeRelations")
+    await w.p.batch_create_edges([{"from_collection": "records", "from_id": r["_key"], "to_collection": "recordGroups", "to_id": "big"}
+                                  for r in (*hidden, vr("mine1"), vr("mine2"), vr("mine3"))], "inheritPermissions")
+    asked: list[str] = []
+    real = w.p._kh_v3_accessible_rows
+
+    async def spy(user_key: str, org_id: str, node_ids: list[str], *a: object, **k: object) -> list:
+        asked.extend(node_ids)
+        return await real(user_key, org_id, node_ids, *a, **k)
+    w.p._kh_v3_accessible_rows = spy
+    try:
+        got = await w.p.get_accessible_virtual_record_ids("uid-gm", w.org, {"apps": [APP]})
+    finally:
+        w.p._kh_v3_accessible_rows = real
+    assert {"mine1", "mine2", "mine3"} <= set(got.values()) and not {r for r in got.values() if r.startswith(("hid", "loose"))}
+    assert len(asked) == len(set(asked)) <= 10, len(asked)            # the 2,000 records nobody reaches were never handed to the check
+
+
+async def test_a_timestamp_that_is_not_a_number_drops_that_record_only(w: World) -> None:
+    await world(w)
+    await w.p.update_node("open1", "records", {"sourceCreatedAtTimestamp": "yesterday"})
+    await w.p.update_node("open2", "records", {"sourceCreatedAtTimestamp": 200})
+    got = await w.p.get_accessible_virtual_record_ids("uid-gm", w.org, None, {"source_created_after_ms": 100})
+    assert set(got.values()) == {"open2"}
+    assert "open1" in set((await w.p.get_accessible_virtual_record_ids("uid-gm", w.org)).values())
+
+
+async def test_an_app_level_connector_opens_to_everyone_it_gates_in_and_to_no_one_else(w: World) -> None:
+    await world(w)
+    await w.nodes("apps", {"_key": "wide", "type": "CONNECTOR", "permissionModel": "APP_LEVEL", "isActive": True})
+    await w.nodes("records", vr("wide1", connectorId="wide", accessRule="RESTRICTED"), vr("wide2", connectorId="wide"))
+    for k in ("wide1", "wide2"):
+        await w.child(("apps", "wide"), ("records", k))
+    await grant(w, "v", "apps", "wide")
+    assert set((await w.p.get_accessible_virtual_record_ids("uid-v", w.org, {"apps": ["wide"]})).values()) == {"wide1", "wide2"}
+    assert await w.p.get_accessible_virtual_record_ids("uid-gm", w.org, {"apps": ["wide"]}) == {}
+    for who in ("v", "gm", "nogate"):
+        got = await w.p.check_access(who, w.org, node_ids=["wide1", "wide2"])
+        assert set((await w.p.get_accessible_virtual_record_ids(f"uid-{who}", w.org, {"apps": ["wide"]})).values()) == set(got.node_ids)
+
+
+async def test_a_virtual_record_id_held_by_two_records_is_cited_by_the_one_the_user_may_open(w: World) -> None:
+    await world(w)
+    await w.nodes("records", vr("a_shut", virtualRecordId="v-pair", accessRule="RESTRICTED"), vr("z_open", virtualRecordId="v-pair"))
+    for k in ("a_shut", "z_open"):
+        await w.child(("recordGroups", "rg"), ("records", k))
+    assert (await w.p.get_accessible_virtual_record_ids("uid-gm", w.org))["v-pair"] == "z_open"          # not the smaller id: that one is shut to gm
+    await grant(w, "gm", "records", "a_shut")
+    assert (await w.p.get_accessible_virtual_record_ids("uid-gm", w.org))["v-pair"] == "a_shut"
+
+
+async def test_an_excluded_app_stays_out_even_when_a_group_reaches_it_and_internal_and_placeholder_records_are_not_served(w: World) -> None:
+    await world(w)
+    await w.nodes("records", vr("inner", isInternal=True), vr("held", isPlaceholder=True))
+    for k in ("inner", "held"):
+        await w.child(("recordGroups", "rg"), ("records", k))
+    assert await w.p.check_record_access_with_details("uid-gm", w.org, "inner")          # the batch check opens an internal record; the scope does not serve it
+    got = set((await w.p.get_accessible_virtual_record_ids("uid-gm", w.org)).values())
+    assert "open1" in got and not {"inner", "held"} & got
+    assert await w.p.get_accessible_virtual_record_ids("uid-gm", w.org, exclude_app_ids=frozenset({APP})) == {}
+    assert "k1" in (await w.p.get_accessible_virtual_record_ids("uid-kbu", w.org, exclude_app_ids=frozenset({APP}))).values()
+    await w.nodes("records", vr("kbx", connectorId="kb1", connectorName="KB"))          # a collection serves what was uploaded to it, not any record that names it
+    await w.child(("apps", "kb1"), ("records", "kbx"))
+    assert (await w.p.check_access("kbu", w.org, node_ids=["kbx"])).node_ids == {"kbx"}
+    assert "kbx" not in (await w.p.get_accessible_virtual_record_ids("uid-kbu", w.org)).values()
+
+
+async def test_the_details_name_only_the_roles_the_model_has(w: World) -> None:
+    await world(w)
+    await w.nodes("users", {"_key": "ed", "userId": "uid-ed"})
+    await w.edge("permission", ("users", "ed"), ("apps", APP), type="USER", role="READER")
+    await w.edge("permission", ("users", "ed"), ("records", "open1"), type="USER", role="EDITOR")
+    assert (await w.p.check_record_access_with_details("uid-ed", w.org, "open1"))["permissions"][0]["relationship"] == "READER"      # not a role the model lacks
+    await w.edge("permission", ("users", "ed"), ("records", "open2"), type="USER", role="WRITER")
+    assert (await w.p.check_record_access_with_details("uid-ed", w.org, "open2"))["permissions"][0]["relationship"] == "WRITER"
+
+
+async def test_a_grant_from_a_user_who_is_not_there_gives_nothing(w: World) -> None:
+    await world(w)
+    await w.edge("permission", ("users", "ghost"), ("records", "open1"), type="USER", role="OWNER")
+    assert await ctx(w, "ghost", "open1", "record") == LOW

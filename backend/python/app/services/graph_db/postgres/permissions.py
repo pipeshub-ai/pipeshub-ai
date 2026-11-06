@@ -36,6 +36,7 @@ _ROLE_RANK = {"OWNER": 4, "WRITER": 3, "READER": 2}
 _AGENT_CAN = {"can_edit": ("OWNER", "WRITER", "ORGANIZER"), "can_delete": ("OWNER",), "can_share": ("OWNER", "ORGANIZER")}
 _KB_TYPE = Connectors.KNOWLEDGE_BASE.value
 _CTX_RANK = {"OWNER": 6, "ADMIN": 5, "EDITOR": 4, "WRITER": 3, "READER": 1}
+_DETAIL_RANK = {"OWNER": 3, "WRITER": 2, "READER": 1}      # the roles a record's access details name
 _CTX_UP = ("OWNER", "ADMIN", "EDITOR", "WRITER")
 _CHECK_CHUNK = 2000     # candidate records handed to the access check at once
 # the metadata filters of a search: key, the edge from the record, the collection of the item, the field its name is in
@@ -334,7 +335,7 @@ class PermissionsMixin(PgBase):
             return None
 
     # ---- the context role, the record access details, and the accessible search scope ----------------------------
-    async def _role_on(self, tx: Tx, org: str, user_key: str, coll: str, node_id: str) -> tuple[str, str] | None:
+    async def _role_on(self, tx: Tx, org: str, user_key: str, coll: str, node_id: str, ranks: dict[str, int] = _CTX_RANK) -> tuple[str, str] | None:
         """The highest role the user holds on a record or record group: their own grant, a group's, a role's, a team's (never above WRITER) or the
         organization's, on the node or on what it inherits from (20 hops) or the collection it belongs to; a source account the user authenticated
         as counts inside that connector. ``(role, source)``, a retired role read as READER; None when no grant gives one."""
@@ -348,7 +349,7 @@ class PermissionsMixin(PgBase):
               UNION SELECT b.to_coll, b.to_id, 0 FROM graph.edges b JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = 'KB'
                 WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3),
             principals AS (
-              SELECT $4::text AS id
+              SELECT u.id FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $4
               UNION SELECT l.to_id FROM graph.edges l JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'users' AND s.id = l.to_id
                 WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $4 AND l.to_coll = 'users'
                   AND l.doc->>'connectorId' = (SELECT x.doc->>'connectorId' FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = $2 AND x.id = $3))
@@ -388,13 +389,13 @@ class PermissionsMixin(PgBase):
                 continue      # a direct grant on a collection counts only with a collection role
             if r["kind"] == "team" and role not in TEAM_GRANT_ROLES:
                 continue
-            if role not in _CTX_RANK:
+            if role not in ranks:
                 continue
             source = ("KNOWLEDGE_BASE" if r["app_type"] == _KB_TYPE else "DIRECT") if r["kind"] == "direct" else {
                 "group": "GROUP", "team": "KNOWLEDGE_BASE_TEAM" if r["tcoll"] == "apps" else "GROUP", "org": "ORGANIZATION"}[r["kind"]]
             if r["kind"] == "direct" and not (r["tcoll"] == "apps" or (r["tcoll"], r["tid"]) == (coll, node_id)):
                 source = "DIRECT_USER_RECORD_GROUP"
-            if best is None or _CTX_RANK[role] > _CTX_RANK[best[0]]:
+            if best is None or ranks[role] > ranks[best[0]]:
                 best = (role, source)
         return best
 
@@ -496,7 +497,7 @@ class PermissionsMixin(PgBase):
         type_coll = {RecordTypes.FILE.value: CollectionNames.FILES.value, RecordTypes.MAIL.value: CollectionNames.MAILS.value, RecordTypes.TICKET.value: CollectionNames.TICKETS.value}.get(record.get("recordType"))
 
         async def go(tx: Tx) -> tuple:
-            best = await self._role_on(tx, org, user_key, "records", record_id)
+            best = await self._role_on(tx, org, user_key, "records", record_id, _DETAIL_RANK)
             meta = await tx.fetch("""/* pipeshub:graph.record_labels */ SELECT e.coll AS ecoll, m.coll AS mcoll, m.id AS mid, m.doc AS mdoc, e.doc AS edoc FROM graph.edges e
                 JOIN graph.nodes m ON m.org_id = e.org_id AND m.coll = e.to_coll AND m.id = e.to_id
                 WHERE e.org_id = $1 AND e.from_coll = 'records' AND e.from_id = $2 AND e.coll IN ('belongsToDepartment', 'belongsToCategory', 'belongsToTopic', 'belongsToLanguage')
@@ -534,9 +535,12 @@ class PermissionsMixin(PgBase):
                                                 raise_on_error: bool = False, exclude_app_ids: frozenset[str] = frozenset()) -> dict[str, str]:
         """``{virtualRecordId: recordId}`` of the indexed, live records the user may open, inside the apps they pass the gate for (or the ones the filters
         name), narrowed by the metadata filters and the source time range. The batch access check decides each record, so this agrees with it.
-        shortcut: every candidate record of the scope is checked, in chunks; upgrade to a walk down from the user's grants when an org outgrows it."""
+        The candidates are what the user can reach: every record of a collection or an app-level connector (the user may open them all), and for a
+        record-level connector what a walk down from the app, from the records and groups granted to the user and from the groups that declare a scope
+        reaches (``access.reachable_records``). Records the user cannot reach are never read. The grants are read once."""
         try:
-            if org_id != current_org_id():
+            org = current_org_id()
+            if org_id != org:
                 return {}
             user = await self.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
             user_key = (user or {}).get("id") or (user or {}).get("_key")
@@ -547,37 +551,46 @@ class PermissionsMixin(PgBase):
             if filters.get(STRICT_SCOPE_FILTER_KEY) and scope is None:
                 return {}
             meta = [(edge, coll, field, filters[k]) for k, edge, coll, field in _META_FILTERS if filters.get(k)]
-            apps = [a for a in await self.get_gated_apps(user_key, org_id) if a.get("id") not in exclude_app_ids]
-            if scope is None:
-                chosen = [a for a in apps if a.get("type") != _KB_TYPE or not a.get("isHidden")]
-            else:
-                chosen = [a for a in apps if a["id"] in scope]
-            conn = [a["id"] for a in chosen if a.get("type") != _KB_TYPE]
-            kbs = [a["id"] for a in chosen if a.get("type") == _KB_TYPE]
-            if not conn and not kbs:
+            access = await self.get_knowledge_hub_access_v3(user_key, org_id)
+            gated = [a for a in access["gated_app_ids"] if a not in exclude_app_ids]
+            docs = {r["id"]: _doc(r["doc"]) for r in await self._q(lambda tx: tx.fetch(
+                "/* pipeshub:graph.accessible_apps */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])", org, gated), None)}
+            chosen = {i: d for i, d in docs.items() if (i in scope if scope is not None else d.get("type") != _KB_TYPE or not d.get("isHidden"))}
+            kbs = [i for i, d in chosen.items() if d.get("type") == _KB_TYPE]
+            wide = [i for i, d in chosen.items() if d.get("type") != _KB_TYPE and d.get("permissionModel") == "APP_LEVEL"]
+            level = {i: d for i, d in chosen.items() if i not in kbs and i not in wide}
+            if not chosen:
                 return {}
             tr = time_range or {}
             dated_only = bool(tr.get(DATED_ONLY_TIME_RANGE_KEY)) and upload_times_undated()
             undated = upload_times_undated() and not dated_only
             bounds = [tr.get(k) for k in ("source_created_after_ms", "source_created_before_ms", "source_updated_after_ms", "source_updated_before_ms")]
-            org = current_org_id()
-            cands = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.accessible_candidates */ SELECT r.id, r.doc->>'virtualRecordId' AS vrid FROM graph.nodes r
-                WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'orgId' = $1 AND r.doc->>'virtualRecordId' IS NOT NULL
-                  AND (r.doc->>'connectorId' = ANY($2::text[]) OR (r.doc->>'connectorId' = ANY($3::text[]) AND r.doc->>'origin' = 'UPLOAD'))
-                  AND (r.doc->>'indexingStatus' = 'COMPLETED' OR r.doc->>'hasIndexedCopy' = 'true') AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
-                  AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset($4::jsonb) f(edge text, coll text, field text, vals jsonb) WHERE NOT EXISTS (
-                      SELECT 1 FROM graph.edges e JOIN graph.nodes m ON m.org_id = e.org_id AND m.coll = f.coll AND m.id = e.to_id
-                      WHERE e.org_id = $1 AND e.coll = f.edge AND e.from_coll = 'records' AND e.from_id = r.id AND m.doc->f.field IN (SELECT jsonb_array_elements(f.vals))))
-                  AND ($5::bigint IS NULL OR (r.doc->>'sourceCreatedAtTimestamp')::numeric >= $5)
-                  AND ($6::bigint IS NULL OR (r.doc->>'sourceCreatedAtTimestamp')::numeric <= $6 OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
-                  AND ($7::bigint IS NULL OR (r.doc->>'sourceLastModifiedTimestamp')::numeric >= $7)
-                  AND ($8::bigint IS NULL OR (r.doc->>'sourceLastModifiedTimestamp')::numeric <= $8 OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
-                  AND (NOT $10 OR coalesce(r.doc->>'sourceTimestampOrigin', '') <> 'upload')
-                ORDER BY r.id""", org, conn, kbs, _j([{"edge": e, "coll": c, "field": f, "vals": v} for e, c, f, v in meta]), *bounds, undated, dated_only), None)
-            access = await self.get_knowledge_hub_access_v3(user_key, org_id)
+
+            async def candidates(tx: Tx) -> list[str]:
+                ids = {r["id"] for r in await tx.fetch("""/* pipeshub:graph.accessible_candidates_app_wide */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'records'
+                    AND ((doc->>'connectorId' = ANY($2::text[])) OR (doc->>'connectorId' = ANY($3::text[]) AND doc->>'origin' = 'UPLOAD'))""", org, wide, kbs)}
+                return sorted(ids | await access_sql.reachable_records(tx, org, access, sorted(level)))
+            ids = await self._q(candidates, None)
+            kept: list[Any] = []
+            for i in range(0, len(ids), _CHECK_CHUNK * 5):
+                kept += await self._q(lambda tx, part=ids[i:i + _CHECK_CHUNK * 5]: tx.fetch("""/* pipeshub:graph.accessible_candidates */ SELECT r.id, r.doc->>'virtualRecordId' AS vrid FROM graph.nodes r
+                    WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = ANY($2::text[]) AND r.doc->>'orgId' = $1 AND r.doc->>'virtualRecordId' IS NOT NULL
+                      AND r.doc->>'connectorId' = ANY($3::text[])
+                      AND (r.doc->>'indexingStatus' = 'COMPLETED' OR r.doc->>'hasIndexedCopy' = 'true') AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
+                      AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset($4::jsonb) f(edge text, coll text, field text, vals jsonb) WHERE NOT EXISTS (
+                          SELECT 1 FROM graph.edges e JOIN graph.nodes m ON m.org_id = e.org_id AND m.coll = f.coll AND m.id = e.to_id
+                          WHERE e.org_id = $1 AND e.coll = f.edge AND e.from_coll = 'records' AND e.from_id = r.id AND m.doc->f.field IN (SELECT jsonb_array_elements(f.vals))))
+                      AND ($5::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceCreatedAtTimestamp') = 'number' THEN (r.doc->>'sourceCreatedAtTimestamp')::numeric END) >= $5)
+                      AND ($6::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceCreatedAtTimestamp') = 'number' THEN (r.doc->>'sourceCreatedAtTimestamp')::numeric END) <= $6
+                           OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
+                      AND ($7::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceLastModifiedTimestamp') = 'number' THEN (r.doc->>'sourceLastModifiedTimestamp')::numeric END) >= $7)
+                      AND ($8::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceLastModifiedTimestamp') = 'number' THEN (r.doc->>'sourceLastModifiedTimestamp')::numeric END) <= $8
+                           OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
+                      AND (NOT $10 OR coalesce(r.doc->>'sourceTimestampOrigin', '') <> 'upload')
+                    ORDER BY r.id""", org, part, sorted(chosen), _j([{"edge": e, "coll": c, "field": f, "vals": v} for e, c, f, v in meta]), *bounds, undated, dated_only), None)
             out: dict[str, str] = {}
-            for i in range(0, len(cands), _CHECK_CHUNK):
-                chunk = cands[i:i + _CHECK_CHUNK]
+            for i in range(0, len(kept), _CHECK_CHUNK):
+                chunk = kept[i:i + _CHECK_CHUNK]
                 rows = await self._kh_v3_accessible_rows(user_key, org_id, [c["id"] for c in chunk], [], access=access, transaction=None)
                 ok = {r["id"] for r in rows if not r.get("isInternal") and not r.get("isPlaceholder")}
                 for c in chunk:
