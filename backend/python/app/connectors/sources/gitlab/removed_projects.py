@@ -72,10 +72,46 @@ class RemovedProjects:
         await self._remove(project_path, project_id)
         return None
 
+    async def remove_unlisted(self, listed_ids: set[int]) -> None:
+        """Remove each stored project a complete listing no longer names because GitLab changed
+        it: 404 (deleted or unreadable), or found under another path (transferred or renamed
+        out of the selection).
+
+        A project still at its stored path left the listing because the filter changed; the full
+        sync a filter change runs unlinks it and keeps its records. An empty listing removes
+        nothing, and any other answer keeps the project.
+        """
+        if not listed_ids:
+            return
+        c = self.c
+        async with c.data_store_provider.transaction() as tx_store:
+            nodes = await tx_store.get_nodes_by_filters(
+                collection=CollectionNames.RECORD_GROUPS.value,
+                filters={"connectorId": c.connector_id},
+            )
+        nodes = [n for n in nodes or [] if isinstance(n, dict)]
+        ids = {str(n.get("externalGroupId") or "") for n in nodes}
+        # A project group is its numeric id with a work-items group beside it, named after the
+        # project's path; a GitLab group is keyed by its path, which may be all digits too.
+        stored_paths = {
+            str(n.get("externalGroupId")): n.get("name")
+            for n in nodes
+            if str(n.get("externalGroupId") or "").isdigit() and f"{n.get('externalGroupId')}-work-items" in ids
+        }
+        for project_id in sorted(set(stored_paths) - {str(i) for i in listed_ids}, key=int):
+            res = await c.runtime.ds_call(c.data_source.get_project, int(project_id))
+            if not res.success and res.status_code != 404:
+                c.note_failed_read(f"project id {project_id}", res)
+                continue
+            path = getattr(res.data, "path_with_namespace", None) if res.success else None
+            if res.success and (not path or path == stored_paths[project_id]):
+                continue
+            await self._remove(path or project_id, project_id)
+
     async def _remove(self, project_path: str, project_id: int | str) -> None:
         c = self.c
         self.logger.warning(
-            "GitLab answers 404 for project %s (id %s): removing it from PipesHub", project_path, project_id,
+            "GitLab project %s (id %s) is gone or no longer selected: removing it from PipesHub", project_path, project_id,
         )
         # The project group holds the work-item, merge-request and code groups below it.
         stored = await c.data_entities_processor.get_record_group_by_external_id(c.connector_id, str(project_id))
