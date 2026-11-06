@@ -954,13 +954,13 @@ async def test_a_failed_permission_upgrade_keeps_the_old_permission(world: _Worl
             alice, CollectionNames.USERS.value, record.id, CollectionNames.RECORDS.value, permission
         )
 
-    # Neither store can write this edge: Neo4j takes no map as a property value,
-    # and ArangoDB's schema wants a number.
+    # Neither store can write this edge: both refuse a map for createdAtTimestamp, which the
+    # permissions schema wants as a number (Neo4j through the shared schema, before any statement).
     refused = Permission.model_construct(
         type=PermissionType.WRITE, entity_type=EntityType.USER, created_at={"refused": True},
         updated_at=get_epoch_timestamp_in_ms(),
     )
-    expected = "Property values can only be of primitive types" if w.neo4j else "permissions schema"
+    expected = "is not of type 'number'" if w.neo4j else "permissions schema"
     assert expected in await _failure(lambda: upgrade(refused))
 
     assert await _roles(w, alice, record.id) == ["READER"]

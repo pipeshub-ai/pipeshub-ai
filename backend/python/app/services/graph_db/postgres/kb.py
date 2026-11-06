@@ -12,6 +12,7 @@ from typing import Any
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, Connectors
 from app.core.org_context import current_org_id
 from app.models.permission import RETIRED_ROLES, read_role
+from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     is_live_record,
@@ -24,7 +25,7 @@ from app.services.graph_db.common.utils import (
     CONTAINMENT_MAX_DEPTH,
     uploaded_document_id,
 )
-from app.services.graph_db.postgres.base import PgBase, _arango, _doc, _j
+from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.records import _vis
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import folder_in_trash
@@ -110,6 +111,8 @@ class KbMixin(PgBase):
                        "createdAtTimestamp": now, "updatedAtTimestamp": now} for t in teams]
             await self.batch_create_edges(edges, "permission", transaction=transaction)
             return {"success": True, "grantedCount": len(edges), "grantedUsers": users, "grantedTeams": teams, "role": role, "kbId": kb_id, "details": {}}
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Create KB permissions failed: {e}")
             return {"success": False, "reason": str(e)}
@@ -123,8 +126,10 @@ class KbMixin(PgBase):
             return {"success": False, "reason": "No users or teams provided", "code": "400"}
         if new_role not in _ROLES:
             return {"success": False, "reason": f"Invalid role. Must be one of: {', '.join(_ROLES)}", "code": "400"}
+        now = get_epoch_timestamp_in_ms()
+        # Outside the try below: it answers every error with a 500 result, and a schema rejection must not become one.
+        _VALIDATOR.validate_edge_update("permission", {"role": new_role, "updatedAtTimestamp": now, "lastUpdatedTimestampAtSource": now})
         try:
-            now = get_epoch_timestamp_in_ms()
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.update_kb_permission */ UPDATE graph.edges e SET doc = e.doc || $5::jsonb
                 FROM graph.edges o, graph.nodes k, graph.nodes u
                 WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = ANY($2::text[]) AND e.to_coll = 'apps' AND e.to_id = $3 AND e.doc->>'type' = 'USER'

@@ -260,6 +260,10 @@ class SubCategories(BaseModel):
     level2: str = Field(description="Level 2 subcategory")
     level3: str = Field(description="Level 3 subcategory")
 
+# Organisations kept per record; more is a listing, not what the record is about.
+MAX_EXTRACTED_ORGANIZATIONS = 10
+
+
 class DocumentClassification(BaseModel):
     departments: list[str] = Field(
         description=(
@@ -279,6 +283,14 @@ class DocumentClassification(BaseModel):
             "2 to 5 (usually 2 or 3) reusable subjects a reader would look for across documents, lowercase except "
             "acronyms; never a person, company, document title, date, amount or id"
         )
+    )
+    organizations: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Organizations the document names as parties, customers, vendors, "
+            "partners, employers, regulators or institutions, verbatim. Not "
+            "people, products, teams or the application the document came from."
+        ),
     )
     summary: str = Field(
         description=(
@@ -306,6 +318,22 @@ class DocumentClassification(BaseModel):
         names = (canonical_language(v) for v in values if isinstance(v, str))
         return list(dict.fromkeys(n for n in names if n))
 
+    @field_validator("organizations", mode="before")
+    @classmethod
+    def _clean_organizations(cls, value: object) -> list[str]:
+        # Capped here rather than with max_items: a rejected list would fail
+        # the whole parse and lose every other field to the summary fallback.
+        if not isinstance(value, list):
+            return []
+        seen: set[str] = set()
+        names: list[str] = []
+        for raw in value:
+            name = raw.strip() if isinstance(raw, str) else ""
+            if name and name.casefold() not in seen:
+                seen.add(name.casefold())
+                names.append(name)
+        return names[:MAX_EXTRACTED_ORGANIZATIONS]
+
 
 def semantic_metadata_from_classification(classification: DocumentClassification) -> SemanticMetadata:
     """Map the LLM's schema onto the stored model. A blank name means "not known"."""
@@ -321,6 +349,7 @@ def semantic_metadata_from_classification(classification: DocumentClassification
         departments=names(classification.departments),
         languages=names(classification.languages),
         topics=names(classification.topics),
+        organizations=list(getattr(classification, "organizations", None) or []),
         summary=classification.summary,
         categories=[category] if category else [],
         sub_category_level_1=optional_name(classification.subcategories.level1),
@@ -436,6 +465,7 @@ def find_code_summary_block(blocks: list[Block]) -> Optional[Block]:
         ):
             return block
     return None
+
 
 class DocumentExtraction(Transformer):
     def __init__(

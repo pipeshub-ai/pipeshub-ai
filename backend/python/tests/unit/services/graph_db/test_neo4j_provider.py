@@ -1199,7 +1199,7 @@ class TestNodeOperations:
         neo4j_provider._arango_to_neo4j_node = MagicMock(  # type: ignore[method-assign]
             side_effect=[{"_key": "n1", "name": "A"}, {"id": "n2", "name": "B"}]
         )
-        neo4j_provider.validator.validate_node_update = MagicMock()
+        neo4j_provider.validator.validate_node_upsert = MagicMock(return_value=[])
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"id": "n1"}, {"id": "n2"}])
 
         result = await neo4j_provider.batch_upsert_nodes(
@@ -1217,7 +1217,7 @@ class TestNodeOperations:
     @pytest.mark.asyncio
     async def test_batch_upsert_nodes_raises_on_exception(self, neo4j_provider: Neo4jProvider):
         neo4j_provider._arango_to_neo4j_node = MagicMock(return_value={"id": "n1"})  # type: ignore[method-assign]
-        neo4j_provider.validator.validate_node_update = MagicMock(side_effect=RuntimeError("invalid"))
+        neo4j_provider.validator.validate_node_upsert = MagicMock(side_effect=RuntimeError("invalid"))
 
         with pytest.raises(RuntimeError, match="invalid"):
             await neo4j_provider.batch_upsert_nodes([{"id": "n1"}], "apps")
@@ -1523,7 +1523,10 @@ class TestAdvancedEdgeOperations:
 
         result = await neo4j_provider.batch_create_entity_relations(
             [
-                {"_from": "users/u1", "_to": "records/r1", "edgeType": "ASSIGNED_TO", "weight": 10},
+                {
+                    "_from": "users/u1", "_to": "records/r1", "edgeType": "ASSIGNED_TO", "weight": 10,
+                    "createdAtTimestamp": 1,
+                },
                 {
                     "from_id": "u2",
                     "to_id": "r2",
@@ -1531,6 +1534,7 @@ class TestAdvancedEdgeOperations:
                     "to_collection": "records",
                     "edgeType": "CREATED_BY",
                     "weight": 20,
+                    "createdAtTimestamp": 1,
                 },
             ],
             transaction="txn-er",
@@ -1541,8 +1545,11 @@ class TestAdvancedEdgeOperations:
 
     @pytest.mark.asyncio
     async def test_batch_create_entity_relations_skips_invalid_edges(
-        self, neo4j_provider: Neo4jProvider
+        self, neo4j_provider: Neo4jProvider, monkeypatch
     ):
+        # Schema validation rejects the edge with no edgeType before the skip logic runs (see
+        # test_neo4j_review_fixes.py); with it off, the skip is what this test is about.
+        monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "off")
         neo4j_provider.client.execute_query = AsyncMock()
 
         result = await neo4j_provider.batch_create_entity_relations(
@@ -1576,6 +1583,7 @@ class TestAdvancedEdgeOperations:
                         "from_collection": "users",
                         "to_collection": "records",
                         "edgeType": "ASSIGNED_TO",
+                        "createdAtTimestamp": 1,
                     }
                 ]
             )
