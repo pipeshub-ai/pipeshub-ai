@@ -3,14 +3,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.neo4j import parse_node_id
 from app.core.org_context import current_org_id
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.models.entities import AppUserGroup, User
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.team_grant_role import (
     TEAM_GRANT_ROLE_CAP,
     TEAM_GRANT_ROLES,
 )
+from app.services.graph_db.interface.graph_db_provider import _distinct_connector_types
 from app.services.graph_db.postgres import access as access_sql
-from app.services.graph_db.postgres.base import PgBase
+from app.services.graph_db.postgres.base import PgBase, _arango, _doc, _j
+from app.services.graph_db.postgres.identity import _soft
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from app.core.db import Tx
@@ -19,6 +26,8 @@ _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connec
 
 
 _ROLE_RANK = {"OWNER": 4, "WRITER": 3, "READER": 2}
+_AGENT_CAN = {"can_edit": ("OWNER", "WRITER", "ORGANIZER"), "can_delete": ("OWNER",), "can_share": ("OWNER", "ORGANIZER")}
+_INHERIT_HOPS = 8     # the longest INHERIT_PERMISSIONS chain the walk to a node's grantees follows, as on the other stores
 
 
 class PermissionsMixin(PgBase):
@@ -110,3 +119,175 @@ class PermissionsMixin(PgBase):
         if access is None:
             access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
         return await self._q(lambda tx: access_sql.accessible_rows(tx, org, ids, vrids, access), transaction)
+
+    # ---- who holds a grant on a node, and the writes of grants -----------------------------------------------------
+    async def _users_granted_on(self, node_id: str, limit: int | None, transaction: str | None) -> list[dict]:
+        """The users holding a PERMISSION edge on the node or on an ancestor it inherits from (up to ``_INHERIT_HOPS``), nearest first, then by id."""
+        key = parse_node_id(node_id)[1] or node_id
+        return await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_users_with_permission_to_node */ WITH RECURSIVE anc(coll, id, depth) AS (
+              SELECT n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.id = $2
+              UNION
+              SELECT i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
+                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < $3)
+            SELECT u.doc FROM anc
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.to_coll = anc.coll AND p.to_id = anc.id
+              JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = p.from_id
+            GROUP BY u.id, u.doc ORDER BY min(anc.depth), u.id LIMIT $4""", current_org_id(), key, _INHERIT_HOPS, limit), transaction)
+
+    @_soft(None)
+    async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str, transaction: str | None = None) -> User | None:
+        rows = await self._users_granted_on(node_id, 1, transaction)
+        return User.from_arango_user(_arango(_doc(rows[0]["doc"]), "users")) if rows else None
+
+    @_soft(list, flag=True)
+    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str, transaction: str | None = None, *,
+                                                raise_on_error: bool = False) -> list[User]:
+        return [User.from_arango_user(_arango(_doc(r["doc"]), "users")) for r in await self._users_granted_on(node_id, None, transaction)]
+
+    @_soft(list, flag=True)
+    async def get_groups_with_permission_to_node(self, node_id: str, node_collection: str, transaction: str | None = None, *,
+                                                 raise_on_error: bool = False) -> list[AppUserGroup]:
+        """The synced user groups (those with an ``externalGroupId``) holding a PERMISSION edge on the node itself."""
+        key = parse_node_id(node_id)[1] or node_id
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_groups_with_permission_to_node */ SELECT DISTINCT g.id, g.doc FROM graph.nodes n
+            JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'groups' AND p.to_coll = n.coll AND p.to_id = n.id
+            JOIN graph.nodes g ON g.org_id = $1 AND g.coll = 'groups' AND g.id = p.from_id AND g.doc->>'externalGroupId' IS NOT NULL
+            WHERE n.org_id = $1 AND n.id = $2 ORDER BY g.id""", current_org_id(), key), transaction)
+        return [AppUserGroup.from_arango_base_user_group(_arango(_doc(r["doc"]), "groups")) for r in rows]
+
+    async def batch_upsert_record_permissions(self, record_id: str, permissions: list[dict], transaction: str | None = None) -> None:
+        """Grants on one record: each edge is pointed at the record, whatever its own target says."""
+        if permissions:
+            await self.batch_create_edges([{**p, "to_id": record_id, "to_collection": "records"} for p in permissions], "permission", transaction)
+
+    async def create_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str, transaction: str | None = None) -> None:
+        now = get_epoch_timestamp_in_ms()
+        await self.batch_create_edges([{"from_id": record_id, "from_collection": "records", "to_id": record_group_id, "to_collection": "recordGroups",
+                                        "createdAtTimestamp": now, "updatedAtTimestamp": now}], "inheritPermissions", transaction)
+
+    async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str, transaction: str | None = None) -> None:
+        """Takes the user's grant on the record (live or in the trash) away; a record that is not there is a no-op."""
+        record = await self.get_record_by_external_id(connector_id, external_id, transaction, visibility=RecordVisibility.ALL)
+        if record:
+            await self.delete_edge(user_id, "users", record.id, "records", "permission", transaction)
+
+    # ---- teams ---------------------------------------------------------------------------------------------------
+    async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict[str, str]], timestamp: int, transaction: str | None = None) -> list[dict]:
+        """Sets the role on each listed user's edge to the team (a user with no edge is skipped); the updated edges come back. A user named twice gets the last role."""
+        last = {ur["userId"]: ur.get("role") for ur in user_roles}
+        if not last:
+            return []
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.batch_update_team_member_roles */ UPDATE graph.edges e
+            SET doc = jsonb_strip_nulls(e.doc || jsonb_build_object('role', x.role, 'updatedAtTimestamp', $4::bigint))
+            FROM jsonb_to_recordset($3::jsonb) AS x("userId" text, role text)
+            WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = x."userId" AND e.to_coll = 'teams' AND e.to_id = $2
+            RETURNING e.doc, e.from_id, e.to_id""", current_org_id(), team_id, _j([{"userId": u, "role": r} for u, r in last.items()]), timestamp), transaction, write=True)
+        return [{**_doc(r["doc"]), "from_id": r["from_id"], "to_id": r["to_id"], "from_collection": "users", "to_collection": "teams",
+                 "_from": f"users/{r['from_id']}", "_to": f"teams/{r['to_id']}"} for r in rows]
+
+    async def delete_all_team_permissions(self, team_id: str, transaction: str | None = None) -> None:
+        """Every grant on the team (its members' edges) goes; the team's own grants to apps stay."""
+        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.delete_all_team_permissions */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission'
+            AND to_coll = 'teams' AND to_id = $2""", current_org_id(), team_id), transaction, write=True)
+
+    async def get_team_permissions_and_owner_count(self, team_id: str, user_ids: list[str], transaction: str | None = None) -> dict[str, Any]:
+        """The team (None when absent), the given users' roles on it, and how many owners it has."""
+        org = current_org_id()
+
+        async def go(tx: Tx) -> dict[str, Any]:
+            team = await tx.fetchrow("/* pipeshub:graph.team_for_permissions */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'teams' AND id = $2", org, team_id)
+            perms = await tx.fetch("""/* pipeshub:graph.team_member_roles */ SELECT p.from_id, p.doc->>'role' AS role FROM graph.edges p JOIN graph.nodes u
+                ON u.org_id = p.org_id AND u.coll = 'users' AND u.id = p.from_id WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users'
+                AND p.to_coll = 'teams' AND p.to_id = $2 AND p.from_id = ANY($3::text[])""", org, team_id, list(user_ids))
+            owners = await tx.fetchval("""/* pipeshub:graph.team_owner_count */ SELECT count(*) FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission'
+                AND p.to_coll = 'teams' AND p.to_id = $2 AND p.doc->>'role' = 'OWNER'""", org, team_id)
+            return {"team": _arango(_doc(team["doc"]), "teams") if team else None, "permissions": {r["from_id"]: r["role"] for r in perms}, "owner_count": owners or 0}
+        return await self._q(go, transaction)
+
+    # ---- agents, apps and the knowledge hub ----------------------------------------------------------------------
+    async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:
+        """How the user reaches the agent: their own grant, else their organization's; None for neither, for a deleted agent, and for another org."""
+        if org_id != current_org_id():
+            return None
+        try:
+            r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.check_agent_permission */ SELECT p.doc->>'role' AS role, p.doc->>'type' AS t FROM graph.nodes a
+                JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.to_coll = 'agentInstances' AND p.to_id = a.id
+                  AND ((p.from_coll = 'users' AND p.from_id = $3 AND p.doc->>'type' = 'USER') OR (p.from_coll = 'organizations' AND p.from_id = $1 AND p.doc->>'type' = 'ORG'))
+                JOIN graph.nodes g ON g.org_id = $1 AND g.coll = p.from_coll AND g.id = p.from_id
+                WHERE a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = $2 AND a.doc->>'isDeleted' IS DISTINCT FROM 'true'
+                ORDER BY (p.doc->>'type' = 'USER') DESC LIMIT 1""", org_id, agent_id, user_id), None)
+        except Exception as e:
+            self.logger.error("Failed to check agent permission: %s", e)
+            return None
+        if not r:
+            return None
+        role = r["role"]
+        return {"access_type": "INDIVIDUAL" if r["t"] == "USER" else "ORG", "user_role": role, **{k: role in v for k, v in _AGENT_CAN.items()}, "can_view": True}
+
+    async def get_user_permission_app_ids(self, user_key: str, org_id: str, transaction: str | None = None) -> list[str]:
+        """Apps of the org the user holds a USER grant on, directly or through a team they are in that holds a TEAM grant on it; hidden ones left out."""
+        if org_id != current_org_id():
+            return []
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_user_permission_app_ids */ WITH ids AS (
+              SELECT e.to_id AS app FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2
+                AND e.to_coll = 'apps' AND e.doc->>'type' = 'USER'
+              UNION SELECT g.to_id FROM graph.edges m JOIN graph.nodes t ON t.org_id = m.org_id AND t.coll = 'teams' AND t.id = m.to_id
+                JOIN graph.edges g ON g.org_id = m.org_id AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = t.id AND g.to_coll = 'apps' AND g.doc->>'type' = 'TEAM'
+                WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = $2 AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER')
+            SELECT DISTINCT a.id FROM ids JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'apps' AND a.id = ids.app
+            WHERE a.doc->>'orgId' = $1 AND a.doc->>'isHidden' IS DISTINCT FROM 'true'""", org_id, user_key), transaction)
+        return [r["id"] for r in rows]
+
+    async def get_gated_apps(self, user_key: str, org_id: str, transaction: str | None = None) -> list[dict]:
+        return await self.get_user_apps(user_key, transaction) if org_id == current_org_id() else []
+
+    async def get_knowledge_hub_access_context_v2(self, user_key: str, org_id: str, *, transaction: str | None = None) -> dict[str, list[str]]:
+        """Who the user is and the apps they pass the gate for: the first two parts of ``get_knowledge_hub_access_v3``."""
+        access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
+        return {"grantee_ids": list(dict.fromkeys(access["grantee_ids"])), "gated_app_ids": list(dict.fromkeys(access["gated_app_ids"]))}
+
+    async def get_accessible_connector_types(self, user_id: str, org_id: str) -> list[str]:
+        """Types of the apps the user passes the gate for. A failed read widens the search (an empty list), it never narrows it."""
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            user_key = (user or {}).get("id") or (user or {}).get("_key")
+            return _distinct_connector_types(await self.get_gated_apps(user_key, org_id)) if user_key else []
+        except Exception as e:
+            self.logger.warning("Could not resolve accessible connector types: %s", e)
+            return []
+
+    async def get_knowledge_hub_node_access(self, node_id: str, user_key: str, org_id: str, folder_mime_types: list[str],
+                                            transaction: str | None = None) -> dict[str, Any] | None:
+        """The node's metadata when the user may access it (the batch check); None for a missing node and a refused one alike."""
+        if org_id != current_org_id():
+            return None
+        try:
+            checked = await self.check_access(user_key, org_id, node_ids=[node_id], transaction=transaction)
+            if node_id not in checked.node_ids:
+                return None
+            row = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.get_knowledge_hub_node_access */ SELECT n.coll, n.doc, kb.id AS kb_id FROM graph.nodes n
+                LEFT JOIN graph.nodes kb ON kb.org_id = n.org_id AND kb.coll = 'apps' AND kb.doc->>'type' = 'KB'
+                  AND kb.id = CASE WHEN n.coll = 'apps' THEN n.id ELSE n.doc->>'connectorId' END
+                WHERE n.org_id = $1 AND n.id = $2 AND n.coll IN ('records', 'recordGroups', 'apps') AND n.doc->>'orgId' = $1
+                ORDER BY n.coll LIMIT 1""", org_id, node_id), transaction)
+            if not row:
+                return None
+            d, coll = _doc(row["doc"]), row["coll"]
+            if coll == "records":
+                out = {"id": node_id, "name": d.get("recordName"), "nodeType": "folder" if d.get("mimeType") in folder_mime_types else "record", "subType": d.get("recordType"),
+                       "connector": d.get("connectorName"), "webUrl": d.get("webUrl"), "recordType": d.get("recordType"), "indexingStatus": d.get("indexingStatus")}
+            elif coll == "recordGroups":
+                out = {"id": node_id, "name": d.get("groupName"), "nodeType": "recordGroup",
+                       "subType": "COLLECTION" if d.get("connectorName") == "KB" else d.get("groupType") or d.get("connectorName"),
+                       "connector": d.get("connectorName"), "webUrl": d.get("webUrl"), "recordType": None, "indexingStatus": None}
+            else:
+                out = {"id": node_id, "name": d.get("name"), "nodeType": "app", "subType": d.get("type"), "connector": d.get("type"), "webUrl": d.get("webUrl"),
+                       "recordType": None, "indexingStatus": None}
+            out["isPlaceholder"] = node_id in checked.placeholder_ids
+            out["userRole"] = await self.get_user_kb_permission(row["kb_id"], user_key, transaction=transaction) if row["kb_id"] else None
+            return out
+        except PermissionVerificationUnavailableError:
+            raise
+        except Exception as e:
+            self.logger.error("get_knowledge_hub_node_access failed: %s", e)
+            return None
