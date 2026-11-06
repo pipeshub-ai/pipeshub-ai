@@ -22994,6 +22994,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return 0
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
+        self.validator.validate_node_update(CollectionNames.ORGS.value, {"parentOrgId": org_id})
         label = collection_to_label(CollectionNames.ORGS.value)
         relationships = "|".join(
             edge_collection_to_relationship(c)

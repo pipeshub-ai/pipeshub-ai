@@ -680,7 +680,7 @@ _AUDITED_CYPHER_WRITERS = frozenset({
     '_delete_unlinked_taxonomy_nodes', '_move_stub_edges_query', '_record_group_link_cypher',
     '_replace_edges_to_cypher', '_require_unique_id', '_stash_connector_delete_handles',
     '_upsert_record_with_type_cypher', 'add_taxonomy_aliases', 'backfill_app_org_ids',
-    'backfill_block_name_folded', 'backfill_hierarchy', 'backfill_indexed_copy_flags', 'batch_create_edges',
+    'backfill_block_name_folded', 'backfill_hierarchy', 'backfill_indexed_copy_flags', 'stamp_external_org_parents', 'batch_create_edges',
     'batch_create_entity_relations', 'batch_update_connector_status', 'batch_update_nodes',
     'batch_update_team_member_roles', 'batch_upsert_node_relations', 'batch_upsert_nodes', 'batch_upsert_people',
     'claim_push_record', 'compare_and_set_indexing_status', 'compare_and_set_record_fields',

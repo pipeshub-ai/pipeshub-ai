@@ -37,6 +37,7 @@ def _connector() -> tuple[SalesforceConnector, MagicMock]:
         setattr(tx, name, AsyncMock())
     tx.get_nodes_by_field_in = AsyncMock(return_value=[])
     tx.get_all_orgs = AsyncMock(return_value=[])
+    tx.get_edges_from_node = AsyncMock(return_value=[])
     tx.get_record_by_external_id = AsyncMock(return_value=None)
     tx.__aenter__ = AsyncMock(return_value=tx)
     tx.__aexit__ = AsyncMock(return_value=None)
@@ -127,7 +128,7 @@ async def test_a_contact_and_its_member_of_edge_without_dates_pass_the_edge_sche
     connector, tx = _connector()
     tx.get_nodes_by_field_in = AsyncMock(
         side_effect=lambda collection, field, values: (
-            [{"id": "org-acme", "name": "Acme", "isExternal": True}] if collection == "organizations" else []
+            [{"id": "org-acme", "name": "Acme", "isExternal": True, "parentOrgId": "org-sf-1"}] if collection == "organizations" else []
         )
     )
     contact = SalesforceContact.model_validate({

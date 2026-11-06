@@ -226,7 +226,7 @@ CLASSIFICATION: dict[str, str] = {
     # ---- node replace (SET n = $node, full validation)
     "update_node_if_match": _R,
     # ---- targeted raw writes of one schema'd field
-    "compare_and_set_indexing_status": _T, "compare_and_set_record_fields": _T,
+    "compare_and_set_indexing_status": _T, "compare_and_set_record_fields": _T, "stamp_external_org_parents": _T,
     "update_indexing_status_for_record_ids": _T, "reset_indexing_status_for_connector": _T,
     "batch_update_connector_status": _T, "update_drive_sync_state": _T, "update_user_sync_state": _T,
     "update_queued_duplicates_status": _T, "claim_push_record": _T, "retag_push_record": _T,
@@ -992,6 +992,7 @@ COVERAGE_GAPS: dict[str, str] = {
           "batch_upsert_app_roles", "batch_upsert_app_users", "batch_upsert_orgs", "batch_upsert_record_groups",
           "batch_upsert_user_groups"), "typed model in, delegates to batch_upsert_nodes; pin through the T3 converters"),
         (("upsert_sync_point", "update_sync_point_if", "store_page_token"), "schema-less collections today"),
+        (("stamp_external_org_parents",), "stamps parentOrgId from its org_id argument, which is a plain string no caller can make invalid; it validates {parentOrgId: org_id}"),
         (("update_agent", "update_agent_template", "update_knowledge_base", "clone_agent_template"),
          "multi-statement, permission-checked; delegates to update_node / ensure_nodes"),
         (("stage_state_create", "stage_state_compare_and_set"), "stage-state fixture; own schema"),
