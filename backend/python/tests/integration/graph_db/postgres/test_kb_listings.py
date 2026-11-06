@@ -115,6 +115,14 @@ async def test_a_folder_lists_its_subfolders_and_records_and_not_what_is_deleted
         assert (await w.p.get_folder_children("kb1", "top", 0, 5))["totalCount"] == 0
 
 
+async def test_the_root_lists_only_items_stored_with_this_orgs_id(w: World) -> None:
+    await tree(w)
+    await folder(w, "foreign-folder", orgId="another-org")
+    await item(w, "foreign", orgId="another-org")
+    r = await w.p.get_kb_children("kb1", 0, 20)
+    assert [f["id"] for f in r["folders"]] == ["top", "zeta"] and [x["id"] for x in r["records"]] == ["r1", "r2"] and r["totalCount"] == 4
+
+
 async def test_a_failed_listing_answers_a_failure_and_the_next_one_answers(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await tree(w)
     real = w.p._q
@@ -172,6 +180,11 @@ async def test_the_flat_listing_filters_sorts_pages_and_lists_a_record_in_each_o
     assert all_[1] == 5 and ids(all_) == ["r1", "in-top", "in-top", "r2", "in-sub"] and {x["folder"]["id"] for x in all_[0] if x["id"] == "in-top"} == {"top", "zeta"}
     assert ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10)) == ["in-sub", "r2", "in-top", "in-top", "r1"]
     assert ids(await w.p.list_kb_records("kb1", "me", w.org, 1, 2, sort_by="createdAtTimestamp", sort_order="asc")) == ["in-top", "in-top"]
+    pairs = []                                                                             # one row at a time: the two rows of a record in two folders are each seen once
+    for skip in range(5):
+        page = (await w.p.list_kb_records("kb1", "me", w.org, skip, 1, sort_by="createdAtTimestamp", sort_order="asc"))[0]
+        pairs += [(x["id"], (x["folder"] or {}).get("id")) for x in page]
+    assert sorted(pairs, key=str) == sorted([(x["id"], (x["folder"] or {}).get("id")) for x in all_[0]], key=str) and len(set(pairs)) == 5
     assert (await w.p.list_kb_records("kb1", "me", w.org, 1, 2))[1] == 5                               # the total ignores the page
     assert ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="top", sort_by="createdAtTimestamp", sort_order="asc")) == ["in-top"]   # a folder: its children only
     whole = (await w.p.list_kb_records("kb1", "me", w.org, 0, 10))[2]
@@ -300,6 +313,12 @@ async def test_a_template_opens_for_its_own_grant_or_a_team_the_user_is_in_and_n
     assert (t["access_type"], t["can_edit"], t["can_delete"], t["can_share"]) == ("INDIVIDUAL", False, False, False)
     t = await w.p.get_template("t1", "member")
     assert (t["access_type"], t["user_role"], t["can_edit"], t["can_delete"]) == ("TEAM", "WRITER", True, False)
+    await users(w, "odd", "oddteam")                                                                               # a grant with a role that is none of the known ones opens nothing
+    await w.edge("permission", ("users", "odd"), ("agentTemplates", "t1"), type="USER", role="EDITOR")
+    await w.nodes("teams", {"_key": "tx"})
+    await w.edge("permission", ("users", "oddteam"), ("teams", "tx"), type="USER", role="READER")
+    await w.edge("permission", ("teams", "tx"), ("agentTemplates", "t1"), type="TEAM", role="")
+    assert await w.p.get_template("t1", "odd") is None and await w.p.get_template("t1", "oddteam") is None
     for team_key, role in (("ta", "READER"), ("tz", "OWNER"), ("tb", "WRITER")):                  # several teams: the highest role wins, whatever the order of the keys
         await w.nodes("teams", {"_key": team_key})
         await w.edge("permission", ("users", "member"), ("teams", team_key), type="USER", role="READER")
