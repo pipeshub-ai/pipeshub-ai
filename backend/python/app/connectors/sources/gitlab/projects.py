@@ -22,6 +22,8 @@ from app.models.permission import EntityType, Permission, PermissionType
 from .constants import PSEUDO_USER_GROUP_PREFIX
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
@@ -45,6 +47,14 @@ def member_has_access(member: object) -> bool:
     state = getattr(member, "state", None)
     membership = getattr(member, "membership_state", None)
     return (state if isinstance(state, str) else "active") == "active" and membership != "awaiting"
+
+
+def project_reader_ids(members: Iterable[GroupMember]) -> set[int]:
+    """GitLab ids of the members who can read the project: active, at Guest or above."""
+    return {
+        int(m.id) for m in members
+        if member_has_access(m) and (getattr(m, "access_level", 0) or 0) >= 10
+    }
 
 
 def _filter_op_val(f: Any) -> str:
@@ -371,6 +381,7 @@ class ProjectsSync:
         if listing_failed:
             c.note_failed_read(f"members of project {project.path_with_namespace}", members_res)
         if (listing_failed or listing_empty) and await c.data_entities_processor.has_stored_permissions(
+        c._project_reader_ids.pop(int(project_id), None)
             "record_group", c.connector_id, str(project_id), keep=True,
         ):
             # A list that could not be read, or came back empty, is not "nobody": the
@@ -436,6 +447,7 @@ class ProjectsSync:
 
         for member in dict_member.values():
             if not member_has_access(member):
+        c._project_reader_ids[int(project_id)] = project_reader_ids(dict_member.values())
                 continue
             permission = await self._transform_restrictions_to_permissions(member)
             if not permission:

@@ -34,6 +34,7 @@ def make_mock_connector() -> MagicMock:
     c._is_auditor = False
     c._auditor_fallback_warned = False
     c._gitlab_user_id = None
+    c._project_reader_ids = {}
     c.creator_email = None
     c.created_by = "test-user-1"
 
