@@ -113,7 +113,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("google/drive/individual", "container", CONTAINER, "google/drive/individual/connector.py:185"),
     Connector("linear", "linear", CONTAINER, "linear/connector.py:1190",
               "team group RECORD_GROUP_LEVEL, ORG grant (public) or group grant (private); the source doc calls it override"),
-    Connector("slack/team", "container", CONTAINER, "slack/team/connector.py:1625"),
+    Connector("slack/team", "container", CONTAINER, "slack/team/connector.py:1630"),
     Connector("slack/individual", "container", CONTAINER, "slack/individual/connector.py:332"),
     Connector("google/gmail/team", "container", CONTAINER, "google/gmail/team/connector.py:1787"),
     Connector("google/gmail/individual", "container", CONTAINER, "google/gmail/individual/connector.py:131"),
