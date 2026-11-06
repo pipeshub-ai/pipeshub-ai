@@ -1,98 +1,11 @@
 import { Response, NextFunction } from 'express';
-import { isJwtTokenValid } from '../utils/validateJwt';
 import { AuthSessionRequest } from './types';
 import { SessionService } from '../services/session.service';
 import {
-  ForbiddenError,
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
-import {
-  ADMIN_ACCESS_REQUIRED_MESSAGE,
-  isUserOrgAdmin,
-} from '../../user_management/services/user-admin.service';
-import { AppConfig } from '../../tokens_manager/config/config';
-import {
-  asAccount,
-  makeOrgContext,
-  runWithOrgContext,
-} from '../../../libs/context/orgContext';
-
-export const userValidator = (
-  req: AuthSessionRequest,
-  _res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const container = req.container;
-    if (!container) {
-      throw new NotFoundError('Auth Container not found');
-    }
-    const config = container.get<AppConfig>('AppConfig');
-
-    const decodedData = isJwtTokenValid(req, config.jwtSecret);
-    if (!decodedData) {
-      throw new UnauthorizedError('Invalid Token');
-    }
-    req.user = decodedData;
-    bindVerified(decodedData as { orgId?: string; userId?: string }, next);
-  } catch (error) {
-    next(error);
-  }
-};
-
-/** The token's signature is verified: its organisation and user are the ones the rest of the request runs as. */
-const bindVerified = (
-  claims: { orgId?: string; userId?: string },
-  next: NextFunction,
-): void => {
-  if (!claims.orgId || !claims.userId) return next();
-  runWithOrgContext(
-    makeOrgContext({
-      orgId: claims.orgId,
-      userId: claims.userId,
-      kind: 'user',
-      source: 'jwt',
-    }),
-    next,
-  );
-};
-
-export const adminValidator = async (
-  req: AuthSessionRequest,
-  _res: Response,
-  next: NextFunction,
-) => {
-  try {
-    const container = req.container;
-    if (!container) {
-      throw new NotFoundError('Auth Container not found');
-    }
-    const config = container.get<AppConfig>('AppConfig');
-    const decodedData = isJwtTokenValid(req, config.jwtSecret);
-    if (!decodedData) {
-      throw new UnauthorizedError('Invalid Token');
-    }
-    req.user = decodedData;
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    if (!userId || !orgId) {
-      throw new NotFoundError('Account not found');
-    }
-
-    const isAdmin = await asAccount(String(orgId), String(userId), 'jwt', () =>
-      isUserOrgAdmin(userId, orgId),
-    );
-
-    if (!isAdmin) {
-      throw new ForbiddenError(ADMIN_ACCESS_REQUIRED_MESSAGE);
-    }
-
-    bindVerified(decodedData as { orgId?: string; userId?: string }, next);
-  } catch (error) {
-    next(error);
-  }
-};
+import { asAccount } from '../../../libs/context/orgContext';
 
 export const authSessionMiddleware = async (
   req: AuthSessionRequest,
