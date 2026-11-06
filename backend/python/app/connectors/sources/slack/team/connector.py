@@ -495,6 +495,8 @@ class SlackConnector(BaseConnector):
         self._slack_executor: ThreadPoolLease | None = None
         # Channel names whose messages this run could not read, for one notice per run.
         self._unreadable_channels: list[str] = []
+        self._unreadable_archived_channels: list[str] = []
+        self._archived_channel_ids: set[str] = set()
         self._channel_list_failed = False
         # Set once Slack refuses the token in a run; parallel channel syncs see it too.
         self._token_refused = False
@@ -725,21 +727,35 @@ class SlackConnector(BaseConnector):
 
     async def _report_unreadable_channels(self) -> None:
         """One notice per run for the channels whose messages could not be read."""
-        names = list(dict.fromkeys(self._unreadable_channels))
-        if not names:
-            return
-        shown = ", ".join(f"#{n}" for n in names[:5])
-        more = f" and {len(names) - 5} more" if len(names) > 5 else ""
-        await self.notify(
-            type=NotificationType.CONNECTOR_SYNC_ERROR,
-            severity=NotificationSeverity.WARNING,
-            title=f"{self.display_name}: some Slack channels were not synced",
-            message=(
-                f"{self.display_name}: the Slack app cannot read {shown}{more}. Invite the "
-                f"app to these channels (/invite in the channel), or add the channels:join "
-                f"scope for public channels."
-            ),
-        )
+
+        def listed(channels: list[str]) -> str:
+            names = list(dict.fromkeys(channels))
+            more = f" and {len(names) - 5} more" if len(names) > 5 else ""
+            return ", ".join(f"#{n}" for n in names[:5]) + more
+
+        if self._unreadable_channels:
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.WARNING,
+                title=f"{self.display_name}: some Slack channels were not synced",
+                message=(
+                    f"{self.display_name}: the Slack app cannot read {listed(self._unreadable_channels)}. Invite the "
+                    f"app to these channels (/invite in the channel), or add the channels:join "
+                    f"scope for public channels."
+                ),
+            )
+        if self._unreadable_archived_channels:
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.WARNING,
+                title=f"{self.display_name}: some archived Slack channels were not synced",
+                message=(
+                    f"These channels are archived and the Slack app is not a member: "
+                    f"{listed(self._unreadable_archived_channels)}. Slack does not allow joining an archived "
+                    f"channel, so their messages are not synced. Unarchive the channel and invite the app "
+                    f"(/invite), then sync again, or ignore this notice."
+                ),
+            )
 
     @cached_property
     def _token_renewal(self) -> SlackTokenRenewal:
@@ -806,6 +822,7 @@ class SlackConnector(BaseConnector):
             # full_sync_coverage.
             self._full_sync_read_failed = False
             self._unreadable_channels = []
+            self._unreadable_archived_channels = []
             self._channel_list_failed = False
             self._token_refused = False
 
@@ -1261,6 +1278,7 @@ class SlackConnector(BaseConnector):
         # channel filters) never bleed into Phase 5 (thread-growth / change detection)
         self.channel_groups_cache.clear()
         self.channel_id_to_name_cache.clear()
+        self._archived_channel_ids.clear()
 
         cursor: Optional[str] = None
         record_groups: list[RecordGroup] = []
@@ -1269,8 +1287,9 @@ class SlackConnector(BaseConnector):
         while True:
             await self.rate_limiter.acquire(Tier.T2)
             ds   = await self._fresh_datasource()
+            # Archived channels stay readable in Slack, and a channel dropped from the
+            # list would lose its grants at the next full sync: list them, same ACL.
             resp = await ds.conversations_list(
-                exclude_archived=True,
                 types=types_param,
                 limit=PAGE_SIZE_CHANNELS,
                 cursor=cursor,
@@ -1325,6 +1344,8 @@ class SlackConnector(BaseConnector):
                         continue
                     if rg.name:
                         self.channel_id_to_name_cache[cid] = rg.name
+                    if cd.get("is_archived"):
+                        self._archived_channel_ids.add(cid)
                     page_items.append((rg, cd))
                 except Exception as exc:
                     self._full_sync_read_failed = True
@@ -1334,7 +1355,7 @@ class SlackConnector(BaseConnector):
 
             perm_sem = asyncio.Semaphore(MAX_CONCURRENT_CHANNEL_MEMBERS)
 
-            async def _resolve_perms(cd: dict[str, Any]) -> list[Permission]:
+            async def _resolve_perms(cd: dict[str, Any]) -> list[Permission] | None:
                 async with perm_sem:
                     return await self._channel_permissions(cd)
 
@@ -1343,7 +1364,7 @@ class SlackConnector(BaseConnector):
                 return_exceptions=True,
             )
 
-            batch: list[tuple[RecordGroup, list[Permission]]] = []
+            batch: list[tuple[RecordGroup, list[Permission] | None]] = []
             for (rg, cd), perms in zip(page_items, perms_results):
                 if isinstance(perms, Exception):
                     # Written with no permissions, the channel would lose every
@@ -1356,7 +1377,8 @@ class SlackConnector(BaseConnector):
                         f"{cd.get('name')}: {perms}; channel left unchanged"
                     )
                     continue
-                batch.append((rg, self._with_authenticator(perms)))
+                # None: the grants are unknown, so the processor keeps the stored ones.
+                batch.append((rg, None if perms is None else self._with_authenticator(perms)))
                 record_groups.append(rg)
                 total += 1
 
@@ -1451,9 +1473,11 @@ class SlackConnector(BaseConnector):
     async def _channel_permissions(
         self,
         channel_data: dict[str, Any],
-    ) -> list[Permission]:
+    ) -> list[Permission] | None:
         """
-        Return the correct HAS_PERMISSION list for a single channel.
+        Return the correct HAS_PERMISSION list for a single channel, or None when an
+        archived private channel's members cannot be read (its membership is frozen,
+        so the grants stored by an earlier sync stay).
 
         Public channel  → workspace_member AppRole (efficient single edge)
         Private channel → explicit member list from conversations.members
@@ -1502,7 +1526,10 @@ class SlackConnector(BaseConnector):
             return perms
 
         # Private channel or group DM — resolve explicit member list
-        member_ids = await self._fetch_channel_members(cid)
+        member_ids = await self._fetch_channel_members(cid, keep_if_unreadable=cid in self._archived_channel_ids)
+        if member_ids is None:
+            self.logger.info(f"Members of archived channel {cid} cannot be read; its stored grants are kept")
+            return None
         perms: list[Permission] = []
         for uid in member_ids:
             email = self.user_id_to_email_cache.get(uid)
@@ -1514,7 +1541,9 @@ class SlackConnector(BaseConnector):
                 ))
         return perms
 
-    async def _fetch_channel_members(self, channel_id: str) -> list[str]:
+    async def _fetch_channel_members(
+        self, channel_id: str, *, keep_if_unreadable: bool = False
+    ) -> list[str] | None:
         """
         Return all member Slack user IDs for a channel via conversations.members
         with full cursor-based pagination.
@@ -1523,7 +1552,8 @@ class SlackConnector(BaseConnector):
         not_in_channel or missing_scope: the members cannot be read with this
         token, so nobody is granted the channel (fail closed) until they can be.
         Those answers repeat on every sync, so they are not a failed read. Any
-        failure after the first page, or any other failure, raises.
+        failure after the first page, or any other failure, raises. With
+        ``keep_if_unreadable`` those answers return None (unknown) instead of [].
         """
         members: list[str] = []
         cursor: Optional[str] = None
@@ -1549,7 +1579,7 @@ class SlackConnector(BaseConnector):
                             f"Cannot read the members of {channel_id} ({error}); "
                             f"nobody is given access to it until they can be read"
                         )
-                        return []
+                        return None if keep_if_unreadable else []
                     # Any other failure leaves the member list short. Returned,
                     # it would replace the channel's grants and lock out every
                     # member not yet read; raised, the channel is left as it is.
@@ -1712,6 +1742,13 @@ class SlackConnector(BaseConnector):
 
             if not resp or not resp.success:
                 error = getattr(resp, "error", "no response")
+                if error == "not_in_channel" and channel_id in self._archived_channel_ids:
+                    # Slack does not let anyone join an archived channel.
+                    self.logger.warning(f"Channel {channel_id} is archived and the bot is not in it, skipping.")
+                    self._unreadable_archived_channels.append(
+                        self.channel_id_to_name_cache.get(channel_id, channel_id)
+                    )
+                    break
                 if error == "not_in_channel" and not join_attempted:
                     # Bot is not a member — try joining (works for public channels)
                     self.logger.info(
@@ -4303,7 +4340,6 @@ class SlackConnector(BaseConnector):
                 await self.rate_limiter.acquire(Tier.T2)
                 ds = await self._fresh_datasource()
                 resp = await ds.conversations_list(
-                    exclude_archived=True,
                     types="public_channel,private_channel",
                     limit=PAGE_SIZE_CHANNELS,
                     cursor=cursor,

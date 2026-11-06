@@ -50,7 +50,8 @@ env:
 jobs:
   oracle:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # the test step took 9 to 19 minutes with the default xdist split, which parks the heavy tests on one worker; worksteal needs about 4
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -77,7 +78,7 @@ jobs:
       - name: Run oracle, scenario and matrix tests
         run: |
           cd backend/python
-          pytest tests/permissions -m "not integration" -n 4 -v -rx --junitxml="$RUNNER_TEMP/oracle-junit.xml"
+          pytest tests/permissions -m "not integration" -n 4 --dist worksteal -v -rx --junitxml="$RUNNER_TEMP/oracle-junit.xml"
 
       # --min-tests pins the suite size, so a module that stopped being collected fails the job; a PR that adds tests raises it.
       # The one allowed skip is the strict expected failure that reports matrix cells without a scenario, by its exact name.
