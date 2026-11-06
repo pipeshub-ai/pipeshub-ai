@@ -227,6 +227,15 @@ class TaxonomyConsolidator:
             collection, winner_key, loser.key, org_id,
             set_merged_from=None, only_merged_from=loser.key, dry_run=dry_run,
         )
+        # A node still redirecting to the loser (a merge that stopped before
+        # _flatten) had its edges carried on with the loser's: they come back
+        # to the loser too, marked as they were, so that node's own unmerge,
+        # which ends at the loser now, still finds them.
+        for follower in await self._redirecting_to(collection, org_id, loser.key):
+            restored += await self.graph.move_taxonomy_edges(
+                collection, winner_key, loser.key, org_id,
+                set_merged_from=follower, only_merged_from=follower, dry_run=dry_run,
+            )
         self.logger.info(
             "kg_taxonomy: unmerge %s | org=%s winner=%s loser=%s edges=%d",
             "planned" if dry_run else "applied", org_id, winner_key, loser.key, restored,
@@ -383,6 +392,21 @@ class TaxonomyConsolidator:
             if node.merged_into in seen or len(seen) > MAX_MERGE_REDIRECT_HOPS:
                 raise ValueError(f"redirect cycle or overlong chain at {collection}/{key}: {seen}")
             key = node.merged_into
+
+    async def _redirecting_to(self, collection: str, org_id: str, key: str) -> list[str]:
+        """The org's nodes whose redirect chain passes through ``key``."""
+        found: list[str] = []
+        frontier = [key]
+        while frontier and len(found) <= MAX_MERGE_REDIRECT_HOPS:
+            rows = await self.graph.get_nodes_by_field_in(
+                collection, MERGED_INTO_FIELD, frontier, return_fields=["id", "orgId"], raise_on_error=True,
+            )
+            frontier = [
+                k for row in rows or []
+                if (k := row.get("id") or row.get("_key")) and row.get("orgId") == org_id and k != key and k not in found
+            ]
+            found += frontier
+        return found
 
     async def _flatten(self, collection: str, org_id: str, loser_key: str, winner_key: str) -> None:
         """Point the org's nodes that redirected to the loser at the winner,
