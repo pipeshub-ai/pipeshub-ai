@@ -52,6 +52,21 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
+
+#: These suites write through the real processor (the harness runs the connector write path), so they stay strict.
+_REAL_WRITER_MODULES = frozenset({"test_write_path", "test_record_property_projection"})
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_worlds_skip_schema_validation(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The parity harness seeds sparse, synthetic graphs to compare traversals, not payloads the application
+    writes, so graph schema validation is off for it. The write-path suites (this folder's ``connectors``
+    package and ``_REAL_WRITER_MODULES``) exercise real writes and stay strict."""
+    name = request.module.__name__
+    if name.rsplit(".", 1)[-1] not in _REAL_WRITER_MODULES and ".connectors." not in name:
+        monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "off")
+
+
 def pytest_collection_modifyitems(items) -> None:
     """Give these tests the timeout their containers need.
 

@@ -73609,7 +73609,6 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [semantic:write]
         - oauth2: [semantic:read]
       requestBody:
         required: true
@@ -73687,7 +73686,6 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [semantic:write]
         - oauth2: [semantic:read]
       requestBody:
         required: true
@@ -73746,7 +73744,6 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [semantic:write]
         - oauth2: [semantic:read]
       requestBody:
         required: true
