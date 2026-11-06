@@ -115,6 +115,16 @@ manager has to approve. A step still ahead never \
 makes a claim that the step has already happened true: "Marcus will approve it" \
 still does not support "Marcus approved it".
 
+How a plan is carried out does not take back what the plan is. For "The \
+strategy is to move Enterprise to a platform fee", neither "Existing customers \
+keep their current terms until their contracts end" nor "Customers who move \
+early get a 12% discount" conflicts: grandfathering, a phased roll-out or an \
+incentive to move early says how and when the move happens, not that it does \
+not happen. Such a sentence conflicts only when it reverses the plan within the \
+claim's own subject, like "Existing Enterprise customers stay on per-seat \
+pricing for good", or when the claim itself is about those customers or that \
+period.
+
 Be strict. None of these supports a claim:
 - a hedged or uncertain statement ("may", "might", "I think", "probably", \
 "it seems", "please confirm");

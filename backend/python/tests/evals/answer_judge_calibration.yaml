@@ -770,6 +770,37 @@ cases:
       - state: "The 2026 strategy targets a $48,000 annual fee for Enterprise."
         expect: supported
 
+  - id: pricing-grandfathered-with-early-discount
+    about: Bob's agent's answer on 2026-11-05, as the nightly logged it (bold markers and links removed); the transition terms are not a conflict
+    answer: |
+      In the Acme Corp demo data, the 2026 enterprise pricing strategy is to:
+      - Replace per-seat pricing with an annual platform fee plus usage bands.
+      - Set the base at $48,000 per year for up to 250 seats, with usage bands at 250, 1,000, and 5,000 seats.
+      - Grandfather existing customers on their current terms through the end of their contracts, while offering a 12% discount for early migration.
+    claims:
+      - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
+        expect: supported
+      - state: "The 2026 strategy targets a $48,000 annual fee for Enterprise."
+        expect: supported
+
+  - id: pricing-existing-customers-never-move
+    about: an exception that reverses the move for part of Enterprise, not a transition term
+    answer: |
+      In 2026, new Enterprise customers get an annual platform fee plus usage bands.
+      Existing Enterprise customers stay on per-seat pricing for good.
+    claims:
+      - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
+        expect: contradicted
+
+  - id: pricing-pilot-only
+    about: the new model is only a pilot; Enterprise as a whole keeps per-seat pricing
+    answer: |
+      The platform fee plus usage bands is only being piloted with five customers in 2026.
+      Everyone else on Enterprise stays on per-seat pricing.
+    claims:
+      - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
+        expect: contradicted
+
   - id: pricing-target-fee
     about: a 2026-10-21 answer that gives the fee as a target, as the record does
     answer: |
