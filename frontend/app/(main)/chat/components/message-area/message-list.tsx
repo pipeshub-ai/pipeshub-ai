@@ -6,6 +6,9 @@ import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
 import { useChatStore } from '../../store';
+import { useCompareStore } from '../../compare/compare-store';
+import { useCompareLifecycle } from '../../compare/use-compare-lifecycle';
+import { CompareColumns } from '../../compare/components/compare-columns';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -120,6 +123,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── Active slot ID (needed for save/restore on conversation switch) ──
   const activeSlotId = useChatStore((s) => s.activeSlotId);
+  const compareTurn = useCompareStore((s) => (activeSlotId ? s.turns[activeSlotId] : undefined));
+  useCompareLifecycle(activeSlotId);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const spacerRef = useRef<HTMLDivElement>(null);
@@ -1112,15 +1117,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
           {messagePairs.map((pair, index) => {
             const isLast = index === messagePairs.length - 1;
-            return (
-              <div
-                key={pair.key}
-                ref={(el) => setMessageRef(pair.key, el)}
-              >
-                <ErrorBoundary
-                  resetKeys={[pair.key, pair.messageId]}
-                  fallback={(error, reset) => <ErrorFallback error={error} reset={reset} compact />}
-                >
+            const compared = isLast ? compareTurn : undefined;
+            const response = (extra?: Partial<React.ComponentProps<typeof ChatResponse>>) => (
                   <ChatResponse
                     question={pair.question}
                     answer={pair.answer}
@@ -1151,7 +1149,29 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                     status={pair.status}
                     streamError={pair.streamError}
                     unanswered={pair.unanswered}
+                    {...extra}
                   />
+            );
+            return (
+              <div
+                key={pair.key}
+                ref={(el) => setMessageRef(pair.key, el)}
+              >
+                <ErrorBoundary
+                  resetKeys={[pair.key, pair.messageId]}
+                  fallback={(error, reset) => <ErrorFallback error={error} reset={reset} compact />}
+                >
+                  {compared && activeSlotId ? (
+                    <CompareColumns
+                      slotId={activeSlotId}
+                      turn={compared}
+                      question={response({ unanswered: true })}
+                      primary={response({ columnMode: true })}
+                      citationCallbacks={citationCallbacks}
+                    />
+                  ) : (
+                    response()
+                  )}
                 </ErrorBoundary>
 
                 {/* Ask More — follow-up suggestions after the last bot response.

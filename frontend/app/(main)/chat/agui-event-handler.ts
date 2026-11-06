@@ -575,6 +575,8 @@ export function createAGUIEventHandler(
           callbacks.onConnected?.((value ?? {}) as SSEConnectedEvent);
         } else if (name === 'ask_user_question') {
           callbacks.onAskUserQuestion?.(value as SSEAskUserQuestionEvent);
+        } else if (name === 'turn_started') {
+          callbacks.onTurnStarted?.((value ?? {}) as { conversationId?: string; userMessageId?: string });
         } else if (name === 'artifact') {
           if (value) callbacks.onArtifact?.(value as SSEArtifactEvent);
         } else if (name === 'message_discarded') {
