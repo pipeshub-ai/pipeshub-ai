@@ -2873,7 +2873,7 @@ class TestCoverageBoostFinal:
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_projects_for_teams([(rg, perms)])
 
-        mock_ds.projects.assert_awaited_once_with(first=10, after=None, filter={
+        mock_ds.projects.assert_awaited_once_with(first=10, after=None, includeArchived=True, filter={
             "accessibleTeams": {"some": {"id": {"in": ["team-1"]}}},
             "updatedAt": {"gt": conn._linear_datetime_from_timestamp(1704067200000 - 60_000)},
         })

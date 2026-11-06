@@ -745,6 +745,40 @@ async def test_a_project_follows_what_its_other_team_grants_without_being_edited
     await env.assert_matches_linear()
 
 
+async def test_an_archived_project_keeps_its_readers_until_it_is_trashed(env: _Env) -> None:
+    """Archive, unarchive, trash, each synced incrementally. An archived project is still shown
+    to every team it belongs to (linear.app/docs/delete-archive-issues); a trashed one is not."""
+    p = await _people(env, "alice", "bob", "carol")
+    ws = env.ws
+    sec = ws.team("SEC", visibility="private", members=[p["sync"], p["alice"]])
+    eng = ws.team("ENG", members=[p["sync"], p["bob"]])
+    launch = ws.project("Launch", [sec, eng], lead=sec, documents=[Document("Launch doc", "text")],
+                        links=[Link("Launch deck", "https://deck.example/l")])
+    # Archived before the first sync: only a listing with includeArchived finds it.
+    old = ws.project("Old", [sec, eng], lead=sec, documents=[Document("Old doc", "text")],
+                     links=[Link("Old deck", "https://deck.example/o")])
+    old.archived_at = old.updated_at = ws.tick()
+    await env.sync()
+    assert await env.record(old.id) is not None, "a project archived before the first sync is missing"
+    await env.assert_matches_linear()
+
+    launch.archived_at = launch.updated_at = ws.tick()
+    await env.sync()
+    assert await env.record(launch.id) is not None, "archiving removed the project"
+    await env.assert_matches_linear()
+
+    launch.archived_at, launch.updated_at = None, ws.tick()
+    await env.sync()
+    await env.assert_matches_linear()
+
+    launch.trashed = True
+    launch.archived_at = launch.updated_at = ws.tick()
+    await env.sync()
+    assert await env.record(launch.id) is None, "the trashed project is still stored"
+    assert await env.record(launch.documents[0].id) is None, "the trashed project's document is still stored"
+    await env.assert_matches_linear()
+
+
 # ---------------------------------------------------------------------- moves and deletes
 
 async def test_an_issue_moved_into_a_private_team_takes_everything_with_it(env: _Env) -> None:

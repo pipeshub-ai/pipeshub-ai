@@ -5128,8 +5128,8 @@ class TestSyncProjectsForTeams:
         # Projects are listed once for all synced teams, ten at a time.
         scope_filter = {"accessibleTeams": {"some": {"id": {"in": ["team-0", "team-1"]}}}}
         assert [c.kwargs for c in mock_ds.projects.await_args_list] == [
-            {"first": 10, "after": None, "filter": scope_filter},
-            {"first": 10, "after": "cursor-1", "filter": scope_filter},
+            {"first": 10, "after": None, "filter": scope_filter, "includeArchived": True},
+            {"first": 10, "after": "cursor-1", "filter": scope_filter, "includeArchived": True},
         ]
         # Each listed project is read in full; one that yields nothing is not stored.
         assert [c.args for c in mock_to_records.await_args_list] == [

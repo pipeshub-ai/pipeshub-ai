@@ -617,6 +617,22 @@ class TestProjectToRecords:
         assert project_record.rewrite_permissions is True  # a team taken off the project loses its grant
 
     @pytest.mark.asyncio
+    async def test_an_archived_project_keeps_the_readers_it_had_while_live(self) -> None:
+        async def readers(**fields) -> set:
+            project = _make_project_data(**fields)
+            project["teams"] = _teams(("team-1", True), ("team-2", False))
+            project["leadTeamId"] = "team-1"
+            connector = self._connector(project)
+            self._grants(connector, **{"team-1": "private", "team-2": "public"})
+            records = await connector._project_to_records("proj-1", {"team-1", "team-2"})
+            return {(r.external_record_id, r.external_record_group_id, r.inherit_permissions,
+                     frozenset((g.external_id, g.entity_type) for g in grants)) for r, grants in records}
+
+        live = await readers()
+        assert await readers(archived_at="2024-02-01T00:00:00.000Z") == live
+        assert any(grants for *_, grants in live)
+
+    @pytest.mark.asyncio
     async def test_a_team_outside_the_sync_adds_no_reader(self) -> None:
         project = _make_project_data()
         project["teams"] = _teams(("team-1", True), ("team-2", False))
@@ -3060,8 +3076,8 @@ class TestSyncProjectsForTeams:
         # Projects are listed once for all synced teams, ten at a time.
         scope_filter = {"accessibleTeams": {"some": {"id": {"in": ["team-0", "team-1"]}}}}
         assert [c.kwargs for c in mock_ds.projects.await_args_list] == [
-            {"first": 10, "after": None, "filter": scope_filter},
-            {"first": 10, "after": "cursor-1", "filter": scope_filter},
+            {"first": 10, "after": None, "filter": scope_filter, "includeArchived": True},
+            {"first": 10, "after": "cursor-1", "filter": scope_filter, "includeArchived": True},
         ]
         # Each listed project is read in full; one that yields nothing is not stored.
         assert [c.args for c in mock_to_records.await_args_list] == [
