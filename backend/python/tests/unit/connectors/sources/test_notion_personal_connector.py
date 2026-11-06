@@ -22,6 +22,7 @@ def _make_connector() -> NotionPersonalConnector:
     data_entities_processor.org_id = "org-1"
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
+    data_entities_processor.on_record_content_update = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.get_records_by_record_type = AsyncMock(return_value=[])
 
