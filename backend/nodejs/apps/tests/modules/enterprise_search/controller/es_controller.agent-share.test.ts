@@ -4,14 +4,19 @@ import sinon from 'sinon'
 import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
-import { ProjectService } from '../../../../src/modules/projects/services/project.service'
+import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { ConversationOperation } from '../../../../src/modules/enterprise_search/services/conversation/domain/types'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { agentArchivesScope, agentListScope, chatListScope, ListScopeEnv, withListScope } from '../helpers/list-scope'
+import { turnDeps } from '../helpers/turn-deps'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 
 /**
  * Sharing an agent conversation is read-only: the owner shares, a recipient can
- * open the transcript and nothing else. These tests run the real controllers
- * against an in-memory store that evaluates the real query filters.
+ * open the transcript and nothing else. These tests run the real route guards
+ * and controllers, as the router mounts them, against an in-memory store that
+ * evaluates the real query filters.
  */
 
 const appConfig = {
@@ -124,8 +129,45 @@ async function callJson(handler: JsonHandler, req: never): Promise<JsonOutcome> 
   return { status: res.statusCode, body: res.jsonBody, error: next.firstCall?.args[0] as JsonOutcome['error'] }
 }
 
+type Layer = (req: never, res: never, next: (err?: unknown) => void) => unknown
+
+/** The route's middleware, then its handler; an error from any layer goes to `next(err)`, as in Express. */
+function mounted(layers: Layer[], handler: JsonHandler): JsonHandler {
+  return (req, res, next) =>
+    new Promise<void>((resolve, reject) => {
+      const step = (i: number): void => {
+        if (i === layers.length) {
+          Promise.resolve(handler(req, res, next)).then(() => resolve(), reject)
+          return
+        }
+        void layers[i]!(req, res, (err?: unknown) => {
+          if (err !== undefined) {
+            ;(next as unknown as (e: unknown) => void)(err)
+            resolve()
+            return
+          }
+          step(i + 1)
+        })
+      }
+      step(0)
+    })
+}
+
+/** `authorize(op, 'agent')` then the handler, as the agent router mounts a per-conversation route. */
+const agentRoute = (op: ConversationOperation, handler: JsonHandler): JsonHandler =>
+  behindGuard(realGuards(), op, handler, 'agent') as JsonHandler
+
+/** `authorize(op, 'agent')`, `runLease('agent')` and the turn handler, as the send and regenerate routes mount them. */
+function agentTurnRoute(op: 'send' | 'regenerate', handler: StreamHandler): StreamHandler {
+  const guards = realGuards()
+  return mounted(
+    [guards.authorize(op, 'agent') as Layer, guards.runLease('agent', { op }) as Layer],
+    handler as unknown as JsonHandler,
+  ) as unknown as StreamHandler
+}
+
 /** A refusal sent to `next` before any stream opened, if there was one. */
-const refusals = new WeakMap<FakeSSEResponse, Error>()
+const refusals = new WeakMap<FakeSSEResponse, Error & { statusCode?: number }>()
 
 async function callStream(handler: StreamHandler, req: never): Promise<FakeSSEResponse> {
   const res = new FakeSSEResponse()
@@ -136,16 +178,13 @@ async function callStream(handler: StreamHandler, req: never): Promise<FakeSSERe
   return res
 }
 
-/** The "not found" a caller gets: a 404 before streaming for a new message, a RUN_ERROR for a regenerate. */
+/** The guard refuses before any SSE header: a 404 through `next`, and no stream frame at all. */
 function notFoundMessage(res: FakeSSEResponse): string | undefined {
   const refusal = refusals.get(res)
-  if (refusal) {
-    expect(res.eventsOf('RUN_ERROR'), 'no stream after a refusal').to.have.length(0)
-    return refusal.message
-  }
-  const errors = res.eventsOf('RUN_ERROR')
-  expect(errors, 'RUN_ERROR frames').to.have.length(1)
-  return errors[0]?.data.message as string | undefined
+  expect(refusal, 'a refusal passed to next').to.not.equal(undefined)
+  expect(refusal?.statusCode).to.equal(404)
+  expect(res.eventsOf('RUN_ERROR'), 'no stream after a refusal').to.have.length(0)
+  return refusal?.message
 }
 
 const agentParams = (s: Setup, extra: Record<string, string> = {}): Record<string, string> => ({
@@ -185,9 +224,12 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
     sinon.restore()
   })
 
-  const shareHandler = () => controller.shareAgentConversation(appConfig) as JsonHandler
-  const unshareHandler = () => controller.unshareAgentConversation(appConfig) as JsonHandler
-  const getHandler = () => controller.getAgentConversationById(appConfig) as JsonHandler
+  const shareHandler = () => agentRoute('manageSharing', controller.shareAgentConversation(appConfig) as JsonHandler)
+  const unshareHandler = () => agentRoute('manageSharing', controller.unshareAgentConversation(appConfig) as JsonHandler)
+  const getHandler = () => agentRoute('read', controller.getAgentConversationById(appConfig) as JsonHandler)
+  const deleteHandler = () => agentRoute('delete', controller.deleteAgentConversationById(appConfig) as JsonHandler)
+  const agentList = (env: ListScopeEnv = {}) =>
+    withListScope(controller.getAllAgentConversations as JsonHandler, 'agent', agentListScope, env)
 
   describe('sharing', () => {
     it('the owner shares with a colleague: it is stored as read access and the response says so', async () => {
@@ -245,9 +287,9 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       const s = setup()
       shareWith(s, RECIPIENT)
 
-      const deleted = await callJson(controller.deleteAgentConversationById(appConfig) as JsonHandler, request(owner, agentParams(s)))
+      const deleted = await callJson(deleteHandler(), request(owner, agentParams(s)))
       const out = await callJson(getHandler(), request(recipient, agentParams(s)))
-      const list = await callJson(controller.getAllAgentConversations as JsonHandler, request(recipient, { agentKey: AGENT_KEY }))
+      const list = await callJson(agentList(), request(recipient, { agentKey: AGENT_KEY }))
 
       expect(deleted.status).to.equal(200)
       expect((conversationArtifacts.deleteConversationArtifacts as sinon.SinonStub).calledOnce).to.equal(true)
@@ -399,7 +441,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
         request(owner, { conversationId: s.plainChatId, agentKey: AGENT_KEY }, share([String(RECIPIENT)])),
       )
       const agentViaPlain = await callJson(
-        controller.shareConversationById(appConfig) as JsonHandler,
+        behindGuard(realGuards(), 'manageSharing', controller.shareConversationById(appConfig) as JsonHandler, 'chat') as JsonHandler,
         request(owner, { conversationId: s.agentChatId }, share([String(RECIPIENT)])),
       )
 
@@ -599,11 +641,23 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       expect(out.error?.statusCode).to.equal(404)
     })
 
+    it('once the owner archives the conversation the recipient gets 404 and the owner still opens it', async () => {
+      const s = setup()
+      shareWith(s, RECIPIENT)
+      s.store.session(s.agentChatId)?.set({ isArchived: true, archivedBy: OWNER })
+
+      const asRecipient = await callJson(getHandler(), request(recipient, agentParams(s)))
+      const asOwner = await callJson(getHandler(), request(owner, agentParams(s)))
+
+      expect(asRecipient.error?.statusCode).to.equal(404)
+      expect(asOwner.status).to.equal(200)
+    })
+
     it('the plain-chat read route does not expose an agent chat shared with the recipient', async () => {
       const s = setup()
       shareWith(s, RECIPIENT)
       const out = await callJson(
-        controller.getConversationById(appConfig) as JsonHandler,
+        behindGuard(realGuards(), 'read', controller.getConversationById(appConfig) as JsonHandler, 'chat') as JsonHandler,
         request(recipient, { conversationId: s.agentChatId }),
       )
       expect(out.error?.statusCode).to.equal(404)
@@ -611,8 +665,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
   })
 
   describe('listing', () => {
-    const list = (user: User) =>
-      callJson(controller.getAllAgentConversations as JsonHandler, request(user, { agentKey: AGENT_KEY }))
+    const list = (user: User, env: ListScopeEnv = {}) => callJson(agentList(env), request(user, { agentKey: AGENT_KEY }))
 
     it('a shared conversation shows up for the recipient under "shared with me", not in their own list', async () => {
       const s = setup()
@@ -657,10 +710,10 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       shareWith(s, RECIPIENT)
       const projectId = oid()
       s.store.session(s.agentChatId)?.set({ projectId, projectVisibility: 'project' })
-      ;(ProjectService.getAccessibleProjectIds as sinon.SinonStub).resolves([projectId])
+      const membership: ListScopeEnv = { projectIds: [String(projectId)] }
 
-      const asMember = await list(stranger)
-      const asOwner = await list(owner)
+      const asMember = await list(stranger, membership)
+      const asOwner = await list(owner, membership)
 
       const memberRows = (asMember.body as { conversations: Array<Record<string, unknown>> }).conversations
       const ownerRows = (asOwner.body as { conversations: Array<Record<string, unknown>> }).conversations
@@ -672,7 +725,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
     it('a conversation shared under one agent is not listed under another agent', async () => {
       const s = setup()
       shareWith(s, RECIPIENT)
-      const out = await callJson(controller.getAllAgentConversations as JsonHandler, request(recipient, { agentKey: OTHER_AGENT_KEY }))
+      const out = await callJson(agentList(), request(recipient, { agentKey: OTHER_AGENT_KEY }))
       expect((out.body as { sharedWithMeConversations: unknown[] }).sharedWithMeConversations).to.deep.equal([])
     })
 
@@ -688,14 +741,17 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       const s = setup()
       shareWith(s, RECIPIENT)
       s.store.session(s.agentChatId)?.set({ isArchived: true, archivedBy: OWNER })
-      const out = await callJson(controller.listAllArchivesAgentConversation() as JsonHandler, request(recipient, { agentKey: AGENT_KEY }))
+      const out = await callJson(
+        withListScope(controller.listAllArchivesAgentConversation() as JsonHandler, 'agent', agentArchivesScope),
+        request(recipient, { agentKey: AGENT_KEY }),
+      )
       expect((out.body as { conversations: unknown[] }).conversations).to.deep.equal([])
     })
   })
 
   describe('the global "shared with me" list', () => {
     const listConversations = (user: User, source: 'owned' | 'shared') =>
-      callJson(controller.getAllConversations as JsonHandler, request(user, {}, {}, { source }))
+      callJson(withListScope(controller.getAllConversations as JsonHandler, 'any', chatListScope), request(user, {}, {}, { source }))
 
     const idsOf = (out: JsonOutcome) => (out.body as { conversations: Array<{ _id: unknown }> }).conversations.map((c) => String(c._id))
 
@@ -747,18 +803,24 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
   describe('a recipient can never change the conversation', () => {
     interface JsonCase {
       name: string
+      op: ConversationOperation
       handler: () => JsonHandler
       body?: Record<string, unknown>
     }
     const jsonCases: JsonCase[] = [
-      { name: 'updateAgentConversationTitle', handler: () => controller.updateAgentConversationTitle as JsonHandler, body: { title: 'Hijacked' } },
-      { name: 'updateAgentFeedback', handler: () => controller.updateAgentFeedback as JsonHandler, body: { isHelpful: false } },
-      { name: 'archiveAgentConversation', handler: () => controller.archiveAgentConversation as JsonHandler },
-      { name: 'unarchiveAgentConversation', handler: () => controller.unarchiveAgentConversation as JsonHandler },
-      { name: 'cancelAgentConversationStream', handler: () => controller.cancelAgentConversationStream(appConfig) as JsonHandler, body: { runId: 'run-1' } },
-      { name: 'forkAgentConversation', handler: () => controller.forkAgentConversation(appConfig) as JsonHandler },
-      { name: 'setConversationProject', handler: () => controller.setConversationProject as JsonHandler, body: { projectId: null } },
-      { name: 'setConversationProjectVisibility', handler: () => controller.setConversationProjectVisibility as JsonHandler, body: { visibility: 'project' } },
+      { name: 'updateAgentConversationTitle', op: 'rename', handler: () => controller.updateAgentConversationTitle as JsonHandler, body: { title: 'Hijacked' } },
+      { name: 'updateAgentFeedback', op: 'feedback', handler: () => controller.updateAgentFeedback as JsonHandler, body: { isHelpful: false } },
+      { name: 'archiveAgentConversation', op: 'archiveSelf', handler: () => controller.archiveAgentConversation as JsonHandler },
+      { name: 'unarchiveAgentConversation', op: 'archiveSelf', handler: () => controller.unarchiveAgentConversation as JsonHandler },
+      { name: 'cancelAgentConversationStream', op: 'cancel', handler: () => controller.cancelAgentConversationStream(appConfig) as JsonHandler, body: { runId: 'run-1' } },
+      { name: 'forkAgentConversation', op: 'fork', handler: () => controller.forkAgentConversation(appConfig) as JsonHandler },
+      {
+        name: 'setConversationProject',
+        op: 'linkProject',
+        handler: () => ((req: never, res: never, next: never) => controller.setConversationProject(req, res, next, appConfig)) as JsonHandler,
+        body: { projectId: null },
+      },
+      { name: 'setConversationProjectVisibility', op: 'linkProject', handler: () => controller.setConversationProjectVisibility as JsonHandler, body: { visibility: 'project' } },
     ]
 
     for (const c of jsonCases) {
@@ -767,7 +829,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
         shareWith(s, RECIPIENT)
         const before = JSON.stringify(s.store.sessions.map((d) => d.toObject()))
 
-        const out = await callJson(c.handler(), request(recipient, agentParams(s, { messageId: s.agentBotMessageId }), c.body))
+        const out = await callJson(agentRoute(c.op, c.handler()), request(recipient, agentParams(s, { messageId: s.agentBotMessageId }), c.body))
 
         expect(out.error?.statusCode).to.equal(404)
         expect(s.store.writes).to.deep.equal([])
@@ -776,20 +838,19 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       })
     }
 
-    it('deleteAgentConversationById: the idempotent 200 deletes nothing and no artifact is removed', async () => {
+    it('deleteAgentConversationById: 404, nothing is deleted and no artifact is removed', async () => {
       const s = setup()
       shareWith(s, RECIPIENT)
 
-      const out = await callJson(controller.deleteAgentConversationById(appConfig) as JsonHandler, request(recipient, agentParams(s)))
+      const out = await callJson(deleteHandler(), request(recipient, agentParams(s)))
 
-      expect(out.status).to.equal(200)
-      expect((out.body as { conversation: unknown }).conversation).to.equal(null)
+      expect(out.error?.statusCode).to.equal(404)
       expect(s.store.session(s.agentChatId)?.isDeleted).to.equal(false)
       expect(s.store.writes).to.deep.equal([])
       expect((conversationArtifacts.deleteConversationArtifacts as sinon.SinonStub).called).to.equal(false)
     })
 
-    it('regenerating is refused for a member the chat is shared with, even at write level', async () => {
+    it('regenerating looks up the granted chat only, never one that merely looks shared', async () => {
       const s = setup()
       s.store.session(s.agentChatId)?.set({
         isShared: true,
@@ -797,40 +858,35 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       })
       s.store.writes.length = 0
 
-      const res = await callStream(
-        controller.regenerateAgentAnswers(appConfig) as StreamHandler,
-        request(recipient, agentParams(s, { messageId: s.agentBotMessageId }), {}),
-      )
-
-      expect(res.eventsOf('RUN_ERROR')).to.have.length(1)
-      expect(s.ai.streamCalls).to.deep.equal([])
-    })
-
-    it('regenerating is refused when the caller owns the row but did not initiate the chat, even if it is shared', async () => {
-      const s = setup()
-      // isShared is what the old filter let through; only the initiator may regenerate.
-      s.store.session(s.agentChatId)?.set({ initiator: STRANGER, isShared: true })
-      s.store.writes.length = 0
-
-      const res = await callStream(
-        controller.regenerateAgentAnswers(appConfig) as StreamHandler,
+      await callStream(
+        agentTurnRoute('regenerate', controller.regenerateAgentAnswers(appConfig, turnDeps()) as StreamHandler),
         request(owner, agentParams(s, { messageId: s.agentBotMessageId }), {}),
       )
 
-      expect(res.eventsOf('RUN_ERROR')).to.have.length(1)
-      expect(s.ai.streamCalls).to.deep.equal([])
+      const filters = (ChatSession.findOne as unknown as sinon.SinonStub).getCalls().map((call) => call.args[0] as Record<string, any>)
+      const lookups = filters.filter((f) => f.agentKey === AGENT_KEY)
+      expect(lookups, 'the lookups of the chat to regenerate').to.not.have.length(0)
+      for (const lookup of lookups) {
+        expect(String(lookup._id)).to.equal(s.agentChatId)
+        expect(lookup).to.not.have.property('$or')
+      }
     })
 
-    const streamCases: Array<{ name: string; handler: () => StreamHandler; body: Record<string, unknown> }> = [
-      { name: 'addMessageStreamToAgentConversation', handler: () => controller.addMessageStreamToAgentConversation(appConfig) as StreamHandler, body: { query: 'More detail' } },
-      { name: 'regenerateAgentAnswers', handler: () => controller.regenerateAgentAnswers(appConfig) as StreamHandler, body: {} },
+    const streamCases: Array<{ name: string; op: 'send' | 'regenerate'; handler: () => StreamHandler; body: Record<string, unknown> }> = [
+      {
+        name: 'addMessageStreamToAgentConversation',
+        op: 'send',
+        handler: () => controller.addMessageStreamToAgentConversation(appConfig, turnDeps()) as StreamHandler,
+        body: { query: 'More detail' },
+      },
+      { name: 'regenerateAgentAnswers', op: 'regenerate', handler: () => controller.regenerateAgentAnswers(appConfig, turnDeps()) as StreamHandler, body: {} },
     ]
     for (const c of streamCases) {
       it(`${c.name}: the recipient is told the conversation was not found; nothing is generated or saved`, async () => {
         const s = setup()
         shareWith(s, RECIPIENT)
 
-        const res = await callStream(c.handler(), request(recipient, agentParams(s, { messageId: s.agentBotMessageId }), c.body))
+        const res = await callStream(agentTurnRoute(c.op, c.handler()), request(recipient, agentParams(s, { messageId: s.agentBotMessageId }), c.body))
 
         expect(notFoundMessage(res)).to.match(/not found/i)
         expect(s.ai.streamCalls).to.deep.equal([])
@@ -844,7 +900,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       shareWith(s, RECIPIENT)
 
       const res = await callStream(
-        controller.addMessageStreamToAgentConversation(appConfig) as StreamHandler,
+        agentTurnRoute('send', controller.addMessageStreamToAgentConversation(appConfig, turnDeps()) as StreamHandler),
         request(owner, agentParams(s), { query: 'More detail' }),
       )
 

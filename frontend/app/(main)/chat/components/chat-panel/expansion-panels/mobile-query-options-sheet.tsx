@@ -9,6 +9,7 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from '@/chat/store';
 import type { ModelOverride, QueryMode } from '@/chat/types';
 import { CollectionsTab } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/collections-tab';
+import type { CollectionScopeSelection } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/collections-tab';
 import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
 import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/universal-agent-resources-panel';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
@@ -22,6 +23,12 @@ interface MobileQueryOptionsSheetProps {
   isAgentChat?: boolean;
   /** Agent ID for filtering models to only those configured for the agent */
   agentId?: string | null;
+  /**
+   * The sources this composer's question is narrowed to, and where a change goes. Defaults to the chat's own filters.
+   * The Collections and All records dock passes its own, so a pick there scopes only the question it sends.
+   */
+  selection?: CollectionScopeSelection;
+  onSelectionChange?: (next: CollectionScopeSelection) => void;
 }
 
 /**
@@ -37,12 +44,16 @@ export function MobileQueryOptionsSheet({
   onOpenChange,
   isAgentChat = false,
   agentId,
+  selection: selectionProp,
+  onSelectionChange,
 }: MobileQueryOptionsSheetProps) {
   const [activePanel, setActivePanel] = useState<ActivePanel>('root');
   const { t } = useTranslation();
 
   const settings = useChatStore((s) => s.settings);
-  const setFilters = useChatStore((s) => s.setFilters);
+  const setChatFilters = useChatStore((s) => s.setFilters);
+  const selection = selectionProp ?? settings.filters;
+  const setFilters = onSelectionChange ?? setChatFilters;
   const setSelectedModelForCtx = useChatStore((s) => s.setSelectedModelForCtx);
 
   const modelCtxKey = ctxKeyFromAgent(agentId);
@@ -99,7 +110,7 @@ export function MobileQueryOptionsSheet({
         />
       )}
       {activePanel === 'connectors' && (
-        <CollectionsTab selection={settings.filters} onSelectionChange={setFilters} />
+        <CollectionsTab selection={selection} onSelectionChange={setFilters} />
       )}
       {activePanel === 'agent-resources' && (
         <Flex
@@ -114,7 +125,7 @@ export function MobileQueryOptionsSheet({
           direction="column"
           style={{ flex: 1, minHeight: 0, maxHeight: 'min(70vh, 520px)', overflow: 'hidden' }}
         >
-          <UniversalAgentResourcesPanel />
+          <UniversalAgentResourcesPanel selection={selection} onSelectionChange={setFilters} />
         </Flex>
       )}
     </MobileBottomSheet>

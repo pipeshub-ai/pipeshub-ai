@@ -38,7 +38,7 @@ export function ArtifactActionMenu({
           onClick: () => handlers.onOpenChat(item),
         },
         item.role === 'OWNER' && {
-          icon: 'person_add',
+          icon: 'ios_share',
           label: t('action.share'),
           onClick: () => handlers.onShare(item),
         },

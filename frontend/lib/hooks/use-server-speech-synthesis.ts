@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { apiClient } from '@/lib/api';
+import { refusalMessage } from '@/lib/api/api-error';
 
 interface UseServerSpeechSynthesisOptions {
   /** Optional voice override (otherwise the provider default is used). */
@@ -12,7 +13,8 @@ interface UseServerSpeechSynthesisOptions {
   /** Playback speed (0.25 – 4.0). */
   rate?: number;
   onEnd?: () => void;
-  onError?: (error: string) => void;
+  /** `refusal` is the server's words when the call was refused (402). */
+  onError?: (error: string, refusal?: string) => void;
 }
 
 interface UseServerSpeechSynthesisReturn {
@@ -229,7 +231,7 @@ export function useServerSpeechSynthesis(
   }, []);
 
   const endSession = useCallback(
-    (session: Session, reason: 'completed' | 'cancelled' | 'error', errorMessage?: string) => {
+    (session: Session, reason: 'completed' | 'cancelled' | 'error', errorMessage?: string, refusal?: string) => {
       if (session.cancelled && reason !== 'cancelled') return;
       session.cancelled = true;
 
@@ -253,7 +255,7 @@ export function useServerSpeechSynthesis(
       if (reason === 'completed') {
         onEndRef.current?.();
       } else if (reason === 'error') {
-        onErrorRef.current?.(errorMessage ?? 'speech-synthesis-failed');
+        onErrorRef.current?.(errorMessage ?? 'speech-synthesis-failed', refusal);
       }
     },
     [teardownPlayback]
@@ -320,7 +322,7 @@ export function useServerSpeechSynthesis(
       } catch (err) {
         if (session.cancelled) return;
         const message = err instanceof Error ? err.message : 'speech-synthesis-failed';
-        endSession(session, 'error', message);
+        endSession(session, 'error', message, refusalMessage(err));
         return;
       }
       if (session.cancelled) return;

@@ -23,6 +23,7 @@ function retentionFilter(
     assignedTo: oid(scope.userId),
     isDeleted: false,
     createdAt: { $gte: retentionCutoff() },
+    ...(scope.hideChatNotices ? { type: { $not: /^chat\./ } } : {}),
     ...(notificationStatus
       ? { status: notificationStatus }
       : includeArchived

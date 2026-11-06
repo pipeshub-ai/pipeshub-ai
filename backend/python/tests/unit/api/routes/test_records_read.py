@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 from app.api.routes import records as route
 from app.models.blocks import BlockType
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -43,8 +44,8 @@ def _request(*, access: bool = True) -> tuple[SimpleNamespace, MagicMock, MagicM
     graph = MagicMock()
     graph.get_user_by_user_id = AsyncMock(return_value={"id": "k-1"})
     graph.check_access = AsyncMock(
-        side_effect=lambda _user, _org, node_ids, **_kw: SimpleNamespace(
-            node_ids=set(node_ids) if access else set(), placeholder_ids=frozenset()
+        side_effect=lambda _user, _org, node_ids, **_kw: AccessCheck(
+            node_ids=frozenset(node_ids) if access else frozenset()
         )
     )
     graph.get_document = AsyncMock(return_value={"connectorId": "c-1"})

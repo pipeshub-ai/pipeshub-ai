@@ -96,6 +96,10 @@ export const userSchema = new Schema<User>(
   { timestamps: true },
 );
 
+// The bare `@` list (`listOrgMembers`) reads one org's members by name, a few at a time: walked in this order, it
+// stops after the few it shows instead of sorting the whole org in memory for every new chat.
+userSchema.index({ orgId: 1, fullName: 1, _id: 1 });
+
 userSchema.pre<User>('save', async function () {
   // Mongoose 9: async hooks signal failure by throwing, with no next callback.
   if (!this.slug) {

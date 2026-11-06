@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Flex } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ELEMENT_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
+import { SIDEBAR_FOCUS_CLASS } from '@/app/components/sidebar/sidebar-focus-style';
 
 interface CollapsibleSectionProps {
   /** Icon name for the section header (Google Material Icon) */
@@ -14,8 +15,6 @@ interface CollapsibleSectionProps {
   isExpanded: boolean;
   /** Toggle expand/collapse */
   onToggle: () => void;
-  /** Whether any child is currently active (highlights the header) */
-  hasActiveChild?: boolean;
   /** Child items to render when expanded */
   children: React.ReactNode;
 }
@@ -23,8 +22,8 @@ interface CollapsibleSectionProps {
 /**
  * Collapsible sidebar section — used for the "People" dropdown.
  *
- * Header row: icon + label + expand_more chevron.
- * Matches SidebarItem hover treatment (olive-3 bg, olive-4 border).
+ * Header row: icon + label + expand_more chevron. It is a disclosure, not a page, so it only ever shows the hover
+ * fill (the subtle fill, lighter than selected); the selected look belongs to the row of the page you are on.
  * Children rendered below when expanded.
  */
 export function CollapsibleSection({
@@ -32,11 +31,9 @@ export function CollapsibleSection({
   label,
   isExpanded,
   onToggle,
-  hasActiveChild = false,
   children,
 }: CollapsibleSectionProps) {
   const [isHovered, setIsHovered] = useState(false);
-  const highlighted = isHovered || (hasActiveChild && !isExpanded);
 
   return (
     <Flex direction="column" style={{ width: '100%' }}>
@@ -44,6 +41,8 @@ export function CollapsibleSection({
       <button
         type="button"
         onClick={onToggle}
+        aria-expanded={isExpanded}
+        className={SIDEBAR_FOCUS_CLASS}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
         style={{
@@ -52,7 +51,6 @@ export function CollapsibleSection({
           margin: 0,
           font: 'inherit',
           color: 'inherit',
-          outline: 'none',
           textDecoration: 'none',
           // Layout
           display: 'flex',
@@ -65,8 +63,9 @@ export function CollapsibleSection({
           flexShrink: 0,
           // Visual
           borderRadius: 'var(--radius-1)',
-          backgroundColor: highlighted ? 'var(--olive-3)' : 'transparent',
-          border: highlighted ? '1px solid var(--olive-4)' : '1px solid transparent',
+          backgroundColor: isHovered ? 'var(--surface-subtle)' : 'transparent',
+          border: '1px solid transparent',
+          transition: 'background-color var(--motion-micro) var(--motion-ease)',
           cursor: 'pointer',
         }}
       >
@@ -77,7 +76,7 @@ export function CollapsibleSection({
             fontSize: 14,
             fontWeight: 400,
             lineHeight: '20px',
-            color: 'var(--slate-11)',
+            color: 'var(--text-secondary)',
             textAlign: 'left',
           }}
         >

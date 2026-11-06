@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { apiClient, streamSSERequest } from '@/lib/api';
-import { ChatApi } from '../api';
-import { CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS, type StreamChatRequest } from '../types';
+import { ChatApi, mapApiConversationToConversation } from '../api';
+import { AgentsApi } from '@/app/(main)/agents/api';
+import { CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS, type ConversationApiResponse, type StreamChatRequest } from '../types';
+import { chatExtension } from '@/config';
 
 vi.mock('@/lib/api', () => ({
   apiClient: {
@@ -174,6 +176,14 @@ describe('ChatApi stream bodies — no model resolved', () => {
     expectNoModelFields();
   });
 
+  it.each(['agent', 'internal_search', 'web_search', 'agent:auto', 'agent:deep', 'agent:quick', '', undefined])(
+    'sends quick mode on an agent route, the only one it takes, from %s',
+    async (chatMode) => {
+      await ChatApi.streamMessage({ ...base, agentId: 'agent-1', chatMode: chatMode as never }, {});
+      expect(sentBody().chatMode).toBe('quick');
+    },
+  );
+
   it('still sends a chosen model, falling back to its name for the friendly name', async () => {
     await ChatApi.streamMessage({ ...base, modelKey: 'k1', modelName: 'gpt-5', modelFriendlyName: '' }, {});
     expect(sentBody()).toMatchObject({ modelKey: 'k1', modelName: 'gpt-5', modelFriendlyName: 'gpt-5' });
@@ -294,5 +304,99 @@ describe('mapApiConversationToConversation', () => {
     expect(inProject.projectId).toBe('p1');
     expect(inProject.projectVisibility).toBe('private');
     expect('projectId' in mapApiConversationToConversation(base)).toBe(false);
+  });
+});
+
+describe('mapApiConversationToConversation', () => {
+  it('keeps the project link so "Move to project" shows the current project', () => {
+    const row = {
+      _id: 'conv-1',
+      title: 'Hello',
+      projectId: 'proj-1',
+      projectVisibility: 'project',
+    } as ConversationApiResponse;
+    expect(mapApiConversationToConversation(row)).toMatchObject({
+      projectId: 'proj-1',
+      projectVisibility: 'project',
+    });
+  });
+});
+
+describe('the conversation routes', () => {
+  const request: StreamChatRequest = {
+    query: 'Q',
+    modelKey: 'k',
+    modelName: 'm',
+    modelFriendlyName: 'M',
+    chatMode: 'quick',
+    filters: { apps: [], kb: [] },
+    conversationId: 'c1',
+  };
+  const model = { modelKey: 'k', modelName: 'm', modelFriendlyName: 'M', filters: { apps: [], kb: [] } };
+
+  beforeEach(() => {
+    mockedGet.mockReset();
+    mockedPost.mockReset();
+    vi.mocked(streamSSERequest).mockReset();
+    vi.mocked(streamSSERequest).mockResolvedValue(undefined as never);
+  });
+
+  it('build on the path the extension gives a conversation', async () => {
+    const path = vi
+      .spyOn(chatExtension, 'conversationPath')
+      .mockImplementation((id, agentId) => `/base/${agentId ?? 'none'}/${id}`);
+    mockedGet.mockResolvedValue({ data: { conversation: { messages: [] } } });
+    mockedPost.mockResolvedValueOnce({ data: { cancelled: true } });
+
+    await ChatApi.fetchConversation('c1');
+    await AgentsApi.fetchAgentConversation('a1', 'c1');
+    await ChatApi.streamMessage(request, {});
+    await ChatApi.streamMessage({ ...request, agentId: 'a1' }, {});
+    await ChatApi.streamRegenerate('c1', 'm1', {}, { ...model, chatMode: 'quick' });
+    await ChatApi.streamAgentRegenerate('a1', 'c1', 'm1', {}, { ...model, chatMode: 'auto' });
+    await ChatApi.cancelStream('c1', 'run-1', 'a1');
+
+    expect(mockedGet.mock.calls[0][0]).toBe('/base/none/c1/');
+    expect(mockedGet.mock.calls[1][0]).toBe('/base/a1/c1');
+    const streamed = vi.mocked(streamSSERequest).mock.calls.map(([url]) => url);
+    expect(streamed[0]).toMatch(/^\/base\/none\/c1\/messages\/stream/);
+    expect(streamed[1]).toMatch(/^\/base\/a1\/c1\/messages\/stream/);
+    expect(streamed[2]).toMatch(/^\/base\/none\/c1\/message\/m1\/regenerate/);
+    expect(streamed[3]).toMatch(/^\/base\/a1\/c1\/message\/m1\/regenerate/);
+    expect(mockedPost.mock.calls[0][0]).toBe('/base/a1/c1/cancel');
+    path.mockRestore();
+  });
+
+  it('keep an agent conversation on its usual path by default', async () => {
+    mockedGet.mockResolvedValueOnce({ data: { conversation: { messages: [] } } });
+    await AgentsApi.fetchAgentConversation('a1', 'c1', { page: 2, limit: 5 });
+    expect(mockedGet.mock.calls[0][0]).toBe('/api/v1/agents/a1/conversations/c1');
+    expect(mockedGet.mock.calls[0][1]).toMatchObject({ params: { page: 2, limit: 5 } });
+  });
+});
+
+describe('ChatApi.fetchConversations — error toast opt-out', () => {
+  const empty = {
+    data: {
+      conversations: [],
+      source: 'owned',
+      pagination: { page: 1, limit: 10, totalCount: 0, totalPages: 0, hasNextPage: false, hasPrevPage: false },
+    },
+  };
+  beforeEach(() => {
+    mockedGet.mockReset();
+  });
+
+  it('forwards suppressErrorToast to the request config', async () => {
+    mockedGet.mockResolvedValueOnce(empty);
+    await ChatApi.fetchConversations(1, 10, { source: 'owned', suppressErrorToast: true });
+    expect(mockedGet.mock.calls[0][1]).toMatchObject({ suppressErrorToast: true });
+  });
+
+  it('leaves the flag unset by default, so the shared error toast still applies', async () => {
+    mockedGet.mockResolvedValueOnce(empty);
+    await ChatApi.fetchConversations(1, 10, { source: 'owned' });
+    const config = mockedGet.mock.calls[0][1] as { suppressErrorToast?: boolean };
+    expect(config.suppressErrorToast).toBeUndefined();
   });
 });

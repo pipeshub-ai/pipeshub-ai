@@ -1,6 +1,6 @@
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { isValidId } from '../../../libs/repositories/ids';
-import { ProjectService } from '../../projects/services/project.service';
+import { conversationExtensions } from '../../enterprise_search/services/conversation/conversation-extensions';
 
 /** What the artifacts gallery shows about an artifact's conversation. */
 export interface ConversationSummary {
@@ -11,6 +11,13 @@ export interface ConversationSummary {
   projectId?: string;
   /** Set when the chat is archived; it then opens from the archived chats page. */
   conversationArchived?: true;
+}
+
+/** The caller, and the projects the conversation guards found they can view. */
+export interface ConversationTitleScope {
+  orgId: string;
+  userId: string;
+  accessibleProjectIds: readonly string[];
 }
 
 /**
@@ -25,13 +32,12 @@ export interface ConversationSummary {
  * chat shared with others.
  *
  * An archived chat is listed only where the archive can open it: for its
- * owner, and for `sharedWith` viewers of an assistant chat.
+ * owner, and for people an assistant chat is shared with.
  */
 export class ConversationTitleService {
   static async batchTitles(
     conversationIds: string[],
-    orgId: string,
-    userId: string,
+    scope: ConversationTitleScope,
   ): Promise<Map<string, ConversationSummary>> {
     const uniqueIds = [...new Set(conversationIds.filter(Boolean))];
     const validIds = uniqueIds.filter((id) => isValidId(id));
@@ -39,24 +45,21 @@ export class ConversationTitleService {
       return new Map();
     }
 
-    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
-      orgId,
-      userId,
-    );
-
     const sessions = await getConversationRepository().listVisibleSummaries(
-      orgId,
-      userId,
+      scope.orgId,
+      scope.userId,
       validIds,
-      accessibleProjectIds.map(String),
+      scope.accessibleProjectIds.map(String),
     );
 
-    const accessibleProjects = new Set(accessibleProjectIds.map(String));
+    const accessibleProjects = new Set(scope.accessibleProjectIds.map(String));
     return new Map(
       sessions.map((session) => [
         session._id,
         {
-          title: session.title ?? 'Untitled',
+          title:
+            conversationExtensions().views.displayTitle(session.title) ??
+            'Untitled',
           ...(session.sessionType === 'agent' && session.agentKey
             ? { agentKey: session.agentKey }
             : {}),

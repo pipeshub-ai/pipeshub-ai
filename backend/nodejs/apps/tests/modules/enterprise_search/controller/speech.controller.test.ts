@@ -88,6 +88,19 @@ describe('SpeechController', () => {
       expect(body.detail).to.include('check the speech settings')
     })
 
+    it("should keep the words of a refusal (402), which the service sends as a structured detail", async () => {
+      sinon.stub(axios, 'get').resolves({
+        status: 402,
+        data: { detail: { code: 'AI_BUDGET_EXCEEDED', scope: 'refused', message: 'This request was refused.' } },
+      })
+      const res = makeRes()
+
+      await getSpeechCapabilities(appConfig)(makeReq(), res, sinon.stub())
+
+      expect(res.status.calledWith(402)).to.be.true
+      expect(res.json.firstCall.args[0].detail).to.equal('This request was refused.')
+    })
+
     it('should keep a resolved 4xx message and its status', async () => {
       sinon.stub(axios, 'get').resolves({
         status: 409,

@@ -55,6 +55,8 @@ async def resolve_attachments(
     user_id: str | None = None,
     graph_provider: Any = None,
     is_service_account: bool = False,
+    conversation_id: str | None = None,
+    acl_version: int | None = None,
 ) -> ResolvedAttachments:
     """The current turn's `query_info["attachments"]` the user may read, as
     retrieval-scope record IDs."""
@@ -77,6 +79,8 @@ async def resolve_attachments(
             virtual_record_id=vrid,
             logger=logger,
             is_service_account=is_service_account,
+            conversation_id=conversation_id,
+            acl_version=acl_version,
         ):
             continue
         if vrid:

@@ -61,22 +61,24 @@ export function SettingsSection({
       <MenuItem
         icon={
           <AppearanceIcon
-            color={isAppearanceActive ? 'var(--slate-12)' : 'var(--slate-11)'}
+            color={isAppearanceActive ? 'var(--text-primary)' : 'var(--text-secondary)'}
           />
         }
         label={
-          <Flex align="center" gap="2">
+          <Flex as="span" align="center" gap="1">
             {t('workspaceMenu.appearance')}
-            <Text size="2" style={{ color: 'var(--slate-8)' }}>•</Text>
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-10)' }}>{appearanceLabel}</Text>
+            <Text style={{ color: 'var(--border-strong)' }}>•</Text>
+            <Text size="2" weight="medium" style={{ color: 'var(--text-secondary)' }}>{appearanceLabel}</Text>
           </Flex>
         }
         isActive={isAppearanceActive}
+        expanded={isAppearanceActive}
+        opensPanel={t('workspaceMenu.appearance')}
         rightSlot={
           <MaterialIcon
             name="chevron_right"
             size={ICON_SIZE_DEFAULT}
-            color={isAppearanceActive ? 'var(--slate-12)' : 'var(--slate-11)'}
+            color={isAppearanceActive ? 'var(--text-primary)' : 'var(--text-secondary)'}
           />
         }
         onClick={onAppearanceToggle}
@@ -87,22 +89,24 @@ export function SettingsSection({
           <MaterialIcon
             name="language"
             size={ICON_SIZE_DEFAULT}
-            color={isLanguageActive ? 'var(--slate-12)' : 'var(--slate-11)'}
+            color={isLanguageActive ? 'var(--text-primary)' : 'var(--text-secondary)'}
           />
         }
         label={
-          <Flex align="center" gap="2">
+          <Flex as="span" align="center" gap="1">
             {t('workspaceMenu.language')}
-            <Text size="2" style={{ color: 'var(--slate-8)' }}>•</Text>
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-10)' }}>{languageLabel}</Text>
+            <Text style={{ color: 'var(--border-strong)' }}>•</Text>
+            <Text size="2" weight="medium" style={{ color: 'var(--text-secondary)' }}>{languageLabel}</Text>
           </Flex>
         }
         isActive={isLanguageActive}
+        expanded={isLanguageActive}
+        opensPanel={t('workspaceMenu.language')}
         rightSlot={
           <MaterialIcon
             name="chevron_right"
             size={ICON_SIZE_DEFAULT}
-            color={isLanguageActive ? 'var(--slate-12)' : 'var(--slate-11)'}
+            color={isLanguageActive ? 'var(--text-primary)' : 'var(--text-secondary)'}
           />
         }
         onClick={onLanguageToggle}
@@ -113,7 +117,7 @@ export function SettingsSection({
           <MaterialIcon
             name="settings"
             size={ICON_SIZE_DEFAULT}
-            color="var(--slate-11)"
+            color="var(--text-secondary)"
           />
         }
         label={t('workspaceMenu.workspaceSettings')}
@@ -130,7 +134,7 @@ export function SettingsSection({
           />
         }
         label={t('workspaceMenu.logOut')}
-        textColor="var(--red-11)"
+        destructive
         onClick={onLogout}
       />
     </Flex>

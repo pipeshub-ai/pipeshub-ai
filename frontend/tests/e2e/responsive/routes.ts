@@ -355,8 +355,12 @@ export const ROUTES: AuditRoute[] = [
     path: CHAT_CONVERSATION,
     setup: mockChat,
     action: async (page) => {
-      await page.getByText('Citation', { exact: true }).last().click({ timeout: ACTION_TIMEOUT });
-      await page.getByRole('button', { name: 'Preview', exact: true }).first().click({ timeout: ACTION_TIMEOUT });
+      // From 1024 px an answer's citations are in the column beside the chat; below that, in the answer's own tabs.
+      const wide = (page.viewportSize()?.width ?? 0) >= 1024;
+      const citations = wide ? page.getByRole('complementary', { name: 'About this answer' }) : page;
+      if (wide) await page.getByRole('button', { name: 'Context', exact: true }).click({ timeout: ACTION_TIMEOUT });
+      await citations.getByRole('tab', { name: /^Citations/ }).last().click({ timeout: ACTION_TIMEOUT });
+      await citations.getByRole('button', { name: 'Preview', exact: true }).first().click({ timeout: ACTION_TIMEOUT });
     },
   },
 

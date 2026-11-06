@@ -8,7 +8,7 @@ import type { ActionCatalogItem } from '../types';
 import { ActionCard, type ActionCardCta } from './action-card';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { PAGE_PADDING_TOP, usePagePaddingTop } from '@/app/(main)/workspace/components/settings-page-container';
 import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 
 interface SegmentedTab {
@@ -80,6 +80,7 @@ export function ActionsCatalogLayout({
   preFilteredCatalog = false,
 }: ActionsCatalogLayoutProps) {
   const isMobile = useIsMobile();
+  const pagePaddingTop = usePagePaddingTop(PAGE_PADDING_TOP);
   const tabFiltered = useMemo(() => {
     if (preFilteredCatalog) return items;
     if (tabFilterMode === 'orgInstances') {
@@ -145,7 +146,7 @@ export function ActionsCatalogLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
+        paddingTop: pagePaddingTop,
         paddingBottom: 64,
         paddingInline: pagePaddingX(100),
         overflowY: 'auto',

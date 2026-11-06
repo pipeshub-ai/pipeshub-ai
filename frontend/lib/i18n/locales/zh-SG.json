@@ -104,8 +104,24 @@
     "createPageDescription": "这是专用的创建智能体页面。请在此处接入您的表单或重定向到您的智能体构建器。",
     "pageTitle": "智能体",
     "comingSoon": "即将推出",
-    "missingAgentKey": "缺少智能体密钥。请从聊天侧边栏打开智能体，或使用有效的链接。",
-    "loading": "正在加载…"
+    "missingAgentKey": "缺少智能体密钥。请从“智能体”页面打开智能体，或使用有效的链接。",
+    "loading": "正在加载…",
+    "index": {
+      "columnAgent": "智能体",
+      "columnOwner": "拥有者",
+      "rowActions": "{{name}} 的操作",
+      "loading": "正在加载智能体…",
+      "loadFailedTitle": "无法加载智能体",
+      "loadFailedDescription": "请检查网络连接后重试。",
+      "emptyTitle": "还没有智能体",
+      "emptyDescription": "您创建或可以使用的智能体会显示在这里。",
+      "emptyDescriptionCanCreate": "您创建或可以使用的智能体会显示在这里。要新建一个，请选择“新建智能体”。",
+      "searchPlaceholder": "搜索智能体…",
+      "searchLabel": "搜索智能体",
+      "closeSearch": "关闭搜索",
+      "noSearchMatchesTitle": "没有符合搜索条件的智能体",
+      "noSearchMatchesDescription": "请尝试其他搜索词。"
+    }
   },
   "projects": {
     "pageTitle": "项目",
@@ -128,7 +144,8 @@
     "noSearchResults": "没有与“{{query}}”匹配的项目",
     "noSearchResultsHint": "请尝试其他名称，或清除搜索。",
     "clearSearch": "清除搜索",
-    "cardActionsLabel": "{{name}} 的操作"
+    "cardActionsLabel": "{{name}} 的操作",
+    "loadingList": "正在加载项目…"
   },
   "timeGroup": {
     "today": "今天",
@@ -145,7 +162,9 @@
     "copiedCode": "已复制",
     "remoteImageBlocked": "未加载外部图片",
     "remoteImageFrom": "来自 {{host}}",
-    "remoteImageLoad": "加载图片"
+    "remoteImageLoad": "加载图片",
+    "usingTool": "正在使用工具…",
+    "delegatingTo": "正在委派给 {{name}}…"
   },
   "uploadProgress": {
     "uploadFailedDefault": "上传失败",
@@ -182,6 +201,7 @@
       "sizeLimitDescription": "每个文件限制为 {{maxMb}} MB。请联系您的管理员申请提高上传限制。",
       "sizeLimitDescriptionAdmin": "每个文件限制为 {{maxMb}} MB。您可以在工作区实验室中提高此限制。",
       "unsupportedDescription": "不支持的文件类型。",
+      "emptyDescription": "此文件是空的。请添加内容后重新上传。",
       "duplicateDescription": "此处已存在同名文件。",
       "trackerHint": "详情请见下方的上传面板。",
       "openLabs": "打开实验室"
@@ -191,6 +211,8 @@
       "tooLarge_other": "{{count}} 个超过 {{maxMb}} MB",
       "unsupported_one": "{{count}} 个不支持的类型",
       "unsupported_other": "{{count}} 个不支持的类型",
+      "empty_one": "{{count}} 个空文件",
+      "empty_other": "{{count}} 个空文件",
       "duplicate_one": "{{count}} 个重复名称",
       "duplicate_other": "{{count}} 个重复名称",
       "other_one": "{{count}} 个其他错误",
@@ -329,6 +351,12 @@
     "searchChats": "搜索聊天",
     "inbox": "收件箱",
     "notifications": "通知",
+    "searchChatsPlaceholder": "搜索聊天…",
+    "searchChatsFailed": "无法搜索你的聊天。请重试。",
+    "loadChatsFailed": "无法加载你的聊天。请重试。",
+    "loadingChats": "正在加载聊天…",
+    "inboxUnread": "收件箱，{{count}} 条未读",
+    "inboxTooltip": "收件箱：发生了什么，以及需要你处理的事",
     "home": "首页"
   },
   "artifacts": {
@@ -411,7 +439,11 @@
     },
     "loadFailed": "加载通知失败",
     "updateFailed": "无法更新通知",
-    "removeFailed": "无法移除通知"
+    "removeFailed": "无法移除通知",
+    "loadingList": "正在加载通知…",
+    "emptyBody": "你的聊天的分享、提及和变更会显示在这里。",
+    "showMore": "显示更多",
+    "showLess": "收起"
   },
   "action": {
     "find": "查找",
@@ -674,7 +706,11 @@
     "expand": "展开侧边栏",
     "close": "关闭侧边栏",
     "collapse": "收起侧边栏",
-    "navigation": "导航"
+    "navigation": "导航",
+    "hide": "隐藏侧边栏",
+    "show": "显示侧边栏",
+    "hideWithShortcut": "隐藏侧边栏（{{shortcut}}）",
+    "showWithShortcut": "显示侧边栏（{{shortcut}}）"
   },
   "menu": {
     "reindex": "重新索引",
@@ -832,6 +868,8 @@
     "heyUser": "你好，{{name}} 👋",
     "heyUserDefaultName": "朋友",
     "askAnything": "随便问点什么…",
+    "askOrSearchWorkspace": "在 {{workspace}} 中提问或搜索任何内容…",
+    "askAboutPaste": "就粘贴的内容提问…",
     "sendMessage": "发送消息",
     "quick": "快速",
     "listening": "正在聆听…",
@@ -851,6 +889,7 @@
       "searchCollections": "搜索收藏集",
       "searchActions": "搜索操作",
       "actionsTab": "操作",
+      "filterTabsLabel": "显示内容",
       "noConnectors": "此智能体未配置任何连接器。",
       "noCollections": "此智能体未配置任何收藏集。",
       "noCollectionMatches": "没有与您的搜索匹配的收藏集。",
@@ -882,6 +921,12 @@
       "resetDefaults": "重置为项目默认值"
     },
     "aiModelsTooltip": "AI 模型",
+    "modelChip": {
+      "ariaLabel": "模型：{{name}}，推理强度 {{effort}}。打开已配置的模型。",
+      "ariaLabelNoEffort": "模型：{{name}}。打开已配置的模型。",
+      "tooltip": "{{name}} · 由 {{provider}} 提供 · 强度 {{effort}}",
+      "tooltipNoEffort": "{{name}} · 由 {{provider}} 提供"
+    },
     "attachmentTooltip": "附加文件",
     "micTooltip": "语音输入",
     "uploadYourFile": "上传您的文件",
@@ -898,6 +943,7 @@
     "yourChats": "您的聊天",
     "noChatsFound": "未找到聊天",
     "noChatsYet": "暂无聊天",
+    "yourChatsEmpty": "您的聊天将显示在这里",
     "searchCollections": "搜索连接器和收藏集",
     "loadingCollections": "正在加载收藏集…",
     "failedToLoadCollections": "加载收藏集失败",
@@ -928,8 +974,8 @@
     "feedbackCategoryUnclearExplanation": "解释不清楚",
     "feedbackCategoryPoorCitations": "引用质量差",
     "feedbackCategoryOther": "其他…",
-    "like": "有帮助",
-    "dislike": "没帮助",
+    "like": "赞",
+    "dislike": "踩",
     "copy": "复制",
     "fork": "分叉对话",
     "forkFromHere": "从此处分叉",
@@ -943,6 +989,7 @@
     "citations": "引用",
     "showMoreCitations_one": "显示另外 {{count}} 条引用",
     "showMoreCitations_other": "显示另外 {{count}} 条引用",
+    "editNotSaved": "你的编辑未保存。请重试。",
     "markdownWithCitations": "含引用的 Markdown",
     "onlyTextWithoutCitations": "仅纯文本（不含引用）",
     "differentModesOfQuery": "不同的查询模式",
@@ -951,14 +998,10 @@
     "generatingTitle": "正在生成聊天…",
     "newChat": "新建聊天",
     "startChat": "开始聊天",
-    "searchAgents": "搜索智能体…",
-    "noAgentsFound": "未找到智能体",
-    "failedToLoadAgents": "无法加载智能体",
-    "backToChatHome": "所有聊天",
+    "backToAgents": "所有智能体",
     "agentSidebarLabel": "智能体",
     "agentNameLoading": "正在加载…",
     "sharedAgentChat": "共享的智能体聊天",
-    "myAgents": "我的智能体",
     "moreAgents": "更多智能体",
     "agentHeaderMenuAria": "智能体选项",
     "agentMenuNewChat": "新建聊天",
@@ -972,14 +1015,17 @@
     "deleteAgentConfirm": "删除此智能体？",
     "deleteAgentDescription": "名为",
     "deleteAgentWarning": "的智能体将从 Pipeshub 中永久删除。使用它的聊天可能无法正常工作。",
-    "agentListRowMenuAria": "智能体选项",
     "failedToDeleteAgent": "无法删除智能体",
     "rename": "重命名",
     "archive": "归档",
     "deleteChat": "删除",
     "pin": "置顶",
     "unpin": "取消置顶",
-    "pinned": "已置顶",
+    "pinned": "已置顶的聊天",
+    "pinnedChatsEmpty": "您置顶的聊天将显示在这里",
+    "pinnedRowSuffix": "，已置顶",
+    "sidebarRunning": "后台处理中",
+    "sidebarRunningOpen": "处理中",
     "pinFailed": "无法置顶聊天",
     "unpinFailed": "无法取消置顶聊天",
     "export": {
@@ -1098,7 +1144,7 @@
         "auto": {
           "label": "自动",
           "short": "自动",
-          "hint": "系统会为每一步选择最佳方式——兼顾速度与全面性。"
+          "hint": "系统会为每一步选择最佳方式，兼顾速度与全面性。"
         },
         "quick": {
           "label": "快速",
@@ -1113,7 +1159,7 @@
         "deep": {
           "label": "深度",
           "short": "深度",
-          "hint": "通过更长的推理进行更深入的探索——在最注重准确性时使用。"
+          "hint": "通过更长的推理进行更深入的探索，在最注重准确性时使用。"
         }
       }
     },
@@ -1394,6 +1440,7 @@
     "demoHide": "隐藏演示数据",
     "scrollAttachmentsLeft": "向左滚动附件",
     "scrollAttachmentsRight": "向右滚动附件",
+    "attachmentsGroup": "附件",
     "demoSuggestions": {
       "1": {
         "text": "支付服务的架构为什么被更改，这个决定是如何做出的？",
@@ -1444,7 +1491,7 @@
       "unsupportedType": "不支持的文件类型：{{names}}。支持的类型：{{types}}。",
       "fileTooLarge": "文件过大：{{names}}。每个文件最大 {{maxMb}} MB。",
       "tooManyFiles": "每条消息最多 {{max}} 个附件。",
-      "pasteTruncated": "\n\n[内容已截断 — 粘贴的文本超出了附件大小上限。]",
+      "pasteTruncated": "\n\n[内容已截断：粘贴的文本超出了附件大小上限。]",
       "uploading": "上传中…",
       "retry": "重新上传",
       "pastedText": "粘贴的文本",
@@ -1452,10 +1499,13 @@
       "removePastedText": "移除粘贴的文本",
       "showInTextField": "在文本框中显示",
       "previewLoadFailed": "加载内容失败",
-      "copyText": "复制",
+      "copyText": "复制到剪贴板",
+      "copied": "已复制",
+      "copyFailed": "无法复制文本",
       "closePreview": "关闭",
       "loadingPreview": "加载中…",
-      "pasteMeta_other": "{{chars}} 个字符 · {{count}} 行"
+      "pasteMeta_other": "{{count}} 行 · {{chars}} 个字符",
+      "pasteChipLabel": "{{label}}，{{meta}}。打开阅读。"
     },
     "voiceSttNotConfigured": "请在 AI 模型设置中配置语音转文字（STT）模型，以启用语音输入。",
     "voiceSttLoading": "正在检查语音功能…",
@@ -1478,6 +1528,20 @@
     "models": "模型",
     "manage": "管理",
     "configuredModels": "已配置的模型",
+    "seeMoreModels": "查看更多模型",
+    "loadingModels": "正在加载模型…",
+    "loadingSources": "正在加载来源…",
+    "modelProviderBy": "由 {{provider}} 提供",
+    "modelTags": {
+      "default": "默认",
+      "reasoning": "推理",
+      "multimodal": "多模态"
+    },
+    "noConnectorsYet": "还没有连接器。你在连接器中连接的应用会显示在这里。",
+    "expandPanel": "展开面板",
+    "collapsePanel": "收起面板",
+    "cancelEditQuery": "取消编辑",
+    "cancelRegenerate": "取消重新生成",
     "reasoningEffort": {
       "label": "推理强度",
       "overrideHint": "再次点击可使用默认值。",
@@ -1487,7 +1551,11 @@
       "low": "低",
       "medium": "中",
       "high": "高",
-      "max": "最高"
+      "max": "最高",
+      "effortLabel": "强度",
+      "faster": "更快",
+      "smarter": "更聪明",
+      "noLadder": "此模型一次性作答，没有强度设置。"
     },
     "universalAgent": {
       "toolsLoadError": "加载可用操作失败。",
@@ -1522,7 +1590,8 @@
       "notice": {
         "expired": "{{server}} 上的 {{tool}} 未运行：请求已过期。如仍需要，请再次提问。",
         "passed": "{{server}} 上的 {{tool}} 未获批准，因此未运行。",
-        "waiting": "{{server}} 上的 {{tool}} 正在等待对话所有者批准。"
+        "waiting": "{{server}} 上的 {{tool}} 正在等待对话所有者批准。",
+        "waitingFor": "{{server}} 上的 {{tool}} 正在等待 {{name}} 批准。"
       },
       "receipt": {
         "allowed": "你允许了 {{tool}}",
@@ -1558,7 +1627,10 @@
       "preview": "预览产物",
       "loadingPreview": "正在加载预览",
       "download": "下载产物",
-      "downloading": "正在下载产物"
+      "downloading": "正在下载产物",
+      "previewButton": "预览",
+      "previewFile": "预览 {{name}}",
+      "downloadFile": "下载 {{name}}"
     },
     "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。",
     "noResultsFor": "未找到“{{query}}”的结果",
@@ -1575,6 +1647,133 @@
       "webSearch": "网络搜索",
       "internalAndWebSearch": "内部 + 网络搜索"
     },
+    "stoppedBeforeAnswer": "在回答开始前已停止",
+    "connectTools": {
+      "blockedTitle": "连接这些工具以使用此智能体",
+      "serviceAccountTitle": "此智能体的工具尚未连接",
+      "noticeTitle": "此回答无法使用某些工具",
+      "chip": "部分工具尚未连接",
+      "chipAction": "连接",
+      "kindAction": "操作",
+      "showMore": "显示另外 {{count}} 个",
+      "askAdmin": "请管理员连接",
+      "serviceAccount": "此智能体使用自己的连接。请管理员在 Agent Builder 中连接 {{tools}}。",
+      "toolsetUnavailable": "无法在此处开始登录。请在 Workspace → 操作 中连接。",
+      "connectedAskAgain": "已连接。再问一次即可使用。",
+      "couldNotUse": "{{agent}} 无法使用 {{tools}}",
+      "defaultAgent": "智能体"
+    },
+    "atMenu": {
+      "label": "提及建议",
+      "sources": "来源",
+      "browseSources": "浏览全部来源",
+      "allSources": "全部来源",
+      "showMore": "显示更多",
+      "nMore": "还有 {{count}} 个",
+      "noMatches": "无匹配项",
+      "keysHint": "↑ ↓ 移动 · Enter 选择 · → 打开来源 · Esc 关闭",
+      "keysHintTick": "↑ ↓ 移动 · Enter 选择 · Alt+Enter 勾选 · → 打开来源 · Esc 关闭",
+      "tooManySources": "一条消息最多可指定 {{max}} 个来源。请移除一些后再发送。"
+    },
+    "answerFailedTitle": "此回答失败",
+    "answerFailedRetry": "重试",
+    "cannotOpenSource": "无法打开此文档。它可能已被删除，或者您没有访问权限。",
+    "queue": {
+      "title": "排队中 · {{count}}",
+      "hint": "每条消息会在前一个回答完成后发送。",
+      "clearAll": "全部清除",
+      "listLabel": "排队中的消息",
+      "edit": "编辑",
+      "editBusy": "请先发送或清除正在输入的消息，再编辑这条",
+      "remove": "从队列中移除",
+      "retry": "重试",
+      "heldAfterRefusal": "未发送：上一条消息无法回答。",
+      "files_one": "{{count}} 个文件",
+      "files_other": "{{count}} 个文件",
+      "full": "最多可排队 {{count}} 条消息。请等待一条发送完毕，或移除一条。",
+      "collapse": "隐藏排队的消息",
+      "expand": "显示排队的消息"
+    },
+    "rowActions": "{{title}} 的操作",
+    "archivedDescription": "{{title}} 位于工作区设置的“已归档的对话”中。",
+    "undo": "撤销",
+    "renameFailedTitle": "无法重命名聊天",
+    "renameFailedDescription": "它保留原来的名称。请重试。",
+    "renameFieldLabel": "新名称",
+    "expandSection": "展开分组",
+    "collapseSection": "收起分组",
+    "addToSection": "添加到{{section}}",
+    "agentNotFound": {
+      "title": "此智能体不存在，或你已无权访问",
+      "description": "请检查链接，或询问分享给你的人。",
+      "back": "返回聊天"
+    },
+    "latestMessages": "最新消息",
+    "questionRail": "此聊天中的问题",
+    "sendFeedback": "发送反馈",
+    "question": {
+      "copied": "已复制",
+      "edit": "编辑",
+      "pastedCode": "粘贴的代码"
+    },
+    "confidenceLevel": "置信度",
+    "runError": {
+      "stoppedTitle": "你已停止此回复",
+      "stoppedBody": "已完成的步骤仍保留在上方的过程中。",
+      "stoppedBodyPartial": "停止前已写好的内容保留在上方。"
+    },
+    "answerPanel": {
+      "label": "关于此回答",
+      "opener": "上下文",
+      "openerHint": "上下文：来源、引用和产出",
+      "close": "关闭上下文",
+      "resize": "调整面板大小",
+      "sources": "来源",
+      "citations": "引用",
+      "context": "上下文",
+      "outputs": "产出",
+      "pending": "回答完成后将在此显示。",
+      "noOutputsTitle": "尚未生成任何内容",
+      "noOutputsBody": "请求文档、表格或摘要后，生成的文件会保存在这里。",
+      "anythingYouCanOpen": "可使用您能打开的任何内容",
+      "sourcesLabel": "来源：{{names}}",
+      "sourcesEmptyTitle": "尚未读取任何内容",
+      "sourcesEmptyBody": "提出需要用到已连接应用的问题，回答所依据的文档会汇集在这里。",
+      "citationsEmptyTitle": "尚未引用任何内容",
+      "citationsEmptyBody": "回答中的每项陈述都链接到其出处段落。这些链接会显示在这里。",
+      "contextCollections": "集合",
+      "contextConnectors": "连接器",
+      "contextFiles": "文件",
+      "contextFolderInCollection": "集合中的文件夹",
+      "contextEmptyTitle": "尚未附加任何内容",
+      "contextEmptyBody": "您为此聊天指定的集合、已连接应用和文件会列在这里。",
+      "anythingTheyCanOpen": "可使用 {{name}} 能打开的任何内容",
+      "anythingOwnerCanOpen": "可使用聊天拥有者能打开的任何内容"
+    },
+    "trail": {
+      "reasoning": "思考",
+      "subAgent": "子代理",
+      "usedSkills_other": "使用了 {{count}} 个技能",
+      "exploredSearches_other": "进行了 {{count}} 次搜索",
+      "ranTools_other": "运行了 {{count}} 个工具",
+      "thoughtFor": "思考了 {{duration}}",
+      "thoughtThrough_other": "思考了 {{count}} 个步骤",
+      "steps_other": "{{count}} 个步骤",
+      "stoppedAfter": "{{duration}} 后停止",
+      "stopped": "已停止",
+      "done": "完成",
+      "showAllSteps": "显示所有步骤",
+      "showFewer": "显示更少",
+      "durationSeconds": "{{value}} 秒",
+      "durationMinutes": "{{minutes}} 分 {{seconds}} 秒"
+    },
+    "citationPill": {
+      "number": "引用 {{number}}：{{name}}"
+    },
+    "citationPopover": {
+      "page": "第 {{page}} 页",
+      "paragraph": "第 {{paragraph}} 段"
+    },
     "searchDegraded": "结果可能不完整。"
   },
   "workspaceMenu": {
@@ -1588,7 +1787,9 @@
     "documentation": "文档",
     "darkMode": "深色模式",
     "lightMode": "浅色模式",
-    "organisations": "组织"
+    "organisations": "组织",
+    "triggerLabel": "{{name}} 工作区和账户菜单",
+    "triggerLabelNoName": "工作区和账户菜单"
   },
   "workspace": {
     "users": {
@@ -1651,7 +1852,12 @@
         "edit": "编辑",
         "resendInviteSuccess": "邀请已重新发送",
         "resendInviteSuccessDescription": "已将邀请重新发送至 {{email}}",
-        "resendInviteError": "重新发送邀请失败"
+        "resendInviteError": "重新发送邀请失败",
+        "changeRoleUndo": "撤销",
+        "changeRoleRestored": "角色已恢复",
+        "changeRoleRestoredDescription": "{{name}} 又是 {{role}} 了",
+        "changeRoleUndoError": "无法恢复角色",
+        "changeRoleUndoErrorDescription": "{{name}} 仍为 {{role}}。请再次更改角色以恢复。"
       },
       "profile": {
         "title": "个人资料",
@@ -1723,7 +1929,10 @@
         "alreadyMembersDescription_other": "所有地址都已属于活跃成员。",
         "importUnsupportedType": "只能导入 .csv、.xlsx 和 .xls 文件。",
         "importTooLongSkipped_other": "已略过 {{count}} 个超过 254 个字符的条目。",
-        "invalidBlocksSend_other": "{{count}} 个无效地址已标红。请修正或删除后再发送邀请。"
+        "invalidBlocksSend_other": "{{count}} 个无效地址已标红。请修正或删除后再发送邀请。",
+        "warnMember": "{{email}} 已是成员，因此不会向该地址发送邀请。",
+        "warnInvited": "{{email}} 已被邀请。再次发送将重新发送其邀请。",
+        "warnMany": "部分地址已是成员或已被邀请。成员将被跳过，待处理的邀请会重新发送。"
       },
       "bulk": {
         "resendInvite": "重新发送邀请",
@@ -2374,7 +2583,12 @@
     "common": {
       "loadingUsers": "正在加载用户...",
       "noUsersAvailable": "没有可用的用户",
-      "selected": "已选择 {{count}} 项"
+      "selected": "已选择 {{count}} 项",
+      "validation": {
+        "nameRequired": "请输入名称。",
+        "nameTooLong": "名称不能超过 {{max}} 个字符。",
+        "descriptionTooLong": "描述不能超过 {{max}} 个字符。"
+      }
     },
     "filters": {
       "role": "角色",
@@ -5176,7 +5390,8 @@
       "section": "API 操作",
       "connectTooltip": "请在“操作”中连接",
       "serviceAccountBlocked": "服务账号智能体只能使用具有共享凭据或无需登录的 API 操作。"
-    }
+    },
+    "nameTooLong": "名称不能超过 {{max}} 个字符。"
   },
   "recordView": {
     "sections": {
@@ -5499,17 +5714,16 @@
     }
   },
   "askUserQuestion": {
-    "questionsHeadingSingular": "问题：",
-    "questionsHeadingPlural": "问题：",
+    "questionsHeadingSingular": "问题",
+    "questionsHeadingPlural": "问题",
     "answered": "已回答",
     "showLess": "收起",
     "showMore": "显示更多",
     "noPreference": "[无偏好]",
+    "skipped": "已跳过",
     "somethingElse": "其他",
-    "questionAskedSingular": "已提问的问题：",
-    "questionAskedPlural": "已提问的问题：",
-    "quickQuestionSingular": "快速提问：",
-    "quickQuestionPlural": "快速提问：",
+    "quickQuestionSingular": "快速提问",
+    "quickQuestionPlural": "快速提问",
     "stepOf": "第 {{step}} 步，共 {{total}} 步",
     "selectedCount": "已选择 {{count}} 项",
     "describeYourAnswer": "描述您的答案…",
@@ -5522,7 +5736,10 @@
     "selectMany": "选择所有适用项",
     "skipAll": "全部跳过",
     "expired": "此问题已过期。请在聊天中回复以继续。",
-    "repliedInChat": "你已在聊天中回复。"
+    "repliedInChat": "你已在聊天中回复。",
+    "unknownPerson": "前成员",
+    "waitingFor": "正在等待 {{name}} 回答",
+    "waitingForYou": "正在等待你回答"
   },
   "agentClaim": {
     "title": "连接智能体",
@@ -5579,8 +5796,21 @@
     "serverError": "服务器错误",
     "timedOut": "请求超时",
     "somethingWentWrong": "出了点问题",
-    "tryAgainShortly": "请稍后重试",
-    "connectedServiceProblem": "关联服务出现问题"
+    "serverBusy": "服务器繁忙",
+    "connectedServiceProblem": "关联服务出现问题",
+    "accessDeniedDescription": "你没有执行此操作的权限。请向工作区管理员申请访问权限。",
+    "invalidRequestDescription": "部分信息无效。请检查后重试。",
+    "notFoundDescription": "它可能已被移动或删除。请刷新页面后重试。",
+    "actionRequiredDescription": "在你开始之后有内容发生了变化。请检查信息后重试。",
+    "connectionErrorDescription": "请检查你的网络连接后重试。",
+    "serverErrorDescription": "服务器未能完成此操作。请稍后重试。如果问题持续出现，请联系你的工作区管理员。",
+    "timedOutDescription": "服务器响应时间过长。请重试。",
+    "somethingWentWrongDescription": "操作未成功。请重试。如果问题持续出现，请联系你的工作区管理员。",
+    "serverBusyDescription": "请稍等片刻，然后重试。"
+  },
+  "loading": {
+    "default": "加载中…",
+    "items": "正在加载项目…"
   },
   "validation": {
     "password": {
@@ -5649,7 +5879,10 @@
     "alreadyRemoved": "已移除",
     "alreadyRemovedDescription": "{{name}} 此前已失去访问权限",
     "removeConfirmTitle": "移除访问权限？",
-    "removeConfirmDescription": "{{name}} 将立即失去访问权限。您之后可以再次共享。"
+    "removeConfirmDescription": "{{name}} 将立即失去访问权限。您之后可以再次共享。",
+    "removeSelection": "移除 {{name}}",
+    "peopleCanSee_other": "{{count}} 人可以查看此聊天",
+    "loadingPeople": "正在加载人员…"
   },
   "demoData": {
     "badge": {

@@ -7,6 +7,7 @@ import { Logger } from '../services/logger.service';
 import { TooManyRequestsError } from '../errors/http.errors';
 import { isMcpRelay } from './mcp-relay';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
+import { SharedRateLimitStore } from './shared-rate-limit-store';
 
 /**
  * Never read X-Forwarded-For / X-Real-IP directly: the client controls them.
@@ -179,13 +180,16 @@ export interface KeyedRateLimiterOptions {
   anonymousSubKey?: (req: Request) => string | undefined;
   // Writes the 429 body, for surfaces whose clients expect another shape than the REST error.
   respond?: (res: Response, message: string, retryAfter: number | null) => void;
+  /** Error code sent on a 429, with `retryAfter` under `details`. Without it the historical body is kept. */
+  code?: string;
+  /** Count in the shared cache so the limit holds across replicas; falls back to in-process on error. */
+  shared?: boolean;
 }
 
 /**
- * Per-user (fallback: per-IP) limiter used by the OAuth-client and skills-import
- * surfaces. The store is in-process, matching `createOAuthClientRateLimiter`'s
- * historical behaviour — N replicas therefore admit N×max/min until a shared
- * store is wired.
+ * Per-user (fallback: per-IP) limiter. The store is in-process unless `shared`
+ * is set — N replicas then admit N×max/min. `prefix` is the bucket identity, so
+ * two limiters that must not share a count need different prefixes.
  */
 export function createKeyedRateLimiter(
   logger: Logger,
@@ -199,6 +203,8 @@ export function createKeyedRateLimiter(
     isFailure,
     anonymousSubKey,
     respond,
+    code,
+    shared,
   } = options;
 
   const keyFor = (req: Request): string => {
@@ -224,6 +230,7 @@ export function createKeyedRateLimiter(
         }
       : {}),
     keyGenerator: keyFor,
+    ...(shared ? { store: new SharedRateLimitStore(prefix, logger) } : {}),
     handler: (req: Request, res: Response): void => {
       const retryAfter = res.getHeader('Retry-After');
       logger.warn('Rate limit exceeded', {
@@ -241,11 +248,18 @@ export function createKeyedRateLimiter(
       }
       const error = new TooManyRequestsError(message);
       res.status(429).json({
-        error: {
-          code: error.code,
-          message: error.message,
-          retryAfter: retrySeconds,
-        },
+        error:
+          code === undefined
+            ? {
+                code: error.code,
+                message: error.message,
+                retryAfter: retrySeconds,
+              }
+            : {
+                code,
+                message: error.message,
+                details: { retryAfter: retrySeconds },
+              },
       });
     },
   };

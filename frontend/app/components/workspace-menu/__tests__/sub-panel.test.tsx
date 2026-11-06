@@ -2,7 +2,10 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+import { runTimersWithPageTornDown } from '@/lib/__tests__/torn-down-page';
+
+const device = vi.hoisted(() => ({ isMobile: false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => device.isMobile }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
 import { SubPanel } from '../sub-panel';
@@ -10,6 +13,8 @@ import { SubPanel } from '../sub-panel';
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
+  device.isMobile = false;
 });
 
 // jsdom has no layout: report the panel's unshifted top and height, as a browser would.
@@ -57,5 +62,17 @@ describe('SubPanel on desktop', () => {
     layoutPanel(100, 348);
     renderPanel();
     expect(screen.getByTestId('row').parentElement?.style.top).toBe('-92px');
+  });
+});
+
+describe('SubPanel on a phone', () => {
+  it('stays quiet when the page is torn down before the sheet hands focus back', () => {
+    device.isMobile = true;
+    vi.useFakeTimers();
+    renderPanel();
+    cleanup();
+    // The sheet's focus scope hands focus back a tick after unmount, possibly after teardown.
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    expect(runTimersWithPageTornDown).not.toThrow();
   });
 });

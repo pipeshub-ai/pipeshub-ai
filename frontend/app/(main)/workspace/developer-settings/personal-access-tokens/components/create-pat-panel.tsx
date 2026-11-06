@@ -13,7 +13,12 @@ import {
   knowledgeLimitForApi,
   type KnowledgeLimitValue,
 } from '@/app/components/knowledge-limit';
-import { FormField, WorkspaceRightPanel } from '../../../components';
+import {
+  FormField,
+  LabeledTextField,
+  WorkspaceRightPanel,
+  useFormValidation,
+} from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { PatApi } from '../api';
@@ -66,7 +71,10 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
   const addToast = useToastStore((s) => s.addToast);
 
   const [name, setName] = useState('');
-  const [nameError, setNameError] = useState<string | undefined>(undefined);
+  const validation = useFormValidation<'name'>({
+    name: name.trim() ? undefined : t('workspace.personalAccessTokens.create.errorNameRequired'),
+  });
+  const resetValidation = validation.reset;
   const [expiryDays, setExpiryDays] = useState<PatExpiryOption>(DEFAULT_EXPIRY_DAYS);
   const [knowledgeLimit, setKnowledgeLimit] = useState<KnowledgeLimitValue>(null);
 
@@ -125,7 +133,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
   useEffect(() => {
     if (!open) {
       setName('');
-      setNameError(undefined);
+      resetValidation();
       setExpiryDays(DEFAULT_EXPIRY_DAYS);
       setKnowledgeLimit(null);
       setScopes(null);
@@ -137,7 +145,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
       return;
     }
     void loadScopes();
-  }, [open, loadScopes]);
+  }, [open, loadScopes, resetValidation]);
 
   const handleClose = useCallback(() => {
     onOpenChange(false);
@@ -187,7 +195,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
   const handleCreate = useCallback(async () => {
     const trimmedName = name.trim();
     if (!trimmedName) {
-      setNameError(t('workspace.personalAccessTokens.create.errorNameRequired'));
+      validation.touch('name');
       return;
     }
     if (selectedScopes.size === 0) {
@@ -384,16 +392,14 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
             <FormField
               label={t('workspace.personalAccessTokens.create.nameLabel')}
               required
-              error={nameError}
+              error={validation.errorFor('name')}
             >
-              <TextField.Root
+              <LabeledTextField
                 size="2"
                 placeholder={t('workspace.personalAccessTokens.create.namePlaceholder')}
                 value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  if (nameError) setNameError(undefined);
-                }}
+                onChange={(e) => setName(e.target.value)}
+                onBlur={() => validation.touch('name')}
                 style={{ width: '100%' }}
               />
             </FormField>

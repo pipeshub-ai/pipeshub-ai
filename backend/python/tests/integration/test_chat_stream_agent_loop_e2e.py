@@ -64,6 +64,7 @@ def _successful_stream_result(output: str) -> SimpleNamespace:
         error=None,
         cancelled=False,
         confidence=None,
+        needs_input=None,
         output=output,
     )
 

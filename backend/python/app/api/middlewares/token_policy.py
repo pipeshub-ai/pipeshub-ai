@@ -38,6 +38,13 @@ ACCEPTED_SERVICE_SCOPES: Final[frozenset[str]] = frozenset(
 )
 
 
+def accepted_service_scopes() -> frozenset[str]:
+    """``ACCEPTED_SERVICE_SCOPES`` plus the scopes the edition's routes accept."""
+    from app.modules.agents.chat_extension import get_chat_extension
+
+    return ACCEPTED_SERVICE_SCOPES | get_chat_extension().extra_service_scopes()
+
+
 def scope_value(scope: ScopeLike) -> str:
     return scope.value if isinstance(scope, TokenScopes) else scope
 

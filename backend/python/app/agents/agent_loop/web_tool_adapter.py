@@ -25,7 +25,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.types import Source
-from app.agent_loop_lib.tools.base import ToolOutput
+from app.agent_loop_lib.tools.base import Tag, ToolOutput
 from app.agents.actions.util.tool_summaries import parse_json_maybe
 from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter
 from app.utils.tool_handlers import ToolHandlerRegistry
@@ -115,6 +115,11 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
     def result_view(self, args: dict[str, Any], result: "ToolResult") -> dict[str, Any] | None:
         content = result.content
         return self._views.pop(content, None) if isinstance(content, str) else None
+
+    @property
+    def tags(self) -> list[Tag]:
+        # Outbound GET: a tool guard can treat the URL as data leaving the box.
+        return [Tag("category", "egress")] if self._tool_name == "fetch_url" else []
 
     @property
     def short_description(self) -> str:

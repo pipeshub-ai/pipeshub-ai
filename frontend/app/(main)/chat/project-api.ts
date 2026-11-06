@@ -64,8 +64,9 @@ export interface ProjectConversationsResult {
 }
 
 export const ProjectApi = {
-  async list(params: ListProjectsParams = {}): Promise<ProjectsListResult> {
+  async list(params: ListProjectsParams = {}, options: { suppressErrorToast?: boolean } = {}): Promise<ProjectsListResult> {
     const { data } = await apiClient.get<ProjectsListResult>(PROJECTS_BASE_URL, {
+      ...(options.suppressErrorToast ? { suppressErrorToast: true } : {}),
       params: {
         page: params.page ?? 1,
         limit: params.limit ?? 20,

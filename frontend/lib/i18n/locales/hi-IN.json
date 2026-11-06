@@ -20,8 +20,24 @@
     "createPageDescription": "नया एजेंट बनाने के लिए यह पृष्ठ है। यहाँ अपना फ़ॉर्म जोड़ें या अपने एजेंट बिल्डर पर रीडायरेक्ट करें।",
     "pageTitle": "एजेंट",
     "comingSoon": "जल्द आ रहा है",
-    "missingAgentKey": "एजेंट कुंजी गायब है। चैट साइडबार से एजेंट खोलें या वैध लिंक का उपयोग करें।",
-    "loading": "लोड हो रहा है…"
+    "missingAgentKey": "एजेंट कुंजी गायब है। एजेंट पेज से एजेंट खोलें या वैध लिंक का उपयोग करें।",
+    "loading": "लोड हो रहा है…",
+    "index": {
+      "columnAgent": "एजेंट",
+      "columnOwner": "स्वामी",
+      "rowActions": "{{name}} के लिए क्रियाएँ",
+      "loading": "एजेंट लोड हो रहे हैं…",
+      "loadFailedTitle": "एजेंट लोड नहीं हो सके",
+      "loadFailedDescription": "अपना कनेक्शन जाँचें और फिर से कोशिश करें।",
+      "emptyTitle": "अभी कोई एजेंट नहीं",
+      "emptyDescription": "आपके बनाए हुए या आपके उपयोग के लिए उपलब्ध एजेंट यहाँ दिखाई देते हैं।",
+      "emptyDescriptionCanCreate": "आपके बनाए हुए या आपके उपयोग के लिए उपलब्ध एजेंट यहाँ दिखाई देते हैं। नया बनाने के लिए, नया एजेंट चुनें।",
+      "searchPlaceholder": "एजेंट खोजें…",
+      "searchLabel": "एजेंट खोजें",
+      "closeSearch": "खोज बंद करें",
+      "noSearchMatchesTitle": "आपकी खोज से कोई एजेंट मेल नहीं खाता",
+      "noSearchMatchesDescription": "कोई दूसरी खोज आज़माएँ।"
+    }
   },
   "projects": {
     "pageTitle": "प्रोजेक्ट्स",
@@ -44,7 +60,8 @@
     "noSearchResults": "“{{query}}” से कोई प्रोजेक्ट मेल नहीं खाता",
     "noSearchResultsHint": "कोई दूसरा नाम आज़माएँ या खोज साफ़ करें।",
     "clearSearch": "खोज साफ़ करें",
-    "cardActionsLabel": "{{name}} के लिए क्रियाएँ"
+    "cardActionsLabel": "{{name}} के लिए क्रियाएँ",
+    "loadingList": "प्रोजेक्ट्स लोड हो रहे हैं…"
   },
   "timeGroup": {
     "today": "आज",
@@ -61,7 +78,9 @@
     "copiedCode": "कॉपी हो गया",
     "remoteImageBlocked": "बाहरी छवि लोड नहीं की गई",
     "remoteImageFrom": "{{host}} से",
-    "remoteImageLoad": "छवि लोड करें"
+    "remoteImageLoad": "छवि लोड करें",
+    "usingTool": "टूल का उपयोग हो रहा है…",
+    "delegatingTo": "{{name}} को सौंपा जा रहा है…"
   },
   "uploadProgress": {
     "uploadFailedDefault": "अपलोड असफल",
@@ -98,6 +117,7 @@
       "sizeLimitDescription": "सीमा प्रति फ़ाइल {{maxMb}} MB है। उच्च सीमा के लिए अपने व्यवस्थापक से संपर्क करें।",
       "sizeLimitDescriptionAdmin": "सीमा प्रति फ़ाइल {{maxMb}} MB है। आप Workspace Labs में इसे बढ़ा सकते हैं।",
       "unsupportedDescription": "असमर्थित फ़ाइल प्रकार।",
+      "emptyDescription": "यह फ़ाइल खाली है। इसमें कुछ सामग्री जोड़ें और फिर से अपलोड करें।",
       "duplicateDescription": "इस नाम की फ़ाइल यहाँ पहले से मौजूद है।",
       "trackerHint": "विवरण नीचे अपलोड पैनल में हैं।",
       "openLabs": "Labs खोलें"
@@ -107,6 +127,8 @@
       "tooLarge_other": "{{count}} {{maxMb}} MB से अधिक",
       "unsupported_one": "{{count}} असमर्थित प्रकार",
       "unsupported_other": "{{count}} असमर्थित प्रकार",
+      "empty_one": "{{count}} खाली फ़ाइल",
+      "empty_other": "{{count}} खाली फ़ाइलें",
       "duplicate_one": "{{count}} डुप्लिकेट नाम",
       "duplicate_other": "{{count}} डुप्लिकेट नाम",
       "other_one": "{{count}} अन्य त्रुटि",
@@ -245,6 +267,12 @@
     "searchChats": "चैट खोजें",
     "inbox": "इनबॉक्स",
     "notifications": "सूचनाएँ",
+    "searchChatsPlaceholder": "चैट खोजें…",
+    "searchChatsFailed": "आपकी चैट खोजी नहीं जा सकीं। फिर से कोशिश करें।",
+    "loadChatsFailed": "आपकी चैट लोड नहीं हो सकीं। फिर से कोशिश करें।",
+    "loadingChats": "चैट लोड हो रही हैं…",
+    "inboxUnread": "इनबॉक्स, {{count}} अपठित",
+    "inboxTooltip": "इनबॉक्स: क्या हुआ, और किसे आपकी ज़रूरत है",
     "home": "होम"
   },
   "artifacts": {
@@ -327,7 +355,11 @@
     },
     "loadFailed": "सूचनाएँ लोड करने में विफल",
     "updateFailed": "सूचना अपडेट नहीं हो सकी",
-    "removeFailed": "सूचना हटाने में विफल"
+    "removeFailed": "सूचना हटाने में विफल",
+    "loadingList": "सूचनाएँ लोड हो रही हैं…",
+    "emptyBody": "आपकी चैट के शेयर, उल्लेख और बदलाव यहाँ दिखते हैं।",
+    "showMore": "और दिखाएँ",
+    "showLess": "कम दिखाएँ"
   },
   "action": {
     "find": "खोजें",
@@ -590,7 +622,11 @@
     "expand": "साइडबार विस्तृत करें",
     "close": "साइडबार बंद करें",
     "collapse": "साइडबार संक्षिप्त करें",
-    "navigation": "नेविगेशन"
+    "navigation": "नेविगेशन",
+    "hide": "साइडबार छिपाएं",
+    "show": "साइडबार दिखाएं",
+    "hideWithShortcut": "साइडबार छिपाएं ({{shortcut}})",
+    "showWithShortcut": "साइडबार दिखाएं ({{shortcut}})"
   },
   "menu": {
     "reindex": "री-इंडेक्स",
@@ -744,6 +780,8 @@
     "heyUser": "नमस्ते, {{name}} 👋",
     "heyUserDefaultName": "दोस्त",
     "askAnything": "कुछ भी पूछें...",
+    "askOrSearchWorkspace": "{{workspace}} में कुछ भी पूछें या खोजें...",
+    "askAboutPaste": "चिपकाई गई सामग्री के बारे में पूछें...",
     "sendMessage": "संदेश भेजें",
     "quick": "त्वरित",
     "listening": "सुन रहे हैं...",
@@ -763,6 +801,7 @@
       "searchCollections": "संग्रह खोजें",
       "searchActions": "कार्य खोजें",
       "actionsTab": "कार्य",
+      "filterTabsLabel": "क्या दिखाएँ",
       "noConnectors": "इस एजेंट के लिए कोई कनेक्टर कॉन्फ़िगर नहीं हैं।",
       "noCollections": "इस एजेंट के लिए कोई संग्रह कॉन्फ़िगर नहीं हैं।",
       "noCollectionMatches": "आपकी खोज से कोई संग्रह मेल नहीं खाता।",
@@ -794,6 +833,12 @@
       "resetDefaults": "प्रोजेक्ट डिफ़ॉल्ट पर रीसेट करें"
     },
     "aiModelsTooltip": "AI मॉडल",
+    "modelChip": {
+      "ariaLabel": "मॉडल: {{name}}, {{effort}} तर्क प्रयास। कॉन्फ़िगर किए गए मॉडल खोलें।",
+      "ariaLabelNoEffort": "मॉडल: {{name}}। कॉन्फ़िगर किए गए मॉडल खोलें।",
+      "tooltip": "{{name}} · {{provider}} द्वारा · {{effort}} प्रयास",
+      "tooltipNoEffort": "{{name}} · {{provider}} द्वारा"
+    },
     "attachmentTooltip": "फ़ाइलें संलग्न करें",
     "micTooltip": "वॉइस इनपुट",
     "uploadYourFile": "अपनी फ़ाइल अपलोड करें",
@@ -810,6 +855,7 @@
     "yourChats": "आपके चैट",
     "noChatsFound": "कोई चैट नहीं मिली",
     "noChatsYet": "अभी तक कोई चैट नहीं",
+    "yourChatsEmpty": "आपके चैट यहां दिखेंगे",
     "searchCollections": "कनेक्टर्स और संग्रह खोजें",
     "loadingCollections": "कलेक्शन लोड हो रहे हैं…",
     "failedToLoadCollections": "कलेक्शन लोड करने में विफल",
@@ -840,14 +886,14 @@
     "feedbackCategoryUnclearExplanation": "अस्पष्ट व्याख्या",
     "feedbackCategoryPoorCitations": "कमजोर उद्धरण",
     "feedbackCategoryOther": "अन्य...",
-    "like": "सहायक",
-    "dislike": "सहायक नहीं",
+    "like": "पसंद करें",
+    "dislike": "नापसंद करें",
     "copy": "कॉपी करें",
     "fork": "चैट फोर्क करें",
     "forkFromHere": "यहाँ से फोर्क करें",
     "regenerate": "पुनः उत्पन्न करें",
     "readAloud": "ज़ोर से पढ़ें",
-    "stopReading": "पढ़ना बंद करें",
+    "stopReading": "बोलना बंद करें",
     "ttsNotSupported": "इस ब्राउज़र में टेक्स्ट-टू-स्पीच समर्थित नहीं है",
     "ttsFailed": "ज़ोर से पढ़ने में विफल। कृपया पुनः प्रयास करें।",
     "copiedAsMarkdown": "मार्कडाउन के रूप में कॉपी किया गया",
@@ -855,6 +901,7 @@
     "citations": "उद्धरण",
     "showMoreCitations_one": "{{count}} और उद्धरण दिखाएँ",
     "showMoreCitations_other": "{{count}} और उद्धरण दिखाएँ",
+    "editNotSaved": "आपका संपादन सहेजा नहीं गया। फिर से कोशिश करें।",
     "markdownWithCitations": "उद्धरण के साथ Markdown",
     "onlyTextWithoutCitations": "केवल टेक्स्ट (बिना उद्धरण के)",
     "differentModesOfQuery": "प्रश्न के विभिन्न तरीके",
@@ -863,14 +910,10 @@
     "generatingTitle": "चैट उत्पन्न किया जा रहा है…",
     "newChat": "नया चैट",
     "startChat": "चैट शुरू करें",
-    "searchAgents": "एजेंट खोजें…",
-    "noAgentsFound": "कोई एजेंट नहीं मिला",
-    "failedToLoadAgents": "एजेंट लोड नहीं हो सके",
-    "backToChatHome": "सभी चैट",
+    "backToAgents": "सभी एजेंट",
     "agentSidebarLabel": "एजेंट",
     "agentNameLoading": "लोड हो रहा है…",
     "sharedAgentChat": "साझा किया गया एजेंट चैट",
-    "myAgents": "मेरे एजेंट",
     "moreAgents": "और एजेंट",
     "agentHeaderMenuAria": "एजेंट विकल्प",
     "agentMenuNewChat": "नया चैट",
@@ -974,7 +1017,7 @@
         "auto": {
           "label": "ऑटो",
           "short": "ऑटो",
-          "hint": "सिस्टम प्रत्येक चरण के लिए सर्वोत्तम दृष्टिकोण चुनता है—गति और गहराई संतुलित।"
+          "hint": "सिस्टम प्रत्येक चरण के लिए सर्वोत्तम दृष्टिकोण चुनता है, गति और गहराई संतुलित।"
         },
         "quick": {
           "label": "त्वरित",
@@ -989,7 +1032,7 @@
         "deep": {
           "label": "गहरा",
           "short": "गहरा",
-          "hint": "लंबे तर्क के साथ अधिक गहन विश्लेषण—जब सटीकता सर्वोपरि हो।"
+          "hint": "लंबे तर्क के साथ अधिक गहन विश्लेषण, जब सटीकता सर्वोपरि हो।"
         }
       }
     },
@@ -1073,7 +1116,6 @@
         "अब तक क्या सबक सीखे गए हैं?"
       ]
     ],
-    "agentListRowMenuAria": "एजेंट विकल्प",
     "archive": "संग्रहित करें",
     "archiveChatConfirm": "क्या आप सुनिश्चित हैं?",
     "archiveChatDescription": "शीर्षक वाली चैट",
@@ -1089,7 +1131,11 @@
     "deleteChat": "हटाएं",
     "pin": "पिन करें",
     "unpin": "अनपिन करें",
-    "pinned": "पिन किया गया",
+    "pinned": "पिन किए गए चैट",
+    "pinnedChatsEmpty": "आप जो चैट पिन करेंगे, वे यहां दिखेंगे",
+    "pinnedRowSuffix": ", पिन किया गया",
+    "sidebarRunning": "पृष्ठभूमि में काम हो रहा है",
+    "sidebarRunningOpen": "काम हो रहा है",
     "pinFailed": "चैट पिन नहीं की जा सकी",
     "unpinFailed": "चैट अनपिन नहीं की जा सकी",
     "export": {
@@ -1306,6 +1352,7 @@
     "demoHide": "डेमो डेटा छिपाएँ",
     "scrollAttachmentsLeft": "अटैचमेंट बाईं ओर स्क्रॉल करें",
     "scrollAttachmentsRight": "अटैचमेंट दाईं ओर स्क्रॉल करें",
+    "attachmentsGroup": "अटैचमेंट",
     "demoSuggestions": {
       "1": {
         "text": "पेमेंट सर्विस की आर्किटेक्चर क्यों बदली गई, और यह निर्णय कैसे लिया गया?",
@@ -1356,7 +1403,7 @@
       "unsupportedType": "असमर्थित फ़ाइल प्रकार: {{names}}. समर्थित प्रकार: {{types}}.",
       "fileTooLarge": "फ़ाइल बहुत बड़ी है: {{names}}. अधिकतम आकार प्रति फ़ाइल {{maxMb}} MB है।",
       "tooManyFiles": "प्रति संदेश अधिकतम {{max}} अटैचमेंट।",
-      "pasteTruncated": "\n\n[सामग्री छोटी कर दी गई — चिपकाया गया टेक्स्ट अधिकतम अटैचमेंट आकार से बड़ा था।]",
+      "pasteTruncated": "\n\n[सामग्री छोटी कर दी गई: चिपकाया गया टेक्स्ट अधिकतम अटैचमेंट आकार से बड़ा था।]",
       "uploading": "अपलोड हो रहा है…",
       "retry": "अपलोड पुनः करें",
       "pastedText": "चिपकाया गया टेक्स्ट",
@@ -1364,11 +1411,14 @@
       "removePastedText": "चिपकाया गया टेक्स्ट हटाएँ",
       "showInTextField": "टेक्स्ट फ़ील्ड में दिखाएँ",
       "previewLoadFailed": "सामग्री लोड नहीं हो सकी",
-      "copyText": "कॉपी करें",
+      "copyText": "क्लिपबोर्ड पर कॉपी करें",
+      "copied": "कॉपी हो गया",
+      "copyFailed": "टेक्स्ट कॉपी नहीं हो सका",
       "closePreview": "बंद करें",
       "loadingPreview": "लोड हो रहा है…",
-      "pasteMeta_one": "{{chars}} अक्षर · {{count}} पंक्ति",
-      "pasteMeta_other": "{{chars}} अक्षर · {{count}} पंक्तियाँ"
+      "pasteMeta_one": "{{count}} पंक्ति · {{chars}} अक्षर",
+      "pasteMeta_other": "{{count}} पंक्तियाँ · {{chars}} अक्षर",
+      "pasteChipLabel": "{{label}}, {{meta}}। पढ़ने के लिए खोलें।"
     },
     "voiceSttNotConfigured": "वॉइस इनपुट सक्षम करने के लिए एआई मॉडल सेटिंग्स में स्पीच-टू-टेक्स्ट (STT) मॉडल कॉन्फ़िगर करें।",
     "voiceSttLoading": "वाक् क्षमताओं की जाँच की जा रही है…",
@@ -1391,6 +1441,20 @@
     "models": "मॉडल",
     "manage": "प्रबंधित करें",
     "configuredModels": "कॉन्फ़िगर किए गए मॉडल",
+    "seeMoreModels": "और मॉडल देखें",
+    "loadingModels": "मॉडल लोड हो रहे हैं…",
+    "loadingSources": "स्रोत लोड हो रहे हैं…",
+    "modelProviderBy": "{{provider}} द्वारा",
+    "modelTags": {
+      "default": "डिफ़ॉल्ट",
+      "reasoning": "रीज़निंग",
+      "multimodal": "मल्टीमोडल"
+    },
+    "noConnectorsYet": "अभी कोई कनेक्टर नहीं है। कनेक्टर्स में आप जो ऐप्स जोड़ते हैं, वे यहाँ दिखते हैं।",
+    "expandPanel": "पैनल बड़ा करें",
+    "collapsePanel": "पैनल छोटा करें",
+    "cancelEditQuery": "संपादन रद्द करें",
+    "cancelRegenerate": "फिर से बनाना रद्द करें",
     "reasoningEffort": {
       "label": "रीज़निंग प्रयास",
       "overrideHint": "डिफ़ॉल्ट उपयोग करने के लिए फिर से क्लिक करें।",
@@ -1400,7 +1464,11 @@
       "low": "कम",
       "medium": "मध्यम",
       "high": "अधिक",
-      "max": "अधिकतम"
+      "max": "अधिकतम",
+      "effortLabel": "प्रयास",
+      "faster": "तेज़",
+      "smarter": "अधिक समझदार",
+      "noLadder": "यह मॉडल एक ही बार में जवाब देता है, इसमें प्रयास की कोई सेटिंग नहीं है।"
     },
     "universalAgent": {
       "toolsLoadError": "उपलब्ध क्रियाएँ लोड नहीं हो सकीं।",
@@ -1436,7 +1504,8 @@
       "notice": {
         "expired": "{{server}} पर {{tool}} नहीं चला: अनुरोध की समय-सीमा खत्म हो गई। ज़रूरत हो तो फिर से पूछें।",
         "passed": "{{server}} पर {{tool}} को अनुमति नहीं मिली, इसलिए यह नहीं चला।",
-        "waiting": "{{server}} पर {{tool}} बातचीत के मालिक की अनुमति का इंतज़ार कर रहा है।"
+        "waiting": "{{server}} पर {{tool}} बातचीत के मालिक की अनुमति का इंतज़ार कर रहा है।",
+        "waitingFor": "{{server}} पर {{tool}} {{name}} की अनुमति का इंतज़ार कर रहा है।"
       },
       "receipt": {
         "allowed": "आपने {{tool}} की अनुमति दी",
@@ -1473,7 +1542,10 @@
       "preview": "आर्टिफैक्ट का पूर्वावलोकन",
       "loadingPreview": "पूर्वावलोकन लोड हो रहा है",
       "download": "आर्टिफैक्ट डाउनलोड करें",
-      "downloading": "आर्टिफैक्ट डाउनलोड हो रहा है"
+      "downloading": "आर्टिफैक्ट डाउनलोड हो रहा है",
+      "previewButton": "पूर्वावलोकन",
+      "previewFile": "{{name}} का पूर्वावलोकन",
+      "downloadFile": "{{name}} डाउनलोड करें"
     },
     "deleteChatArtifactsNote": "इस चैट में सहायक द्वारा बनाई गई फ़ाइलें भी हटा दी जाएँगी।",
     "noResultsFor": "“{{query}}” के लिए कोई परिणाम नहीं मिला",
@@ -1490,6 +1562,138 @@
       "webSearch": "वेब खोज",
       "internalAndWebSearch": "आंतरिक + वेब खोज"
     },
+    "stoppedBeforeAnswer": "उत्तर शुरू होने से पहले रोका गया",
+    "connectTools": {
+      "blockedTitle": "इस एजेंट का उपयोग करने के लिए ये टूल कनेक्ट करें",
+      "serviceAccountTitle": "इस एजेंट के टूल कनेक्ट नहीं हैं",
+      "noticeTitle": "यह जवाब कुछ टूल का उपयोग नहीं कर सका",
+      "chip": "कुछ टूल कनेक्ट नहीं हैं",
+      "chipAction": "कनेक्ट करें",
+      "kindAction": "कार्य",
+      "showMore": "{{count}} और दिखाएँ",
+      "askAdmin": "इसे कनेक्ट करने के लिए किसी एडमिन से कहें",
+      "serviceAccount": "यह एजेंट अपने कनेक्शन का उपयोग करता है। Agent Builder में {{tools}} कनेक्ट करने के लिए किसी एडमिन से कहें।",
+      "toolsetUnavailable": "यहाँ साइन-इन शुरू नहीं हो सका। इसे Workspace → Actions में कनेक्ट करें।",
+      "connectedAskAgain": "कनेक्ट हो गया। इसका उपयोग करने के लिए फिर से पूछें।",
+      "couldNotUse": "{{agent}} {{tools}} का उपयोग नहीं कर सका",
+      "defaultAgent": "एजेंट"
+    },
+    "atMenu": {
+      "label": "उल्लेख के सुझाव",
+      "sources": "स्रोत",
+      "browseSources": "सभी स्रोत देखें",
+      "allSources": "सभी स्रोत",
+      "showMore": "और दिखाएँ",
+      "nMore": "{{count}} और",
+      "noMatches": "कोई मिलान नहीं",
+      "keysHint": "↑ ↓ से चलें · चुनने के लिए Enter · स्रोत खोलने के लिए → · बंद करने के लिए Esc",
+      "keysHintTick": "↑ ↓ से चलें · चुनने के लिए Enter · टिक करने के लिए Alt+Enter · स्रोत खोलने के लिए → · बंद करने के लिए Esc",
+      "tooManySources": "एक संदेश में अधिकतम {{max}} स्रोतों का नाम हो सकता है। कुछ हटाकर फिर से भेजें।"
+    },
+    "answerFailedTitle": "यह उत्तर विफल रहा",
+    "answerFailedRetry": "फिर से कोशिश करें",
+    "cannotOpenSource": "आप यह दस्तावेज़ नहीं खोल सकते। हो सकता है इसे हटा दिया गया हो, या आपके पास इसकी पहुँच न हो।",
+    "queue": {
+      "title": "कतार में · {{count}}",
+      "hint": "हर संदेश पिछले उत्तर के पूरा होने पर भेजा जाता है।",
+      "clearAll": "सभी हटाएँ",
+      "listLabel": "कतार में संदेश",
+      "edit": "संपादित करें",
+      "editBusy": "इसे संपादित करने के लिए पहले वह संदेश भेजें या हटाएँ जो आप लिख रहे हैं",
+      "remove": "कतार से हटाएँ",
+      "retry": "फिर से कोशिश करें",
+      "heldAfterRefusal": "नहीं भेजा गया: इससे पहले के संदेश का उत्तर नहीं दिया जा सका।",
+      "files_one": "{{count}} फ़ाइल",
+      "files_other": "{{count}} फ़ाइलें",
+      "full": "आप अधिकतम {{count}} संदेश कतार में रख सकते हैं। किसी एक के भेजे जाने का इंतज़ार करें, या एक हटाएँ।",
+      "collapse": "कतार के संदेश छिपाएँ",
+      "expand": "कतार के संदेश दिखाएँ"
+    },
+    "rowActions": "{{title}} के लिए कार्रवाइयाँ",
+    "archivedDescription": "{{title}} वर्कस्पेस सेटिंग्स में, संग्रहीत चैट के अंतर्गत है।",
+    "undo": "पूर्ववत करें",
+    "renameFailedTitle": "चैट का नाम नहीं बदला जा सका",
+    "renameFailedDescription": "इसका पुराना नाम बना रहेगा। फिर से कोशिश करें।",
+    "renameFieldLabel": "नया नाम",
+    "expandSection": "अनुभाग विस्तृत करें",
+    "collapseSection": "अनुभाग संक्षिप्त करें",
+    "addToSection": "{{section}} में जोड़ें",
+    "agentNotFound": {
+      "title": "यह एजेंट मौजूद नहीं है या अब आपके पास इसकी पहुँच नहीं है",
+      "description": "लिंक जाँचें, या जिसने आपके साथ इसे साझा किया उससे पूछें।",
+      "back": "चैट पर वापस जाएँ"
+    },
+    "latestMessages": "नवीनतम संदेश",
+    "questionRail": "इस चैट में प्रश्न",
+    "sendFeedback": "फ़ीडबैक भेजें",
+    "question": {
+      "copied": "कॉपी हो गया",
+      "edit": "संपादित करें",
+      "pastedCode": "पेस्ट किया गया कोड"
+    },
+    "confidenceLevel": "विश्वास स्तर",
+    "runError": {
+      "stoppedTitle": "आपने यह जवाब रोक दिया",
+      "stoppedBody": "जो चरण पूरे हुए, वे ऊपर के क्रम में अब भी हैं।",
+      "stoppedBodyPartial": "रोकने से पहले जो लिखा गया था, वह ऊपर रखा गया है।"
+    },
+    "answerPanel": {
+      "label": "इस उत्तर के बारे में",
+      "opener": "संदर्भ",
+      "openerHint": "संदर्भ: स्रोत, उद्धरण और आउटपुट",
+      "close": "संदर्भ बंद करें",
+      "resize": "पैनल का आकार बदलें",
+      "sources": "स्रोत",
+      "citations": "उद्धरण",
+      "context": "संदर्भ",
+      "outputs": "आउटपुट",
+      "pending": "उत्तर आने पर यह भर जाएगा।",
+      "noOutputsTitle": "अभी तक कुछ नहीं बना",
+      "noOutputsBody": "कोई दस्तावेज़, शीट या सारांश माँगें, और उससे बनी फ़ाइलें यहाँ रखी जाएँगी।",
+      "anythingYouCanOpen": "आप जो कुछ भी खोल सकते हैं, उसका उपयोग कर सकता था",
+      "sourcesLabel": "स्रोत: {{names}}",
+      "sourcesEmptyTitle": "अभी तक कुछ नहीं पढ़ा गया",
+      "sourcesEmptyBody": "ऐसा कुछ पूछें जिसके लिए आपके कनेक्ट किए गए ऐप्स चाहिए, और उत्तर के पीछे के दस्तावेज़ यहाँ इकट्ठा होंगे।",
+      "citationsEmptyTitle": "अभी तक कुछ उद्धृत नहीं हुआ",
+      "citationsEmptyBody": "उत्तर का हर दावा उस अंश से जुड़ा होता है जहाँ से वह आया। वे लिंक यहाँ आते हैं।",
+      "contextCollections": "कलेक्शन",
+      "contextConnectors": "कनेक्टर्स",
+      "contextFiles": "फ़ाइलें",
+      "contextFolderInCollection": "कलेक्शन में फ़ोल्डर",
+      "contextEmptyTitle": "अभी तक कुछ नहीं जोड़ा गया",
+      "contextEmptyBody": "जिन कलेक्शन, कनेक्ट किए गए ऐप्स और फ़ाइलों पर आप इस चैट को केंद्रित करते हैं, वे यहाँ दिखाई देते हैं।",
+      "anythingTheyCanOpen": "{{name}} जो कुछ भी खोल सकते हैं, उसका उपयोग कर सकता था",
+      "anythingOwnerCanOpen": "चैट का स्वामी जो कुछ भी खोल सकता है, उसका उपयोग कर सकता था"
+    },
+    "trail": {
+      "reasoning": "सोच रहा है",
+      "subAgent": "उप-एजेंट",
+      "usedSkills_one": "{{count}} स्किल का उपयोग किया",
+      "usedSkills_other": "{{count}} स्किल का उपयोग किया",
+      "exploredSearches_one": "{{count}} खोज की",
+      "exploredSearches_other": "{{count}} खोजें कीं",
+      "ranTools_one": "{{count}} टूल चलाया",
+      "ranTools_other": "{{count}} टूल चलाए",
+      "thoughtFor": "{{duration}} तक सोचा",
+      "thoughtThrough_one": "{{count}} चरण में सोचा",
+      "thoughtThrough_other": "{{count}} चरणों में सोचा",
+      "steps_one": "{{count}} चरण",
+      "steps_other": "{{count}} चरण",
+      "stoppedAfter": "{{duration}} बाद रोका गया",
+      "stopped": "रोका गया",
+      "done": "हो गया",
+      "showAllSteps": "सभी चरण दिखाएं",
+      "showFewer": "कम दिखाएं",
+      "durationSeconds": "{{value}} से.",
+      "durationMinutes": "{{minutes}} मि. {{seconds}} से."
+    },
+    "citationPill": {
+      "number": "उद्धरण {{number}}: {{name}}"
+    },
+    "citationPopover": {
+      "page": "पेज {{page}}",
+      "paragraph": "अनुच्छेद {{paragraph}}"
+    },
     "searchDegraded": "परिणाम अधूरे हो सकते हैं।"
   },
   "workspaceMenu": {
@@ -1503,7 +1707,9 @@
     "documentation": "डॉक्यूमेंटेशन",
     "darkMode": "डार्क मोड",
     "lightMode": "लाइट मोड",
-    "organisations": "संगठन"
+    "organisations": "संगठन",
+    "triggerLabel": "{{name}} वर्कस्पेस और खाता मेन्यू",
+    "triggerLabelNoName": "वर्कस्पेस और खाता मेन्यू"
   },
   "workspace": {
     "users": {
@@ -1566,7 +1772,12 @@
         "edit": "संपादित करें",
         "resendInviteSuccess": "आमंत्रण पुनः भेजा गया",
         "resendInviteSuccessDescription": "{{email}} को आमंत्रण पुनः भेज दिया गया है",
-        "resendInviteError": "आमंत्रण पुनः नहीं भेजा जा सका"
+        "resendInviteError": "आमंत्रण पुनः नहीं भेजा जा सका",
+        "changeRoleUndo": "पूर्ववत करें",
+        "changeRoleRestored": "भूमिका पहले जैसी हो गई",
+        "changeRoleRestoredDescription": "{{name}} फिर से {{role}} है",
+        "changeRoleUndoError": "भूमिका पहले जैसी नहीं हो सकी",
+        "changeRoleUndoErrorDescription": "{{name}} अब भी {{role}} है। इसे वापस करने के लिए भूमिका फिर से बदलें।"
       },
       "profile": {
         "title": "प्रोफ़ाइल",
@@ -1644,7 +1855,10 @@
         "importTooLongSkipped_one": "254 वर्णों से लंबी {{count}} प्रविष्टि छोड़ दी गई।",
         "importTooLongSkipped_other": "254 वर्णों से लंबी {{count}} प्रविष्टियाँ छोड़ दी गईं।",
         "invalidBlocksSend_one": "{{count}} अमान्य पता लाल रंग में चिह्नित है। आमंत्रण भेजने के लिए उसे ठीक करें या हटाएँ।",
-        "invalidBlocksSend_other": "{{count}} अमान्य पते लाल रंग में चिह्नित हैं। आमंत्रण भेजने के लिए उन्हें ठीक करें या हटाएँ।"
+        "invalidBlocksSend_other": "{{count}} अमान्य पते लाल रंग में चिह्नित हैं। आमंत्रण भेजने के लिए उन्हें ठीक करें या हटाएँ।",
+        "warnMember": "{{email}} पहले से सदस्य है, इसलिए इस पते पर कोई आमंत्रण नहीं भेजा जाएगा।",
+        "warnInvited": "{{email}} को पहले ही आमंत्रित किया जा चुका है। दोबारा भेजने पर उनका आमंत्रण फिर से भेजा जाएगा।",
+        "warnMany": "कुछ पते पहले से सदस्य हैं या पहले ही आमंत्रित हैं। सदस्यों को छोड़ दिया जाता है और लंबित आमंत्रण फिर से भेजे जाते हैं।"
       },
       "bulk": {
         "resendInvite": "आमंत्रण पुनः भेजें",
@@ -4289,7 +4503,12 @@
     "common": {
       "loadingUsers": "उपयोगकर्ता लोड हो रहे हैं...",
       "noUsersAvailable": "कोई उपयोगकर्ता उपलब्ध नहीं",
-      "selected": "{{count}} चयनित"
+      "selected": "{{count}} चयनित",
+      "validation": {
+        "nameRequired": "एक नाम दर्ज करें।",
+        "nameTooLong": "नाम अधिकतम {{max}} अक्षरों का होना चाहिए।",
+        "descriptionTooLong": "विवरण अधिकतम {{max}} अक्षरों का होना चाहिए।"
+      }
     },
     "skills": {
       "title": "Skills",
@@ -5117,7 +5336,8 @@
       "section": "API कार्रवाइयाँ",
       "connectTooltip": "इसे कार्रवाइयों में कनेक्ट करें",
       "serviceAccountBlocked": "सर्विस-अकाउंट एजेंट केवल साझा क्रेडेंशियल वाली या बिना साइन-इन वाली API कार्रवाइयाँ इस्तेमाल कर सकते हैं।"
-    }
+    },
+    "nameTooLong": "नाम अधिकतम {{max}} अक्षरों का होना चाहिए।"
   },
   "recordView": {
     "sections": {
@@ -5440,17 +5660,16 @@
     }
   },
   "askUserQuestion": {
-    "questionsHeadingSingular": "प्रश्न :",
-    "questionsHeadingPlural": "प्रश्न :",
+    "questionsHeadingSingular": "प्रश्न",
+    "questionsHeadingPlural": "प्रश्न",
     "answered": "उत्तर दिया गया",
     "showLess": "कम दिखाएं",
     "showMore": "अधिक दिखाएं",
     "noPreference": "[कोई प्राथमिकता नहीं]",
+    "skipped": "छोड़ा गया",
     "somethingElse": "कुछ और",
-    "questionAskedSingular": "पूछा गया प्रश्न:",
-    "questionAskedPlural": "पूछे गए प्रश्न:",
-    "quickQuestionSingular": "त्वरित प्रश्न :",
-    "quickQuestionPlural": "त्वरित प्रश्न :",
+    "quickQuestionSingular": "त्वरित प्रश्न",
+    "quickQuestionPlural": "त्वरित प्रश्न",
     "stepOf": "चरण {{step}} में से {{total}}",
     "selectedCount": "{{count}} चयनित",
     "describeYourAnswer": "अपना उत्तर वर्णन करें…",
@@ -5463,7 +5682,10 @@
     "selectMany": "लागू होने वाले सभी चुनें",
     "skipAll": "सभी छोड़ें",
     "expired": "इस प्रश्न की समय-सीमा समाप्त हो गई है। जारी रखने के लिए चैट में उत्तर दें।",
-    "repliedInChat": "आपने चैट में उत्तर दिया।"
+    "repliedInChat": "आपने चैट में उत्तर दिया।",
+    "unknownPerson": "पूर्व सदस्य",
+    "waitingFor": "{{name}} के उत्तर की प्रतीक्षा है",
+    "waitingForYou": "आपके उत्तर की प्रतीक्षा है"
   },
   "collections": {
     "stats": {
@@ -5612,8 +5834,21 @@
     "serverError": "सर्वर त्रुटि",
     "timedOut": "अनुरोध का समय समाप्त हो गया",
     "somethingWentWrong": "कुछ गलत हो गया",
-    "tryAgainShortly": "कृपया थोड़ी देर में फिर से प्रयास करें",
-    "connectedServiceProblem": "कनेक्ट की गई सेवा में समस्या"
+    "serverBusy": "सर्वर व्यस्त है",
+    "connectedServiceProblem": "कनेक्ट की गई सेवा में समस्या",
+    "accessDeniedDescription": "आपको यह करने की अनुमति नहीं है। एक्सेस के लिए अपने वर्कस्पेस एडमिन से पूछें।",
+    "invalidRequestDescription": "कुछ विवरण मान्य नहीं हैं। उन्हें जांचें और फिर से प्रयास करें।",
+    "notFoundDescription": "हो सकता है इसे हटा दिया गया हो या कहीं और ले जाया गया हो। पेज रीफ्रेश करें और फिर से प्रयास करें।",
+    "actionRequiredDescription": "आपके शुरू करने के बाद कुछ बदल गया है। विवरण जांचें और फिर से प्रयास करें।",
+    "connectionErrorDescription": "अपना इंटरनेट कनेक्शन जांचें और फिर से प्रयास करें।",
+    "serverErrorDescription": "सर्वर इसे पूरा नहीं कर सका। थोड़ी देर में फिर से प्रयास करें। अगर ऐसा होता रहे, तो अपने वर्कस्पेस एडमिन से संपर्क करें।",
+    "timedOutDescription": "सर्वर ने जवाब देने में बहुत समय लिया। फिर से प्रयास करें।",
+    "somethingWentWrongDescription": "यह काम नहीं किया। फिर से प्रयास करें। अगर ऐसा होता रहे, तो अपने वर्कस्पेस एडमिन से संपर्क करें।",
+    "serverBusyDescription": "थोड़ा रुकें, फिर से प्रयास करें।"
+  },
+  "loading": {
+    "default": "लोड हो रहा है…",
+    "items": "आइटम लोड हो रहे हैं…"
   },
   "validation": {
     "password": {
@@ -5683,7 +5918,11 @@
     "alreadyRemoved": "पहले ही हटाया जा चुका है",
     "alreadyRemovedDescription": "{{name}} की पहुँच पहले ही हट चुकी थी",
     "removeConfirmTitle": "पहुँच हटाएँ?",
-    "removeConfirmDescription": "{{name}} की पहुँच तुरंत हट जाएगी। आप बाद में फिर से साझा कर सकते हैं।"
+    "removeConfirmDescription": "{{name}} की पहुँच तुरंत हट जाएगी। आप बाद में फिर से साझा कर सकते हैं।",
+    "removeSelection": "{{name}} को हटाएँ",
+    "peopleCanSee_one": "{{count}} व्यक्ति इस चैट को देख सकता है",
+    "peopleCanSee_other": "{{count}} लोग इस चैट को देख सकते हैं",
+    "loadingPeople": "लोग लोड हो रहे हैं…"
   },
   "demoData": {
     "badge": {

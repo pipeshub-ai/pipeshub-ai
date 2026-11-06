@@ -4,7 +4,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import * as cmConfig from '../../../../src/modules/configuration_manager/config/config'
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
-import { MigrationService } from '../../../../src/modules/configuration_manager/services/migration.service'
+import { MigrationService, useConversationMigrations } from '../../../../src/modules/configuration_manager/services/migration.service'
 
 describe('MigrationService', () => {
   let mockLogger: any
@@ -74,8 +74,14 @@ describe('MigrationService', () => {
       const groupNameIndexStub = sinon.stub(service, 'userGroupNameIndexMigration' as any).resolves()
       const delegationTtlStub = sinon.stub(service, 'delegationLogRetentionMigration' as any).resolves()
       const serviceAccountKindStub = sinon.stub(service, 'serviceAccountKindBackfillMigration' as any).resolves()
+      const conversationMigration = sinon.stub().resolves()
+      const removeMigration = useConversationMigrations(conversationMigration)
 
-      await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any })
+      try {
+        await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any })
+      } finally {
+        removeMigration()
+      }
 
       expect(mockLogger.info.calledWith('Running migration...')).to.be.true
       expect(signInStub.calledOnce).to.be.true
@@ -85,6 +91,9 @@ describe('MigrationService', () => {
       expect(chatStub.calledOnce).to.be.true
       expect(chatSessionsStub.calledOnce).to.be.true
       expect(chatStub.calledBefore(chatSessionsStub)).to.be.true
+      expect(conversationMigration.calledOnceWith(mockLogger, mockKeyValueStore)).to.be.true
+      expect(chatSessionsStub.calledBefore(conversationMigration)).to.be.true
+      expect(conversationMigration.calledBefore(adminStub)).to.be.true
       expect(adminStub.calledOnce).to.be.true
       expect(documentOrgIdStub.calledOnce).to.be.true
       expect(groupNameIndexStub.calledOnce).to.be.true

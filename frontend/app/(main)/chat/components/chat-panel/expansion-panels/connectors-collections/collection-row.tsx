@@ -70,13 +70,13 @@ export function CollectionRow({
         width: '100%',
         minWidth: 0,
         height: 'var(--space-7)',
-        backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
-        border: '1px solid var(--olive-3)',
+        backgroundColor: isHovered ? 'var(--fill-muted)' : 'var(--surface-subtle)',
+        border: '1px solid var(--border-subtle)',
         borderRadius: 'var(--radius-1)',
         paddingLeft: 'var(--space-3)',
         paddingRight: 'var(--space-2)',
         cursor: 'pointer',
-        transition: 'background-color 0.15s',
+        transition: 'background-color var(--motion-micro) var(--motion-ease)',
         boxSizing: 'border-box',
       }}
     >
@@ -98,7 +98,7 @@ export function CollectionRow({
           style={{
             flex: 1,
             minWidth: 0,
-            color: 'var(--slate-11)',
+            color: 'var(--text-secondary)',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
@@ -113,7 +113,7 @@ export function CollectionRow({
         <Text
           size="1"
           style={{
-            color: 'var(--olive-9)',
+            color: 'var(--text-secondary)',
             whiteSpace: 'nowrap',
             flexShrink: 0,
           }}

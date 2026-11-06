@@ -1,19 +1,21 @@
 'use client';
 
-import { useMemo } from 'react';
-import { Badge, Flex } from '@radix-ui/themes';
+import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
+import { Badge, Box, Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
+import { ICON_SIZE_DEFAULT, KbdChip } from '@/app/components/sidebar';
+import { SIDEBAR_ROW_TINT_CLASS } from '@/app/components/sidebar/sidebar-focus-style';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useTranslation } from 'react-i18next';
 import { getModifierSymbol } from '@/lib/utils/platform';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
+import { Link } from '@/lib/navigation';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { usePathname, useRouter } from 'next/navigation';
-import { SidebarItem } from './sidebar-item';
+import { readRailMemory, writeRailMemory } from './rail-memory';
 
 // ========================================
 // Navigation item config
@@ -32,6 +34,7 @@ const MAIN_NAV_ITEMS: NavItem[] = [
   { icon: 'folder', labelKey: 'nav.collections', route: '/knowledge-base/' },
   { icon: 'inventory_2', labelKey: 'nav.allRecords', route: '/knowledge-base/?view=all-records' },
   { icon: 'attachment', labelKey: 'nav.allArtifacts', route: '/artifacts/', beta: true },
+  { icon: 'smart_toy', labelKey: 'nav.agents', route: '/agents/' },
 ];
 
 /** Projects nav item — gated behind `ENABLE_PROJECTS`, rendered separately below. */
@@ -62,30 +65,114 @@ function BetaNavLabel({ text }: { text: string }) {
   );
 }
 
-/** Keyboard shortcut chip, as the design draws it. */
-const KbdBadge = ({ children }: { children: React.ReactNode }) => (
-  <span
-    style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      height: 17,
-      padding: '0 var(--space-1)',
-      background: 'var(--neutral-1)',
-      border: '1px solid var(--neutral-3)',
-      borderRadius: 'var(--radius-2)',
-      fontSize: 12,
-      lineHeight: '16px',
-      letterSpacing: '0.04px',
-      color: 'var(--neutral-12)',
-      fontWeight: 400,
-      whiteSpace: 'nowrap',
-    }}
-  >
-    {children}
-  </span>
-);
+/** The geometry every nav row shares: a ghost Button stretched to the rail, its negative ghost margin cleared, 32px tall. */
+const NAV_ROW_STYLE: CSSProperties = {
+  width: '100%',
+  height: 'var(--space-6)',
+  margin: 0,
+  paddingInline: 'var(--space-3)',
+  gap: 'var(--space-2)',
+  justifyContent: 'space-between',
+  borderRadius: 'var(--radius-1)',
+  boxSizing: 'border-box',
+};
 
-const NAV_ICON_COLOR = 'var(--neutral-11)';
+interface NavRowProps {
+  icon: string;
+  label: ReactNode;
+  /** A route: the row is a link. Otherwise it is a button. */
+  href?: string;
+  onClick?: () => void;
+  /** New chat: the accent row. */
+  accent?: boolean;
+  /** This row is the page you are on. */
+  selected?: boolean;
+  rightSlot?: ReactNode;
+}
+
+/**
+ * One row of the navigation stack: a Radix ghost Button (a link for a route), so hover,
+ * press and the focus ring come from Radix. Label and glyph are the secondary text role;
+ * the row you are on takes the muted fill and the primary text.
+ */
+function NavRow({ icon, label, href, onClick, accent = false, selected = false, rightSlot }: NavRowProps) {
+  const color = accent ? 'var(--accent-a11)' : selected ? 'var(--text-primary)' : 'var(--text-secondary)';
+  const weight = accent || selected ? 'medium' : 'regular';
+  const labelStyle: CSSProperties = {
+    flex: 1,
+    minWidth: 0,
+    textAlign: 'left',
+    color,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  };
+  const inner = (
+    <>
+      <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
+        <MaterialIcon name={icon} size={ICON_SIZE_DEFAULT} color={color} />
+        {typeof label === 'string' ? (
+          <Text size="2" weight={weight} style={labelStyle}>
+            {label}
+          </Text>
+        ) : (
+          <Box
+            style={{
+              ...labelStyle,
+              fontSize: 'var(--font-size-2)',
+              lineHeight: 'var(--line-height-2)',
+              fontWeight: `var(--font-weight-${weight})`,
+            }}
+          >
+            {label}
+          </Box>
+        )}
+      </Flex>
+      {rightSlot}
+    </>
+  );
+  const style: CSSProperties = {
+    ...NAV_ROW_STYLE,
+    // Selected is the chat rows' look: the muted fill and a 1px default border (hover is lighter, see the class).
+    border: `1px solid ${selected ? 'var(--border-default)' : 'transparent'}`,
+    ...(selected ? { backgroundColor: 'var(--fill-muted)' } : {}),
+  };
+
+  if (href) {
+    const handleLinkClick = (e: MouseEvent) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+      onClick?.();
+    };
+    return (
+      <Button
+        asChild
+        variant="ghost"
+        color={accent ? undefined : 'gray'}
+        size="2"
+        className={SIDEBAR_ROW_TINT_CLASS}
+        style={style}
+      >
+        <Link href={href} onClick={handleLinkClick} aria-current={selected ? 'page' : undefined}>
+          {inner}
+        </Link>
+      </Button>
+    );
+  }
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      color={accent ? undefined : 'gray'}
+      size="2"
+      className={SIDEBAR_ROW_TINT_CLASS}
+      onClick={onClick}
+      aria-current={selected ? 'page' : undefined}
+      style={style}
+    >
+      {inner}
+    </Button>
+  );
+}
 
 /**
  * Static navigation section — "New Chat" button, Search, Collections, etc.
@@ -94,10 +181,17 @@ export function StaticNavSection() {
   const dispatch = useCommandStore((s) => s.dispatch);
   const { t } = useTranslation();
   const modKey = useMemo(() => getModifierSymbol(), []);
-  const isMobile = useIsMobile();
+  // The drawer layout: following a row closes the drawer.
+  const isMobile = useIsBelowDesktop();
   const canHover = useCanHover();
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
-  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  // Until the flags are read, the row shows as it did last time, so the rows under it do not move when they arrive.
+  const projectsFlag = useFeatureFlagsStore((s) => (s.flags === null ? null : selectProjectsEnabled(s)));
+  const [projectsLastTime] = useState(() => readRailMemory('projects') === 1);
+  const projectsEnabled = projectsFlag ?? projectsLastTime;
+  useEffect(() => {
+    if (projectsFlag !== null) writeRailMemory('projects', projectsFlag ? 1 : 0);
+  }, [projectsFlag]);
   const pathname = usePathname();
   const router = useRouter();
 
@@ -117,49 +211,34 @@ export function StaticNavSection() {
 
   return (
     <Flex direction="column" gap="1">
-      {/* New Chat */}
-      <SidebarItem
-        icon={<MaterialIcon name="assistant" size={ICON_SIZE_DEFAULT} color="var(--accent-a11)" />}
-        label={t('chat.newChat')}
-        onClick={handleNewChat}
-        textColor="var(--accent-a11)"
-        fontWeight={500}
+      <NavRow icon="assistant" label={t('chat.newChat')} onClick={handleNewChat} accent />
+      {/* Search chats opens the command palette (⌘ + K) */}
+      <NavRow
+        icon="search"
+        label={t('nav.searchChats')}
+        onClick={handleOpenSearch}
+        rightSlot={canHover ? <KbdChip keys={[modKey, 'K']} /> : undefined}
       />
-      {/* Search Chats — opens command palette (⌘+K) */}
-        <SidebarItem
-          icon={<MaterialIcon name="search" size={ICON_SIZE_DEFAULT} color={NAV_ICON_COLOR} />}
-          label={t('nav.searchChats')}
-          onClick={handleOpenSearch}
-          textColor={NAV_ICON_COLOR}
-          rightSlot={canHover ? <KbdBadge>{modKey} + K</KbdBadge> : undefined}
-        />
 
       {projectsEnabled && (
-        <SidebarItem
-          icon={<MaterialIcon name={PROJECTS_NAV_ITEM.icon} size={ICON_SIZE_DEFAULT} color={NAV_ICON_COLOR} />}
-          textColor={NAV_ICON_COLOR}
+        <NavRow
+          icon={PROJECTS_NAV_ITEM.icon}
           label={<BetaNavLabel text={t(PROJECTS_NAV_ITEM.labelKey)} />}
           href={PROJECTS_NAV_ITEM.route}
           onClick={closeOnMobile}
         />
       )}
       {MAIN_NAV_ITEMS.map((item) => (
-        <SidebarItem
+        <NavRow
           key={item.route}
-          icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color={NAV_ICON_COLOR} />}
-          textColor={NAV_ICON_COLOR}
-          label={
-            item.beta ? (
-              <BetaNavLabel text={t(item.labelKey)} />
-            ) : (
-              t(item.labelKey)
-            )
-          }
+          icon={item.icon}
+          label={item.beta ? <BetaNavLabel text={t(item.labelKey)} /> : t(item.labelKey)}
           href={item.route}
           onClick={closeOnMobile}
-          isActive={
-            item.route.startsWith('/artifacts') &&
-            pathname.startsWith('/artifacts')
+          selected={
+            (item.route.startsWith('/artifacts') && pathname.startsWith('/artifacts')) ||
+            // Only the index itself: the builder and an agent's chat are other pages.
+            (item.route === '/agents/' && pathname.replace(/\/$/, '') === '/agents')
           }
         />
       ))}

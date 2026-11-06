@@ -74,12 +74,13 @@ export function SearchResultCard({
     >
       {/* ── HEADER — record name + action buttons ──────────────────── */}
       <Flex direction="column" gap="1">
-        <Flex align="center" justify="between">
+        <Flex align="center" justify="between" gap="2">
           {/* Left: connector icon + record name */}
           <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
             <ConnectorIcon type={metadata.connector} size={16} />
             <Text
               size="2"
+              title={metadata.recordName}
               style={{
                 color: 'var(--slate-a11)',
                 lineHeight: 'var(--line-height-2)',

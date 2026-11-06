@@ -20,9 +20,11 @@ import { useChatStore } from '@/chat/store';
 import {
   NotificationFilterMenu,
   NOTIFICATIONS_PANEL_TOOLTIP_CLASS,
-  useNotificationFilterLabels,
 } from './notification-filter-menu';
+import { ListSkeleton } from '@/app/components/ui/list-skeleton';
+import { useDeferredLoading } from '@/app/components/ui/use-deferred-loading';
 import { useTranslation } from 'react-i18next';
+import { notificationExtension } from '@/config';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useNavHidden } from '@/app/components/sidebar/use-nav-hidden';
@@ -34,7 +36,32 @@ import {
   useNotificationPanelWidthStore,
 } from './panel-width-store';
 
-const TRANSITION = '0.25s cubic-bezier(0.4, 0, 0.2, 1)';
+/** Square on the rail side, rounded on the open side. */
+const PANEL_RADIUS = '0 var(--radius-4) var(--radius-4) 0';
+
+/** Opening and closing ride the motion roles, so reduced motion makes both instant. */
+const OPEN_ANIMATION = 'notif-panel-slide-in var(--motion-surface) var(--motion-ease)';
+const CLOSE_ANIMATION = 'notif-panel-slide-out var(--motion-control) var(--motion-ease) forwards';
+
+const prefersReducedMotion = () =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/** The Inbox button that opened the panel, if it is on screen (the rail may be collapsed). */
+function findVisibleInboxTrigger(): HTMLElement | null {
+  const triggers = document.querySelectorAll<HTMLElement>('[data-ph-notifications-trigger]');
+  return Array.from(triggers).find((el) => el.getClientRects().length > 0) ?? null;
+}
+
+/** The drawer's Open sidebar button, when the rail is a closed drawer. */
+function findVisibleOpenSidebar(label: string): HTMLElement | null {
+  const buttons = document.querySelectorAll<HTMLElement>('button[aria-label]');
+  return (
+    Array.from(buttons).find((el) => el.getAttribute('aria-label') === label && el.getClientRects().length > 0) ??
+    null
+  );
+}
 
 /**
  * Floating notification panel.
@@ -46,7 +73,6 @@ const TRANSITION = '0.25s cubic-bezier(0.4, 0, 0.2, 1)';
  */
 export function NotificationsPanel() {
   const { t } = useTranslation();
-  const filterLabels = useNotificationFilterLabels();
   const isPanelOpen = useNotificationStore((s) => s.isPanelOpen);
   const closePanel = useNotificationStore((s) => s.closePanel);
   const notifications = useNotificationStore((s) => s.notifications);
@@ -108,8 +134,14 @@ export function NotificationsPanel() {
       setIsClosing(false);
       setIsVisible(true);
     } else if (hasOpenedRef.current) {
-      // Panel was open before — play exit animation, then unmount.
-      setIsClosing(true);
+      // Panel was open before — play exit animation, then unmount. Under reduced
+      // motion there is no exit animation to wait for.
+      if (prefersReducedMotion()) {
+        setIsVisible(false);
+        setIsClosing(false);
+      } else {
+        setIsClosing(true);
+      }
     }
   }, [isPanelOpen]);
 
@@ -234,6 +266,13 @@ export function NotificationsPanel() {
     [syncPendingActions],
   );
 
+  const rowExtension = notificationExtension.usePanelRows({
+    isPanelOpen,
+    beginRowAction: (id) => beginRowAction(id, 'extra'),
+    endRowAction,
+    setError,
+  });
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -267,6 +306,11 @@ export function NotificationsPanel() {
 
   const displayNotifications = getVisibleNotifications(notifications, listFilter);
 
+  // The first page, or the backfill behind an empty filter, is loading.
+  const listLoading = displayNotifications.length === 0 && (loading || hasMore || isLoadingMore);
+  const listSkeleton = useDeferredLoading(listLoading);
+  const showListSkeleton = listLoading || listSkeleton.visible;
+
   useEffect(() => {
     if (!isPanelOpen || loading) return;
     void ensureBackfill();
@@ -276,11 +320,59 @@ export function NotificationsPanel() {
   useEffect(() => {
     if (!isPanelOpen) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closePanel();
+      if (e.key !== 'Escape') return;
+      // An Escape pressed inside an open menu, popover or dialog (the filter menu) belongs
+      // to that layer: only it closes, and the panel stays. Judged by where the key was
+      // pressed, not by defaultPrevented: the Filter tooltip that shows when focus returns
+      // to its trigger also marks Escape handled, and must not keep the panel open.
+      const target = e.target instanceof Element ? e.target : null;
+      if (target?.closest('[role="menu"], [role="dialog"], [role="alertdialog"], [data-radix-popper-content-wrapper]')) return;
+      closePanel();
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [isPanelOpen, closePanel]);
+
+  // Focus moves into the panel when it opens, so the keyboard lands where the
+  // content is, and back to the Inbox button when it closes from inside.
+  useEffect(() => {
+    if (!isPanelOpen || !isVisible) return;
+    const panel = panelRef.current;
+    if (panel && !panel.contains(document.activeElement)) panel.focus({ preventScroll: true });
+  }, [isPanelOpen, isVisible]);
+
+  useEffect(() => {
+    if (isPanelOpen || !hasOpenedRef.current) return;
+    const panel = panelRef.current;
+    const active = document.activeElement;
+    // Focus was in the panel, in a menu it opened (portalled outside it), or nowhere: hand it
+    // back to the Inbox button, or to Open sidebar when the rail is a closed drawer.
+    const focusWasOurs =
+      active === null ||
+      active === document.body ||
+      !active.isConnected ||
+      Boolean(panel?.contains(active)) ||
+      active.closest('[data-ph-notifications-filter-menu], [data-radix-popper-content-wrapper]') !== null;
+    if (!focusWasOurs) return;
+    (findVisibleInboxTrigger() ?? findVisibleOpenSidebar(t('sidebar.open')))?.focus();
+  }, [isPanelOpen, t]);
+
+  // On a phone the panel covers the page, so it behaves as a modal sheet: the page
+  // behind is inert (out of the tab order and the accessibility tree) while it is open.
+  useEffect(() => {
+    if (!isPanelOpen || !isVisible || !isMobile) return;
+    const portalRoot = panelRef.current?.closest('body > *');
+    const background = Array.from(document.body.children).filter(
+      (el): el is HTMLElement =>
+        el instanceof HTMLElement &&
+        el !== portalRoot &&
+        el.tagName !== 'SCRIPT' &&
+        el.tagName !== 'STYLE' &&
+        !el.hasAttribute('inert'),
+    );
+    background.forEach((el) => el.setAttribute('inert', ''));
+    return () => background.forEach((el) => el.removeAttribute('inert'));
+  }, [isPanelOpen, isVisible, isMobile]);
 
   // Close when clicking outside the panel (main content, sidebar items, etc.).
   // Exclude the notifications toggle so mousedown does not fight with its click handler.
@@ -519,6 +611,7 @@ export function NotificationsPanel() {
         data-ph-notifications-panel=""
         role="complementary"
         aria-label={t('nav.inbox')}
+        tabIndex={-1}
         onAnimationEnd={handleAnimationEnd}
         style={{
           position: 'fixed',
@@ -530,15 +623,18 @@ export function NotificationsPanel() {
           zIndex: 9100,
           display: 'flex',
           flexDirection: 'column',
+          outline: 'none',
+          // Glass over the page, as the other floating chrome; a phone sheet fills the
+          // screen with no edge or corner.
           // Frosted like the other side panels (shared frost tokens in globals.css)
           background: 'var(--frost-bg)',
           backdropFilter: 'var(--frost-filter)',
           WebkitBackdropFilter: 'var(--frost-filter)',
-          borderRight: isMobile ? 'none' : '1px solid var(--olive-4)',
-          boxShadow: '4px 0 20px rgba(0, 0, 0, 0.09)',
-          animation: isClosing
-            ? `notif-panel-slide-out ${TRANSITION} forwards`
-            : `notif-panel-slide-in ${TRANSITION}`,
+          border: isMobile ? 'none' : '1px solid var(--border-subtle)',
+          borderLeft: 'none',
+          borderRadius: isMobile ? 0 : PANEL_RADIUS,
+          boxShadow: 'var(--shadow-5)',
+          animation: isClosing ? CLOSE_ANIMATION : OPEN_ANIMATION,
         }}
       >
         {/* Resize handle — right edge */}
@@ -567,7 +663,7 @@ export function NotificationsPanel() {
               width: 2,
               height: '100%',
               borderRadius: 1,
-              transition: 'opacity 0.15s',
+              transition: 'opacity var(--motion-micro) var(--motion-ease)',
               opacity: resizeHandleHovered || isResizingPanel ? 1 : 0,
               backgroundColor: 'var(--olive-8)',
             }}
@@ -580,33 +676,23 @@ export function NotificationsPanel() {
           justify="between"
           gap="2"
           style={{
-            padding: 'var(--space-3) var(--space-4)',
-            borderBottom: '1px solid var(--olive-4)',
+            height: 'var(--space-8)',
+            padding: 'var(--space-2) var(--space-3)',
+            boxSizing: 'border-box',
+            background: 'var(--surface-raised)',
+            borderBottom: '1px solid var(--border-subtle)',
+            borderTopRightRadius: isMobile ? 0 : 'var(--radius-4)',
             flexShrink: 0,
             overflow: 'visible',
           }}
         >
-          <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-            <MaterialIcon name="inbox" size={20} color="var(--slate-11)" />
-            <Flex direction="column" gap="0" style={{ minWidth: 0 }}>
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                {t('nav.inbox')}
-              </Text>
-              <Text
-                size="1"
-                truncate
-                style={{
-                  color: 'var(--gray-11)',
-                  opacity: 0.5,
-                }}
-              >
-                {filterLabels[listFilter]}
-              </Text>
-            </Flex>
-          </Flex>
+          {/* One line: the active filter shows in the Filter tooltip and as the checked item in its menu. */}
+          <Text size="2" weight="medium" truncate style={{ color: 'var(--text-primary)', minWidth: 0 }}>
+            {t('nav.inbox')}
+          </Text>
           <Flex
             align="center"
-            gap="2"
+            gap="1"
             data-ph-notifications-header-actions=""
             style={{ flexShrink: 0 }}
           >
@@ -625,14 +711,18 @@ export function NotificationsPanel() {
                   aria-label={t('notifications.markAllRead')}
                   onClick={() => void onMarkAllRead()}
                   style={{
+                    // Radix trims a ghost button with negative margins; without them the
+                    // three buttons sit 4px apart (28px pitch), so their touch areas never
+                    // reach a neighbour's centre.
+                    margin: 0,
                     cursor: unreadCount === 0 || markingAllRead ? 'not-allowed' : 'pointer',
                     pointerEvents: unreadCount === 0 || markingAllRead ? 'auto' : undefined,
                   }}
                 >
                   {markingAllRead ? (
-                    <Spinner size={18} />
+                    <Spinner size={16} />
                   ) : (
-                    <MaterialIcon name="done_all" size={18} color="var(--slate-11)" />
+                    <MaterialIcon name="done_all" size={16} color="var(--text-secondary)" />
                   )}
                 </IconButton>
               </Tooltip>
@@ -645,8 +735,9 @@ export function NotificationsPanel() {
               color="gray"
               aria-label={t('notifications.close')}
               onClick={closePanel}
+              style={{ margin: 0 }}
             >
-              <MaterialIcon name="close" size={18} color="var(--slate-11)" />
+              <MaterialIcon name="close" size={16} color="var(--text-secondary)" />
             </IconButton>
           </Flex>
         </Flex>
@@ -654,7 +745,13 @@ export function NotificationsPanel() {
         {/* ── Body ────────────────────────────────────────────── */}
         <Box
           className="no-scrollbar"
-          style={{ flex: 1, overflowY: 'auto' }}
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            overflowY: 'auto',
+            borderBottomRightRadius: isMobile ? 0 : 'var(--radius-4)',
+          }}
         >
           {error && (
             <Text
@@ -669,34 +766,44 @@ export function NotificationsPanel() {
             </Text>
           )}
 
-          {loading && displayNotifications.length === 0 ? (
-            <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
-              <Text size="2" color="gray">
-                {t('notifications.loading')}
-              </Text>
-            </Flex>
-          ) : displayNotifications.length === 0 && (hasMore || isLoadingMore) ? (
-            <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
-              <Text size="2" color="gray">
-                {t('notifications.loading')}
-              </Text>
-            </Flex>
+          {showListSkeleton ? (
+            <ListSkeleton
+              variant="two-line"
+              glyphSize={28}
+              statusLabel={t('notifications.loadingList')}
+              exiting={listSkeleton.exiting}
+              // The skeleton's rows inset 12px; the real rows inset 16 (--space-4), so the glyph
+              // slot lines up with the row's glyph frame.
+              style={{ paddingTop: 'var(--space-3)', paddingInline: 'var(--space-1)', boxSizing: 'border-box' }}
+            />
           ) : displayNotifications.length === 0 ? (
             <Flex
               direction="column"
               align="center"
               justify="center"
-              gap="2"
-              style={{ paddingTop: 'var(--space-8)' }}
+              gap="1"
+              style={{
+                flex: 1,
+                minHeight: 200,
+                padding: 'var(--space-7) var(--space-5)',
+                textAlign: 'center',
+              }}
             >
-              <MaterialIcon name="inbox" size={40} color="var(--slate-8)" />
-              <Text size="2" color="gray">
+              <Box style={{ marginBottom: 'var(--space-2)', lineHeight: 0 }}>
+                <MaterialIcon name="inbox" size={22} color="var(--text-placeholder)" />
+              </Box>
+              <Text size="2" weight="medium" style={{ color: 'var(--text-primary)' }}>
                 {listFilter === 'unread'
                   ? t('notifications.emptyUnread')
                   : listFilter === 'archived'
                   ? t('notifications.emptyArchived')
                   : t('notifications.empty')}
               </Text>
+              {listFilter === 'all' && (
+                <Text size="2" style={{ color: 'var(--text-secondary)', maxWidth: 300 }}>
+                  {t('notifications.emptyBody')}
+                </Text>
+              )}
             </Flex>
           ) : (
             <Flex direction="column">
@@ -717,6 +824,8 @@ export function NotificationsPanel() {
                   archiveLabel={t('notifications.archive')}
                   unarchiveLabel={t('notifications.unarchive')}
                   dismissLabel={t('notifications.dismiss')}
+                  decoration={rowExtension.decorate(n)}
+                  extraAction={rowExtension.extraAction(n)}
                 />
               ))}
               {hasMore && (

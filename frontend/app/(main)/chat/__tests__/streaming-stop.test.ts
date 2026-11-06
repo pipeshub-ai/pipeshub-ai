@@ -98,9 +98,14 @@ function makeSlot(overrides: Partial<ChatSlot> = {}): ChatSlot {
     runId: 'run-123',
     stopping: false,
     remoteRunInProgress: false,
+    remoteRunId: null,
+    remoteStopRequested: false,
     messagePagination: null,
     lastAccessedAt: Date.now(),
-    isOwner: true,
+    access: null,
+    activeRun: null,
+    rev: null,
+    accessLost: false,
     ...overrides,
   };
 }
@@ -841,5 +846,80 @@ describe('Stop keeps the streamed partial answer when the server saved it empty'
     expect(earlier.content).not.toEqual([{ type: 'text', text: 'Regenerated partial' }]);
     regenSpy.mockRestore();
     fetchSpy.mockRestore();
+  });
+});
+
+describe('cancelStreamForSlot — a run that outlived a reload (this tab streams nothing)', () => {
+  const reloaded = (overrides: Partial<ChatSlot> = {}) =>
+    seedSlot({
+      isStreaming: false,
+      runId: null,
+      remoteRunInProgress: true,
+      remoteRunId: 'server-run',
+      ...overrides,
+    });
+
+  it('posts one cancel naming the id the loaded question carried', () => {
+    reloaded();
+
+    cancelStreamForSlot(SLOT_ID);
+
+    expect(mockedCancelStream).toHaveBeenCalledTimes(1);
+    expect(mockedCancelStream).toHaveBeenCalledWith('conv-1', 'server-run', undefined);
+    expect(useChatStore.getState().slots[SLOT_ID]?.remoteStopRequested).toBe(true);
+  });
+
+  it('forwards the agent id for a scoped agent conversation', () => {
+    reloaded({ threadAgentId: 'agent-42' });
+
+    cancelStreamForSlot(SLOT_ID);
+
+    expect(mockedCancelStream).toHaveBeenCalledWith('conv-1', 'server-run', 'agent-42');
+  });
+
+  it('sends no second cancel while the first is out or acknowledged, and keeps polling state intact', async () => {
+    reloaded();
+
+    cancelStreamForSlot(SLOT_ID);
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(30_000);
+    cancelStreamForSlot(SLOT_ID);
+
+    expect(mockedCancelStream).toHaveBeenCalledTimes(1);
+    const slot = useChatStore.getState().slots[SLOT_ID];
+    expect(slot?.remoteRunInProgress).toBe(true);
+    expect(slot?.stopping).toBe(false);
+  });
+
+  it('frees Stop when the server refused the cancel, since nothing was stopped', async () => {
+    mockedCancelStream.mockResolvedValue({ cancelled: false });
+    reloaded();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(useChatStore.getState().slots[SLOT_ID]?.remoteStopRequested).toBe(false);
+  });
+
+  it('frees Stop when the request failed', async () => {
+    mockedCancelStream.mockRejectedValue(new Error('network down'));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    reloaded();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(useChatStore.getState().slots[SLOT_ID]?.remoteStopRequested).toBe(false);
+  });
+
+  it('does nothing without an id to name or a conversation', () => {
+    reloaded({ remoteRunId: null });
+    cancelStreamForSlot(SLOT_ID);
+    reloaded({ convId: null });
+    cancelStreamForSlot(SLOT_ID);
+    reloaded({ remoteRunInProgress: false });
+    cancelStreamForSlot(SLOT_ID);
+
+    expect(mockedCancelStream).not.toHaveBeenCalled();
   });
 });

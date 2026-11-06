@@ -1,12 +1,16 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
-import { Flex, Text, Badge, Spinner, RadioGroup, Button } from '@radix-ui/themes';
+import { useEffect, useState, useCallback } from 'react';
+import { Flex, Text, Badge, RadioGroup, Button } from '@radix-ui/themes';
+import { ToggleGroup } from 'radix-ui';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { useRouter } from 'next/navigation';
-import Image from 'next/image';
+import { Link } from '@/lib/navigation';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ListSkeleton } from '@/app/components/ui/list-skeleton';
+import { useDeferredLoading } from '@/app/components/ui/use-deferred-loading';
+import { touchTarget } from '@/app/components/ui/responsive';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useChatStore, ctxKeyFromAgent, ASSISTANT_CTX } from '@/chat/store';
 import { fetchModelsForContext, OrgModelsFetchError } from '@/chat/utils/fetch-models-for-context';
 import {
@@ -96,7 +100,7 @@ function ModelLogo({ provider }: { provider: string }) {
       src={resolveLlmProviderIconPath(provider)}
       fallbackSrc={AGENT_LLM_FALLBACK_ICON}
       size={20}
-      color="var(--slate-12)"
+      color="var(--text-primary)"
       variant="flat"
     />
   );
@@ -110,7 +114,6 @@ export function ModelSelectorPanel({
   allowExtraOptions = true,
 }: ModelSelectorPanelProps) {
   const { t } = useTranslation();
-  const router = useRouter();
   const isAdmin = useUserStore(selectIsAdmin);
 
   const ctxKey = ctxKeyFromAgent(agentId);
@@ -125,6 +128,10 @@ export function ModelSelectorPanel({
 
   const [isLoading, setIsLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
+  const loading = useDeferredLoading(isLoading);
+  // The skeleton shows only once the hook says so; the list waits until it has gone.
+  const showSkeleton = loading.visible;
+  const busy = isLoading || loading.visible;
 
   useEffect(() => {
     let cancelled = false;
@@ -203,47 +210,39 @@ export function ModelSelectorPanel({
 
   const handleReasoningEffortSelect = useCallback(
     (value: ReasoningEffort) => {
-      // Clicking the already-active pill clears the override (back to the
-      // model's own default) rather than getting stuck once selected.
+      // Pressing the pill that is already picked clears the pick, so the
+      // chat goes back to the default rather than staying stuck on it.
       setReasoningEffortForCtx(ctxKey, reasoningEffort === value ? null : value);
     },
     [ctxKey, reasoningEffort, setReasoningEffortForCtx]
   );
 
+  const groupLabel = t('chat.configuredModels', 'Configured models');
+  const handleGroupChange = useCallback(
+    (value: string) => {
+      const model = models.find((m) => modelValue(m) === value);
+      if (model) handleSelect(model);
+    },
+    [models, handleSelect]
+  );
+
   return (
-    <Flex direction="column" gap="4" data-testid="chat-model-panel" style={{ flex: 1, overflow: 'hidden' }}>
-      {/* Header — matches QueryModePanel "Different Modes of Query" style */}
+    <Flex direction="column" gap="3" data-testid="chat-model-panel" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
       {!hideHeader && (
-        <Flex align="center" justify="between">
-          <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            {t('chat.configuredModels', 'Configured models')}
+        <Flex align="center" justify="between" gap="2">
+          <Text size="2" weight="medium" style={{ color: 'var(--text-primary)' }}>
+            {groupLabel}
           </Text>
-          {isAdmin && (
-            <span
-              onClick={() => {
-                router.push('/workspace/ai-models');
-              }}
-              style={{
-                fontSize: 'var(--font-size-1)',
-                fontWeight: 'var(--font-weight-medium)',
-                color: 'var(--slate-11)',
-                cursor: 'pointer',
-                background: 'none',
-                border: '1px solid var(--slate-7)',
-                borderRadius: 'var(--radius-2)',
-                padding: '2px var(--space-2)',
-                lineHeight: 'inherit',
-              }}
-            >
-              {t('chat.openModels', 'Manage models')}
-            </span>
+          {isAdmin && !error && (
+            <Button asChild size="1" variant="outline" color="gray" radius="small">
+              <Link href={AI_MODELS_HREF}>{t('chat.seeMoreModels', 'See more models')}</Link>
+            </Button>
           )}
         </Flex>
       )}
 
-      {/* Reasoning effort selector — rendered above the scrollable list so it
-          stays visible regardless of how many models the panel contains. */}
-      {!isLoading && !error && showReasoningEffort && (
+      {/* Above the list, so it stays in view however many models there are. */}
+      {!busy && !error && showReasoningEffort && (
         <ReasoningEffortSelector
           value={reasoningEffort}
           onSelect={handleReasoningEffortSelect}
@@ -252,76 +251,87 @@ export function ModelSelectorPanel({
         />
       )}
 
-      {/* Body */}
-      <Flex
-        direction="column"
-        gap="2"
-        style={{ flex: 1, overflowY: 'auto' }}
-        className="no-scrollbar"
-      >
-        {isLoading && (
-          <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
-            <Spinner size="2" />
-          </Flex>
-        )}
+      {showSkeleton && (
+        <ListSkeleton
+          variant="menu-row"
+          // The card height, so nothing moves when the cards arrive.
+          rowHeight={MODEL_CARD_HEIGHT}
+          glyphSize={20}
+          appearDelayMs={0}
+          exiting={loading.exiting}
+          statusLabel={t('chat.loadingModels', 'Loading models…')}
+        />
+      )}
 
-        {!isLoading && error && (
-          <Flex 
-            direction="column" 
-            align="center" 
-            justify="center" 
-            gap="3"
-            style={{ padding: 'var(--space-6)' }}
-          >
-            <MaterialIcon 
-              name="error_outline" 
-              size={32} 
-              color="var(--red-9)" 
-            />
-            <Text 
-              size="2" 
-              style={{ 
-                color: 'var(--red-9)', 
-                textAlign: 'center',
-                maxWidth: '300px',
-                lineHeight: '1.5'
-              }}
-            >
-              {error}
-            </Text>
-            {isAdmin && (
-              <Button
-                variant="soft"
-                size="2"
-                onClick={() => {
-                  router.push('/workspace/ai-models');
-                }}
-              >
+      {!busy && error && (
+        <Flex direction="column" align="center" justify="center" gap="3" style={{ padding: 'var(--space-6)' }}>
+          <MaterialIcon name="error_outline" size={32} color="var(--red-9)" />
+          <Text size="2" style={{ color: 'var(--red-11)', textAlign: 'center', maxWidth: '300px', lineHeight: '1.5' }}>
+            {error}
+          </Text>
+          {isAdmin && (
+            <Button asChild variant="soft" size="2">
+              <Link href={AI_MODELS_HREF}>
                 <MaterialIcon name="settings" size={16} />
                 {t('chat.openModels', 'Manage models')}
-              </Button>
-            )}
-          </Flex>
-        )}
+              </Link>
+            </Button>
+          )}
+        </Flex>
+      )}
 
-        {!isLoading && !error && allowExtraOptions && (
-          <ModelSelectorExtraOptions models={models} selectedModel={selectedModel} onModelSelect={onModelSelect} />
-        )}
+      {!busy && !error && allowExtraOptions && (
+        <ModelSelectorExtraOptions models={models} selectedModel={selectedModel} onModelSelect={onModelSelect} />
+      )}
 
-        {!isLoading && !error && models.map((model) => (
-          <ModelItem
-            key={`${model.modelKey}::${model.modelName}`}
-            model={model}
-            isSelected={model.modelKey === activeKey && model.modelName === activeName}
-            onSelect={handleSelect}
-          />
-        ))}
-      </Flex>
+      {!busy && !error && (
+        // One radio group for the whole list: Tab enters it once and the
+        // arrow keys move the choice.
+        <RadioGroup.Root
+          value={activeModel ? modelValue(activeModel) : ''}
+          onValueChange={handleGroupChange}
+          aria-label={groupLabel}
+          className="no-scrollbar"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-2)',
+            // 296px: room for four cards before the list scrolls.
+            maxHeight: 'calc(var(--space-9) * 4 + var(--space-7))',
+            minHeight: 0,
+            overflowY: 'auto',
+            // The last card's border never sits on the clip edge, where it rounds away at some zoom levels; the
+            // inset counts inside the 296px.
+            paddingBottom: 'var(--space-1)',
+            boxSizing: 'border-box',
+          }}
+        >
+          {models.map((model) => (
+            <ModelItem
+              key={modelValue(model)}
+              model={model}
+              isSelected={model === activeModel}
+              onSelect={handleSelect}
+            />
+          ))}
+        </RadioGroup.Root>
+      )}
     </Flex>
   );
 }
 
-// ─── Reasoning effort selector (shown only for isReasoning models) ───
+/** The admin page where models are added and configured. */
+const AI_MODELS_HREF = '/workspace/ai-models/';
+
+/** A model card with one tag row: 12 + 20 + 8 + 20 + 12, plus its 1px border. */
+const MODEL_CARD_HEIGHT = 74;
+
+/** Comma-separated configs share a `modelKey`, so the name is part of the value. */
+function modelValue(model: AvailableLlmModel): string {
+  return `${model.modelKey}::${model.modelName}`;
+}
+
+// ─── Reasoning effort, shown only for reasoning models ───
 
 interface ReasoningEffortSelectorProps {
   /** `null` = no explicit override, model/provider uses its own default. */
@@ -331,63 +341,66 @@ interface ReasoningEffortSelectorProps {
   modelDefault: ReasoningEffort | null;
 }
 
+/**
+ * One pill per effort level. With nothing picked, the level that applies (the
+ * agent's default, then the model's, then the product default) is highlighted.
+ * Pressing the picked pill again goes back to the default.
+ */
 export function ReasoningEffortSelector({ value, onSelect, agentDefault, modelDefault }: ReasoningEffortSelectorProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const effectiveDefault = agentDefault ?? modelDefault ?? DEFAULT_REASONING_EFFORT;
+  const applied = value ?? effectiveDefault;
   const usesModelDefault = !agentDefault && Boolean(modelDefault);
+  const label = t('chat.reasoningEffort.label', 'Reasoning effort');
+
   return (
     <Flex
       direction="column"
       gap="2"
+      data-testid="reasoning-effort-selector"
       style={{
-        padding: 'var(--space-3) var(--space-4)',
-        borderRadius: 'var(--radius-1)',
-        border: '1px solid var(--olive-3)',
-        backgroundColor: 'var(--olive-2)',
-        marginTop: 'var(--space-1)',
+        flexShrink: 0,
+        padding: 'var(--space-3)',
+        borderRadius: 'var(--radius-2)',
+        border: '1px solid var(--border-subtle)',
+        // Raised, like the model cards: the shell behind it is the subtle surface while a panel is open.
+        backgroundColor: 'var(--surface-raised)',
       }}
     >
-      <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
-        {t('chat.reasoningEffort.label', 'Reasoning Effort')}
+      <Text size="1" weight="medium" style={{ color: 'var(--text-primary)' }}>
+        {label}
       </Text>
-      <Flex align="center" gap="2" wrap="wrap" role="radiogroup" aria-label={t('chat.reasoningEffort.label', 'Reasoning Effort')}>
+      <ToggleGroup.Root
+        type="single"
+        role="radiogroup"
+        aria-label={label}
+        value={applied}
+        // A press on the pill that is already on sends an empty value: pass
+        // that level on, so the parent can clear the pick.
+        onValueChange={(next) => onSelect((next || applied) as ReasoningEffort)}
+        style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--space-2)' }}
+      >
         {REASONING_EFFORT_OPTIONS.map((option) => {
-          const isActive = value === option.value || (!value && option.value === effectiveDefault);
+          const isActive = option.value === applied;
           return (
-            <Flex
-              key={option.value}
-              align="center"
-              justify="center"
-              role="radio"
-              aria-checked={isActive}
-              tabIndex={0}
-              onClick={() => onSelect(option.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  onSelect(option.value);
-                }
-              }}
-              style={{
-                padding: '4px var(--space-3)',
-                borderRadius: 'var(--radius-6)',
-                border: isActive ? '1px solid var(--accent-9)' : '1px solid var(--slate-7)',
-                backgroundColor: isActive ? 'var(--accent-3)' : 'transparent',
-                cursor: 'pointer',
-              }}
-            >
-              <Text
+            <ToggleGroup.Item key={option.value} value={option.value} asChild>
+              <Button
+                type="button"
                 size="1"
-                weight={isActive ? 'medium' : 'regular'}
-                style={{ color: isActive ? 'var(--accent-11)' : 'var(--slate-11)' }}
+                radius="full"
+                variant={isActive ? 'surface' : 'outline'}
+                color={isActive ? undefined : 'gray'}
+                // On phones: a 44px touch target that stays a pill (wider than tall).
+                style={isMobile ? { ...touchTarget(true), paddingInline: 'var(--space-3)' } : undefined}
               >
                 {t(option.labelKey, option.defaultLabel)}
-              </Text>
-            </Flex>
+              </Button>
+            </ToggleGroup.Item>
           );
         })}
-      </Flex>
-      <Text size="1" style={{ color: 'var(--slate-10)' }}>
+      </ToggleGroup.Root>
+      <Text size="1" style={{ color: 'var(--text-secondary)' }}>
         {value
           ? t('chat.reasoningEffort.overrideHint', 'Click again to use the default.')
           : usesModelDefault
@@ -404,7 +417,7 @@ export function ReasoningEffortSelector({ value, onSelect, agentDefault, modelDe
   );
 }
 
-// ─── Individual model item (card style matching QueryModePanel) ──────
+// ─── One configured model ──────
 
 interface ModelItemProps {
   model: AvailableLlmModel;
@@ -412,8 +425,12 @@ interface ModelItemProps {
   onSelect: (model: AvailableLlmModel) => void;
 }
 
+/**
+ * A card for one model. The whole card selects it; the radio inside is the
+ * control keyboards and screen readers use.
+ */
 function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
-  const [isHovered, setIsHovered] = useState(false);
+  const { t } = useTranslation();
   // Provider always comes through from the API. If we don't have a curated
   // friendly name for it in PROVIDER_FRIENDLY_NAMES, fall back to splitting
   // the raw camelCase provider key into words rather than a placeholder.
@@ -426,83 +443,76 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
   // Description is optional — only render when we actually have one so we
   // don't show placeholder text for models that aren't in the curated map.
   const description = MODEL_DESCRIPTIONS[model.modelName];
+  const name = model.modelFriendlyName || model.modelName;
 
   return (
     <Flex
-      align="center"
-      justify="between"
-      onClick={() => onSelect(model)}
+      direction="column"
+      gap="3"
+      data-testid="chat-model-option"
+      data-selected={isSelected || undefined}
+      onClick={() => {
+        if (!isSelected) onSelect(model);
+      }}
       style={{
-        padding: 'var(--space-3) var(--space-4)',
-        borderRadius: 'var(--radius-1)',
-        border: '1px solid var(--olive-3)',
-        backgroundColor: 'var(--olive-2)',
+        flexShrink: 0,
+        padding: 'var(--space-3)',
+        borderRadius: 'var(--radius-2)',
+        border: `1px solid ${isSelected ? 'var(--accent-a7)' : 'var(--border-default)'}`,
+        backgroundColor: isSelected ? 'var(--accent-a2)' : 'var(--surface-raised)',
         cursor: 'pointer',
       }}
     >
-      {/* Left: all content left-aligned */}
-      <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
-        {/* Name row: logo + friendly name + dot + provider */}
-        <Flex align="center" gap="2">
-          <ModelLogo provider={model.provider} />
-          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            {model.modelFriendlyName || model.modelName}
-          </Text>
-          {providerName && (
-            <>
-              <Image
-                src="/icons/common/ellipse-1.svg"
-                alt=""
-                width={4}
-                height={4}
-                style={{ flexShrink: 0 }}
-              />
-              <Text size="1" style={{ color: 'var(--slate-10)' }}>
-                by {providerName}
-              </Text>
-            </>
+      <Flex align="center" justify="between" gap="3">
+        <Flex direction="column" gap="2" style={{ flex: 1, minWidth: 0 }}>
+          <Flex align="center" gap="2" wrap="wrap">
+            <ModelLogo provider={model.provider} />
+            <Text size="2" weight="medium" style={{ color: 'var(--text-primary)' }}>
+              {name}
+            </Text>
+            {providerName && (
+              <>
+                <Text size="1" aria-hidden style={{ color: 'var(--text-tertiary)' }}>
+                  ·
+                </Text>
+                <Text size="1" style={{ color: 'var(--text-secondary)' }}>
+                  {t('chat.modelProviderBy', { provider: providerName, defaultValue: 'by {{provider}}' })}
+                </Text>
+              </>
+            )}
+          </Flex>
+
+          {description && (
+            <Text size="1" style={{ color: 'var(--text-secondary)' }}>
+              {description}
+            </Text>
+          )}
+
+          {(model.isDefault || model.isReasoning || model.isMultimodal) && (
+            <Flex align="center" gap="2" wrap="wrap">
+              {model.isDefault && (
+                // The accent colour: the workspace's own choice.
+                <Badge size="1" variant="soft" radius="small">
+                  {t('chat.modelTags.default', 'Default')}
+                </Badge>
+              )}
+              {model.isReasoning && (
+                <Badge size="1" variant="soft" radius="small" color="indigo">
+                  {t('chat.modelTags.reasoning', 'Reasoning')}
+                </Badge>
+              )}
+              {model.isMultimodal && (
+                // Soft blue text is under 4.5:1 on a light card; high contrast lifts it.
+                <Badge size="1" variant="soft" radius="small" color="blue" highContrast>
+                  {t('chat.modelTags.multimodal', 'Multimodal')}
+                </Badge>
+              )}
+            </Flex>
           )}
         </Flex>
 
-        {/* Description — only rendered when we have a curated one-liner. */}
-        {description && (
-          <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '1.4' }}>
-            {description}
-          </Text>
-        )}
-
-        {/* Tags */}
-        <Flex align="center" gap="1" wrap="wrap" style={{ marginTop: 'var(--space-1)' }}>
-          {model.isDefault && (
-            <Badge size="1" variant="outline" color="jade">
-              Default
-            </Badge>
-          )}
-          {model.isReasoning && (
-            <Badge size="1" variant="outline" color="violet">
-              Reasoning
-            </Badge>
-          )}
-          {model.isMultimodal && (
-            <Badge size="1" variant="outline" color="blue">
-              Multimodal
-            </Badge>
-          )}
-        </Flex>
+        <RadioGroup.Item value={modelValue(model)} aria-label={name} />
       </Flex>
-
-      {/* Right: Radio indicator — vertically centered */}
-      <RadioGroup.Root
-        value={isSelected ? 'selected' : ''}
-        style={{
-          flexShrink: 0,
-          marginLeft: 'var(--space-3)',
-          pointerEvents: 'none',
-          '--accent-indicator': 'var(--accent-9)',
-        } as React.CSSProperties}
-      >
-        <RadioGroup.Item value="selected" />
-      </RadioGroup.Root>
     </Flex>
   );
 }

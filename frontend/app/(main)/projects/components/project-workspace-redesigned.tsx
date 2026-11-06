@@ -5,6 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import { Box, Button, Callout, DropdownMenu, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { IconMenuItem } from '@/app/components/ui/icon-menu-item';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
@@ -14,6 +15,8 @@ import { ChatApi } from '@/chat/api';
 import type { AttachmentRef, AppliedFilters } from '@/chat/types';
 import { ProjectApi, projectDetailKey } from '@/chat/project-api';
 import { writeSwrKey } from '@/lib/api/swr-cache';
+import type { ComposerSendExtra } from '@/chat/chat-extension';
+import type { MentionNode } from '@/chat/utils/node-mentions';
 import type { ProjectDetail, ProjectKnowledgeScope } from '@/chat/project-types';
 import { createProjectShareAdapter } from '@/chat/share-adapter';
 import { useChatStore, ASSISTANT_CTX } from '@/chat/store';
@@ -21,15 +24,16 @@ import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { chatContentColumnStyle } from '@/chat/constants';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
+import { useNewChatComposerScope } from '@/chat/hooks/use-new-chat-composer-scope';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { toast } from '@/lib/store/toast-store';
 import { DeleteProjectDialog, EditProjectDialog, LeaveProjectDialog } from '@/chat/sidebar/dialogs';
 import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { touchTarget } from '@/app/components/ui/responsive';
-import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar/constants';
 import { useUserStore } from '@/lib/store/user-store';
 import { Link } from '@/lib/navigation';
+import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar/constants';
 import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 import { ProjectSettingsPanel, type SetupSectionKey } from './settings-panel';
 import { ChatDefaultsCard } from './chat-defaults-card';
@@ -158,6 +162,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   // Every settings edit below calls `setProject(...)`, so the composer's
   // allow-list follows the right-hand cards live.
   useProjectScopeHydration(project);
+  useNewChatComposerScope(projectId);
 
   // The project chat and the project sidebar read this project from the shared
   // cache: keep it equal to what is on screen here, without asking again.
@@ -350,7 +355,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
 
   // ── Composer: hands the message off to /chat via the pending-chat buffer ──
   const handleSend = useCallback(
-    (message: string, attachments?: AttachmentRef[]) => {
+    (message: string, attachments?: AttachmentRef[], nodes?: MentionNode[], extra?: ComposerSendExtra) => {
       if (!message.trim() && (!attachments || attachments.length === 0)) return;
       // The server refuses new chats in an archived project; keep the draft.
       if (isArchived) {
@@ -360,6 +365,8 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       usePendingChatStore.getState().setPending({
         message,
         attachments,
+        extra,
+        ...(nodes && nodes.length > 0 ? { mentions: nodes } : {}),
         pageContext: {},
         referrerPage: pathname,
       });
@@ -436,7 +443,9 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
           ...(isMobile ? { height: 40 } : {}),
           padding: isMobile
             ? `0 var(--space-2) 0 ${MOBILE_HAMBURGER_GUTTER_PX}px`
-            : 'var(--space-3) var(--space-6)',
+            : stacked
+              ? 'var(--space-3) var(--space-4)'
+              : 'var(--space-3) var(--space-6)',
           borderBottom: '1px solid var(--olive-3)',
           flexShrink: 0,
         }}
@@ -498,60 +507,36 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
             </DropdownMenu.Trigger>
             <DropdownMenu.Content align="end">
               {isOwner && isMobile && (
-                <DropdownMenu.Item onClick={() => setShareOpen(true)}>
-                  <Flex align="center" gap="2">
-                    <MaterialIcon name="ios_share" size={16} />
-                    <Text size="2">{t('chat.projects.workspace.share')}</Text>
-                  </Flex>
-                </DropdownMenu.Item>
+                <IconMenuItem icon="ios_share" onClick={() => setShareOpen(true)}>
+                  {t('chat.projects.workspace.share')}
+                </IconMenuItem>
               )}
-              <DropdownMenu.Item onClick={() => void handleTogglePin()} disabled={isMutating}>
-                <Flex align="center" gap="2">
-                  <MaterialIcon name={project.isPinned ? 'star' : 'star_outline'} size={16} />
-                  <Text size="2">
-                    {project.isPinned ? t('chat.projects.unpinProject') : t('chat.projects.pinProject')}
-                  </Text>
-                </Flex>
-              </DropdownMenu.Item>
+              <IconMenuItem icon={project.isPinned ? 'keep_off' : 'keep'} onClick={() => void handleTogglePin()} disabled={isMutating}>
+                {project.isPinned ? t('chat.projects.unpinProject') : t('chat.projects.pinProject')}
+              </IconMenuItem>
               {canEdit && !isArchived && (
-                <DropdownMenu.Item onClick={() => setEditOpen(true)}>
-                  <Flex align="center" gap="2">
-                    <MaterialIcon name="edit" size={16} />
-                    <Text size="2">{t('chat.projects.editDetails')}</Text>
-                  </Flex>
-                </DropdownMenu.Item>
+                <IconMenuItem icon="edit" onClick={() => setEditOpen(true)}>
+                  {t('chat.projects.editDetails')}
+                </IconMenuItem>
               )}
               {isOwner && (
-                <DropdownMenu.Item onClick={() => void handleToggleArchive()} disabled={isMutating}>
-                  <Flex align="center" gap="2">
-                    <MaterialIcon name={project.isArchived ? 'unarchive' : 'archive'} size={16} />
-                    <Text size="2">
-                      {project.isArchived
-                        ? t('chat.projects.unarchiveProject')
-                        : t('chat.projects.archiveProject')}
-                    </Text>
-                  </Flex>
-                </DropdownMenu.Item>
+                <IconMenuItem
+                  icon={project.isArchived ? 'unarchive' : 'archive'}
+                  onClick={() => void handleToggleArchive()}
+                  disabled={isMutating}
+                >
+                  {project.isArchived ? t('chat.projects.unarchiveProject') : t('chat.projects.archiveProject')}
+                </IconMenuItem>
               )}
               {isMember && (
-                <DropdownMenu.Item color="red" onClick={() => setLeaveOpen(true)}>
-                  <Flex align="center" gap="2">
-                    <MaterialIcon name="logout" size={16} color="var(--red-11)" />
-                    <Text size="2" style={{ color: 'var(--red-11)' }}>
-                      {t('chat.projects.leaveProject')}
-                    </Text>
-                  </Flex>
-                </DropdownMenu.Item>
+                <IconMenuItem icon="logout" color="red" onClick={() => setLeaveOpen(true)}>
+                  {t('chat.projects.leaveProject')}
+                </IconMenuItem>
               )}
               {isOwner && (
-                <DropdownMenu.Item color="red" onClick={() => setDeleteDialogOpen(true)}>
-                  <Flex align="center" gap="2">
-                    <MaterialIcon name="delete" size={16} color="var(--red-11)" />
-                    <Text size="2" style={{ color: 'var(--red-11)' }}>
-                      {t('chat.projects.deleteProject')}
-                    </Text>
-                  </Flex>
-                </DropdownMenu.Item>
+                <IconMenuItem icon="delete" color="red" onClick={() => setDeleteDialogOpen(true)}>
+                  {t('chat.projects.deleteProject')}
+                </IconMenuItem>
               )}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
@@ -666,6 +651,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
             >
               <ChatInput
                 variant="full"
+                startsNewChat
                 onSend={handleSend}
                 onUploadFile={handleUploadFile}
                 onDeleteFile={handleDeleteFile}

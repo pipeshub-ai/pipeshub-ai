@@ -50,7 +50,7 @@ def _context(**overrides: object) -> AgentContext:
     return context
 
 
-async def _stream_turns(collector: TranscriptCollector, *texts: str) -> None:
+async def _stream_turns(collector: TranscriptCollector, *texts: str, then_tool: bool = False) -> None:
     run = RunContext(role_name="root", model="m")
 
     async def emit(event_type: EventType, **payload: object) -> None:
@@ -61,7 +61,7 @@ async def _stream_turns(collector: TranscriptCollector, *texts: str) -> None:
         await emit(EventType.TEXT_MESSAGE_START)
         await emit(EventType.TEXT_MESSAGE_CONTENT, delta=text)
         await emit(EventType.TEXT_MESSAGE_END)
-        if i < len(texts) - 1:
+        if i < len(texts) - 1 or then_tool:
             await emit(EventType.TOOL_CALL_START, tool_call_id=f"t{i}", tool="web_search", args={"q": "x"})
             await emit(EventType.TOOL_CALL_END, tool_call_id=f"t{i}", content="results")
 
@@ -246,6 +246,22 @@ class TestStoppedRunWithTranscript:
         assert "[1]" in narration_part["content"] and "[1]" in final_part["content"]
         assert result["answer"] == final_part["content"]
         assert len(result["citations"]) == 1
+
+    async def test_stop_after_a_tool_call_keeps_the_narration_before_it(self) -> None:
+        context = _context()
+        narration = "I'll look up the release guidance, then list the tips."
+        await _stream_turns(context.transcript_collector, narration, then_tool=True)
+
+        result = await AnswerFinalizer(context, CitationCollector(context)).run(
+            agent_success=False, agent_error="Cancelled", agent_cancelled=True,
+            streamed_answer="", event_sink=_Sink(),
+        )
+
+        assert result["status"] == "stopped"
+        assert result["answer"] == ""
+        assert [(p["type"], p.get("content"), p.get("isFinal")) for p in result["parts"]] == [
+            ("text", narration, None), ("tool_call", None, None), ("text", "", True),
+        ]
 
 
 class TestAskUserQuestionFallbackPayloads:

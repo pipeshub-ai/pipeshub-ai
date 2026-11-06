@@ -343,6 +343,34 @@ class TestTextMessageTranslation:
         await emitter.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "late"}))
         sink.write.assert_not_awaited()
 
+    async def test_a_reply_discarded_after_it_ended_is_taken_back(self) -> None:
+        """A hook overruled the reply (`ask_in_text_recovery`): the message already ended, so only
+        the take-back frame goes out, once."""
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        message_id = sink.write.await_args.args[0]["data"]["messageId"]
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Which report do you mean?"}))
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {"turn_index": 0}))
+        sink.write.reset_mock()
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {"turn_index": 0, "discarded": True}))
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {"turn_index": 0, "discarded": True}))
+
+        frames = [call.args[0]["data"] for call in sink.write.await_args_list]
+        assert [(f["type"], f["name"], f["value"]) for f in frames] == [
+            ("CUSTOM", MESSAGE_DISCARDED_EVENT_NAME, {"messageId": message_id}),
+        ]
+
+    async def test_an_end_with_no_open_message_and_no_discard_sends_nothing(self) -> None:
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+        sink.write.reset_mock()
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+
+        sink.write.assert_not_awaited()
+
 
 class TestReasoningTranslation:
     async def test_reasoning_lifecycle_wraps_with_start_and_end_markers(self) -> None:

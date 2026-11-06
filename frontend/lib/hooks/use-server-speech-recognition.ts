@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { apiClient } from '@/lib/api';
+import { refusalMessage } from '@/lib/api/api-error';
 
 interface UseServerSpeechRecognitionOptions {
   /** Optional BCP-47 language tag, forwarded to the STT provider. */
   lang?: string;
-  onError?: (error: string) => void;
+  /** `refusal` is the server's words when the call was refused (402). */
+  onError?: (error: string, refusal?: string) => void;
 }
 
 interface UseServerSpeechRecognitionReturn {
@@ -275,7 +277,7 @@ export function useServerSpeechRecognition(
         setInterimTranscript('');
         const message =
           err instanceof Error ? err.message : 'Transcription failed';
-        onErrorRef.current?.(message);
+        onErrorRef.current?.(message, refusalMessage(err));
       }
     },
     [buildForm]

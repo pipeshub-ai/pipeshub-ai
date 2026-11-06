@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
+import React, { useContext, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -14,6 +14,7 @@ import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useChatStore } from '../../store';
 import type { McpSignInServer } from '../../types';
+import { AnswerSlotContext, answerSlotIdNow, useAnswerSlotId } from './answer-slot-scope';
 
 /** When the server's current sign-in was made (0 for a record from before that was kept), or null without one. */
 async function signedInAt(server: McpSignInServer): Promise<number | null> {
@@ -37,8 +38,10 @@ interface McpSignInCardProps {
 export function McpSignInCard({ servers }: McpSignInCardProps) {
   const { t } = useTranslation();
   const access = useChatStore((s) => s.agentContextAccess);
+  const scopedSlotId = useContext(AnswerSlotContext);
+  const answerSlotId = useAnswerSlotId();
   // Someone viewing a conversation shared with them can't send in it.
-  const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
+  const canSend = useChatStore((s) => (answerSlotId ? s.slots[answerSlotId]?.isOwner ?? null : null)) !== false;
   const [signedIn, setSignedIn] = useState<ReadonlySet<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -96,7 +99,7 @@ export function McpSignInCard({ servers }: McpSignInCardProps) {
   };
 
   const tryAgain = () => {
-    const slotId = useChatStore.getState().activeSlotId;
+    const slotId = answerSlotIdNow(scopedSlotId);
     if (!slotId) return;
     const text = t('chat.mcpSignIn.retryMessage', { servers: servers.map((s) => s.serverName).join(', ') });
     // MCP servers are only in agent mode.
@@ -114,15 +117,15 @@ export function McpSignInCard({ servers }: McpSignInCardProps) {
     <Box
       data-testid="mcp-sign-in-card"
       style={{
-        border: '1px solid var(--slate-5)',
+        border: '1px solid var(--border-strong)',
         borderRadius: 'var(--radius-3)',
         padding: 'var(--space-3)',
-        backgroundColor: 'var(--slate-2)',
+        backgroundColor: 'var(--surface-subtle)',
       }}
     >
       <Flex align="center" gap="2" mb="2">
         <MaterialIcon name="lock_open" size={16} color="var(--amber-11)" />
-        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+        <Text size="2" weight="medium" style={{ color: 'var(--text-primary)' }}>
           {t('chat.mcpSignIn.title')}
         </Text>
       </Flex>
@@ -135,11 +138,11 @@ export function McpSignInCard({ servers }: McpSignInCardProps) {
             <Flex key={server.instanceId} direction="column" gap="1">
               <Flex align="center" justify="between" gap="3">
                 <Flex direction="column" style={{ minWidth: 0 }}>
-                  <Text size="2" style={{ color: 'var(--slate-12)', overflowWrap: 'anywhere' }}>
+                  <Text size="2" style={{ color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>
                     {server.serverName}
                   </Text>
                   {server.scopes.length > 0 && (
-                    <Text size="1" style={{ color: 'var(--slate-11)', overflowWrap: 'anywhere' }}>
+                    <Text size="1" style={{ color: 'var(--text-secondary)', overflowWrap: 'anywhere' }}>
                       {t('chat.mcpSignIn.needs', { scopes: server.scopes.join(', ') })}
                     </Text>
                   )}
@@ -164,7 +167,7 @@ export function McpSignInCard({ servers }: McpSignInCardProps) {
                     </Button>
                   )
                 ) : (
-                  <Text size="1" style={{ color: 'var(--slate-10)', textAlign: 'right' }}>
+                  <Text size="1" style={{ color: 'var(--text-secondary)', textAlign: 'right' }}>
                     {t('chat.mcpSignIn.askAnEditor')}
                   </Text>
                 )}
@@ -189,7 +192,7 @@ export function McpSignInCard({ servers }: McpSignInCardProps) {
 
       {ready && canSend && !resent && (
         <Flex align="center" justify="between" gap="3" mt="3">
-          <Text size="1" style={{ color: 'var(--slate-11)' }}>
+          <Text size="1" style={{ color: 'var(--text-secondary)' }}>
             {t('chat.mcpSignIn.allSignedIn')}
           </Text>
           <Button size="1" onClick={tryAgain}>

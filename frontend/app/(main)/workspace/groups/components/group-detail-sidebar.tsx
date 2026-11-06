@@ -17,6 +17,8 @@ import type { CheckboxOption, PaginatedMembersListHandle } from '../../component
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
 import { groupSaveRefusalMessage } from '../save-error';
+import { workspaceNameProblem } from '../../name-rules';
+import { fieldErrorsOf } from '@/lib/api/api-error';
 import { hasLockedGroupName, isSystemGroup } from '../types';
 import type { GroupUser } from '../types';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
@@ -206,15 +208,21 @@ export function GroupDetailSidebar({
       exitEditMode();
       onUpdateSuccess?.();
     } catch (error) {
-      addToast({
-        variant: 'error',
-        title: t(
-          'workspace.groups.edit.saveError',
-          'Failed to update group'
-        ),
-        description: groupSaveRefusalMessage(error),
-        duration: 5000,
-      });
+      // A reason the server pinned to the name shows on the field, not as a toast.
+      const nameReason = fieldErrorsOf(error).name;
+      if (nameReason) {
+        setNameServerError(nameReason);
+      } else {
+        addToast({
+          variant: 'error',
+          title: t(
+            'workspace.groups.edit.saveError',
+            'Failed to update group'
+          ),
+          description: groupSaveRefusalMessage(error),
+          duration: 5000,
+        });
+      }
     } finally {
       setIsSavingEdit(false);
     }
@@ -254,7 +262,12 @@ export function GroupDetailSidebar({
   const canEditName = isEditMode && !isNameLocked;
   // Block Save Edits when the name is editable but cleared — otherwise the
   // empty name is silently ignored while member changes still go through.
-  const isNameEmpty = canEditName && editGroupName.trim().length === 0;
+  // Same rule as a team name; the server's own answer (say, a name already in
+  // use) shows on the field until the name changes.
+  const [nameServerError, setNameServerError] = useState<string | undefined>(undefined);
+  const nameProblem = canEditName ? workspaceNameProblem(editGroupName, t) : undefined;
+  const nameError = nameServerError ?? nameProblem;
+  const isNameInvalid = Boolean(nameProblem);
 
   const deleteButton = (
     <LoadingButton
@@ -285,7 +298,7 @@ export function GroupDetailSidebar({
           : t('workspace.groups.edit.edit', 'Edit group')
       }
       secondaryLabel={t('workspace.groups.edit.cancel', 'Cancel')}
-      primaryDisabled={isEditMode && (isSavingEdit || isNameEmpty)}
+      primaryDisabled={isEditMode && (isSavingEdit || isNameInvalid)}
       primaryLoading={isSavingEdit}
       onPrimaryClick={handlePrimaryClick}
       onSecondaryClick={handleSecondaryClick}
@@ -305,11 +318,8 @@ export function GroupDetailSidebar({
         {/* Group Name */}
         <FormField
           label={t('workspace.groups.detail.nameLabel', 'Group Name')}
-          error={
-            isNameEmpty
-              ? t('workspace.groups.edit.nameRequired', 'Group name is required')
-              : undefined
-          }
+          required={canEditName}
+          error={nameError}
         >
           {isNameLocked ? (
             <Tooltip
@@ -323,7 +333,10 @@ export function GroupDetailSidebar({
                   ariaLabel={t('workspace.groups.detail.nameLabel', 'Group Name')}
                   value={isEditMode ? editGroupName : detailGroup?.name ?? ''}
                   canEditName={canEditName}
-                  onChange={setEditGroupName}
+                  onChange={(value) => {
+                    setEditGroupName(value);
+                    setNameServerError(undefined);
+                  }}
                 />
               </span>
             </Tooltip>
@@ -332,7 +345,10 @@ export function GroupDetailSidebar({
               ariaLabel={t('workspace.groups.detail.nameLabel', 'Group Name')}
               value={isEditMode ? editGroupName : detailGroup?.name ?? ''}
               canEditName={canEditName}
-              onChange={setEditGroupName}
+              onChange={(value) => {
+                setEditGroupName(value);
+                setNameServerError(undefined);
+              }}
             />
           )}
         </FormField>

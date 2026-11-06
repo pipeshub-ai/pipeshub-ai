@@ -252,6 +252,8 @@ export interface SSEEvent<T = unknown> {
 export interface SSEStreamingOptions<T = unknown> {
   onEvent: (event: SSEEvent<T>) => void;
   onError: (error: Error) => void;
+  /** Called once with the response of a successful request, before its body is read. */
+  onResponse?: (response: Response) => void;
   signal?: AbortSignal;
 }
 
@@ -348,7 +350,7 @@ export async function streamSSERequest<T = unknown>(
   body: Record<string, unknown>,
   options: SSEStreamingOptions<T>
 ): Promise<void> {
-  const { onEvent, onError, signal } = options;
+  const { onEvent, onError, onResponse, signal } = options;
 
   let responseStarted = false;
   try {
@@ -379,6 +381,7 @@ export async function streamSSERequest<T = unknown>(
       throw await streamHttpError(response, CHAT_STREAM_ERROR_MESSAGES);
     }
     responseStarted = true;
+    onResponse?.(response);
 
     const reader = response.body?.getReader();
     if (!reader) {

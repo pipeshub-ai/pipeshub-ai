@@ -7,6 +7,7 @@ from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
 from app.config.configuration_service import ConfigurationService
+from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.code_graph.connectors import agent_knowledge_has_code_connector
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
@@ -93,6 +94,8 @@ class ChatState(TypedDict):
     user_email: str
     send_user_info: bool
     conversation_id: str | None
+    acl_version: int | None
+    run_id: str | None
 
     # Enhanced features
     system_prompt: str | None  # User-defined system prompt
@@ -134,6 +137,9 @@ class ChatState(TypedDict):
     api_toolset_tools: list[str] | None  # Attached API toolset operations, "<instanceId>:<toolName>"
     mcp_server_configs: dict[str, dict] | None  # SENSITIVE: {instanceId: {"instance": ..., "auth": ..., "ownerId": ...}}
     mcp_tool_load_failures: list[dict] | None  # Runtime discovery failures (soft-skip), populated by MCPToolProvider
+    # Attached toolsets/MCP servers the caller has not connected (`readiness.UnavailableTool` wire
+    # dicts, no credentials): left out of the run, named in the prompt and the completion.
+    unavailable_tools: list[dict[str, Any]] | None
 
     # Planner-based execution fields
     execution_plan: dict[str, Any] | None  # Planned execution from planner node
@@ -598,6 +604,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "limit": chat_query.get("limit", 50),
         "messages": [],  # Will be populated in prepare_prompt_node
         "previous_conversations": chat_query.get("previous_conversations") or chat_query.get("previousConversations") or [],
+        **get_chat_extension().chat_state_fields(chat_query),
         "quick_mode": chat_query.get("quickMode", False),
         "filters": filters,
         "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),
@@ -628,6 +635,8 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "user_email": user_info.get("userEmail", ""),
         "send_user_info": user_info.get("sendUserInfo", True),
         "conversation_id": chat_query.get("conversationId"),
+        "acl_version": chat_query.get("aclVersion"),
+        "run_id": chat_query.get("runId"),
         "llm": llm,
         "logger": logger,
         "retrieval_service": retrieval_service,
@@ -699,6 +708,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "mcp_servers": chat_query.get("mcpServers", []),
         "mcp_server_configs": chat_query.get("mcpServerConfigs", {}),
         "api_toolset_tools": chat_query.get("apiToolsetTools", []),
+        "unavailable_tools": chat_query.get("unavailableTools") or [],
         # Deliberately NOT pre-seeded here (unlike most other fields above) — same reason
         # `toolset_load_failures` isn't: `AgentContext.model_post_init()`'s `setdefault()`
         # only makes this dict and `context.mcp_tool_load_failures` the SAME list object

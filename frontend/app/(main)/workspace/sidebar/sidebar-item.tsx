@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Link } from '@/lib/navigation';
 import { ELEMENT_HEIGHT } from '@/app/components/sidebar';
+import { SIDEBAR_FOCUS_CLASS } from '@/app/components/sidebar/sidebar-focus-style';
 
 interface WorkspaceSidebarItemProps {
   /** Optional left icon (MaterialIcon, Image, any ReactNode) */
@@ -22,10 +23,11 @@ interface WorkspaceSidebarItemProps {
 }
 
 /**
- * Workspace sidebar item — matches the chat SidebarItem styling exactly.
+ * Workspace sidebar item.
  *
- * Hover/active: olive-3 background + olive-4 border
- * Default: transparent background, transparent border
+ * Selected (the page you are on): the muted fill, a 1px default border, and the label in the primary text colour at
+ * medium weight. Hover and press: the subtle fill, one step lighter, with no border, so a hovered row never looks like
+ * the selected one. Keyboard focus is the shared sidebar focus ring. Same recipe as the chat sidebar's rows.
  */
 export function WorkspaceSidebarItem({
   icon,
@@ -37,14 +39,12 @@ export function WorkspaceSidebarItem({
   paddingLeft = 12,
 }: WorkspaceSidebarItemProps) {
   const [isHovered, setIsHovered] = useState(false);
-  const highlighted = isActive || isHovered;
 
   const sharedStyle: React.CSSProperties = {
     appearance: 'none',
     margin: 0,
     font: 'inherit',
     color: 'inherit',
-    outline: 'none',
     textDecoration: 'none',
     display: 'flex',
     alignItems: 'center',
@@ -56,8 +56,9 @@ export function WorkspaceSidebarItem({
     boxSizing: 'border-box',
     flexShrink: 0,
     borderRadius: 'var(--radius-1)',
-    backgroundColor: highlighted ? 'var(--olive-3)' : 'transparent',
-    border: highlighted ? '1px solid var(--olive-4)' : '1px solid transparent',
+    backgroundColor: isActive ? 'var(--fill-muted)' : isHovered ? 'var(--surface-subtle)' : 'transparent',
+    border: isActive ? '1px solid var(--border-default)' : '1px solid transparent',
+    transition: 'background-color var(--motion-micro) var(--motion-ease)',
     cursor: (onClick || href) ? 'pointer' : 'default',
   };
 
@@ -73,9 +74,9 @@ export function WorkspaceSidebarItem({
         style={{
           flex: 1,
           fontSize: 14,
-          fontWeight: 400,
+          fontWeight: isActive ? 500 : 400,
           lineHeight: '20px',
-          color: 'var(--slate-11)',
+          color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
@@ -95,14 +96,21 @@ export function WorkspaceSidebarItem({
     };
 
     return (
-      <Link href={href} onClick={handleLinkClick} style={sharedStyle} {...hoverHandlers}>
+      <Link
+        href={href}
+        onClick={handleLinkClick}
+        aria-current={isActive ? 'page' : undefined}
+        className={SIDEBAR_FOCUS_CLASS}
+        style={sharedStyle}
+        {...hoverHandlers}
+      >
         {content}
       </Link>
     );
   }
 
   return (
-    <button type="button" onClick={onClick} style={sharedStyle} {...hoverHandlers}>
+    <button type="button" onClick={onClick} className={SIDEBAR_FOCUS_CLASS} style={sharedStyle} {...hoverHandlers}>
       {content}
     </button>
   );

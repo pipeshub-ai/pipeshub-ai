@@ -2,14 +2,23 @@
 
 import React from 'react';
 import { Box } from '@radix-ui/themes';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { PAGE_PADDING_X, pagePaddingX } from '@/app/components/ui/responsive';
 
-/** Top padding that clears the fixed mobile hamburger. */
-export const MOBILE_PAGE_PADDING_TOP = 'max(56px, var(--space-8))';
+/** Top padding below 1024px, under the shell's 40px Open sidebar row: the title starts 56px down. */
+export const MOBILE_PAGE_PADDING_TOP = 'var(--space-4)';
 
 /** Top padding of every settings page on desktop (--space-7), list and detail alike. */
 export const PAGE_PADDING_TOP = 32;
+
+/**
+ * A settings page's top padding: `desktop` from 1024px up, MOBILE_PAGE_PADDING_TOP below, where the
+ * Open sidebar row already sits above the page. Keyed on the drawer layout, not the phone width, so a
+ * tablet title does not drop by the row's height.
+ */
+export function usePagePaddingTop(desktop: React.CSSProperties['paddingTop']): React.CSSProperties['paddingTop'] {
+  return useIsBelowDesktop() ? MOBILE_PAGE_PADDING_TOP : desktop;
+}
 
 /**
  * Inline padding for a full-width scroll surface whose content is capped at `maxWidth`
@@ -25,7 +34,7 @@ export interface SettingsPageContainerProps {
 }
 
 export function SettingsPageContainer({ children, maxWidth }: SettingsPageContainerProps) {
-  const isMobile = useIsMobile();
+  const paddingTop = usePagePaddingTop(PAGE_PADDING_TOP);
   return (
     <Box
       style={{
@@ -33,7 +42,7 @@ export function SettingsPageContainer({ children, maxWidth }: SettingsPageContai
         maxWidth,
         marginInline: 'auto',
         paddingInline: pagePaddingX(100),
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
+        paddingTop,
         paddingBottom: 64,
       }}
     >

@@ -9,10 +9,11 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SecondaryPanel, SidebarBackHeader } from '@/app/components/sidebar';
 import { useChatStore } from '@/chat/store';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatSectionElement } from './chat-section-element';
+import { chatSlots } from '@/config';
 import { AGENT_CONVERSATIONS_PAGE_SIZE } from '../constants';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search';
@@ -42,7 +43,7 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
 
   const moveConversationToTop = useChatStore((s) => s.moveConversationToTop);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
-  const isMobile = useIsMobile();
+  const isMobile = useIsBelowDesktop();
 
   const { t } = useTranslation();
 
@@ -57,6 +58,8 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
     page: number;
     hasNextPage: boolean;
   } | null>(null);
+
+  const visibleRows = chatSlots.useVisibleConversations(rows);
 
   const sentinelRef = useRef<HTMLDivElement>(null);
   const paginationRef = useRef(pagination);
@@ -190,8 +193,8 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
             <Flex align="center" justify="center" style={{ padding: 'var(--space-5) var(--space-3)' }}>
               <LottieLoader variant="loader" size={28} showLabel />
             </Flex>
-          ) : rows.length > 0 ? (
-            rows.map((conv) => (
+          ) : visibleRows.length > 0 ? (
+            visibleRows.map((conv) => (
               <ChatSectionElement
                 key={conv.id}
                 conversation={conv}

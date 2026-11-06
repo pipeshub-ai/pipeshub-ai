@@ -4,6 +4,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Checkbox, Flex, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ListSkeleton } from '@/app/components/ui/list-skeleton';
+import { useDeferredLoading } from '@/app/components/ui/use-deferred-loading';
 import { KnowledgeHubApi } from '@/app/(main)/knowledge-base/api';
 import { KB_MIN_SEARCH_QUERY_LENGTH } from '@/app/(main)/knowledge-base/utils';
 import type { KnowledgeHubNode, NodeType } from '@/app/(main)/knowledge-base/types';
@@ -176,7 +178,7 @@ export function ExpandArrow({
         border: 'none',
         padding: 0,
         cursor: 'pointer',
-        color: 'var(--slate-10)',
+        color: 'var(--text-tertiary)',
       }}
     >
       <MaterialIcon name={expanded ? 'expand_more' : 'chevron_right'} size={18} />
@@ -195,7 +197,7 @@ export function LoadMoreLink({ loading, onClick }: { loading: boolean; onClick: 
         background: 'none',
         border: 'none',
         cursor: loading ? 'default' : 'pointer',
-        color: 'var(--olive-9)',
+        color: 'var(--text-secondary)',
         fontSize: 12,
         padding: 0,
         textAlign: 'left',
@@ -280,47 +282,26 @@ export function useNodeChildren(nodeType: string, nodeId: string) {
   };
 }
 
-export function TreeLoadShimmer({ indent }: { indent?: string }) {
-  const widths = ['72%', '54%', '64%'];
+/** The loading rows of a picker list: the shared list skeleton, at the list's indent. */
+export function TreeLoadShimmer({
+  indent,
+  exiting,
+  appearDelayMs,
+}: {
+  indent?: string;
+  exiting?: boolean;
+  /** 0 when the caller already waits with useDeferredLoading. */
+  appearDelayMs?: number;
+}) {
+  const { t } = useTranslation();
   return (
-    <Flex direction="column" role="status" aria-busy="true" style={{ width: '100%' }}>
-      {widths.map((width, i) => (
-        <Flex
-          key={i}
-          align="center"
-          gap="2"
-          style={{
-            paddingLeft: indent,
-            height: 32,
-            animation: 'kb-row-in 380ms ease both',
-            animationDelay: `${i * 70}ms`,
-          }}
-        >
-          <Box
-            style={{
-              width: 14,
-              height: 14,
-              borderRadius: 3,
-              flexShrink: 0,
-              backgroundColor: 'var(--olive-4)',
-              animation: 'shimmer-pulse 1.4s ease-in-out infinite',
-              animationDelay: `${i * 70}ms`,
-            }}
-          />
-          <Box
-            style={{
-              height: 10,
-              width,
-              maxWidth: 160,
-              borderRadius: 4,
-              backgroundColor: 'var(--olive-4)',
-              animation: 'shimmer-pulse 1.4s ease-in-out infinite',
-              animationDelay: `${i * 70}ms`,
-            }}
-          />
-        </Flex>
-      ))}
-    </Flex>
+    <ListSkeleton
+      variant="menu-row"
+      exiting={exiting}
+      appearDelayMs={appearDelayMs}
+      statusLabel={t('chat.loadingSources', { defaultValue: 'Loading sources…' })}
+      style={indent ? { paddingLeft: indent, boxSizing: 'border-box' } : undefined}
+    />
   );
 }
 
@@ -334,22 +315,25 @@ export function KnowledgeTreeChildren({
 }: TreeSelectionProps & { parent: KnowledgeTreeNode; depth: number }) {
   const { t } = useTranslation();
   const { items, status, nextCursor, loadingMore, retry, loadMore } = useNodeChildren(parent.nodeType, parent.id);
+  const loading = useDeferredLoading(status === 'loading');
   const indent = `calc(var(--space-3) + ${depth * INDENT_PER_LEVEL_PX}px)`;
   const note: React.CSSProperties = { paddingLeft: indent, height: 'var(--space-6)' };
 
-  if (status === 'loading') {
-    return <TreeLoadShimmer indent={indent} />;
+  if (loading.visible) {
+    return <TreeLoadShimmer indent={indent} exiting={loading.exiting} appearDelayMs={0} />;
   }
+  // A fast load shows nothing until its rows arrive.
+  if (status === 'loading') return null;
   if (status === 'error') {
     return (
       <Flex align="center" gap="2" style={note}>
-        <Text size="1" style={{ color: 'var(--red-9)' }}>
+        <Text size="1" style={{ color: 'var(--red-11)' }}>
           {t('chat.treeLoadFailed')}
         </Text>
         <button
           type="button"
           onClick={retry}
-          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--olive-9)', fontSize: 12 }}
+          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-secondary)', fontSize: 12 }}
         >
           {t('chat.treeRetry')}
         </button>
@@ -359,7 +343,7 @@ export function KnowledgeTreeChildren({
   if (items.length === 0) {
     return (
       <Flex align="center" style={note}>
-        <Text size="1" style={{ color: 'var(--slate-9)' }}>
+        <Text size="1" style={{ color: 'var(--text-secondary)' }}>
           {t('chat.treeEmpty')}
         </Text>
       </Flex>
@@ -369,14 +353,9 @@ export function KnowledgeTreeChildren({
   const ancestorIds = [...parent.ancestorIds, parent.id];
   return (
     <Flex direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
-      {items.map((item, index) => (
-        <Box
-          key={item.id}
-          style={{
-            animation: 'kb-row-in 320ms ease both',
-            animationDelay: `${Math.min(index, 12) * 40}ms`,
-          }}
-        >
+      {/* Rows that replace a skeleton arrive at once, without a staggered entrance. */}
+      {items.map((item) => (
+        <Box key={item.id}>
         <KnowledgeTreeRow
           node={{
             id: item.id,
@@ -433,7 +412,7 @@ export function KnowledgeTreeRow({
           paddingLeft: `calc(var(--space-3) + ${depth * INDENT_PER_LEVEL_PX}px)`,
           paddingRight: 'var(--space-2)',
           borderRadius: 'var(--radius-1)',
-          backgroundColor: hovered ? 'var(--olive-3)' : 'transparent',
+          backgroundColor: hovered ? 'var(--fill-muted)' : 'transparent',
           cursor: selection.locked ? 'default' : 'pointer',
         }}
       >
@@ -463,7 +442,7 @@ export function KnowledgeTreeRow({
           truncate
           title={node.name}
           style={{
-            color: 'var(--slate-11)',
+            color: 'var(--text-secondary)',
             flexShrink: node.subtitle ? 0 : 1,
             maxWidth: node.subtitle ? '60%' : undefined,
             minWidth: node.subtitle ? undefined : NAME_MIN_PX,
@@ -472,7 +451,7 @@ export function KnowledgeTreeRow({
           {node.name}
         </Text>
         {node.subtitle ? (
-          <Text size="1" truncate title={node.subtitle} style={{ color: 'var(--slate-9)', minWidth: 0 }}>
+          <Text size="1" truncate title={node.subtitle} style={{ color: 'var(--text-secondary)', minWidth: 0 }}>
             {node.subtitle}
           </Text>
         ) : null}
@@ -605,13 +584,25 @@ const ROOT_ROW: React.CSSProperties = {
   minWidth: 0,
   boxSizing: 'border-box',
   height: 'var(--space-7)',
-  backgroundColor: 'var(--olive-2)',
-  border: '1px solid var(--olive-3)',
+  backgroundColor: 'var(--surface-subtle)',
+  border: '1px solid var(--border-subtle)',
   borderRadius: 'var(--radius-1)',
   paddingLeft: 'var(--space-3)',
   paddingRight: 'var(--space-2)',
-  transition: 'background-color 0.15s',
+  transition: 'background-color var(--motion-micro) var(--motion-ease)',
   cursor: 'pointer',
+};
+
+/**
+ * How a root row is drawn. `apps-panel` is the chat's apps panel: the medium
+ * radius, even side padding and a 16px mark. Other pickers keep the default.
+ */
+export type KnowledgeTreeRootAppearance = 'default' | 'apps-panel';
+
+const APPS_PANEL_ROOT_ROW: React.CSSProperties = {
+  ...ROOT_ROW,
+  borderRadius: 'var(--radius-2)',
+  paddingLeft: 'var(--space-2)',
 };
 
 /**
@@ -623,19 +614,22 @@ export function KnowledgeTreeRoot({
   filters,
   onSelectionChange,
   readOnly,
-}: TreeSelectionProps & { node: KnowledgeTreeNode }) {
+  appearance = 'default',
+}: TreeSelectionProps & { node: KnowledgeTreeNode; appearance?: KnowledgeTreeRootAppearance }) {
   const [expanded, setExpanded] = useState(false);
   const [everExpanded, setEverExpanded] = useState(false);
   useSelectionPlaces(filters);
   const selection = useNodeSelection(node, { filters, onSelectionChange, readOnly });
   const isCollection = node.nodeType === 'app' && (node.connector ?? '').trim().toUpperCase() === 'KB';
+  const appsPanel = appearance === 'apps-panel';
+  const markSize = appsPanel ? 16 : 20;
 
   return (
     <Flex direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
       <Flex
         align="center"
         gap="2"
-        style={{ ...ROOT_ROW, cursor: selection.locked ? 'default' : 'pointer' }}
+        style={{ ...(appsPanel ? APPS_PANEL_ROOT_ROW : ROOT_ROW), cursor: selection.locked ? 'default' : 'pointer' }}
         onClick={selection.toggle}
         role="presentation"
       >
@@ -651,7 +645,7 @@ export function KnowledgeTreeRoot({
         <NodeCheckbox name={node.name} selection={selection} />
         <span style={{ display: 'inline-flex', flexShrink: 0, alignItems: 'center', lineHeight: 0 }} aria-hidden>
           {isCollection ? (
-            <CollectionLeadingIcon sourceType="KB" size={20} />
+            <CollectionLeadingIcon sourceType="KB" size={markSize} />
           ) : (
             <KbNodeNameIcon
               isKnowledgeHub
@@ -660,11 +654,11 @@ export function KnowledgeTreeRoot({
               mimeType={node.mimeType}
               extension={node.extension}
               name={node.name}
-              size={20}
+              size={markSize}
             />
           )}
         </span>
-        <Text size="2" weight="medium" truncate style={{ color: 'var(--slate-11)' }}>
+        <Text size="2" weight="medium" truncate style={{ color: 'var(--text-secondary)' }}>
           {node.name}
         </Text>
       </Flex>
@@ -708,11 +702,11 @@ export function KnowledgeTreeGroup({
         <span style={{ display: 'inline-flex', flexShrink: 0, alignItems: 'center', lineHeight: 0 }} aria-hidden>
           {icon}
         </span>
-        <Text size="2" weight="medium" truncate style={{ color: 'var(--slate-11)', minWidth: 0 }}>
+        <Text size="2" weight="medium" truncate style={{ color: 'var(--text-secondary)', minWidth: 0 }}>
           {title}
         </Text>
         {meta ? (
-          <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
+          <Text size="1" style={{ color: 'var(--text-secondary)', flexShrink: 0 }}>
             {meta}
           </Text>
         ) : null}
@@ -885,25 +879,28 @@ export function KnowledgeSearchResults({
   const metaCache = useChatStore((s) => s.collectionMetaCache);
   const shown = items.filter((item) => !excludeIds.has(item.id));
   useNodePlaces(shown.filter((item) => item.nodeType !== 'app').map((item) => ({ id: item.id, nodeType: item.nodeType })));
+  const loading = useDeferredLoading(status === 'loading');
 
   const note: React.CSSProperties = { paddingLeft: 'var(--space-1)', minHeight: 'var(--space-6)' };
   if (status === 'idle') return null;
   if (status === 'short') {
     return (
       <Flex align="center" style={note} role="status">
-        <Text size="1" style={{ color: 'var(--neutral-a10)' }}>
+        <Text size="1" style={{ color: 'var(--text-secondary)' }}>
           {t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })}
         </Text>
       </Flex>
     );
   }
-  if (status === 'loading') {
-    return <TreeLoadShimmer />;
+  if (loading.visible && (status === 'loading' || status === 'ready')) {
+    return <TreeLoadShimmer exiting={loading.exiting} appearDelayMs={0} />;
   }
+  // A fast search shows nothing until its rows arrive.
+  if (status === 'loading') return null;
   if (status === 'error') {
     return (
       <Flex align="center" style={note} role="alert">
-        <Text size="1" style={{ color: 'var(--red-9)' }}>
+        <Text size="1" style={{ color: 'var(--red-11)' }}>
           {t('chat.treeSearchFailed')}
         </Text>
       </Flex>
@@ -912,7 +909,7 @@ export function KnowledgeSearchResults({
   if (shown.length === 0) {
     return emptyText ? (
       <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-        <Text size="2" style={{ color: 'var(--slate-9)' }}>
+        <Text size="2" style={{ color: 'var(--text-secondary)' }}>
           {emptyText}
         </Text>
       </Flex>
@@ -922,21 +919,15 @@ export function KnowledgeSearchResults({
   return (
     <Flex direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
       <Flex align="center" style={{ height: 28, paddingLeft: 'var(--space-1)' }}>
-        <Text size="1" style={{ color: 'var(--olive-9)' }}>
+        <Text size="1" style={{ color: 'var(--text-secondary)' }}>
           {t('chat.treeSearchMatches')}
         </Text>
       </Flex>
-      {shown.map((item, index) => {
+      {shown.map((item) => {
         const ancestorIds = item.nodeType === 'app' ? [] : metaCache[item.id]?.ancestorIds;
         const path = (ancestorIds ?? []).map((id) => metaCache[id]?.name).filter(Boolean);
         return (
-          <Box
-            key={item.id}
-            style={{
-              animation: 'kb-row-in 320ms ease both',
-              animationDelay: `${Math.min(index, 12) * 40}ms`,
-            }}
-          >
+          <Box key={item.id}>
           <KnowledgeTreeRow
             node={{
               id: item.id,

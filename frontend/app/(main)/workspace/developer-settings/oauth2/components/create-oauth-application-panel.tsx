@@ -21,7 +21,12 @@ import {
   knowledgeLimitForApi,
   type KnowledgeLimitValue,
 } from '@/app/components/knowledge-limit';
-import { FormField, WorkspaceRightPanel } from '../../../components';
+import {
+  FormField,
+  LabeledTextField,
+  WorkspaceRightPanel,
+  useFormValidation,
+} from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { Oauth2Api } from '../api';
 import { ServiceAccountsApi } from '../../../service-accounts/api';
@@ -76,6 +81,24 @@ const CARD_STYLE: React.CSSProperties = {
 };
 
 const MAX_REDIRECT_URIS = 10;
+
+type GeneralField =
+  | 'name'
+  | 'grants'
+  | 'redirectUris'
+  | 'serviceAccount'
+  | 'homepageUrl'
+  | 'privacyPolicyUrl'
+  | 'termsUrl';
+const GENERAL_FIELDS: readonly GeneralField[] = [
+  'name',
+  'grants',
+  'redirectUris',
+  'serviceAccount',
+  'homepageUrl',
+  'privacyPolicyUrl',
+  'termsUrl',
+];
 
 const CREDENTIAL_MONO: React.CSSProperties = {
   fontFamily:
@@ -159,14 +182,6 @@ export function CreateOAuthApplicationPanel({
   const [homepageUrl, setHomepageUrl] = useState('');
   const [privacyPolicyUrl, setPrivacyPolicyUrl] = useState('');
   const [termsUrl, setTermsUrl] = useState('');
-
-  const [generalErrors, setGeneralErrors] = useState<{
-    name?: string;
-    redirectUris?: string;
-    grants?: string;
-    optionalUrls?: string;
-    serviceAccount?: string;
-  }>({});
 
   /**
    * The service account a client-credentials application acts as.
@@ -254,7 +269,7 @@ export function CreateOAuthApplicationPanel({
       setServiceAccountId('');
       setServiceAccounts(null);
       setServiceAccountsError(null);
-      setGeneralErrors({});
+      resetValidation();
       setScopesByCategory(null);
       setScopesError(null);
       setSelectedScopes(new Set());
@@ -290,16 +305,6 @@ export function CreateOAuthApplicationPanel({
       cancelled = true;
     };
   }, [open, t, applyLoadedScopes]);
-
-  useEffect(() => {
-    if (usesAuthorizationCode) return;
-    setGeneralErrors((prev) => {
-      if (!prev.redirectUris) return prev;
-      const next = { ...prev };
-      delete next.redirectUris;
-      return next;
-    });
-  }, [usesAuthorizationCode]);
 
   const handleClose = useCallback(() => {
     onOpenChange(false);
@@ -355,60 +360,42 @@ export function CreateOAuthApplicationPanel({
     [addToast, t]
   );
 
+  // One rule per field, checked as the form is edited. Each message shows under
+  // its field once the person leaves it, and Next stays disabled until none is left.
+  const cleanRedirectUris = redirectUris.map((u) => u.trim()).filter(Boolean);
+  const optionalUrlProblem = (value: string) => {
+    const o = optionalUrlOrEmpty(value);
+    return o && !isValidHttpUrl(o)
+      ? t('workspace.oauth2.create.errorOptionalUrlInvalid')
+      : undefined;
+  };
+  const validation = useFormValidation<GeneralField>({
+    name: name.trim() ? undefined : t('workspace.oauth2.create.errorNameRequired'),
+    grants:
+      grantTypes.size === 0 ? t('workspace.oauth2.create.errorGrantRequired') : undefined,
+    redirectUris: !usesAuthorizationCode
+      ? undefined
+      : cleanRedirectUris.length === 0
+        ? t('workspace.oauth2.create.errorRedirectRequired')
+        : cleanRedirectUris.some((u) => !isValidOAuthRedirectUri(u))
+          ? t('workspace.oauth2.create.errorRedirectInvalid')
+          : undefined,
+    serviceAccount:
+      grantTypes.has('client_credentials') && !serviceAccountId
+        ? t('workspace.oauth2.create.errorServiceAccountRequired')
+        : undefined,
+    homepageUrl: optionalUrlProblem(homepageUrl),
+    privacyPolicyUrl: optionalUrlProblem(privacyPolicyUrl),
+    termsUrl: optionalUrlProblem(termsUrl),
+  });
+  const { touchAll, reset: resetValidation } = validation;
+
+  /** False, with every problem now showing, when the General tab is not ready. */
   const validateGeneral = useCallback((): boolean => {
-    const errors: typeof generalErrors = {};
-    if (!name.trim()) {
-      errors.name = t('workspace.oauth2.create.errorNameRequired');
-    }
-
-    if (usesAuthorizationCode) {
-      const uris = redirectUris.map((u) => u.trim()).filter(Boolean);
-      if (uris.length === 0) {
-        errors.redirectUris = t('workspace.oauth2.create.errorRedirectRequired');
-      } else {
-        const bad = uris.some((u) => !isValidOAuthRedirectUri(u));
-        if (bad) {
-          errors.redirectUris = t('workspace.oauth2.create.errorRedirectInvalid');
-        }
-      }
-    }
-
-    if (grantTypes.size === 0) {
-      errors.grants = t('workspace.oauth2.create.errorGrantRequired');
-    }
-
-    if (grantTypes.has('client_credentials') && !serviceAccountId) {
-      errors.serviceAccount = t(
-        'workspace.oauth2.create.errorServiceAccountRequired'
-      );
-    }
-
-    const optFields = [
-      { v: homepageUrl, key: 'home' as const },
-      { v: privacyPolicyUrl, key: 'privacy' as const },
-      { v: termsUrl, key: 'terms' as const },
-    ];
-    for (const { v } of optFields) {
-      const o = optionalUrlOrEmpty(v);
-      if (o && !isValidHttpUrl(o)) {
-        errors.optionalUrls = t('workspace.oauth2.create.errorOptionalUrlInvalid');
-        break;
-      }
-    }
-
-    setGeneralErrors(errors);
-    return Object.keys(errors).length === 0;
-  }, [
-    name,
-    redirectUris,
-    grantTypes,
-    usesAuthorizationCode,
-    homepageUrl,
-    privacyPolicyUrl,
-    termsUrl,
-    serviceAccountId,
-    t,
-  ]);
+    if (validation.isValid) return true;
+    touchAll(GENERAL_FIELDS);
+    return false;
+  }, [validation.isValid, touchAll]);
 
   /**
    * Two states, and no flag for "in flight".
@@ -573,18 +560,7 @@ export function CreateOAuthApplicationPanel({
     handleClose();
   }, [createdCredentials, onOpenManage, handleClose]);
 
-  const trimmedRedirectUris = useMemo(
-    () => redirectUris.map((u) => u.trim()).filter(Boolean),
-    [redirectUris]
-  );
-  const hasValidRedirect = trimmedRedirectUris.some((u) =>
-    isValidOAuthRedirectUri(u)
-  );
-
-  const primaryDisabledGeneral =
-    !name.trim() ||
-    grantTypes.size === 0 ||
-    (usesAuthorizationCode && !hasValidRedirect);
+  const primaryDisabledGeneral = !validation.isValid;
 
   const primaryTooltipGeneral = primaryDisabledGeneral
     ? t('workspace.oauth2.create.nextDisabledTooltip')
@@ -813,7 +789,11 @@ export function CreateOAuthApplicationPanel({
       ) : (
         <Tabs.Root
           value={activeTab}
-          onValueChange={(v) => setActiveTab(v as CreateTab)}
+          onValueChange={(v) => {
+            // Leaving General for a later step needs the same check as Next.
+            if (v !== 'general' && !validateGeneral()) return;
+            setActiveTab(v as CreateTab);
+          }}
         >
           <Tabs.List
             style={{
@@ -838,13 +818,14 @@ export function CreateOAuthApplicationPanel({
                 <FormField
                   label={t('workspace.oauth2.create.appNameLabel')}
                   required
-                  error={generalErrors.name}
+                  error={validation.errorFor('name')}
                 >
-                  <TextField.Root
+                  <LabeledTextField
                     size="2"
                     placeholder={t('workspace.oauth2.create.appNamePlaceholder')}
                     value={name}
                     onChange={(e) => setName(e.target.value)}
+                    onBlur={() => validation.touch('name')}
                     style={{ width: '100%' }}
                   />
                 </FormField>
@@ -879,12 +860,14 @@ export function CreateOAuthApplicationPanel({
                     *
                   </Text>
                 </Text>
-                {generalErrors.grants && (
+                {validation.errorFor('grants') && (
                   <Text
+                    id="oauth-grants-error"
+                    role="alert"
                     size="1"
                     style={{ color: 'var(--red-a11)', marginTop: 4 }}
                   >
-                    {generalErrors.grants}
+                    {validation.errorFor('grants')}
                   </Text>
                 )}
                 <Flex wrap="wrap" gap="3" style={{ marginTop: 'var(--space-2)' }}>
@@ -990,9 +973,9 @@ export function CreateOAuthApplicationPanel({
                       </select>
                     )}
 
-                    {generalErrors.serviceAccount && (
-                      <Text size="1" style={{ color: 'var(--red-a11)' }}>
-                        {generalErrors.serviceAccount}
+                    {validation.errorFor('serviceAccount') && (
+                      <Text role="alert" size="1" style={{ color: 'var(--red-a11)' }}>
+                        {validation.errorFor('serviceAccount')}
                       </Text>
                     )}
                   </Box>
@@ -1017,12 +1000,14 @@ export function CreateOAuthApplicationPanel({
                       {t('workspace.oauth2.create.redirectHelper')}
                     </Text>
                   </Flex>
-                  {generalErrors.redirectUris && (
+                  {validation.errorFor('redirectUris') && (
                     <Text
+                      id="oauth-redirect-error"
+                      role="alert"
                       size="1"
                       style={{ color: 'var(--red-a11)', marginTop: 4 }}
                     >
-                      {generalErrors.redirectUris}
+                      {validation.errorFor('redirectUris')}
                     </Text>
                   )}
                   <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-3)' }}>
@@ -1030,6 +1015,13 @@ export function CreateOAuthApplicationPanel({
                       <Flex key={index} align="center" gap="2">
                         <TextField.Root
                           size="2"
+                          color={validation.errorFor('redirectUris') ? 'red' : undefined}
+                          aria-invalid={validation.errorFor('redirectUris') ? true : undefined}
+                          aria-describedby={
+                            validation.errorFor('redirectUris') ? 'oauth-redirect-error' : undefined
+                          }
+                          aria-label={t('workspace.oauth2.create.redirectHeading')}
+                          onBlur={() => validation.touch('redirectUris')}
                           placeholder={t(
                             'workspace.oauth2.create.redirectPlaceholder'
                           )}
@@ -1083,16 +1075,13 @@ export function CreateOAuthApplicationPanel({
 
               <Box style={CARD_STYLE}>
                 <Flex direction="column" gap="3">
-                  {generalErrors.optionalUrls && (
-                    <Text size="1" style={{ color: 'var(--red-a11)' }}>
-                      {generalErrors.optionalUrls}
-                    </Text>
-                  )}
                   <FormField
                     label={t('workspace.oauth2.create.homepageLabel')}
                     optional
+                    error={validation.errorFor('homepageUrl')}
                   >
-                    <TextField.Root
+                    <LabeledTextField
+                      onBlur={() => validation.touch('homepageUrl')}
                       type="url"
                       placeholder={t('workspace.oauth2.create.urlPlaceholder')}
                       value={homepageUrl}
@@ -1103,8 +1092,10 @@ export function CreateOAuthApplicationPanel({
                   <FormField
                     label={t('workspace.oauth2.create.privacyLabel')}
                     optional
+                    error={validation.errorFor('privacyPolicyUrl')}
                   >
-                    <TextField.Root
+                    <LabeledTextField
+                      onBlur={() => validation.touch('privacyPolicyUrl')}
                       type="url"
                       value={privacyPolicyUrl}
                       onChange={(e) => setPrivacyPolicyUrl(e.target.value)}
@@ -1115,8 +1106,10 @@ export function CreateOAuthApplicationPanel({
                   <FormField
                     label={t('workspace.oauth2.create.termsLabel')}
                     optional
+                    error={validation.errorFor('termsUrl')}
                   >
-                    <TextField.Root
+                    <LabeledTextField
+                      onBlur={() => validation.touch('termsUrl')}
                       type="url"
                       value={termsUrl}
                       onChange={(e) => setTermsUrl(e.target.value)}

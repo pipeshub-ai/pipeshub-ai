@@ -33,7 +33,7 @@ export function AgentStrategyModePanel({
         <Text
           size="1"
           weight="medium"
-          style={{ color: 'var(--slate-12)' }}
+          style={{ color: 'var(--text-primary)' }}
         >
           {t('chat.differentModesOfQuery')}
         </Text>
@@ -73,10 +73,10 @@ function StrategyModeRow({ id, isActive, onSelect }: StrategyModeRowProps) {
       style={{
         padding: 'var(--space-3) var(--space-4)',
         borderRadius: 'var(--radius-1)',
-        border: '1px solid var(--olive-3)',
-        backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
+        border: '1px solid var(--border-subtle)',
+        backgroundColor: isHovered ? 'var(--fill-muted)' : 'var(--surface-subtle)',
         cursor: 'pointer',
-        transition: 'background-color 0.12s ease',
+        transition: 'background-color var(--motion-micro) var(--motion-ease)',
       }}
     >
       <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
@@ -84,7 +84,7 @@ function StrategyModeRow({ id, isActive, onSelect }: StrategyModeRowProps) {
           <MaterialIcon
             name={AGENT_STRATEGY_ICONS[id]}
             size={20}
-            color={isActive ? 'var(--mode-agent-icon)' : 'var(--slate-11)'}
+            color={isActive ? 'var(--mode-agent-icon)' : 'var(--text-secondary)'}
           />
           <Text
             size="2"
@@ -94,7 +94,7 @@ function StrategyModeRow({ id, isActive, onSelect }: StrategyModeRowProps) {
             {t(`chat.agentStrategy.modes.${id}.label`)}
           </Text>
         </Flex>
-        <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: 1.45 }}>
+        <Text size="1" style={{ color: 'var(--text-secondary)', lineHeight: 1.45 }}>
           {t(`chat.agentStrategy.modes.${id}.hint`)}
         </Text>
       </Flex>
@@ -108,7 +108,7 @@ function StrategyModeRow({ id, isActive, onSelect }: StrategyModeRowProps) {
           borderRadius: '50%',
           border: isActive
             ? '5px solid var(--accent-9)'
-            : '1px solid var(--slate-7)',
+            : '1px solid var(--gray-7)',
           flexShrink: 0,
           marginLeft: 'var(--space-3)',
         }}

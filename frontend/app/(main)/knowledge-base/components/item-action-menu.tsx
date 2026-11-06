@@ -128,6 +128,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
             <React.Fragment key={i}>
               {action.separatorBefore && <DropdownMenu.Separator />}
               <DropdownMenu.Item
+                textValue={action.label}
                 color={action.color}
                 disabled={isBlocked || undefined}
                 style={{
@@ -162,7 +163,9 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
                   {isPending ? (
                     <Spinner size={14} color={iconColor} />
                   ) : (
-                    <MaterialIcon name={action.icon} size={16} color={iconColor} />
+                    <span aria-hidden style={{ display: 'inline-flex', flexShrink: 0 }}>
+                      <MaterialIcon name={action.icon} size={16} color={iconColor} />
+                    </span>
                   )}
                   <Text
                     size={isMobile ? '2' : '1'}

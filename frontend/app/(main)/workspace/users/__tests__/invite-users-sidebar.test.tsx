@@ -4,7 +4,11 @@ import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react
 import { AxiosError, AxiosHeaders } from 'axios';
 import '@/lib/__tests__/test-i18n';
 
-const usersApi = vi.hoisted(() => ({ inviteUsers: vi.fn(), updateUser: vi.fn() }));
+const usersApi = vi.hoisted(() => ({
+  inviteUsers: vi.fn(),
+  updateUser: vi.fn(),
+  checkInviteStatus: vi.fn(),
+}));
 vi.mock('../api', () => ({ UsersApi: usersApi }));
 const xlsxRead = vi.hoisted(() => ({ fail: null as Error | null }));
 vi.mock('xlsx', async (importOriginal) => {
@@ -54,11 +58,18 @@ vi.mock('../../components', () => ({
   TagInput: ({
     tags,
     error,
+    warnings,
   }: {
     tags: Array<{ id: string; value: string; isValid?: boolean }>;
     error?: string;
+    warnings?: Record<string, string>;
   }) => (
     <div>
+      {Object.entries(warnings ?? {}).map(([email, note]) => (
+        <p key={email} data-testid="warning" data-email={email}>
+          {note}
+        </p>
+      ))}
       {tags.map((tag) => (
         <span key={tag.id} data-testid="tag" data-invalid={tag.isValid === false ? 'true' : 'false'}>
           {tag.value}
@@ -125,6 +136,8 @@ beforeEach(() => {
   clearToasts();
   signInAs('admin');
   usersApi.inviteUsers.mockReset();
+  usersApi.checkInviteStatus.mockReset();
+  usersApi.checkInviteStatus.mockResolvedValue({});
   xlsxRead.fail = null;
 });
 
@@ -146,6 +159,47 @@ describe('inviting admins', () => {
     openPanel(tags(['a@x.com', true], ['b@x.com', true]));
 
     expect(screen.queryByText(warning)).toBeNull();
+  });
+});
+
+describe('warning about addresses already in the workspace', () => {
+  it('asks the server which typed addresses already belong, and passes a note for each', async () => {
+    usersApi.checkInviteStatus.mockResolvedValue({
+      'dave@x.com': 'member',
+      'pat@x.com': 'invited',
+    });
+    openPanel(tags(['Dave@x.com', true], ['pat@x.com', true], ['new@x.com', true]));
+
+    await waitFor(() => expect(screen.getAllByTestId('warning')).toHaveLength(2));
+    expect(usersApi.checkInviteStatus).toHaveBeenCalledWith(['dave@x.com', 'pat@x.com', 'new@x.com']);
+    const notes = Object.fromEntries(
+      screen.getAllByTestId('warning').map((el) => [el.getAttribute('data-email'), el.textContent]),
+    );
+    expect(notes['dave@x.com']).toBe('dave@x.com is already a member, so no invite will be sent to this address.');
+    expect(notes['pat@x.com']).toBe('pat@x.com has already been invited. Sending again will resend their invite.');
+    // Sending stays possible: a resend is a real outcome.
+    expect((sendButton() as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('does not ask again for an address it already knows, and skips invalid ones', async () => {
+    usersApi.checkInviteStatus.mockResolvedValue({});
+    openPanel(tags(['a@x.com', true], ['not-an-email', false]));
+    await waitFor(() => expect(usersApi.checkInviteStatus).toHaveBeenCalledTimes(1));
+    expect(usersApi.checkInviteStatus).toHaveBeenCalledWith(['a@x.com']);
+
+    act(() => {
+      useUsersStore.setState({ inviteEmails: tags(['a@x.com', true], ['b@x.com', true]) });
+    });
+    await waitFor(() => expect(usersApi.checkInviteStatus).toHaveBeenCalledTimes(2));
+    expect(usersApi.checkInviteStatus).toHaveBeenLastCalledWith(['b@x.com']);
+  });
+
+  it('shows no note, and no error, when the check fails', async () => {
+    usersApi.checkInviteStatus.mockRejectedValue(new Error('offline'));
+    openPanel(tags(['a@x.com', true]));
+    await waitFor(() => expect(usersApi.checkInviteStatus).toHaveBeenCalled());
+    expect(screen.queryAllByTestId('warning')).toHaveLength(0);
+    expect(toasts()).toHaveLength(0);
   });
 });
 

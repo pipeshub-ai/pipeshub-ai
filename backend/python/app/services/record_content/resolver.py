@@ -99,7 +99,7 @@ class RecordContentResolver:
         record = await self._lookup_record(ref, artifact_actor, conversation_id)
         reader = artifact_actor if _is_artifact(record) else actor
 
-        await self._authorizer.authorize(reader, record)
+        await self._authorizer.authorize(reader, record, conversation_id=conversation_id)
 
         content, source = await self._fetch(record, actor=reader, version=version,
                                             max_bytes=max_bytes, session=session)

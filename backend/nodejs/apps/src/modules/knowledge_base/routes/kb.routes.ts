@@ -62,7 +62,7 @@ import { extensionToMimeType, getMimeType } from '../../storage/mimetypes/mimety
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { FileProcessorService } from '../../../libs/middlewares/file_processor/fp.service';
-import { KB_UPLOAD_LIMITS } from '../constants/kb.constants';
+import { KB_UPLOAD_LIMITS, kbUploadAllowlist } from '../constants/kb.constants';
 import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/util';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { RequestHandler, Response, NextFunction } from 'express';
@@ -147,6 +147,7 @@ export function createKnowledgeBaseRouter(
     strictFileUpload: boolean;
     allowedExtensions?: string[];
     partialUpload?: boolean;
+    rejectEmptyFiles?: boolean;
   }): RequestHandler[] => {
     const handler: RequestHandler = async (
       req: AuthenticatedUserRequest,
@@ -165,6 +166,7 @@ export function createKnowledgeBaseRouter(
           strictFileUpload: opts.strictFileUpload,
           allowedExtensions: opts.allowedExtensions,
           partialUpload: opts.partialUpload,
+          rejectEmptyFiles: opts.rejectEmptyFiles,
           resolveMimeType: (ext: string) => getMimeType(ext),
         });
         const upload = service.upload();
@@ -380,16 +382,14 @@ export function createKnowledgeBaseRouter(
     // File processing middleware (dynamic max size)
     ...createDynamicBufferUpload({
       fieldName: 'files',
-      allowedMimeTypes: Object.values(extensionToMimeType),
-      allowedExtensions: Object.keys(extensionToMimeType).map((e) =>
-        e.toLowerCase(),
-      ),
+      ...kbUploadAllowlist(extensionToMimeType),
       maxFilesAllowed: KB_UPLOAD_LIMITS.maxFilesPerRequest,
       isMultipleFilesAllowed: true,
       strictFileUpload: true,
       // Reject oversize / unsupported files individually instead of failing the
       // whole batch; rejected files are reported back as per-file failures.
       partialUpload: true,
+      rejectEmptyFiles: true,
     }),
     // Validate multipart form data after file processing
     validateMultipartFormData,

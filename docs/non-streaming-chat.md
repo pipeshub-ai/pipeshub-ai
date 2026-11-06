@@ -315,7 +315,7 @@ crashed streaming turn leaves, and the next follow-up moves it on.
 | `request_too_large` | 413 | 413, message kept | same |
 | `content_filter` | 422 | 422, message kept | same |
 | `llm_not_configured` / `llm_initialization_failed` | 424 | 424, message kept | same |
-| `toolset_config_missing` / `mcp_server_config_missing` | 424 | 424, message kept ("connect your actions in Workspace → Actions") | same |
+| `toolset_config_missing` / `mcp_server_config_missing` (service-account agents only; `details.items` names the tools) | 424 | 424, message kept ("ask an admin to connect them in Agent Builder") | same |
 | `rate_limit` / `quota_exceeded` | 429 | 429, message kept | same |
 | `auth_error` / `server_error` (provider) | 502 | 500, generic message | same |
 | `timeout` | 504 | 500, "unavailable" | same |

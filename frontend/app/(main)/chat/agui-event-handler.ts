@@ -23,6 +23,11 @@ import type { StreamMessageCallbacks } from './api';
 import { toolStatusLabel } from './utils/tool-display';
 import { ChatStreamError } from './stream-error';
 import { toolApprovalDetails } from './tool-approval';
+import { settledAnswerText } from './utils/repair-streaming-markdown';
+import { i18n } from '@/lib/i18n';
+
+/** The one status line for a model turn that has not started writing: the same words the idle watchdog shows. */
+const thinking = () => i18n.t('chatStream.thinkingFallback');
 
 /** Mutable counters the caller inspects after the stream ends (mirrors the
  * legacy dispatcher's local `receivedComplete`/`lastSSEError` bookkeeping). */
@@ -45,7 +50,6 @@ interface AGUIStreamState {
 // that does not send one.
 const MAX_TOOL_ARGS_CHARS = 2000;
 const MAX_TOOL_RESULT_CHARS = 2000;
-
 /**
  * Builds the live `MessagePart[]` timeline from the SAME AG-UI event stream
  * this handler already reads, mirroring the server-side `TranscriptCollector`
@@ -351,11 +355,22 @@ export function createAGUIEventHandler(
   tracking?: AGUIStreamTracking,
 ): (event: SSEEvent) => void {
   let textBuffer = '';
+  // How much of `textBuffer` is the server's tidied answer; the rest is raw text streamed since.
+  let settledLength = 0;
   let rawTextReceived = 0;
   let awaitingRetryAfterDiscard = false;
   let state: AGUIStreamState = { citations: [], normalizedAnswer: '', rawLength: 0 };
   const partsBuilder = new LivePartsBuilder();
   const emitParts = () => callbacks.onParts?.(partsBuilder.snapshot());
+  /**
+   * The answer as it can be shown without a later frame changing it (`settledAnswerText`): its words as they arrive,
+   * each citation once the server has numbered it.
+   */
+  const shownText = (): string => settledAnswerText(textBuffer, settledLength);
+  const resetText = (text = '') => {
+    textBuffer = text;
+    settledLength = text.length;
+  };
 
   return (event: SSEEvent) => {
     const data = event.data as AGUIEventEnvelope | undefined;
@@ -366,7 +381,7 @@ export function createAGUIEventHandler(
         const stepName = typeof data?.stepName === 'string' ? data.stepName : '';
         if (stepName.startsWith('sub_agent:')) {
           const roleName = stepName.slice('sub_agent:'.length);
-          callbacks.onStatus?.({ status: 'executing', message: `Delegating to ${roleName}...` });
+          callbacks.onStatus?.({ status: 'executing', message: i18n.t('chatStream.delegatingTo', { name: roleName }) });
         }
         if (data) partsBuilder.handleStepStarted(data);
         break;
@@ -403,7 +418,7 @@ export function createAGUIEventHandler(
           callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
         }
         if (isNewRootTurn) {
-          textBuffer = '';
+          resetText();
           rawTextReceived = 0;
           awaitingRetryAfterDiscard = false;
         }
@@ -418,8 +433,9 @@ export function createAGUIEventHandler(
         const runId = typeof data?.runId === 'string' ? data.runId : undefined;
         if (partsBuilder.isRootRun(runId)) {
           textBuffer += delta;
-          rawTextReceived += delta.length;
-          callbacks.onChunk?.({ chunk: delta, accumulated: textBuffer, citations: state.citations });
+          // In code points, as the server counts `rawLength`: an emoji is two UTF-16 units but one character there.
+          rawTextReceived += Array.from(delta).length;
+          callbacks.onChunk?.({ chunk: delta, accumulated: shownText(), citations: state.citations });
         }
         if (data) partsBuilder.handleTextContent(data);
         emitParts();
@@ -436,7 +452,7 @@ export function createAGUIEventHandler(
         // final answer (RUN_FINISHED follows) — TOOL_CALL_START clears it.
         const runId = typeof data?.runId === 'string' ? data.runId : undefined;
         if (partsBuilder.isRootRun(runId)) {
-          callbacks.onStatus?.({ status: 'calling_llm', message: 'Thinking...' });
+          callbacks.onStatus?.({ status: 'calling_llm', message: thinking() });
         }
         emitParts();
         break;
@@ -451,7 +467,7 @@ export function createAGUIEventHandler(
         const runId = typeof data?.runId === 'string' ? data.runId : undefined;
         if (textBuffer && partsBuilder.isRootRun(runId)) {
           partsBuilder.settleLastRootText();
-          textBuffer = '';
+          resetText();
           rawTextReceived = 0;
           state = { ...state, normalizedAnswer: '', rawLength: 0 };
           callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
@@ -486,7 +502,7 @@ export function createAGUIEventHandler(
         // Status uses present-tense humanization only — `displayName` is past
         // tense for the timeline ("Ran code") and would make a long-running
         // tool look finished while the chat is still busy.
-        callbacks.onStatus?.({ status: 'executing', message: `${toolStatusLabel(toolCallName)}...` });
+        callbacks.onStatus?.({ status: 'executing', message: `${toolStatusLabel(toolCallName)}…` });
         // A tool call is about to run for the turn that was just streamed —
         // it was never the final answer, so settle it into the timeline
         // (already appended as a `text` part above) and stop showing it in
@@ -497,7 +513,7 @@ export function createAGUIEventHandler(
         const runId = typeof data?.runId === 'string' ? data.runId : undefined;
         if (textBuffer && partsBuilder.isRootRun(runId)) {
           partsBuilder.settleLastRootText();
-          textBuffer = '';
+          resetText();
           rawTextReceived = 0;
           state = { ...state, normalizedAnswer: '', rawLength: 0 };
           callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
@@ -519,7 +535,7 @@ export function createAGUIEventHandler(
         // STATE_SNAPSHOT(calling_llm) / TEXT_MESSAGE_START arrives.
         const runId = typeof data?.runId === 'string' ? data.runId : undefined;
         if (partsBuilder.isRootRun(runId)) {
-          callbacks.onStatus?.({ status: 'calling_llm', message: 'Thinking...' });
+          callbacks.onStatus?.({ status: 'calling_llm', message: thinking() });
         }
         break;
       }
@@ -548,8 +564,8 @@ export function createAGUIEventHandler(
         state = applyStatePatch(state, textOps);
         if (endsDiscard) {
           awaitingRetryAfterDiscard = false;
-          textBuffer = state.normalizedAnswer;
-          callbacks.onChunk?.({ chunk: '', accumulated: textBuffer, citations: state.citations });
+          resetText(state.normalizedAnswer);
+          callbacks.onChunk?.({ chunk: '', accumulated: shownText(), citations: state.citations });
           break;
         }
         const normalizationCurrent =
@@ -557,11 +573,11 @@ export function createAGUIEventHandler(
             ? state.rawLength >= rawTextReceived
             : state.normalizedAnswer.length >= textBuffer.length;
         if (normalizationCurrent) {
-          textBuffer = state.normalizedAnswer;
+          resetText(state.normalizedAnswer);
         }
         callbacks.onChunk?.({
           chunk: '',
-          accumulated: textBuffer,
+          accumulated: shownText(),
           citations: state.citations,
           ...(state.confidence !== undefined ? { confidence: state.confidence } : {}),
         });
@@ -585,13 +601,15 @@ export function createAGUIEventHandler(
             runId,
           );
           if (partsBuilder.isRootRun(runId)) {
-            textBuffer = '';
+            resetText();
             rawTextReceived = 0;
             awaitingRetryAfterDiscard = true;
             state = { ...state, normalizedAnswer: '', rawLength: 0 };
             callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
           }
           emitParts();
+        } else if (typeof name === 'string') {
+          callbacks.onCustomEvent?.(name, value);
         }
         break;
       }
@@ -652,14 +670,15 @@ export function createAGUIEventHandler(
         }
         const status = typeof snapshot?.status === 'string' ? snapshot.status : '';
         const STATUS_MESSAGES: Record<string, string> = {
-          starting: 'Starting...',
-          calling_llm: 'Thinking...',
-          running_tool: 'Executing tool...',
+          // Before the model's first call the run is starting up: to the reader that is still thinking.
+          starting: thinking(),
+          calling_llm: thinking(),
+          running_tool: 'Executing tool…',
         };
         let message = STATUS_MESSAGES[status];
         if (message) {
           if (status === 'running_tool' && typeof snapshot?.current_tool === 'string') {
-            message = `${toolStatusLabel(snapshot.current_tool)}...${toolProgressText(snapshot)}`;
+            message = `${toolStatusLabel(snapshot.current_tool)}…${toolProgressText(snapshot)}`;
           }
           callbacks.onStatus?.({ status, message });
         }

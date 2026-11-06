@@ -310,6 +310,10 @@ class ModelResponseContext:
     metadata: dict[str, Any] = field(default_factory=dict)
     recovery_message: "Message | None" = None
     recovery_tool_results: "list[CoreToolResult] | None" = None
+    # With `recovery_message` on a reply without tool calls: the next turn replaces the reply, so
+    # its streamed text is taken back from the client and the transcript (not on the run's last
+    # turn, where nothing replaces it). The model still sees it.
+    discard_text: bool = False
 
 
 @dataclass

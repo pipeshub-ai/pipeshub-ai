@@ -2,24 +2,32 @@
 
 import { Suspense, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { ServiceGate } from '@/app/components/ui/service-gate';
+import { AgentsIndex } from './components/index/agents-index';
 
-/** Agents live in chat ("My agents"); old `/agents` links land there, keeping `?agentId=`. */
-function AgentsRedirect() {
+/** Old `/agents?agentId=…` links open that agent's chat, keeping every param; the bare URL is the Agents index. */
+function AgentsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const query = searchParams.toString();
+  const redirect = searchParams.has('agentId');
 
   useEffect(() => {
-    router.replace(query ? `/chat/?${query}` : '/chat/');
-  }, [router, query]);
+    if (redirect) router.replace(`/chat/?${query}`);
+  }, [redirect, router, query]);
 
-  return null;
+  if (redirect) return null;
+  return (
+    <ServiceGate services={['query']}>
+      <AgentsIndex />
+    </ServiceGate>
+  );
 }
 
 export default function AgentsPage() {
   return (
     <Suspense fallback={null}>
-      <AgentsRedirect />
+      <AgentsPageContent />
     </Suspense>
   );
 }

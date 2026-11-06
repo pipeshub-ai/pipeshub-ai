@@ -96,8 +96,8 @@ class TestStages:
     async def test_the_rows_carry_only_what_the_check_reads(self) -> None:
         provider, _ = _provider({"targets": [_row("a", ok=True)]})
         rows = await provider._kh_v3_accessible_rows("u", "org", ["a"], [], access=ACCESS, transaction=None)
-        # isPlaceholder: a stub asked for by id must not pass for a real record.
-        assert rows == [{"id": "a", "vrid": "vr-a", "connectorId": "app", "indexingStatus": "COMPLETED",
+        # isPlaceholder: a stub asked for by id must not pass for a real record. name: a shared chat's sources.
+        assert rows == [{"id": "a", "name": None, "vrid": "vr-a", "connectorId": "app", "indexingStatus": "COMPLETED",
                          "isInternal": False, "hasIndexedCopy": False, "isPlaceholder": False, "groupIds": []}]
 
     @pytest.mark.asyncio

@@ -104,8 +104,24 @@
     "createPageDescription": "這是專用的建立代理程式頁面。請在此連接您的表單，或重新導向至您的代理程式建立工具。",
     "pageTitle": "代理程式",
     "comingSoon": "即將推出",
-    "missingAgentKey": "缺少代理程式金鑰。請從對話側邊欄開啟代理程式，或使用有效的連結。",
-    "loading": "載入中…"
+    "missingAgentKey": "缺少代理程式金鑰。請從「代理程式」頁面開啟代理程式，或使用有效的連結。",
+    "loading": "載入中…",
+    "index": {
+      "columnAgent": "代理",
+      "columnOwner": "擁有者",
+      "rowActions": "{{name}} 的操作",
+      "loading": "正在載入代理…",
+      "loadFailedTitle": "無法載入代理",
+      "loadFailedDescription": "請檢查網路連線後再試一次。",
+      "emptyTitle": "尚無代理",
+      "emptyDescription": "您建立或可使用的代理會顯示在這裡。",
+      "emptyDescriptionCanCreate": "您建立或可使用的代理會顯示在這裡。若要建立，請選取「新增代理」。",
+      "searchPlaceholder": "搜尋代理…",
+      "searchLabel": "搜尋代理",
+      "closeSearch": "關閉搜尋",
+      "noSearchMatchesTitle": "沒有符合搜尋條件的代理",
+      "noSearchMatchesDescription": "請嘗試其他搜尋字詞。"
+    }
   },
   "projects": {
     "pageTitle": "專案",
@@ -128,7 +144,8 @@
     "noSearchResults": "沒有符合「{{query}}」的專案",
     "noSearchResultsHint": "請嘗試其他名稱，或清除搜尋。",
     "clearSearch": "清除搜尋",
-    "cardActionsLabel": "{{name}} 的操作"
+    "cardActionsLabel": "{{name}} 的操作",
+    "loadingList": "正在載入專案…"
   },
   "timeGroup": {
     "today": "今天",
@@ -145,7 +162,9 @@
     "copiedCode": "已複製",
     "remoteImageBlocked": "未載入外部圖片",
     "remoteImageFrom": "來自 {{host}}",
-    "remoteImageLoad": "載入圖片"
+    "remoteImageLoad": "載入圖片",
+    "usingTool": "正在使用工具…",
+    "delegatingTo": "正在委派給 {{name}}…"
   },
   "uploadProgress": {
     "uploadFailedDefault": "上傳失敗",
@@ -182,6 +201,7 @@
       "sizeLimitDescription": "每個檔案的限制為 {{maxMb}} MB。請聯絡您的管理員以申請提高上傳限制。",
       "sizeLimitDescriptionAdmin": "每個檔案的限制為 {{maxMb}} MB。您可以在「工作區實驗室」中提高此限制。",
       "unsupportedDescription": "不支援的檔案類型。",
+      "emptyDescription": "此檔案是空的。請新增內容後重新上傳。",
       "duplicateDescription": "此處已存在同名檔案。",
       "trackerHint": "詳細資訊請見下方的上傳面板。",
       "openLabs": "開啟實驗室"
@@ -191,6 +211,8 @@
       "tooLarge_other": "{{count}} 個超過 {{maxMb}} MB",
       "unsupported_one": "{{count}} 個不支援的類型",
       "unsupported_other": "{{count}} 個不支援的類型",
+      "empty_one": "{{count}} 個空檔案",
+      "empty_other": "{{count}} 個空檔案",
       "duplicate_one": "{{count}} 個重複名稱",
       "duplicate_other": "{{count}} 個重複名稱",
       "other_one": "{{count}} 個其他錯誤",
@@ -329,6 +351,12 @@
     "searchChats": "搜尋對話",
     "inbox": "收件匣",
     "notifications": "通知",
+    "searchChatsPlaceholder": "搜尋聊天…",
+    "searchChatsFailed": "無法搜尋你的聊天。請重試。",
+    "loadChatsFailed": "無法載入你的聊天。請重試。",
+    "loadingChats": "正在載入聊天…",
+    "inboxUnread": "收件匣，{{count}} 則未讀",
+    "inboxTooltip": "收件匣：發生了什麼，以及需要你處理的事",
     "home": "首頁"
   },
   "artifacts": {
@@ -411,7 +439,11 @@
     },
     "loadFailed": "載入通知失敗",
     "updateFailed": "無法更新通知",
-    "removeFailed": "無法移除通知"
+    "removeFailed": "無法移除通知",
+    "loadingList": "正在載入通知…",
+    "emptyBody": "你的聊天的分享、提及和變更會顯示在這裡。",
+    "showMore": "顯示更多",
+    "showLess": "收起"
   },
   "action": {
     "find": "尋找",
@@ -674,7 +706,11 @@
     "expand": "展開側邊欄",
     "close": "關閉側邊欄",
     "collapse": "收合側邊欄",
-    "navigation": "導覽"
+    "navigation": "導覽",
+    "hide": "隱藏側邊欄",
+    "show": "顯示側邊欄",
+    "hideWithShortcut": "隱藏側邊欄（{{shortcut}}）",
+    "showWithShortcut": "顯示側邊欄（{{shortcut}}）"
   },
   "menu": {
     "reindex": "重新索引",
@@ -832,6 +868,8 @@
     "heyUser": "嗨，{{name}} 👋",
     "heyUserDefaultName": "您好",
     "askAnything": "隨時提問...",
+    "askOrSearchWorkspace": "在 {{workspace}} 中提問或搜尋任何內容...",
+    "askAboutPaste": "針對貼上的內容提問...",
     "sendMessage": "傳送訊息",
     "quick": "快速",
     "listening": "聆聽中...",
@@ -851,6 +889,7 @@
       "searchCollections": "搜尋集合",
       "searchActions": "搜尋動作",
       "actionsTab": "動作",
+      "filterTabsLabel": "顯示內容",
       "noConnectors": "此代理尚未設定任何連接器。",
       "noCollections": "此代理尚未設定任何集合。",
       "noCollectionMatches": "沒有符合您搜尋條件的集合。",
@@ -882,6 +921,12 @@
       "resetDefaults": "重設為專案預設值"
     },
     "aiModelsTooltip": "AI 模型",
+    "modelChip": {
+      "ariaLabel": "模型：{{name}}，推理強度 {{effort}}。開啟已設定的模型。",
+      "ariaLabelNoEffort": "模型：{{name}}。開啟已設定的模型。",
+      "tooltip": "{{name}} · 由 {{provider}} 提供 · 強度 {{effort}}",
+      "tooltipNoEffort": "{{name}} · 由 {{provider}} 提供"
+    },
     "attachmentTooltip": "附加檔案",
     "micTooltip": "語音輸入",
     "uploadYourFile": "上傳您的檔案",
@@ -898,6 +943,7 @@
     "yourChats": "您的對話",
     "noChatsFound": "找不到任何對話",
     "noChatsYet": "尚無對話",
+    "yourChatsEmpty": "您的對話將顯示在這裡",
     "searchCollections": "搜尋連接器與集合",
     "loadingCollections": "正在載入集合…",
     "failedToLoadCollections": "無法載入集合",
@@ -928,8 +974,8 @@
     "feedbackCategoryUnclearExplanation": "解釋不清楚",
     "feedbackCategoryPoorCitations": "引用品質不佳",
     "feedbackCategoryOther": "其他...",
-    "like": "有幫助",
-    "dislike": "沒有幫助",
+    "like": "讚",
+    "dislike": "倒讚",
     "copy": "複製",
     "fork": "分叉對話",
     "forkFromHere": "從此處分叉",
@@ -943,6 +989,7 @@
     "citations": "引用",
     "showMoreCitations_one": "顯示另外 {{count}} 則引用",
     "showMoreCitations_other": "顯示另外 {{count}} 則引用",
+    "editNotSaved": "你的編輯未儲存。請再試一次。",
     "markdownWithCitations": "含引用的 Markdown",
     "onlyTextWithoutCitations": "僅純文字（不含引用）",
     "differentModesOfQuery": "不同的查詢模式",
@@ -951,14 +998,10 @@
     "generatingTitle": "正在產生對話…",
     "newChat": "新對話",
     "startChat": "開始對話",
-    "searchAgents": "搜尋代理…",
-    "noAgentsFound": "找不到任何代理",
-    "failedToLoadAgents": "無法載入代理",
-    "backToChatHome": "所有對話",
+    "backToAgents": "所有代理程式",
     "agentSidebarLabel": "代理",
     "agentNameLoading": "載入中…",
     "sharedAgentChat": "共享的智能體聊天",
-    "myAgents": "我的代理",
     "moreAgents": "更多代理",
     "agentHeaderMenuAria": "代理選項",
     "agentMenuNewChat": "新對話",
@@ -972,14 +1015,17 @@
     "deleteAgentConfirm": "要刪除此代理嗎？",
     "deleteAgentDescription": "名稱為",
     "deleteAgentWarning": "的代理將從 Pipeshub 永久移除。使用此代理的對話可能無法如預期運作。",
-    "agentListRowMenuAria": "代理選項",
     "failedToDeleteAgent": "無法刪除代理",
     "rename": "重新命名",
     "archive": "封存",
     "deleteChat": "刪除",
     "pin": "置頂",
     "unpin": "取消置頂",
-    "pinned": "已置頂",
+    "pinned": "已置頂的對話",
+    "pinnedChatsEmpty": "您置頂的對話將顯示在這裡",
+    "pinnedRowSuffix": "，已置頂",
+    "sidebarRunning": "背景處理中",
+    "sidebarRunningOpen": "處理中",
     "pinFailed": "無法置頂聊天",
     "unpinFailed": "無法取消置頂聊天",
     "export": {
@@ -1098,7 +1144,7 @@
         "auto": {
           "label": "自動",
           "short": "自動",
-          "hint": "系統會為每個步驟挑選最佳做法——兼顧速度與完整性。"
+          "hint": "系統會為每個步驟挑選最佳做法，兼顧速度與完整性。"
         },
         "quick": {
           "label": "快速",
@@ -1113,7 +1159,7 @@
         "deep": {
           "label": "深入",
           "short": "深入",
-          "hint": "以更長的推理進行更徹底的探索——最重視準確度時適用。"
+          "hint": "以更長的推理進行更徹底的探索，最重視準確度時適用。"
         }
       }
     },
@@ -1394,6 +1440,7 @@
     "demoHide": "隱藏示範資料",
     "scrollAttachmentsLeft": "向左捲動附件",
     "scrollAttachmentsRight": "向右捲動附件",
+    "attachmentsGroup": "附件",
     "demoSuggestions": {
       "1": {
         "text": "付款服務的架構為何變更，這項決定是如何做出的？",
@@ -1444,7 +1491,7 @@
       "unsupportedType": "不支援的檔案類型：{{names}}。支援的類型：{{types}}。",
       "fileTooLarge": "檔案過大：{{names}}。每個檔案上限為 {{maxMb}} MB。",
       "tooManyFiles": "每則訊息最多 {{max}} 個附件。",
-      "pasteTruncated": "\n\n[內容已截斷 — 貼上的文字超過附件大小上限。]",
+      "pasteTruncated": "\n\n[內容已截斷：貼上的文字超過附件大小上限。]",
       "uploading": "上傳中…",
       "retry": "重新上傳",
       "pastedText": "貼上的文字",
@@ -1452,10 +1499,13 @@
       "removePastedText": "移除貼上的文字",
       "showInTextField": "在文字欄位中顯示",
       "previewLoadFailed": "載入內容失敗",
-      "copyText": "複製",
+      "copyText": "複製到剪貼簿",
+      "copied": "已複製",
+      "copyFailed": "無法複製文字",
       "closePreview": "關閉",
       "loadingPreview": "載入中…",
-      "pasteMeta_other": "{{chars}} 個字元 · {{count}} 行"
+      "pasteMeta_other": "{{count}} 行 · {{chars}} 個字元",
+      "pasteChipLabel": "{{label}}，{{meta}}。開啟閱讀。"
     },
     "voiceSttNotConfigured": "請在「AI 模型」設定中設定語音轉文字（STT）模型，以啟用語音輸入。",
     "voiceSttLoading": "正在檢查語音功能…",
@@ -1478,6 +1528,20 @@
     "models": "模型",
     "manage": "管理",
     "configuredModels": "已設定的模型",
+    "seeMoreModels": "查看更多模型",
+    "loadingModels": "正在載入模型…",
+    "loadingSources": "正在載入來源…",
+    "modelProviderBy": "由 {{provider}} 提供",
+    "modelTags": {
+      "default": "預設",
+      "reasoning": "推理",
+      "multimodal": "多模態"
+    },
+    "noConnectorsYet": "還沒有連接器。你在連接器中連接的應用程式會顯示在這裡。",
+    "expandPanel": "展開面板",
+    "collapsePanel": "收合面板",
+    "cancelEditQuery": "取消編輯",
+    "cancelRegenerate": "取消重新產生",
     "reasoningEffort": {
       "label": "推理強度",
       "overrideHint": "再次點選即可使用預設值。",
@@ -1487,7 +1551,11 @@
       "low": "低",
       "medium": "中",
       "high": "高",
-      "max": "最高"
+      "max": "最高",
+      "effortLabel": "強度",
+      "faster": "更快",
+      "smarter": "更聰明",
+      "noLadder": "此模型一次作答，沒有強度設定。"
     },
     "universalAgent": {
       "toolsLoadError": "載入可用動作失敗。",
@@ -1522,7 +1590,8 @@
       "notice": {
         "expired": "{{server}} 上的 {{tool}} 未執行：請求已過期。如仍需要，請再次提問。",
         "passed": "{{server}} 上的 {{tool}} 未獲核准，因此未執行。",
-        "waiting": "{{server}} 上的 {{tool}} 正在等待對話擁有者核准。"
+        "waiting": "{{server}} 上的 {{tool}} 正在等待對話擁有者核准。",
+        "waitingFor": "{{server}} 上的 {{tool}} 正在等待 {{name}} 核准。"
       },
       "receipt": {
         "allowed": "你允許了 {{tool}}",
@@ -1558,7 +1627,10 @@
       "preview": "預覽產物",
       "loadingPreview": "正在載入預覽",
       "download": "下載產物",
-      "downloading": "正在下載產物"
+      "downloading": "正在下載產物",
+      "previewButton": "預覽",
+      "previewFile": "預覽 {{name}}",
+      "downloadFile": "下載 {{name}}"
     },
     "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。",
     "noResultsFor": "找不到「{{query}}」的結果",
@@ -1575,6 +1647,133 @@
       "webSearch": "網路搜尋",
       "internalAndWebSearch": "內部 + 網路搜尋"
     },
+    "stoppedBeforeAnswer": "在回答開始前已停止",
+    "connectTools": {
+      "blockedTitle": "連接這些工具以使用此代理",
+      "serviceAccountTitle": "此代理的工具尚未連接",
+      "noticeTitle": "此回答無法使用部分工具",
+      "chip": "部分工具尚未連接",
+      "chipAction": "連接",
+      "kindAction": "動作",
+      "showMore": "顯示另外 {{count}} 個",
+      "askAdmin": "請管理員連接",
+      "serviceAccount": "此代理使用自己的連線。請管理員在 Agent Builder 中連接 {{tools}}。",
+      "toolsetUnavailable": "無法在此處開始登入。請在 Workspace → 動作 中連接。",
+      "connectedAskAgain": "已連接。再問一次即可使用。",
+      "couldNotUse": "{{agent}} 無法使用 {{tools}}",
+      "defaultAgent": "代理"
+    },
+    "atMenu": {
+      "label": "提及建議",
+      "sources": "來源",
+      "browseSources": "瀏覽全部來源",
+      "allSources": "全部來源",
+      "showMore": "顯示更多",
+      "nMore": "還有 {{count}} 個",
+      "noMatches": "無相符項目",
+      "keysHint": "↑ ↓ 移動 · Enter 選取 · → 開啟來源 · Esc 關閉",
+      "keysHintTick": "↑ ↓ 移動 · Enter 選取 · Alt+Enter 勾選 · → 開啟來源 · Esc 關閉",
+      "tooManySources": "一則訊息最多可指定 {{max}} 個來源。請移除一些後再傳送。"
+    },
+    "answerFailedTitle": "此回答失敗",
+    "answerFailedRetry": "重試",
+    "cannotOpenSource": "無法開啟此文件。它可能已被刪除，或者您沒有存取權限。",
+    "queue": {
+      "title": "排隊中 · {{count}}",
+      "hint": "每則訊息會在前一個回答完成後送出。",
+      "clearAll": "全部清除",
+      "listLabel": "排隊中的訊息",
+      "edit": "編輯",
+      "editBusy": "請先送出或清除正在輸入的訊息，再編輯這則",
+      "remove": "從佇列中移除",
+      "retry": "重試",
+      "heldAfterRefusal": "未傳送：上一則訊息無法回答。",
+      "files_one": "{{count}} 個檔案",
+      "files_other": "{{count}} 個檔案",
+      "full": "最多可排隊 {{count}} 則訊息。請等待一則送出，或移除一則。",
+      "collapse": "隱藏排隊的訊息",
+      "expand": "顯示排隊的訊息"
+    },
+    "rowActions": "{{title}} 的操作",
+    "archivedDescription": "{{title}} 位於工作區設定的「已封存的對話」中。",
+    "undo": "復原",
+    "renameFailedTitle": "無法重新命名對話",
+    "renameFailedDescription": "它保留原本的名稱。請重試。",
+    "renameFieldLabel": "新名稱",
+    "expandSection": "展開分組",
+    "collapseSection": "收合分組",
+    "addToSection": "新增到{{section}}",
+    "agentNotFound": {
+      "title": "此代理不存在，或你已無權存取",
+      "description": "請檢查連結，或詢問分享給你的人。",
+      "back": "返回聊天"
+    },
+    "latestMessages": "最新訊息",
+    "questionRail": "此聊天中的問題",
+    "sendFeedback": "傳送意見回饋",
+    "question": {
+      "copied": "已複製",
+      "edit": "編輯",
+      "pastedCode": "貼上的程式碼"
+    },
+    "confidenceLevel": "信賴度",
+    "runError": {
+      "stoppedTitle": "你已停止此回覆",
+      "stoppedBody": "已完成的步驟仍保留在上方的過程中。",
+      "stoppedBodyPartial": "停止前已寫好的內容保留在上方。"
+    },
+    "answerPanel": {
+      "label": "關於此回答",
+      "opener": "脈絡",
+      "openerHint": "脈絡：來源、引用和產出",
+      "close": "關閉脈絡",
+      "resize": "調整面板大小",
+      "sources": "來源",
+      "citations": "引用",
+      "context": "脈絡",
+      "outputs": "產出",
+      "pending": "回答完成後將在此顯示。",
+      "noOutputsTitle": "尚未產生任何內容",
+      "noOutputsBody": "請求文件、試算表或摘要後，產生的檔案會保存在這裡。",
+      "anythingYouCanOpen": "可使用您能開啟的任何內容",
+      "sourcesLabel": "來源：{{names}}",
+      "sourcesEmptyTitle": "尚未讀取任何內容",
+      "sourcesEmptyBody": "提出需要用到已連結應用程式的問題，回答所依據的文件會匯集在這裡。",
+      "citationsEmptyTitle": "尚未引用任何內容",
+      "citationsEmptyBody": "回答中的每項陳述都連結到其出處段落。這些連結會顯示在這裡。",
+      "contextCollections": "集合",
+      "contextConnectors": "連接器",
+      "contextFiles": "檔案",
+      "contextFolderInCollection": "集合中的資料夾",
+      "contextEmptyTitle": "尚未附加任何內容",
+      "contextEmptyBody": "您為此聊天指定的集合、已連結應用程式和檔案會列在這裡。",
+      "anythingTheyCanOpen": "可使用 {{name}} 能開啟的任何內容",
+      "anythingOwnerCanOpen": "可使用聊天擁有者能開啟的任何內容"
+    },
+    "trail": {
+      "reasoning": "思考",
+      "subAgent": "子代理",
+      "usedSkills_other": "使用了 {{count}} 個技能",
+      "exploredSearches_other": "進行了 {{count}} 次搜尋",
+      "ranTools_other": "執行了 {{count}} 個工具",
+      "thoughtFor": "思考了 {{duration}}",
+      "thoughtThrough_other": "思考了 {{count}} 個步驟",
+      "steps_other": "{{count}} 個步驟",
+      "stoppedAfter": "{{duration}} 後停止",
+      "stopped": "已停止",
+      "done": "完成",
+      "showAllSteps": "顯示所有步驟",
+      "showFewer": "顯示較少",
+      "durationSeconds": "{{value}} 秒",
+      "durationMinutes": "{{minutes}} 分 {{seconds}} 秒"
+    },
+    "citationPill": {
+      "number": "引用 {{number}}：{{name}}"
+    },
+    "citationPopover": {
+      "page": "第 {{page}} 頁",
+      "paragraph": "第 {{paragraph}} 段"
+    },
     "searchDegraded": "結果可能不完整。"
   },
   "workspaceMenu": {
@@ -1588,7 +1787,9 @@
     "documentation": "說明文件",
     "darkMode": "深色模式",
     "lightMode": "淺色模式",
-    "organisations": "組織"
+    "organisations": "組織",
+    "triggerLabel": "{{name}} 工作區和帳戶選單",
+    "triggerLabelNoName": "工作區和帳戶選單"
   },
   "workspace": {
     "users": {
@@ -1651,7 +1852,12 @@
         "edit": "編輯",
         "resendInviteSuccess": "已重新傳送邀請",
         "resendInviteSuccessDescription": "已將邀請重新傳送至 {{email}}",
-        "resendInviteError": "重新傳送邀請失敗"
+        "resendInviteError": "重新傳送邀請失敗",
+        "changeRoleUndo": "復原",
+        "changeRoleRestored": "角色已還原",
+        "changeRoleRestoredDescription": "{{name}} 又是 {{role}} 了",
+        "changeRoleUndoError": "無法還原角色",
+        "changeRoleUndoErrorDescription": "{{name}} 仍為 {{role}}。請再次變更角色以還原。"
       },
       "profile": {
         "title": "個人檔案",
@@ -1723,7 +1929,10 @@
         "alreadyMembersDescription_other": "所有地址都已屬於使用中的成員。",
         "importUnsupportedType": "只能匯入 .csv、.xlsx 和 .xls 檔案。",
         "importTooLongSkipped_other": "已略過 {{count}} 個超過 254 個字元的項目。",
-        "invalidBlocksSend_other": "{{count}} 個無效地址已標紅。請修正或刪除後再傳送邀請。"
+        "invalidBlocksSend_other": "{{count}} 個無效地址已標紅。請修正或刪除後再傳送邀請。",
+        "warnMember": "{{email}} 已是成員，因此不會向此地址傳送邀請。",
+        "warnInvited": "{{email}} 已被邀請。再次傳送將重新傳送其邀請。",
+        "warnMany": "部分地址已是成員或已被邀請。成員將被略過，待處理的邀請會重新傳送。"
       },
       "bulk": {
         "resendInvite": "重新傳送邀請",
@@ -2374,7 +2583,12 @@
     "common": {
       "loadingUsers": "正在載入使用者…",
       "noUsersAvailable": "沒有可用的使用者",
-      "selected": "已選取 {{count}} 個"
+      "selected": "已選取 {{count}} 個",
+      "validation": {
+        "nameRequired": "請輸入名稱。",
+        "nameTooLong": "名稱不能超過 {{max}} 個字元。",
+        "descriptionTooLong": "描述不能超過 {{max}} 個字元。"
+      }
     },
     "filters": {
       "role": "角色",
@@ -5176,7 +5390,8 @@
       "section": "API 動作",
       "connectTooltip": "請在「動作」中連線",
       "serviceAccountBlocked": "服務帳戶代理程式只能使用具有共用憑證或不需登入的 API 動作。"
-    }
+    },
+    "nameTooLong": "名稱不能超過 {{max}} 個字元。"
   },
   "recordView": {
     "sections": {
@@ -5499,17 +5714,16 @@
     }
   },
   "askUserQuestion": {
-    "questionsHeadingSingular": "問題：",
-    "questionsHeadingPlural": "問題：",
+    "questionsHeadingSingular": "問題",
+    "questionsHeadingPlural": "問題",
     "answered": "已回答",
     "showLess": "顯示較少",
     "showMore": "顯示更多",
     "noPreference": "[無偏好]",
+    "skipped": "已略過",
     "somethingElse": "其他",
-    "questionAskedSingular": "已提出的問題：",
-    "questionAskedPlural": "已提出的問題：",
-    "quickQuestionSingular": "快速提問：",
-    "quickQuestionPlural": "快速提問：",
+    "quickQuestionSingular": "快速提問",
+    "quickQuestionPlural": "快速提問",
     "stepOf": "第 {{step}} 步，共 {{total}} 步",
     "selectedCount": "已選取 {{count}} 個",
     "describeYourAnswer": "描述您的答案…",
@@ -5522,7 +5736,10 @@
     "selectMany": "選擇所有適用項目",
     "skipAll": "全部略過",
     "expired": "此問題已過期。請在聊天中回覆以繼續。",
-    "repliedInChat": "你已在聊天中回覆。"
+    "repliedInChat": "你已在聊天中回覆。",
+    "unknownPerson": "前成員",
+    "waitingFor": "正在等待 {{name}} 回答",
+    "waitingForYou": "正在等待你回答"
   },
   "agentClaim": {
     "title": "連接代理",
@@ -5579,8 +5796,21 @@
     "serverError": "伺服器錯誤",
     "timedOut": "請求逾時",
     "somethingWentWrong": "發生錯誤",
-    "tryAgainShortly": "請稍後再試",
-    "connectedServiceProblem": "連線的服務發生問題"
+    "serverBusy": "伺服器忙碌中",
+    "connectedServiceProblem": "連線的服務發生問題",
+    "accessDeniedDescription": "你沒有執行此操作的權限。請向工作區管理員申請存取權限。",
+    "invalidRequestDescription": "部分資訊無效。請檢查後重試。",
+    "notFoundDescription": "它可能已被移動或刪除。請重新整理頁面後重試。",
+    "actionRequiredDescription": "在你開始之後有內容發生了變化。請檢查資訊後重試。",
+    "connectionErrorDescription": "請檢查你的網路連線後重試。",
+    "serverErrorDescription": "伺服器未能完成此操作。請稍後再試。如果問題持續發生，請聯絡你的工作區管理員。",
+    "timedOutDescription": "伺服器回應時間過長。請重試。",
+    "somethingWentWrongDescription": "操作未成功。請重試。如果問題持續發生，請聯絡你的工作區管理員。",
+    "serverBusyDescription": "請稍候片刻，然後重試。"
+  },
+  "loading": {
+    "default": "載入中…",
+    "items": "正在載入項目…"
   },
   "validation": {
     "password": {
@@ -5649,7 +5879,10 @@
     "alreadyRemoved": "已移除",
     "alreadyRemovedDescription": "{{name}} 先前已失去存取權",
     "removeConfirmTitle": "移除存取權？",
-    "removeConfirmDescription": "{{name}} 將立即失去存取權。您之後可以再次分享。"
+    "removeConfirmDescription": "{{name}} 將立即失去存取權。您之後可以再次分享。",
+    "removeSelection": "移除 {{name}}",
+    "peopleCanSee_other": "{{count}} 人可以查看此對話",
+    "loadingPeople": "正在載入人員…"
   },
   "demoData": {
     "badge": {

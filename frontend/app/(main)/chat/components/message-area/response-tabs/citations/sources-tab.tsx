@@ -1,7 +1,9 @@
 'use client';
 
 import React from 'react';
-import { Flex, Text, Box } from '@radix-ui/themes';
+import { Flex } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
+import { PanelEmpty } from '../../../answer-panel/panel-empty';
 import { ReferenceCard } from './citation-card';
 import { getCitationCountBySource } from './utils';
 import type { CitationMaps, CitationCallbacks } from './types';
@@ -9,6 +11,8 @@ import type { CitationMaps, CitationCallbacks } from './types';
 interface SourcesTabProps {
   citationMaps: CitationMaps;
   callbacks?: CitationCallbacks;
+  /** No space above the first card: the column beside a chat pads its own body. */
+  flush?: boolean;
 }
 
 /**
@@ -18,16 +22,13 @@ interface SourcesTabProps {
  * resolves each to its first citation, and renders a `ReferenceCard` with the
  * count of all citations referencing that record.
  */
-export function SourcesTab({ citationMaps, callbacks }: SourcesTabProps) {
+export function SourcesTab({ citationMaps, callbacks, flush = false }: SourcesTabProps) {
+  const { t } = useTranslation();
   const { sourcesOrder, sources, citations } = citationMaps;
 
   if (sourcesOrder.length === 0) {
     return (
-      <Box style={{ padding: 'var(--space-4) 0' }}>
-        <Text size="2" style={{ color: 'var(--slate-11)' }}>
-          No sources available.
-        </Text>
-      </Box>
+      <PanelEmpty icon="description" title={t('chat.answerPanel.sourcesEmptyTitle')} body={t('chat.answerPanel.sourcesEmptyBody')} />
     );
   }
 
@@ -35,7 +36,7 @@ export function SourcesTab({ citationMaps, callbacks }: SourcesTabProps) {
   const countsBySource = getCitationCountBySource(citationMaps);
 
   return (
-    <Flex direction="column" gap="2" style={{ padding: 'var(--space-4) 0' }}>
+    <Flex direction="column" gap="2" style={{ padding: flush ? '0 0 var(--space-4)' : 'var(--space-4) 0' }}>
       {sourcesOrder.map((recordId) => {
         const firstCitationId = sources[recordId];
         const citation = firstCitationId ? citations[firstCitationId] : undefined;

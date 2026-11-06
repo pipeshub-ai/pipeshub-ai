@@ -276,11 +276,14 @@ export abstract class BaseKafkaConsumerConnection
     handler: (message: StreamMessage<T>) => Promise<void>,
   ): Promise<void> {
     await this.ensureConnection();
+    const manualCommit = this.config.manualCommit === true;
     try {
       // The runner outlives this call: it must not keep the caller's org context.
       await spawnDetached(() =>
         this.consumer.run({
+          autoCommit: !manualCommit,
           eachMessage: async ({ topic, partition, message }) => {
+            let handling = false;
             try {
               if (!message.value) {
                 throw new BadRequestError('Empty message value');
@@ -293,6 +296,7 @@ export abstract class BaseKafkaConsumerConnection
               };
 
               // Carry the producer's trace id and org into consumer-side logs.
+              handling = true;
               await runWithRequestContext(
                 contextFromEnvelope(parsedValue, newSystemRoot),
                 () =>
@@ -311,6 +315,19 @@ export abstract class BaseKafkaConsumerConnection
               });
               // A store that is frozen or away is not a bad message: let KafkaJS see the failure so the offset is not committed.
               if (isRetryableStoreError(error)) throw error;
+              // Uncommitted, so it comes back; an unreadable message is skipped.
+              if (manualCommit && handling) {
+                throw error;
+              }
+            }
+            if (manualCommit) {
+              await this.consumer.commitOffsets([
+                {
+                  topic,
+                  partition,
+                  offset: String(Number(message.offset) + 1),
+                },
+              ]);
             }
           },
         }),

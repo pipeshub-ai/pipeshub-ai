@@ -10,7 +10,7 @@
  * never visually changes when the live stream hands off to the persisted
  * transcript.
  */
-import React, { useState, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useMemo, useCallback, useLayoutEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -30,11 +30,15 @@ import { processMarkdownContent } from '../../utils/process-markdown-content';
 import {
   extractSqlQuery,
   extractToolsetLabel,
+  isAskUserQuestionTool,
   isMcpTool,
   isWebTool,
   isSkillTool,
+  shownQuestionOf,
   toolActivityLabel as toolActivityLabelUtil,
 } from '../../utils/tool-display';
+import { answeredQuestions } from './ask-user-question-card';
+import { TRAIL_FOLD_EVENT, viewFollowsEnd } from './keep-on-screen';
 
 interface AgentActivityTimelineProps {
   parts: MessagePart[];
@@ -91,10 +95,13 @@ function filterRootParts(parts: MessagePart[], isStreaming: boolean): MessagePar
   return parts.filter((part) => {
     // The reply's sign-in card, drawn under the answer (`McpSignInCard`).
     if (part.type === 'mcp_sign_in') return false;
+    // A question is a row once it is answered; a refused or failed ask showed nothing, and a waiting one is its card.
+    if (part.type === 'tool_call' && isAskUserQuestionTool(part.toolName)) return shownQuestionOf(part) !== null;
     if (part.type !== 'text') return true;
     if (part.isFinal) return false;
     if (isStreaming && !part.settled) return false;
-    return true;
+    // Stop before the first word leaves the model call's text part open and blank: no step was taken.
+    return Boolean(part.content?.trim());
   });
 }
 
@@ -117,12 +124,14 @@ type RenderItem =
  * directly, without a group wrapper. */
 function groupConsecutiveToolCalls(parts: MessagePart[]): RenderItem[] {
   const items: RenderItem[] = [];
+  // A question is a row of its own, never one of a group's calls.
+  const groupable = (part: MessagePart) => part.type === 'tool_call' && !isAskUserQuestionTool(part.toolName);
   let i = 0;
   while (i < parts.length) {
     const part = parts[i];
-    if (part.type === 'tool_call') {
+    if (groupable(part)) {
       let j = i;
-      while (j < parts.length && parts[j].type === 'tool_call') j += 1;
+      while (j < parts.length && groupable(parts[j])) j += 1;
       const group = parts.slice(i, j);
       if (group.length === 1) {
         items.push({ kind: 'part', part: group[0], key: `part-${group[0].toolCallId ?? i}` });
@@ -133,7 +142,7 @@ function groupConsecutiveToolCalls(parts: MessagePart[]): RenderItem[] {
     } else {
       // One run emits several narration parts with the same runId, so the
       // index keeps their keys apart; parts are only ever appended.
-      items.push({ kind: 'part', part, key: `part-${part.type}-${part.runId ?? 'root'}-${i}` });
+      items.push({ kind: 'part', part, key: part.toolCallId ? `part-${part.toolCallId}` : `part-${part.type}-${part.runId ?? 'root'}-${i}` });
       i += 1;
     }
   }
@@ -156,9 +165,7 @@ function handleToggleKeyDown(e: React.KeyboardEvent, toggle: () => void): void {
   }
 }
 
-function hasRenderableContent(item: RenderItem): boolean {
-  if (item.kind === 'toolGroup') return true;
-  const { part } = item;
+function hasRenderableContent(part: MessagePart): boolean {
   if (part.type === 'reasoning' || part.type === 'text') return !!part.content?.trim();
   return true;
 }
@@ -215,6 +222,14 @@ function getTimelineIcon(item: RenderItem): TimelineIconSpec {
         border: 'var(--slate-6)',
       };
     case 'tool_call': {
+      if (isAskUserQuestionTool(part.toolName)) {
+        return {
+          kind: 'icon',
+          node: <MaterialIcon name="question_answer" size={13} color="var(--slate-10)" />,
+          bg: 'var(--slate-a3)',
+          border: 'var(--slate-6)',
+        };
+      }
       const status = part.status ?? 'running';
       const iconName = isSkillTool(part.toolName)
         ? 'auto_stories'
@@ -243,8 +258,13 @@ function getTimelineIcon(item: RenderItem): TimelineIconSpec {
  * one absolutely-positioned strip, so it naturally keeps pace with rows
  * that grow, shrink, or get inserted while streaming — no height
  * measurement needed. */
-function TimelineRow({ icon, isLast, children }: { icon: TimelineIconSpec; isLast: boolean; children: React.ReactNode }) {
-  return (
+function TimelineRow({ icon, isLast, opens = false, children }: { icon: TimelineIconSpec; isLast: boolean; opens?: boolean; children: React.ReactNode }) {
+  // Decided once, when the row first draws: a step that joins a trail already on screen opens to its height (as the
+  // trail's body does), so what is under the trail moves down with it instead of a row's height in one frame. While
+  // the view follows the answer's end, that follow keeps the text in place as the step joins, in the same frame: it
+  // joins at once there, since opening would move the text a few pixels each frame for the follow to bring back.
+  const [opening] = useState(() => opens && !viewFollowsEnd());
+  const row = (
     <Flex className="agent-activity-enter">
       <Flex direction="column" align="center" style={{ width: 24, flexShrink: 0 }}>
         {icon.kind === 'dot' ? (
@@ -281,12 +301,16 @@ function TimelineRow({ icon, isLast, children }: { icon: TimelineIconSpec; isLas
           />
         )}
       </Flex>
-      <Box style={{ flex: 1, minWidth: 0, paddingLeft: 'var(--space-3)', paddingBottom: isLast ? 0 : 'var(--space-3)' }}>
+      <Box className="trail-row-body" style={{ flex: 1, minWidth: 0, paddingLeft: 'var(--space-3)', paddingBottom: isLast ? 0 : 'var(--space-3)' }}>
         {children}
       </Box>
     </Flex>
   );
+  return opening ? <div className="trail-row-opens">{row}</div> : row;
 }
+
+/** The status row's place among the rows a trail has drawn. */
+const STATUS_ROW = 'status';
 
 export function AgentActivityTimeline({ parts, isNested = false, isStreaming = false, currentStatus = null, citationMaps, citationCallbacks }: AgentActivityTimelineProps) {
   const visible = useMemo(
@@ -300,7 +324,9 @@ export function AgentActivityTimeline({ parts, isNested = false, isStreaming = f
   const hasLiveTextWithContent = isStreaming && visible.some(
     (p) => p.type === 'text' && !p.settled && !p.isFinal && !!p.content?.trim(),
   );
-  const items = groupConsecutiveToolCalls(visible).filter(hasRenderableContent);
+  // Blank text is dropped before grouping: an empty turn between two tool calls must not split their group, or the
+  // saved trail (which keeps such turns) would group differently from the live one and change height at the run's end.
+  const items = groupConsecutiveToolCalls(visible.filter(hasRenderableContent));
   const lastItem = items.length > 0 ? items[items.length - 1] : null;
   const lastItemCoversStatus = lastItem !== null && (
     (lastItem.kind === 'part' && lastItem.part.type === 'reasoning') ||
@@ -308,14 +334,27 @@ export function AgentActivityTimeline({ parts, isNested = false, isStreaming = f
     (lastItem.kind === 'toolGroup' && lastItem.parts.some((p) => (p.status ?? 'running') === 'running'))
   );
   const showStatus = !isNested && isStreaming && !!currentStatus && !hasLiveTextWithContent && !lastItemCoversStatus;
+  // The rows this trail drew last time its rows changed (the rows of its first draw at first). A step it adds while
+  // streaming opens to its height. It changes only when a row comes or goes, not with every streaming update.
+  const rowKeys = [...items.map((item) => item.key), ...(showStatus ? [STATUS_ROW] : [])].join('\n');
+  const [drawnKeys, setDrawnKeys] = useState(rowKeys);
+  useLayoutEffect(() => setDrawnKeys(rowKeys), [rowKeys]);
+  const drawn = new Set(drawnKeys.split('\n'));
   if (items.length === 0 && !showStatus) return null;
   const rowCount = items.length + (showStatus ? 1 : 0);
+  // Narration is left out: its words glide in from where they were read (`useNarrationGlide`), unclipped.
+  const opens = (item: (typeof items)[number]) =>
+    isStreaming && !isNested && !(item.kind === 'part' && item.part.type === 'text') && !drawn.has(item.key)
+    // A tool call that a second one joins becomes their group: the same step, not a new one.
+    && !drawn.has(item.key.replace(/^group-/, 'part-'));
+  // The status ("Thinking…", after a quiet moment) opens too when it joins steps already drawn.
+  const statusOpens = isStreaming && items.length > 0 && !drawn.has(STATUS_ROW);
 
   return (
     <Box style={{ marginBottom: isNested ? 'var(--space-2)' : 'var(--space-3)' }}>
       <Flex direction="column">
         {items.map((item, idx) => (
-          <TimelineRow key={item.key} icon={getTimelineIcon(item)} isLast={idx === rowCount - 1}>
+          <TimelineRow key={item.key} icon={getTimelineIcon(item)} isLast={idx === rowCount - 1} opens={opens(item)}>
             {item.kind === 'toolGroup' ? (
               <ToolCallGroup parts={item.parts} />
             ) : (
@@ -328,7 +367,7 @@ export function AgentActivityTimeline({ parts, isNested = false, isStreaming = f
             of a disconnected element below the (possibly-suppressed)
             answer. See ChatResponse for the simple-response fallback. */}
         {showStatus && (
-          <TimelineRow icon={{ kind: 'lottie', node: <LottieLoader variant="thinking" size={18} /> }} isLast>
+          <TimelineRow icon={{ kind: 'lottie', node: <LottieLoader variant="thinking" size={18} /> }} isLast opens={statusOpens}>
             <StatusTimelineEntry status={currentStatus} />
           </TimelineRow>
         )}
@@ -341,10 +380,13 @@ function AgentActivityPart({ part, isStreaming, citationMaps, citationCallbacks 
   switch (part.type) {
     case 'reasoning':
       return <ThinkingBlock content={part.content ?? ''} />;
-    case 'tool_call':
+    case 'tool_call': {
+      const question = shownQuestionOf(part);
+      if (question) return <QuestionRow question={question} />;
       // Top-level rail row — the icon lives on the rail (see
       // `getTimelineIcon`), not duplicated inline on the card itself.
       return <ToolCallCard part={part} showIcon={false} />;
+    }
     case 'sub_agent':
       return <SubAgentGroup part={part} citationMaps={citationMaps} citationCallbacks={citationCallbacks} />;
     case 'text': {
@@ -397,8 +439,9 @@ function NarrationTextImpl({ content, citationMaps, citationCallbacks }: { conte
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const components = useMemo(() => createMarkdownComponents(citMapsRef, citCbRef), []);
 
+  // Its row fades it in as it does every step (`TimelineRow`): a fade of its own would make it rise twice as far.
   return (
-    <Box className="narration-text agent-activity-enter" style={{ color: 'var(--slate-12)', fontSize: 'var(--font-size-2)', lineHeight: 1.6 }}>
+    <Box className="narration-text" style={{ color: 'var(--slate-12)', fontSize: 'var(--font-size-2)', lineHeight: 1.6 }}>
       <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} urlTransform={markdownUrlTransform} components={components}>
         {cleanContent}
       </ReactMarkdown>
@@ -469,6 +512,58 @@ function StatusTimelineEntry({ status }: { status: StatusMessage }) {
       <span className="generating-shimmer-base">{status.message}</span>
       <span className="generating-shimmer-overlay" aria-hidden="true">{status.message}</span>
     </Text>
+  );
+}
+
+/** A card the run asked, where it asked it: its explanation, then each question with what the person answered. */
+function QuestionRow({ question }: { question: NonNullable<MessagePart['question']> }) {
+  const { t } = useTranslation();
+  const { payload } = question;
+  const skipped = t('askUserQuestion.skipped');
+  const rows = answeredQuestions(payload, question.answers ?? {}, skipped);
+  const muted: React.CSSProperties = { margin: 0, color: 'var(--slate-11)' };
+  return (
+    <Box
+      data-testid="trail-question"
+      className="agent-activity-enter"
+      style={{
+        border: '1px solid var(--slate-4)',
+        borderRadius: 'var(--radius-3)',
+        backgroundColor: 'var(--slate-a2)',
+        padding: 'var(--space-2) var(--space-3)',
+      }}
+    >
+      <Text as="p" size="1" weight="medium" style={muted}>
+        {rows.length === 1 ? t('askUserQuestion.questionsHeadingSingular') : t('askUserQuestion.questionsHeadingPlural')}
+      </Text>
+      {payload.userIntent ? (
+        <Text as="p" size="1" style={{ ...muted, marginTop: 'var(--space-1)' }}>
+          {payload.userIntent}
+        </Text>
+      ) : null}
+      {rows.map((row, i) => (
+        <Box key={row.uuid} style={{ marginTop: 'var(--space-2)' }}>
+          <Text as="p" size="1" style={muted}>
+            {rows.length > 1 ? `${i + 1}. ${row.question}` : row.question}
+          </Text>
+          {row.answer ? (
+            <Text
+              as="p"
+              size="1"
+              weight={row.answer === skipped ? 'regular' : 'medium'}
+              style={{ margin: 'var(--space-1) 0 0', color: row.answer === skipped ? 'var(--slate-11)' : 'var(--slate-12)' }}
+            >
+              {row.answer}
+            </Text>
+          ) : null}
+        </Box>
+      ))}
+      {payload.repliedInChat ? (
+        <Text as="p" size="1" style={{ ...muted, marginTop: 'var(--space-2)' }}>
+          {t('askUserQuestion.repliedInChat')}
+        </Text>
+      ) : null}
+    </Box>
   );
 }
 
@@ -1194,7 +1289,8 @@ export function SubAgentGroup({ part, citationMaps, citationCallbacks }: { part:
  * transcript rather than tracked separately, so it never drifts from what's
  * actually rendered underneath. */
 export function buildActivitySummary(parts: MessagePart[]): string {
-  const toolCount = parts.filter((p) => p.type === 'tool_call').length;
+  // A question the run asked is not a tool it used.
+  const toolCount = parts.filter((p) => p.type === 'tool_call' && !isAskUserQuestionTool(p.toolName)).length;
   const thinkCount = parts.filter((p) => p.type === 'reasoning').length;
   const subAgentCount = parts.filter((p) => p.type === 'sub_agent').length;
 
@@ -1207,19 +1303,75 @@ export function buildActivitySummary(parts: MessagePart[]): string {
 
 /**
  * Wraps an activity timeline in a collapsible summary. Expanded while
- * streaming so the live trace stays visible; collapsed by default for
- * historical messages. Never auto-collapses — the user toggles it.
+ * streaming so the live trace stays visible; folded, with its own 300 ms
+ * animation, once the run ends (not while it waits on a person's answer),
+ * and from the start for a saved answer. The reader's own toggle wins after
+ * that. `waiting` takes the summary's place while the run waits on a person.
  */
-export function CollapsibleActivitySection({ parts, isStreaming = false, children }: { parts: MessagePart[]; isStreaming?: boolean; children: React.ReactNode }) {
-  const [collapsed, setCollapsed] = useState(!isStreaming);
-  const summary = useMemo(() => buildActivitySummary(parts), [parts]);
+export function CollapsibleActivitySection({
+  parts,
+  isStreaming = false,
+  waiting,
+  replied = false,
+  chatRunning = false,
+  children,
+}: {
+  parts: MessagePart[];
+  isStreaming?: boolean;
+  waiting?: string;
+  /** Its question card was typed past in the chat: the wait ended with no run of its own. */
+  replied?: boolean;
+  /** A run is going in this chat, in any row. */
+  chatRunning?: boolean;
+  children: React.ReactNode;
+}) {
+  // A run waiting on an answer has not ended: mounted then (the saved row taking over from the streamed one, a reload),
+  // the box opens with the steps that led to the question, as it was while the run streamed.
+  const [collapsed, setCollapsed] = useState(!isStreaming && !waiting);
+  // The run's end folds the trail in place: it is the same section, so the fold animates rather than snapping shut.
+  // A run that stops to ask a question has not ended: the trail stays as it is until the answer comes and it ends.
+  const [wasStreaming, setWasStreaming] = useState(isStreaming);
+  const [endFolds, setEndFolds] = useState(0);
+  if (wasStreaming !== isStreaming) {
+    setWasStreaming(isStreaming);
+    if (!isStreaming && !waiting) {
+      setCollapsed(true);
+      setEndFolds((n) => n + 1);
+    }
+  }
+  // A card typed past ends the wait without this run ending: the open box folds when the reply's run ends, in that
+  // run's end-of-run hold, so the reply's question does not move while its answer streams. Only that run: the reader's
+  // own toggle, or a later run, never folds it.
+  const [wasReplied, setWasReplied] = useState(replied);
+  const [owesFold, setOwesFold] = useState(false);
+  if (wasReplied !== replied) {
+    setWasReplied(replied);
+    if (replied && !collapsed) setOwesFold(true);
+  }
+  const [wasChatRunning, setWasChatRunning] = useState(chatRunning);
+  if (wasChatRunning !== chatRunning) {
+    setWasChatRunning(chatRunning);
+    if (!chatRunning && owesFold) {
+      setOwesFold(false);
+      setCollapsed(true);
+      setEndFolds((n) => n + 1);
+    }
+  }
+  // Before paint, so the scroll box around it can hold the answer under it still from the fold's first frame.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (endFolds > 0) rootRef.current?.dispatchEvent(new Event(TRAIL_FOLD_EVENT, { bubbles: true }));
+  }, [endFolds]);
+  const counted = useMemo(() => buildActivitySummary(parts), [parts]);
+  const summary = waiting ?? counted;
 
   const handleToggle = useCallback(() => {
     setCollapsed((prev) => !prev);
+    setOwesFold(false);
   }, []);
 
   return (
-    <Box style={{ marginBottom: 'var(--space-3)' }}>
+    <Box ref={rootRef} style={{ marginBottom: 'var(--space-3)' }}>
       <Flex
         align="center"
         gap="1"
@@ -1241,25 +1393,16 @@ export function CollapsibleActivitySection({ parts, isStreaming = false, childre
           size={ICON_SIZES.PRIMARY}
           color="var(--slate-9)"
         />
-        <Text size="1" style={{ color: 'var(--slate-9)' }}>
+        {/* A wait is a status to read, so it takes the readable quiet step; a count stays as quiet as before. */}
+        <Text size="1" style={{ color: waiting ? 'var(--slate-11)' : 'var(--slate-9)' }}>
           {summary}
         </Text>
       </Flex>
       {/* 0fr/1fr grid animates to the content's intrinsic height — no fixed
-          maxHeight cap that would clip long transcripts. */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateRows: collapsed ? '0fr' : '1fr',
-          transition: 'grid-template-rows 300ms ease-out, opacity 200ms ease-out',
-          opacity: collapsed ? 0 : 1,
-        }}
-      >
-        <div
-          style={{ overflow: 'hidden', minHeight: 0 }}
-          aria-hidden={collapsed || undefined}
-          inert={collapsed || undefined}
-        >
+          maxHeight cap that would clip long transcripts. `.trail-body` takes the
+          page motion tokens, so with reduced motion it opens and shuts at once. */}
+      <div className="trail-body" data-open={!collapsed}>
+        <div aria-hidden={collapsed || undefined} inert={collapsed || undefined}>
           {children}
         </div>
       </div>

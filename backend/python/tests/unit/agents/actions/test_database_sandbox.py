@@ -343,7 +343,7 @@ class TestScheduleCSVExport:
         assert create.await_args.kwargs["user_id"] == "u-bob"
 
     @pytest.mark.asyncio
-    async def test_record_creation_failure_still_returns_upload(self):
+    async def test_record_creation_failure_fails_the_export(self):
         import asyncio
 
         from app.agents.actions.database_sandbox import database_sandbox as mod
@@ -372,10 +372,8 @@ class TestScheduleCSVExport:
             assert len(captured_tasks) == 1
             result = await captured_tasks[0]
 
-        assert result is not None
-        (entry,) = result["artifacts"]
-        assert "recordId" not in entry and "version" not in entry
-        assert entry["mimeType"] == "text/csv"
+        # Chat rows keep no signed URLs, so an export without a record has no lasting link: it counts as failed.
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_without_a_user_the_export_is_not_registered(self):
@@ -404,9 +402,8 @@ class TestScheduleCSVExport:
 
         create.assert_not_awaited()
         mock_blob.save_versioned_artifact_to_storage.assert_not_awaited()
-        (entry,) = result["artifacts"]
-        assert "recordId" not in entry
-        assert entry["signedUrl"] == "https://blob.example/z"
+        # Chat rows keep no signed URLs, so an export without a record has no lasting link: it counts as failed.
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_blob_save_raises_resolves_to_none(self):

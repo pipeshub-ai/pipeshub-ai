@@ -5,6 +5,8 @@ import mongoose from 'mongoose';
 import { MongoService } from '../../../src/libs/services/mongo.service';
 import { ConnectionError } from '../../../src/libs/errors/database.errors';
 import { BadRequestError, InternalServerError } from '../../../src/libs/errors/http.errors';
+import { Logger } from '../../../src/libs/services/logger.service';
+import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend';
 import { envGuard } from '../../helpers/env-guard';
 
 describe('MongoService', () => {
@@ -63,6 +65,80 @@ describe('MongoService', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(ConnectionError);
       }
+    });
+  });
+
+  describe('MONGO_AUTO_INDEX', () => {
+    const env = envGuard();
+    beforeEach(() => env.snapshot());
+    afterEach(() => env.restore());
+
+    const boot = async () => {
+      const connect = sinon.stub(mongoose, 'connect').resolves(undefined as any);
+      sinon.stub(service as any, 'setupConnectionHandlers');
+      sinon.stub(service as any, 'ensureCollections').resolves();
+      const report = sinon.stub(service as any, 'reportMissingIndexes').resolves();
+      await service.initialize();
+      return { autoIndex: connect.firstCall.args[1]?.autoIndex, reported: report.called };
+    };
+
+    it('builds schema indexes at startup when unset', async () => {
+      delete process.env.MONGO_AUTO_INDEX;
+      expect(await boot()).to.deep.equal({ autoIndex: true, reported: false });
+    });
+
+    it('with false, startup builds no indexes and reports the missing ones instead', async () => {
+      process.env.MONGO_AUTO_INDEX = 'false';
+      expect(await boot()).to.deep.equal({ autoIndex: false, reported: true });
+    });
+  });
+
+  describe('reportMissingIndexes', () => {
+    const model = (collectionName: string, toCreate: unknown[], documents: number) => ({
+      collection: { collectionName },
+      diffIndexes: sinon.stub().resolves({ toCreate, toDrop: [] }),
+      estimatedDocumentCount: sinon.stub().resolves(documents),
+      createIndexes: sinon.stub().resolves(),
+    });
+    const gauge = async () =>
+      (await metricsBackend.serialize())
+        .split('\n')
+        .find((line) => line.startsWith('pipeshub_mongo_missing_indexes '));
+    const report = (models: Record<string, unknown>) => {
+      (service as any).connection = { models };
+      return (service as any).reportMissingIndexes();
+    };
+
+    it('does not build on a collection that holds documents; logs each missing index and counts it', async () => {
+      const warn = sinon.stub(Logger.prototype, 'warn');
+      const spec = [{ orgId: 1, changeRev: 1 }, { unique: true }];
+      const busy = model('chatSessions', [spec, [{ userId: 1 }, {}]], 10);
+      const complete = model('users', [], 10);
+      await report({ ChatSession: busy, User: complete });
+      expect(busy.diffIndexes.firstCall.args[0]).to.deep.equal({ indexOptionsToCreate: true });
+      expect(busy.createIndexes.called).to.equal(false);
+      expect(complete.estimatedDocumentCount.called).to.equal(false);
+      expect(warn.calledWith('MongoDB index missing', { collection: 'chatSessions', keys: spec[0], options: spec[1] })).to.equal(true);
+      expect(await gauge()).to.equal('pipeshub_mongo_missing_indexes 2');
+    });
+
+    it('builds the indexes of a collection with no documents, so a new install needs no runbook', async () => {
+      const empty = model('counters', [[{ name: 1 }, { unique: true }]], 0);
+      await report({ Counter: empty });
+      expect(empty.createIndexes.calledOnce).to.equal(true);
+      expect(await gauge()).to.equal('pipeshub_mongo_missing_indexes 0');
+    });
+
+    it('counts the indexes of a build that fails, and a failed check never fails startup', async () => {
+      const warn = sinon.stub(Logger.prototype, 'warn');
+      const failedBuild = model('counters', [[{ name: 1 }, { unique: true }]], 0);
+      failedBuild.createIndexes.rejects(new Error('not authorized'));
+      const failedCheck = model('users', [], 1);
+      failedCheck.diffIndexes.rejects(new Error('timed out'));
+      await report({ Counter: failedBuild, User: failedCheck });
+      expect(warn.calledWith('Could not check or build MongoDB indexes', { collection: 'counters', error: 'not authorized' })).to.equal(true);
+      expect(warn.calledWith('Could not check or build MongoDB indexes', { collection: 'users', error: 'timed out' })).to.equal(true);
+      expect(await gauge()).to.equal('pipeshub_mongo_missing_indexes 1');
     });
   });
 

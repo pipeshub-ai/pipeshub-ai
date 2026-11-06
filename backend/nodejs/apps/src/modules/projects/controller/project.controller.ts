@@ -18,6 +18,13 @@ import {
 import { ProjectKnowledgeBaseService } from '../services/project-kb.service';
 import { IProject, ProjectDto, ProjectRole } from '../types/project.interfaces';
 import { resolveCallerTeamIds } from '../utils/team-membership';
+import {
+  conversationContextOf,
+} from '../../enterprise_search/services/conversation/http/conversation-context';
+import {
+  conversationExtensions,
+  ProjectSettingsExtension,
+} from '../../enterprise_search/services/conversation/conversation-extensions';
 
 /** A project as the caller sees it (their own pin, their role), for JSON responses. */
 function projectWithRole(
@@ -74,7 +81,14 @@ export const listProjects =
       const { projects, totalCount } = await ProjectService.list(
         orgId,
         userId,
-        { page, limit, search, scope, includeArchived, isArchived },
+        {
+          page,
+          limit,
+          search,
+          scope,
+          includeArchived,
+          isArchived,
+        },
         callerTeamIds,
       );
       res.status(200).json({
@@ -113,7 +127,10 @@ export const getProjectById =
   };
 
 export const updateProject =
-  (appConfig: AppConfig): ProjectRouteHandler =>
+  (
+    appConfig: AppConfig,
+    settings?: ProjectSettingsExtension,
+  ): ProjectRouteHandler =>
   async (req, res, next): Promise<void> => {
     try {
       const userId = req.user?.userId as string;
@@ -157,6 +174,7 @@ export const updateProject =
         projectId,
         patch,
         callerTeamIds,
+        await settings?.forUpdate(req),
       );
       const role = ProjectService.computeRole(
         project,
@@ -194,7 +212,11 @@ export const deleteProject =
       const userId = req.user?.userId as string;
       const orgId = req.user?.orgId as string;
       const { projectId } = req.params as { projectId: string };
-      const project = await ProjectService.loadForDelete(orgId, userId, projectId);
+      const project = await ProjectService.loadForDelete(
+        orgId,
+        userId,
+        projectId,
+      );
       if (project) {
         await ProjectKnowledgeBaseService.deleteLinkedKb(
           appConfig,
@@ -224,7 +246,12 @@ export const archiveProject =
         true,
         callerTeamIds,
       );
-      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      const role = ProjectService.computeRole(
+        project,
+        userId,
+        orgId,
+        callerTeamIds,
+      );
       res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
@@ -246,7 +273,12 @@ export const unarchiveProject =
         false,
         callerTeamIds,
       );
-      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      const role = ProjectService.computeRole(
+        project,
+        userId,
+        orgId,
+        callerTeamIds,
+      );
       res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
@@ -268,7 +300,12 @@ export const pinProject =
         true,
         callerTeamIds,
       );
-      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      const role = ProjectService.computeRole(
+        project,
+        userId,
+        orgId,
+        callerTeamIds,
+      );
       res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
@@ -290,7 +327,12 @@ export const unpinProject =
         false,
         callerTeamIds,
       );
-      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      const role = ProjectService.computeRole(
+        project,
+        userId,
+        orgId,
+        callerTeamIds,
+      );
       res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
@@ -300,7 +342,8 @@ export const unpinProject =
 /**
  * GET /:projectId/conversations — chat + agent sessions in this project that
  * the caller may see: rows they own, plus rows with `projectVisibility:
- * 'project'` if they have at least viewer access to the project itself.
+ * 'project'` if they have at least viewer access to the project itself, plus
+ * any other rows the conversation guard's list filter lets them see.
  * Access to the project has already been asserted, so a private chat that
  * belongs to a *different* project member never leaks here.
  */
@@ -311,6 +354,7 @@ export const getProjectConversations =
       const userId = req.user?.userId as string;
       const orgId = req.user?.orgId as string;
       const { projectId } = req.params as { projectId: string };
+      const lists = conversationExtensions().lists;
       const callerTeamIds = await resolveCallerTeamIds(req, appConfig);
       await ProjectService.assertAccess(
         orgId,
@@ -335,9 +379,16 @@ export const getProjectConversations =
           limit,
         });
 
+      const ctx = conversationContextOf(req);
+      const decorate = await lists.rowDecorator(ctx, conversations);
       res.status(200).json({
-        conversations: conversations.map((c) =>
-          c.userId === userId ? c : withoutOwnerOnlyFields(c),
+        conversations: conversations.map((row) =>
+          decorate(
+            lists.redactRecipients(
+              ctx,
+              row.userId === userId ? row : withoutOwnerOnlyFields(row),
+            ),
+          ),
         ),
         pagination: {
           page,
@@ -427,7 +478,9 @@ export const upsertProjectMembers =
           .filter((member) => member.principalType === 'team')
           .map(async (member) => {
             if (!(await teamExists(appConfig, req, member.principalId))) {
-              throw new BadRequestError(`Team not found: ${member.principalId}`);
+              throw new BadRequestError(
+                `Team not found: ${member.principalId}`,
+              );
             }
           }),
       );

@@ -60,13 +60,17 @@ test.describe('Ask about an uploaded document', () => {
       timeout: 180_000,
     });
 
-    // The Citation tab lists what the answer cites; it stays disabled when nothing is cited.
-    await page.getByText('Citation', { exact: true }).last().click();
-    await expect(page.getByText(recordName).first(), 'the uploaded document should be cited').toBeVisible({
+    // From 1024 px what the answer cites is in the column beside the chat, on its Citations tab; below that width
+    // the answer keeps its own Citations tab.
+    const wide = (page.viewportSize()?.width ?? 0) >= 1024;
+    const citations = wide ? page.getByRole('complementary', { name: 'About this answer' }) : page;
+    if (wide) await page.getByRole('button', { name: 'Context', exact: true }).click();
+    await citations.getByRole('tab', { name: /^Citations/ }).last().click();
+    await expect(citations.getByText(recordName).first(), 'the uploaded document should be cited').toBeVisible({
       timeout: 15_000,
     });
 
-    await page.getByRole('button', { name: /Open in collections/ }).first().click();
+    await citations.getByRole('button', { name: /Open in Collections/ }).first().click();
     await expect(page, 'the citation should open the collection holding the document').toHaveURL(
       new RegExp(`nodeId=${kbId}`),
       { timeout: 20_000 },

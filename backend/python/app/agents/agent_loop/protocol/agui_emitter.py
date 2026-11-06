@@ -50,7 +50,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # CUSTOM event: drop the named text message and everything its run streamed
-# after it. Sent when a model call fails mid-stream (see `Agent.step()`).
+# after it. Sent when a model call fails mid-stream, or when a hook overrules
+# the reply it ended with (see `Agent.step()`).
 MESSAGE_DISCARDED_EVENT_NAME = "message_discarded"
 
 # How a call that waited for approval was settled (`tool_approvals.Outcome.answer`).
@@ -69,6 +70,8 @@ class AGUIEventEmitter(EventEmitter):
         self._thread_id = thread_id
         # (run_id, kind) -> open messageId, kind in {"text", "reasoning"}
         self._open_messages: dict[tuple[str, str], str] = {}
+        # run_id -> the text messageId of its latest model call, open or ended.
+        self._model_call_messages: dict[str, str] = {}
         # Confidence-trailer stripping: buffer raw text per run_id so we
         # can withhold the trailing `---\nConfidence: <level>` marker
         # (and its partial forms) from TEXT_MESSAGE_CONTENT frames.
@@ -79,6 +82,12 @@ class AGUIEventEmitter(EventEmitter):
     async def emit(self, event: "AgentEvent") -> None:
         for sse_event in self._translate(event):
             await self._event_sink.write(sse_event)
+
+    @staticmethod
+    def _message_discarded(message_id: str, run_id: str) -> dict:
+        return frame(
+            AGUIEventType.CUSTOM, name=MESSAGE_DISCARDED_EVENT_NAME, value={"messageId": message_id}, runId=run_id,
+        )
 
     def _translate(self, event: "AgentEvent") -> list[dict]:
         run_ctx: "RunContext" = event.run_context
@@ -191,6 +200,7 @@ class AGUIEventEmitter(EventEmitter):
         if event.event_type == EventType.TEXT_MESSAGE_START:
             message_id = new_id("msg")
             self._open_messages[(run_id, "text")] = message_id
+            self._model_call_messages[run_id] = message_id
             self._text_buffers[run_id] = ""
             self._emitted_len[run_id] = 0
             return [frame(AGUIEventType.TEXT_MESSAGE_START, messageId=message_id, role="assistant", runId=run_id)]
@@ -215,7 +225,9 @@ class AGUIEventEmitter(EventEmitter):
         if event.event_type == EventType.TEXT_MESSAGE_END:
             message_id = self._open_messages.pop((run_id, "text"), None)
             if message_id is None:
-                return []
+                # A hook overruled the reply this run's message already ended with.
+                ended = self._model_call_messages.pop(run_id, None) if payload.get("discarded") else None
+                return [self._message_discarded(ended, run_id)] if ended else []
             raw = self._text_buffers.pop(run_id, "")
             if payload.get("discarded"):
                 # The model call failed mid-stream and may be retried: the
@@ -223,10 +235,7 @@ class AGUIEventEmitter(EventEmitter):
                 self._emitted_len.pop(run_id, None)
                 return [
                     frame(AGUIEventType.TEXT_MESSAGE_END, messageId=message_id, runId=run_id),
-                    frame(
-                        AGUIEventType.CUSTOM, name=MESSAGE_DISCARDED_EVENT_NAME,
-                        value={"messageId": message_id}, runId=run_id,
-                    ),
+                    self._message_discarded(message_id, run_id),
                 ]
             clean, _ = parse_confidence_from_answer(raw)
             prev = self._emitted_len.pop(run_id, 0)

@@ -99,4 +99,18 @@ describe('orderPinnedFirst', () => {
 
     expect(orderPinnedFirst(list)).toBe(list);
   });
+
+  it('puts a chat just unpinned where its last activity places it among the rest, not on top', () => {
+    const list = [chat('old', 1000), chat('p1', 9000, { isPinned: true }), chat('r1', 5000), chat('r2', 500)];
+
+    expect(ids(orderPinnedFirst(list, 'old'))).toEqual(['p1', 'r1', 'old', 'r2']);
+    expect(ids(orderPinnedFirst([chat('new', 8000), chat('r1', 5000)], 'new'))).toEqual(['new', 'r1']);
+    expect(ids(orderPinnedFirst([chat('oldest', 100), chat('r1', 5000)], 'oldest'))).toEqual(['r1', 'oldest']);
+  });
+
+  it('goes after the last chat newer than it, so one moved up on use (its time not yet updated) stays above', () => {
+    const list = [chat('x', 3000), chat('justUsed', 1000), chat('r1', 4000), chat('r2', 2000)];
+
+    expect(ids(orderPinnedFirst(list, 'x'))).toEqual(['justUsed', 'r1', 'x', 'r2']);
+  });
 });

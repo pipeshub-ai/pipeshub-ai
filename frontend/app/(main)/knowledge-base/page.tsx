@@ -118,6 +118,7 @@ import { useDebouncedSearch } from './hooks/use-debounced-search';
 import { toPendingChatNode, useTickedRows } from './hooks/use-ticked-rows';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
+import { chatContentColumnStyle } from '@/chat/constants';
 import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError, parseRetryAfter } from '@/lib/api/api-error';
 import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
@@ -3247,14 +3248,19 @@ function KnowledgeBasePageContent() {
 
         {selectedCount === 0 && (
           <>
+            {/* The chat composer's own column (its width and 16px side gutter) so the dock, once open, lines up with
+                it; it sits above the pagination row. */}
             <Flex
               justify="center"
+              className="chat-column-gutter"
               style={{
+                ...chatContentColumnStyle(),
+                paddingLeft: undefined,
+                paddingRight: undefined,
                 position: 'absolute',
-                bottom: 64,
+                bottom: 'var(--space-9)',
                 left: '50%',
                 transform: 'translateX(-50%)',
-                width: 'min(800px, calc(100% - 48px))',
                 zIndex: 20,
                 pointerEvents: 'none',
               }}

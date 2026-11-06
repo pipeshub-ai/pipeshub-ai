@@ -6,7 +6,10 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { ChatSectionHeader } from './chat-section-header';
-import { ChatSectionElement, StartChatButton, ChatItemSkeleton } from './chat-section-element';
+import { ListSkeleton } from '@/app/components/ui/list-skeleton';
+import { useDeferredLoading } from '@/app/components/ui/use-deferred-loading';
+import { StartChatButton, GeneratingTitleItem } from './chat-section-element';
+import { ChatListRow, useRowSelect } from './chat-list-row';
 import { SidebarItem } from './sidebar-item';
 import { TimeGroup } from './time-group';
 import type { Conversation } from '@/chat/types';
@@ -21,6 +24,8 @@ interface ChatSectionBaseProps {
   currentConversationId: string | null;
   onSelectConversation: (id: string) => void;
   onAdd?: () => void;
+  /** The +'s accessible name; defaults to "New chat". */
+  addLabel?: string;
   onNewChat: () => void;
   skeletonCount: number;
   /** When true, the section grows to fill available space and scrolls */
@@ -29,16 +34,21 @@ interface ChatSectionBaseProps {
   hasMore?: boolean;
   /** Called when "More" button is clicked */
   onMore?: () => void;
-  /** Pending conversations to show as "Generating Title…" shimmers in Today group */
+  /** Pending conversations to show as "Generating Title…" shimmers first (in the Today group when time-grouped) */
   pendingConversations?: PendingConversation[];
-  /** Empty-state text; defaults to "No chats yet" */
-  emptyStateText?: string;
+  /** Empty-state text; defaults to "No chats yet". `null`: no line at all. */
+  emptyStateText?: string | null;
   /** Agent sidebar: agent-scoped row actions (delete only) */
   agentId?: string;
   /** When true, a chevron toggle is shown and the section body can be collapsed */
   isCollapsible?: boolean;
   /** Initial collapsed state (defaults to false) */
   defaultCollapsed?: boolean;
+  /**
+   * `rail`: a group of the main chat rail. A 40px heading whose title is plain text, an 8px gap
+   * before the first row, and a one-line empty state in medium weight.
+   */
+  variant?: 'default' | 'rail';
 }
 
 /**
@@ -73,6 +83,7 @@ export function ChatSection({
   currentConversationId,
   onSelectConversation,
   onAdd,
+  addLabel,
   onNewChat,
   skeletonCount,
   isScrollable = false,
@@ -83,27 +94,39 @@ export function ChatSection({
   agentId,
   isCollapsible = false,
   defaultCollapsed = false,
+  variant = 'default',
 }: ChatSectionProps) {
   const { t } = useTranslation();
+  const select = useRowSelect(onSelectConversation);
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
+  const skeleton = useDeferredLoading(isLoading);
+  const showSkeleton = isLoading || skeleton.visible;
 
   const isTimeGrouped = !!timeGroups;
   const showGenerating = pendingConversations.length > 0;
   const isEmpty = isTimeGrouped
     ? timeGroups.length === 0 && !showGenerating
     : !conversations || conversations.length === 0;
+  const isRail = variant === 'rail';
+  // A chat still being written is today's, so it gets a Today group even when no listed chat is from today.
+  const groups =
+    timeGroups && showGenerating && !timeGroups.some(([label]) => label === 'Today')
+      ? withTodayGroup(timeGroups)
+      : timeGroups;
 
   return (
     <Flex
       direction="column"
+      gap={isRail ? '2' : undefined}
       style={isScrollable && !isCollapsed ? { flex: 1, minHeight: 0 } : undefined}
     >
       {(title || onAdd || isCollapsible) && (
         <ChatSectionHeader
           title={title ?? ''}
+          size={isRail ? 'rail' : 'default'}
           onAdd={onAdd}
-          addAriaLabel={onAdd ? t('chat.newChat') : undefined}
-          onTitleClick={!isCollapsible && hasMore ? onMore : undefined}
+          addAriaLabel={onAdd ? addLabel ?? t('chat.newChat') : undefined}
+          onTitleClick={!isRail && !isCollapsible && hasMore ? onMore : undefined}
           isCollapsed={isCollapsible ? isCollapsed : undefined}
           onToggleCollapse={isCollapsible ? () => setIsCollapsed((c) => !c) : undefined}
         />
@@ -111,7 +134,7 @@ export function ChatSection({
 
       {!isCollapsed && hasError ? (
         <Flex direction="column" gap="2" style={{ padding: 'var(--space-2) var(--space-3)' }}>
-          <Text size="1" style={{ color: '#ef4444' }}>
+          <Text size="1" style={{ color: 'var(--red-11)' }}>
             {t('chat.failedToLoad')}
           </Text>
           <StartChatButton onClick={onNewChat} />
@@ -124,25 +147,33 @@ export function ChatSection({
             ...(isScrollable ? { overflowY: 'auto', flex: 1 } : {}),
           }}
         >
-          {isLoading ? (
-            /* Skeleton loading state */
-            <Flex direction="column" gap="1">
-              {Array.from({ length: skeletonCount }, (_, i) => (
-                <ChatItemSkeleton key={i} />
-              ))}
-            </Flex>
-          ) : isEmpty && !showGenerating ? (
+          {showSkeleton ? (
+            /* Skeleton loading state: the shared list skeleton, at the chat row's height */
+            <ListSkeleton
+              variant="sidebar-row"
+              count={skeletonCount}
+              statusLabel={t('nav.loadingChats')}
+              exiting={skeleton.exiting}
+            />
+          ) : isEmpty && !showGenerating && !hasMore ? (
             /* Empty state: plain text, since the sidebar's New chat already starts one */
-            <Text
-              size="1"
-              style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-10)' }}
-            >
-              {emptyStateText ?? t('chat.noChatsYet')}
-            </Text>
-          ) : isTimeGrouped ? (
+            emptyStateText !== null && (
+              <Text
+                size="1"
+                weight={isRail ? 'medium' : undefined}
+                style={{
+                  // In the rail, in line with the section's label above it.
+                  padding: isRail ? '0 var(--space-3)' : 'var(--space-2) var(--space-3)',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                {emptyStateText ?? t('chat.noChatsYet')}
+              </Text>
+            )
+          ) : groups ? (
             /* Time-grouped list (Your Chats) */
             <Flex direction="column">
-              {timeGroups.map(([label, convs]) => (
+              {groups.map(([label, convs]) => (
                 <TimeGroup
                   key={label}
                   label={label}
@@ -153,41 +184,42 @@ export function ChatSection({
                   agentId={agentId}
                 />
               ))}
-              {/* If generating but no groups yet, show a standalone generating group */}
-              {showGenerating && timeGroups.length === 0 && (
-                <TimeGroup
-                  label="Today"
-                  conversations={[]}
-                  currentConversationId={currentConversationId}
-                  onSelectConversation={onSelectConversation}
-                  pendingConversations={pendingConversations}
-                  agentId={agentId}
-                />
-              )}
             </Flex>
           ) : (
-            /* Flat list (Shared Chats) */
-            <Flex direction="column" gap="1">
+            /* Flat list: rows sit flush, one 36px row after another */
+            <Flex direction="column">
+              {[...pendingConversations]
+                .sort((a, b) => b.createdAt - a.createdAt)
+                .map((pending) => (
+                  <GeneratingTitleItem key={pending.slotId} slotId={pending.slotId} />
+                ))}
               {conversations!.map((conv) => (
-                <ChatSectionElement
+                <ChatListRow
                   key={conv.id}
                   conversation={conv}
                   isActive={currentConversationId === conv.id}
-                  onClick={() => onSelectConversation(conv.id)}
                   agentId={agentId}
+                  select={select}
                 />
               ))}
             </Flex>
           )}
 
-          {/* "⋯ More" overflow button */}
-          {hasMore && (
+          {/* "⋯ More" overflow button, with the rows: under a skeleton it would show, then move down when they come */}
+          {hasMore && !showSkeleton && (
             <MoreButton onClick={onMore} />
           )}
         </Flex>
       ) : null}
     </Flex>
   );
+}
+
+/** `groups` with an empty Today group where it belongs: after Pinned, before every earlier day. */
+function withTodayGroup(groups: Array<[SidebarGroupKey, Conversation[]]>): Array<[SidebarGroupKey, Conversation[]]> {
+  const at = groups.findIndex(([label]) => label !== 'Pinned');
+  const i = at < 0 ? groups.length : at;
+  return [...groups.slice(0, i), ['Today', []], ...groups.slice(i)];
 }
 
 /**

@@ -37,7 +37,10 @@ vi.mock('../../../../components/workspace-right-panel', () => ({
   WorkspaceRightPanel: ({ open, headerActions }: { open: boolean; headerActions?: React.ReactNode }) =>
     open ? <div>{headerActions}</div> : null,
 }));
-vi.mock('../../../../components', () => ({
+vi.mock('../../../../components', async () => ({
+  // The real hook and input: they only read the FormField context this mock leaves empty.
+  useFormValidation: (await import('../../../../components/use-form-validation')).useFormValidation,
+  LabeledTextField: (await import('../../../../components/form-field')).LabeledTextField,
   FormField: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   SelectDropdown: () => null,
   TagInput: () => null,

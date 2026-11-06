@@ -3,6 +3,9 @@ oauth_apps_router = None
 knowledge_hub_service_factory = None
 sharing_router = None 
 agent_sharing_router = None
+# Routes mounted ahead of the shared query routers / beside the entity router.
+query_extension_router = None
+entity_extension_router = None
 allowed_connector_list_scopes: set[str] = {"personal", "team"}
 # Organization-wide rules for toolset tools (the "Tool approvals" editor). Off: a toolset tool
 # starts from what it does to data, and the person in the chat answers its approval card.
@@ -27,6 +30,7 @@ from app.api.routes.mcp_resolvers import (
     mask_mcp_instance_for_response,
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
+    unusable_agent_mcp_server_ids,  # noqa: F401
 )
 from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.api.middlewares.auth import (

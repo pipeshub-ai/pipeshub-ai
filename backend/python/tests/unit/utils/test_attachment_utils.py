@@ -840,13 +840,14 @@ class TestKeepAccessibleAttachments:
 
     @staticmethod
     async def _keep(
-        graph, attachments, history, *, service_account=False, user_id="u1",
+        graph, attachments, history, *, service_account=False, user_id="u1", **chat,
     ) -> tuple[list[dict], list[dict]]:
         from app.utils.attachment_utils import keep_accessible_attachments
 
         return await keep_accessible_attachments(
             graph, org_id="org-1", user_id=user_id, is_service_account=service_account,
             attachments=attachments, previous_conversations=history, logger=logging.getLogger("t"),
+            **chat,
         )
 
     @pytest.mark.asyncio
@@ -890,6 +891,35 @@ class TestKeepAccessibleAttachments:
         turn = [{"virtualRecordId": "mine", "recordId": "forged"}, {"recordId": "no-vrid"}]
         kept_turn, _ = await self._keep(graph, turn, [])
         assert kept_turn == [{"virtualRecordId": "mine", "recordId": "rec-mine"}]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_a_chat_attachment_with_no_grant_is_left_to_the_chat_content_access(self, allow: bool) -> None:
+        """Another member's file in a shared chat's history: the graph grants the
+        user nothing on it, the installed ChatContentAccess decides."""
+        graph = self._graph({"mine"})
+        graph.get_nodes_by_field_in = AsyncMock(return_value=[
+            {"id": "up-b", "virtualRecordId": "bobs", "orgId": "org-1",
+             "origin": "UPLOAD", "connectorId": "attachments_org-1"},
+            {"id": "drive-1", "virtualRecordId": "connector-file", "orgId": "org-1",
+             "origin": "CONNECTOR", "connectorId": "drive"},
+        ])
+        access = MagicMock(graph_grants_chat_content=False)
+        access.can_read_chat_content = AsyncMock(return_value=allow)
+        history = [{"role": "user_query", "attachments": [
+            {"virtualRecordId": "bobs"}, {"virtualRecordId": "connector-file"}, {"virtualRecordId": "mine"},
+        ]}]
+
+        with patch("app.utils.attachment_utils.get_chat_content_access", return_value=access):
+            _, kept_history = await self._keep(graph, [], history, conversation_id="conv-1", acl_version=3)
+
+        expected = [{"virtualRecordId": "mine", "recordId": "rec-mine"}]
+        if allow:
+            expected.insert(0, {"virtualRecordId": "bobs", "recordId": "up-b"})
+        assert kept_history[0]["attachments"] == expected
+        access.can_read_chat_content.assert_awaited_once_with(
+            graph, user_id="u1", org_id="org-1", record="up-b", conversation_id="conv-1", acl_version=3,
+        )
 
     @pytest.mark.asyncio
     async def test_a_service_account_keeps_only_this_orgs_chat_attachments(self) -> None:

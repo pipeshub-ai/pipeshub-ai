@@ -5,8 +5,11 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Box, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { chatSlots } from '@/config';
 import { MentionIcon } from '@/chat/components/mention-icon';
-import { MentionMenu, type MentionMenuHandle } from '@/chat/components/mention-menu';
+import { MentionMenu, useMentionPhoneLayout, type MentionMenuHandle, type MentionPick } from '@/chat/components/mention-menu';
+import type { MentionGroupsContext, MentionGroupsResult } from '@/chat/chat-extension';
+import type { ComposerMentionContext } from '@/chat/components/composer/composer-input.types';
 import type { ChatKnowledgeFilters } from '@/chat/types';
 import {
   activeMentionQuery,
@@ -24,6 +27,11 @@ import {
 } from '@/chat/utils/node-mentions';
 
 const MENU_MAX_HEIGHT = 340;
+// The phone's menu spans the screen, above the keyboard, with this much on each side.
+const PHONE_GUTTER = 8;
+
+const NO_GROUPS: MentionGroupsResult = { groups: [] };
+const useNoMentionGroups = (_ctx: MentionGroupsContext): MentionGroupsResult => NO_GROUPS;
 
 interface Box2D {
   left: number;
@@ -67,8 +75,11 @@ interface MentionComposerFieldProps {
   /** The chat's scope: with it, the menu's checkboxes tick nodes into it. */
   selection?: ChatKnowledgeFilters;
   onSelectionChange?: (next: ChatKnowledgeFilters) => void;
+  /** Where the composer sits, and the sources its menu lists first. */
+  context?: ComposerMentionContext;
   style?: React.CSSProperties;
   'aria-label'?: string;
+  'data-testid'?: string;
 }
 
 export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionComposerFieldProps>(
@@ -89,8 +100,10 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
       selection,
       mentionsOff,
       onSelectionChange,
+      context,
       style,
       'aria-label': ariaLabel,
+      'data-testid': testId,
     },
     ref,
   ) {
@@ -113,6 +126,7 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
       valueRef.current = value;
     }, [value]);
     const listId = useId();
+    const isMobile = useMentionPhoneLayout();
     const [activeOption, setActiveOption] = useState<string | undefined>(undefined);
     const onActiveChange = useCallback((id: string | undefined) => setActiveOption(id), []);
 
@@ -133,6 +147,14 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
       if (dismissed && !dismissedIntact) setDismissed(null);
     }, [dismissed, dismissedIntact]);
     const spans = useMemo(() => locateMentions(value, mentions), [value, mentions]);
+    // A plain field holds source chips only; `richItems: false` tells the groups' provider so.
+    const useMentionGroups = chatSlots?.useMentionGroups ?? useNoMentionGroups;
+    const extraGroups = useMentionGroups({
+      query: menuOpen && active ? active.query : '',
+      enabled: menuOpen,
+      richItems: false,
+      surface: context?.surface ?? 'chat',
+    });
 
     // However the menu closes after a tick (Escape, a click elsewhere, no more matches), the `@query` goes.
     useEffect(() => {
@@ -163,9 +185,10 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
       if (!el) return;
       const shell = el.closest('[data-composer-shell]') ?? el;
       const rect = shell.getBoundingClientRect();
+      const phone = isMobile && typeof window !== 'undefined';
       setMenuBox({
-        left: rect.left,
-        width: rect.width,
+        left: phone ? PHONE_GUTTER : rect.left,
+        width: phone ? window.innerWidth - PHONE_GUTTER * 2 : rect.width,
         bottom: window.innerHeight - rect.top + 8,
         maxHeight: Math.max(160, Math.min(MENU_MAX_HEIGHT, rect.top - 16)),
       });
@@ -210,6 +233,11 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
     // Names have spaces, so a query runs on past one; once it has a space and matches nothing, the user is writing on.
     const onNoMatches = () => {
       if (active && /\s/.test(active.query)) closeMenu();
+    };
+
+    const pickFromMenu = (picked: MentionPick) => {
+      // Only sources become chips in a plain field.
+      if (picked.kind === 'source') pick(picked.node);
     };
 
     const pick = (mention: MentionNode) => {
@@ -387,9 +415,9 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
               bottom: menuBox.bottom,
               zIndex: 80,
               background: 'var(--olive-1)',
-              border: '1px solid var(--olive-4)',
+              border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-3)',
-              boxShadow: 'var(--shadow-5)',
+              boxShadow: 'var(--shadow-4)',
               padding: 6,
               boxSizing: 'border-box',
               display: 'flex',
@@ -409,12 +437,18 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
                     }
                   : undefined
               }
-              onPick={pick}
+              onPick={pickFromMenu}
               onNoMatches={onNoMatches}
               onClearQuery={() => replaceToken('@')}
               maxHeight={menuBox.maxHeight - 14}
               listId={listId}
               onActiveChange={onActiveChange}
+              groups={extraGroups.groups}
+              footer={extraGroups.footer}
+              sources={{
+                preferred: context?.preferredSources,
+                first: Boolean(context?.sourcesFirst || extraGroups.sourcesFirst),
+              }}
             />
           </Box>,
           // Inside the theme root, so Radix tokens and components (the checkboxes) are styled.
@@ -467,7 +501,7 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
               inset: 0,
               overflow: 'hidden',
               pointerEvents: 'none',
-              color: readOnly ? (typeof style?.color === 'string' ? style.color : 'var(--slate-a8)') : 'var(--slate-12)',
+              color: readOnly ? (typeof style?.color === 'string' ? style.color : 'var(--text-placeholder)') : 'var(--text-primary)',
             }}
           >
             {highlighted}
@@ -476,10 +510,12 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
         <textarea
           ref={setRefs}
           className="chat-input-textarea"
+          data-testid={testId}
           value={value}
           readOnly={readOnly}
           rows={1}
           aria-label={ariaLabel}
+          // A textarea can't be a combobox: it stays a textbox, tied to the menu by aria-controls and aria-activedescendant.
           aria-autocomplete="list"
           aria-controls={menuOpen ? listId : undefined}
           aria-activedescendant={menuOpen ? activeOption : undefined}
@@ -519,9 +555,9 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
             resize: 'none',
             background: 'transparent',
             position: 'relative',
-            color: value ? 'transparent' : (readOnly ? style?.color : 'var(--slate-12)'),
+            color: value ? 'transparent' : (readOnly ? style?.color : 'var(--text-primary)'),
             WebkitTextFillColor: value ? 'transparent' : undefined,
-            caretColor: 'var(--slate-12)',
+            caretColor: 'var(--text-primary)',
           }}
         />
       </div>

@@ -15,6 +15,7 @@ import {
   ToolCallCard,
   formatToolPayload,
 } from '../agent-activity';
+import { TRAIL_FOLD_EVENT } from '../keep-on-screen';
 import type { MessagePart, StatusMessage } from '../../../types';
 
 // No global RTL setup file is wired into vitest.config.ts for this
@@ -176,6 +177,23 @@ describe('AgentActivityTimeline — narration text', () => {
     expect(container.querySelectorAll('.live-narration-text').length).toBe(0);
   });
 
+  it('fades a narration row in once, as its row, like every other step', () => {
+    const { container } = renderTimeline(
+      [
+        { type: 'text', content: 'I will search the handbook.', settled: true },
+        { type: 'tool_call', toolCallId: 'call-1', toolName: 'web_search', status: 'completed' },
+      ],
+      { isStreaming: true },
+    );
+    const text = container.querySelector('.narration-text') as HTMLElement;
+    const entrances = (el: Element | null) => {
+      let n = 0;
+      for (let e = el; e && e !== container; e = e.parentElement) if (e.classList.contains('agent-activity-enter')) n += 1;
+      return n;
+    };
+    expect(entrances(text)).toBe(1);
+  });
+
   it('renders every text part (including isFinal) when nested inside a sub-agent group', () => {
     renderTimeline(
       [{ type: 'text', content: 'Delegate final answer.', isFinal: true }],
@@ -219,6 +237,68 @@ describe('AgentActivityTimeline — narration text', () => {
   });
 });
 
+describe('AgentActivityTimeline — a step that joins the trail while it streams', () => {
+  const tool = (id: string, extra: Partial<MessagePart> = {}): MessagePart =>
+    ({ type: 'tool_call', toolCallId: id, toolName: 'web_search', displayName: `Searched ${id}`, status: 'completed', ...extra });
+  const think: MessagePart = { type: 'reasoning', content: 'Looking for the rules.' };
+  const timeline = (parts: MessagePart[], isStreaming = true) =>
+    h(Theme, null, h(AgentActivityTimeline, { parts, isStreaming }));
+  const opening = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('.trail-row-opens')).map((el) => el.textContent);
+
+  it('opens to its height, and only that step: not the rows already drawn, nor a trail drawn whole', () => {
+    const { container, rerender } = render(timeline([think]));
+    // A trail's first draw does not open row by row.
+    expect(opening(container)).toEqual([]);
+    rerender(timeline([think, { type: 'text', content: 'Next I will search.', settled: true, runId: 'r1' }, tool('call-1')]));
+    // The new tool step opens; the narration does not (its words glide in from the answer).
+    expect(opening(container)).toHaveLength(1);
+    expect(opening(container)[0]).toContain('Searched call-1');
+    expect(opening(container)[0]).not.toContain('Next I will search.');
+    // Once opening, it stays the same element as the trail goes on.
+    const row = container.querySelector('.trail-row-opens');
+    rerender(timeline([think, { type: 'text', content: 'Next I will search.', settled: true, runId: 'r1' }, tool('call-1'), think]));
+    expect(container.querySelector('.trail-row-opens')).toBe(row);
+  });
+
+  it('opens the status that joins steps already drawn after a quiet moment, not one that starts the trail', () => {
+    const status = (parts: MessagePart[]) => h(Theme, null, h(AgentActivityTimeline, { parts, isStreaming: true, currentStatus: STATUS }));
+    const first = render(status([]));
+    expect(opening(first.container)).toEqual([]);
+    first.unmount();
+    const { container, rerender } = render(timeline([think, tool('call-1')]));
+    rerender(status([think, tool('call-1')]));
+    expect(opening(container)).toHaveLength(1);
+    expect(opening(container)[0]).toContain('Using Jira Search');
+  });
+
+  it('joins a step at once while the view follows the answer\'s end, which keeps the text in place', () => {
+    const scroller = document.createElement('div');
+    scroller.className = 'chat-message-scroll';
+    scroller.setAttribute('data-follows-end', '');
+    document.body.appendChild(scroller);
+    try {
+      const { container, rerender } = render(timeline([think]));
+      rerender(timeline([think, tool('call-1')]));
+      expect(opening(container)).toEqual([]);
+    } finally {
+      scroller.remove();
+    }
+  });
+
+  it('does not open a step drawn when the trail is not streaming', () => {
+    const { container, rerender } = render(timeline([think], false));
+    rerender(timeline([think, tool('call-1')], false));
+    expect(opening(container)).toEqual([]);
+  });
+
+  it('does not reopen a tool call that a second one joins as their group', () => {
+    const { container, rerender } = render(timeline([think, tool('call-1')]));
+    rerender(timeline([think, tool('call-1'), tool('call-2', { toolName: 'jira.search_issues' })]));
+    expect(opening(container)).toEqual([]);
+  });
+});
+
 describe('AgentActivityTimeline — tool call grouping', () => {
   it('renders a single tool call directly, without a group summary row', () => {
     renderTimeline([{ type: 'tool_call', toolCallId: 'call-1', toolName: 'web_search', displayName: 'Searched the web', status: 'completed' }]);
@@ -236,6 +316,21 @@ describe('AgentActivityTimeline — tool call grouping', () => {
     expect(screen.getByText('Explored 2 searches')).toBeTruthy();
     // Individual cards are collapsed by default.
     expect(screen.queryByText('Searched the web')).toBeNull();
+  });
+
+  it('groups tool calls the same live and saved: an empty turn between them does not split the group', () => {
+    const calls: MessagePart[] = [
+      { type: 'tool_call', toolCallId: 'call-1', toolName: 'web_search', status: 'completed' },
+      { type: 'text', content: '', runId: 'run-1' },
+      { type: 'tool_call', toolCallId: 'call-2', toolName: 'jira.search_issues', status: 'completed' },
+    ];
+    // Saved: the empty turn is kept in the transcript.
+    renderTimeline(calls);
+    expect(screen.getByText('Explored 2 searches')).toBeTruthy();
+    cleanup();
+    // Live: the same turn, still open, is not shown at all.
+    renderTimeline(calls, { isStreaming: true });
+    expect(screen.getByText('Explored 2 searches')).toBeTruthy();
   });
 
   it('expands the group summary to reveal individual tool-call cards', () => {
@@ -833,6 +928,12 @@ describe('hasMultiStepActivity', () => {
 });
 
 describe('getVisibleRootParts', () => {
+  it('a text part with no words is no step: Stop before the first word leaves one open', () => {
+    const blank = { type: 'text', content: '', settled: true } as never;
+    const spaces = { type: 'text', content: '  \n', settled: true } as never;
+    expect(getVisibleRootParts([blank, spaces], false)).toEqual([]);
+  });
+
   it('always hides the isFinal part, streaming or not', () => {
     const parts: MessagePart[] = [{ type: 'text', content: 'the answer', isFinal: true }];
     expect(getVisibleRootParts(parts, true)).toEqual([]);
@@ -892,7 +993,7 @@ describe('buildActivitySummary', () => {
 });
 
 describe('CollapsibleActivitySection', () => {
-  function renderCollapsible(parts: MessagePart[], props: { isStreaming?: boolean } = {}) {
+  function renderCollapsible(parts: MessagePart[], props: { isStreaming?: boolean; waiting?: string } = {}) {
     return render(
       h(Theme, null, h(CollapsibleActivitySection, { parts, ...props }, h('div', { 'data-testid': 'child' }, 'child content'))),
     );
@@ -921,6 +1022,13 @@ describe('CollapsibleActivitySection', () => {
     expect(screen.getByText('Used 1 tool')).toBeTruthy();
   });
 
+  it('starts open when it mounts while the run waits on a question', () => {
+    // The saved row taking over from the streamed one, or a reload, mounts the box while the card waits.
+    renderCollapsible([{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }], { waiting: 'Waiting for your answer' });
+    expect(isContentHidden()).toBe(false);
+    expect(screen.getByText('Waiting for your answer')).toBeTruthy();
+  });
+
   it('toggles collapse on header click during streaming', () => {
     renderCollapsible(
       [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }],
@@ -944,16 +1052,65 @@ describe('CollapsibleActivitySection', () => {
     expect(isContentHidden()).toBe(true);
   });
 
-  it('does not auto-collapse when isStreaming transitions from true to false', () => {
+  it('folds in place, with its animation, when the run ends: the same section, never one mounted shut', () => {
     const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }];
-    const { rerender } = renderCollapsible(parts, { isStreaming: true });
+    const { rerender, container } = renderCollapsible(parts, { isStreaming: true });
+    const body = container.querySelector('.trail-body') as HTMLElement;
+    expect(body.dataset.open).toBe('true');
     expect(isContentHidden()).toBe(false);
 
     rerender(
       h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming: false }, h('div', { 'data-testid': 'child' }, 'child content'))),
     );
-    // Stays expanded — collapse is user-driven only.
+    // The same element, now shut: `.trail-body` animates grid-template-rows to 0fr (instantly under reduced motion).
+    expect(container.querySelector('.trail-body')).toBe(body);
+    expect(body.dataset.open).toBe('false');
+    expect(isContentHidden()).toBe(true);
+
+    // The reader can open it again afterwards.
+    fireEvent.click(screen.getByText('Used 1 tool'));
     expect(isContentHidden()).toBe(false);
+  });
+
+  it('stays open while the run waits on a question, and folds when the answered run ends', () => {
+    const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }];
+    const section = (isStreaming: boolean, waiting?: string) =>
+      h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming, waiting }, h('div', { 'data-testid': 'child' }, 'child content')));
+    const { rerender, container } = renderCollapsible(parts, { isStreaming: true });
+    const body = container.querySelector('.trail-body') as HTMLElement;
+
+    // The run stops on a card: it has not ended, so its steps stay in view under "Waiting for your answer".
+    rerender(section(false, 'Waiting for your answer'));
+    expect(body.dataset.open).toBe('true');
+    expect(screen.getByText('Waiting for your answer')).toBeTruthy();
+
+    // Answered, the run carries on, and its end folds the box.
+    rerender(section(true));
+    rerender(section(false));
+    expect(container.querySelector('.trail-body')).toBe(body);
+    expect(body.dataset.open).toBe('false');
+  });
+
+  it("tells the scroll box around it when the run's end folds it, and only then", () => {
+    const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }];
+    const section = (isStreaming: boolean, waiting?: string) =>
+      h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming, waiting }, h('div', null, 'child content')));
+    const folds = vi.fn();
+    document.addEventListener(TRAIL_FOLD_EVENT, folds);
+    try {
+      const { rerender } = renderCollapsible(parts, { isStreaming: true });
+      rerender(section(false, 'Waiting for your answer'));
+      expect(folds).not.toHaveBeenCalled();
+      rerender(section(true));
+      rerender(section(false));
+      expect(folds).toHaveBeenCalledTimes(1);
+      // The reader's own toggles are theirs: the box around it keeps out of them.
+      fireEvent.click(screen.getByText('Used 1 tool'));
+      fireEvent.click(screen.getByText('Used 1 tool'));
+      expect(folds).toHaveBeenCalledTimes(1);
+    } finally {
+      document.removeEventListener(TRAIL_FOLD_EVENT, folds);
+    }
   });
 
   it('keeps a user-collapsed section collapsed when streaming ends', () => {
@@ -989,6 +1146,42 @@ describe('CollapsibleActivitySection', () => {
     fireEvent.click(screen.getByText('Used 1 tool'));
     expect(panel?.hasAttribute('aria-hidden')).toBe(false);
     expect(panel?.hasAttribute('inert')).toBe(false);
+  });
+
+  describe('when its question card is typed past in the chat', () => {
+    const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }];
+    const draw = (props: { waiting?: string; replied?: boolean; chatRunning?: boolean }) =>
+      h(Theme, null, h(CollapsibleActivitySection, { parts, ...props }, h('div', { 'data-testid': 'child' }, 'child content')));
+
+    it("folds when the reply's run ends, not while it streams, and tells the scroll box as a run's own end does", () => {
+      const folds = vi.fn();
+      const { rerender, container } = render(draw({ waiting: 'Waiting for your answer' }));
+      container.addEventListener(TRAIL_FOLD_EVENT, folds);
+      // The reply is sent: the card reads as replied to, and the reply's run starts. The box stays as it is meanwhile.
+      rerender(draw({ replied: true, chatRunning: true }));
+      expect(isContentHidden()).toBe(false);
+      expect(folds).not.toHaveBeenCalled();
+      // The reply's run ends.
+      rerender(draw({ replied: true, chatRunning: false }));
+      expect(isContentHidden()).toBe(true);
+      expect(folds).toHaveBeenCalledTimes(1);
+      // A later run in the chat leaves it as the reader has it.
+      fireEvent.click(screen.getByText('Used 1 tool'));
+      rerender(draw({ replied: true, chatRunning: true }));
+      rerender(draw({ replied: true, chatRunning: false }));
+      expect(isContentHidden()).toBe(false);
+      expect(folds).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves the reader's own choice: opened again before the reply's run ends, it stays open", () => {
+      const { rerender } = render(draw({ waiting: 'Waiting for your answer' }));
+      rerender(draw({ replied: true, chatRunning: true }));
+      // The reader folds it and opens it again while the reply's answer streams.
+      fireEvent.click(screen.getByText('Used 1 tool'));
+      fireEvent.click(screen.getByText('Used 1 tool'));
+      rerender(draw({ replied: true, chatRunning: false }));
+      expect(isContentHidden()).toBe(false);
+    });
   });
 });
 

@@ -444,12 +444,13 @@ test.describe('Chat — message actions: regenerate', () => {
     await expect(regenBtn).toBeVisible({ timeout: 8_000 });
   });
 
-  test('clicking regenerate populates the chat input with the original question', async ({
+  test('clicking regenerate re-runs the question at once, with no composer mode', async ({
     page,
   }) => {
-    // Mock the regenerate SSE endpoint
+    let regenerateRequests = 0;
     await page.route(`**/api/v1/conversations/${CONV_ID}/message/*/regenerate`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
+      regenerateRequests += 1;
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
@@ -470,24 +471,15 @@ test.describe('Chat — message actions: regenerate', () => {
 
     await regenBtn.click();
 
-    // After clicking regenerate, the app dispatches 'showRegenBar' via commandStore.
-    // The chat input should enter regenerate mode, showing the original question text
-    // and a "Regenerating for…" indicator bar above the input.
-    const regenIndicator = page.locator(
-      'text=/Regenerating|regenerate|Re-generating/i',
-    );
-    const inputWithQuestion = page.locator('textarea').last();
-
-    const indicatorVisible = await regenIndicator.first().isVisible({ timeout: 3_000 }).catch(() => false);
-    const inputValue = await inputWithQuestion.inputValue().catch(() => '');
-
-    // Either the indicator or the pre-filled question confirms regen mode
-    expect(indicatorVisible || inputValue.includes(TEST_QUESTION.slice(0, 20))).toBeTruthy();
+    // One click is the whole action: the request goes out and no "Regenerate response" chip is left waiting for Send.
+    await expect.poll(() => regenerateRequests, { timeout: 5_000 }).toBe(1);
+    await expect(page.getByText('Regenerate response')).toHaveCount(0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Response tabs: Answer / Sources / Citations
+// Response tabs: from 1024 px the column beside the chat (Sources / Citations /
+// Context / Outputs); below it, the answer's own Answer / Sources / Citations
 // ---------------------------------------------------------------------------
 
 test.describe('Chat — response tabs', () => {
@@ -502,14 +494,25 @@ test.describe('Chat — response tabs', () => {
     });
   });
 
-  test('"Sources" tab is rendered for a completed response', async ({ page }) => {
-    // Tabs are plain elements, not buttons; match the label itself.
-    await expect(page.getByText('Sources', { exact: true }).first()).toBeVisible({ timeout: 5_000 });
+  test('from 1024 px the answer has no tabs; "Context" opens the column on Sources', async ({ page }) => {
+    await expect(page.locator('.response-tabs-scroll')).toHaveCount(0);
+    // The mocked answer carries no citations, so its toolbar has no Sources button.
+    await expect(page.getByTestId('answer-sources')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Context', exact: true }).click();
+    const column = page.getByRole('complementary', { name: 'About this answer' });
+    for (const name of ['Sources', 'Citations', 'Context', 'Outputs']) {
+      await expect(column.getByRole('tab', { name })).toBeVisible();
+    }
+    await expect(column.getByRole('tab', { name: 'Sources' })).toHaveAttribute('aria-selected', 'true');
+    await expect(column.getByText('Nothing read yet')).toBeVisible();
   });
 
-  test('"Sources" tab does nothing for an answer with no sources', async ({ page }) => {
-    // The mocked answer carries no citations, so the tab is shown but disabled.
-    await page.getByText('Sources', { exact: true }).first().click();
+  test('below 1024 px the answer keeps its tabs; Sources and Citations are disabled for an answer with none', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 800 });
+    const tabs = page.locator('.response-tabs-scroll').last();
+    await expect(tabs.getByRole('tab', { name: 'Answer' })).toHaveAttribute('aria-selected', 'true');
+    await expect(tabs.getByRole('tab', { name: /^Sources/ })).toBeDisabled();
+    await expect(tabs.getByRole('tab', { name: /^Citations/ })).toBeDisabled();
     await expect(page.locator(`text=${TEST_ANSWER.slice(0, 40)}`).first()).toBeVisible({
       timeout: 5_000,
     });

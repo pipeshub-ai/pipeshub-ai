@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Button, Flex, Text, IconButton } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, IconButton, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import { Spinner } from '@/app/components/ui/spinner';
+import { SkeletonGlyph } from '@/app/components/ui/list-skeleton';
+import { useDeferredLoading } from '@/app/components/ui/use-deferred-loading';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { isProcessedError } from '@/lib/api';
 import { isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
@@ -18,7 +20,7 @@ interface ArtifactsPanelProps {
   /** Jump to the CODE artifact `artifact.derivedFromCodeArtifactId` was generated from. Rejects with a gone error when that artifact was deleted. */
   onViewSource?: (codeArtifactId: string) => void | Promise<void>;
   /** recordId -> highest version seen anywhere in the conversation — powers the "newer version available" hint (see `MessageList`). */
-  latestArtifactVersions?: Map<string, number>;
+  latestArtifactVersions?: ReadonlyMap<string, number>;
 }
 
 const MIME_ICONS: Record<string, string> = {
@@ -32,6 +34,15 @@ const MIME_ICONS: Record<string, string> = {
   'text/': 'article',
   'application/json': 'data_object',
 };
+
+/**
+ * A ghost IconButton sizes to its glyph and pulls its margins in by its padding, so the spinner that replaces a glyph
+ * resizes it and neighbours' hit areas overlap. A fixed box keeps every action the same size, a gap apart.
+ */
+const ACTION_BUTTON_STYLE: React.CSSProperties = { width: 28, height: 28, padding: 0, margin: 0, flexShrink: 0 };
+
+/** An artifact row is at least 60px: a 32px tile in 12px of padding, with room for a two-line name and meta. */
+const ARTIFACT_ROW_MIN_HEIGHT = 'calc(var(--space-8) + var(--space-3))';
 
 function getIconForMime(mimeType: string): string {
   for (const [prefix, icon] of Object.entries(MIME_ICONS)) {
@@ -128,7 +139,7 @@ export function ArtifactsPanel({
         style={{ marginBottom: collapsed ? 0 : 'var(--space-2)' }}
       >
         <MaterialIcon name={collapsed ? 'expand_more' : 'expand_less'} size={18} color="var(--accent-11)" />
-        <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
+        <Text size="2" weight="medium" style={{ color: 'var(--text-secondary)' }}>
           {t('chat.artifactsPanel.generated', { count: artifacts.length })}
         </Text>
       </Button>
@@ -232,26 +243,16 @@ function ArtifactThumbnail({ artifact, onGone }: { artifact: ChatArtifact; onGon
     };
   }, [artifact.recordId, artifact.downloadUrl, artifact.version, onGone]);
 
-  const showSkeleton = !src || (!loaded && !errored);
+  const loading = !src || (!loaded && !errored);
+  // A fast load paints nothing; a slow one shows the shared skeleton glyph, which holds still under reduced motion.
+  const { visible: showSkeleton } = useDeferredLoading(loading && !errored);
 
   return (
     <Box style={{ position: 'relative', width: '100%', height: '100%' }}>
       {showSkeleton && (
-        <Flex
-          align="center"
-          justify="center"
-          style={{
-            position: 'absolute',
-            inset: 0,
-            backgroundColor: 'var(--slate-4)',
-            backgroundImage:
-              'linear-gradient(90deg, var(--slate-3) 0%, var(--slate-5) 50%, var(--slate-3) 100%)',
-            backgroundSize: '400% 100%',
-            animation: 'shimmer-sweep 1.4s linear infinite',
-          }}
-        >
-          <Spinner size={14} color="var(--slate-11)" />
-        </Flex>
+        <Box style={{ position: 'absolute', inset: 0 }}>
+          <SkeletonGlyph size={32} />
+        </Box>
       )}
       {errored && (
         <Flex
@@ -260,10 +261,10 @@ function ArtifactThumbnail({ artifact, onGone }: { artifact: ChatArtifact; onGon
           style={{
             position: 'absolute',
             inset: 0,
-            backgroundColor: 'var(--accent-3)',
+            backgroundColor: 'var(--fill-muted)',
           }}
         >
-          <MaterialIcon name="image" size={20} color="var(--accent-11)" />
+          <MaterialIcon name="image" size={16} color="var(--text-secondary)" />
         </Flex>
       )}
       {src && (
@@ -278,7 +279,7 @@ function ArtifactThumbnail({ artifact, onGone }: { artifact: ChatArtifact; onGon
             objectFit: 'cover',
             display: 'block',
             opacity: loaded ? 1 : 0,
-            transition: 'opacity 150ms ease-out',
+            transition: 'opacity var(--motion-control) var(--motion-ease)',
           }}
         />
       )}
@@ -360,22 +361,22 @@ function ArtifactCard({
         style={{
           padding: 'var(--space-2) var(--space-3)',
           borderRadius: 'var(--radius-2)',
-          border: '1px dashed var(--slate-6)',
-          backgroundColor: 'var(--slate-2)',
+          border: '1px dashed var(--gray-6)',
+          backgroundColor: 'var(--surface-subtle)',
         }}
       >
         <Flex
           align="center"
           justify="center"
-          style={{ width: 40, height: 40, borderRadius: 'var(--radius-1)', backgroundColor: 'var(--slate-3)', flexShrink: 0 }}
+          style={{ width: 40, height: 40, borderRadius: 'var(--radius-1)', backgroundColor: 'var(--fill-muted)', flexShrink: 0 }}
         >
-          <MaterialIcon name="hide_source" size={20} color="var(--slate-9)" />
+          <MaterialIcon name="hide_source" size={20} color="var(--text-secondary)" />
         </Flex>
         <Flex direction="column" style={{ flex: 1, minWidth: 0 }}>
-          <Text size="2" weight="medium" style={{ color: 'var(--slate-10)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <Text size="2" weight="medium" style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {artifact.fileName}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-9)' }}>
+          <Text size="1" style={{ color: 'var(--text-secondary)' }}>
             {t('chat.artifactsPanel.unavailable')}
           </Text>
         </Flex>
@@ -388,17 +389,19 @@ function ArtifactCard({
       align="center"
       gap="3"
       style={{
-        padding: 'var(--space-2) var(--space-3)',
+        minHeight: ARTIFACT_ROW_MIN_HEIGHT,
+        padding: 'var(--space-3)',
+        boxSizing: 'border-box',
         borderRadius: 'var(--radius-2)',
-        border: '1px solid var(--slate-6)',
-        backgroundColor: 'var(--slate-2)',
+        border: '1px solid var(--border-subtle)',
+        backgroundColor: 'var(--surface-subtle)',
       }}
     >
       {showThumbnail ? (
         <Box
           style={{
-            width: 40,
-            height: 40,
+            width: 'var(--space-6)',
+            height: 'var(--space-6)',
             borderRadius: 'var(--radius-1)',
             overflow: 'hidden',
             flexShrink: 0,
@@ -411,20 +414,20 @@ function ArtifactCard({
           align="center"
           justify="center"
           style={{
-            width: 40,
-            height: 40,
+            width: 'var(--space-6)',
+            height: 'var(--space-6)',
             borderRadius: 'var(--radius-1)',
-            backgroundColor: 'var(--accent-3)',
+            backgroundColor: 'var(--fill-muted)',
             flexShrink: 0,
           }}
         >
-          <MaterialIcon name={icon} size={20} color="var(--accent-11)" />
+          <MaterialIcon name={icon} size={16} color="var(--text-secondary)" />
         </Flex>
       )}
 
       <Flex direction="column" style={{ flex: 1, minWidth: 0 }}>
         <Flex align="center" gap="1">
-          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <Text size="2" style={{ color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {artifact.fileName}
           </Text>
           {!!artifact.version && (
@@ -443,7 +446,7 @@ function ArtifactCard({
             </Text>
           )}
         </Flex>
-        <Text size="1" style={{ color: 'var(--slate-9)' }}>
+        <Text size="1" weight="light" style={{ color: 'var(--text-secondary)' }}>
           {t(`artifacts.types.${artifact.artifactType}`, { defaultValue: artifact.artifactType })}{' '}
           {artifact.sizeBytes > 0 ? `· ${formatFileSize(artifact.sizeBytes)}` : ''}
         </Text>
@@ -454,7 +457,7 @@ function ArtifactCard({
         )}
       </Flex>
 
-      <Flex gap="1">
+      <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
         {onViewSource && artifact.derivedFromCodeArtifactId && !sourceGone && (
           <IconButton
             size="1"
@@ -463,7 +466,7 @@ function ArtifactCard({
             disabled={isViewingSource}
             aria-label={isViewingSource ? t('chat.artifactsPanel.loadingSource') : t('chat.artifactsPanel.viewSource')}
             title={t('chat.artifactsPanel.viewSourceTitle')}
-            style={{ cursor: isViewingSource ? 'wait' : 'pointer' }}
+            style={{ ...ACTION_BUTTON_STYLE, cursor: isViewingSource ? 'wait' : 'pointer' }}
           >
             {isViewingSource ? (
               <Spinner size={16} />
@@ -473,35 +476,29 @@ function ArtifactCard({
           </IconButton>
         )}
         {onPreview && (
+          <Button
+            size="1"
+            onClick={runPreview}
+            loading={isPreviewing}
+            aria-label={t('chat.artifactsPanel.previewFile', { name: artifact.fileName })}
+            style={{ cursor: 'pointer' }}
+          >
+            {t('chat.artifactsPanel.previewButton')}
+          </Button>
+        )}
+        <Tooltip content={t('chat.artifactsPanel.downloadFile', { name: artifact.fileName })}>
           <IconButton
             size="1"
-            variant="ghost"
-            onClick={runPreview}
-            disabled={isPreviewing}
-            aria-label={isPreviewing ? t('chat.artifactsPanel.loadingPreview') : t('chat.artifactsPanel.preview')}
-            style={{ cursor: isPreviewing ? 'wait' : 'pointer' }}
+            variant="soft"
+            color="gray"
+            onClick={runDownload}
+            loading={isDownloading}
+            aria-label={t('chat.artifactsPanel.downloadFile', { name: artifact.fileName })}
+            style={{ cursor: 'pointer' }}
           >
-            {isPreviewing ? (
-              <Spinner size={16} />
-            ) : (
-              <MaterialIcon name="visibility" size={18} />
-            )}
+            <MaterialIcon name="download" size={16} />
           </IconButton>
-        )}
-        <IconButton
-          size="1"
-          variant="ghost"
-          onClick={runDownload}
-          disabled={isDownloading}
-          aria-label={isDownloading ? t('chat.artifactsPanel.downloading') : t('chat.artifactsPanel.download')}
-          style={{ cursor: isDownloading ? 'wait' : 'pointer' }}
-        >
-          {isDownloading ? (
-            <Spinner size={16} />
-          ) : (
-            <MaterialIcon name="download" size={18} />
-          )}
-        </IconButton>
+        </Tooltip>
       </Flex>
     </Flex>
   );

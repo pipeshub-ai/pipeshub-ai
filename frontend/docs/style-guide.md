@@ -398,6 +398,24 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 - `color`: CSS color value (default: inherit)
 - `style`: Additional inline styles
 
+### IconMenuItem
+
+**File**: `app/components/ui/icon-menu-item.tsx`
+
+Every action in a `DropdownMenu` leads with its glyph. Use `IconMenuItem` instead of building the row from `Flex`, `MaterialIcon` and `Text`:
+
+```tsx
+import { IconMenuItem } from '@/app/components/ui/icon-menu-item';
+
+<IconMenuItem icon="drive_file_rename_outline" onSelect={onRename}>{t('chat.rename')}</IconMenuItem>
+<IconMenuItem icon="delete" color="red" onSelect={onDelete}>{t('chat.deleteChat')}</IconMenuItem>
+```
+
+- The glyph is 16px in `--text-secondary`, 8px from the words. A red or disabled item draws it in the item's own colour.
+- The glyph is hidden from screen readers and from type-ahead. When the children are not one string (a trailing lock icon, a tooltip), pass `textValue`.
+- One glyph per action in every menu: Rename `drive_file_rename_outline`, Edit `edit`, Pin `keep` / Unpin `keep_off`, Export or Download `download`, Archive `archive` / Unarchive `unarchive`, Mute `notifications_off` / Unmute `notifications`, Move to project `drive_file_move`, Remove from project `folder_off`, Share `ios_share`, Leave `logout`, Delete `delete`.
+- Choice menus (a radio or checkbox list, such as a role or a page size) keep their own markers.
+
 ### Select
 
 **File**: `app/components/ui/Select.tsx`

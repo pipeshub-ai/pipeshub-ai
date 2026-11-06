@@ -122,3 +122,43 @@ describe('chatConversationIdFromHref', () => {
     expect(chatConversationIdFromHref(href)).toBeNull();
   });
 });
+
+describe('NotificationRow long message', () => {
+  beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', NoopResizeObserver);
+    // jsdom has no layout: report a message taller than the two-line clamp.
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(200);
+  });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('expands and collapses with real buttons named from i18n keys', () => {
+    render(
+      <Theme>
+        <NotificationRow
+          notification={{ _id: 'n2', type: 'x', title: 'Title', message: 'A long message', status: 'unread' }}
+          onMarkRead={vi.fn()}
+          onMarkUnread={vi.fn()}
+          onArchive={vi.fn()}
+          onUnarchive={vi.fn()}
+          onDismiss={vi.fn()}
+          markReadLabel="read"
+          markUnreadLabel="unread"
+          archiveLabel="archive"
+          unarchiveLabel="unarchive"
+          dismissLabel="dismiss"
+        />
+      </Theme>,
+    );
+    const more = screen.getByRole('button', { name: 'notifications.showMore' });
+    expect(more.tagName).toBe('BUTTON');
+    fireEvent.click(more);
+    const less = screen.getByRole('button', { name: 'notifications.showLess' });
+    expect(less.tagName).toBe('BUTTON');
+    fireEvent.click(less);
+    expect(screen.getByRole('button', { name: 'notifications.showMore' })).toBeTruthy();
+  });
+});

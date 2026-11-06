@@ -8,6 +8,8 @@ import {
   LargePayloadError,
   UnsupportedMediaTypeError,
 } from '../errors/http.errors';
+import { DomainHttpError } from '../errors/domain-http.error';
+import { publicFieldErrors } from '../utils/field-errors';
 import { isClientSafeError, isReaderWritten } from '../errors/reader-friendly';
 import {
   jsonResponse,
@@ -176,6 +178,9 @@ export class ErrorMiddleware {
       error instanceof HttpError;
     const isInternalPlumbing = error.statusCode >= 500 && !isOurOwnWording;
     const requestId = req.context?.requestId;
+    const fieldErrors = isInternalPlumbing
+      ? undefined
+      : publicFieldErrors(error);
 
     const errorResponse = {
       error: {
@@ -184,6 +189,12 @@ export class ErrorMiddleware {
           ? INFRASTRUCTURE_FAILURE_MESSAGE
           : error.message,
         ...(requestId && { requestId }),
+        // Which input each problem belongs to, so a form can mark the field
+        // instead of showing the sentence as a toast.
+        ...(fieldErrors && { fieldErrors }),
+        ...(error instanceof DomainHttpError &&
+          error.publicDetails &&
+          !isInternalPlumbing && { details: error.publicDetails }),
         // Only include metadata in development, and never for a failure whose
         // details describe our internals.
         ...(isDevelopment &&

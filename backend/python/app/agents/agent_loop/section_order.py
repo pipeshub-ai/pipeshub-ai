@@ -77,6 +77,7 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # ("repo_instructions",          Volatility.CONV),
     ("knowledge_sources",          Volatility.CONV),
     ("capability_summary",         Volatility.CONV),
+    ("conversation_rules",         Volatility.CONV),
     ("user_context",               Volatility.CONV),
     ("answer_confidence",          Volatility.CONV),
     # Worked examples — injected for SMALL and MID tiers only; omitted for
@@ -107,6 +108,9 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("request_context",            Volatility.TURN),
     # Per request: a client can send a different entity filter on every turn.
     ("entity_filter",              Volatility.TURN),
+    ("sender_context",             Volatility.TURN),
+    # Attached tools this sender has not connected; depends on who asks, so it is per turn.
+    ("unavailable_tools",          Volatility.TURN),
     ("attachments",                Volatility.TURN),
     # Citation rules for an agent that cites only what a question brought
     # (retrieved results, attachments); see `citation_rules` above otherwise.

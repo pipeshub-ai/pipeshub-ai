@@ -82,7 +82,12 @@ const readerText = (data: unknown): string | undefined => {
     const value = body[key];
     if (typeof value === 'string' && value.length > 0) return value;
   }
-  return undefined;
+  // A refusal (402) sends `{code, scope, message}`: its message is written for the reader too.
+  const structured = (body.detail as { message?: unknown } | null | undefined)
+    ?.message;
+  return typeof structured === 'string' && structured.length > 0
+    ? structured
+    : undefined;
 };
 
 /**

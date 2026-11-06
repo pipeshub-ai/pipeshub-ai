@@ -56,6 +56,11 @@ export interface InviteUsersResult {
   alreadyActive?: number;
 }
 
+/** What an address already is in the workspace: has signed in, or has a pending invite. */
+export type InviteAddressStatus = 'member' | 'invited';
+
+const INVITE_CHECK_BATCH = 500;
+
 export const UsersApi = {
   /**
    * List users with pagination and server-side filters.
@@ -203,6 +208,34 @@ export const UsersApi = {
       restored: count(data?.restored),
       alreadyActive: count(data?.alreadyActive),
     };
+  },
+
+  /**
+   * Which of these addresses already belong to the workspace, so the invite form
+   * can warn before anything is sent. Addresses that would get a fresh invite
+   * are left out. Sends nothing.
+   * POST /api/v1/users/bulk/invite/check
+   */
+  async checkInviteStatus(emails: string[]): Promise<Record<string, InviteAddressStatus>> {
+    const found: Record<string, InviteAddressStatus> = {};
+    // The server takes at most 1000 per request.
+    for (let i = 0; i < emails.length; i += INVITE_CHECK_BATCH) {
+      const { data } = await apiClient.post<{
+        existing?: Array<{ email?: unknown; status?: unknown }>;
+      }>(
+        `${BASE_URL}/bulk/invite/check`,
+        { emails: emails.slice(i, i + INVITE_CHECK_BATCH) },
+        // A warning is a courtesy: when the check fails the form simply shows none.
+        { suppressErrorToast: true },
+      );
+      for (const item of data?.existing ?? []) {
+        if (typeof item.email !== 'string') continue;
+        if (item.status === 'member' || item.status === 'invited') {
+          found[item.email.toLowerCase()] = item.status;
+        }
+      }
+    }
+    return found;
   },
 
   /**

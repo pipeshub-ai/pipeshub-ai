@@ -9,6 +9,9 @@ import { AuthTokenService } from '../../../../src/libs/services/authtoken.servic
 import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
 import { slackJwtGenerator } from '../../../../src/libs/utils/createJwt'
 import { createMockLogger } from '../../../helpers/mock-logger'
+import { CONVERSATION_TYPES } from '../../../../src/modules/enterprise_search/services/conversation/conversation.types'
+import { markingGuards } from '../helpers/guarded-chat'
+import { turnDeps } from '../helpers/turn-deps'
 
 const JWT_SECRET = 'test-jwt-secret'
 const SCOPED_SECRET = 'test-scoped-secret'
@@ -34,6 +37,8 @@ function buildRouter() {
     jwtSecret: JWT_SECRET,
     scopedJwtSecret: SCOPED_SECRET,
   } as any)
+  container.bind(CONVERSATION_TYPES.ConversationGuards).toConstantValue(markingGuards())
+  container.bind(CONVERSATION_TYPES.ConversationTurnDeps).toConstantValue(turnDeps())
   return createAgentConversationalRouter(container)
 }
 

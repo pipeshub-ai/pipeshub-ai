@@ -123,7 +123,7 @@ class ArtifactManager:
 
     def _record_actor(self) -> Actor:
         """Who knowledge records are read as: the run's user, whose access the agent has."""
-        return Actor(org_id=self.chat_state.get("org_id", ""), user_id=self.chat_state.get("user_id", ""))
+        return Actor.from_state(self.chat_state)
 
     def _decode(self, content: str, is_base64: bool) -> bytes | str:
         try:
@@ -558,7 +558,10 @@ class ArtifactManager:
         # A signed URL needs no bearer token, so this is the only permission
         # check between the caller and the bytes.
         try:
-            await TieredRecordAuthorizer(graph_provider).authorize(self._record_actor(), record)
+            await TieredRecordAuthorizer(graph_provider).authorize(
+                self._record_actor(), record,
+                conversation_id=(self.chat_state or {}).get("conversation_id"),
+            )
         except RecordNotFoundError:
             return _result(False, {"success": False, "error": f"Record {record_id!r} was deleted, so it can no longer be downloaded"})
         except RecordAccessDeniedError:

@@ -14,6 +14,7 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { FakeAIBackend, FakeSSEResponse, settle } from './chat-test-harness'
+import { behind, behindGuard, realGuards } from '../helpers/guarded-chat'
 
 const URI = process.env.SHARE_TEST_MONGO_URI
 const describeIfMongo = URI ? describe : describe.skip
@@ -21,6 +22,8 @@ const oid = () => new mongoose.Types.ObjectId()
 
 const appConfig = { aiBackend: 'http://ai.test', iamBackend: 'http://iam.test', jwtSecret: 's', scopedJwtSecret: 's' } as never
 type Handler = (req: never, res: never, next: never) => Promise<unknown>
+// Each handler runs behind its route's guard, as in es.routes.ts: a denial is the guard's 404.
+const guards = realGuards()
 
 describeIfMongo('sharing a chat on a real MongoDB: the recipient is notified, and archiving takes it away', function () {
   this.timeout(60000)
@@ -54,10 +57,13 @@ describeIfMongo('sharing a chat on a real MongoDB: the recipient is notified, an
 
   before(async () => {
     await mongoose.connect(URI as string, { dbName: `share_test_${Date.now()}` })
+    // Index builds on the fresh database hold locks a transaction (REPLICA_SET_AVAILABLE=true) cannot wait for.
+    await Promise.all(Object.values(mongoose.models).map((model) => model.init()))
     await Users.collection.insertMany([
-      { _id: owner, orgId, fullName: 'Olivia Owner', email: 'o@example.com', isDeleted: false },
-      { _id: recipient, orgId, fullName: 'Riley Recipient', email: 'r@example.com', isDeleted: false },
-      { _id: stranger, orgId, fullName: 'Sam Stranger', email: 's@example.com', isDeleted: false },
+      // The pre-save hook that gives each user a unique slug does not run on insertMany.
+      { _id: owner, orgId, fullName: 'Olivia Owner', email: 'o@example.com', slug: 'olivia-owner', isDeleted: false },
+      { _id: recipient, orgId, fullName: 'Riley Recipient', email: 'r@example.com', slug: 'riley-recipient', isDeleted: false },
+      { _id: stranger, orgId, fullName: 'Sam Stranger', email: 's@example.com', slug: 'sam-stranger', isDeleted: false },
     ] as never)
   })
 
@@ -87,21 +93,22 @@ describeIfMongo('sharing a chat on a real MongoDB: the recipient is notified, an
 
   for (const kind of ['agent', 'plain'] as const) {
     describe(`${kind} chat`, () => {
-      const params = (id: string) => (kind === 'agent' ? { conversationId: id, agentKey: AGENT_KEY } : { conversationId: id })
+      const params = (id: string): Record<string, string> => (kind === 'agent' ? { conversationId: id, agentKey: AGENT_KEY } : { conversationId: id })
+      const guarded = (op: 'manageSharing' | 'read' | 'archiveSelf', handler: unknown) => behindGuard(guards, op, handler as Handler, kind === 'agent' ? 'agent' : 'chat')
       const share = (id: string, ...users: mongoose.Types.ObjectId[]) =>
         call(
-          (kind === 'agent' ? controller.shareAgentConversation(appConfig) : controller.shareConversationById(appConfig)) as Handler,
+          guarded('manageSharing', kind === 'agent' ? controller.shareAgentConversation(appConfig) : controller.shareConversationById(appConfig)),
           request(owner, params(id), { userIds: users.map(String) }),
         )
       const open = (id: string, user: mongoose.Types.ObjectId) =>
         call(
-          (kind === 'agent' ? controller.getAgentConversationById(appConfig) : controller.getConversationById(appConfig)) as Handler,
+          guarded('read', kind === 'agent' ? controller.getAgentConversationById(appConfig) : controller.getConversationById(appConfig)),
           request(user, params(id)),
         )
       const archive = (id: string) =>
-        call((kind === 'agent' ? controller.archiveAgentConversation : controller.archiveConversation) as unknown as Handler, request(owner, params(id)))
+        call(guarded('archiveSelf', kind === 'agent' ? controller.archiveAgentConversation : controller.archiveConversation), request(owner, params(id)))
       const unarchive = (id: string) =>
-        call((kind === 'agent' ? controller.unarchiveAgentConversation : controller.unarchiveConversation) as unknown as Handler, request(owner, params(id)))
+        call(guarded('archiveSelf', kind === 'agent' ? controller.unarchiveAgentConversation : controller.unarchiveConversation), request(owner, params(id)))
 
       it('stores one unread notification for the recipient that links to the chat, and none for a repeat share', async () => {
         const id = await seed(kind)
@@ -155,11 +162,12 @@ describeIfMongo('sharing a chat on a real MongoDB: the recipient is notified, an
 
   it('an archived agent chat leaves the shared-with-me list of its recipient', async () => {
     const id = await seed('agent')
-    await call(controller.shareAgentConversation(appConfig) as Handler, request(owner, { conversationId: id, agentKey: AGENT_KEY }, { userIds: [String(recipient)] }))
-    const list = () => call(controller.getAllAgentConversations as unknown as Handler, request(recipient, { agentKey: AGENT_KEY }))
+    await call(behindGuard(guards, 'manageSharing', controller.shareAgentConversation(appConfig) as Handler, 'agent'), request(owner, { conversationId: id, agentKey: AGENT_KEY }, { userIds: [String(recipient)] }))
+    const listed = behind(guards.listScope('agent', { shareRows: 'never', sharedWithMeList: true, archived: 'exclude' }), controller.getAllAgentConversations as unknown as Handler)
+    const list = () => call(listed, request(recipient, { agentKey: AGENT_KEY }))
     expect(((await list()).body?.sharedWithMeConversations as unknown[]).length).to.equal(1)
 
-    await call(controller.archiveAgentConversation as unknown as Handler, request(owner, { conversationId: id, agentKey: AGENT_KEY }))
+    await call(behindGuard(guards, 'archiveSelf', controller.archiveAgentConversation as unknown as Handler, 'agent'), request(owner, { conversationId: id, agentKey: AGENT_KEY }))
 
     expect(((await list()).body?.sharedWithMeConversations as unknown[]).length).to.equal(0)
   })

@@ -19,6 +19,7 @@ function makeCallbacks(): {
     onComplete: vi.fn(),
     onArtifact: vi.fn(),
     onAskUserQuestion: vi.fn(),
+    onCustomEvent: vi.fn(),
     onAnswerFinal: vi.fn(),
     onReasoning: vi.fn(),
     onParts: vi.fn(),
@@ -302,7 +303,7 @@ describe('createAGUIEventHandler', () => {
 
     expect(spies.onStatus).toHaveBeenCalledWith({
       status: 'executing',
-      message: 'Delegating to internal_exploration_agent...',
+      message: 'Delegating to internal_exploration_agent…',
     });
   });
 
@@ -321,7 +322,7 @@ describe('createAGUIEventHandler', () => {
 
     handle(frame('TOOL_CALL_START', { toolCallName: 'jira_search' }));
 
-    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'executing', message: 'Using Jira Search...' });
+    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'executing', message: 'Using Jira Search…' });
   });
 
   it('restores Thinking status on TEXT_MESSAGE_END so the UI is not idle between narration and the next tool', () => {
@@ -333,7 +334,7 @@ describe('createAGUIEventHandler', () => {
     spies.onStatus.mockClear();
     handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
 
-    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'calling_llm', message: 'Thinking...' });
+    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'calling_llm', message: 'Thinking…' });
   });
 
   it('keeps TOOL_CALL_START status present-tense even when displayName is past-tense', () => {
@@ -346,7 +347,7 @@ describe('createAGUIEventHandler', () => {
       toolCallId: 'call-1',
     }));
 
-    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'executing', message: 'Using Run Code...' });
+    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'executing', message: 'Using Run Code…' });
   });
 
   it('restores Thinking status after TOOL_CALL_RESULT while waiting for the next LLM turn', () => {
@@ -362,7 +363,23 @@ describe('createAGUIEventHandler', () => {
       status: 'completed',
     }));
 
-    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'calling_llm', message: 'Thinking...' });
+    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'calling_llm', message: 'Thinking…' });
+  });
+
+  it('spells every status line with one ellipsis character, and thinking in the same words as the idle line', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('STATE_SNAPSHOT', { snapshot: { status: 'starting' } }));
+    handle(frame('STATE_SNAPSHOT', { snapshot: { status: 'calling_llm' } }));
+    handle(frame('STATE_SNAPSHOT', { snapshot: { status: 'running_tool' } }));
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'c1', toolCallName: 'jira_search' }));
+    handle(frame('TOOL_CALL_RESULT', { runId: 'root', toolCallId: 'c1', content: 'ok', status: 'completed' }));
+    handle(frame('STEP_STARTED', { stepName: 'sub_agent:researcher' }));
+
+    const messages = spies.onStatus.mock.calls.map(([update]: [{ message: string }]) => update.message);
+    expect(messages).toEqual(['Thinking…', 'Thinking…', 'Executing tool…', 'Using Jira Search…', 'Thinking…', 'Delegating to researcher…']);
+    expect(messages.some((m: string) => m.includes('...'))).toBe(false);
   });
 
   it('routes CUSTOM conversation_created to onConnected', () => {
@@ -382,6 +399,16 @@ describe('createAGUIEventHandler', () => {
     handle(frame('CUSTOM', { name: 'ask_user_question', value: { status: 'success', toolData } }));
 
     expect(spies.onAskUserQuestion).toHaveBeenCalledWith({ status: 'success', toolData });
+  });
+
+  it('routes a CUSTOM event it has no callback for to onCustomEvent', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const value = { id: 'd1', name: 'Something new' };
+
+    handle(frame('CUSTOM', { name: 'something_new', value }));
+
+    expect(spies.onCustomEvent).toHaveBeenCalledWith('something_new', value);
   });
 
   it('routes CUSTOM artifact to onArtifact', () => {
@@ -521,7 +548,7 @@ describe('createAGUIEventHandler', () => {
 
     handle(frame('STATE_SNAPSHOT', { snapshot: { status: 'calling_llm' } }));
 
-    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'calling_llm', message: 'Thinking...' });
+    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'calling_llm', message: 'Thinking…' });
     expect(spies.onAnswerFinal).not.toHaveBeenCalled();
   });
 
@@ -537,7 +564,7 @@ describe('createAGUIEventHandler', () => {
 
     const messages = spies.onStatus.mock.calls.map(([update]: [{ message: string }]) => update.message);
     const label = messages[3];
-    expect(label.endsWith('...')).toBe(true);
+    expect(label.endsWith('…')).toBe(true);
     expect(messages.slice(0, 3)).toEqual([`${label} 3/10`, `${label} 25%`, `${label} Reading page 3`]);
   });
 
@@ -1261,5 +1288,120 @@ describe('createAGUIEventHandler — a model call discarded mid-stream', () => {
     handle(patch('Part one, ', 10, true));
 
     expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: 'Part one, ', citations: [] });
+  });
+});
+
+describe('createAGUIEventHandler — citations show once, numbered', () => {
+  const tidied = (normalizedAnswer: string, rawLength: number, citations: object[] = []) =>
+    frame('STATE_DELTA', {
+      delta: [
+        { op: 'replace', path: '/citations', value: citations },
+        { op: 'replace', path: '/normalizedAnswer', value: normalizedAnswer },
+        { op: 'replace', path: '/rawLength', value: rawLength },
+      ],
+    });
+  const shown = (spies: Record<string, ReturnType<typeof vi.fn>>) =>
+    (spies.onChunk.mock.calls.at(-1) as [{ accumulated: string }])[0].accumulated;
+
+  it('shows the words as they arrive and a citation once the server has numbered it, never a provisional chip', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const first = 'Code freeze begins 10 days before each release.';
+    const raw = `${first} [source](ref2)\n\nA release`;
+
+    handle(frame('TEXT_MESSAGE_START'));
+    handle(frame('TEXT_MESSAGE_CONTENT', { delta: `${first} ` }));
+    expect(shown(spies)).toBe(`${first} `);
+    handle(frame('TEXT_MESSAGE_CONTENT', { delta: '[source](ref2)\n\nA release' }));
+    // The words after the citation are not held for the server; the link itself is left out until it is numbered.
+    expect(shown(spies)).toBe(`${first}\n\nA release`);
+
+    const numbered = `${first} [1](https://h/record/r1/preview#blockIndex=0)\n\nA release`;
+    handle(tidied(numbered, raw.length, [{ chunkIndex: 1 }]));
+    expect(shown(spies)).toBe(numbered);
+    handle(frame('TEXT_MESSAGE_CONTENT', { delta: ' captain' }));
+    expect(shown(spies)).toBe(`${numbered} captain`);
+  });
+
+  it('shows a group of citations only whole, so its count never changes', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const u = (n: number) => `(https://h/record/r/preview#blockIndex=${n})`;
+    const seen: string[] = [];
+    const record = () => seen.push(shown(spies));
+
+    handle(frame('TEXT_MESSAGE_START'));
+    handle(frame('TEXT_MESSAGE_CONTENT', { delta: 'Rules [source](ref1) [source](ref2)' }));
+    record();
+    handle(tidied(`Rules [1]${u(1)} [2]${u(2)}`, 'Rules [source](ref1) [source](ref2)'.length));
+    record();
+    handle(frame('TEXT_MESSAGE_CONTENT', { delta: ' [source](ref3)' }));
+    record();
+    handle(frame('TEXT_MESSAGE_CONTENT', { delta: '. Next rule' }));
+    record();
+    const whole = `Rules [1]${u(1)} [2]${u(2)} [3]${u(3)}. Next rule`;
+    handle(tidied(whole, 'Rules [source](ref1) [source](ref2) [source](ref3). Next rule'.length));
+    record();
+
+    // Never one or two of the run's chips on their own: none, then all three.
+    expect(seen.filter((text) => text.includes('[1]'))).toEqual([whole]);
+    expect(seen.at(-2)).toBe('Rules. Next rule');
+  });
+
+  it('stops at a link still being typed, as the server cannot number half of one', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TEXT_MESSAGE_START'));
+    for (const delta of ['See ', '[Release', ' process', '](', 'ref']) {
+      handle(frame('TEXT_MESSAGE_CONTENT', { delta }));
+      expect(shown(spies)).toBe(delta === 'See ' ? 'See ' : 'See');
+    }
+  });
+
+  it('holds back a closing line that may become the confidence trailer the server takes out', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const body = 'Two open issues.';
+
+    handle(frame('TEXT_MESSAGE_START'));
+    handle(frame('TEXT_MESSAGE_CONTENT', { delta: body }));
+    handle(tidied(body, body.length));
+    for (const delta of ['\n\n', '---', '\nConf', 'idence: Hi']) {
+      handle(frame('TEXT_MESSAGE_CONTENT', { delta }));
+      expect(shown(spies).trimEnd()).toBe(body);
+    }
+  });
+
+  it('never stalls the words when the server does not number a citation: the citation alone waits', () => {
+    vi.useFakeTimers();
+    try {
+      const { callbacks, spies } = makeCallbacks();
+      const handle = createAGUIEventHandler(callbacks);
+
+      handle(frame('TEXT_MESSAGE_START'));
+      handle(frame('TEXT_MESSAGE_CONTENT', { delta: 'Freeze starts Monday. [source](ref2) More' }));
+      expect(shown(spies)).toBe('Freeze starts Monday. More');
+      vi.advanceTimersByTime(5000);
+      handle(frame('TEXT_MESSAGE_CONTENT', { delta: ' text' }));
+      // No raw link, and no chip that is not numbered.
+      expect(shown(spies)).toBe('Freeze starts Monday. More text');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts what streamed in characters, as the server does, so an emoji does not stop it taking the tidied text', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const raw = 'Shipped 🚀 [Release process](ref1)';
+
+    handle(frame('TEXT_MESSAGE_START'));
+    handle(frame('TEXT_MESSAGE_CONTENT', { delta: raw }));
+    const numbered = 'Shipped 🚀 Release process [1](https://h/record/r1)';
+    handle(tidied(numbered, Array.from(raw).length));
+    handle(frame('TEXT_MESSAGE_CONTENT', { delta: ' next' }));
+    // The numbered copy was taken: its chip shows once the sentence goes on.
+    expect(shown(spies)).toBe(`${numbered} next`);
   });
 });

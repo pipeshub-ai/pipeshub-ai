@@ -566,6 +566,8 @@ export interface RecordDetailsResponse {
     isArchived: boolean;
     indexingStatus: IndexingStatus;
     reason?: string;
+    /** Who uploaded it: a failure reason written for them reads differently for anyone else. */
+    uploadedBy?: string;
     // Set while the record waits out its source's rate limit (epoch ms).
     retryNotBefore?: number | null;
     connectorName?: string;

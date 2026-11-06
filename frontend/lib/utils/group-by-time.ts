@@ -1,7 +1,7 @@
 /**
  * Reusable time-grouping utility.
  *
- * Default buckets (local date):
+ * Default buckets, by the viewer's local calendar day (the browser's time zone, not UTC):
  *   - Today
  *   - Yesterday
  *   - Previous 7 days — 7 local calendar days before the start of yesterday
@@ -13,6 +13,8 @@
  * When a bucket is disabled, items merge to the next enabled lower bucket, then
  * the next higher one (see {@link resolveBucket}).
  */
+
+import { addLocalDays, startOfLocalDay } from './local-day';
 
 // ── Public types ──
 
@@ -40,31 +42,22 @@ export interface GroupByTimeOptions {
    * items are placed in the nearest enabled bucket above.
    */
   enabledGroups?: EnabledGroups;
+  /** The time the buckets are relative to (epoch ms). Defaults to now; a list held open past midnight passes its day. */
+  now?: number;
 }
 
-// ── Time boundaries (local wall calendar; avoids DST 7×24h drift) ──
-
-function startOfLocalDay(d: Date): number {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-}
+// ── Time boundaries (the viewer's local calendar; a day is not always 24h) ──
 
 /**
- * @returns { todayStart, yesterdayStart, prev7Start } in epoch ms, local time.
+ * @returns { todayStart, yesterdayStart, prev7Start } in epoch ms, at local midnights.
  * "Previous 7" covers [prev7Start, yesterdayStart).
  */
-function getTimeBoundariesMs(): { todayStart: number; yesterdayStart: number; prev7Start: number } {
-  const now = new Date();
-  const todayStart = startOfLocalDay(now);
-
-  const y = new Date(todayStart);
-  y.setDate(y.getDate() - 1);
-  const yesterdayStart = startOfLocalDay(y);
-
-  const p7 = new Date(yesterdayStart);
-  p7.setDate(p7.getDate() - 7);
-  const prev7Start = p7.getTime();
-
-  return { todayStart, yesterdayStart, prev7Start };
+function getTimeBoundariesMs(now: number): { todayStart: number; yesterdayStart: number; prev7Start: number } {
+  return {
+    todayStart: startOfLocalDay(now),
+    yesterdayStart: addLocalDays(now, -1),
+    prev7Start: addLocalDays(now, -8),
+  };
 }
 
 // ── Raw bucket (before disabled-group resolution) ──
@@ -136,7 +129,7 @@ export function groupByTime<T>(
   options?: GroupByTimeOptions,
 ): Record<TimeGroupKey, T[]> {
   const enabled = resolveEnabled(options);
-  const { todayStart, yesterdayStart, prev7Start } = getTimeBoundariesMs();
+  const { todayStart, yesterdayStart, prev7Start } = getTimeBoundariesMs(options?.now ?? Date.now());
 
   const groups = {} as Record<TimeGroupKey, T[]>;
   for (const key of TIME_GROUP_KEYS) {

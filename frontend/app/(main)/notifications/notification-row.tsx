@@ -2,19 +2,22 @@
 
 import { useState, useRef, useLayoutEffect, useCallback, type CSSProperties } from 'react';
 import { Link } from '@/lib/navigation';
-import { Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
+import { Flex, Text, Box, IconButton, Tooltip, Link as RadixLink } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
+import { localDaysBetween } from '@/lib/utils/local-day';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
+import type { NotificationRowDecoration, NotificationRowExtraAction } from './notification-extension';
 
 export type NotificationRowAction =
   | 'markRead'
   | 'markUnread'
   | 'archive'
   | 'unarchive'
-  | 'dismiss';
+  | 'dismiss'
+  | 'extra';
 
 /** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
 /**
@@ -41,7 +44,8 @@ export function chatConversationIdFromHref(href: string): string | null {
   return url.searchParams.get('conversationId') || null;
 }
 
-function formatRelativeTime(
+/** How long ago a notice came: hours within a day, then the viewer's calendar days. */
+export function formatRelativeTime(
   iso: string | undefined,
   lang: string,
   compact = false,
@@ -49,11 +53,11 @@ function formatRelativeTime(
   if (!iso) return '';
   const ts = new Date(iso).getTime();
   if (Number.isNaN(ts)) return '';
-  const diff = Date.now() - ts;
+  const now = Date.now();
+  const diff = now - ts;
   const secs = Math.floor(diff / 1000);
   const mins = Math.floor(diff / 60000);
   const hrs = Math.floor(mins / 60);
-  const days = Math.floor(hrs / 24);
   const rtf = new Intl.RelativeTimeFormat(lang, {
     numeric: 'auto',
     style: compact ? 'narrow' : 'long',
@@ -61,10 +65,11 @@ function formatRelativeTime(
   if (secs < 60) return rtf.format(0, 'second');
   if (mins < 60) return rtf.format(-mins, 'minute');
   if (hrs < 24) return rtf.format(-hrs, 'hour');
-  return rtf.format(-days, 'day');
+  // Past a day, count the viewer's calendar days, as the chat list's "Yesterday" does.
+  return rtf.format(-Math.max(1, localDaysBetween(ts, now)), 'day');
 }
 
-function severityIcon(severity: NotificationSeverity): string {
+export function severityIcon(severity: NotificationSeverity): string {
   switch (severity) {
     case 'info':
       return 'info';
@@ -232,6 +237,8 @@ export function NotificationRow({
   dismissLabel,
   compactTime = false,
   pendingAction = null,
+  decoration = null,
+  extraAction = null,
   onOpenLink,
 }: {
   notification: NotificationListItem;
@@ -249,6 +256,9 @@ export function NotificationRow({
   dismissLabel: string;
   compactTime?: boolean;
   pendingAction?: NotificationRowAction | null;
+  /** Overrides of the row's text, link and icon. */
+  decoration?: NotificationRowDecoration | null;
+  extraAction?: NotificationRowExtraAction | null;
 }) {
   const { t, i18n } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -263,13 +273,15 @@ export function NotificationRow({
   const timeLabel = formatRelativeTime(n.createdAt, i18n.language, compactTime);
   const severity = n.severity ?? 'error';
   const shared = n.type === 'chatShared' ? sharedChatText(n, t) : null;
-  const title = shared?.title ?? n.title ?? '';
-  const message = shared?.message ?? n.message ?? '';
-  const href = notificationHref(n.redirectLink ?? '');
+  const title = decoration?.title ?? shared?.title ?? n.title ?? '';
+  const message = decoration?.message ?? shared?.message ?? n.message ?? '';
+  const href =
+    decoration && 'href' in decoration ? decoration.href ?? null : notificationHref(n.redirectLink ?? '');
 
   const isRead = n.status === 'read' || n.status === 'archived';
   const readOpacity = isRead ? 0.65 : 1;
   const titleStyle = { color: 'var(--slate-12)' };
+  const subtitle = decoration?.subtitle;
   const isBusy = pendingAction != null;
 
   const measureMessageTruncation = useCallback(() => {
@@ -323,9 +335,9 @@ export function NotificationRow({
           }}
         >
           <MaterialIcon
-            name={severityIcon(severity)}
+            name={decoration?.icon ?? severityIcon(severity)}
             size={16}
-            color={severityColor(severity)}
+            color={decoration?.iconColor ?? severityColor(severity)}
           />
         </Box>
 
@@ -342,85 +354,96 @@ export function NotificationRow({
                 }}
               />
             </Box>
-            <Box ref={messageContainerRef} style={{ position: 'relative', minWidth: 0, width: '100%' }}>
-              {/* Invisible unclamped clone — used only to measure full text height */}
-              <div
-                ref={measureRef}
-                aria-hidden="true"
+            {subtitle ? (
+              <Text
+                data-ph-notification-subtitle=""
+                size="1"
+                title={subtitle}
                 style={{
-                  visibility: 'hidden',
-                  pointerEvents: 'none',
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  fontSize: 'var(--font-size-1)',
-                  lineHeight: 'var(--line-height-1)',
-                  letterSpacing: 'var(--letter-spacing-1)',
-                  whiteSpace: 'normal',
-                  overflow: 'visible',
-                }}
-              >
-                {message}
-              </div>
-              <div
-                style={{
-                  display: isExpanded ? 'block' : '-webkit-box',
-                  WebkitLineClamp: isExpanded ? undefined : 2,
-                  WebkitBoxOrient: 'vertical',
+                  color: 'var(--slate-12)',
+                  fontWeight: 500,
                   overflow: 'hidden',
-                  paddingRight: (isTruncated && !isExpanded) ? '58px' : '0',
-                  fontSize: 'var(--font-size-1)',
-                  lineHeight: 'var(--line-height-1)',
-                  letterSpacing: 'var(--letter-spacing-1)',
-                  color: 'var(--gray-11)',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                {message}
-              </div>
-              {isTruncated && !isExpanded && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setIsExpanded(true)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') setIsExpanded(true);
-                  }}
+                {subtitle}
+              </Text>
+            ) : null}
+            {message ? (
+              <Box ref={messageContainerRef} style={{ position: 'relative', minWidth: 0, width: '100%' }}>
+                {/* Invisible unclamped clone — used only to measure full text height */}
+                <div
+                  ref={measureRef}
+                  aria-hidden="true"
                   style={{
+                    visibility: 'hidden',
+                    pointerEvents: 'none',
                     position: 'absolute',
-                    bottom: 0,
-                    right: 0,
-                    cursor: 'pointer',
-                    color: 'var(--accent-11)',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
                     fontSize: 'var(--font-size-1)',
+                    lineHeight: 'var(--line-height-1)',
+                    letterSpacing: 'var(--letter-spacing-1)',
+                    whiteSpace: 'normal',
+                    overflow: 'visible',
+                  }}
+                >
+                  {message}
+                </div>
+                <div
+                  style={{
+                    display: isExpanded ? 'block' : '-webkit-box',
+                    WebkitLineClamp: isExpanded ? undefined : 2,
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                    paddingRight: (isTruncated && !isExpanded) ? '58px' : '0',
+                    fontSize: 'var(--font-size-1)',
+                    lineHeight: 'var(--line-height-1)',
+                    letterSpacing: 'var(--letter-spacing-1)',
+                    color: 'var(--gray-11)',
+                  }}
+                >
+                  {message}
+                </div>
+                {isTruncated && !isExpanded && (
+                  <RadixLink asChild size="1" underline="hover">
+                    <button
+                      type="button"
+                      onClick={() => setIsExpanded(true)}
+                      style={{
+                        position: 'absolute',
+                        bottom: 0,
+                        right: 0,
+                        // accent-11 is 4.35:1 on the row at this size, under AA's 4.5:1.
+                        color: 'var(--accent-12)',
+                        lineHeight: 'var(--line-height-1)',
+                        userSelect: 'none',
+                      }}
+                    >
+                      {t('notifications.showMore')}
+                    </button>
+                  </RadixLink>
+                )}
+              </Box>
+            ) : null}
+            {isExpanded && isTruncated && (
+              <RadixLink asChild size="1" underline="hover">
+                <button
+                  type="button"
+                  onClick={() => setIsExpanded(false)}
+                  style={{
+                    alignSelf: 'flex-start',
+                    marginTop: 'calc(var(--space-1) / 2)',
+                    color: 'var(--accent-12)',
                     lineHeight: 'var(--line-height-1)',
                     userSelect: 'none',
                   }}
                 >
-                  show more
-                </span>
-              )}
-            </Box>
-            {isExpanded && isTruncated && (
-              <span
-                role="button"
-                tabIndex={0}
-                onClick={() => setIsExpanded(false)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') setIsExpanded(false);
-                }}
-                style={{
-                  display: 'inline-block',
-                  marginTop: '2px',
-                  cursor: 'pointer',
-                  color: 'var(--accent-11)',
-                  fontSize: 'var(--font-size-1)',
-                  lineHeight: 'var(--line-height-1)',
-                  userSelect: 'none',
-                }}
-              >
-                show less
-              </span>
+                  {t('notifications.showLess')}
+                </button>
+              </RadixLink>
             )}
           </Flex>
 
@@ -446,6 +469,15 @@ export function NotificationRow({
                   onClick={() => onMarkUnread(n)}
                   disabled={isBusy}
                   loading={pendingAction === 'markUnread'}
+                />
+              ) : null}
+              {extraAction ? (
+                <NotificationActionButton
+                  label={extraAction.label}
+                  icon={extraAction.icon}
+                  onClick={extraAction.onClick}
+                  disabled={isBusy}
+                  loading={pendingAction === 'extra'}
                 />
               ) : null}
               {n.status !== 'archived' ? (

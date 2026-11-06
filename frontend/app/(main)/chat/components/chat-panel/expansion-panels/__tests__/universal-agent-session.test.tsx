@@ -140,7 +140,7 @@ describe("the chat's Actions and MCP lists at session end", () => {
     useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: true } });
     serve(['b-jira'], ['b-linear']);
     renderInTheme(<UniversalAgentResourcesPanel />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Actions' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Actions' }));
     await flush();
 
     // Within five minutes of A's load, yet asked again for B.

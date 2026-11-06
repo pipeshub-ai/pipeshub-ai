@@ -121,6 +121,15 @@ export function usePaginatedList<T>({
     [limit]
   );
 
+  // Nothing fetches or lands after unmount: neither a search typed just before it nor a page already on its way.
+  useEffect(
+    () => () => {
+      fetchGenerationRef.current += 1;
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    },
+    []
+  );
+
   // Initial load when enabled
   useEffect(() => {
     if (!enabled) return;

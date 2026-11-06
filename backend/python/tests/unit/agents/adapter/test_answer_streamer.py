@@ -260,6 +260,26 @@ class TestStreamedAnswerTracking:
 
         assert streamer.streamed_answer == ""
 
+    async def test_a_stop_keeps_the_turn_still_on_screen(self) -> None:
+        """A stopped run never reaches AGENT_COMPLETE: the text it was showing is its answer so far."""
+        streamer, _sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "I'll look up the guidance, then"}))
+        await streamer.on_event(_event(EventType.CANCELLATION, {"error": "Cancelled"}))
+
+        assert streamer.streamed_answer == "I'll look up the guidance, then"
+
+    async def test_a_stop_after_a_tool_call_has_no_answer_yet(self) -> None:
+        streamer, _sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Let me check that..."}))
+        await streamer.on_event(_event(EventType.TOOL_CALL_START, {"tool": "jira_search"}))
+        await streamer.on_event(_event(EventType.CANCELLATION, {"error": "Cancelled"}))
+
+        assert streamer.streamed_answer == ""
+
 
 class TestCitationResolutionDuringStreaming:
     """Citations must be resolved live via `normalize_citations_and_chunks`
@@ -452,6 +472,20 @@ class TestDiscardedModelCall:
         streamer, sink = _make_streamer(context)
 
         await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_END, {"discarded": True}))
+
+        ops = {op["path"]: op["value"] for op in sink.events[-1]["data"]["delta"]}
+        assert ops["/discarded"] is True
+        assert ops["/normalizedAnswer"] == ""
+
+    async def test_a_reply_taken_back_after_it_ended_clears_the_answer(self) -> None:
+        """A hook overruled the reply (`ask_in_text_recovery`) once its message had ended."""
+        context = make_context(protocol="agui")
+        streamer, sink = _make_streamer(context)
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Which report do you mean?"}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_END))
         await streamer.on_event(_event(EventType.TEXT_MESSAGE_END, {"discarded": True}))
 
         ops = {op["path"]: op["value"] for op in sink.events[-1]["data"]["delta"]}

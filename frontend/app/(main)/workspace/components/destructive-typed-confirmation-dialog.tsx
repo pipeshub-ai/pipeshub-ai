@@ -65,9 +65,8 @@ export function DestructiveTypedConfirmationDialog({
           maxWidth: '37.5rem',
           padding: 'var(--space-5) 0',
           borderRadius: 'var(--radius-5)',
-          border: '1px solid var(--olive-a3)',
-          boxShadow:
-            '0 16px 36px -20px rgba(0, 6, 46, 0.2), 0 16px 64px rgba(0, 0, 85, 0.02), 0 12px 60px rgba(0, 0, 0, 0.15)',
+          border: '1px solid var(--border-subtle)',
+          boxShadow: 'var(--shadow-6)',
           overflow: 'hidden',
         }}
         onClick={(e) => e.stopPropagation()}
@@ -82,7 +81,7 @@ export function DestructiveTypedConfirmationDialog({
             gap="3"
             style={{ padding: '0 var(--space-5)' }}
           >
-            <Text size="5" weight="bold" style={{ color: 'var(--slate-12)' }}>
+            <Text size="5" weight="bold" style={{ color: 'var(--text-primary)' }}>
               {heading}
             </Text>
             <Flex direction="column" gap="2">
@@ -95,7 +94,7 @@ export function DestructiveTypedConfirmationDialog({
             gap="2"
             style={{ padding: '0 var(--space-5)' }}
           >
-            <Text size="2" style={{ color: 'var(--slate-11)' }}>
+            <Text size="2" style={{ color: 'var(--text-secondary)' }}>
               {confirmInputLabel}
             </Text>
             <TextField.Root

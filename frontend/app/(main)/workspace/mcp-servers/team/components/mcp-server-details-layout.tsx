@@ -6,7 +6,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { McpInstanceRow } from './mcp-instance-row';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
@@ -66,7 +66,7 @@ export function McpServerDetailsLayout({
   toolsState,
   onDiscoverTools,
 }: McpServerDetailsLayoutProps) {
-  const isMobile = useIsMobile();
+  const isMobile = useIsBelowDesktop();
   const { t } = useTranslation();
 
   return (

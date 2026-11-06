@@ -1016,9 +1016,11 @@ export function ConnectorPanel() {
     isLoadingSchema,
     isLoadingConfig,
     configReadOnly,
+    instanceNameMissing: isCreateMode && !instanceName.trim(),
     onNext: handleSaveAuth,
     onSave: handleSaveConfig,
     labels: {
+      instanceNameRequired: t('workspace.actions.errors.instanceNameRequired'),
       next: t('common.next'),
       testingConnection: t('workspace.connectors.authTab.connectionCheck.testing'),
       saving: t('action.saving'),
@@ -1232,6 +1234,7 @@ function getFooterConfig({
   isLoadingSchema,
   isLoadingConfig,
   configReadOnly,
+  instanceNameMissing,
   onNext,
   onSave,
   labels,
@@ -1252,9 +1255,12 @@ function getFooterConfig({
   isLoadingSchema: boolean;
   isLoadingConfig: boolean;
   configReadOnly: boolean;
+  /** Creating an instance without a name: Next waits for one. */
+  instanceNameMissing: boolean;
   onNext: () => void;
   onSave: () => void;
   labels: {
+    instanceNameRequired: string;
     next: string;
     testingConnection: string;
     saving: string;
@@ -1287,10 +1293,18 @@ function getFooterConfig({
   if (panelActiveTab === 'authenticate') {
     return {
       primaryLabel: isCheckingConnection ? labels.testingConnection : labels.next,
-      /** Validation runs on click; only disable while the check or save request is in flight. */
-      primaryDisabled: isSavingAuth || isCheckingConnection,
+      /**
+       * The required name gates Next like every other create form. The other
+       * credential fields are checked on click, since which of them apply
+       * depends on the connector's schema.
+       */
+      primaryDisabled: isSavingAuth || isCheckingConnection || instanceNameMissing,
       primaryLoading: isSavingAuth || isCheckingConnection,
-      primaryTooltip: isSavingAuth ? labels.saving : undefined,
+      primaryTooltip: isSavingAuth
+        ? labels.saving
+        : instanceNameMissing
+          ? labels.instanceNameRequired
+          : undefined,
       onPrimary: onNext,
       secondaryLabel: labels.cancel,
     };

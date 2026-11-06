@@ -3,6 +3,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useFormFieldControl } from './form-field';
 
 // ========================================
 // Types
@@ -27,6 +28,13 @@ interface TagInputProps {
   validate?: (value: string) => string | null;
   /** Error message to display below */
   error?: string;
+  /**
+   * A non-blocking note for a tag, keyed by the tag's lowercase value. A valid tag
+   * with a note turns amber (the value is allowed, but the reader should know).
+   */
+  warnings?: Record<string, string>;
+  /** The line shown instead of each note when more than one tag has one. */
+  warningsSummary?: string;
   /** When true, tags are read-only — no adding, removing, or editing */
   disabled?: boolean;
   /** Single-line-ish field for forms that stack several tag inputs (vs. the tall email-invite box). */
@@ -39,6 +47,9 @@ interface TagInputProps {
   freeText?: boolean;
 }
 
+/** What ends one address and starts the next. */
+const SEPARATORS = /[\s,;]+/;
+
 // ========================================
 // Component
 // ========================================
@@ -49,6 +60,8 @@ export function TagInput({
   placeholder = 'Enter a value',
   validate,
   error,
+  warnings,
+  warningsSummary,
   disabled = false,
   compact = false,
   freeText = false,
@@ -73,29 +86,43 @@ export function TagInput({
     [freeText]
   );
 
-  const addTag = useCallback(
-    (value: string) => {
-      const trimmed = value.trim();
-      if (!trimmed) return;
-
-      // Check for duplicates
-      if (tags.some((t) => isDuplicate(t.value, trimmed))) {
-        setInputValue('');
-        return;
+  /** One tag per value, skipping blanks and anything already listed. */
+  const addTags = useCallback(
+    (values: string[]) => {
+      const added: TagItem[] = [];
+      for (const value of values) {
+        const trimmed = value.trim();
+        if (!trimmed) continue;
+        if (
+          tags.some((t) => isDuplicate(t.value, trimmed)) ||
+          added.some((t) => isDuplicate(t.value, trimmed))
+        ) {
+          continue;
+        }
+        added.push({
+          id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          value: trimmed,
+          isValid: validate ? validate(trimmed) === null : true,
+        });
       }
+      if (added.length > 0) handleTagsChange([...tags, ...added]);
+    },
+    [tags, onTagsChange, validate, isDuplicate]
+  );
 
-      const isValid = validate ? validate(trimmed) === null : true;
-      const newTag: TagItem = {
-        id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        value: trimmed,
-        isValid,
-      };
-
-      handleTagsChange([...tags, newTag]);
+  /**
+   * Turns typed or filled text into tags. Addresses are separated by white space,
+   * commas or semicolons, so text that arrived without key presses (an IME, a
+   * fill, an autofill) cannot leave a separator inside a tag. Free text splits
+   * on nothing: it is one value.
+   */
+  const addTag = useCallback(
+    (text: string) => {
+      addTags(freeText ? [text] : text.split(SEPARATORS));
       setInputValue('');
       setEditingTagId(null);
     },
-    [tags, onTagsChange, validate, isDuplicate]
+    [addTags, freeText]
   );
 
   const removeTag = useCallback(
@@ -147,32 +174,9 @@ export function TagInput({
     (e: React.ClipboardEvent<HTMLInputElement>) => {
       e.preventDefault();
       const pastedText = e.clipboardData.getData('text');
-      const values = pastedText.split(freeText ? /[\r\n]+/ : /[,\s\n]+/).filter((v) => v.trim());
-      const newTags: TagItem[] = [];
-
-      for (const val of values) {
-        const trimmed = val.trim();
-        if (!trimmed) continue;
-        if (
-          tags.some((t) => isDuplicate(t.value, trimmed)) ||
-          newTags.some((t) => isDuplicate(t.value, trimmed))
-        ) {
-          continue;
-        }
-
-        const isValid = validate ? validate(trimmed) === null : true;
-        newTags.push({
-          id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          value: trimmed,
-          isValid,
-        });
-      }
-
-      if (newTags.length > 0) {
-        handleTagsChange([...tags, ...newTags]);
-      }
+      addTags(pastedText.split(freeText ? /[\r\n]+/ : SEPARATORS));
     },
-    [tags, handleTagsChange, validate, freeText, isDuplicate]
+    [addTags, freeText]
   );
 
   // Handle click-to-edit on a pill
@@ -196,6 +200,11 @@ export function TagInput({
     if (!disabled) inputRef.current?.focus();
   };
 
+  // Inside a FormField the label names the input; the error and note lines below
+  // describe it, and it is marked invalid while an address is.
+  const control = useFormFieldControl();
+  const errorId = `${control.id ?? 'tag-input'}-tag-error`;
+  const warningId = `${control.id ?? 'tag-input'}-tag-warning`;
   const hasInvalidTags = tags.some((t) => t.isValid === false);
   const hasError = !!error || hasInvalidTags;
   const borderColor = hasError
@@ -205,6 +214,14 @@ export function TagInput({
       : 'var(--slate-a5)';
   const borderWidth = isFocused || hasError ? 2 : 1;
   const paddingCompensation = isFocused || hasError ? 3 : 4;
+
+  // A note only counts on a tag that is still listed and valid.
+  const notes = tags.flatMap((tag) => {
+    const note = tag.isValid === false ? undefined : warnings?.[tag.value.toLowerCase()];
+    return note ? [note] : [];
+  });
+  const warningLine =
+    notes.length === 0 ? undefined : notes.length === 1 ? notes[0] : (warningsSummary ?? notes[0]);
 
   // Build the error message
   const errorMessage = error || (hasInvalidTags
@@ -241,6 +258,7 @@ export function TagInput({
             <TagPill
               key={tag.id}
               tag={tag}
+              warning={warnings?.[tag.value.toLowerCase()]}
               onRemove={() => removeTag(tag.id)}
               onEdit={handleEditTag}
               disabled={disabled}
@@ -252,6 +270,13 @@ export function TagInput({
             <input
             ref={inputRef}
             type="text"
+            id={control.id}
+            aria-required={control['aria-required']}
+            aria-invalid={errorMessage ? true : undefined}
+            aria-describedby={
+              [errorMessage ? errorId : null, warningLine ? warningId : null].filter(Boolean).join(' ') ||
+              undefined
+            }
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -283,8 +308,13 @@ export function TagInput({
       </Box>
 
       {errorMessage && (
-        <Text size="1" style={{ color: 'var(--red-a11)', lineHeight: '16px' }}>
+        <Text id={errorId} size="1" style={{ color: 'var(--red-a11)', lineHeight: '16px' }}>
           {errorMessage}
+        </Text>
+      )}
+      {warningLine && (
+        <Text id={warningId} size="1" role="status" style={{ color: 'var(--amber-11)', lineHeight: '16px' }}>
+          {warningLine}
         </Text>
       )}
     </Flex>
@@ -297,11 +327,14 @@ export function TagInput({
 
 function TagPill({
   tag,
+  warning,
   onRemove,
   onEdit,
   disabled = false,
 }: {
   tag: TagItem;
+  /** A note about this value: the tag is allowed, and shown amber. */
+  warning?: string;
   onRemove: () => void;
   onEdit: (id: string) => void;
   disabled?: boolean;
@@ -323,6 +356,11 @@ function TagPill({
   } else if (isHighlighted) {
     bgColor = 'var(--accent-surface)';
     border = '1px solid var(--accent-a7)';
+  } else if (warning) {
+    bgColor = 'var(--amber-a3)';
+    border = '1px solid var(--amber-a7)';
+    textColor = 'var(--amber-11)';
+    iconColor = 'var(--amber-11)';
   } else if (isEditing) {
     bgColor = 'transparent';
     border = '1px dashed var(--accent-a8)';
@@ -361,7 +399,7 @@ function TagPill({
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
         }}
-        title={tag.value}
+        title={warning ? `${tag.value}: ${warning}` : tag.value}
       >
         {tag.value}
       </Text>

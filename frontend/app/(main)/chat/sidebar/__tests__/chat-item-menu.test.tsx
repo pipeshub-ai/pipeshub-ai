@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 
-vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: ({ name }: { name: string }) => <span data-icon={name} /> }));
 
 const canHover = vi.hoisted(() => ({ value: true }));
 vi.mock('@/lib/hooks/use-can-hover', () => ({ useCanHover: () => canHover.value }));
@@ -24,7 +24,7 @@ function renderMenu(props: Partial<React.ComponentProps<typeof ChatItemMenu>> = 
   const onRowClick = vi.fn();
   renderInTheme(
     <div onClick={onRowClick}>
-      <ChatItemMenu isParentHovered {...handlers} {...props} />
+      <ChatItemMenu title="Q3 plan" isParentHovered {...handlers} {...props} />
     </div>,
   );
   return { ...handlers, onRowClick };
@@ -115,15 +115,77 @@ describe('chat row menu', () => {
   });
 });
 
+/** Each item's words and the glyph it leads with. */
+const glyphs = () =>
+  screen.getAllByRole('menuitem').map((el) => [el.textContent, el.querySelector('[data-icon]')?.getAttribute('data-icon')]);
+
+describe('chat row menu glyphs', () => {
+  it('leads every item with the glyph its action has in every menu', async () => {
+    renderMenu({ onTogglePin: vi.fn(), onExport: vi.fn(), onMoveToProject: vi.fn(), onRemoveFromProject: vi.fn() });
+
+    await openMenu();
+
+    expect(glyphs()).toEqual([
+      ['Rename', 'drive_file_rename_outline'],
+      ['Pin', 'keep'],
+      ['Export', 'download'],
+      ['Move to project', 'drive_file_move'],
+      ['Remove from project', 'folder_off'],
+      ['Archive', 'archive'],
+      ['Delete', 'delete'],
+    ]);
+  });
+
+  it('crosses the pin out for Unpin', async () => {
+    renderMenu({ onTogglePin: vi.fn(), isPinned: true });
+
+    await openMenu();
+
+    expect(glyphs()).toContainEqual(['Unpin', 'keep_off']);
+  });
+});
+
+describe('chat row menu layout', () => {
+  it('is named for the chat it acts on', () => {
+    renderMenu();
+    expect(screen.getByRole('button', { name: 'Actions for Q3 plan' })).toBeTruthy();
+  });
+
+  it('puts the project items before Archive, and one line before Delete, which comes last', async () => {
+    renderMenu({ onTogglePin: vi.fn(), onExport: vi.fn(), onMoveToProject: vi.fn(), onRemoveFromProject: vi.fn() });
+
+    await openMenu();
+
+    expect(screen.getAllByRole('menuitem').map((el) => el.textContent)).toEqual([
+      'Rename',
+      'Pin',
+      'Export',
+      'Move to project',
+      'Remove from project',
+      'Archive',
+      'Delete',
+    ]);
+    const separators = screen.getAllByRole('separator');
+    expect(separators).toHaveLength(1);
+    expect(separators[0].nextElementSibling?.textContent).toBe('Delete');
+  });
+
+  it("lines its list up with the trigger's right edge", async () => {
+    renderMenu();
+    await openMenu();
+    expect(screen.getByRole('menu').getAttribute('data-align')).toBe('end');
+  });
+});
+
 describe('chat row menu on touch', () => {
-  it('hides the trigger on a hover device until the row is hovered', () => {
+  it('fades the trigger out on a hover device until the row is hovered, keeping its place', () => {
     renderMenu({ isParentHovered: false });
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Actions for Q3 plan' }).style.opacity).toBe('0');
   });
 
   it('keeps the trigger visible when the row cannot be hovered', () => {
     canHover.value = false;
     renderMenu({ isParentHovered: false });
-    expect(screen.getByRole('button')).toBeTruthy();
+    expect(screen.getByRole('button').style.opacity).toBe('1');
   });
 });

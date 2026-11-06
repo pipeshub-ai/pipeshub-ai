@@ -24,6 +24,11 @@ export interface FileProcessorConfiguration {
    */
   partialUpload?: boolean;
   /**
+   * Partial-upload only: reject a file with no bytes (reason `EMPTY_FILE`) instead of
+   * accepting a record with nothing to read or index. Defaults to false.
+   */
+  rejectEmptyFiles?: boolean;
+  /**
    * Partial-upload only: ceiling on TOTAL bytes buffered for one multipart
    * request, bounding heap use regardless of file count. Defaults to 1 GB
    * (clamped up to at least `maxFileSize`). A request exceeding it is aborted.

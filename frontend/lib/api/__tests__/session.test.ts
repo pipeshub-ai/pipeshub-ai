@@ -272,7 +272,7 @@ describe('error toasts', () => {
     fakeServer({ status: 503, headers: { 'retry-after': '4' } });
     await expect(apiClient.get('/x')).rejects.toBeDefined();
     expect(errorToasts().map((t) => [t.title, t.description])).toEqual([
-      ['Please try again shortly', 'PipesHub is busy right now. Please try again in 4 seconds.'],
+      ['The server is busy', 'PipesHub is busy right now. Please try again in 4 seconds.'],
     ]);
   });
 

@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Flex, Text } from '@radix-ui/themes';
+import { Flex, Text, TextField } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { ICON_SIZES } from '@/lib/constants/icon-sizes';
+import { ListSkeleton } from '@/app/components/ui/list-skeleton';
+import { useDeferredLoading } from '@/app/components/ui/use-deferred-loading';
 import { ChatApi, type KnowledgeBaseForChat, type ListCollectionsForChatResult } from '@/chat/api';
 import { useChatStore } from '@/chat/store';
 import { hasAnyFilter } from '@/chat/utils/tree-selection';
@@ -18,8 +19,8 @@ import {
   LoadMoreLink,
   type KnowledgeSearchScope,
   type KnowledgeTreeNode,
+  type KnowledgeTreeRootAppearance,
 } from './knowledge-tree';
-import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { ChatKnowledgeFilters } from '@/chat/types';
 
 // ── Types ──
@@ -121,6 +122,11 @@ interface CollectionsTabProps {
   restrictToKbIds?: string[] | null;
   /** Narrows which hub roots are shown — defaults to 'all'. */
   filterMode?: CollectionsTabFilterMode;
+  /**
+   * `apps-panel`: drawn as the chat's apps panel (its root rows, and the
+   * Connectors tab as one "Your apps" list). Other pickers keep the default.
+   */
+  appearance?: KnowledgeTreeRootAppearance;
 }
 
 /**
@@ -133,11 +139,16 @@ export function CollectionsTab({
   onSelectionChange,
   restrictToKbIds = null,
   filterMode = 'all',
+  appearance = 'default',
 }: CollectionsTabProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchFocused, setSearchFocused] = useState(false);
   const [collections, setCollections] = useState<CollectionSelectItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  // The skeleton shows only once the hook says so (after the show delay, then for
+  // its minimum time); the real rows wait until it has gone.
+  const loading = useDeferredLoading(isLoading);
+  const showSkeleton = loading.visible;
+  const busy = isLoading || loading.visible;
   const [hasError, setHasError] = useState(false);
   const [rootsListMeta, setRootsListMeta] = useState<ChildListMeta | null>(null);
   const [loadingMoreApps, setLoadingMoreApps] = useState(false);
@@ -329,6 +340,19 @@ export function CollectionsTab({
   const emptyText = filterMode === 'connectors' ? t('chat.noConnectorsFound') : t('message.noCollections');
   // From the second character, also while the debounce runs, so "nothing found" does not flash first.
   const searchingServer = searchQuery.trim().length >= 2;
+  const searchPlaceholder =
+    filterMode === 'connectors'
+      ? t('chat.agentResources.searchConnectors')
+      : filterMode === 'collections'
+        ? t('chat.agentResources.searchCollections')
+        : t('chat.searchCollections');
+  // The apps panel lists connected apps as one "Your apps" list, not by date.
+  const appsList = appearance === 'apps-panel' && filterMode === 'connectors';
+  const rootGroups: [string, CollectionSelectItem[]][] = appsList
+    ? groupedCollections.length > 0
+      ? [[t('chat.mentionYourApps'), groupedCollections.flatMap(([, items]) => items)]]
+      : []
+    : groupedCollections;
 
   return (
     <Flex
@@ -336,48 +360,21 @@ export function CollectionsTab({
       gap="2"
       style={{ flex: 1, minWidth: 0, width: '100%', overflow: 'hidden' }}
     >
-      <Flex align="center" gap="1" style={{ width: '100%' }}>
-        <Flex
-          align="center"
-          gap="2"
-          style={{
-            flex: 1,
-            height: 'var(--space-6)',
-            border: `1px solid ${searchFocused ? 'var(--accent-11)' : 'var(--olive-3)'}`,
-            borderRadius: 'var(--radius-2)',
-            paddingLeft: 'var(--space-2)',
-            paddingRight: 'var(--space-2)',
-            backgroundColor: 'var(--slate-1)',
-          }}
-        >
-          <MaterialIcon
-            name="search"
-            size={ICON_SIZES.PRIMARY}
-            color="var(--slate-9)"
-          />
-          <input
-            type="text"
-            className="collections-search-input"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onFocus={() => setSearchFocused(true)}
-            onBlur={() => setSearchFocused(false)}
-            placeholder={t('chat.searchCollections')}
-            style={{
-              flex: 1,
-              border: 'none',
-              outline: 'none',
-              backgroundColor: 'transparent',
-              color: 'var(--slate-12)',
-              fontSize: 'var(--font-size-2)',
-              fontFamily: 'inherit',
-            }}
-          />
-        </Flex>
-      </Flex>
+      <TextField.Root
+        size="2"
+        radius="small"
+        value={searchQuery}
+        onChange={(e) => setSearchQuery(e.target.value)}
+        placeholder={searchPlaceholder}
+        style={{ width: '100%', flexShrink: 0 }}
+      >
+        <TextField.Slot>
+          <MaterialIcon name="search" size={16} color="var(--text-secondary)" />
+        </TextField.Slot>
+      </TextField.Root>
 
       {queryTooShort && (
-        <Text size="1" style={{ color: 'var(--neutral-a10)', padding: '0 var(--space-1)', flexShrink: 0 }}>
+        <Text size="1" style={{ color: 'var(--text-secondary)', padding: '0 var(--space-1)', flexShrink: 0 }}>
           {t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })}
         </Text>
       )}
@@ -386,7 +383,7 @@ export function CollectionsTab({
         <Text
           size="1"
           style={{
-            color: 'var(--slate-11)',
+            color: 'var(--text-secondary)',
             padding: '0 var(--space-1)',
             flexShrink: 0,
           }}
@@ -407,26 +404,32 @@ export function CollectionsTab({
           overflowY: 'auto',
         }}
       >
-        {isLoading && (
-          <Flex align="center" justify="center" style={{ flex: 1, minHeight: 0 }}>
-            <LottieLoader variant="loader" size={48} />
-          </Flex>
+        {showSkeleton && (
+          <ListSkeleton
+            variant="menu-row"
+            // The root row's height and mark, so nothing moves when the rows arrive.
+            rowHeight={40}
+            glyphSize={16}
+            appearDelayMs={0}
+            exiting={loading.exiting}
+            statusLabel={t('chat.loadingSources', { defaultValue: 'Loading sources…' })}
+          />
         )}
 
-        {hasError && !isLoading && (
+        {hasError && !busy && (
           <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-            <Text size="2" style={{ color: 'var(--red-9)' }}>
+            <Text size="2" style={{ color: 'var(--red-11)' }}>
               {t('chat.failedToLoadCollections')}
             </Text>
           </Flex>
         )}
 
         {/* ── Collections mode: flat KB items, no parent container row ── */}
-        {filterMode === 'collections' && !isLoading && !hasError && !queryTooShort && (
+        {filterMode === 'collections' && !busy && !hasError && !queryTooShort && (
           flatKbItems.length === 0 ? (
             searchingServer ? null : (
             <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-              <Text size="2" style={{ color: 'var(--slate-9)' }}>
+              <Text size="2" style={{ color: 'var(--text-secondary)' }}>
                 {searchQuery ? t('message.noCollections') : t('chat.noCollectionsAvailable')}
               </Text>
             </Flex>
@@ -434,28 +437,38 @@ export function CollectionsTab({
           ) : (
             <Flex direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
               {flatKbItems.map((root) => (
-                <KnowledgeTreeRoot key={root.id} node={toTreeRoot(root)} filters={selection} onSelectionChange={onSelectionChange} />
+                <KnowledgeTreeRoot
+                  key={root.id}
+                  node={toTreeRoot(root)}
+                  filters={selection}
+                  onSelectionChange={onSelectionChange}
+                  appearance={appearance}
+                />
               ))}
             </Flex>
           )
         )}
 
         {/* ── Normal mode (connectors / all): time-grouped root rows ── */}
-        {filterMode !== 'collections' && !isLoading && !hasError && !queryTooShort && groupedCollections.length === 0 && !searchingServer && (
+        {filterMode !== 'collections' && !busy && !hasError && !queryTooShort && groupedCollections.length === 0 && !searchingServer && (
           <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-            <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            <Text size="2" style={{ color: 'var(--text-secondary)' }}>
               {searchQuery || collections.length > 0
                 ? t(filterMode === 'connectors' ? 'chat.noConnectorsFound' : 'message.noCollections')
-                : t('chat.noCollectionsAvailable')}
+                : filterMode === 'connectors'
+                  ? t('chat.noConnectorsYet', {
+                      defaultValue: 'No connectors yet. Apps you connect in Connectors appear here.',
+                    })
+                  : t('chat.noCollectionsAvailable')}
             </Text>
           </Flex>
         )}
 
         {filterMode !== 'collections' &&
-          !isLoading &&
+          !busy &&
           !hasError &&
           !queryTooShort &&
-          groupedCollections.map(([label, items]) => (
+          rootGroups.map(([label, items]) => (
             <Flex key={label} direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
               <Flex
                 align="center"
@@ -470,7 +483,7 @@ export function CollectionsTab({
                     fontWeight: 400,
                     lineHeight: 'var(--line-height-1)',
                     letterSpacing: '0.04px',
-                    color: 'var(--olive-9)',
+                    color: 'var(--text-secondary)',
                   }}
                 >
                   {label}
@@ -478,12 +491,18 @@ export function CollectionsTab({
               </Flex>
 
               {items.map((root) => (
-                <KnowledgeTreeRoot key={root.id} node={toTreeRoot(root)} filters={selection} onSelectionChange={onSelectionChange} />
+                <KnowledgeTreeRoot
+                  key={root.id}
+                  node={toTreeRoot(root)}
+                  filters={selection}
+                  onSelectionChange={onSelectionChange}
+                  appearance={appearance}
+                />
               ))}
             </Flex>
           ))}
 
-        {!isLoading && !hasError && serverQuery ? (
+        {!busy && !hasError && serverQuery ? (
           <KnowledgeSearchResults
             query={serverQuery}
             scope={searchScope}
@@ -494,7 +513,7 @@ export function CollectionsTab({
           />
         ) : null}
 
-        {!isLoading && !hasError && !searchingServer && rootsListMeta?.hasMore && !restrictToKbIds?.length ? (
+        {!busy && !hasError && !searchingServer && rootsListMeta?.hasMore && !restrictToKbIds?.length ? (
           <Flex
             align="center"
             style={{

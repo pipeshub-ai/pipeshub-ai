@@ -14,11 +14,11 @@ from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from app.agents.agent_loop.cancellation.policy import CancelRequester
 from app.agents.agent_loop.cancellation.registry import (
     RunCancellationRegistry,
-    RunOwner,
 )
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
@@ -45,6 +45,7 @@ from app.models.blocks import (
     CitationMetadata,
     DataFormat,
 )
+from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.parsers import parse_pool
 from app.modules.parsers.parse_pool import ParseWorkerError
 from app.modules.parsers.parse_pool_lanes import interactive_parsing
@@ -87,7 +88,7 @@ from app.utils.attachment_mime_types import (
     TEXT_ATTACHMENT_MIME_TYPES,
 )
 from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
-from app.utils.chat_helpers import accessible_node_ids
+from app.utils.chat_helpers import accessible_node_names
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.image_utils import downscale_to_limits
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
@@ -159,6 +160,9 @@ class ChatQuery(BaseModel):
     # that predate this field or don't need cancellation (the agent loop
     # generates one itself — see `stream_bridge.py`/`bridge.py`).
     runId: str | None = None
+    # The chat's ACL version from Node (always present on Node requests).
+    # Keys the chat-content access cache; absent means "do not cache".
+    aclVersion: int | None = None
     # Set by Node for a project-scoped chat (see `applyProjectScope`,
     # project-context.ts). When true and the effective `filters` carry no
     # apps/kb, `get_accessible_virtual_record_ids` returns no records instead
@@ -1328,7 +1332,8 @@ async def check_viewer_record_access(
     """Which of these records the viewer named in the service token may read, by
     the same `check_access` as search and `fetch_record`. Node signs the viewer's
     own ids after authenticating them, so a shared chat is rendered for the person
-    looking at it. An access check that cannot answer is a 503, never a guess."""
+    looking at it, each readable asked node under its current name. An access
+    check that cannot answer is a 503, never a guess."""
     org_id, viewer_id = _permission_grantor(claims)
     payload = await _parse_permission_request(request, RecordAccessRequest)
     ids = list(dict.fromkeys(r for r in payload.recordIds if r))
@@ -1342,13 +1347,15 @@ async def check_viewer_record_access(
         for row in rows:
             by_url.setdefault(row.get("webUrl"), []).append(row["id"])
     try:
-        readable = await accessible_node_ids(
+        readable = await accessible_node_names(
             graph_provider, set(ids) | {r for rs in by_url.values() for r in rs}, viewer_id, org_id,
         )
     except PermissionVerificationUnavailableError as exc:
         raise HTTPException(status_code=503, detail="Access check unavailable") from exc
     return {
         "accessible": [r for r in ids if r in readable],
+        # Current names, only of the asked nodes the viewer may open, so a shared chat names them as they are now.
+        "names": {r: readable[r] for r in ids if r in readable},
         "accessibleUrls": [
             u for u in urls
             if by_url.get(u)
@@ -1651,6 +1658,16 @@ async def _stream_chat_via_agent_loop(
     user_id = user.get("userId")
     protocol = resolve_protocol(query_info.protocol, request)
 
+    chat_extension = get_chat_extension()
+    preflight = await chat_extension.preflight(
+        query_info, graph_provider=graph_provider, config_service=config_service,
+        user_id=user_id, org_id=org_id, logger=logger_,
+    )
+    if preflight is not None:
+        async for chunk in preflight:
+            yield chunk
+        return
+
     # LLM init, system prompts, user/org enrichment, and the entity vector
     # store are independent of each other and all sit before the first
     # streamed byte, so they run as one wave instead of serial round trips.
@@ -1721,15 +1738,19 @@ async def _stream_chat_via_agent_loop(
     if query_info.strictScope:
         effective_filters["strictScope"] = True
 
+    extension_fields = chat_extension.query_fields(query_info)
     attachments, previous_conversations = await keep_accessible_attachments(
         graph_provider,
         org_id=org_id,
         user_id=user_id,
         is_service_account=bool(user.get("isServiceAccount")),
         attachments=query_info.attachments,
-        previous_conversations=query_info.previousConversations,
+        # The edition may rewrite the history the run reads (shared-chat rows): filter that copy.
+        previous_conversations=extension_fields.pop("previous_conversations", query_info.previousConversations),
         logger=logger_,
         connection_sources=connection_limit(user),
+        conversation_id=query_info.conversationId,
+        acl_version=query_info.aclVersion,
     )
     query_dict = {
         "query": query_info.query,
@@ -1750,8 +1771,10 @@ async def _stream_chat_via_agent_loop(
         "includeRetrievalContext": query_info.includeRetrievalContext,
         "keywordSearchBudget": query_info.keywordSearchBudget,
         "runId": query_info.runId,
+        "aclVersion": query_info.aclVersion,
         "is_service_account": bool(user.get("isServiceAccount")),
     }
+    query_dict.update(extension_fields)
     user_info = {
         "userId": user_id,
         "orgId": org_id,
@@ -1820,6 +1843,13 @@ async def _stream_chat_via_agent_loop(
             yield event
 
 
+def _invalid_parameters(e: Exception) -> HTTPException:
+    """A 400 that names no field or value; the reason goes to the server log, without the values sent."""
+    reason = e.errors(include_url=False, include_input=False) if isinstance(e, ValidationError) else type(e).__name__
+    logger.warning("Invalid request parameters: %s", reason)
+    return HTTPException(status_code=400, detail="Invalid request parameters")
+
+
 async def _parse_chat_query(
     request: Request,
     cancellation_registry: RunCancellationRegistry,
@@ -1834,9 +1864,12 @@ async def _parse_chat_query(
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")
 
     try:
-        query_info = ChatQuery(**body)
+        query_info = get_chat_extension().chat_query_model(ChatQuery)(**body)
+    except HTTPException:
+        # The request model refused the body with a status and code of its own.
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+        raise _invalid_parameters(e) from e
 
     # A real HTTP 409 is only possible HERE, before `StreamingResponse` is
     # returned — once the SSE generator below starts, Starlette has already
@@ -1889,7 +1922,9 @@ async def askAI(
         config_service=config_service,
         cancellation_registry=cancellation_registry,
     )
-    outcome = await collect_stream_outcome(stream, request.is_disconnected)
+    outcome = await collect_stream_outcome(
+        stream, request.is_disconnected, keep_events=get_chat_extension().completion_events(),
+    )
     return outcome.to_response()
 
 
@@ -1967,10 +2002,10 @@ async def cancel_chat_stream(
     try:
         cancel_request = CancelRunRequest(**body)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+        raise _invalid_parameters(e) from e
 
     user = getattr(request.state, "user", {}) or {}
-    requester = RunOwner(
+    requester = CancelRequester(
         user_id=user.get("userId", ""),
         org_id=user.get("orgId", ""),
         conversation_id=cancel_request.conversationId,

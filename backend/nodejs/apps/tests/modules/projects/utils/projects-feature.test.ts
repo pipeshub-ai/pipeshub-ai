@@ -23,6 +23,7 @@ function stubFlags(featureFlags: Record<string, boolean>): sinon.SinonStub {
 describe('projects/utils/projects-feature', () => {
   beforeEach(() => ProjectsFeature.resetCache());
   afterEach(() => {
+    ProjectsFeature.useFlags();
     sinon.restore();
     setProjectsSettingsSource();
     ProjectsFeature.resetCache();
@@ -161,6 +162,55 @@ describe('projects/utils/projects-feature', () => {
 
       expect(await ProjectsFeature.isEnabled()).to.equal(true);
       expect(lookups).to.equal(0);
+    });
+  });
+
+  describe('with a flag source set', () => {
+    const source = (answer: boolean) => ({ isEnabled: sinon.stub().resolves(answer) });
+
+    it('reads ENABLE_PROJECTS from the source, not the shared settings', async () => {
+      const read = stubFlags({ ENABLE_PROJECTS: false });
+      const flags = source(true);
+      ProjectsFeature.useFlags(flags);
+
+      expect(await ProjectsFeature.isEnabled()).to.equal(true);
+      expect(flags.isEnabled.calledOnceWithExactly('ENABLE_PROJECTS')).to.equal(true);
+      expect(read.called).to.equal(false);
+    });
+
+    it('the route guard passes the refusal to next when the source says off, and lets the request through when on', async () => {
+      ProjectsFeature.useFlags(source(false));
+      const off = sinon.spy();
+      await requireProjectsEnabled({} as any, {} as any, off);
+      expect(off.firstCall.args[0]).to.be.instanceOf(ForbiddenError);
+
+      ProjectsFeature.useFlags(source(true));
+      const on = sinon.spy();
+      await requireProjectsEnabled({} as any, {} as any, on);
+      expect(on.calledOnceWithExactly()).to.equal(true);
+    });
+
+    it('asks the source on every call, so two callers with different answers do not share a cached value', async () => {
+      const flags = { isEnabled: sinon.stub().onFirstCall().resolves(true).onSecondCall().resolves(false) };
+      ProjectsFeature.useFlags(flags);
+
+      expect(await ProjectsFeature.isEnabled()).to.equal(true);
+      expect(await ProjectsFeature.isEnabled()).to.equal(false);
+    });
+
+    it('leaves Projects on when the source throws', async () => {
+      ProjectsFeature.useFlags({ isEnabled: sinon.stub().rejects(new Error('boom')) });
+
+      expect(await ProjectsFeature.isEnabled()).to.equal(true);
+    });
+
+    it('goes back to the shared settings after useFlags() with no source', async () => {
+      ProjectsFeature.useFlags(source(true));
+      ProjectsFeature.useFlags();
+      stubStore(true);
+      stubFlags({ ENABLE_PROJECTS: false });
+
+      expect(await ProjectsFeature.isEnabled()).to.equal(false);
     });
   });
 });

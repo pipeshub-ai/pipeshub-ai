@@ -1,6 +1,7 @@
 'use client'
 
 import React, { Suspense, useEffect, useState } from "react"
+import { usePathname } from "next/navigation"
 import { Flex, Box, Text } from "@radix-ui/themes"
 import { MaterialIcon } from "../components/ui/MaterialIcon"
 import { ThemeProvider, ThemeScript } from "../components/theme-provider"
@@ -33,6 +34,9 @@ import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-but
 import { useNavHidden } from '@/app/components/sidebar/use-nav-hidden'
 import { SIDEBAR_WIDTH } from "@/app/components/sidebar/constants"
 import { MobileMenuButton } from './components/mobile-menu-button'
+import ChatSidebar from './chat/sidebar'
+import { isChatRailPath } from './chat/sidebar/chat-rail-routes'
+import { RouteLoadingCover, SidebarSlot } from './components/route-loading'
 
 // Extra pixels beyond sidebarWidth needed to accommodate the "More Chats"
 // secondary panel that SidebarBase adds when open (it widens the cluster).
@@ -77,15 +81,11 @@ export default function RootLayout({
       <head>
         <ThemeScript />
         <link
-          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons"
-          rel="stylesheet"
-        />
-        <link
           href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block"
           rel="stylesheet"
         />
       </head>
-      <body style={{ backgroundColor: 'var(--olive-1, #f8f8f5)' }}>
+      <body style={{ backgroundColor: 'var(--surface-raised)' }}>
         <I18nextProvider i18n={i18n}>
           <BrandProvider>
             <ThemeProvider>
@@ -131,6 +131,9 @@ function AppLayout({
 }) {
   const sidebarWidth = useAppliedSidebarWidth()
   const navHidden = useNavHidden()
+  // One chat rail for every page that shows it, kept here rather than in each page's sidebar slot, which would
+  // build it again on every move between those pages.
+  const chatRail = isChatRailPath(usePathname())
 
   // ── Full-name guard ────────────────────────────────────────────────────────
   const profile = useUserStore((s) => s.profile)
@@ -172,7 +175,7 @@ function AppLayout({
         style={{
           width: '100%',
           overflow: 'hidden',
-          backgroundColor: 'var(--slate-2)',
+          backgroundColor: 'var(--surface-raised)',
         }}
       >
         {/* Sidebar slot — on desktop renders inline with a collapsible animation;
@@ -192,10 +195,14 @@ function AppLayout({
               : `${sidebarWidth + SIDEBAR_SECONDARY_PANEL_EXTRA_PX}px`,
             overflow: 'hidden',
             visibility: navHidden ? 'hidden' : 'visible',
+            opacity: navHidden ? 0 : 1,
             flexShrink: 0,
+            // Opening takes a surface's time; closing is quicker and fades the
+            // contents so they read as gone before the gap has closed. Both are
+            // 0ms under reduced motion (the motion roles zero out).
             transition: navHidden
-              ? 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0.28s'
-              : 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
+              ? 'max-width var(--motion-control) var(--motion-ease), opacity var(--motion-control) var(--motion-ease), visibility 0s linear var(--motion-control)'
+              : 'max-width var(--motion-surface) var(--motion-ease), opacity var(--motion-surface) var(--motion-ease)',
             position: 'relative',
             // Must be an explicit height so the SidebarBase's height:'100%'
             // chain resolves correctly (this Box is a flex child of the outer
@@ -204,12 +211,19 @@ function AppLayout({
             height: '100%',
           }}
         >
-          {sidebar}
+          {chatRail ? (
+            <Suspense>
+              <ChatSidebar />
+            </Suspense>
+          ) : (
+            <SidebarSlot>{sidebar}</SidebarSlot>
+          )}
         </Box>
 
         {/* Main content area — zIndex: 0 creates a stacking context so
             page-internal z-indexes don't compete with the sidebar's
-            secondary panel (zIndex: 10 in root context). */}
+            secondary panel (zIndex: 10 in root context). position: relative
+            also bounds the page-change loader to this column. */}
         <Flex
           key="app-main-column"
           direction="column"
@@ -225,11 +239,12 @@ function AppLayout({
           <Box
             key="app-main-scroll"
             data-app-main-scroll
-            className="no-scrollbar"
             style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}
           >
             {children}
           </Box>
+          {/* The page-change loader, over this column only: the sidebar stays on screen while a page loads. */}
+          <RouteLoadingCover key="app-route-loading-cover" />
         </Flex>
 
         <UploadProgressTracker key="upload-progress-tracker" />

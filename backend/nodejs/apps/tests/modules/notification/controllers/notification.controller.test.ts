@@ -60,32 +60,32 @@ describe('notification.controller on the repository seam', () => {
   afterEach(() => setNotificationRepository());
 
   it('answers 401 without a valid user, before touching the store', async () => {
-    await listNotifications({ user: {}, query: {} } as any, res, next);
+    await listNotifications()({ user: {}, query: {} } as any, res, next);
     expect(res.status.calledWith(401)).to.equal(true);
     expect(repo.list.called).to.equal(false);
   });
 
   it('lists with the caller\'s scope, the clamped page size and the status filter', async () => {
-    await listNotifications(req({ query: { limit: '500', status: 'read' } }), res, next);
+    await listNotifications()(req({ query: { limit: '500', status: 'read' } }), res, next);
     expect(repo.list.firstCall.args).to.deep.equal([{ userId, orgId }, { status: 'read', cursor: undefined, limit: 50 }]);
   });
 
   it('pages: more rows than the limit give hasMore and a cursor that resumes after the last row shown', async () => {
     const rows = [row(), row(), row()].map((r, i) => ({ ...r, createdAt: new Date(Date.UTC(2026, 4, 20, 10, 30 - i)) }));
     repo.list.resolves(rows);
-    await listNotifications(req({ query: { limit: '2' } }), res, next);
+    await listNotifications()(req({ query: { limit: '2' } }), res, next);
     const body = res.json.firstCall.args[0];
     expect(body.notifications).to.have.length(2);
     expect(body.hasMore).to.equal(true);
     expect(body.cursor).to.equal(encodeCursor({ createdAt: rows[1].createdAt, _id: rows[1]._id }));
 
     repo.list.resetHistory();
-    await listNotifications(req({ query: { limit: '2', cursor: body.cursor } }), res, next);
+    await listNotifications()(req({ query: { limit: '2', cursor: body.cursor } }), res, next);
     expect(repo.list.firstCall.args[1].cursor).to.deep.equal({ createdAt: rows[1].createdAt, id: rows[1]._id });
   });
 
   it('rejects a malformed cursor with 400 and does not query', async () => {
-    await listNotifications(req({ query: { cursor: 'not-a-cursor' } }), res, next);
+    await listNotifications()(req({ query: { cursor: 'not-a-cursor' } }), res, next);
     expect(res.status.calledWith(400)).to.equal(true);
     expect(repo.list.called).to.equal(false);
   });

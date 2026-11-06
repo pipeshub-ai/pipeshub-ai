@@ -2,11 +2,17 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import { createProjectsRouter } from '../../../../src/modules/projects/routes/project.routes';
 import { requireProjectsEnabled } from '../../../../src/modules/projects/utils/projects-feature';
+import { CONVERSATION_TYPES } from '../../../../src/modules/enterprise_search/services/conversation/conversation.types';
 
 describe('projects/routes/project.routes', () => {
   const authenticate = function authenticate() {};
   const container = {
-    get: (id: string) => (id === 'AuthMiddleware' ? { authenticate } : {}),
+    get: (id: string | symbol) =>
+      id === 'AuthMiddleware'
+        ? { authenticate }
+        : id === CONVERSATION_TYPES.ConversationGuards
+          ? { listScope: () => function listScope() {} }
+          : {},
   } as any;
 
   it('checks the Projects flag after authenticate on every route', () => {

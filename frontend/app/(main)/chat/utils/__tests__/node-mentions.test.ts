@@ -6,6 +6,7 @@ import {
   insertMention,
   locateMentionNames,
   locateMentions,
+  mentionedNodes,
   MENTION_LABEL_MAX,
   mentionChipRemoval,
   mentionLabel,
@@ -18,6 +19,7 @@ import {
   withUniqueLabel,
   type MentionNode,
 } from '../node-mentions';
+import type { AppliedFilterNode } from '../../types';
 
 const budget: MentionNode = {
   id: 'rec-1',
@@ -159,5 +161,63 @@ describe('node mentions', () => {
     expect(locateMentions(text, [finance, second]).map((span) => span.node.id)).toEqual(['sal', 'fin']);
     expect(stripMentionPads(text, [finance, second])).toBe(`${sales.name}  and ${finance.name} `);
     expect(withUniqueLabel(sales, [budget])).toBe(sales);
+  });
+});
+
+describe('where @ opens the menu', () => {
+  it('at the start, after a space, and after an opening bracket or quote; never inside an email', () => {
+    expect(activeMentionQuery('@bud', 4)).toEqual({ start: 0, query: 'bud' });
+    expect(activeMentionQuery('see (@bud', 9)).toEqual({ start: 5, query: 'bud' });
+    expect(activeMentionQuery('say "@bud', 9)).toEqual({ start: 5, query: 'bud' });
+    expect(activeMentionQuery('mail a@bud', 10)).toBeNull();
+  });
+
+  it('takes a query of up to 64 characters', () => {
+    const long = 'a'.repeat(64);
+    expect(activeMentionQuery(`@${long}`, 65)).toEqual({ start: 0, query: long });
+    expect(activeMentionQuery(`@${long}b`, 66)).toBeNull();
+  });
+});
+
+describe('locateMentionNames: a sent name touching punctuation', () => {
+  const node = (id: string, name: string): MentionNode => ({ id, name, nodeType: 'app', connector: 'S3' });
+  const S3 = node('s3', 'S3');
+  const names = (text: string, mentions: MentionNode[] = [S3]) => locateMentionNames(text, mentions).map((s) => text.slice(s.start, s.end));
+
+  it.each(['in S3?', 'in S3, please', 'in S3.', 'in S3!', '(S3 and more)', 'more (S3)', '"S3" please', 'S3: what changed?', 'in S3...'])(
+    'finds it in %s',
+    (text) => {
+      expect(names(text)).toEqual(['S3']);
+    },
+  );
+
+  it('finds each one in a sentence of them', () => {
+    const mentions = [node('d', 'Team Drive'), node('r', 'report.pdf')];
+    expect(names('What is in (Team Drive and report.pdf) too.', mentions)).toEqual(['Team Drive', 'report.pdf']);
+  });
+
+  it.each(['S3.txt', "S3's bucket", 'xS3', 'S3x', 'S3-bucket', 'S3_old', 'a/S3/b', 'S3?x'])('leaves %s alone: it is another word', (text) => {
+    expect(names(text)).toEqual([]);
+  });
+
+  it('the composer keeps its stricter rule: only a space ends a chip it is still tracking', () => {
+    expect(locateMentions('in S3?', [S3])).toEqual([]);
+  });
+});
+
+describe('locateMentionNames: a source the reader cannot open', () => {
+  // The server sends it with its kind only: no id and no name. An old question (no `mentioned` flags), or one whose
+  // every source is locked for this reader, falls back to its folders and records, the locked ones included.
+  const locked = { redacted: true, reason: 'no_access', nodeType: 'folder' } as unknown as AppliedFilterNode;
+  const folder = { id: 'fol-1', name: 'Orbit folder', nodeType: 'folder', connector: 'KB' };
+
+  it('is skipped, and the sources that have a name are still found', () => {
+    const named = mentionedNodes({ apps: [], kb: [], records: [locked, folder] });
+    const spans = locateMentionNames('What is in Orbit folder?', named.map((node) => ({ ...node, extension: null, mimeType: null })));
+    expect(spans.map((span) => span.node.id)).toEqual(['fol-1']);
+  });
+
+  it('alone: nothing is found, and nothing throws', () => {
+    expect(locateMentionNames('What is in it?', mentionedNodes({ apps: [], kb: [], records: [locked] }) as never)).toEqual([]);
   });
 });

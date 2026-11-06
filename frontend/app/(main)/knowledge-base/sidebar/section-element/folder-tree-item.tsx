@@ -199,7 +199,7 @@ export function FolderTreeItem({
           ),
         )
       : []),
-    canEdit && !!onRename && { icon: 'edit', label: t('menu.rename'), onClick: handleRenameStart },
+    canEdit && !!onRename && { icon: 'drive_file_rename_outline', label: t('menu.rename'), onClick: handleRenameStart },
     // Collections can only be deleted by OWNER
     canDelete && !!onDelete && !(enhancedNode.nodeType === 'app' && enhancedNode.permission?.role !== 'OWNER') && {
       icon: 'delete',

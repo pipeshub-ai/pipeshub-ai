@@ -37,6 +37,13 @@ afterEach(() => {
 });
 
 describe('ArtifactsPanel thumbnails', () => {
+  it('paints nothing for a fast thumbnail load and the shared skeleton glyph for a slow one', async () => {
+    streamRecord.mockReturnValue(new Promise(() => {}));
+    const { container } = render(h(Theme, null, h(ArtifactsPanel, { artifacts: [artifact({ recordId: 'r1' })] })));
+    expect(container.querySelector('.skeleton-shimmer')).toBeNull();
+    await waitFor(() => expect(container.querySelector('.skeleton-shimmer')).not.toBeNull(), { timeout: 1000 });
+  });
+
   // T33
   it('still renders an image artifact thumbnail streamed through the API', async () => {
     streamRecord.mockResolvedValue(new Blob(['png'], { type: 'image/png' }));

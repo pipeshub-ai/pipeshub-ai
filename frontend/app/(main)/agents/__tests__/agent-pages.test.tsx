@@ -27,6 +27,9 @@ vi.mock('@/app/components/ui/service-gate', () => ({
   ServiceGate: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+vi.mock('../components/index/agents-index', () => ({
+  AgentsIndex: () => <div data-testid="agents-index" />,
+}));
 
 import AgentsPage from '../page';
 import NewAgentPage from '../new/page';
@@ -43,18 +46,20 @@ afterEach(() => {
 });
 
 describe('agent pages', () => {
-  it('sends the bare agents URL to chat, where agents live', () => {
+  it('shows the Agents index at the bare agents URL', () => {
     render(<AgentsPage />);
-    expect(router.replace).toHaveBeenCalledWith('/chat/');
+    expect(screen.getByTestId('agents-index')).toBeTruthy();
+    expect(router.replace).not.toHaveBeenCalled();
   });
 
-  it('keeps the agent in the link when redirecting to chat', () => {
-    search.params = new URLSearchParams('agentId=a1');
+  it("sends an old link with an agent in it to that agent's chat, keeping every param", () => {
+    search.params = new URLSearchParams('agentId=a1&orgId=o1');
     render(<AgentsPage />);
-    expect(router.replace).toHaveBeenCalledWith('/chat/?agentId=a1');
+    expect(router.replace).toHaveBeenCalledWith('/chat/?agentId=a1&orgId=o1');
+    expect(screen.queryByTestId('agents-index')).toBeNull();
   });
 
-  it('opens the create dialog over a blank builder, and returns to chat when it is dismissed', async () => {
+  it('opens the create dialog over a blank builder, and returns to the Agents page when it is dismissed', async () => {
     vi.useFakeTimers();
     render(<NewAgentPage />);
 
@@ -66,7 +71,7 @@ describe('agent pages', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(200);
     });
-    expect(router.push).toHaveBeenCalledWith('/chat');
+    expect(router.push).toHaveBeenCalledWith('/agents/');
   });
 
   it('edits the agent named in the link', () => {
@@ -80,7 +85,7 @@ describe('agent pages', () => {
     render(<EditAgentPage />);
 
     expect(
-      screen.getByText('Missing agent key. Open an agent from the chat sidebar or use a valid link.'),
+      screen.getByText('Missing agent key. Open an agent from the Agents page or use a valid link.'),
     ).toBeTruthy();
     expect(screen.queryByTestId('agent-builder')).toBeNull();
   });

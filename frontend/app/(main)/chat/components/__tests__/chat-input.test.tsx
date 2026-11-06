@@ -20,16 +20,20 @@ const speech = vi.hoisted(() => ({
   toggle: vi.fn(),
   stop: vi.fn(),
   resetTranscript: vi.fn(),
-  onError: null as null | ((error: string) => void),
+  onError: null as null | ((error: string, refusal?: string) => void),
 }));
 const device = vi.hoisted(() => ({ isMobile: false }));
-const mentionField = vi.hoisted(() => ({ rendered: vi.fn<(mentionsOff: boolean | undefined) => void>() }));
+const mentionField = vi.hoisted(() => ({
+  latest: null as null | { onChange: (value: string) => void; onMentionsChange: (nodes: { id: string; name: string; nodeType: string; connector: string }[]) => void },
+  rendered: vi.fn<(mentionsOff: boolean | undefined, context?: { preferredSources?: readonly { id: string; name: string }[] | null }) => void>(),
+}));
 
 vi.mock('@/chat/components/mention-composer-field', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/chat/components/mention-composer-field')>();
   type FieldProps = Omit<React.ComponentProps<typeof actual.MentionComposerField>, 'ref'>;
   const Spy = React.forwardRef<HTMLTextAreaElement, FieldProps>(function MentionComposerFieldSpy(props, ref) {
-    mentionField.rendered(props.mentionsOff);
+    mentionField.rendered(props.mentionsOff, props.context);
+    mentionField.latest = props;
     return <actual.MentionComposerField {...props} ref={ref} />;
   });
   return { ...actual, MentionComposerField: Spy };
@@ -37,13 +41,25 @@ vi.mock('@/chat/components/mention-composer-field', async (importOriginal) => {
 
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
 
+const org = vi.hoisted(() => ({
+  value: { org: null as null | { shortName?: string; registeredName?: string }, logoUrl: null },
+  calls: 0,
+}));
+vi.mock('@/chat/api', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  fetchOrgWithLogo: () => {
+    org.calls += 1;
+    return Promise.resolve(org.value);
+  },
+}));
+
 vi.mock('@/chat/streaming', () => ({
   cancelStreamForSlot: (...args: unknown[]) => streaming.cancelStreamForSlot(...args),
   streamRegenerateForSlot: (...args: unknown[]) => streaming.streamRegenerateForSlot(...args),
 }));
 
 vi.mock('@/lib/hooks/use-chat-speech-recognition', () => ({
-  useChatSpeechRecognition: (opts: { onError?: (error: string) => void }) => {
+  useChatSpeechRecognition: (opts: { onError?: (error: string, refusal?: string) => void }) => {
     speech.onError = opts.onError ?? null;
     return {
       ...speech.state,
@@ -76,6 +92,7 @@ vi.mock('@/chat/components/chat-panel/expansion-panels/chat-input-overlay-panel'
 
 vi.mock('@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel', () => ({
   getAppliedReasoningEffortLabel: (_t: unknown, { picked }: { picked: string | null }) => `Effort ${picked}`,
+  getReasoningEffortLabel: (_t: unknown, level: string) => level.charAt(0).toUpperCase() + level.slice(1),
   ModelSelectorPanel: ({ onModelSelect }: { onModelSelect: (m: unknown) => void }) => (
     <button
       type="button"
@@ -115,9 +132,18 @@ vi.mock('@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-pa
 }));
 
 vi.mock('@/chat/components/chat-panel/expansion-panels/universal-agent-resources-panel', () => ({
-  UniversalAgentResourcesPanel: ({ onToggleView }: { onToggleView: () => void }) => (
+  UniversalAgentResourcesPanel: ({
+    onToggleView,
+    onSelectionChange,
+  }: {
+    onToggleView: () => void;
+    onSelectionChange?: (next: { apps: string[]; kb: string[] }) => void;
+  }) => (
     <div>
       <p>Universal agent resources</p>
+      <button type="button" onClick={() => onSelectionChange?.({ apps: [], kb: ['kb-handbook'] })}>
+        Choose the handbook
+      </button>
       <button type="button" onClick={onToggleView}>
         Toggle panel size
       </button>
@@ -126,18 +152,40 @@ vi.mock('@/chat/components/chat-panel/expansion-panels/universal-agent-resources
 }));
 
 vi.mock('@/chat/components/chat-panel/expansion-panels/mobile-query-options-sheet', () => ({
-  MobileQueryOptionsSheet: ({ open }: { open: boolean }) => (open ? <p>Query options</p> : null),
+  MobileQueryOptionsSheet: ({
+    open,
+    onOpenChange,
+    onSelectionChange,
+  }: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    onSelectionChange?: (next: { apps: string[]; kb: string[] }) => void;
+  }) =>
+    open ? (
+      <div role="dialog" aria-label="Query options">
+        <p>Query options</p>
+        <button type="button" onClick={() => onSelectionChange?.({ apps: [], kb: ['kb-handbook'] })}>
+          Choose the handbook on the phone
+        </button>
+        <button type="button" onClick={() => onOpenChange(false)}>
+          Done
+        </button>
+      </div>
+    ) : null,
 }));
 
 import { ChatInput } from '../chat-input';
-import { useChatStore } from '@/chat/store';
+import { ASSISTANT_CTX, useChatStore } from '@/chat/store';
+import { applyConversationModelInfoToStore } from '@/chat/utils/apply-conversation-model-info';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useToastStore } from '@/lib/store/toast-store';
+import { chatSlots } from '@/config';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { DRAFT_SAVE_DEBOUNCE_MS } from '@/chat/hooks/use-composer-draft';
 import { loadDraft, saveDraft } from '@/chat/utils/composer-draft';
 import { allowChatDraftWrites, discardAllChatDrafts } from '@/lib/storage/chat-drafts';
 import type { AttachmentRef } from '@/chat/types';
+import { MENTION_PAD_CLOSE, MENTION_PAD_OPEN, insertMention } from '@/chat/utils/node-mentions';
 
 const initialChatState = useChatStore.getState();
 
@@ -165,6 +213,8 @@ beforeEach(() => {
   speech.stop.mockReset();
   speech.resetTranscript.mockReset();
   device.isMobile = false;
+  org.value = { org: null, logoUrl: null };
+  org.calls = 0;
   vi.stubGlobal('ResizeObserver', FakeResizeObserver);
 });
 
@@ -195,6 +245,11 @@ function sendButton(): HTMLButtonElement {
 
 function type(text: string) {
   fireEvent.change(composer(), { target: { value: text } });
+}
+
+/** The + menu opens from the keyboard the way a person tabbing to it would. */
+function openPlusMenu() {
+  fireEvent.keyDown(screen.getByRole('button', { name: 'Attach files and capabilities' }), { key: 'Enter' });
 }
 
 function toastTitles(): string[] {
@@ -287,6 +342,20 @@ describe('ChatInput — typing and sending', () => {
     expect(sendButton().getAttribute('aria-disabled')).toBe('true');
   });
 
+  it('paints Send soft gray while empty and the brand solid once there is something to send', () => {
+    renderInput();
+    expect(sendButton().className).toContain('rt-variant-soft');
+    expect(sendButton().getAttribute('data-accent-color')).toBe('gray');
+    // The soft variant's focus outline reads --accent-8: it is pointed at the product focus ring.
+    expect(sendButton().style.getPropertyValue('--accent-8')).toBe('var(--focus-ring)');
+    expect(sendButton().style.backgroundColor).toBe('');
+
+    type('Ready to go');
+    expect(sendButton().className).toContain('rt-variant-solid');
+    expect(sendButton().getAttribute('data-accent-color')).not.toBe('gray');
+    expect(sendButton().style.backgroundColor).toBe('');
+  });
+
   it('offers Stop instead of Send while an answer is streaming, and stops it', () => {
     const slotId = startStreamingSlot();
     const { onSend } = renderInput();
@@ -302,14 +371,158 @@ describe('ChatInput — typing and sending', () => {
     expect(toastTitles()).toContain('Stopping…');
   });
 
-  it('disables Stop once stopping has begun so a second click cannot cancel twice', () => {
+  it('marks Stop aria-disabled once stopping has begun so a second click cannot cancel twice', () => {
     startStreamingSlot({ stopping: true });
     renderInput();
 
     const stop = screen.getByRole('button', { name: 'Stop generating' }) as HTMLButtonElement;
-    expect(stop.disabled).toBe(true);
+    // Never the disabled attribute: a disabled button would drop keyboard focus to the page.
+    expect(stop.disabled).toBe(false);
+    expect(stop.getAttribute('aria-disabled')).toBe('true');
     fireEvent.click(stop);
     expect(streaming.cancelStreamForSlot).not.toHaveBeenCalled();
+  });
+
+  it('draws Stop as the outlined square glyph on the solid brand button', () => {
+    startStreamingSlot();
+    renderInput();
+
+    const stop = screen.getByRole('button', { name: 'Stop generating' });
+    expect(stop.className).toContain('rt-variant-solid');
+    expect(stop.style.backgroundColor).toBe('');
+    const glyph = stop.querySelector('svg');
+    expect(glyph?.getAttribute('aria-hidden')).toBe('true');
+    expect(glyph?.querySelector('path')?.getAttribute('d')).toBe('M6.66667 1.33333V6.66667H1.33333V1.33333H6.66667ZM8 0H0V8H8V0Z');
+  });
+
+  it('Stop is the same 32px touch-size button as Send, 44px on a touch phone only', () => {
+    startStreamingSlot();
+    renderInput();
+    let stop = screen.getByRole('button', { name: 'Stop generating' });
+    expect(stop.className).toContain('touch-size');
+    expect(stop.style.width).toBe('32px');
+    cleanup();
+    // A phone-width window driven by a mouse keeps the 32px button.
+    device.isMobile = true;
+    startStreamingSlot();
+    renderInput();
+    stop = screen.getByRole('button', { name: 'Stop generating' });
+    expect(stop.style.minWidth).toBe('32px');
+    cleanup();
+    // A touch screen gets the 44px target.
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(pointer: coarse)',
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    try {
+      startStreamingSlot();
+      renderInput();
+      stop = screen.getByRole('button', { name: 'Stop generating' });
+      expect(stop.style.minWidth).toBe('44px');
+      expect(stop.style.minHeight).toBe('44px');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps keyboard focus on the button when the stream ends and Stop becomes Send', () => {
+    const slotId = startStreamingSlot();
+    renderInput();
+    const stop = screen.getByRole('button', { name: 'Stop generating' });
+    stop.focus();
+    fireEvent.click(stop);
+    expect(streaming.cancelStreamForSlot).toHaveBeenCalledTimes(1);
+    // The run reports it is stopping: Stop is aria-disabled and keeps the focus.
+    act(() => {
+      useChatStore.getState().updateSlot(slotId, { stopping: true });
+    });
+    expect(stop.getAttribute('aria-disabled')).toBe('true');
+    expect((stop as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(stop);
+    expect(streaming.cancelStreamForSlot).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(stop);
+    act(() => {
+      useChatStore.getState().updateSlot(slotId, { isStreaming: false, stopping: false });
+    });
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(sendButton());
+  });
+
+  it('offers Stop for a run that kept going after a reload, and stops it', () => {
+    const slotId = startStreamingSlot({ isStreaming: false, remoteRunInProgress: true, remoteRunId: 'server-run' });
+    renderInput();
+
+    expect(screen.queryByRole('button', { name: 'Send message' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop generating' }));
+
+    expect(streaming.cancelStreamForSlot).toHaveBeenCalledWith(slotId);
+  });
+
+  it('marks that Stop aria-disabled once its cancel went out', () => {
+    startStreamingSlot({ isStreaming: false, remoteRunInProgress: true, remoteRunId: 'server-run', remoteStopRequested: true });
+    renderInput();
+
+    const stop = screen.getByRole('button', { name: 'Stop generating' });
+    expect(stop.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(stop);
+    expect(streaming.cancelStreamForSlot).not.toHaveBeenCalled();
+  });
+
+  it('keeps Send for a reloaded run it has no id to stop', () => {
+    startStreamingSlot({ isStreaming: false, remoteRunInProgress: true, remoteRunId: null });
+    renderInput();
+
+    expect(screen.queryByRole('button', { name: 'Stop generating' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy();
+  });
+
+  it('the collapsed dock never shows Stop: a run on the chat page is not its run', () => {
+    startStreamingSlot();
+    renderInput({ variant: 'widget', expandable: true, widgetPlaceholder: 'Ask about this page' });
+    expect(screen.queryByTestId('chat-stop-button')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy();
+  });
+
+  it('keeps Send and sends while an answer streams, when sending during a run is on', () => {
+    startStreamingSlot();
+    const { onSend } = renderInput({ sendDuringRun: true });
+    type('A note beside the answer');
+
+    expect(screen.queryByRole('button', { name: 'Stop generating' })).toBeNull();
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('A note beside the answer', undefined, undefined);
+
+    type('And another');
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenLastCalledWith('And another', undefined, undefined);
+  });
+
+  it('queues a follow-up while the answer streams: Stop while the box is empty, Send once it holds a question', () => {
+    const slotId = startStreamingSlot();
+    const { onSend } = renderInput({ queueDuringRun: true });
+
+    expect(screen.getByRole('button', { name: 'Stop generating' })).toBeTruthy();
+    type('A follow-up');
+    expect(screen.queryByRole('button', { name: 'Stop generating' })).toBeNull();
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('A follow-up', undefined, undefined);
+    expect(composer().value).toBe('');
+
+    // The box is empty again: Stop is back, and still stops the answer.
+    fireEvent.click(screen.getByRole('button', { name: 'Stop generating' }));
+    expect(streaming.cancelStreamForSlot).toHaveBeenCalledWith(slotId);
+  });
+
+  it('takes a queued question back into an empty box when it is edited', () => {
+    const slotId = startStreamingSlot();
+    renderInput({ queueDuringRun: true });
+
+    act(() => useChatStore.getState().updateSlot(slotId, { composerRestore: 'Edit me' }));
+
+    expect(composer().value).toBe('Edit me');
+    expect(useChatStore.getState().slots[slotId].composerRestore).toBeNull();
+    expect(useChatStore.getState().slots[slotId].composerHasText).toBe(true);
   });
 
   it('lets a follow-up through once the stopped run is winding down', () => {
@@ -333,6 +546,93 @@ describe('ChatInput — typing and sending', () => {
     expect(sendButton().getAttribute('aria-disabled')).toBe('true');
     fireEvent.keyDown(composer(), { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('keeps what was typed while a send was being confirmed, and drops only the sent words', async () => {
+    const accepted = deferred<boolean>();
+    renderInput({ onSend: vi.fn(() => accepted.promise) });
+    type('First question');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    type('First question and a second one');
+    await act(async () => accepted.resolve(true));
+
+    expect(composer().value).toBe('and a second one');
+  });
+
+  it('leaves a box rewritten while a send was being confirmed as it is', async () => {
+    const accepted = deferred<boolean>();
+    renderInput({ onSend: vi.fn(() => accepted.promise) });
+    type('First question');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    type('Something else entirely');
+    await act(async () => accepted.resolve(true));
+
+    expect(composer().value).toBe('Something else entirely');
+  });
+
+  it('clears the box once a confirmed send lands, when resolving the send rewrote it (a typed name became its chip)', async () => {
+    const accepted = deferred<boolean>();
+    // A rich field: its handle reads the box itself, and finishing a typed alias rewrites the box and reports it.
+    const box = { text: '', onChange: (_t: string) => {} };
+    const RichField = React.forwardRef<unknown, { value: string; onChange(t: string): void; onKeyDown(e: React.KeyboardEvent): void; placeholder: string }>(
+      function RichField(props, ref) {
+        box.onChange = props.onChange;
+        React.useImperativeHandle(ref, () => ({
+          focus: () => {},
+          clear: () => { box.text = ''; props.onChange(''); },
+          setText: (t: string) => { box.text = t; props.onChange(t); },
+          insertText: () => {},
+          getValue: () => ({ text: box.text }),
+        }));
+        return (
+          <textarea
+            placeholder={props.placeholder}
+            value={props.value}
+            onKeyDown={props.onKeyDown}
+            onChange={(e) => { box.text = e.target.value; props.onChange(e.target.value); }}
+          />
+        );
+      },
+    );
+    const plain = chatSlots.useComposerInput;
+    const input = vi.spyOn(chatSlots, 'useComposerInput').mockImplementation((opts) => ({
+      ...plain(opts),
+      resolveSend: () => {
+        box.text = 'PipesHub, ask the team';
+        box.onChange(box.text);
+        return { text: box.text };
+      },
+    }));
+    const slots = chatSlots as { ComposerField: unknown };
+    const ownField = slots.ComposerField;
+    slots.ComposerField = RichField;
+    try {
+      const onSend = vi.fn(() => accepted.promise);
+      renderInput({ onSend });
+      type('assistant, ask the team');
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+      expect(onSend).toHaveBeenCalledWith('PipesHub, ask the team', undefined, undefined);
+
+      await act(async () => accepted.resolve(true));
+
+      expect(composer().value).toBe('');
+    } finally {
+      input.mockRestore();
+      slots.ComposerField = ownField;
+    }
+  });
+
+  it('clears the box once a confirmed send lands on an untouched draft', async () => {
+    const accepted = deferred<boolean>();
+    renderInput({ onSend: vi.fn(() => accepted.promise) });
+    type('First question');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    await act(async () => accepted.resolve(true));
+
+    expect(composer().value).toBe('');
   });
 
   it('seeds the box from a suggestion, and re-seeds only when a new suggestion is picked', () => {
@@ -567,12 +867,8 @@ describe('ChatInput — attachments', () => {
   it('opens the upload area from the + menu and shows the attachment limits', () => {
     renderInput({ onUploadFile: vi.fn() });
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Attach files and capabilities' }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Attach files and capabilities' }));
-    fireEvent.click(screen.getByText('Attach files'));
+    openPlusMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Attach files' }));
 
     expect(screen.getByText('Upload your file')).toBeTruthy();
     expect(screen.getByText('Up to 10 files per message')).toBeTruthy();
@@ -585,12 +881,8 @@ describe('ChatInput — attachments', () => {
     const onUploadFile = vi.fn(() => new Promise<AttachmentRef>(() => {}));
     const { container } = renderInput({ onUploadFile });
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Attach files and capabilities' }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Attach files and capabilities' }));
-    fireEvent.click(screen.getByText('Attach files'));
+    openPlusMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Attach files' }));
     expect(screen.getByText('Upload your file')).toBeTruthy();
 
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
@@ -603,12 +895,8 @@ describe('ChatInput — attachments', () => {
 
   it('closes the upload area even when every picked file is turned away', () => {
     const { container } = renderInput({ onUploadFile: vi.fn() });
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Attach files and capabilities' }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Attach files and capabilities' }));
-    fireEvent.click(screen.getByText('Attach files'));
+    openPlusMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Attach files' }));
 
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     fireEvent.change(input, {
@@ -618,6 +906,20 @@ describe('ChatInput — attachments', () => {
     expect(screen.queryByText('Upload your file')).toBeNull();
   });
 });
+
+/** A reply that holds a question card: Regenerate opens the bar for it instead of re-running at once. */
+function holdQuestionCard(slotId: string, messageId = 'msg-7'): void {
+  useChatStore.getState().updateSlot(slotId, {
+    messages: [
+      {
+        id: messageId,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Which region?' }],
+        metadata: { custom: { messageId, persistedAskUserQuestion: { name: 'ask_user_question', questions: [] } } },
+      } as never,
+    ],
+  });
+}
 
 describe('ChatInput — regenerate and edit a previous message', () => {
   function openActiveConversation(): string {
@@ -633,6 +935,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     const slotId = store.createSlot('conv-1');
     store.updateSlot(slotId, { isInitialized: true });
     store.setActiveSlot(slotId);
+    holdQuestionCard(slotId);
     const { onSend } = renderInput();
 
     act(() => {
@@ -668,6 +971,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     const slotId = store.createSlot('conv-1');
     store.updateSlot(slotId, { isInitialized: true });
     store.setActiveSlot(slotId);
+    holdQuestionCard(slotId);
     renderInput();
     act(() => {
       useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
@@ -686,6 +990,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     const store = useChatStore.getState();
     const slotId = store.createSlot('conv-1');
     store.setActiveSlot(slotId);
+    holdQuestionCard(slotId);
     renderInput();
     act(() => {
       useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
@@ -699,6 +1004,34 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     expect(streaming.streamRegenerateForSlot.mock.calls[0][1]).toBe('msg-7');
   });
 
+  it('re-runs a plain answer at once from one click, with its first filters and no bar (DF-094)', () => {
+    const slotId = openActiveConversation();
+    const { onSend } = renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', {
+        messageId: 'msg-7',
+        text: 'Which vendors renewed?',
+        appliedFilters: { apps: [{ id: 'app-drive', name: 'Drive', nodeType: 'app', connector: 'DRIVE' }], kb: [] },
+      });
+    });
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledTimes(1);
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(slotId, 'msg-7', undefined, { apps: ['app-drive'], kb: [] });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.queryByText('Regenerate response')).toBeNull();
+    expect(composer().value).toBe('');
+  });
+
+  it('does not start a second run while the answer is still being written', () => {
+    const slotId = openActiveConversation();
+    useChatStore.getState().updateSlot(slotId, { isStreaming: true });
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
+    });
+    expect(streaming.streamRegenerateForSlot).not.toHaveBeenCalled();
+  });
+
   it('forgets answers picked on the card when the bar is closed', () => {
     renderInput();
     act(() => {
@@ -710,6 +1043,22 @@ describe('ChatInput — regenerate and edit a previous message', () => {
 
     expect(useChatStore.getState().regenAnswers).toBeNull();
     expect(useChatStore.getState().regenTargetMessageId).toBeNull();
+  });
+
+  it('regenerates on the slot the answer names, not the active one', () => {
+    const store = useChatStore.getState();
+    const active = store.createSlot('conv-1');
+    const beside = store.createSlot('conv-2');
+    store.setActiveSlot(active);
+    holdQuestionCard(beside, 'msg-9');
+    renderInput();
+
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-9', text: 'Old question', slotId: beside });
+    });
+    fireEvent.click(sendButton());
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(beside, 'msg-9', undefined, undefined);
   });
 
   it('leaves regenerate mode on Escape without regenerating', () => {
@@ -773,6 +1122,24 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     expect(screen.queryByText('Edit query')).toBeNull();
   });
 
+  it('re-asks an edit on the slot the answer names (an agent thread), not the room on screen', () => {
+    const room = openActiveConversation();
+    const thread = useChatStore.getState().createSlot('thread-1');
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-9', text: 'Agent question', slotId: thread });
+    });
+
+    type('Edited agent question');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledTimes(1);
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+      thread, 'msg-9', undefined, undefined, { query: 'Edited agent question' },
+    );
+    expect(streaming.streamRegenerateForSlot.mock.calls[0][0]).not.toBe(room);
+  });
+
   it('regenerates without a new question when the edit leaves the text unchanged', () => {
     const slotId = openActiveConversation();
     renderInput();
@@ -804,17 +1171,42 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     );
   });
 
-  it('turns @ mentions off while editing, so the question keeps the filters it was asked with', () => {
+  it('Edit: a source the question named comes back as its chip, and the scope stays', () => {
+    const slotId = openActiveConversation();
     renderInput();
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+    const folder = { id: 'fol-1', name: 'Orbit folder', nodeType: 'folder', connector: 'KB', mentioned: true };
+    const app = { id: 'app-drive', name: 'Drive', nodeType: 'app', connector: 'DRIVE', mentioned: false };
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'How many crates in Orbit folder? Ask Drive too',
+        appliedFilters: { apps: [app], kb: [], records: [folder] },
+      });
+    });
+
+    // Only what the question named is a chip: a source picked for the chat is not in its words.
+    expect(composer().value).toBe(`How many crates in ${MENTION_PAD_OPEN}Orbit folder${MENTION_PAD_CLOSE}? Ask Drive too`);
+    expect(mentionField.latest && (mentionField.latest as { mentions?: { id: string }[] }).mentions?.map((node) => node.id)).toEqual(['fol-1']);
+
+    // Sent as it was: the words come back whole, so it is a plain regenerate with the question's own scope.
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+      slotId, 'msg-3', undefined, { apps: ['app-drive'], kb: [], records: ['fol-1'] },
+    );
+  });
+
+  it('turns @ mentions off while editing, so the question keeps the filters it was asked with', () => {
+    const mentionsOff = () => mentionField.rendered.mock.calls.at(-1)?.[0];
+    renderInput();
+    expect(mentionsOff()).toBe(false);
 
     act(() => {
       useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
     });
 
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+    expect(mentionsOff()).toBe(true);
     fireEvent.keyDown(composer(), { key: 'Escape' });
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+    expect(mentionsOff()).toBe(false);
   });
 
   describe('the files of the edited question', () => {
@@ -1012,7 +1404,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     });
 
     it('leaves the edit files when a regenerate starts instead', () => {
-      openActiveConversation();
+      holdQuestionCard(openActiveConversation());
       renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
       startEdit();
 
@@ -1177,20 +1569,80 @@ describe('ChatInput — @ in agent and project chats', () => {
     toolCatalogFullNames: [],
   });
 
-  it('turns @ off in a project chat', () => {
-    useChatStore.setState({ projectScope: projectScope({ apps: ['app-1'], kb: ['kb-1'] }) });
+  // @ is off in both: their sources can't be searched in one request. The scope's sources are still worked out for a
+  // field that offers @ there.
+  it('offers no @ in a project chat; the project’s own sources come first where their names are known', () => {
+    useChatStore.setState({
+      projectScope: projectScope({ apps: ['app-1'], kb: ['kb-1'] }),
+      collectionNamesCache: { 'app-1': 'Jira' },
+      collectionMetaCache: { 'app-1': { name: 'Jira', nodeType: 'app', connector: 'JIRA' } },
+    });
     renderInput();
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+    const [off, context] = mentionField.rendered.mock.calls.at(-1) ?? [];
+    expect(off).toBe(true);
+    expect(context?.preferredSources).toEqual([expect.objectContaining({ id: 'app-1', name: 'Jira', nodeType: 'app' })]);
   });
 
-  it('turns @ off in an agent chat', () => {
+  it('offers no @ in an agent chat; the agent’s knowledge comes first', () => {
+    useChatStore.setState({
+      agentKnowledgeDefaults: { apps: [], kb: ['kb-9'] },
+      collectionNamesCache: { 'kb-9': 'Handbook' },
+    });
     renderInput({ isAgentChat: true, agentId: 'agent-1' });
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+    const [off, context] = mentionField.rendered.mock.calls.at(-1) ?? [];
+    expect(off).toBe(true);
+    expect(context?.preferredSources).toEqual([expect.objectContaining({ id: 'kb-9', name: 'Handbook' })]);
   });
 
-  it('keeps @ outside agent and project chats', () => {
+  it('keeps @ outside agent and project chats, with every source', () => {
     renderInput();
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+    const [off, context] = mentionField.rendered.mock.calls.at(-1) ?? [];
+    expect(off).toBeFalsy();
+    expect(context?.preferredSources).toBeNull();
+  });
+});
+
+describe('ChatInput — sources named with @', () => {
+  const report = { id: 'q3', name: 'Q3 Report', nodeType: 'record', connector: 'KB' };
+  const nameSources = (nodes: (typeof report)[], tail = 'what changed') => {
+    const text = nodes.reduce((acc, node) => insertMention(acc, acc.length, acc.length, node), '');
+    act(() => {
+      mentionField.latest?.onChange(`${text}${tail}`);
+      mentionField.latest?.onMentionsChange(nodes);
+    });
+  };
+
+  it('sends the named source with that question only: the chat’s own selection stays as it was', () => {
+    useChatStore.setState({ settings: { ...useChatStore.getState().settings, filters: { apps: ['app-drive'], kb: [] } } });
+    const { onSend } = renderInput();
+    nameSources([report]);
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith('Q3 Report what changed', undefined, [expect.objectContaining({ id: 'q3' })]);
+    expect(useChatStore.getState().settings.filters).toEqual({ apps: ['app-drive'], kb: [] });
+    // Its name is kept, so the sent question shows it as a chip.
+    expect(useChatStore.getState().collectionMetaCache.q3).toMatchObject({ name: 'Q3 Report', nodeType: 'record' });
+  });
+
+  it('two sources of one name after the same word typed plain, and one chip deleted: the list settles, and sends', () => {
+    const [a, b] = ['a', 'b'].map((id) => ({ ...report, id, name: 'Docs' }));
+    const chip = (node: typeof report) => insertMention('', 0, 0, node);
+    const { onSend } = renderInput();
+    act(() => {
+      mentionField.latest?.onChange(`Docs and ${chip(a)}${chip(b)}`);
+      mentionField.latest?.onMentionsChange([a, b]);
+    });
+    // Which node owns which "Docs" is now ambiguous: the kept list must not swap order on every render.
+    act(() => mentionField.latest?.onChange(`Docs and ${chip(a)}what changed`));
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a message naming more than ten sources, and says why', () => {
+    const { onSend } = renderInput();
+    nameSources(Array.from({ length: 11 }, (_, i) => ({ ...report, id: `r${i}`, name: `Report ${i}` })));
+    fireEvent.click(sendButton());
+    expect(onSend).not.toHaveBeenCalled();
+    expect(toastTitles()[0]).toContain('10 sources');
   });
 });
 
@@ -1272,8 +1724,28 @@ describe('ChatInput — connectors and collections', () => {
     expect(screen.queryByRole('dialog', { name: 'Expanded panel' })).toBeNull();
   });
 
+  it('leaves the larger view behind when the composer that opened it goes away', () => {
+    const { unmount } = renderInput();
+    fireEvent.click(screen.getByText('apps').closest('button') as HTMLButtonElement);
+    fireEvent.click(screen.getByText('Toggle panel size'));
+    expect(useChatStore.getState().expansionViewMode).toBe('overlay');
+
+    unmount();
+
+    expect(useChatStore.getState().expansionViewMode).toBe('inline');
+  });
+
   it('opens the agent resources panel for universal agent mode', () => {
     useChatStore.setState({ settings: { ...useChatStore.getState().settings, queryMode: 'agent' } });
+    renderInput();
+
+    fireEvent.click(screen.getByText('apps').closest('button') as HTMLButtonElement);
+
+    expect(screen.getByText('Universal agent resources')).toBeTruthy();
+  });
+
+  it('keeps the agent resources panel after a chat stored in an older mode was opened', () => {
+    applyConversationModelInfoToStore({ modelKey: 'k', modelName: 'm', chatMode: 'internal_search' }, ASSISTANT_CTX);
     renderInput();
 
     fireEvent.click(screen.getByText('apps').closest('button') as HTMLButtonElement);
@@ -1316,6 +1788,199 @@ describe('ChatInput — connectors and collections', () => {
   });
 });
 
+describe('ChatInput — placeholder', () => {
+  const field = (text: string) => screen.getByPlaceholderText(text) as HTMLTextAreaElement;
+
+  it('names the workspace in a solo chat once its name is known', async () => {
+    org.value = { org: { shortName: 'Acme', registeredName: 'Acme Corp' }, logoUrl: null };
+    renderInput({ useWorkspacePlaceholder: true });
+    expect(field('Ask anything...')).toBeTruthy();
+    await act(async () => {});
+    expect(field('Ask or search anything on Acme...')).toBeTruthy();
+  });
+
+  it('falls back to the registered name, and to "Ask anything..." while no name is known', async () => {
+    org.value = { org: { shortName: '', registeredName: 'Acme Corp' }, logoUrl: null };
+    renderInput({ useWorkspacePlaceholder: true });
+    await act(async () => {});
+    expect(field('Ask or search anything on Acme Corp...')).toBeTruthy();
+    cleanup();
+    org.value = { org: null, logoUrl: null };
+    renderInput({ useWorkspacePlaceholder: true });
+    await act(async () => {});
+    expect(field('Ask anything...')).toBeTruthy();
+  });
+
+  it('keeps the given text, the agent chat text and the text of composers that do not ask for the workspace', async () => {
+    org.value = { org: { shortName: 'Acme' }, logoUrl: null };
+    renderInput({ useWorkspacePlaceholder: true, placeholder: 'Message the chat, or @PipesHub to ask' });
+    await act(async () => {});
+    expect(field('Message the chat, or @PipesHub to ask')).toBeTruthy();
+    cleanup();
+    renderInput({ useWorkspacePlaceholder: true, isAgentChat: true, agentId: 'agent-1' });
+    await act(async () => {});
+    expect(field('Ask anything...')).toBeTruthy();
+    cleanup();
+    renderInput();
+    await act(async () => {});
+    expect(field('Ask anything...')).toBeTruthy();
+    // None of them needs the name, so none asks for it.
+    expect(org.calls).toBe(0);
+  });
+
+  it('asks about the paste while it waits in an empty box, and goes back once there is text', async () => {
+    org.value = { org: { shortName: 'Acme' }, logoUrl: null };
+    renderInput({ useWorkspacePlaceholder: true, onUploadFile: vi.fn(() => new Promise<AttachmentRef>(() => {})) });
+    await act(async () => {});
+    const longText = Array.from({ length: 200 }, (_, i) => `Line ${i}`).join('\n');
+    fireEvent.paste(field('Ask or search anything on Acme...'), { clipboardData: { items: [], getData: () => longText } });
+    expect(field('Ask about the pasted content...')).toBeTruthy();
+    fireEvent.change(field('Ask about the pasted content...'), { target: { value: 'Summarise it' } });
+    expect(field('Ask or search anything on Acme...')).toBeTruthy();
+  });
+
+  const longPaste = () => ({ clipboardData: { items: [], getData: () => Array.from({ length: 200 }, (_, i) => `Line ${i}`).join('\n') } });
+  const pendingUpload = () => vi.fn(() => new Promise<AttachmentRef>(() => {}));
+
+  it('edit mode never switches to the paste text and keeps the field text', async () => {
+    org.value = { org: { shortName: 'Acme' }, logoUrl: null };
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    renderInput({ useWorkspacePlaceholder: true, onUploadFile: pendingUpload() });
+    await act(async () => {});
+    fireEvent.paste(field('Ask or search anything on Acme...'), longPaste());
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
+    });
+    fireEvent.change(screen.getByDisplayValue('Original question'), { target: { value: '' } });
+    expect(screen.queryByPlaceholderText('Ask about the pasted content...')).toBeNull();
+    expect(field('Ask or search anything on Acme...')).toBeTruthy();
+  });
+
+  it('regenerate mode never switches to the paste text', async () => {
+    org.value = { org: { shortName: 'Acme' }, logoUrl: null };
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    holdQuestionCard(slotId);
+    renderInput({ useWorkspacePlaceholder: true, onUploadFile: pendingUpload() });
+    await act(async () => {});
+    fireEvent.paste(field('Ask or search anything on Acme...'), longPaste());
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
+    });
+    expect(screen.queryByPlaceholderText('Ask about the pasted content...')).toBeNull();
+  });
+
+  it('the dimmed field under the overlay panel keeps the base text, never the paste text', async () => {
+    org.value = { org: { shortName: 'Acme' }, logoUrl: null };
+    renderInput({ useWorkspacePlaceholder: true, onUploadFile: pendingUpload() });
+    await act(async () => {});
+    fireEvent.paste(field('Ask or search anything on Acme...'), longPaste());
+    expect(field('Ask about the pasted content...')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('apps').closest('button') as HTMLButtonElement);
+    fireEvent.click(screen.getByText('Toggle panel size'));
+    expect(screen.getByRole('dialog', { name: 'Expanded panel' })).toBeTruthy();
+    expect(screen.queryByPlaceholderText('Ask about the pasted content...')).toBeNull();
+    expect(field('Ask or search anything on Acme...')).toBeTruthy();
+  });
+
+  it('the collapsed KB dock keeps its own text and never asks for the workspace', async () => {
+    org.value = { org: { shortName: 'Acme' }, logoUrl: null };
+    renderInput({
+      variant: 'widget',
+      expandable: true,
+      widgetPlaceholder: 'Ask in Handbook',
+      placeholder: 'Ask anything in Handbook...',
+    });
+    await act(async () => {});
+    expect(field('Ask in Handbook')).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/Acme|pasted/)).toBeNull();
+    expect(org.calls).toBe(0);
+  });
+
+  it('the expanded KB dock keeps its own text, with a paste too', async () => {
+    org.value = { org: { shortName: 'Acme' }, logoUrl: null };
+    renderInput({
+      variant: 'widget',
+      expandable: true,
+      widgetPlaceholder: 'Ask in Handbook',
+      placeholder: 'Ask anything in Handbook...',
+      onUploadFile: pendingUpload(),
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Expand composer' }));
+    await act(async () => {});
+    fireEvent.paste(field('Ask anything in Handbook...'), longPaste());
+    expect(field('Ask anything in Handbook...')).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/Acme|pasted/)).toBeNull();
+    expect(org.calls).toBe(0);
+  });
+
+  it('Projects (no workspace prop) stays "Ask anything...", with a paste too', async () => {
+    org.value = { org: { shortName: 'Acme' }, logoUrl: null };
+    renderInput({ onUploadFile: pendingUpload() });
+    await act(async () => {});
+    fireEvent.paste(field('Ask anything...'), longPaste());
+    expect(field('Ask anything...')).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/Acme|pasted/)).toBeNull();
+    expect(org.calls).toBe(0);
+  });
+
+  it('says it is listening while dictating, whatever else is in the box', async () => {
+    org.value = { org: { shortName: 'Acme' }, logoUrl: null };
+    speech.state = { ...speech.state, isListening: true };
+    renderInput({ useWorkspacePlaceholder: true });
+    await act(async () => {});
+    expect(field('Listening...')).toBeTruthy();
+  });
+});
+
+describe('ChatInput — the apps button dot', () => {
+  const appsButton = () => screen.getByText('apps').closest('button') as HTMLButtonElement;
+  const dot = () => appsButton().querySelector('[aria-hidden]');
+  const set = (patch: Record<string, unknown>) =>
+    useChatStore.setState({ settings: { ...useChatStore.getState().settings, ...patch } });
+
+  it('has no dot with nothing narrowed', () => {
+    renderInput();
+    expect(dot()).toBeNull();
+  });
+
+  it('has no dot when the selected sources already show as chips', () => {
+    set({ filters: { apps: [], kb: ['kb-handbook'] } });
+    renderInput();
+    expect(screen.getByRole('group', { name: 'Attachments' })).toBeTruthy();
+    expect(dot()).toBeNull();
+  });
+
+  it('has no dot in agent mode when only sources are narrowed, shown as chips', () => {
+    set({ queryMode: 'agent', filters: { apps: [], kb: ['kb-handbook'] } });
+    useChatStore.setState({ universalAgentStreamTools: null });
+    renderInput();
+    expect(screen.getByRole('group', { name: 'Attachments' })).toBeTruthy();
+    expect(dot()).toBeNull();
+  });
+
+  it('keeps the dot when tools are narrowed, which no chip shows', () => {
+    set({ queryMode: 'agent' });
+    useChatStore.setState({ universalAgentStreamTools: ['jira-a:jira.search'] });
+    renderInput();
+    expect(screen.queryByRole('group', { name: 'Attachments' })).toBeNull();
+    expect(dot()).not.toBeNull();
+  });
+
+  it('keeps the dot for narrowed tools even with source chips showing', () => {
+    set({ queryMode: 'agent', filters: { apps: [], kb: ['kb-handbook'] } });
+    useChatStore.setState({ universalAgentStreamTools: ['jira-a:jira.search'] });
+    renderInput();
+    expect(dot()).not.toBeNull();
+  });
+});
+
 describe('ChatInput — model, voice and search view', () => {
   it('shows the model in use and switches it from the model panel', () => {
     useChatStore.setState({
@@ -1334,6 +1999,36 @@ describe('ChatInput — model, voice and search view', () => {
     expect(useChatStore.getState().settings.selectedModels.__assistant__).toEqual(
       expect.objectContaining({ modelName: 'fast-1' }),
     );
+  });
+
+  it('draws the model chip as a ghost Radix button that opens its panel and names the effort it runs with', () => {
+    useChatStore.setState({
+      settings: {
+        ...useChatStore.getState().settings,
+        defaultModels: {
+          __assistant__: { modelKey: 'k-smart', modelName: 'smart-1', modelFriendlyName: 'Smart One', modelProvider: 'anthropic' },
+        },
+        availableModels: {
+          __assistant__: { models: [{ modelKey: 'k-smart', modelName: 'smart-1', isReasoning: true } as never], fetchedAt: Date.now() },
+        },
+      },
+    });
+    renderInput();
+    const chip = screen.getByRole('button', { name: 'Model: Smart One, High reasoning effort. Open configured models.' });
+    expect(chip.className).toContain('rt-Button');
+    expect(chip.className).toContain('rt-variant-ghost');
+    expect(chip.getAttribute('aria-expanded')).toBe('false');
+    expect(chip.textContent).toContain('High');
+    expect(chip.textContent).not.toContain('Default');
+
+    fireEvent.click(chip);
+    expect(chip.getAttribute('aria-expanded')).toBe('true');
+    expect(chip.className).toContain('rt-variant-soft');
+
+    // Escape closes the panel and hands focus back to the chip.
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByText('Pick Fast One')).toBeNull();
+    expect(document.activeElement).toBe(chip);
   });
 
   it('adds what the user dictated to the text already typed', () => {
@@ -1368,6 +2063,14 @@ describe('ChatInput — model, voice and search view', () => {
     act(() => speech.onError?.('not-allowed'));
 
     expect(toastTitles()).toEqual(['Could not access microphone']);
+  });
+
+  it("says why dictation was refused (402), in the server's words", () => {
+    renderInput();
+
+    act(() => speech.onError?.('Request failed', 'This request was refused.'));
+
+    expect(toastTitles()).toEqual(['This request was refused.']);
   });
 
   it('explains why voice input is off when no speech model is set up', () => {
@@ -1446,6 +2149,196 @@ describe('ChatInput — compact widget', () => {
   });
 });
 
+describe('ChatInput — the Collections and All records dock, once open, is the chat composer', () => {
+  const openDock = () => {
+    const utils = renderInput({ variant: 'widget', expandable: true, widgetPlaceholder: 'Ask about this page' });
+    fireEvent.click(screen.getByRole('button', { name: 'Expand composer' }));
+    return utils;
+  };
+  const card = (root: HTMLElement) => root.querySelector('[data-composer-card]') as HTMLElement;
+  const surface = (el: HTMLElement) => ({
+    background: el.style.background,
+    backdropFilter: el.style.backdropFilter,
+    border: el.style.border,
+  });
+  const appsButton = () => screen.getByText('apps').closest('button') as HTMLButtonElement;
+  // A real click on the chip moves focus to it, out of the text field.
+  const openModelPanel = () => {
+    const chip = screen.getAllByTestId('chat-model-selector')[0];
+    act(() => chip.focus());
+    fireEvent.click(chip);
+    expect(screen.getByText('Pick Fast One')).toBeTruthy();
+  };
+
+  it('paints the same surface as the chat composer with the model panel open', () => {
+    const chat = renderInput();
+    openModelPanel();
+    const chatSurface = surface(card(chat.container));
+    cleanup();
+
+    const dock = openDock();
+    openModelPanel();
+
+    expect(surface(card(dock.container))).toEqual(chatSurface);
+    expect(card(dock.container).style.background).not.toContain('color-mix');
+  });
+
+  it('paints the same surface as the chat composer while you type', () => {
+    const chat = renderInput();
+    fireEvent.focus(composer());
+    type('What changed?');
+    const chatSurface = surface(card(chat.container));
+    cleanup();
+
+    const dock = openDock();
+    fireEvent.focus(composer());
+    type('What changed?');
+
+    expect(surface(card(dock.container))).toEqual(chatSurface);
+  });
+
+  it('has the same toolbar as the chat composer, apps button included', () => {
+    const chat = renderInput();
+    const chatButtons = within(card(chat.container)).getAllByRole('button').map((b) => b.getAttribute('aria-label') ?? b.textContent);
+    cleanup();
+
+    const dock = openDock();
+    const dockButtons = within(card(dock.container)).getAllByRole('button').map((b) => b.getAttribute('aria-label') ?? b.textContent);
+
+    expect(dockButtons).toEqual(chatButtons);
+    expect(appsButton()).toBeTruthy();
+  });
+
+  it('scopes the question to the sources picked in its apps panel, and leaves the chat page selection alone', () => {
+    const { onSend } = openDock();
+
+    fireEvent.click(appsButton());
+    fireEvent.click(screen.getByText('Choose the handbook'));
+    fireEvent.click(appsButton());
+    type('What is in it?');
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith(
+      'What is in it?',
+      undefined,
+      [expect.objectContaining({ id: 'kb-handbook' })],
+    );
+    expect(useChatStore.getState().settings.filters).toEqual(initialChatState.settings.filters);
+  });
+
+  it('in agent mode too, the apps panel picks scope its own question, not the chat page', () => {
+    useChatStore.setState({ settings: { ...useChatStore.getState().settings, queryMode: 'agent' } });
+    const { onSend } = openDock();
+
+    fireEvent.click(appsButton());
+    expect(screen.getByText('Universal agent resources')).toBeTruthy();
+    fireEvent.click(screen.getByText('Choose the handbook'));
+    fireEvent.click(appsButton());
+    type('What is in it?');
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith(
+      'What is in it?',
+      undefined,
+      [expect.objectContaining({ id: 'kb-handbook' })],
+    );
+    expect(useChatStore.getState().settings.filters).toEqual(initialChatState.settings.filters);
+  });
+
+  it('stays open while the apps panel is in its larger overlay', () => {
+    openDock();
+    fireEvent.click(appsButton());
+    fireEvent.click(screen.getByText('Toggle panel size'));
+    expect(screen.getByRole('dialog', { name: 'Expanded panel' })).toBeTruthy();
+
+    // The real overlay is portaled to the body with a scrim over the page, not inside the dock.
+    fireEvent.mouseDown(document.body);
+
+    expect(screen.getByRole('dialog', { name: 'Expanded panel' })).toBeTruthy();
+    expect(screen.queryByPlaceholderText('Ask about this page')).toBeNull();
+  });
+
+  it('stays open for a click in a dialog opened from one of its panels', () => {
+    openDock();
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    const field = document.createElement('input');
+    dialog.appendChild(field);
+    document.body.appendChild(dialog);
+
+    fireEvent.mouseDown(field);
+
+    expect(screen.queryByPlaceholderText('Ask about this page')).toBeNull();
+    dialog.remove();
+  });
+
+  // The larger view's mode is shared chat state. Left set by a composer on another page (new chat, then Collections in
+  // the sidebar), it must not keep this one open.
+  it('folds on click-away even when another composer left the larger view set', () => {
+    useChatStore.setState({ expansionViewMode: 'overlay' });
+    openDock();
+
+    fireEvent.mouseDown(document.body);
+
+    expect(screen.getByPlaceholderText('Ask about this page')).toBeTruthy();
+    expect(screen.queryByPlaceholderText('Ask anything...')).toBeNull();
+  });
+
+  it('with the larger view left set elsewhere, Escape still closes its panel and click-away still folds it', () => {
+    useChatStore.setState({ expansionViewMode: 'overlay' });
+    openDock();
+    openModelPanel();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByText('Pick Fast One')).toBeNull();
+
+    fireEvent.mouseDown(document.body);
+    expect(screen.getByPlaceholderText('Ask about this page')).toBeTruthy();
+  });
+
+  it('writes the picks made in the larger view to its own question too', () => {
+    useChatStore.setState({ settings: { ...useChatStore.getState().settings, queryMode: 'agent' } });
+    const { onSend } = openDock();
+
+    fireEvent.click(appsButton());
+    fireEvent.click(screen.getByText('Toggle panel size'));
+    const overlay = screen.getByRole('dialog', { name: 'Expanded panel' });
+    fireEvent.click(within(overlay).getByText('Choose the handbook'));
+    fireEvent.click(within(overlay).getByText('Toggle panel size'));
+    fireEvent.click(appsButton());
+    type('What is in it?');
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith('What is in it?', undefined, [expect.objectContaining({ id: 'kb-handbook' })]);
+    expect(useChatStore.getState().settings.filters).toEqual(initialChatState.settings.filters);
+  });
+
+  it('writes the picks made in the larger connectors view to its own question too', () => {
+    const { onSend } = openDock();
+
+    fireEvent.click(appsButton());
+    fireEvent.click(screen.getByText('Toggle panel size'));
+    const overlay = screen.getByRole('dialog', { name: 'Expanded panel' });
+    fireEvent.click(within(overlay).getByText('Choose the handbook'));
+    fireEvent.click(within(overlay).getByText('Toggle panel size'));
+    fireEvent.click(appsButton());
+    type('What is in it?');
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith('What is in it?', undefined, [expect.objectContaining({ id: 'kb-handbook' })]);
+    expect(useChatStore.getState().settings.filters).toEqual(initialChatState.settings.filters);
+  });
+
+  it('still folds back to one line when you click away from it', () => {
+    openDock();
+
+    fireEvent.mouseDown(document.body);
+
+    expect(screen.getByPlaceholderText('Ask about this page')).toBeTruthy();
+    expect(screen.queryByPlaceholderText('Ask anything...')).toBeNull();
+  });
+});
+
 describe('ChatInput — on a phone', () => {
   it('opens the query options sheet from the more button', () => {
     device.isMobile = true;
@@ -1454,6 +2347,22 @@ describe('ChatInput — on a phone', () => {
     fireEvent.click(screen.getByText('more_horiz').closest('button') as HTMLButtonElement);
 
     expect(screen.getByText('Query options')).toBeTruthy();
+  });
+
+  it('in the Collections and All records dock, sources picked in the sheet scope its own question', () => {
+    device.isMobile = true;
+    const { onSend } = renderInput({ variant: 'widget', expandable: true, widgetPlaceholder: 'Ask about this page' });
+    fireEvent.click(screen.getByRole('button', { name: 'Expand composer' }));
+
+    fireEvent.click(screen.getByText('more_horiz').closest('button') as HTMLButtonElement);
+    fireEvent.mouseDown(screen.getByText('Choose the handbook on the phone'));
+    fireEvent.click(screen.getByText('Choose the handbook on the phone'));
+    fireEvent.click(screen.getByText('Done'));
+    type('What is in it?');
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith('What is in it?', undefined, [expect.objectContaining({ id: 'kb-handbook' })]);
+    expect(useChatStore.getState().settings.filters).toEqual(initialChatState.settings.filters);
   });
 });
 
@@ -1982,5 +2891,190 @@ describe('ChatInput — a sent message is not kept as a draft', () => {
     await settleHost();
 
     expect(loadDraft(KEY_NEW)).toBe('the next question, typed during the answer');
+  });
+});
+
+describe('ChatInput — composer behaviour that must survive a change of input component', () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it('consumes Enter so the browser inserts no newline, but leaves Shift+Enter to the browser', () => {
+    renderInput();
+    type('Line one');
+
+    expect(fireEvent.keyDown(composer(), { key: 'Enter', shiftKey: true })).toBe(true);
+    expect(fireEvent.keyDown(composer(), { key: 'Enter' })).toBe(false);
+  });
+
+  it('does not send on Enter when nothing was typed, and keeps the box open for typing', () => {
+    const { onSend } = renderInput();
+
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(composer().value).toBe('');
+  });
+
+  it('keeps multi-line text exactly as typed', () => {
+    const { onSend } = renderInput();
+    type('first\nsecond\n\nthird');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(onSend).toHaveBeenCalledWith('first\nsecond\n\nthird', undefined, undefined);
+  });
+
+  it('leaves a short plain-text paste to the browser', () => {
+    const onUploadFile = vi.fn();
+    renderInput({ onUploadFile });
+
+    const notCancelled = fireEvent.paste(composer(), {
+      clipboardData: { items: [], getData: () => 'a short note' },
+    });
+
+    expect(notCancelled).toBe(true);
+    expect(onUploadFile).not.toHaveBeenCalled();
+    expect(screen.queryByText('Pasted text')).toBeNull();
+  });
+
+  it('takes over a pasted file and a very long paste, so the browser inserts nothing', () => {
+    const onUploadFile = vi.fn(() => new Promise<AttachmentRef>(() => {}));
+    renderInput({ onUploadFile });
+    const shot = new File(['png'], 'diagram.png', { type: 'image/png' });
+    const longText = Array.from({ length: 200 }, (_, i) => `Line ${i} of the pasted log`).join('\n');
+
+    expect(
+      fireEvent.paste(composer(), {
+        clipboardData: { items: [{ kind: 'file', getAsFile: () => shot }], getData: () => '' },
+      }),
+    ).toBe(false);
+    expect(
+      fireEvent.paste(composer(), { clipboardData: { items: [], getData: () => longText } }),
+    ).toBe(false);
+
+    expect(onUploadFile).toHaveBeenCalledTimes(2);
+    expect(composer().value).toBe('');
+  });
+
+  it('moves a pasted-text attachment back into the box and focuses it', async () => {
+    // jsdom's Blob has no text()
+    vi.stubGlobal('File', class extends File {
+      text() {
+        return Promise.resolve('Line 0\nLine 1');
+      }
+    });
+    const onUploadFile = vi.fn().mockResolvedValue(ref('r-paste'));
+    renderInput({ onUploadFile });
+    type('Intro');
+    const longText = Array.from({ length: 200 }, (_, i) => `Line ${i}`).join('\n');
+    fireEvent.paste(composer(), { clipboardData: { items: [], getData: () => longText } });
+
+    await act(async () => {});
+    // The chip opens the reader; "Show in text field" lives there.
+    fireEvent.click(screen.getByRole('button', { name: /^Pasted text,/ }));
+    await act(async () => {});
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Show in text field' }));
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+        vi.runAllTimers();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(composer().value.startsWith('Intro\n\nLine 0')).toBe(true);
+    expect(screen.queryByText('Pasted text')).toBeNull();
+    expect(document.activeElement).toBe(composer());
+  });
+
+  it('grows with the text up to 160px and goes back to one line once sent', () => {
+    const { onSend } = renderInput();
+    const box = composer();
+    expect(box.style.maxHeight).toBe('160px');
+
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, value: 80 });
+    type('a\nb\nc');
+    fireEvent.input(box);
+    expect(box.style.height).toBe('80px');
+
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, value: 400 });
+    fireEvent.input(box);
+    expect(box.style.height).toBe('160px');
+
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalled();
+    expect(box.style.height).toBe('auto');
+  });
+
+  it('puts the dictated words after the typed text while they are still being recognised', () => {
+    speech.state = { ...speech.state, isListening: true, interimTranscript: 'what is' };
+    renderInput();
+    expect((screen.getByPlaceholderText('Listening...') as HTMLTextAreaElement).value).toBe('what is');
+
+    cleanup();
+    speech.state = { ...speech.state, isListening: false, interimTranscript: 'the plan' };
+    renderInput();
+    type('Tell me');
+    expect(composer().value).toBe('Tell me the plan');
+  });
+
+  it('shows the question being regenerated, dimmed and not editable, and Escape empties it', () => {
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-2', text: 'Earlier question' });
+    });
+
+    expect(composer().value).toBe('Earlier question');
+    expect(composer().readOnly).toBe(true);
+    // The field's text is drawn by the layer behind it, which carries the dimmed colour.
+    expect((composer().previousElementSibling as HTMLElement).style.color).toBe('var(--text-placeholder)');
+
+    fireEvent.keyDown(composer(), { key: 'Escape' });
+    expect(composer().value).toBe('');
+    expect(composer().readOnly).toBe(false);
+    expect(composer().style.color).toBe('var(--text-primary)');
+  });
+
+  it('focuses the box when editing an earlier question and when a suggestion seeds it', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      renderInput();
+      act(() => {
+        useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original' });
+      });
+      act(() => {
+        vi.runAllTimers();
+      });
+      expect(document.activeElement).toBe(composer());
+
+      act(() => (document.activeElement as HTMLElement).blur());
+      cleanup();
+      const { rerender } = renderInput();
+      rerender(
+        <Theme>
+          <ChatInput onSend={vi.fn()} prefill={{ key: 1, text: 'Seed' }} />
+        </Theme>,
+      );
+      act(() => {
+        vi.runAllTimers();
+      });
+      expect(composer().value).toBe('Seed');
+      expect(document.activeElement).toBe(composer());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears the attachment chips and the text together on send', async () => {
+    const upload = vi.fn().mockResolvedValue(ref('r1'));
+    const { onSend } = renderInput({ onUploadFile: upload });
+    pick(pdf());
+    await act(async () => {});
+    type('See attached');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(onSend).toHaveBeenCalledWith('See attached', [ref('r1')], undefined);
+    expect(composer().value).toBe('');
+    expect(screen.queryByText('report.pdf')).toBeNull();
   });
 });

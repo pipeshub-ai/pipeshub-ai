@@ -179,14 +179,30 @@ export interface IMessagePart {
   }>;
 }
 
+/** An agent tool the requester could not use: not set up, not signed in, or removed. Holds no credentials. */
+export interface IUnavailableTool {
+  kind: 'toolset' | 'mcp';
+  instanceId: string;
+  displayName: string;
+  name?: string | null;
+  problem: 'not_configured' | 'not_authenticated' | 'not_found';
+  authMode?: string | null;
+  /** One credential an administrator enters for everyone. */
+  sharedCredential: boolean;
+  /** The requester can connect it themselves. */
+  userCanConnect: boolean;
+}
+
 export interface IMessage {
-  messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system' | 'tool_call';
+  messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system' | 'tool_call' | 'note';
   content: string;
   contentFormat?: 'MARKDOWN' | 'JSON' | 'HTML';
   /** Set on a `bot_response` persisted from a cancelled/disconnected run. */
   status?: 'stopped';
   citations?: IMessageCitation[];
   confidence?: string;
+  /** Only `Capability Card` (an answer produced by an extension instead of the model) is kept; the UI hides the search chrome for it. */
+  answerMatchType?: 'Capability Card';
   followUpQuestions?: IFollowUpQuestion[];
   feedback?: IFeedback[];
   metadata?: IMessageMetadata;
@@ -203,6 +219,16 @@ export interface IMessage {
   reasoning?: IReasoningTurn[];
   /** Ordered agent-activity transcript for this bot_response turn — see IMessagePart. */
   parts?: IMessagePart[];
+  /** Tools the agent had but the requester could not use on this turn; the answer ran without them. */
+  unavailableTools?: IUnavailableTool[];
+  /** `error`: the refusal's code, so a reader of the stored row knows trying again cannot help. */
+  errorCode?: string;
+  /** `user_query`; absent on legacy rows (author = session owner). */
+  authorUserId?: Types.ObjectId;
+  /** `bot_response` / `error` / `tool_call`: the user whose turn produced the row. */
+  requestedBy?: Types.ObjectId;
+  /** The `user_query` `_id` this row answers, same session. */
+  inReplyTo?: Types.ObjectId;
 }
 
 export interface IConversation {
@@ -213,10 +239,7 @@ export interface IConversation {
   messages: IMessageDocument[];
   isShared?: boolean;
   shareLink?: string;
-  sharedWith?: Array<{
-    userId: Types.ObjectId;
-    accessLevel: 'read' | 'write';
-  }>;
+  sharedWith?: IChatSessionShareRow[];
   isDeleted?: boolean;
   deletedBy?: Types.ObjectId;
   isArchived?: boolean;
@@ -287,6 +310,22 @@ export interface IConversationModel extends Model<IConversationDocument> {
  * the agent.conversation.schema.ts override `enum: ['agent_chat']`) — this
  * type only ever needs the latter, written on agent sessions.
  */
+/**
+ * One `chatSessions.sharedWith[]` entry. Rows written by `/share` are `{userId, accessLevel}`
+ * only (no `principalType`): readers must infer a user principal from `userId`.
+ */
+export interface IChatSessionShareRow {
+  principalType?: 'user' | 'team';
+  /** Present iff the principal is a user. */
+  userId?: Types.ObjectId;
+  /** Graph team id (UUID or `all_<orgId>`), present iff the principal is a team. */
+  teamId?: string;
+  accessLevel: 'read' | 'write';
+  addedBy?: Types.ObjectId;
+  addedAt?: Date;
+  updatedAt?: Date;
+}
+
 export interface IChatSession {
   userId: Types.ObjectId;
   orgId: Types.ObjectId;
@@ -326,6 +365,8 @@ export interface IChatSession {
   sessionType: 'chat' | 'agent';
   /** Seq allocation counter. Internal (`select: false` in the schema) — never returned in a response. */
   nextSeq?: number;
+  /** Bumped on every visible change. Absent on legacy rows. */
+  rev?: number;
 
   // ---- Agent-only fields, present only when sessionType === 'agent' ----
   agentKey?: string;
@@ -360,6 +401,11 @@ export interface IChatSessionMessage extends IMessage {
   orgId: Types.ObjectId;
   /** Internal sort key — never returned in a response; gaps are legal. */
   seq: number;
+  /** The session `rev` the row was last written at; absent on rows older than stamping. */
+  changeRev?: number;
+  /** Set on a removed row, which stays only as an emptied marker. */
+  removedAt?: Date;
+  removedBy?: Types.ObjectId;
 }
 
 export interface IChatSessionMessageDocument
@@ -380,6 +426,7 @@ export type AnswerMatchType =
   | 'Exact Match'
   | 'Partial Match'
   | 'No Match'
+  | 'Capability Card'
   | 'Error';
 
 export interface IAIResponse {
@@ -412,6 +459,10 @@ export interface IAIResponse {
   parts?: IMessagePart[];
   /** Set by Python `classify_error` on a graceful failure answer (`auth_error`, …). */
   errorCode?: string;
+  /** Tools the run left out because the requester has not connected them (AI backend `UnavailableTool`). */
+  unavailableTools?: IUnavailableTool[];
+  /** Non-streaming routes only: the run's custom events the chat extension asked to keep. Never stored. */
+  events?: unknown[];
 }
 
 export interface IAIModel {

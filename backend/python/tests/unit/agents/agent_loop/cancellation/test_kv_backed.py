@@ -229,3 +229,20 @@ class TestUnregister:
         assert outcome == "cancelled"
         await asyncio.sleep(0.05)
         assert token.is_cancelled is False
+
+
+class TestLegacyCancelPayload:
+    async def test_legacy_payload_from_another_user_is_refused_by_the_watcher(self) -> None:
+        store = _FakeKVStore()
+        owner_registry = KVBackedRunCancellationRegistry(store)
+        token = CancellationToken()
+        await owner_registry.register("run-1", token, _owner(user_id="user-a"))
+        try:
+            legacy = RunOwner(user_id="user-b", org_id="org-1", conversation_id="conv-1")
+            from app.agents.agent_loop.cancellation.kv_backed import _key
+
+            await store.create_key(_key("run-1"), legacy.model_dump_json())
+            await asyncio.sleep(0.1)
+            assert token.is_cancelled is False
+        finally:
+            await owner_registry.unregister("run-1")

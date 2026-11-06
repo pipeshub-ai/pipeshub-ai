@@ -286,3 +286,19 @@ class TestCacheSplit:
         original = dict(extra)
         _run_build_blocks(ctx, extra_sections=extra)
         assert extra == original
+
+
+class TestConversationSections:
+    def test_rules_is_conv_before_user_context(self) -> None:
+        vol = dict(PIPESHUB_SECTION_ORDER)
+        assert vol["conversation_rules"] == Volatility.CONV
+        assert SECTION_NAMES.index("conversation_rules") < SECTION_NAMES.index("user_context")
+        assert SECTION_NAMES.index("conversation_rules") > SECTION_NAMES.index("capability_summary")
+
+    def test_sender_is_turn_after_request_context(self) -> None:
+        vol = dict(PIPESHUB_SECTION_ORDER)
+        assert vol["sender_context"] == Volatility.TURN
+        # After the request context, with only other per-turn sections (the entity filter) between them.
+        start, sender = SECTION_NAMES.index("request_context"), SECTION_NAMES.index("sender_context")
+        assert start < sender
+        assert all(vol[name] == Volatility.TURN for name in SECTION_NAMES[start:sender])

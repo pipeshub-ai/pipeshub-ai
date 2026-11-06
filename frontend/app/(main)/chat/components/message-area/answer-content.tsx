@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useLayoutEffect } from 'react';
 import { withCurrentOrgId } from '@/lib/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -11,7 +11,7 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import type { Schema } from 'hast-util-sanitize';
 import type { PluggableList } from 'unified';
 import 'katex/dist/katex.min.css';
-import { Box, Flex, Text, Heading } from '@radix-ui/themes';
+import { Box, Flex, Heading, Text } from '@radix-ui/themes';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { InlineCitationBadge, InlineCitationGroup } from './response-tabs/citations';
@@ -34,9 +34,13 @@ import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { useCopyText } from '@/lib/hooks/use-copy-text';
 import type { Root, Blockquote } from 'mdast';
 import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
+import { useFramePacedText } from './use-frame-paced-text';
+import { withoutUndefinedFootnotes } from '../../utils/repair-streaming-markdown';
 import { downloadCode } from '../../utils/code-download';
 import { downloadTableCsv, tableNodeToRows, type TableNode } from '../../utils/table-csv';
 import { CHAT_LINK_STYLE, isRawUrlText, shortLinkLabel } from '../../utils/link-label';
+import { ANSWER_INLINE_MARK } from '../../chat-extension';
+import { chatExtension, chatSlots } from '@/config';
 
 /**
  * rehype-sanitize schema.
@@ -320,7 +324,7 @@ interface AnswerContentProps {
   content: string;
   citationMaps?: CitationMaps;
   citationCallbacks?: CitationCallbacks;
-  /** Only while true is `content` split into independently-memoized blocks. */
+  /** The answer is still being written: it carries the typing caret. */
   isStreaming?: boolean;
 }
 
@@ -424,11 +428,33 @@ function slugify(text: string): string {
   return text.toLowerCase().replace(/[^\w\s-]/g, '').replace(/[\s_]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
-const HEADING_SIZES: Record<number, '7' | '6' | '5' | '4' | '3' | '2'> = {
-  1: '7', 2: '6', 3: '5', 4: '4', 5: '3', 6: '2',
+/**
+ * The trail's narration (the base map) sets every heading as a 14/20 section
+ * heading and its text at 14/22. The answer itself (`withAnswerProse`) uses
+ * the document scale below: 28, 24, 20, 18, 16 and 14px headings, 14px
+ * paragraphs on a 1.6 line and list items on a 1.7 line.
+ */
+const ANSWER_LINE_HEIGHT = 'calc(var(--line-height-2) + var(--space-1) / 2)';
+/** A list item's text starts where the design's bullet row puts it: 51px in from the column. */
+const LIST_INDENT = 'calc(var(--space-7) + var(--space-3) - var(--space-1) / 4)';
+const SECTION_HEADING_STYLE: React.CSSProperties = {
+  marginTop: 'var(--space-5)',
+  marginBottom: 'var(--space-2)',
 };
-const HEADING_STYLES: Record<number, React.CSSProperties> = {
-  1: { marginTop: 'var(--space-5)', marginBottom: 'var(--space-3)', paddingBottom: 'var(--space-2)', borderBottom: '1px solid var(--slate-4)' },
+
+type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
+/**
+ * Below the 20px question, so an answer's heading never reads as the next question: h1 18px and h2 16px, then h3 to
+ * h6 at body size, told apart by weight.
+ */
+const ANSWER_HEADING_SIZES: Record<HeadingLevel, '4' | '3' | '2'> = {
+  1: '4', 2: '3', 3: '2', 4: '2', 5: '2', 6: '2',
+};
+/** h1 and h2 are semibold, as the design's answer headings; h3 to h6 are bold at 14px. */
+const ANSWER_HEADING_SEMIBOLD: Partial<Record<HeadingLevel, true>> = { 1: true, 2: true };
+/** A top-level heading is ruled off under its text; the others step down in space above and below. */
+const ANSWER_HEADING_STYLES: Record<HeadingLevel, React.CSSProperties> = {
+  1: { marginTop: 'var(--space-5)', marginBottom: 'var(--space-3)', paddingBottom: 'var(--space-2)', borderBottom: '1px solid var(--border-default)' },
   2: { marginTop: 'var(--space-4)', marginBottom: 'var(--space-2)' },
   3: { marginTop: 'var(--space-3)', marginBottom: 'var(--space-2)' },
   4: { marginTop: 'var(--space-3)', marginBottom: 'var(--space-1)' },
@@ -436,17 +462,37 @@ const HEADING_STYLES: Record<number, React.CSSProperties> = {
   6: { marginTop: 'var(--space-2)', marginBottom: 'var(--space-1)' },
 };
 
-function AnchorHeading({ level, children }: { level: 1 | 2 | 3 | 4 | 5 | 6; children?: React.ReactNode }) {
+/** An h1 without its rule: the padding above the rule goes with it. */
+const UNRULED: React.CSSProperties = { borderBottom: undefined, paddingBottom: undefined };
+
+function AnchorHeading({
+  level,
+  inAnswer = false,
+  ruled = true,
+  children,
+}: {
+  level: HeadingLevel;
+  /** The answer's own heading, on the document scale; otherwise a 14px section heading. */
+  inAnswer?: boolean;
+  /** False for an h1 that opens the answer: the line under the question already separates the two. */
+  ruled?: boolean;
+  children?: React.ReactNode;
+}) {
   const [showAnchor, setShowAnchor] = useState(false);
   const canHover = useCanHover();
   const id = slugify(extractNodeText(children));
-  const tag = `h${level}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
-  return (
-    <Heading
+  const Tag = `h${level}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
+  const heading = (
+    <Tag
       id={id || undefined}
-      as={tag}
-      size={HEADING_SIZES[level]}
-      style={{ ...HEADING_STYLES[level], color: 'var(--slate-12)', position: 'relative', cursor: 'default' }}
+      style={{
+        ...(inAnswer ? ANSWER_HEADING_STYLES[level] : SECTION_HEADING_STYLE),
+        ...(inAnswer && !ruled ? UNRULED : {}),
+        ...(inAnswer && ANSWER_HEADING_SEMIBOLD[level] ? { fontWeight: 600 } : {}),
+        color: 'var(--text-primary)',
+        position: 'relative',
+        cursor: 'default',
+      }}
       onMouseEnter={() => setShowAnchor(true)}
       onMouseLeave={() => setShowAnchor(false)}
     >
@@ -468,7 +514,16 @@ function AnchorHeading({ level, children }: { level: 1 | 2 | 3 | 4 | 5 | 6; chil
           #
         </a>
       )}
+    </Tag>
+  );
+  return inAnswer ? (
+    <Heading asChild size={ANSWER_HEADING_SIZES[level]} weight={ANSWER_HEADING_SEMIBOLD[level] ? undefined : 'bold'}>
+      {heading}
     </Heading>
+  ) : (
+    <Text asChild size="2" weight="bold">
+      {heading}
+    </Text>
   );
 }
 
@@ -800,6 +855,17 @@ export function parseInlineCitations(
   return parts.length > 0 ? parts : [text];
 }
 
+/** Text the chat extension marked (`answer.toMarkdown`) goes to its `AnswerInlineText`; the rest stays as it is. */
+function withInlineText(nodes: React.ReactNode[]): React.ReactNode[] {
+  return nodes.map((node, i) =>
+    typeof node === 'string' && node.includes(ANSWER_INLINE_MARK) ? (
+      <chatSlots.AnswerInlineText key={`inline-${i}`} text={node} />
+    ) : (
+      node
+    ),
+  );
+}
+
 /**
  * Recursively walk React children, replacing `[N]` citations in any string segments.
  */
@@ -809,13 +875,13 @@ export function processChildren(
   citationCallbacks?: CitationCallbacks,
 ): React.ReactNode {
   if (typeof children === 'string') {
-    return parseInlineCitations(children, citationMaps, citationCallbacks);
+    return withInlineText(parseInlineCitations(children, citationMaps, citationCallbacks));
   }
 
   if (Array.isArray(children)) {
     return children.map((child, i) => {
       if (typeof child === 'string') {
-        const parsed = parseInlineCitations(child, citationMaps, citationCallbacks);
+        const parsed = withInlineText(parseInlineCitations(child, citationMaps, citationCallbacks));
         // Wrap in a fragment with key if we produced multiple nodes
         return parsed.length === 1 ? parsed[0] : <React.Fragment key={i}>{parsed}</React.Fragment>;
       }
@@ -826,27 +892,38 @@ export function processChildren(
   return children;
 }
 
+/** Paragraph and list item spacing a renderer may set; the base map's values are the trail narration's. */
+type ProseSpacing = {
+  lineHeight?: React.CSSProperties['lineHeight'];
+  marginBottom?: React.CSSProperties['marginBottom'];
+};
+
 export function createMarkdownComponents(
   citationMapsRef: React.MutableRefObject<CitationMaps | undefined>,
   citationCallbacksRef: React.MutableRefObject<CitationCallbacks | undefined>,
 ) {
+  const heading = (level: HeadingLevel) =>
+    function MarkdownHeading({ children }: { children?: React.ReactNode }) {
+      return <AnchorHeading level={level}>{children}</AnchorHeading>;
+    };
   return {
-    h1: ({ children }: { children?: React.ReactNode }) => <AnchorHeading level={1}>{children}</AnchorHeading>,
-    h2: ({ children }: { children?: React.ReactNode }) => <AnchorHeading level={2}>{children}</AnchorHeading>,
-    h3: ({ children }: { children?: React.ReactNode }) => <AnchorHeading level={3}>{children}</AnchorHeading>,
-    h4: ({ children }: { children?: React.ReactNode }) => <AnchorHeading level={4}>{children}</AnchorHeading>,
-    h5: ({ children }: { children?: React.ReactNode }) => <AnchorHeading level={5}>{children}</AnchorHeading>,
-    h6: ({ children }: { children?: React.ReactNode }) => <AnchorHeading level={6}>{children}</AnchorHeading>,
-    p: ({ children }: { children?: React.ReactNode }) => (
-      <Text size="2" as="div" style={{ marginBottom: 'var(--space-3)', lineHeight: 1.6, color: 'var(--slate-12)' }}>
+    h1: heading(1),
+    h2: heading(2),
+    h3: heading(3),
+    h4: heading(4),
+    h5: heading(5),
+    h6: heading(6),
+    p: ({ children, lineHeight = ANSWER_LINE_HEIGHT, marginBottom = 'var(--space-4)' }: { children?: React.ReactNode } & ProseSpacing) => (
+      <Text size="2" as="div" style={{ marginBottom, lineHeight, color: 'var(--text-primary)' }}>
         {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
       </Text>
     ),
     ul: ({ children, className }: { children?: React.ReactNode; className?: string }) => (
       <ul
         style={{
-          paddingLeft: 'var(--space-4)',
-          marginBottom: 'var(--space-3)',
+          paddingLeft: LIST_INDENT,
+          marginTop: 0,
+          marginBottom: 'var(--space-4)',
           listStyleType: className?.includes('contains-task-list') ? 'none' : 'disc',
         }}
       >
@@ -856,23 +933,29 @@ export function createMarkdownComponents(
     ol: ({ children }: { children?: React.ReactNode }) => (
       <ol
         style={{
-          paddingLeft: 'var(--space-4)',
-          marginBottom: 'var(--space-3)',
+          paddingLeft: LIST_INDENT,
+          marginTop: 0,
+          marginBottom: 'var(--space-4)',
           listStyleType: 'decimal',
         }}
       >
         {children}
       </ol>
     ),
-    li: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
+    li: ({
+      children,
+      className,
+      lineHeight = ANSWER_LINE_HEIGHT,
+      marginBottom = 'var(--space-2)',
+    }: { children?: React.ReactNode; className?: string } & ProseSpacing) => {
       const isTask = className?.includes('task-list-item');
       return (
         <li
           style={{
-            marginBottom: 'var(--space-1)',
-            lineHeight: 1.7,
-            color: 'var(--slate-12)',
-            fontSize: '14px',
+            marginBottom,
+            lineHeight,
+            color: 'var(--text-primary)',
+            fontSize: 'var(--font-size-2)',
             listStyleType: isTask ? 'none' : undefined,
             display: isTask ? 'flex' : undefined,
             alignItems: isTask ? 'flex-start' : undefined,
@@ -912,7 +995,7 @@ export function createMarkdownComponents(
       return null;
     },
     strong: ({ children }: { children?: React.ReactNode }) => (
-      <Text weight="bold" style={{ color: 'var(--slate-12)' }}>
+      <Text weight="bold" style={{ color: 'var(--text-primary)' }}>
         {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
       </Text>
     ),
@@ -924,9 +1007,9 @@ export function createMarkdownComponents(
     code: ({ children }: { children?: React.ReactNode }) => (
       <code
         style={{
-          background: 'var(--slate-4)',
-          border: '1px solid var(--slate-6)',
-          color: 'var(--slate-12)',
+          background: 'var(--fill-hover)',
+          border: '1px solid var(--gray-6)',
+          color: 'var(--text-primary)',
           fontWeight: 400,
           padding: '1px 5px',
           borderRadius: '4px',
@@ -1234,6 +1317,71 @@ export function createMarkdownComponents(
   };
 }
 
+/**
+ * The answer's first block: an h1 on the answer's first line has no rule under it, as the line under the question
+ * already separates the two. Every later h1 keeps its rule. Leading blank lines are dropped before the split, so the
+ * first block's line 1 is the answer's.
+ */
+function withOpeningHeading(components: ReturnType<typeof withAnswerProse>): ReturnType<typeof withAnswerProse> {
+  return {
+    ...components,
+    h1: function OpeningHeading({ children, node }: { children?: React.ReactNode; node?: { position?: { start: { line: number } } } }) {
+      return (
+        <AnchorHeading level={1} inAnswer ruled={node?.position?.start.line !== 1}>
+          {children}
+        </AnchorHeading>
+      );
+    },
+  };
+}
+
+/** A list in the answer: the browser's own bullets and numbers, the text 16px in from the column. */
+function answerListStyle(listStyleType: 'disc' | 'decimal' | 'none'): React.CSSProperties {
+  return { paddingLeft: 'var(--space-4)', marginBottom: 'var(--space-3)', listStyleType };
+}
+
+/**
+ * The answer's own headings, paragraphs and lists: headings on a document scale from 28px down to 14px, 14px text on
+ * a 1.6 line (1.7 in a list item) and the browser's own list markers. Inline code, quotes, tables and code blocks are
+ * the base map's. The trail's narration renders markdown with the base map and keeps its look.
+ */
+function withAnswerProse(base: ReturnType<typeof createMarkdownComponents>) {
+  const BaseParagraph = base.p;
+  const BaseItem = base.li;
+  const heading = (level: HeadingLevel) =>
+    function AnswerHeading({ children }: { children?: React.ReactNode }) {
+      return (
+        <AnchorHeading level={level} inAnswer>
+          {children}
+        </AnchorHeading>
+      );
+    };
+  return {
+    ...base,
+    h1: heading(1),
+    h2: heading(2),
+    h3: heading(3),
+    h4: heading(4),
+    h5: heading(5),
+    h6: heading(6),
+    p: (props: { children?: React.ReactNode }) => (
+      <BaseParagraph {...props} lineHeight={1.6} marginBottom="var(--space-3)" />
+    ),
+    li: (props: { children?: React.ReactNode; className?: string }) => (
+      <BaseItem {...props} lineHeight={1.7} marginBottom="var(--space-1)" />
+    ),
+    // `start` keeps a list that begins past 1 counting from its own number.
+    ol: ({ children, start }: { children?: React.ReactNode; start?: number }) => (
+      <ol start={start} style={answerListStyle('decimal')}>
+        {children}
+      </ol>
+    ),
+    ul: ({ children, className }: { children?: React.ReactNode; className?: string }) => (
+      <ul style={answerListStyle(className?.includes('contains-task-list') ? 'none' : 'disc')}>{children}</ul>
+    ),
+  };
+}
+
 interface MarkdownBlockProps {
   source: string;
   components: ReturnType<typeof createMarkdownComponents>;
@@ -1268,7 +1416,8 @@ function MarkdownBlockImpl({ source, components }: MarkdownBlockProps) {
  * every already-settled block (all but the one still growing) bails out of
  * `React.memo` entirely — skipping unified's parse → transform → render
  * pipeline — instead of every block re-parsing the whole answer on every
- * SSE flush.
+ * SSE flush. When the saved answer takes over, only blocks whose text or
+ * citations changed are drawn again; none is mounted afresh.
  */
 const MarkdownBlock = React.memo(
   MarkdownBlockImpl,
@@ -1277,6 +1426,45 @@ const MarkdownBlock = React.memo(
     prev.components === next.components &&
     prev.citationMaps === next.citationMaps,
 );
+
+/** A citation marker (`[3]`): a block without one needn't redraw when only the citation data changes. */
+const CITATION_MARKER = /\[\d+\]/;
+
+/**
+ * Where the typing caret goes: the last element of the answer holding prose (a paragraph, a heading, a list's last
+ * item, the footnotes' last note, a closed `<details>` block's summary), or after a display formula, drawn after its
+ * last line by CSS, so after any citation chip that ends it. None when the answer ends in code, a table, a quote or a
+ * picture.
+ */
+function caretHost(box: HTMLElement): HTMLElement | null {
+  let el = box.lastElementChild as HTMLElement | null;
+  while (el) {
+    if (el.tagName === 'UL' || el.tagName === 'OL' || el.tagName === 'SECTION') {
+      el = el.lastElementChild as HTMLElement | null;
+      continue;
+    }
+    // Closed, a details block shows only its summary: the caret follows that.
+    if (el instanceof HTMLDetailsElement) {
+      el = el.open ? (el.lastElementChild as HTMLElement | null) : el.querySelector<HTMLElement>(':scope > summary');
+      continue;
+    }
+    if (el.tagName === 'SUMMARY') return el;
+    // Display maths: the formula's own line, which the caret ends.
+    if (el.classList.contains('katex-display')) return el.querySelector<HTMLElement>(':scope > .katex');
+    let node = el.lastChild;
+    while (node && node.nodeType === Node.TEXT_NODE && !node.textContent?.trim()) node = node.previousSibling;
+    const last = node instanceof HTMLElement ? node : null;
+    if (el.tagName === 'LI' && last && (last.matches('ul, ol') || last.classList.contains('rt-Text'))) {
+      el = last;
+      continue;
+    }
+    // A paragraph (`.rt-Text`) or a heading (`.rt-Heading` in the answer, `.rt-Text` in the narration).
+    if (!el.matches('li, .rt-Text, .rt-Heading')) return null;
+    // A picture closing the paragraph (`MarkdownImage`, a block-level box) stands alone: no caret under it.
+    return last?.matches('.rt-Box') && last.querySelector('img') ? null : el;
+  }
+  return null;
+}
 
 export const AnswerContent = React.memo(function AnswerContent({
   content,
@@ -1291,9 +1479,14 @@ export const AnswerContent = React.memo(function AnswerContent({
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const components = useMemo(
-    () => createMarkdownComponents(citationMapsRef, citationCallbacksRef),
+    () => withAnswerProse(createMarkdownComponents(citationMapsRef, citationCallbacksRef)),
   []);
+  const openingComponents = useMemo(() => withOpeningHeading(components), [components]);
 
+  // While it streams the text is revealed a little every frame (`useFramePacedText`), not in the bursts it arrives in.
+  const paced = useFramePacedText(content, Boolean(isStreaming));
+  // A footnote reference shows with its definition: what is drawn may stop between the two.
+  const drawn = isStreaming || paced !== content ? withoutUndefinedFootnotes(paced) : paced;
   // Pipeline order matters:
   // 1. preprocessHtmlCodeBlocks  — convert <pre><code> to fenced blocks
   // 2. preprocessHtmlIndentation — strip ≥4-space indent from HTML tag lines
@@ -1301,27 +1494,38 @@ export const AnswerContent = React.memo(function AnswerContent({
   // 3. preprocessMath            — \[..\] / \(..\) → $$..$$  (both forms)
   //    (skips fenced blocks created by step 1)
   const normalizedContent = useMemo(
-    () => preprocessMath(preprocessHtmlIndentation(preprocessHtmlCodeBlocks(content))),
-    [content],
+    () => preprocessMath(preprocessHtmlIndentation(preprocessHtmlCodeBlocks(chatExtension.answer.toMarkdown(drawn)))),
+    [drawn],
   );
 
-  // Splitting only helps while streaming — it lets settled blocks skip
-  // re-parsing on every flush (see `MarkdownBlock`). The persisted / final
-  // answer never changes after mount, so it keeps rendering as one block,
-  // identical to the pre-split behavior.
+  // Split while streaming, so settled blocks skip re-parsing on every flush (see `MarkdownBlock`), and the same way
+  // once done, so the saved answer that replaces the streamed one keeps every block in place.
   const blocks = useMemo(
-    () => (isStreaming ? splitMarkdownBlocks(normalizedContent) : [normalizedContent]),
-    [isStreaming, normalizedContent],
+    // Leading blank lines render nothing: dropped, the first block starts on the answer's first line.
+    () => splitMarkdownBlocks(normalizedContent.replace(/^(?:[ \t]*\n)+/, '')),
+    [normalizedContent],
   );
+
+  // The caret is a pseudo-element of the element `caretHost` picks, so drawing it never splits the text.
+  const boxRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const host = isStreaming ? caretHost(box) : null;
+    const current = box.querySelector('[data-caret]');
+    if (current === host) return;
+    current?.removeAttribute('data-caret');
+    host?.setAttribute('data-caret', '');
+  });
 
   return (
-    <Box>
+    <Box ref={boxRef} className="answer-prose">
       {blocks.map((block, i) => (
         <MarkdownBlock
           key={i}
           source={block}
-          components={components}
-          citationMaps={citationMaps}
+          components={i === 0 ? openingComponents : components}
+          citationMaps={CITATION_MARKER.test(block) ? citationMaps : undefined}
         />
       ))}
     </Box>

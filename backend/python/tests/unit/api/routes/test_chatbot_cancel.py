@@ -9,12 +9,16 @@ and mapping the registry's `CancelOutcome` to an HTTP response."""
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
 
-from app.agents.agent_loop.cancellation.registry import CancelOutcome, RunOwner
+from app.agents.agent_loop.cancellation.policy import CancelRequester
+
+if TYPE_CHECKING:
+    from app.agents.agent_loop.cancellation.registry import CancelOutcome, RunOwner
 
 
 class _FakeRegistry:
@@ -54,7 +58,7 @@ class TestCancelChatStream:
         result = await cancel_chat_stream(request, registry)
 
         assert result == {"cancelled": True}
-        assert registry.calls == [(run_id, RunOwner(user_id="user-1", org_id="org-1"))]
+        assert registry.calls == [(run_id, CancelRequester(user_id="user-1", org_id="org-1"))]
 
     async def test_conversation_id_from_the_body_is_forwarded_into_run_owner(self) -> None:
         """Node's cancel routes forward the already-ownership-checked path
@@ -70,7 +74,7 @@ class TestCancelChatStream:
 
         assert result == {"cancelled": True}
         assert registry.calls == [
-            (run_id, RunOwner(user_id="user-1", org_id="org-1", conversation_id="conv-1"))
+            (run_id, CancelRequester(user_id="user-1", org_id="org-1", conversation_id="conv-1"))
         ]
 
     async def test_missing_conversation_id_builds_a_run_owner_with_none(self) -> None:
@@ -86,7 +90,7 @@ class TestCancelChatStream:
         result = await cancel_chat_stream(request, registry)
 
         assert result == {"cancelled": True}
-        assert registry.calls == [(run_id, RunOwner(user_id="user-1", org_id="org-1"))]
+        assert registry.calls == [(run_id, CancelRequester(user_id="user-1", org_id="org-1"))]
 
     async def test_not_found_or_already_finished_returns_cancelled_false_not_a_4xx(self) -> None:
         from app.api.routes.chatbot import cancel_chat_stream
@@ -158,4 +162,23 @@ class TestCancelChatStream:
         result = await cancel_chat_stream(request, registry)
 
         assert result == {"cancelled": False}
-        assert registry.calls[0][1] == RunOwner(user_id="", org_id="")
+        assert registry.calls[0][1] == CancelRequester(user_id="", org_id="")
+
+
+class TestCancelRouteAuth:
+    def test_user_cancel_route_admits_no_service_scope(self) -> None:
+        from fastapi.routing import APIRoute
+
+        from app.api.middlewares.auth import AUTH_POLICY_ATTR
+        from app.api.routes.chatbot import router
+
+        route = next(r for r in router.routes if isinstance(r, APIRoute) and r.path == "/chat/cancel")
+        found, pending = [], [route.dependant]
+        while pending:
+            d = pending.pop()
+            policy = getattr(d.call, AUTH_POLICY_ATTR, None)
+            if policy is not None:
+                found.append(policy)
+            pending.extend(d.dependencies)
+        (policy,) = found
+        assert policy.service_scopes == frozenset()

@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Flex, Text } from '@radix-ui/themes';
-import { CitationNumberCircle } from './citation-number-circle';
-import { CitationSourceLinkRow } from './citation-source-link-row';
+import React from 'react';
+import { useTranslation } from 'react-i18next';
+import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
+import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
+import { CITATION_CHIP_TEXT, CITATION_NUMBER_CHIP, useCitationPopoverTrigger } from './citation-number-circle';
 import type { CitationData, CitationCallbacks } from './types';
 
 interface InlineCitationBadgeProps {
@@ -17,100 +18,97 @@ interface InlineCitationBadgeProps {
   callbacks?: CitationCallbacks;
 }
 
+/** Characters of a record name a pill shows before it is cut with "…". */
+export const CITATION_LABEL_MAX_CHARS = 24;
+
+/** The record's name without its extension, cut to the pill's length. */
+export function citationLabel(recordName: string | undefined): { full: string; shown: string } {
+  const full = recordName ? recordName.replace(/\.[^/.]+$/, '') : '';
+  const shown = full.length > CITATION_LABEL_MAX_CHARS ? `${full.slice(0, CITATION_LABEL_MAX_CHARS)}…` : full;
+  return { full, shown };
+}
+
 /**
- * Small inline citation pill rendered inside the answer markdown.
+ * The pill's frame: a quiet bubble that sits in a line of text without making
+ * the line taller, while `.citation-pill`'s hit area still reaches 24px.
  */
-function InlineCitationBadgeImpl({
+export const CITATION_PILL_FRAME: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
+  boxSizing: 'content-box',
+  paddingBlock: 'calc(var(--space-1) / 2)',
+  paddingInline: 'var(--space-1)',
+  // Pulls the frame's padding and edge back out of the line box, so a line holding a pill is no taller.
+  marginBlock: 'calc(var(--space-1) / -2)',
+  marginInlineStart: 'var(--space-1)',
+  marginInlineEnd: 'calc(var(--space-1) / 2)',
+  borderRadius: 'var(--radius-1)',
+  borderWidth: 'calc(var(--space-1) / 6)',
+  verticalAlign: 'middle',
+  whiteSpace: 'nowrap',
+};
+
+/**
+ * One citation inside the answer: one button holding the source's mark, its
+ * name and the marker's number, opening the citation's preview.
+ */
+function InlineCitationBadgeImpl({ chunkIndex, occurrenceKey, citation, callbacks }: InlineCitationBadgeProps) {
+  // No citation data yet (early streaming): only the number, quiet, and nothing to open.
+  if (!citation) {
+    return (
+      <span
+        style={{
+          ...CITATION_PILL_FRAME,
+          paddingInline: 'calc(var(--space-1) / 2)',
+          background: 'var(--surface-subtle)',
+          border: `${CITATION_PILL_FRAME.borderWidth} solid var(--border-subtle)`,
+        }}
+      >
+        <span
+          style={{
+            ...CITATION_NUMBER_CHIP,
+            background: 'var(--fill-muted)',
+            borderColor: 'var(--border-default)',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          {chunkIndex}
+        </span>
+      </span>
+    );
+  }
+  return <ResolvedCitationPill chunkIndex={chunkIndex} occurrenceKey={occurrenceKey} citation={citation} callbacks={callbacks} />;
+}
+
+function ResolvedCitationPill({
   chunkIndex,
   occurrenceKey,
   citation,
   callbacks,
-}: InlineCitationBadgeProps) {
-  const [isHovered, setIsHovered] = useState(false);
-
-  const connector = citation?.connector || '';
-
-  // Strip file extension from recordName for display (e.g. "Report.pdf" → "Report")
-  const fileNameWithoutExt = citation?.recordName
-    ? citation.recordName.replace(/\.[^/.]+$/, '')
-    : '';
-
-  const truncatedName =
-    fileNameWithoutExt.length > 24
-      ? fileNameWithoutExt.slice(0, 24) + '…'
-      : fileNameWithoutExt;
-
-  // ── No citation data yet (early streaming) → simple numbered badge ──
-  if (!citation) {
-    return (
-      <Flex
-        as="span"
-        align="center"
-        justify="center"
-        wrap="wrap"
-        style={{
-          display: 'inline-flex',
-          backgroundColor: 'var(--slate-a3)',
-          border: '1px solid var(--slate-a5)',
-          padding: '2px var(--space-1)', /* was: 2px 6px, delta: -2px side */
-          borderRadius: 'var(--radius-1)',
-          verticalAlign: 'middle',
-          marginLeft: 'var(--space-1)',
-          marginRight: '2px',
-          minWidth: '18px',
-          minHeight: 'var(--space-5)', /* was: 20px, delta: +4px */
-          rowGap: '2px',
-        }}
-      >
-        <Text
-          size="1"
-          weight="medium"
-          style={{ color: 'var(--accent-11)', lineHeight: 1, fontSize: 'var(--font-size-1)' /* was: 11px, delta: +1px */ }}
-        >
-          {chunkIndex}
-        </Text>
-      </Flex>
-    );
-  }
-
-  // ── Full pill: connector icon + filename + numbered circle (matches group style) ──
+}: InlineCitationBadgeProps & { citation: CitationData }) {
+  const { t } = useTranslation();
+  const { ref, isOpen, onClick } = useCitationPopoverTrigger({ chunkIndex, occurrenceKey, citation, callbacks });
+  const { full, shown } = citationLabel(citation.recordName);
   return (
-    <Flex
-      as="span"
-      align="center"
-      gap="1"
-      wrap="wrap"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        display: 'inline-flex',
-        background: isHovered ? 'var(--accent-3)' : 'var(--olive-2)',
-        border: `0.667px solid ${isHovered ? 'var(--accent-8)' : 'var(--olive-3)'}`,
-        padding: '2px var(--space-1)', /* was: 2px 6px, delta: -2px side */
-        borderRadius: 'var(--radius-1)',
-        verticalAlign: 'middle',
-        marginLeft: 'var(--space-1)',
-        marginRight: '2px',
-        transition: 'all 0.15s ease',
-        minHeight: 'var(--space-5)', /* was: 20px, delta: +4px */
-        rowGap: '2px',
-        columnGap: 'var(--space-1)',
-      }}
+    <button
+      ref={ref}
+      type="button"
+      className="citation-pill"
+      data-citation-pill=""
+      onClick={onClick}
+      aria-haspopup="dialog"
+      aria-expanded={isOpen}
+      aria-label={t('chat.citationPill.number', { number: chunkIndex, name: full })}
+      style={{ ...CITATION_PILL_FRAME, cursor: 'pointer', font: 'inherit' }}
     >
-      <CitationSourceLinkRow
-        citation={citation}
-        connector={connector}
-        truncatedName={truncatedName}
-      />
-
-      {/* Citation number circle (also acts as popover trigger) */}
-      <CitationNumberCircle
-        chunkIndex={chunkIndex}
-        occurrenceKey={occurrenceKey}
-        citation={citation}
-        callbacks={callbacks}
-      />
-    </Flex>
+      <span aria-hidden style={{ display: 'inline-flex', flexShrink: 0 }}>
+        <ConnectorIcon type={citation.connector || ''} size={14} />
+      </span>
+      <span style={CITATION_CHIP_TEXT}>{shown}</span>
+      <DemoSourceBadge connectorId={citation.connectorId} />
+      <span style={CITATION_NUMBER_CHIP}>{chunkIndex}</span>
+    </button>
   );
 }
 
@@ -119,10 +117,8 @@ function InlineCitationBadgeImpl({
  * `MarkdownBlock` in `answer-content.tsx`), but its citation badges are
  * still recreated as plain JSX on every parent render. Memoizing here
  * avoids re-rendering an unaffected badge just because a sibling row's
- * citation data arrived, or a still-growing block elsewhere re-rendered.
- * Compares by the citation's *identity fields* rather than object identity
- * — the SSE pipeline may hand back a differently-referenced but logically
- * identical `CitationData` object across flushes.
+ * citation data arrived. Compares by the citation's identity fields rather
+ * than object identity.
  */
 function inlineCitationBadgePropsEqual(
   prev: InlineCitationBadgeProps,

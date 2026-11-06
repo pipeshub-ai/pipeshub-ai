@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.agents.agent_loop.mcp_access import MCPAccessResolver
+from app.modules.agents.chat_extension import ChatExtension
 from tests.unit.agents.adapter.conftest import make_context
 
 
@@ -107,3 +108,23 @@ class TestResolve:
     def test_no_attached_servers_returns_empty_list(self) -> None:
         context = make_context()
         assert MCPAccessResolver.resolve(context) == []
+
+    def test_a_server_the_chat_hooks_refuse_is_left_out(self, monkeypatch) -> None:
+        seen: list[tuple[Any, dict[str, Any]]] = []
+
+        class _RefusesInst2(ChatExtension):
+            def mcp_server_allowed(self, context: Any, instance: Any) -> bool:  # noqa: ANN401
+                seen.append((context, instance))
+                return instance["_id"] != "inst-2"
+
+        monkeypatch.setattr("app.agents.agent_loop.mcp_access.get_chat_extension", _RefusesInst2)
+        context = make_context(
+            mcp_servers=[{"instanceId": "inst-1", "name": "JiraMCP"}, {"instanceId": "inst-2", "name": "SlackMCP"}],
+            mcp_server_configs={
+                "inst-1": {"instance": _instance("inst-1"), "auth": {}},
+                "inst-2": {"instance": _instance("inst-2"), "auth": {}},
+            },
+        )
+
+        assert [s.instance_id for s in MCPAccessResolver.resolve(context)] == ["inst-1"]
+        assert seen == [(context, _instance("inst-1")), (context, _instance("inst-2"))]

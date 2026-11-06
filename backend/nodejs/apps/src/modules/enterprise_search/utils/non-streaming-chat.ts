@@ -1,38 +1,38 @@
+import mongoose, { ClientSession } from 'mongoose';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { unansweredCallError } from '../../../libs/errors/backend-error';
 import {
   HttpError,
   InternalServerError,
-  NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
-import { CONVERSATION_STATUS } from '../constants/constants';
-import {
-  getConversationRepository,
-  type ChatSessionDto,
-  type NewMessage,
-  type NewSession,
-  type SessionScope,
-} from '../../../libs/repositories/conversation';
-import { createUnitOfWork } from '../../../libs/repositories/doc-store';
-import type { Tx } from '../../../libs/repositories/uow';
+import { ChatSession } from '../schema/chat.session.schema';
 import {
   AIServiceResponse,
   IAIModel,
   IAIResponse,
+  IChatSession,
+  IChatSessionDocument,
+  IChatSessionMessageDocument,
   IMessage,
 } from '../types/conversation.interfaces';
+import { RunLostError } from '../services/conversation/domain/errors';
+import { LeaseLostError } from '../services/conversation/turn/run-lease';
+import type { TurnAnswerHooks } from '../services/conversation/turn/turn-extension';
+import {
+  inShortTransaction,
+  TurnRun,
+} from '../services/conversation/turn/turn-run';
 import { AiChatRequest, ChatTarget } from './ai-chat-payload';
+import { refusalFrom } from './ai-stream';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingAIResponseError,
   userFacingChatError,
 } from './chat-error-messages';
 import {
-  appendMessages,
-  formatPreviousConversations,
-  getMessages,
+  appendTurnMessages,
   markAgentConversationFailed,
   markConversationFailed,
   saveCompleteConversation,
@@ -55,75 +55,30 @@ const logger = Logger.getInstance({ service: 'Non-streaming chat' });
 /** Set on success and failure so a caller can find the conversation a failed turn left behind. */
 export const CONVERSATION_ID_HEADER = 'X-Conversation-Id';
 
-// Read per call: tests and the replica-set suite toggle it without reloading this module.
-const isReplicaSet = (): boolean =>
-  process.env.REPLICA_SET_AVAILABLE === 'true';
-
-const inShortTransaction = <T>(work: (tx: Tx) => Promise<T>): Promise<T> =>
-  createUnitOfWork(isReplicaSet()).run(work);
+const withSession = (
+  session: ClientSession | null,
+): { session: ClientSession } | undefined =>
+  session ? { session } : undefined;
 
 export const openConversation = (
-  fields: NewSession,
-  userMessage: NewMessage,
-): Promise<ChatSessionDto> =>
-  inShortTransaction((tx) =>
-    getConversationRepository().openSession(fields, userMessage, tx),
-  );
-
-export interface ContinuedConversation {
-  conversation: ChatSessionDto;
-  /** History before this turn, in the shape the AI backend expects. */
-  previousConversations: ReturnType<typeof formatPreviousConversations>;
-}
-
-/** Who is asking. */
-export interface TurnViewer {
-  userId: string;
-  orgId: string;
-}
-
-export const continueConversation = async (
-  scope: SessionScope,
-  conversationId: string,
-  userMessage: NewMessage,
-  viewer: TurnViewer,
-): Promise<ContinuedConversation> => {
-  const { conversation, rows } = await inShortTransaction(async (tx) => {
-    const repo = getConversationRepository();
-    const found = await repo.findForTurn(
-      scope,
-      conversationId,
-      { orgId: viewer.orgId, userId: viewer.userId },
-      tx,
+  fields: Partial<IChatSession>,
+  userMessage: IMessage,
+): Promise<{
+  conversation: IChatSessionDocument;
+  userRow: IChatSessionMessageDocument;
+}> =>
+  inShortTransaction(async (session) => {
+    const conversation = (await new ChatSession(fields).save(
+      withSession(session),
+    )) as IChatSessionDocument;
+    const [userRow] = await appendTurnMessages(
+      conversation._id as mongoose.Types.ObjectId,
+      conversation.orgId,
+      [userMessage],
+      session,
     );
-    if (!found) {
-      throw new NotFoundError('Conversation not found');
-    }
-    // Read before the new question is appended, so the history is this turn's.
-    const rows = (await getMessages(
-      found._id,
-      { orgId: found.orgId },
-      tx,
-    )) as Array<Record<string, unknown>>;
-    await appendMessages(found._id, found.orgId, [userMessage], tx);
-    const saved = await repo.recordRunState(
-      found._id,
-      {
-        status: CONVERSATION_STATUS.INPROGRESS,
-        failReason: null,
-        lastActivityAt: Date.now(),
-      },
-      tx,
-    );
-    return { conversation: saved ?? found, rows };
+    return { conversation, userRow: userRow as IChatSessionMessageDocument };
   });
-  return {
-    conversation,
-    previousConversations: formatPreviousConversations(
-      rows as unknown as IMessage[],
-    ),
-  };
-};
 
 const STATUS_CODE_NAMES: Record<number, string> = {
   400: 'BAD_REQUEST',
@@ -178,12 +133,15 @@ const hasAnswer = (data: IAIResponse | undefined): data is IAIResponse =>
 
 export interface CompleteTurnOptions {
   target: ChatTarget;
-  conversation: ChatSessionDto;
+  conversation: IChatSessionDocument;
   aiBackend: string;
   request: AiChatRequest;
   headers: Record<string, string>;
   modelInfo: IAIModel;
   requestId?: string;
+  /** Present for a follow-up turn: stamps the answer and fences its write on the lease. */
+  run?: TurnRun;
+  answer?: TurnAnswerHooks;
 }
 
 export interface CompletedTurn {
@@ -201,7 +159,7 @@ export const completeTurn = async (
   const fail = async (
     failReason: string,
     errorType: string,
-    clientError: HttpError,
+    clientError: Error,
     stack?: string,
   ): Promise<never> => {
     const markFailed =
@@ -209,11 +167,19 @@ export const completeTurn = async (
         ? markAgentConversationFailed
         : markConversationFailed;
     try {
-      await markFailed(conversation, failReason, null, errorType, stack);
+      await markFailed(
+        conversation,
+        failReason,
+        null,
+        errorType,
+        stack,
+        undefined,
+        options.run,
+      );
     } catch (markError: unknown) {
       logger.error('Failed to record a failed non-streaming turn', {
         requestId,
-        conversationId: conversation._id,
+        conversationId: String(conversation._id),
         error:
           markError instanceof Error ? markError.message : String(markError),
       });
@@ -235,7 +201,7 @@ export const completeTurn = async (
   } catch (error: unknown) {
     logger.error('AI backend call failed', {
       requestId,
-      conversationId: conversation._id,
+      conversationId: String(conversation._id),
       error: error instanceof Error ? error.message : String(error),
     });
     const failReason = userFacingChatError(error);
@@ -248,11 +214,13 @@ export const completeTurn = async (
   }
 
   if (response.statusCode !== 200) {
-    const failReason = userFacingAIResponseError(response);
+    // A coded refusal reaches the client as its code, as a stream's does.
+    const refusal = refusalFrom(response.statusCode, response.data);
+    const failReason = refusal?.message ?? userFacingAIResponseError(response);
     return fail(
       failReason,
-      errorCodeOf(response.data),
-      rejectionFor(response.statusCode, failReason),
+      refusal?.code ?? errorCodeOf(response.data),
+      refusal ?? rejectionFor(response.statusCode, failReason),
     );
   }
   if (!hasAnswer(response.data)) {
@@ -263,13 +231,27 @@ export const completeTurn = async (
     );
   }
 
+  // The custom events a streamed run would have passed through, collected by the AI backend.
+  const { events } = response.data;
+  if (Array.isArray(events)) {
+    for (const event of events) {
+      const { name, value } = (event ?? {}) as {
+        name?: unknown;
+        value?: unknown;
+      };
+      if (typeof name === 'string') options.answer?.observe(name, value);
+    }
+  }
+
   try {
     const saved = (await saveCompleteConversation(
       conversation,
       response.data,
-      conversation.orgId,
+      String(conversation.orgId),
       null,
       options.modelInfo,
+      options.run,
+      options.answer,
     )) as Record<string, unknown>;
     return {
       conversation: saved,
@@ -280,6 +262,9 @@ export const completeTurn = async (
       ...searchDegradedMeta(response.data),
     };
   } catch (error: unknown) {
+    if (error instanceof LeaseLostError) {
+      throw new RunLostError();
+    }
     return fail(
       CHAT_ERROR_MESSAGES.saveFailed,
       'save_error',

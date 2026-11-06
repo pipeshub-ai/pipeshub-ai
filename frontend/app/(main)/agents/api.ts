@@ -1,9 +1,15 @@
 import { apiClient } from '@/lib/api';
 import { refreshSwrKey, revalidateSwrNamespace, SWR_NS, writeSwrKey } from '@/lib/api/swr-cache';
 import { onSessionEnd } from '@/lib/api/session-cache';
-import { mapApiConversationToConversation, type ForkConversationResult } from '@/chat/api';
+import { isGoneError } from '@/lib/api/api-error';
+import {
+  mapApiConversationToConversation,
+  mapArchivedConversation,
+  type ForkConversationResult,
+} from '@/chat/api';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from '@/chat/constants';
+import { chatExtension } from '@/config';
 
 // The agent conversations endpoint returns both owned and shared lists in one
 // response, unlike `/api/v1/conversations` which now takes a `source` param.
@@ -478,18 +484,23 @@ const pendingAgentRequests = new Map<string, Promise<GetAgentResult>>();
 // A request from the previous session may never settle; the next user must not wait on it.
 onSessionEnd(() => pendingAgentRequests.clear());
 
-const pendingAgentId = (agentKey: string, quiet: boolean) => `${agentKey}|${quiet}`;
+/** `quietWhenGone`: no toast when the agent no longer exists or is no longer visible. */
+type AgentRequestMode = 'quiet' | 'quietWhenGone' | 'loud';
+
+const pendingAgentId = (agentKey: string, mode: AgentRequestMode) => `${agentKey}|${mode}`;
 
 /** A request that started before this agent was written must not answer a later read. */
 function forgetPendingAgent(agentKey: string): void {
-  pendingAgentRequests.delete(pendingAgentId(agentKey, true));
-  pendingAgentRequests.delete(pendingAgentId(agentKey, false));
+  for (const mode of ['quiet', 'quietWhenGone', 'loud'] as const) {
+    pendingAgentRequests.delete(pendingAgentId(agentKey, mode));
+  }
 }
 
-async function requestAgent(agentKey: string, quiet: boolean): Promise<GetAgentResult> {
+async function requestAgent(agentKey: string, mode: AgentRequestMode): Promise<GetAgentResult> {
+  const suppressErrorToast = mode === 'quiet' ? true : mode === 'quietWhenGone' ? isGoneError : undefined;
   const { data } = await apiClient.get<GetAgentApiResponse>(
     `${AGENTS_BASE_URL}/${agentKey}`,
-    quiet ? { suppressErrorToast: true } : undefined,
+    suppressErrorToast ? { suppressErrorToast } : undefined,
   );
   const agent = data?.agent;
   if (!agent || typeof agent !== 'object') {
@@ -526,13 +537,14 @@ export const AgentsApi = {
   /**
    * `quiet` keeps a failed lookup from raising the global error toast, for callers that already cope
    * with it: someone a chat was shared with may not be allowed to open the agent it belongs to.
+   * `quietWhenGone` keeps the toast only for a 404 or 403, for callers that show their own "not found" state.
    */
-  async getAgent(agentKey: string, options?: { quiet?: boolean }): Promise<GetAgentResult> {
-    const quiet = Boolean(options?.quiet);
-    const id = pendingAgentId(agentKey, quiet);
+  async getAgent(agentKey: string, options?: { quiet?: boolean; quietWhenGone?: boolean }): Promise<GetAgentResult> {
+    const mode: AgentRequestMode = options?.quiet ? 'quiet' : options?.quietWhenGone ? 'quietWhenGone' : 'loud';
+    const id = pendingAgentId(agentKey, mode);
     const pending = pendingAgentRequests.get(id);
     if (pending) return pending;
-    const request = requestAgent(agentKey, quiet).finally(() => {
+    const request = requestAgent(agentKey, mode).finally(() => {
       if (pendingAgentRequests.get(id) === request) pendingAgentRequests.delete(id);
     });
     pendingAgentRequests.set(id, request);
@@ -541,16 +553,19 @@ export const AgentsApi = {
 
   /**
    * Single agent conversation + messages (chat history).
-   * GET /api/v1/agents/:agentId/conversations/:conversationId
+   * GET /api/v1/agents/:agentId/conversations/:conversationId, on the path the chat extension gives the conversation.
    */
   async fetchAgentConversation(
     agentId: string,
     conversationId: string,
-    options?: { page?: number; limit?: number }
+    options?: { page?: number; limit?: number; quietWhenGone?: boolean }
   ): Promise<FetchAgentConversationResult> {
     const { data } = await apiClient.get<AgentConversationDetailApiResponse>(
-      `${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}`,
-      { params: { page: options?.page, limit: options?.limit } },
+      chatExtension.conversationPath(conversationId, agentId),
+      {
+        params: { page: options?.page, limit: options?.limit },
+        ...(options?.quietWhenGone ? { suppressErrorToast: isGoneError } : {}),
+      },
     );
 
     const conv = data?.conversation;
@@ -693,7 +708,7 @@ export const AgentsApi = {
     return {
       groups: (data?.groups ?? []).map((g) => ({
         agentKey: g.agentKey,
-        conversations: g.conversations.map((c: any) => mapApiConversationToConversation(c)),
+        conversations: g.conversations.map((c: any) => mapArchivedConversation(c)),
         pagination: g.pagination,
       })),
       agentPagination: data?.agentPagination ?? {
@@ -725,7 +740,7 @@ export const AgentsApi = {
     }>(`${AGENTS_BASE_URL}/${agentId}/conversations/show/archives`, { params: query });
 
     return {
-      conversations: (data?.conversations ?? []).map(mapApiConversationToConversation),
+      conversations: (data?.conversations ?? []).map((c) => mapArchivedConversation(c)),
       sharedConversations: [],
       pagination: data?.pagination ?? {
         page: 1, limit: 20, totalCount: 0, totalPages: 0, hasNextPage: false, hasPrevPage: false,
@@ -748,8 +763,11 @@ export const AgentsApi = {
   },
 
   /** POST /api/v1/agents/create */
-  async createAgent(payload: AgentFormPayload): Promise<AgentDetail> {
-    const { data } = await apiClient.post<CreateAgentApiResponse>(`${AGENTS_BASE_URL}/create`, payload);
+  async createAgent(
+    payload: AgentFormPayload,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<AgentDetail> {
+    const { data } = await apiClient.post<CreateAgentApiResponse>(`${AGENTS_BASE_URL}/create`, payload, options);
     // The request succeeded, so the agent may exist even if the body lacks it.
     revalidateSwrNamespace(SWR_NS.agentLists);
     if (!data?.agent) throw new Error('Create agent failed');
@@ -760,8 +778,12 @@ export const AgentsApi = {
    * PUT /api/v1/agents/:agentKey
    * Some deployments return only `{ status, message }` on success; we then GET the agent.
    */
-  async updateAgent(agentKey: string, payload: Partial<AgentFormPayload>): Promise<AgentDetail> {
-    const { data } = await apiClient.put<UpdateAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`, payload);
+  async updateAgent(
+    agentKey: string,
+    payload: Partial<AgentFormPayload>,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<AgentDetail> {
+    const { data } = await apiClient.put<UpdateAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`, payload, options);
 
     revalidateSwrNamespace(SWR_NS.agentLists);
     forgetPendingAgent(agentKey);
@@ -791,11 +813,12 @@ export const AgentsApi = {
   },
 
   /** GET /api/v1/knowledgeBase/ — collections for agent builder (limit 1–100 per request). */
-  async getKnowledgeBasesForBuilder(params?: { page?: number; limit?: number }): Promise<KnowledgeBasesForBuilderResult> {
+  async getKnowledgeBasesForBuilder(params?: { page?: number; limit?: number; quiet?: boolean }): Promise<KnowledgeBasesForBuilderResult> {
     const limit = Math.min(Math.max(params?.limit ?? KB_PAGE_MAX, 1), KB_PAGE_MAX);
     const page = Math.max(params?.page ?? 1, 1);
     const { data } = await apiClient.get<KnowledgeBaseListApiResponse>('/api/v1/knowledgeBase/', {
       params: { page, limit },
+      suppressErrorToast: params?.quiet,
     });
     return { knowledgeBases: data?.knowledgeBases ?? [] };
   },
@@ -825,6 +848,7 @@ export const AgentsApi = {
     sortBy?: string;
     sortOrder?: 'asc' | 'desc';
     flattened?: boolean;
+    quiet?: boolean;
   }): Promise<{ nodes: KnowledgeHubAppNode[]; nextCursor: string | null }> {
     const query: Record<string, string | number | boolean> = {};
     // Only ever hand back a cursor the server issued; inventing one is a 400.
@@ -841,7 +865,7 @@ export const AgentsApi = {
 
     const { data } = await apiClient.get<KnowledgeHubNodesApiResponse>(
       '/api/v1/knowledgeBase/knowledge-hub/nodes',
-      { params: query }
+      { params: query, suppressErrorToast: params?.quiet }
     );
 
     const items = (data?.items ?? []).filter((node) => node?.id);

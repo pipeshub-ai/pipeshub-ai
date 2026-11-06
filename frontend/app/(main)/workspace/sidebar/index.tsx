@@ -21,7 +21,7 @@ import {
 } from '@/lib/store/feature-flags-store';
 import { YourConnectorsIcon } from '@/app/components/ui/your-connectors-icon';
 import { BetaBadge } from '@/app/components/ui/beta-badge';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 
@@ -108,7 +108,7 @@ export default function WorkspaceSidebar() {
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
-  const isMobile = useIsMobile();
+  const isMobile = useIsBelowDesktop();
   const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
 
@@ -117,9 +117,14 @@ export default function WorkspaceSidebar() {
     ? rawPathname.slice(0, -1)
     : rawPathname;
 
-  const [isPeopleExpanded, setIsPeopleExpanded] = useState(
-    PEOPLE_ROUTES.some((route) => pathname.startsWith(route))
-  );
+  const isPeopleChildActive = PEOPLE_ROUTES.some((route) => pathname.startsWith(route));
+  const [isPeopleExpanded, setIsPeopleExpanded] = useState(isPeopleChildActive);
+  // Arriving on a People page opens People, so the selected row is never hidden in it; a manual collapse stays.
+  const [wasOnPeoplePage, setWasOnPeoplePage] = useState(isPeopleChildActive);
+  if (isPeopleChildActive !== wasOnPeoplePage) {
+    setWasOnPeoplePage(isPeopleChildActive);
+    if (isPeopleChildActive) setIsPeopleExpanded(true);
+  }
 
   const flagEnabled: Record<FeatureFlagGate, boolean> = {
     mcp: mcpEnabled,
@@ -151,7 +156,6 @@ export default function WorkspaceSidebar() {
     }
     return false;
   };
-  const isPeopleChildActive = PEOPLE_ROUTES.some((route) => pathname.startsWith(route));
 
   const visibleOverviewItems = OVERVIEW_ITEMS.filter(isNavItemVisible);
   const visibleWorkspaceItems = WORKSPACE_ITEMS.filter(isNavItemVisible);
@@ -200,7 +204,6 @@ export default function WorkspaceSidebar() {
               label={t('workspace.sidebar.sections.people')}
               isExpanded={isPeopleExpanded}
               onToggle={() => setIsPeopleExpanded((prev) => !prev)}
-              hasActiveChild={isPeopleChildActive}
             >
               {visiblePeopleItems.map((item) => (
                 <WorkspaceSidebarItem

@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { installMemoryStorage, jwtExpiringIn } from '@/lib/api/__tests__/sse-response';
+import { en } from '@/lib/__tests__/test-i18n';
 import type { CitationApiResponse } from '@/chat/types';
 import type { CitationData, CitationMaps, StreamingCitationData } from '../types';
 
@@ -23,6 +24,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 const { useAuthStore } = await import('@/lib/store/auth-store');
 const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
 const { useChatStore } = await import('@/chat/store');
+const { useToastStore } = await import('@/lib/store/toast-store');
 const {
   buildCitationMapsFromApi,
   buildCitationMapsFromStreaming,
@@ -245,6 +247,22 @@ describe('clicking a citation', () => {
       fakeApi({ [`GET ${KB}/record/r1`]: { status: 200, data: {} } });
       await actions().onPreview(citation());
       expect(preview()).toMatchObject({ isLoading: false, error: 'Record details unavailable' });
+    });
+
+    it.each([403, 404])('says the document cannot be opened when the server answers %i, in the preview only (no "not found" toast)', async (status) => {
+      useToastStore.getState().clearAll();
+      fakeApi({ [`GET ${KB}/record/r1`]: { status } });
+      await actions().onPreview(citation());
+      expect(preview()).toMatchObject({ isLoading: false, error: en.chat.cannotOpenSource });
+      // A source someone else's answer cites may be one the reader can't open: "moved or deleted" would be wrong.
+      expect(useToastStore.getState().toasts).toEqual([]);
+    });
+
+    it('keeps the general error for any other failure', async () => {
+      fakeApi({ [`GET ${KB}/record/r1`]: { status: 500 } });
+      await actions().onPreview(citation());
+      expect(preview()?.error).toBeTruthy();
+      expect(preview()?.error).not.toBe(en.chat.cannotOpenSource);
     });
   });
 });

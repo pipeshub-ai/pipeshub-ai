@@ -15,7 +15,7 @@ import { McpServerCard } from './mcp-server-card';
 import { EnterpriseFeatureNotice } from '@/config';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { PAGE_PADDING_TOP, usePagePaddingTop } from '@/app/(main)/workspace/components/settings-page-container';
 import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 
 // ========================================
@@ -71,6 +71,7 @@ export function McpCatalogLayout({
   onOpenPersonal,
 }: McpCatalogLayoutProps) {
   const isMobile = useIsMobile();
+  const pagePaddingTop = usePagePaddingTop(PAGE_PADDING_TOP);
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>('all');
 
@@ -164,7 +165,7 @@ export function McpCatalogLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
+        paddingTop: pagePaddingTop,
         paddingBottom: 64,
         paddingInline: pagePaddingX(100),
         overflowY: 'auto',

@@ -1,8 +1,12 @@
 import 'reflect-metadata';
+import { EventEmitter } from 'events';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { OutboxDispatcher } from '../../../../src/libs/services/outbox/outbox.dispatcher';
+import {
+  OutboxDispatcher,
+  wakeOutbox,
+} from '../../../../src/libs/services/outbox/outbox.dispatcher';
 import { OutboxEvent } from '../../../../src/libs/repositories/outbox/schema/outbox.schema';
 
 function makeLogger() {
@@ -315,5 +319,146 @@ describe('OutboxDispatcher', () => {
 
     release!();
     await first;
+  });
+
+  describe('waking instead of waiting for the poll', () => {
+    /** Lets the stubbed database calls of a pass run; nothing here waits on a timer. */
+    const settle = async () => {
+      for (let i = 0; i < 50; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    };
+    /** A poll so long that only a wake can have delivered anything in a test. */
+    const NEVER = 60 * 60 * 1000;
+    let running: OutboxDispatcher[] = [];
+    const startDispatcher = (producer: ReturnType<typeof makeProducer>, logger = makeLogger(), inserts: (() => unknown) | null = null) => {
+      const dispatcher = new OutboxDispatcher(producer as any, logger as any, NEVER, { inserts: inserts as any });
+      dispatcher.start();
+      running.push(dispatcher);
+      return dispatcher;
+    };
+    afterEach(async () => {
+      await Promise.all(running.map((d) => d.stop()));
+      running = [];
+    });
+
+    it('a row written outside a transaction goes out at once', async () => {
+      stubClaims([row()]);
+      const producer = makeProducer();
+      startDispatcher(producer);
+
+      wakeOutbox();
+      await settle();
+
+      expect(producer.publish.calledOnce).to.equal(true);
+    });
+
+    it('a row written in a transaction goes out once its session ends, never before the commit, and several rows wake it once', async () => {
+      const { find } = stubClaims([row()]);
+      const producer = makeProducer();
+      startDispatcher(producer);
+      const session = new EventEmitter();
+
+      wakeOutbox(session as never);
+      wakeOutbox(session as never);
+      await settle();
+      expect(find.called, 'nothing is looked for before the commit').to.equal(false);
+      expect(session.listenerCount('ended')).to.equal(1);
+
+      session.emit('ended');
+      await settle();
+      expect(producer.publish.calledOnce).to.equal(true);
+    });
+
+    it('a wake during a pass makes it look once more, so a row written meanwhile is not left for the poll', async () => {
+      const first = row();
+      const second = row({ orderingKey: 'user:org-1:user-2' });
+      const page = (rows: unknown[]) =>
+        ({ sort: () => ({ skip: (n: number) => ({ limit: () => ({ exec: async () => (n === 0 ? rows : []) }) }) }) }) as any;
+      const find = sinon.stub(OutboxEvent, 'find');
+      find.onCall(0).returns(page([first]));
+      find.onCall(1).returns(page([]));
+      find.onCall(2).returns(page([second]));
+      find.returns(page([]));
+      sinon.stub(OutboxEvent, 'exists').resolves(null as any);
+      const claim = sinon.stub(OutboxEvent, 'findOneAndUpdate');
+      claim.onCall(0).returns({ exec: async () => first } as any);
+      claim.onCall(1).returns({ exec: async () => second } as any);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const producer = makeProducer({ publish: sinon.stub().onFirstCall().callsFake(() => gate).resolves() });
+      const dispatcher = startDispatcher(producer);
+
+      const pass = dispatcher.drain();
+      await settle();
+      // The second row is written while the first is being published.
+      wakeOutbox();
+      release();
+      expect(await pass).to.equal(2);
+      expect(producer.publish.args.map((a) => a[1].key)).to.deep.equal(['userAdded', 'userAdded']);
+      expect(find.callCount).to.equal(4);
+    });
+
+    it('a row another instance wrote wakes it through the insert stream; a stream that breaks opens again while the poll carries on', async () => {
+      const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+      try {
+        stubClaims([row()]);
+        const producer = makeProducer();
+        const logger = makeLogger();
+        const streams: Array<EventEmitter & { close: sinon.SinonStub }> = [];
+        const open = sinon.stub().callsFake(() => {
+          const stream = Object.assign(new EventEmitter(), { close: sinon.stub().resolves() });
+          streams.push(stream);
+          return stream;
+        });
+        const dispatcher = startDispatcher(producer, logger, open);
+        expect(open.callCount).to.equal(1);
+
+        streams[0]!.emit('change', { _id: { _data: 'token' } });
+        await settle();
+        expect(producer.publish.calledOnce).to.equal(true);
+
+        streams[0]!.emit('error', new Error('primary stepped down'));
+        expect(logger.warn.calledOnce).to.equal(true);
+        expect(streams[0]!.close.calledOnce).to.equal(true);
+        clock.tick(999);
+        expect(open.callCount).to.equal(1);
+        clock.tick(1);
+        expect(open.callCount).to.equal(2);
+
+        await dispatcher.stop();
+        expect(streams[1]!.close.calledOnce).to.equal(true);
+        clock.tick(60_000);
+        expect(open.callCount).to.equal(2);
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it('a stopped dispatcher is not woken', async () => {
+      const { find } = stubClaims([row()]);
+      const dispatcher = startDispatcher(makeProducer());
+      await dispatcher.stop();
+
+      wakeOutbox();
+      await settle();
+
+      expect(find.called).to.equal(false);
+    });
+
+    it('opens no insert stream on a standalone server, where there are none', () => {
+      const before = process.env.REPLICA_SET_AVAILABLE;
+      process.env.REPLICA_SET_AVAILABLE = 'false';
+      try {
+        const logger = makeLogger();
+        const dispatcher = new OutboxDispatcher(makeProducer() as any, logger as any, NEVER);
+        dispatcher.start();
+        running.push(dispatcher);
+        expect(logger.info.firstCall.args[1]).to.deep.include({ wakesOnInsert: false });
+      } finally {
+        if (before === undefined) delete process.env.REPLICA_SET_AVAILABLE;
+        else process.env.REPLICA_SET_AVAILABLE = before;
+      }
+    });
   });
 });

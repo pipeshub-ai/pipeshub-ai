@@ -5,7 +5,12 @@ import {
   IFollowUpQuestion,
   IMessageCitation,
 } from '../types/conversation.interfaces';
-import { CONFIDENCE_LEVELS, REASONING_EFFORT_VALUES } from '../constants/constants';
+import {
+  CONFIDENCE_LEVELS,
+  REASONING_EFFORT_VALUES,
+} from '../constants/constants';
+import { unavailableToolSchema } from './unavailable-tool.schema';
+import { schemaExtensions } from '../../../edition-schemas';
 
 const toolCallItemSchema = new Schema(
   {
@@ -157,12 +162,25 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
       type: Schema.Types.ObjectId,
       required: true,
       ref: 'ChatSession',
-      index: true,
+      // No index of its own: `{sessionId, seq}` serves every lookup by session.
     },
     orgId: { type: Schema.Types.ObjectId, required: true, index: true },
     // Per-session monotonic sort key allocated from the parent session's
     // `nextSeq` counter. Gaps are legal; never treat this as a count or index.
     seq: { type: Number, required: true },
+    // The session `rev` this row was last written at (insert, in-place change or removal), one value
+    // per row, so a reader holding a `rev` can ask for exactly the rows changed after it. Absent on
+    // rows written before stamping existed.
+    changeRev: { type: Number },
+    // A removed row stays, emptied, as a marker that it changed; every read skips it (NOT_REMOVED).
+    removedAt: { type: Date },
+    removedBy: { type: Schema.Types.ObjectId },
+
+    // Authorship. Not required and no defaults: legacy rows lack them and read
+    // as authored by `session.userId`.
+    authorUserId: { type: Schema.Types.ObjectId }, // user_query
+    requestedBy: { type: Schema.Types.ObjectId }, // bot_response | error | tool_call
+    inReplyTo: { type: Schema.Types.ObjectId },
 
     messageType: {
       type: String,
@@ -187,6 +205,7 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     status: { type: String, enum: ['stopped'] },
     citations: [messageCitationSchema],
     confidence: { type: String, enum: CONFIDENCE_LEVELS },
+    answerMatchType: { type: String, enum: ['Capability Card'] },
     followUpQuestions: [followUpQuestionSchema],
     feedback: [feedbackSchema],
     metadata: {
@@ -276,6 +295,10 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     // Mixed for the same reason as the legacy schema's identical field:
     // shape varies by `type`, and `sub_agent` nests the same shape recursively.
     parts: [Schema.Types.Mixed],
+    // Tools the requester could not use on this turn (additive).
+    unavailableTools: { type: [unavailableToolSchema], default: undefined },
+    // An `error` row the AI service refused to run (additive): trying again cannot help.
+    errorCode: { type: String },
   },
   {
     timestamps: true, // parity with the old embedded messageSchema
@@ -287,6 +310,11 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
 // Serves both the seq-ordered read path and duplicate-seq protection —
 // the real backstop for allocateSeq's optimistic $inc allocation.
 chatSessionMessageSchema.index({ sessionId: 1, seq: 1 }, { unique: true });
+
+schemaExtensions.chatSessionMessage(chatSessionMessageSchema);
+
+/** Query fragment every read of rows adds, so removed rows are never shown or counted. */
+export const NOT_REMOVED = { removedAt: { $exists: false } } as const;
 
 export const ChatSessionMessage: Model<IChatSessionMessageDocument> =
   mongoose.model<IChatSessionMessageDocument>(

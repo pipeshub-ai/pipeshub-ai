@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { DropdownMenu, Flex, IconButton, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { IconMenuItem } from '@/app/components/ui/icon-menu-item';
 import { connectionCta, connectionStatus, kindCounts, type ConnectionStatus } from '../toolset-form';
 import type { ApiToolset } from '../types';
 
@@ -92,16 +93,14 @@ export function ApiActionCard({ toolset, isAdmin, onOpen, onEdit, onDelete }: Ap
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content size="1" align="end" onClick={(e) => e.stopPropagation()}>
                   {onEdit ? (
-                    <DropdownMenu.Item onSelect={onEdit}>
-                      <MaterialIcon name="edit" size={14} />
+                    <IconMenuItem icon="edit" onSelect={onEdit}>
                       {t('workspace.apiToolsets.cta.edit')}
-                    </DropdownMenu.Item>
+                    </IconMenuItem>
                   ) : null}
                   {onDelete ? (
-                    <DropdownMenu.Item color="red" onSelect={onDelete}>
-                      <MaterialIcon name="delete" size={14} />
+                    <IconMenuItem icon="delete" color="red" onSelect={onDelete}>
                       {t('workspace.apiToolsets.cta.delete')}
-                    </DropdownMenu.Item>
+                    </IconMenuItem>
                   ) : null}
                 </DropdownMenu.Content>
               </DropdownMenu.Root>

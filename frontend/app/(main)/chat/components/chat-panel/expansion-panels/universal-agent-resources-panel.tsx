@@ -16,12 +16,12 @@ import {
   Checkbox,
   Flex,
   IconButton,
+  SegmentedControl,
   Spinner,
   Text,
   TextField,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore, ASSISTANT_CTX, getUniversalCombinedCatalog } from '@/chat/store';
@@ -73,24 +73,40 @@ function UniversalAgentFilterTablist({
   /** Tabs excluded entirely (not just disabled) — e.g. 'mcp' when ENABLE_MCP is off. */
   hiddenTabs?: TabValue[];
 }) {
-  const items = useMemo(
-    () =>
-      TAB_VALUES.filter((v) => !hiddenTabs.includes(v)).map((v) => ({
-        value: v,
-        label: labels[v],
-        disabled: disabledTabs.includes(v),
-      })),
-    [hiddenTabs, disabledTabs, labels]
+  const { t } = useTranslation();
+  const visibleTabValues = useMemo(
+    () => TAB_VALUES.filter((v) => !hiddenTabs.includes(v)),
+    [hiddenTabs]
   );
+
   return (
-    <SegmentedTabs
-      kind="tabs"
-      size="1"
-      aria-label="Universal agent filters"
+    // The one segmented control of the apps panel; its items hug their labels.
+    // Items cannot be disabled one by one, so a disabled tab ignores the pick.
+    <SegmentedControl.Root
+      size="2"
+      radius="small"
+      aria-label={t('chat.agentResources.filterTabsLabel', { defaultValue: 'What to show' })}
       value={value}
-      onValueChange={onValueChange}
-      items={items}
-    />
+      onValueChange={(next) => {
+        const tab = next as TabValue;
+        if (!disabledTabs.includes(tab)) onValueChange(tab);
+      }}
+      style={{ flexShrink: 0, maxWidth: '100%' }}
+    >
+      {visibleTabValues.map((tabValue) => {
+        const isDisabled = disabledTabs.includes(tabValue);
+        return (
+          <SegmentedControl.Item
+            key={tabValue}
+            value={tabValue}
+            aria-disabled={isDisabled || undefined}
+            style={isDisabled ? { color: 'var(--text-placeholder)', cursor: 'not-allowed' } : undefined}
+          >
+            {labels[tabValue]}
+          </SegmentedControl.Item>
+        );
+      })}
+    </SegmentedControl.Root>
   );
 }
 
@@ -221,6 +237,12 @@ onSessionEnd(() => {
 interface UniversalAgentResourcesPanelProps {
   onToggleView?: () => void;
   viewMode?: ExpansionViewMode;
+  /**
+   * The sources this composer's question is narrowed to, and where a change goes. Defaults to the chat's own filters.
+   * The Collections and All records dock passes its own, so a pick there scopes only the question it sends.
+   */
+  selection?: CollectionScopeSelection;
+  onSelectionChange?: (next: CollectionScopeSelection) => void;
 }
 
 /**
@@ -237,6 +259,8 @@ interface UniversalAgentResourcesPanelProps {
 export function UniversalAgentResourcesPanel({
   onToggleView,
   viewMode = 'inline',
+  selection: selectionProp,
+  onSelectionChange,
 }: UniversalAgentResourcesPanelProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<TabValue>('connectors');
@@ -253,7 +277,9 @@ export function UniversalAgentResourcesPanel({
   const [apiActions, setApiActions] = useState<ApiToolset[]>(() => _actionsPageCache.apiActions);
 
   const settings = useChatStore((s) => s.settings);
-  const setFilters = useChatStore((s) => s.setFilters);
+  const setChatFilters = useChatStore((s) => s.setFilters);
+  const selection = selectionProp ?? settings.filters;
+  const setFilters = onSelectionChange ?? setChatFilters;
   const agentCapabilities = settings.agentCapabilities;
 
   const toolGroups = useChatStore((s) => s.universalAgentToolGroups);
@@ -929,7 +955,7 @@ export function UniversalAgentResourcesPanel({
   return (
     <Flex
       direction="column"
-      gap="3"
+      gap="4"
       style={{ flex: 1, minHeight: 0, height: '100%', overflow: 'hidden' }}
     >
       {/* Model gate warning — non-dismissable; send button is disabled externally */}
@@ -1010,9 +1036,10 @@ export function UniversalAgentResourcesPanel({
             The component only unmounts when the user switches to the Actions tab. */}
         {(tab === 'connectors' || tab === 'collections') && (
           <CollectionsTab
-            selection={settings.filters}
+            selection={selection}
             onSelectionChange={handleCollectionSelectionChange}
             filterMode={tab}
+            appearance="apps-panel"
           />
         )}
 

@@ -10,7 +10,8 @@ vi.mock('@/lib/hooks/use-is-mobile', () => ({
   useIsMobile: () => viewport.mobile,
   useIsBelowDesktop: () => viewport.belowDesktop,
 }));
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+const router = vi.hoisted(() => ({ push: vi.fn() }));
+vi.mock('next/navigation', () => ({ useRouter: () => router }));
 vi.mock('@/config', () => ({ PermissionLockIcon: () => <span>Locked</span> }));
 vi.mock('@/app/(main)/workspace/users/api', () => ({ UsersApi: { getUsersByIds: vi.fn(async () => []) } }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
@@ -44,6 +45,14 @@ afterEach(() => {
   cleanup();
   viewport.mobile = false;
   viewport.belowDesktop = false;
+});
+
+describe('the builder header back button', () => {
+  it('goes to the Agents page when the builder gives it no back handler', () => {
+    renderHeader();
+    fireEvent.click(screen.getByRole('button', { name: 'Go back' }));
+    expect(router.push).toHaveBeenCalledWith('/agents/');
+  });
 });
 
 describe('AgentBuilderHeader', () => {

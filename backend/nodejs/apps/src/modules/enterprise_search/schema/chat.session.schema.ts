@@ -1,6 +1,7 @@
 import mongoose, { Schema, Model } from 'mongoose';
 import { IChatSessionDocument } from '../types/conversation.interfaces';
 import { REASONING_EFFORT_VALUES } from '../constants/constants';
+import { schemaExtensions } from '../../../edition-schemas';
 
 /**
  * Single collection backing both plain chat and agent chat threads
@@ -27,7 +28,7 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
     // read as a message count (messages can be soft/hard-removed leaving gaps).
     nextSeq: { type: Number, default: 0, select: false },
 
-    userId: { type: Schema.Types.ObjectId, required: true, index: true },
+    userId: { type: Schema.Types.ObjectId, required: true },
     orgId: { type: Schema.Types.ObjectId, required: true, index: true },
     title: { type: String },
     initiator: { type: Schema.Types.ObjectId, required: true, index: true },
@@ -90,7 +91,7 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
     },
 
     // ---- Agent-only fields (undefined when sessionType === 'chat') ----
-    agentKey: { type: String, index: true }, // Reference to agent _key in ArangoDB
+    agentKey: { type: String }, // Reference to agent _key in ArangoDB
     conversationSource: {
       type: String,
       enum: ['agent_chat'],
@@ -104,7 +105,7 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
 
     // ---- Project linking (optional on both chat and agent sessions) ----
     /** Reference to `projects` collection. Absent = not linked to a project. */
-    projectId: { type: Schema.Types.ObjectId, index: true },
+    projectId: { type: Schema.Types.ObjectId },
     /**
      * Per-conversation override of the owning project's `chatSharing`
      * default. 'project' exposes this chat to every project member with at
@@ -113,23 +114,35 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
      * getProjectConversations for the read-side of this rule.
      */
     projectVisibility: { type: String, enum: ['private', 'project'] },
+    // Bumped on every visible change, so a reader can tell its copy is stale.
+    rev: { type: Number, default: 0 },
   },
   { timestamps: true, collection: 'chatSessions' },
 );
 
 // Create additional indexes as needed
+// List indexes end in `_id` so each list branch is read in sort order (`lastActivityAt`, then `_id`).
+// No single-field userId, agentKey or projectId index: each leads a compound index below.
 chatSessionSchema.index({
   sessionType: 1,
   orgId: 1,
   userId: 1,
   lastActivityAt: -1,
+  _id: -1,
 });
 chatSessionSchema.index({ sessionType: 1, orgId: 1, initiator: 1 });
 chatSessionSchema.index({ agentKey: 1, orgId: 1 });
 chatSessionSchema.index({ userId: 1, agentKey: 1 });
 chatSessionSchema.index({ isShared: 1 });
-chatSessionSchema.index({ projectId: 1, orgId: 1, isDeleted: 1, lastActivityAt: -1 });
-chatSessionSchema.index({ lastActivityAt: -1 });
+chatSessionSchema.index({
+  projectId: 1,
+  orgId: 1,
+  isDeleted: 1,
+  lastActivityAt: -1,
+  _id: -1,
+});
+
+schemaExtensions.chatSession(chatSessionSchema);
 
 export const ChatSession: Model<IChatSessionDocument> =
   mongoose.model<IChatSessionDocument>('ChatSession', chatSessionSchema);

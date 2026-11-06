@@ -199,7 +199,7 @@ function ActionCard({
         const isDanger = action.variant === 'danger';
         const isPending = pendingIndex === i || action.isLoading === true;
         const anyPending = pendingIndex !== null;
-        const iconColor = isDanger ? 'var(--red-11)' : 'var(--slate-11)';
+        const iconColor = isDanger ? 'var(--red-11)' : 'var(--text-secondary)';
 
         const handleClick = (e: React.MouseEvent) => {
           e.stopPropagation();
@@ -270,7 +270,9 @@ function ActionCard({
               {isPending ? (
                 <Spinner size={14} color={iconColor} />
               ) : (
-                <MaterialIcon name={action.icon} size={16} color={iconColor} />
+                <span aria-hidden style={{ display: 'inline-flex', flexShrink: 0 }}>
+                  <MaterialIcon name={action.icon} size={16} color={iconColor} />
+                </span>
               )}
               <Text size="2">{action.label}</Text>
             </Flex>
@@ -414,15 +416,13 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                   opacity: isDisabled ? 0.45 : 1,
                 }}
               >
-                <MaterialIcon
-                  name={action.icon}
-                  size={16}
-                  color={isDanger ? 'var(--red-10)' : 'var(--slate-11)'}
-                />
+                <span aria-hidden style={{ display: 'inline-flex', flexShrink: 0 }}>
+                  <MaterialIcon name={action.icon} size={16} color={isDanger ? 'var(--red-11)' : 'var(--text-secondary)'} />
+                </span>
                 <Text
                   size="1"
                   style={{
-                    color: isDanger ? 'var(--red-10)' : 'var(--slate-11)',
+                    color: isDanger ? 'var(--red-11)' : 'var(--text-secondary)',
                   }}
                 >
                   {action.label}

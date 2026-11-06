@@ -64,6 +64,10 @@ function FeatureFlagRow({
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
 }) {
+  const { t } = useTranslation();
+  const description = flag.descriptionKey
+    ? t(flag.descriptionKey, { defaultValue: flag.description, description: flag.description })
+    : flag.description;
   return (
     <Flex
       align="center"
@@ -78,7 +82,7 @@ function FeatureFlagRow({
         >
           {flag.label || flag.key}
         </Text>
-        {flag.description && (
+        {description && (
           <Text
             size="1"
             style={{
@@ -89,7 +93,7 @@ function FeatureFlagRow({
               fontWeight: 300,
             }}
           >
-            {flag.description}
+            {description}
           </Text>
         )}
       </Box>

@@ -26,6 +26,10 @@ function matchesFilter(
       !(condition instanceof Date) &&
       !(condition instanceof mongoose.Types.ObjectId);
     if (isPlainOperatorObject) {
+      if ('$not' in condition) {
+        const pattern = (condition as { $not: unknown }).$not;
+        return !(pattern instanceof RegExp && pattern.test(String(value)));
+      }
       if ('$ne' in condition) {
         return String(value) !== String((condition as { $ne: unknown }).$ne);
       }
@@ -61,16 +65,18 @@ describe('notification/routes/notification.routes', () => {
   let container: Container;
   let userId: string;
   let orgId: string;
+  let token: Record<string, unknown>;
   let app: express.Express;
   let server: Server | undefined;
 
   beforeEach(() => {
     userId = new mongoose.Types.ObjectId().toString();
     orgId = new mongoose.Types.ObjectId().toString();
+    token = {};
     container = new Container();
     const authMiddleware = {
       authenticate: sinon.stub().callsFake((req: any, _res: any, next: any) => {
-        req.user = { userId, orgId };
+        req.user = { userId, orgId, ...token };
         next();
       }),
     };
@@ -499,5 +505,102 @@ describe('notification/routes/notification.routes', () => {
     await new Promise<void>((resolve, reject) =>
       srv.close((err) => (err ? reject(err) : resolve())),
     );
+  });
+  describe('chat notices and token scopes', () => {
+    const KB_ONLY = { isOAuth: true, oauthScopes: ['kb:read'] };
+    const CONVERSATION_READ = { isOAuth: true, oauthScopes: ['kb:read', 'conversation:read'] };
+    let rows: Record<string, unknown>[];
+
+    beforeEach(() => {
+      const row = (type: string, status: string) => ({
+        _id: new mongoose.Types.ObjectId().toString(),
+        orgId,
+        assignedTo: userId,
+        isDeleted: false,
+        type,
+        status,
+        createdAt: new Date(),
+      });
+      rows = [
+        row('chat.mentioned', 'unread'),
+        row('chat.shared', 'unread'),
+        row('chat.accessChanged', 'read'),
+        row('org.notice', 'unread'),
+        row('user.bulkInvite', 'read'),
+      ];
+      stubNotificationsFind((filter) => ({
+        sort: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves(rows.filter((doc) => matchesFilter(doc, filter))),
+      }));
+      sinon
+        .stub(Notifications, 'countDocuments')
+        .callsFake(((filter: Record<string, unknown>) =>
+          Promise.resolve(rows.filter((doc) => matchesFilter(doc, filter)).length)) as never);
+    });
+
+    async function listTypes(): Promise<string[]> {
+      const port = await listen();
+      const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/`);
+      expect(res.status).to.equal(200);
+      const body = await res.json();
+      return body.notifications.map((n: { type: string }) => n.type);
+    }
+
+    async function stats(): Promise<Record<string, number>> {
+      const port = await listen();
+      const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/stats`);
+      expect(res.status).to.equal(200);
+      return res.json();
+    }
+
+    it('a token without conversation:read lists no chat notices and every other notice', async () => {
+      token = KB_ONLY;
+      expect(await listTypes()).to.deep.equal(['org.notice', 'user.bulkInvite']);
+    });
+
+    it('a token without conversation:read counts no chat notices in stats', async () => {
+      token = KB_ONLY;
+      expect(await stats()).to.deep.equal({ unreadCount: 1, readCount: 1, archivedCount: 0 });
+    });
+
+    for (const [name, scopes] of [
+      ['a conversation:read token', CONVERSATION_READ],
+      ['a session token', {}],
+    ] as const) {
+      it(`${name} lists and counts chat notices as before`, async () => {
+        token = scopes;
+        expect(await listTypes()).to.deep.equal(rows.map((row) => row.type));
+        server?.close();
+        server = undefined;
+        expect(await stats()).to.deep.equal({ unreadCount: 3, readCount: 2, archivedCount: 0 });
+      });
+    }
+
+    it('a token without conversation:read cannot read a chat notice back through a write', async () => {
+      token = KB_ONLY;
+      const chat = rows[0]!;
+      const update = sinon.stub(Notifications, 'findOneAndUpdate').callsFake(((filter: Record<string, unknown>) => ({
+        lean: sinon.stub().resolves(matchesFilter(chat, { ...filter, _id: chat._id }) ? chat : null),
+      })) as never);
+      const port = await listen();
+      const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/${String(chat._id)}/read`, {
+        method: 'PATCH',
+      });
+      expect(res.status).to.equal(404);
+      expect(update.calledOnce).to.equal(true);
+    });
+
+    it('mark all read leaves chat notices alone for a token without conversation:read', async () => {
+      token = KB_ONLY;
+      const updateMany = sinon.stub(Notifications, 'updateMany').resolves({ modifiedCount: 1 } as never);
+      const port = await listen();
+      const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/read-all`, { method: 'PATCH' });
+      expect(res.status).to.equal(200);
+      const filter = updateMany.firstCall.args[0] as Record<string, unknown>;
+      expect(rows.filter((doc) => matchesFilter(doc, filter)).map((doc) => doc.type)).to.deep.equal([
+        'org.notice',
+      ]);
+    });
   });
 });

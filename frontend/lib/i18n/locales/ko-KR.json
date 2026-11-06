@@ -104,8 +104,24 @@
     "createPageDescription": "이 페이지는 에이전트 생성 전용 페이지입니다. 여기에서 양식을 연결하거나 에이전트 빌더로 리디렉션하세요.",
     "pageTitle": "에이전트",
     "comingSoon": "곧 제공 예정",
-    "missingAgentKey": "에이전트 키가 없습니다. 채팅 사이드바에서 에이전트를 열거나 유효한 링크를 사용하세요.",
-    "loading": "로드 중…"
+    "missingAgentKey": "에이전트 키가 없습니다. 에이전트 페이지에서 에이전트를 열거나 유효한 링크를 사용하세요.",
+    "loading": "로드 중…",
+    "index": {
+      "columnAgent": "에이전트",
+      "columnOwner": "소유자",
+      "rowActions": "{{name}} 작업",
+      "loading": "에이전트를 불러오는 중…",
+      "loadFailedTitle": "에이전트를 불러오지 못했습니다",
+      "loadFailedDescription": "연결을 확인한 후 다시 시도하세요.",
+      "emptyTitle": "아직 에이전트가 없습니다",
+      "emptyDescription": "직접 만들었거나 사용할 수 있는 에이전트가 여기에 표시됩니다.",
+      "emptyDescriptionCanCreate": "직접 만들었거나 사용할 수 있는 에이전트가 여기에 표시됩니다. 새로 만들려면 새 에이전트를 선택하세요.",
+      "searchPlaceholder": "에이전트 검색…",
+      "searchLabel": "에이전트 검색",
+      "closeSearch": "검색 닫기",
+      "noSearchMatchesTitle": "검색과 일치하는 에이전트가 없습니다",
+      "noSearchMatchesDescription": "다른 검색어를 입력해 보세요."
+    }
   },
   "projects": {
     "pageTitle": "프로젝트",
@@ -128,7 +144,8 @@
     "noSearchResults": "“{{query}}”와(과) 일치하는 프로젝트가 없습니다",
     "noSearchResultsHint": "다른 이름을 시도하거나 검색을 지우세요.",
     "clearSearch": "검색 지우기",
-    "cardActionsLabel": "{{name}} 작업"
+    "cardActionsLabel": "{{name}} 작업",
+    "loadingList": "프로젝트를 불러오는 중…"
   },
   "timeGroup": {
     "today": "오늘",
@@ -145,7 +162,9 @@
     "copiedCode": "복사됨",
     "remoteImageBlocked": "외부 이미지가 로드되지 않았습니다",
     "remoteImageFrom": "{{host}}에서",
-    "remoteImageLoad": "이미지 불러오기"
+    "remoteImageLoad": "이미지 불러오기",
+    "usingTool": "도구 사용 중…",
+    "delegatingTo": "{{name}}에 위임하는 중…"
   },
   "uploadProgress": {
     "uploadFailedDefault": "업로드 실패",
@@ -182,6 +201,7 @@
       "sizeLimitDescription": "파일당 제한은 {{maxMb}} MB입니다. 업로드 제한 상향은 관리자에게 문의하세요.",
       "sizeLimitDescriptionAdmin": "파일당 제한은 {{maxMb}} MB입니다. 워크스페이스 실험실에서 제한을 늘릴 수 있습니다.",
       "unsupportedDescription": "지원되지 않는 파일 형식입니다.",
+      "emptyDescription": "이 파일이 비어 있습니다. 내용을 추가한 뒤 다시 업로드하세요.",
       "duplicateDescription": "같은 이름의 파일이 이미 여기에 존재합니다.",
       "trackerHint": "자세한 내용은 아래 업로드 패널에서 확인하세요.",
       "openLabs": "실험실 열기"
@@ -191,6 +211,8 @@
       "tooLarge_other": "{{count}}개가 {{maxMb}} MB 초과",
       "unsupported_one": "지원되지 않는 형식 {{count}}개",
       "unsupported_other": "지원되지 않는 형식 {{count}}개",
+      "empty_one": "빈 파일 {{count}}개",
+      "empty_other": "빈 파일 {{count}}개",
       "duplicate_one": "중복된 이름 {{count}}개",
       "duplicate_other": "중복된 이름 {{count}}개",
       "other_one": "기타 오류 {{count}}개",
@@ -329,6 +351,12 @@
     "searchChats": "채팅 검색",
     "inbox": "받은 편지함",
     "notifications": "알림",
+    "searchChatsPlaceholder": "채팅 검색…",
+    "searchChatsFailed": "채팅을 검색하지 못했습니다. 다시 시도하세요.",
+    "loadChatsFailed": "채팅을 불러오지 못했습니다. 다시 시도하세요.",
+    "loadingChats": "채팅을 불러오는 중…",
+    "inboxUnread": "받은 편지함, 읽지 않음 {{count}}개",
+    "inboxTooltip": "받은 편지함: 일어난 일과 확인이 필요한 일",
     "home": "홈"
   },
   "artifacts": {
@@ -411,7 +439,11 @@
     },
     "loadFailed": "알림을 불러오지 못했습니다",
     "updateFailed": "알림을 업데이트할 수 없습니다",
-    "removeFailed": "알림을 제거할 수 없습니다"
+    "removeFailed": "알림을 제거할 수 없습니다",
+    "loadingList": "알림을 불러오는 중…",
+    "emptyBody": "채팅의 공유, 멘션, 변경 사항이 여기에 표시됩니다.",
+    "showMore": "더 보기",
+    "showLess": "간략히 보기"
   },
   "action": {
     "find": "찾기",
@@ -674,7 +706,11 @@
     "expand": "사이드바 펼치기",
     "close": "사이드바 닫기",
     "collapse": "사이드바 접기",
-    "navigation": "탐색"
+    "navigation": "탐색",
+    "hide": "사이드바 숨기기",
+    "show": "사이드바 표시",
+    "hideWithShortcut": "사이드바 숨기기 ({{shortcut}})",
+    "showWithShortcut": "사이드바 표시 ({{shortcut}})"
   },
   "menu": {
     "reindex": "다시 인덱싱",
@@ -832,6 +868,8 @@
     "heyUser": "안녕하세요, {{name}}님 👋",
     "heyUserDefaultName": "사용자",
     "askAnything": "무엇이든 물어보세요...",
+    "askOrSearchWorkspace": "{{workspace}}에서 무엇이든 묻거나 검색하세요...",
+    "askAboutPaste": "붙여넣은 내용에 대해 물어보세요...",
     "sendMessage": "메시지 보내기",
     "quick": "빠른 모드",
     "listening": "듣는 중...",
@@ -851,6 +889,7 @@
       "searchCollections": "컬렉션 검색",
       "searchActions": "액션 검색",
       "actionsTab": "액션",
+      "filterTabsLabel": "표시할 항목",
       "noConnectors": "이 에이전트에 구성된 커넥터가 없습니다.",
       "noCollections": "이 에이전트에 구성된 컬렉션이 없습니다.",
       "noCollectionMatches": "검색과 일치하는 컬렉션이 없습니다.",
@@ -882,6 +921,12 @@
       "resetDefaults": "프로젝트 기본값으로 재설정"
     },
     "aiModelsTooltip": "AI 모델",
+    "modelChip": {
+      "ariaLabel": "모델: {{name}}, 추론 강도 {{effort}}. 구성된 모델 열기.",
+      "ariaLabelNoEffort": "모델: {{name}}. 구성된 모델 열기.",
+      "tooltip": "{{name}} · {{provider}} 제공 · 강도 {{effort}}",
+      "tooltipNoEffort": "{{name}} · {{provider}} 제공"
+    },
     "attachmentTooltip": "파일 첨부",
     "micTooltip": "음성 입력",
     "uploadYourFile": "파일 업로드",
@@ -898,6 +943,7 @@
     "yourChats": "내 채팅",
     "noChatsFound": "채팅을 찾을 수 없습니다",
     "noChatsYet": "아직 채팅이 없습니다",
+    "yourChatsEmpty": "내 채팅이 여기에 표시됩니다",
     "searchCollections": "커넥터 및 컬렉션 검색",
     "loadingCollections": "컬렉션을 불러오는 중…",
     "failedToLoadCollections": "컬렉션을 불러오지 못했습니다",
@@ -928,8 +974,8 @@
     "feedbackCategoryUnclearExplanation": "불명확한 설명",
     "feedbackCategoryPoorCitations": "부실한 인용",
     "feedbackCategoryOther": "기타...",
-    "like": "도움이 됨",
-    "dislike": "도움이 안 됨",
+    "like": "좋아요",
+    "dislike": "싫어요",
     "copy": "복사",
     "fork": "채팅 분기",
     "forkFromHere": "여기서 분기",
@@ -943,6 +989,7 @@
     "citations": "인용",
     "showMoreCitations_one": "인용 {{count}}개 더 보기",
     "showMoreCitations_other": "인용 {{count}}개 더 보기",
+    "editNotSaved": "편집 내용이 저장되지 않았습니다. 다시 시도하세요.",
     "markdownWithCitations": "인용 포함 Markdown",
     "onlyTextWithoutCitations": "인용 없이 텍스트만",
     "differentModesOfQuery": "다양한 질의 모드",
@@ -951,14 +998,10 @@
     "generatingTitle": "채팅 생성 중…",
     "newChat": "새 채팅",
     "startChat": "채팅 시작",
-    "searchAgents": "에이전트 검색…",
-    "noAgentsFound": "에이전트를 찾을 수 없습니다",
-    "failedToLoadAgents": "에이전트를 불러올 수 없습니다",
-    "backToChatHome": "모든 채팅",
+    "backToAgents": "모든 에이전트",
     "agentSidebarLabel": "에이전트",
     "agentNameLoading": "불러오는 중…",
     "sharedAgentChat": "공유된 에이전트 채팅",
-    "myAgents": "내 에이전트",
     "moreAgents": "더 많은 에이전트",
     "agentHeaderMenuAria": "에이전트 옵션",
     "agentMenuNewChat": "새 채팅",
@@ -972,14 +1015,17 @@
     "deleteAgentConfirm": "이 에이전트를 삭제하시겠습니까?",
     "deleteAgentDescription": "다음 이름의 에이전트",
     "deleteAgentWarning": "가 Pipeshub에서 영구적으로 제거됩니다. 이 에이전트를 사용하는 채팅이 정상적으로 작동하지 않을 수 있습니다.",
-    "agentListRowMenuAria": "에이전트 옵션",
     "failedToDeleteAgent": "에이전트를 삭제할 수 없습니다",
     "rename": "이름 변경",
     "archive": "보관",
     "deleteChat": "삭제",
     "pin": "고정",
     "unpin": "고정 해제",
-    "pinned": "고정됨",
+    "pinned": "고정된 채팅",
+    "pinnedChatsEmpty": "고정한 채팅이 여기에 표시됩니다",
+    "pinnedRowSuffix": ", 고정됨",
+    "sidebarRunning": "백그라운드에서 처리 중",
+    "sidebarRunningOpen": "처리 중",
     "pinFailed": "채팅을 고정하지 못했습니다",
     "unpinFailed": "채팅 고정을 해제하지 못했습니다",
     "export": {
@@ -1394,6 +1440,7 @@
     "demoHide": "데모 데이터 숨기기",
     "scrollAttachmentsLeft": "첨부 파일 왼쪽으로 스크롤",
     "scrollAttachmentsRight": "첨부 파일 오른쪽으로 스크롤",
+    "attachmentsGroup": "첨부 파일",
     "demoSuggestions": {
       "1": {
         "text": "결제 서비스 아키텍처는 왜 변경되었고, 그 결정은 어떻게 이루어졌나요?",
@@ -1444,7 +1491,7 @@
       "unsupportedType": "지원하지 않는 파일 형식: {{names}}. 지원 형식: {{types}}.",
       "fileTooLarge": "파일이 너무 큽니다: {{names}}. 파일당 최대 크기는 {{maxMb}} MB입니다.",
       "tooManyFiles": "메시지당 첨부 파일은 최대 {{max}}개입니다.",
-      "pasteTruncated": "\n\n[내용이 잘렸습니다 — 붙여넣은 텍스트가 최대 첨부 크기를 초과했습니다.]",
+      "pasteTruncated": "\n\n[내용이 잘렸습니다: 붙여넣은 텍스트가 최대 첨부 크기를 초과했습니다.]",
       "uploading": "업로드 중…",
       "retry": "업로드 재시도",
       "pastedText": "붙여넣은 텍스트",
@@ -1452,10 +1499,13 @@
       "removePastedText": "붙여넣은 텍스트 제거",
       "showInTextField": "텍스트 입력란에 표시",
       "previewLoadFailed": "내용을 불러오지 못했습니다",
-      "copyText": "복사",
+      "copyText": "클립보드에 복사",
+      "copied": "복사됨",
+      "copyFailed": "텍스트를 복사하지 못했습니다",
       "closePreview": "닫기",
       "loadingPreview": "불러오는 중…",
-      "pasteMeta_other": "{{chars}}자 · {{count}}줄"
+      "pasteMeta_other": "{{count}}줄 · {{chars}}자",
+      "pasteChipLabel": "{{label}}, {{meta}}. 열어서 읽기."
     },
     "voiceSttNotConfigured": "음성 입력을 사용하려면 AI 모델 설정에서 음성 인식(STT) 모델을 구성하세요.",
     "voiceSttLoading": "음성 기능을 확인하는 중…",
@@ -1478,6 +1528,20 @@
     "models": "모델",
     "manage": "관리",
     "configuredModels": "구성된 모델",
+    "seeMoreModels": "더 많은 모델 보기",
+    "loadingModels": "모델을 불러오는 중…",
+    "loadingSources": "소스를 불러오는 중…",
+    "modelProviderBy": "{{provider}} 제공",
+    "modelTags": {
+      "default": "기본",
+      "reasoning": "추론",
+      "multimodal": "멀티모달"
+    },
+    "noConnectorsYet": "아직 커넥터가 없습니다. 커넥터에서 연결한 앱이 여기에 표시됩니다.",
+    "expandPanel": "패널 펼치기",
+    "collapsePanel": "패널 접기",
+    "cancelEditQuery": "편집 취소",
+    "cancelRegenerate": "다시 생성 취소",
     "reasoningEffort": {
       "label": "추론 강도",
       "overrideHint": "기본값을 사용하려면 다시 클릭하세요.",
@@ -1487,7 +1551,11 @@
       "low": "낮음",
       "medium": "보통",
       "high": "높음",
-      "max": "최대"
+      "max": "최대",
+      "effortLabel": "강도",
+      "faster": "더 빠르게",
+      "smarter": "더 똑똑하게",
+      "noLadder": "이 모델은 한 번에 답하며, 강도 설정이 없습니다."
     },
     "universalAgent": {
       "toolsLoadError": "사용 가능한 작업을 불러오지 못했습니다.",
@@ -1522,7 +1590,8 @@
       "notice": {
         "expired": "{{server}}의 {{tool}}이(가) 실행되지 않았습니다. 요청이 만료되었습니다. 아직 필요하면 다시 요청하세요.",
         "passed": "{{server}}의 {{tool}}이(가) 승인되지 않아 실행되지 않았습니다.",
-        "waiting": "{{server}}의 {{tool}}이(가) 대화 소유자의 승인을 기다리고 있습니다."
+        "waiting": "{{server}}의 {{tool}}이(가) 대화 소유자의 승인을 기다리고 있습니다.",
+        "waitingFor": "{{server}}의 {{tool}}이(가) {{name}} 님의 승인을 기다리고 있습니다."
       },
       "receipt": {
         "allowed": "{{tool}}을(를) 허용했습니다",
@@ -1558,7 +1627,10 @@
       "preview": "아티팩트 미리보기",
       "loadingPreview": "미리보기 불러오는 중",
       "download": "아티팩트 다운로드",
-      "downloading": "아티팩트 다운로드 중"
+      "downloading": "아티팩트 다운로드 중",
+      "previewButton": "미리 보기",
+      "previewFile": "{{name}} 미리 보기",
+      "downloadFile": "{{name}} 다운로드"
     },
     "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다.",
     "noResultsFor": "“{{query}}”에 대한 결과가 없습니다",
@@ -1575,6 +1647,133 @@
       "webSearch": "웹 검색",
       "internalAndWebSearch": "내부 + 웹 검색"
     },
+    "stoppedBeforeAnswer": "답변이 시작되기 전에 중지됨",
+    "connectTools": {
+      "blockedTitle": "이 에이전트를 사용하려면 다음 도구를 연결하세요",
+      "serviceAccountTitle": "이 에이전트의 도구가 연결되지 않았습니다",
+      "noticeTitle": "이 답변에서 일부 도구를 사용하지 못했습니다",
+      "chip": "일부 도구가 연결되지 않았습니다",
+      "chipAction": "연결",
+      "kindAction": "액션",
+      "showMore": "{{count}}개 더 보기",
+      "askAdmin": "관리자에게 연결을 요청하세요",
+      "serviceAccount": "이 에이전트는 자체 연결을 사용합니다. 관리자에게 Agent Builder에서 {{tools}}을(를) 연결해 달라고 요청하세요.",
+      "toolsetUnavailable": "여기서 로그인을 시작할 수 없습니다. Workspace → 작업에서 연결하세요.",
+      "connectedAskAgain": "연결되었습니다. 사용하려면 다시 질문하세요.",
+      "couldNotUse": "{{agent}}이(가) {{tools}}을(를) 사용하지 못했습니다",
+      "defaultAgent": "에이전트"
+    },
+    "atMenu": {
+      "label": "멘션 추천",
+      "sources": "소스",
+      "browseSources": "모든 소스 보기",
+      "allSources": "모든 소스",
+      "showMore": "더 보기",
+      "nMore": "{{count}}개 더",
+      "noMatches": "일치하는 항목 없음",
+      "keysHint": "↑ ↓ 이동 · Enter 선택 · → 소스 열기 · Esc 닫기",
+      "keysHintTick": "↑ ↓ 이동 · Enter 선택 · Alt+Enter 체크 · → 소스 열기 · Esc 닫기",
+      "tooManySources": "메시지 하나에 소스를 최대 {{max}}개까지 지정할 수 있습니다. 일부를 제거하고 다시 보내세요."
+    },
+    "answerFailedTitle": "이 답변을 생성하지 못했습니다",
+    "answerFailedRetry": "다시 시도",
+    "cannotOpenSource": "이 문서를 열 수 없습니다. 삭제되었거나 액세스 권한이 없을 수 있습니다.",
+    "queue": {
+      "title": "대기 중 · {{count}}",
+      "hint": "각 메시지는 앞의 답변이 끝나면 전송됩니다.",
+      "clearAll": "모두 지우기",
+      "listLabel": "대기 중인 메시지",
+      "edit": "수정",
+      "editBusy": "이 메시지를 수정하려면 입력 중인 메시지를 보내거나 지우세요",
+      "remove": "대기열에서 제거",
+      "retry": "다시 시도",
+      "heldAfterRefusal": "보내지 않음: 이전 메시지에 답변할 수 없습니다.",
+      "files_one": "파일 {{count}}개",
+      "files_other": "파일 {{count}}개",
+      "full": "메시지는 최대 {{count}}개까지 대기열에 넣을 수 있습니다. 하나가 전송될 때까지 기다리거나 하나를 제거하세요.",
+      "collapse": "대기 중인 메시지 숨기기",
+      "expand": "대기 중인 메시지 보기"
+    },
+    "rowActions": "{{title}} 작업",
+    "archivedDescription": "{{title}}은(는) 워크스페이스 설정의 보관된 채팅에 있습니다.",
+    "undo": "실행 취소",
+    "renameFailedTitle": "채팅 이름을 변경하지 못했습니다",
+    "renameFailedDescription": "이전 이름이 유지됩니다. 다시 시도하세요.",
+    "renameFieldLabel": "새 이름",
+    "expandSection": "섹션 펼치기",
+    "collapseSection": "섹션 접기",
+    "addToSection": "{{section}}에 추가",
+    "agentNotFound": {
+      "title": "이 에이전트가 없거나 더 이상 접근할 수 없습니다",
+      "description": "링크를 확인하거나 공유한 사람에게 문의하세요.",
+      "back": "채팅으로 돌아가기"
+    },
+    "latestMessages": "최신 메시지",
+    "questionRail": "이 채팅의 질문",
+    "sendFeedback": "피드백 보내기",
+    "question": {
+      "copied": "복사됨",
+      "edit": "편집",
+      "pastedCode": "붙여넣은 코드"
+    },
+    "confidenceLevel": "신뢰도",
+    "runError": {
+      "stoppedTitle": "이 응답을 중지했습니다",
+      "stoppedBody": "완료된 단계는 위의 기록에 그대로 있습니다.",
+      "stoppedBodyPartial": "중지하기 전에 작성된 내용은 위에 남아 있습니다."
+    },
+    "answerPanel": {
+      "label": "이 답변 정보",
+      "opener": "컨텍스트",
+      "openerHint": "컨텍스트: 출처, 인용 및 결과물",
+      "close": "컨텍스트 닫기",
+      "resize": "패널 크기 조정",
+      "sources": "출처",
+      "citations": "인용",
+      "context": "컨텍스트",
+      "outputs": "결과물",
+      "pending": "답변이 완료되면 채워집니다.",
+      "noOutputsTitle": "아직 만든 것이 없습니다",
+      "noOutputsBody": "문서, 시트 또는 요약을 요청하면 만들어진 파일이 여기에 보관됩니다.",
+      "anythingYouCanOpen": "내가 열 수 있는 모든 항목을 사용할 수 있었습니다",
+      "sourcesLabel": "출처: {{names}}",
+      "sourcesEmptyTitle": "아직 읽은 것이 없습니다",
+      "sourcesEmptyBody": "연결된 앱이 필요한 질문을 하면 답변의 근거가 된 문서가 여기에 모입니다.",
+      "citationsEmptyTitle": "아직 인용한 것이 없습니다",
+      "citationsEmptyBody": "답변의 모든 주장은 그 출처가 된 구절과 연결됩니다. 그 링크가 여기에 표시됩니다.",
+      "contextCollections": "컬렉션",
+      "contextConnectors": "커넥터",
+      "contextFiles": "파일",
+      "contextFolderInCollection": "컬렉션의 폴더",
+      "contextEmptyTitle": "아직 첨부된 항목이 없습니다",
+      "contextEmptyBody": "이 채팅에 지정한 컬렉션, 연결된 앱, 파일이 여기에 표시됩니다.",
+      "anythingTheyCanOpen": "{{name}}님이 열 수 있는 모든 항목을 사용할 수 있었습니다",
+      "anythingOwnerCanOpen": "채팅 소유자가 열 수 있는 모든 항목을 사용할 수 있었습니다"
+    },
+    "trail": {
+      "reasoning": "생각",
+      "subAgent": "하위 에이전트",
+      "usedSkills_other": "스킬 {{count}}개 사용",
+      "exploredSearches_other": "검색 {{count}}회 수행",
+      "ranTools_other": "도구 {{count}}개 실행",
+      "thoughtFor": "{{duration}} 동안 생각함",
+      "thoughtThrough_other": "{{count}}단계로 생각함",
+      "steps_other": "{{count}}단계",
+      "stoppedAfter": "{{duration}} 후 중지됨",
+      "stopped": "중지됨",
+      "done": "완료",
+      "showAllSteps": "모든 단계 보기",
+      "showFewer": "간단히 보기",
+      "durationSeconds": "{{value}}초",
+      "durationMinutes": "{{minutes}}분 {{seconds}}초"
+    },
+    "citationPill": {
+      "number": "인용 {{number}}: {{name}}"
+    },
+    "citationPopover": {
+      "page": "{{page}}페이지",
+      "paragraph": "{{paragraph}}번째 단락"
+    },
     "searchDegraded": "결과가 완전하지 않을 수 있습니다."
   },
   "workspaceMenu": {
@@ -1588,7 +1787,9 @@
     "documentation": "문서",
     "darkMode": "다크 모드",
     "lightMode": "라이트 모드",
-    "organisations": "조직"
+    "organisations": "조직",
+    "triggerLabel": "{{name}} 워크스페이스 및 계정 메뉴",
+    "triggerLabelNoName": "워크스페이스 및 계정 메뉴"
   },
   "workspace": {
     "users": {
@@ -1651,7 +1852,12 @@
         "edit": "편집",
         "resendInviteSuccess": "초대 재발송됨",
         "resendInviteSuccessDescription": "{{email}}(으)로 초대를 다시 보냈습니다",
-        "resendInviteError": "초대를 다시 보내지 못했습니다"
+        "resendInviteError": "초대를 다시 보내지 못했습니다",
+        "changeRoleUndo": "실행 취소",
+        "changeRoleRestored": "역할이 복원되었습니다",
+        "changeRoleRestoredDescription": "{{name}}의 역할이 다시 {{role}}입니다",
+        "changeRoleUndoError": "역할을 복원할 수 없습니다",
+        "changeRoleUndoErrorDescription": "{{name}}의 역할은 여전히 {{role}}입니다. 되돌리려면 역할을 다시 변경하세요."
       },
       "profile": {
         "title": "프로필",
@@ -1723,7 +1929,10 @@
         "alreadyMembersDescription_other": "모든 주소가 이미 활성 구성원의 주소입니다.",
         "importUnsupportedType": ".csv, .xlsx, .xls 파일만 가져올 수 있습니다.",
         "importTooLongSkipped_other": "254자를 넘는 항목 {{count}}개는 제외했습니다.",
-        "invalidBlocksSend_other": "잘못된 주소 {{count}}개가 빨간색으로 표시되어 있습니다. 초대를 보내려면 수정하거나 삭제하세요."
+        "invalidBlocksSend_other": "잘못된 주소 {{count}}개가 빨간색으로 표시되어 있습니다. 초대를 보내려면 수정하거나 삭제하세요.",
+        "warnMember": "{{email}}은(는) 이미 구성원이므로 이 주소로는 초대를 보내지 않습니다.",
+        "warnInvited": "{{email}}은(는) 이미 초대되었습니다. 다시 보내면 초대가 다시 전송됩니다.",
+        "warnMany": "일부 주소는 이미 구성원이거나 이미 초대되었습니다. 구성원은 건너뛰고, 대기 중인 초대는 다시 보냅니다."
       },
       "bulk": {
         "resendInvite": "초대 다시 보내기",
@@ -2374,7 +2583,12 @@
     "common": {
       "loadingUsers": "사용자 로드 중...",
       "noUsersAvailable": "사용자가 없습니다",
-      "selected": "{{count}}개 선택됨"
+      "selected": "{{count}}개 선택됨",
+      "validation": {
+        "nameRequired": "이름을 입력하세요.",
+        "nameTooLong": "이름은 {{max}}자 이하여야 합니다.",
+        "descriptionTooLong": "설명은 {{max}}자 이하여야 합니다."
+      }
     },
     "filters": {
       "role": "역할",
@@ -5176,7 +5390,8 @@
       "section": "API 액션",
       "connectTooltip": "액션에서 연결하세요",
       "serviceAccountBlocked": "서비스 계정 에이전트는 공유 자격 증명이 있거나 로그인이 필요 없는 API 액션만 사용할 수 있습니다."
-    }
+    },
+    "nameTooLong": "이름은 {{max}}자 이하여야 합니다."
   },
   "recordView": {
     "sections": {
@@ -5499,17 +5714,16 @@
     }
   },
   "askUserQuestion": {
-    "questionsHeadingSingular": "질문:",
-    "questionsHeadingPlural": "질문:",
+    "questionsHeadingSingular": "질문",
+    "questionsHeadingPlural": "질문",
     "answered": "답변 완료",
     "showLess": "간략히 보기",
     "showMore": "더 보기",
     "noPreference": "[선호 사항 없음]",
+    "skipped": "건너뜀",
     "somethingElse": "기타",
-    "questionAskedSingular": "받은 질문:",
-    "questionAskedPlural": "받은 질문:",
-    "quickQuestionSingular": "간단한 질문:",
-    "quickQuestionPlural": "간단한 질문:",
+    "quickQuestionSingular": "간단한 질문",
+    "quickQuestionPlural": "간단한 질문",
     "stepOf": "{{total}}단계 중 {{step}}단계",
     "selectedCount": "{{count}}개 선택됨",
     "describeYourAnswer": "답변을 설명해 주세요…",
@@ -5522,7 +5736,10 @@
     "selectMany": "해당하는 항목 모두 선택",
     "skipAll": "모두 건너뛰기",
     "expired": "이 질문은 만료되었습니다. 계속하려면 채팅에서 답장하세요.",
-    "repliedInChat": "채팅에서 답장했습니다."
+    "repliedInChat": "채팅에서 답장했습니다.",
+    "unknownPerson": "이전 멤버",
+    "waitingFor": "{{name}}님의 답변을 기다리는 중",
+    "waitingForYou": "답변을 기다리는 중"
   },
   "agentClaim": {
     "title": "에이전트 연결",
@@ -5579,8 +5796,21 @@
     "serverError": "서버 오류",
     "timedOut": "요청 시간 초과",
     "somethingWentWrong": "문제가 발생했습니다",
-    "tryAgainShortly": "잠시 후 다시 시도해 주세요",
-    "connectedServiceProblem": "연결된 서비스에 문제가 있습니다"
+    "serverBusy": "서버가 사용 중입니다",
+    "connectedServiceProblem": "연결된 서비스에 문제가 있습니다",
+    "accessDeniedDescription": "이 작업을 할 권한이 없습니다. 워크스페이스 관리자에게 접근 권한을 요청하세요.",
+    "invalidRequestDescription": "일부 정보가 올바르지 않습니다. 확인한 후 다시 시도하세요.",
+    "notFoundDescription": "이동되었거나 삭제되었을 수 있습니다. 페이지를 새로고침한 후 다시 시도하세요.",
+    "actionRequiredDescription": "작업을 시작한 후 변경된 내용이 있습니다. 정보를 확인한 후 다시 시도하세요.",
+    "connectionErrorDescription": "인터넷 연결을 확인한 후 다시 시도하세요.",
+    "serverErrorDescription": "서버에서 이 작업을 완료하지 못했습니다. 잠시 후 다시 시도하세요. 계속 발생하면 워크스페이스 관리자에게 문의하세요.",
+    "timedOutDescription": "서버 응답 시간이 너무 오래 걸렸습니다. 다시 시도하세요.",
+    "somethingWentWrongDescription": "작업이 완료되지 않았습니다. 다시 시도하세요. 계속 발생하면 워크스페이스 관리자에게 문의하세요.",
+    "serverBusyDescription": "잠시 기다린 후 다시 시도하세요."
+  },
+  "loading": {
+    "default": "불러오는 중…",
+    "items": "항목을 불러오는 중…"
   },
   "validation": {
     "password": {
@@ -5649,7 +5879,10 @@
     "alreadyRemoved": "이미 제거됨",
     "alreadyRemovedDescription": "{{name}} 님은 이미 액세스 권한이 없었습니다",
     "removeConfirmTitle": "액세스 권한을 제거할까요?",
-    "removeConfirmDescription": "{{name}} 님은 즉시 액세스 권한을 잃습니다. 나중에 다시 공유할 수 있습니다."
+    "removeConfirmDescription": "{{name}} 님은 즉시 액세스 권한을 잃습니다. 나중에 다시 공유할 수 있습니다.",
+    "removeSelection": "{{name}} 제거",
+    "peopleCanSee_other": "{{count}}명이 이 채팅을 볼 수 있음",
+    "loadingPeople": "사람을 불러오는 중…"
   },
   "demoData": {
     "badge": {

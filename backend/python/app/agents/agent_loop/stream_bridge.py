@@ -49,6 +49,7 @@ from app.agents.agent_loop.hooks import CitationCollector
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
 from app.core.org_context import spawn_in_request
+from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
@@ -56,7 +57,12 @@ from app.modules.demo_data.chat import (
     note_org_real_data,
 )
 from app.modules.retrieval import degraded_notice
-from app.utils.conversation_tasks import begin_run, discard_tasks
+from app.utils.conversation_tasks import (
+    begin_run,
+    cancel_run_tasks,
+    discard_tasks,
+    set_task_run,
+)
 from app.utils.stage_timer import RunTimer
 from app.utils.time_conversion import set_llm_time_zone
 
@@ -431,6 +437,8 @@ async def run_agent_loop_stream(
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
+    # The generated id when the client sent none; artifacts are stamped with it.
+    chat_state["run_id"] = run_id
     # Picked up by PipesHubAgentFactory.create() for its own sub-stage marks.
     chat_state["_stage_timer"] = stage_timer
     # `stage_timer` stops at the first agent event; this one times the rest
@@ -448,6 +456,7 @@ async def run_agent_loop_stream(
         configured_context_window=context_length,
         is_reasoning_model=is_reasoning_model,
         run_id=run_id, cancellation_token=cancellation_token,
+        invocation="assistant" if chat_state.get("is_placeholder_agent") else "saved_agent",
     )
 
     async def _produce() -> None:
@@ -456,11 +465,14 @@ async def run_agent_loop_stream(
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
         begin_run()
+        # Background tasks the run's tools start reach only this run's answer.
+        set_task_run(run_id)
         agent: Any = None
         run_timing = _AgentRunTiming(run_timer)
         run_finished = False
         try:
-            if card_already_answered(context.previous_conversations, query_info.get("query", "")):
+            # Another member's message after the card is no reply to it: only the sender's rows count.
+            if card_already_answered(get_chat_extension().sender_history(context), query_info.get("query", "")):
                 await emit_already_answered(context, event_sink=context.event_sink)
                 run_finished = True
                 return
@@ -576,6 +588,8 @@ async def run_agent_loop_stream(
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
+            if context.conversation_id:
+                cancel_run_tasks(context.conversation_id)
             if context.sandbox_manager is not None:
                 try:
                     await context.sandbox_manager.destroy_all()

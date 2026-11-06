@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, fireEvent, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 import { installMemoryStorage } from '@/lib/api/__tests__/sse-response';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
@@ -8,13 +9,17 @@ import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-bu
 installMemoryStorage();
 
 const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), prefetch: vi.fn() }));
+const urlReads = vi.hoisted(() => ({ n: 0 }));
 vi.mock('next/navigation', () => ({
   useRouter: () => router,
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => {
+    urlReads.n += 1;
+    return new URLSearchParams();
+  },
   usePathname: () => '/chat/',
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 
 const { useChatStore } = await import('@/chat/store');
 const { ChatSectionElement } = await import('../chat-section-element');
@@ -38,6 +43,24 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('a chat row in the sidebar', () => {
+  it('does not follow the page URL, so a chat getting its id does not draw every row again', () => {
+    urlReads.n = 0;
+    renderRow();
+    expect(urlReads.n).toBe(0);
+  });
+
+  it('is not drawn again when another chat gets its title', () => {
+    let commits = 0;
+    renderInTheme(
+      <React.Profiler id="row" onRender={() => { commits += 1; }}>
+        <ChatSectionElement conversation={conversation} isActive={false} onClick={vi.fn()} />
+      </React.Profiler>,
+    );
+    const before = commits;
+    act(() => useChatStore.setState({ newlyResolvedIds: new Set(['conv-other']) }));
+    expect(commits).toBe(before);
+  });
+
   it('shows no dot for a chat with nothing new', () => {
     renderRow();
 
@@ -108,6 +131,68 @@ describe('a chat row in the sidebar', () => {
     renderRow();
 
     expect(dot()).toBeNull();
+    expect(screen.getByRole('img', { name: 'Working in the background' })).toBeTruthy();
+  });
+
+  it('marks a running chat with a pulsing dot, not a spinner: "Working" on the open chat, "Working in the background" elsewhere', () => {
+    const slotId = useChatStore.getState().createSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, { isStreaming: true });
+
+    const { rerender } = renderRow(false);
+    const running = screen.getByRole('img', { name: 'Working in the background' });
+    expect(running.className).toBe('sidebar-activity-dot');
+    expect(running.hasAttribute('data-live')).toBe(true);
+    expect(screen.queryByRole('status')).toBeNull();
+
+    rerender(<ChatSectionElement conversation={conversation} isActive onClick={vi.fn()} />);
+    expect(screen.getByRole('img', { name: 'Working' })).toBeTruthy();
+  });
+});
+
+describe('a pinned chat row', () => {
+  const pinned = { id: 'conv-3', title: 'Roadmap', isOwner: true, isPinned: true } as never;
+  const mark = () => document.querySelector('[data-pinned-mark]');
+  const row = (conv: unknown, agentId?: string) => (
+    <Theme>
+      <ChatSectionElement conversation={conv as never} isActive={false} onClick={vi.fn()} agentId={agentId} />
+    </Theme>
+  );
+
+  it('wears the pin right after its title, hidden from screen readers, and its name says pinned', () => {
+    render(row(pinned));
+
+    // Browsers, and this one, put a space before a visually hidden word: read aloud, it is "Roadmap, pinned".
+    expect(screen.getByRole('link', { name: /^Roadmap ?, pinned$/ })).toBeTruthy();
+    expect(mark()?.getAttribute('aria-hidden')).toBe('true');
+    expect(screen.getByText('Roadmap').nextElementSibling).toBe(mark());
+  });
+
+  it('an unpinned row has no pin, and Pin or Unpin shows or drops it at once', () => {
+    const { rerender } = render(row({ ...(pinned as object), isPinned: false }));
+    expect(mark()).toBeNull();
+    expect(screen.getByRole('link', { name: 'Roadmap' })).toBeTruthy();
+
+    rerender(row(pinned));
+    expect(mark()).not.toBeNull();
+
+    rerender(row({ ...(pinned as object), isPinned: undefined }));
+    expect(mark()).toBeNull();
+  });
+
+  it('an agent chat, which has no pin, never wears it', () => {
+    render(row(pinned, 'agent-7'));
+
+    expect(mark()).toBeNull();
+  });
+
+  it('keeps the pin right after the title while the chat answers, before the running dot', () => {
+    const slotId = useChatStore.getState().createSlot('conv-3');
+    useChatStore.getState().updateSlot(slotId, { isStreaming: true });
+    render(row(pinned));
+
+    const running = screen.getByRole('img', { name: 'Working in the background' });
+    expect(screen.getByText('Roadmap').nextElementSibling).toBe(mark());
+    expect(mark()!.compareDocumentPosition(running) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 

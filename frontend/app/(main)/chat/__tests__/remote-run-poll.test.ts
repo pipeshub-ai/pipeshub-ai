@@ -52,6 +52,19 @@ describe('startRemoteRunPoll', () => {
     expect(slot(slotId).isInitialized).toBe(false);
   });
 
+  it('drops the id to cancel and the pending Stop once the run settles', async () => {
+    const slotId = remoteRunSlot();
+    useChatStore.getState().updateSlot(slotId, { remoteRunId: 'server-run', remoteStopRequested: true });
+    fetchConversation.mockResolvedValue(respond('Stopped'));
+
+    startRemoteRunPoll({ slotId, convId: 'conv-1', agentId: null });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(slot(slotId).remoteRunInProgress).toBe(false);
+    expect(slot(slotId).remoteRunId).toBeNull();
+    expect(slot(slotId).remoteStopRequested).toBe(false);
+  });
+
   it('reads the status from the agent conversation endpoint for an agent thread', async () => {
     const slotId = remoteRunSlot();
     fetchAgentConversation.mockResolvedValue(respond('Complete'));

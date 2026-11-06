@@ -20,6 +20,7 @@ import {
 } from '../../../../src/modules/projects/controller/project.controller'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { ProjectKnowledgeBaseService } from '../../../../src/modules/projects/services/project-kb.service'
+import { setConversationContext } from '../../../../src/modules/enterprise_search/services/conversation/http/conversation-context'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../../../src/libs/errors/http.errors'
@@ -138,6 +139,8 @@ describe('project.controller', () => {
   })
 
   describe('listProjects', () => {
+    const LIST_FILTER = { $and: [{ marker: 'from-guard' }] }
+
     it('paginates and returns totalPages computed from totalCount/limit', async () => {
       stubNoTeamMemberships()
       const rows = [makeProjectDoc()]
@@ -146,6 +149,7 @@ describe('project.controller', () => {
       const req = createMockRequest({
         query: { page: 1, limit: 10, scope: 'mine', includeArchived: false },
       })
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter: LIST_FILTER })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -158,7 +162,7 @@ describe('project.controller', () => {
       expect(body.pagination).to.deep.equal({ page: 1, limit: 10, totalCount: 25, totalPages: 3 })
     })
 
-    it('passes the exact archive filter through to ProjectService.list', async () => {
+    it('passes the exact archive filter and the guard list filter through to ProjectService.list', async () => {
       stubNoTeamMemberships()
       const listStub = sinon.stub(ProjectService, 'list').resolves({
         projects: [],
@@ -174,6 +178,7 @@ describe('project.controller', () => {
           isArchived: true,
         },
       })
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter: LIST_FILTER })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -183,6 +188,7 @@ describe('project.controller', () => {
       expect(listStub.firstCall.args[2]).to.deep.include({
         includeArchived: false,
         isArchived: true,
+        visibleConversations: LIST_FILTER,
       })
     })
 
@@ -192,6 +198,7 @@ describe('project.controller', () => {
       sinon.stub(ProjectService, 'list').rejects(error)
 
       const req = createMockRequest({ query: { page: 1, limit: 10, scope: 'mine', includeArchived: false } })
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter: LIST_FILTER })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -209,6 +216,7 @@ describe('project.controller', () => {
       const req = createMockRequest({
         query: { page: 1, limit: 10, scope: 'all', includeArchived: false },
       })
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter: LIST_FILTER })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -688,6 +696,7 @@ describe('project.controller', () => {
       sinon.stub(ChatSession, 'countDocuments').resolves(2)
 
       const req = createMockRequest({ params: { projectId: PROJECT_ID }, query: { page: 1, limit: 20 } })
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter: { $and: [] } })
       const res = createMockResponse()
       await getProjectConversations(createMockAppConfig())(req, res, createMockNext())
 
@@ -705,6 +714,7 @@ describe('project.controller', () => {
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
       const req = createMockRequest({ params: { projectId: PROJECT_ID }, query: { page: 1, limit: 20 } })
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter: { $and: [] } })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -717,25 +727,35 @@ describe('project.controller', () => {
       expect(body.pagination).to.deep.equal({ page: 1, limit: 20, totalCount: 0, totalPages: 0 })
     })
 
-    it('scopes the query to own rows OR project-visible rows within the project', async () => {
+    it('ANDs the guard\'s list filter with the project id instead of building its own access predicate', async () => {
       stubNoTeamMemberships()
       sinon.stub(ProjectService, 'assertAccess').resolves({ role: 'viewer', project: makeProjectDoc() })
       const findStub = sinon.stub(ChatSession, 'find').returns(makeFindChain([]) as any)
-      sinon.stub(ChatSession, 'countDocuments').resolves(0)
+      const countStub = sinon.stub(ChatSession, 'countDocuments').resolves(0)
+      const listFilter = { $and: [{ marker: 'from-guard' }] }
 
       const req = createMockRequest({ params: { projectId: PROJECT_ID }, query: { page: 1, limit: 20 } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await getProjectConversations(createMockAppConfig())(req, res, next)
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter })
+      await getProjectConversations(createMockAppConfig())(req, createMockResponse(), createMockNext())
 
       const filter = findStub.firstCall.args[0] as any
-      expect(filter.projectId.toString()).to.equal(PROJECT_ID)
-      expect(filter.isDeleted).to.equal(false)
-      expect(filter.$or).to.deep.equal([
-        { userId: new mongoose.Types.ObjectId(VALID_OID) },
-        { projectVisibility: 'project' },
-      ])
+      expect(Object.keys(filter)).to.deep.equal(['$and'])
+      expect(filter.$and[0]).to.equal(listFilter)
+      expect(filter.$and[1].projectId.toString()).to.equal(PROJECT_ID)
+      expect(countStub.firstCall.args[0]).to.equal(filter)
+    })
+
+    it('fails closed when the list guard is not mounted', async () => {
+      stubNoTeamMemberships()
+      sinon.stub(ProjectService, 'assertAccess').resolves({ role: 'viewer', project: makeProjectDoc() })
+      const find = sinon.stub(ChatSession, 'find')
+
+      const req = createMockRequest({ params: { projectId: PROJECT_ID }, query: { page: 1, limit: 20 } })
+      const next = createMockNext()
+      await getProjectConversations(createMockAppConfig())(req, createMockResponse(), next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error)
+      expect(find.called).to.equal(false)
     })
 
     it('rejects with the access error when the caller has no access', async () => {
@@ -744,6 +764,7 @@ describe('project.controller', () => {
       sinon.stub(ProjectService, 'assertAccess').rejects(error)
 
       const req = createMockRequest({ params: { projectId: PROJECT_ID }, query: { page: 1, limit: 20 } })
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter: { $and: [] } })
       const res = createMockResponse()
       const next = createMockNext()
 

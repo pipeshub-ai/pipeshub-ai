@@ -58,6 +58,7 @@ export function AuthenticateTab() {
     instanceNameError,
     setAuthFormValue,
     setInstanceName,
+    setInstanceNameError,
     setSelectedAuthType,
     oauthCredentialBaselineTick,
     connectionCheck,
@@ -516,6 +517,11 @@ export function AuthenticateTab() {
               value={instanceName}
               disabled={isCheckingConnection}
               onChange={(e) => setInstanceName(e.target.value)}
+              onBlur={() => {
+                if (!instanceName.trim()) {
+                  setInstanceNameError(t('workspace.actions.errors.instanceNameRequired'));
+                }
+              }}
               placeholder={t('workspace.actions.instanceNamePlaceholder', { name: connectorTypeName })}
               aria-invalid={instanceNameError ? true : undefined}
               style={{

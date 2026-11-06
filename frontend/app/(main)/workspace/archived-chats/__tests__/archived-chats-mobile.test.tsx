@@ -10,6 +10,7 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: env.push, replace: env.replace }),
   useSearchParams: () => new URLSearchParams(env.conversationId ? `conversationId=${env.conversationId}` : ''),
 }));
+vi.mock('@/app/components/sidebar/sidebar-expand-button', () => ({ SidebarExpandButton: () => null }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('../components', () => ({
   ArchivedChatsSidebar: ({ onDeleted, onRestored }: {

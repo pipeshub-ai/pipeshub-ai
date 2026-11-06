@@ -55,6 +55,22 @@ class TestReduce:
         assert answer["content"].endswith("(Tools used: search, fetch.)")
         assert exchange_tokens([question, answer]) < exchange_tokens(exchange) // 5
 
+    def test_a_shared_chats_notes_quotes_and_shared_answers_stay_shortened(self) -> None:
+        exchange = [
+            {"role": "user_query", "content": "Q", "authorRef": "participant_1"},
+            {"role": "bot_response", "content": "A"},
+            {"role": "note", "content": "n" * 5_000, "authorRef": "participant_2"},
+            {"role": "shared_answer", "content": "s", "authorRef": "participant_2", "question": "Q2"},
+            {"role": "quote", "content": "q", "authorRef": "participant_1", "sourceRef": "participant_2"},
+        ]
+
+        reduced = reduce_exchange(exchange)
+
+        assert [row["role"] for row in reduced] == ["user_query", "bot_response", "note", "shared_answer", "quote"]
+        assert reduced[2]["authorRef"] == "participant_2"
+        assert len(reduced[2]["content"]) <= REDUCED_ANSWER_CHARS + 10
+        assert reduced[3]["question"] == "Q2" and reduced[4]["sourceRef"] == "participant_2"
+
 
 class TestPlan:
     def test_newest_whole_then_reduced_then_omitted(self) -> None:

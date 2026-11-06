@@ -88,6 +88,7 @@ class DatabaseSandbox:
         org_id = self.chat_state.get("org_id")
         user_id = artifact_owner_id(self.chat_state)
         graph_provider = self.chat_state.get("graph_provider")
+        run_id = self.chat_state.get("run_id")
 
         if not (conversation_id and org_id and rows):
             return
