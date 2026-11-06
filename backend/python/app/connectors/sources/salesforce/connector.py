@@ -4790,7 +4790,9 @@ class SalesforceConnector(BaseConnector):
                         # None keeps the account's readers: the permission step writes them
                         # from UserRecordAccess, and [] would clear them until it runs.
                         record_groups_with_perms.append((record_group, None))
-                        updated_time_ms = _parse_salesforce_timestamp(acc.LastModifiedDate)
+                        # The edge schemas need non-null timestamps; an account without dates gets now.
+                        edge_created_ms = start_time_ms or get_epoch_timestamp_in_ms()
+                        edge_updated_ms = _parse_salesforce_timestamp(acc.LastModifiedDate) or edge_created_ms
                         prospect_edge = {
                             "to_id": org_node.id,
                             "rating": rating,
@@ -4798,8 +4800,8 @@ class SalesforceConnector(BaseConnector):
                             "externalId": account_id,
                             "startTime": start_time_ms,
                             "endTime": end_time_ms,
-                            "createdAtTimestamp": start_time_ms,
-                            "updatedAtTimestamp": updated_time_ms,
+                            "createdAtTimestamp": edge_created_ms,
+                            "updatedAtTimestamp": edge_updated_ms,
                         }
                         customer_edge: Optional[Dict] = None
                         if end_time_ms is not None:
@@ -4810,8 +4812,8 @@ class SalesforceConnector(BaseConnector):
                                 "activeCustomer": active_customer,
                                 "externalId": account_id,
                                 "since": end_time_ms,
-                                "createdAtTimestamp": start_time_ms,
-                                "updatedAtTimestamp": updated_time_ms,
+                                "createdAtTimestamp": edge_created_ms,
+                                "updatedAtTimestamp": edge_updated_ms,
                             }
                         orgs_with_edges.append((org_node, record_group, prospect_edge, customer_edge))
                     except Exception as e:
@@ -4954,17 +4956,21 @@ class SalesforceConnector(BaseConnector):
                             )
                             continue
 
+                        since_ms = _parse_salesforce_timestamp(contact.CreatedDate)
+                        contact_updated_ms = _parse_salesforce_timestamp(contact.LastModifiedDate)
+                        # The person and edge schemas need non-null timestamps; a contact without dates gets now.
+                        edge_created_ms = since_ms or get_epoch_timestamp_in_ms()
+                        edge_updated_ms = contact_updated_ms or edge_created_ms
+
                         person = self._create_person(
                             email=email,
                             org_id=org_id,
                             first_name=contact.FirstName,
                             last_name=contact.LastName,
                             phone=contact.Phone,
-                            created_at=_parse_salesforce_timestamp(contact.CreatedDate),
-                            updated_at=_parse_salesforce_timestamp(contact.LastModifiedDate),
+                            created_at=edge_created_ms,
+                            updated_at=edge_updated_ms,
                         )
-                        since_ms = _parse_salesforce_timestamp(contact.CreatedDate)
-                        contact_updated_ms = _parse_salesforce_timestamp(contact.LastModifiedDate)
 
                         contact_edge = {
                             "to_id": person.id,
@@ -4972,8 +4978,8 @@ class SalesforceConnector(BaseConnector):
                             "leadSource": contact.LeadSource,
                             "since": since_ms,
                             "externalId": contact_id,
-                            "createdAtTimestamp": since_ms,
-                            "updatedAtTimestamp": contact_updated_ms,
+                            "createdAtTimestamp": edge_created_ms,
+                            "updatedAtTimestamp": edge_updated_ms,
                         }
                         member_of_edge: Optional[Dict] = None
                         account_obj = contact.Account or {}
@@ -4984,8 +4990,8 @@ class SalesforceConnector(BaseConnector):
                                 "accountName": account_name,
                                 "title": contact.Title,
                                 "department": contact.Department,
-                                "createdAtTimestamp": since_ms,
-                                "updatedAtTimestamp": contact_updated_ms,
+                                "createdAtTimestamp": edge_created_ms,
+                                "updatedAtTimestamp": edge_updated_ms,
                             }
                         contact_with_edges.append((person, contact_edge, member_of_edge))
                     except Exception as e:
@@ -5161,6 +5167,9 @@ class SalesforceConnector(BaseConnector):
                             _parse_salesforce_timestamp(lead.ConvertedDate)
                             if is_converted else None
                         )
+                        # The person and edge schemas need non-null timestamps; a lead without dates gets now.
+                        edge_created_ms = start_time_ms or get_epoch_timestamp_in_ms()
+                        edge_updated_ms = _parse_salesforce_timestamp(lead.LastModifiedDate) or edge_created_ms
                         edge_attrs = {
                             "company": lead.Company,
                             "title": lead.Title,
@@ -5172,8 +5181,8 @@ class SalesforceConnector(BaseConnector):
                             "externalId": lead_id,
                             "startTime": start_time_ms,
                             "endTime": end_time_ms,
-                            "createdAtTimestamp": start_time_ms,
-                            "updatedAtTimestamp": _parse_salesforce_timestamp(lead.LastModifiedDate),
+                            "createdAtTimestamp": edge_created_ms,
+                            "updatedAtTimestamp": edge_updated_ms,
                         }
                         lead_email = lead.Email
                         if not lead_email:
@@ -5187,8 +5196,8 @@ class SalesforceConnector(BaseConnector):
                             first_name=lead.FirstName,
                             last_name=lead.LastName,
                             phone=lead.Phone,
-                            created_at=_parse_salesforce_timestamp(lead.CreatedDate),
-                            updated_at=_parse_salesforce_timestamp(lead.LastModifiedDate),
+                            created_at=edge_created_ms,
+                            updated_at=edge_updated_ms,
                         )
                         lead_with_edges.append((person, edge_attrs))
                     except Exception as e:
@@ -5419,8 +5428,9 @@ class SalesforceConnector(BaseConnector):
                     records.append(record)
                     deal_info_edge = {
                         "stage": opp.StageName or "",
-                        "createdAtTimestamp": _parse_salesforce_timestamp(opp.CreatedDate),
-                        "updatedAtTimestamp": _parse_salesforce_timestamp(opp.LastModifiedDate),
+                        # The edge schema needs non-null timestamps; an opportunity without dates gets now.
+                        "createdAtTimestamp": _parse_salesforce_timestamp(opp.CreatedDate) or get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": _parse_salesforce_timestamp(opp.LastModifiedDate) or get_epoch_timestamp_in_ms(),
                     }
                     opportunity_with_edges.append((record, deal_info_edge))
 

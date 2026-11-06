@@ -412,7 +412,7 @@ class TestArtifactVersionsField:
         ])
 
         NodeSchemaValidator().validate_node_update(
-            CollectionNames.ARTIFACTS.value, {"version": 2, "versions": payload},
+            CollectionNames.ARTIFACTS.value, {"versions": payload},
         )
 
     def test_still_accepts_arrays_written_before_serialization(self):

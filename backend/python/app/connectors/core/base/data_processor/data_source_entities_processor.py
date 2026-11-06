@@ -100,6 +100,8 @@ from app.services.messaging.record_titles import (
     build_record_title_message,
     clean_record_title,
 )
+from app.schema.node_validator import SchemaValidationError
+from app.telemetry.modules.schema_metrics import record_schema_rejection
 from app.telemetry.modules.soft_delete_metrics import record_restored, record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge, remaining_record_keys
@@ -483,14 +485,29 @@ class DataSourceEntitiesProcessor:
         """Log a failure a retried method is about to raise: as a warning when
         retry_on_deadlock will run the method again, which it reports itself, and
         as an error when nothing will."""
+        if isinstance(error, SchemaValidationError):
+            self._report_schema_rejection(error)
+            return
         log = self.logger.warning if will_retry(self, error) else self.logger.error
         log(message, exc_info=exc_info)
+
+    def _report_schema_rejection(self, error: SchemaValidationError) -> None:
+        """Log and count a schema rejection once, however many handlers it passes through."""
+        if getattr(error, "schema_reported", False):
+            return
+        error.schema_reported = True
+        self.logger.error("Graph write rejected by schema validation (collection=%s): %s", error.collection, error)
+        record_schema_rejection(error.collection)
 
     def _must_propagate(self, error: Exception, tx_store: TransactionStore | None) -> bool:
         """Whether a handler that logs a failure and goes on has to let this one
         through: a conflict the caller resolves by running its transaction
-        again, or a failure that ended the explicit transaction of ``tx_store``,
-        after which every later statement fails."""
+        again, a failure that ended the explicit transaction of ``tx_store``,
+        after which every later statement fails, or a schema rejection: a
+        permanent error that would otherwise commit the block without its write."""
+        if isinstance(error, SchemaValidationError):
+            self._report_schema_rejection(error)
+            return True
         provider = self.data_store_provider
         if (
             is_transient_conflict(error)
@@ -3041,10 +3058,14 @@ class DataSourceEntitiesProcessor:
             if current_status == ProgressStatus.QUEUED.value:
                 self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
                 return
-            record["indexingStatus"] = ProgressStatus.QUEUED.value
-            await tx_store.batch_upsert_nodes([record], CollectionNames.RECORDS.value)
+            # Only the status: re-upserting the whole stored document would make strict validation see every legacy key.
+            await tx_store.batch_update_nodes(
+                [{"_key": record_id, "indexingStatus": ProgressStatus.QUEUED.value}], CollectionNames.RECORDS.value
+            )
             self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
         except Exception as e:
+            if self._must_propagate(e, tx_store):
+                raise
             # Log but don't fail the main operation if status update fails
             self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
@@ -3157,6 +3178,56 @@ class DataSourceEntitiesProcessor:
 
         await self._publish_membership_sync(moved_virtual_record_ids)
 
+    async def _write_records_slice(
+        self,
+        batch_slice: list[tuple[Record, list[Permission]]],
+        narrowed_connectors: set[str],
+        *,
+        replace_permissions: bool,
+    ) -> tuple[list[Record], list[PendingMove], list[tuple[str, str | None]], dict[str, Record]]:
+        """Write one slice of records in one transaction; returns what to publish once it committed."""
+        records_to_publish: list[Record] = []
+        # Deliberately a separate list from records_to_publish: the publish
+        # filters (AUTO_INDEX_OFF, internal, COMPLETED, KB folders,
+        # placeholders) are about whether there is anything to *index*. A
+        # COMPLETED, unchanged record that merely moved between groups is
+        # exactly the case this exists for, and every one of those filters
+        # would drop it.
+        moved_virtual_record_ids: list[tuple[str, str | None]] = []
+        title_changes: dict[str, Record] = {}
+        pending_moves: list[PendingMove] = []
+        async with self._drop_access_after(narrowed_connectors), self._sync_transaction(explicit=True) as store:
+            tx_store = _BatchLookups(store)
+            # Per slice, not for the whole batch: the slices before this one
+            # have moved their blobs, so the stored paths are where they are.
+            old_path_map = await self._snapshot_old_paths(batch_slice, tx_store)
+            for record, permissions in batch_slice:
+                pre_old_path = old_path_map.get(
+                    record.external_record_id, _NO_OLD_PATH,
+                )
+                replace = replace_permissions or bool(record.rewrite_permissions)
+                processed_record, moves = await self._process_record(
+                    record, permissions, tx_store, moved_virtual_record_ids,
+                    pre_old_path=pre_old_path,
+                    narrowed_connectors=narrowed_connectors,
+                    permissions_fetched=True,
+                    replace_permissions=replace,
+                    title_changes=title_changes,
+                )
+                pending_moves.extend(moves)
+
+                if processed_record:
+                    records_to_publish.append(processed_record)
+        return records_to_publish, pending_moves, moved_virtual_record_ids, title_changes
+
+    def _quarantine_record(self, record: Record, error: SchemaValidationError) -> None:
+        """Skip a record whose write the schema refused: it cannot succeed on a re-run."""
+        self._report_schema_rejection(error)
+        self.logger.error(
+            "Record %s quarantined, skipped: write rejected by schema validation (collection=%s): %s",
+            record.id, error.collection, error,
+        )
+
     @retry_on_deadlock()
     async def on_new_records(
         self,
@@ -3172,44 +3243,30 @@ class DataSourceEntitiesProcessor:
             narrowed_connectors: set[str] = set()
             for start in range(0, len(records_with_permissions), _RECORDS_PER_TRANSACTION):
                 batch_slice = records_with_permissions[start:start + _RECORDS_PER_TRANSACTION]
-                records_to_publish: list[Record] = []
-                # Deliberately a separate list from records_to_publish: the publish
-                # filters (AUTO_INDEX_OFF, internal, COMPLETED, KB folders,
-                # placeholders) are about whether there is anything to *index*. A
-                # COMPLETED, unchanged record that merely moved between groups is
-                # exactly the case this exists for, and every one of those filters
-                # would drop it.
-                moved_virtual_record_ids: list[tuple[str, str | None]] = []
-                title_changes: dict[str, Record] = {}
-                pending_moves: list[PendingMove] = []
-                async with self._drop_access_after(narrowed_connectors), self._sync_transaction(explicit=True) as store:
-                    tx_store = _BatchLookups(store)
-                    # Per slice, not for the whole batch: the slices before this one
-                    # have moved their blobs, so the stored paths are where they are.
-                    old_path_map = await self._snapshot_old_paths(batch_slice, tx_store)
-                    for record, permissions in batch_slice:
-                        pre_old_path = old_path_map.get(
-                            record.external_record_id, _NO_OLD_PATH,
-                        )
-                        replace = replace_permissions or bool(record.rewrite_permissions)
-                        processed_record, moves = await self._process_record(
-                            record, permissions, tx_store, moved_virtual_record_ids,
-                            pre_old_path=pre_old_path,
-                            narrowed_connectors=narrowed_connectors,
-                            permissions_fetched=True,
-                            replace_permissions=replace,
-                            title_changes=title_changes,
-                        )
-                        pending_moves.extend(moves)
-
-                        if processed_record:
-                            records_to_publish.append(processed_record)
+                try:
+                    written = [await self._write_records_slice(batch_slice, narrowed_connectors, replace_permissions=replace_permissions)]
+                except SchemaValidationError:
+                    # A permanent rejection must not hold the other records of the slice
+                    # (or, through an unadvanced checkpoint, every later sync) hostage:
+                    # redo the slice one record per transaction and quarantine the bad ones.
+                    written = []
+                    for item in batch_slice:
+                        try:
+                            one = await self._write_records_slice([item], narrowed_connectors, replace_permissions=replace_permissions)
+                        except SchemaValidationError as e:
+                            self._quarantine_record(item[0], e)
+                            continue
+                        # This record's transaction has committed: its post-commit work runs now,
+                        # before the next record is written, so an error on a later record (a
+                        # deadlock, say) cannot leave it unpublished with a re-run finding it unchanged.
+                        await self._after_slice_committed(*one)
                 # Before the next slice starts: a re-run finds this slice's records
                 # unchanged and would redo none of it. A slice that rolled back
                 # does not get here.
-                await self._after_slice_committed(
-                    records_to_publish, pending_moves, moved_virtual_record_ids, title_changes
-                )
+                for records_to_publish, pending_moves, moved_virtual_record_ids, title_changes in written:
+                    await self._after_slice_committed(
+                        records_to_publish, pending_moves, moved_virtual_record_ids, title_changes
+                    )
         except Exception as e:
             self._log_failure(f"Transaction on_new_records failed: {str(e)}", e)
             raise e
