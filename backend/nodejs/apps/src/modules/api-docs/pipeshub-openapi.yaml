@@ -50313,8 +50313,11 @@ paths:
         service-account agent needs no extra permission. Changing the
         `knowledge` of a service-account agent that has no
         `serviceAccountUserId` is also limited to its owner or an
-        administrator, because it searches with its creator's access.
-        Resending the same sources is not a change.
+        administrator, because it searches with its creator's access. What
+        counts is what the agent can search: resending the same sources with
+        the same record-group and record limits, in any order or spelling, is
+        not a change, while adding or removing a source or changing its
+        limits, including narrowing one, is.
 
         **Success response**
 

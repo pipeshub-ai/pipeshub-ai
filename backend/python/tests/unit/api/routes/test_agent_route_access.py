@@ -1511,6 +1511,25 @@ class TestUnboundServiceAgentKnowledgeByNonOwner:
 
         assert response.status_code == 403
 
+    def test_an_editor_cannot_drop_the_limit_of_a_source_listed_twice(self, client, service_agent, monkeypatch) -> None:
+        """Search keeps a duplicated source's limit, so sending it whole widens it."""
+        service_agent.add_node("agentKnowledge", {"_key": "kn-2", "connectorId": "conn-1", "filters": ""})
+        service_agent.add_edge("agentHasKnowledge", {"_from": f"{AGENTS}/shared", "_to": "agentKnowledge/kn-2"})
+        self._role(monkeypatch, CallerRole(CallerRoleStatus.VALID, "member"))
+
+        response = client.put("/api/v1/agent/shared", headers=as_user("bob"), json={"knowledge": [{"connectorId": "conn-1"}]})
+
+        assert response.status_code == 403
+
+    def test_an_editor_cannot_change_sources_by_also_naming_a_service_account(self, client, service_agent, monkeypatch) -> None:
+        self._role(monkeypatch, CallerRole(CallerRoleStatus.VALID, "member"))
+
+        response = client.put("/api/v1/agent/shared", headers=as_user("bob"), json={**self.ADDED, "serviceAccountUserId": "u-account"})
+
+        assert response.status_code == 403
+        assert self._connectors(service_agent) == {"conn-1"}
+        assert not service_agent.nodes[AGENTS]["shared"].get("serviceAccountUserId")
+
     def test_an_unconfirmed_role_saves_nothing(self, client, service_agent, monkeypatch) -> None:
         self._role(monkeypatch, CallerRole(CallerRoleStatus.UNKNOWN))
 

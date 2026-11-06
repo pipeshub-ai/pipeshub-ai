@@ -197,6 +197,9 @@ export const selectIsAdmin = (s: UserProfileStore) => s.profile?.isAdmin ?? null
 /** isAdmin once this session's profile refresh has finished; null before then, because the persisted value may be out of date. */
 export const selectRefreshedIsAdmin = (s: UserProfileStore) =>
   s.isInitialized && !s.error ? (s.profile?.isAdmin ?? null) : null;
+/** A finished refresh that left the admin role unknown (a failed request); it is retried, and the role reads as unknown until then. */
+export const selectAdminRoleNeedsRetry = (s: UserProfileStore) =>
+  s.isInitialized && !s.isLoading && Boolean(s.profile) && selectRefreshedIsAdmin(s) === null;
 export const selectAvatarUrl = (s: UserProfileStore) => s.profile?.avatarUrl ?? null;
 export const selectFullName = (s: UserProfileStore) => s.profile?.fullName ?? null;
 export const selectUserEmail = (s: UserProfileStore) => s.profile?.email ?? null;

@@ -8,15 +8,18 @@
  *   • Triggers initialization when the user is authenticated.
  *   • Re-initializes (force) when the decoded userId changes (true re-login, not token refresh).
  *   • Clears the profile when the user is no longer authenticated.
+ *   • Retries while a failed request left the admin role unknown.
  *
  * Renders nothing — purely a side-effect component.
  */
 
 import { useEffect } from 'react';
 import { useInitializeUserProfile } from '@/lib/hooks/use-initialize-user-profile';
+import { selectAdminRoleNeedsRetry, useUserStore } from '@/lib/store/user-store';
 import { getUserIdFromToken } from '@/lib/utils/jwt';
 
 const LOG = '[user-initializer]';
+export const ADMIN_ROLE_RETRY_MS = 30_000;
 
 export function UserProfileInitializer() {
   const {
@@ -59,6 +62,14 @@ export function UserProfileInitializer() {
       prevUserIdRef.current = null;
     }
   }, [isHydrated, isAuthenticated, accessToken, initialize, clearProfile, prevUserIdRef]);
+
+  const adminRoleNeedsRetry = useUserStore(selectAdminRoleNeedsRetry);
+  useEffect(() => {
+    if (!isAuthenticated || !adminRoleNeedsRetry) return;
+    // Forced: a failed refresh can leave a stored role that the skip check would accept.
+    const timer = setTimeout(() => initialize(true), ADMIN_ROLE_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [isAuthenticated, adminRoleNeedsRetry, initialize]);
 
   return null;
 }

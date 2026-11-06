@@ -3498,7 +3498,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         if (
             "knowledge" in body
             and agent.get("isServiceAccount")
-            and not body.get("serviceAccountUserId", agent.get("serviceAccountUserId"))
+            and not agent.get("serviceAccountUserId")
             and perm.get("user_role") != "OWNER"
             and source_reach(_parse_knowledge_sources(body.get("knowledge", [])).values())
             != source_reach(agent.get("knowledge") or [])

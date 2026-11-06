@@ -463,6 +463,17 @@ class TestSourceReach:
 
         assert source_reach([{"connectorId": "c1", "filters": {"records": ["r1"]}}]) != source_reach([{"connectorId": "c1"}])
 
+    def test_a_source_listed_twice_keeps_its_limit_as_search_does(self) -> None:
+        from app.modules.agents.knowledge_scope import (
+            resolve_agent_filters,
+            source_reach,
+        )
+
+        stored = [{"connectorId": "c1", "filters": {"recordGroups": ["g1"]}}, {"connectorId": "c1"}]
+        assert resolve_agent_filters(stored, None, is_universal_agent=False).sources["recordGroups"] == ["g1"]
+        assert source_reach(stored) == {"c1": (("g1",), ())}
+        assert source_reach(stored) != source_reach([{"connectorId": "c1"}])
+
     def test_an_unreadable_limit_searches_nothing_not_everything(self) -> None:
         from app.modules.agents.knowledge_scope import source_reach
 

@@ -134,10 +134,14 @@ def source_reach(entries: Iterable[object]) -> dict[str, tuple[tuple[str, ...], 
     source_ids = {str(e["connectorId"]).strip() for e in items}
     reach: dict[str, tuple[tuple[str, ...], ...] | None] = {}
     for entry in items:
+        source = str(entry["connectorId"]).strip()
         limit = _narrowed_to(entry, source_ids)
-        reach[str(entry["connectorId"]).strip()] = (
-            None if limit is None else tuple(tuple(sorted(limit[key])) for key in _NARROWING_KEYS)
-        )
+        # As in resolve_agent_filters: a source listed twice is searched with its
+        # last limit, and a whole-source entry does not lift an earlier limit.
+        if limit is None:
+            reach.setdefault(source, None)
+        else:
+            reach[source] = tuple(tuple(sorted(limit[key])) for key in _NARROWING_KEYS)
     return reach
 
 
