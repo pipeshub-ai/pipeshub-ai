@@ -2235,8 +2235,9 @@ class SlackConnector(BaseConnector):
             if not resp or not resp.success:
                 error = getattr(resp, "error", "no response")
                 # The thread or channel is gone: nothing more can be read, so
-                # a retry would fail the same way. Treat it as finished.
-                if error in ("thread_not_found", "channel_not_found", "not_in_channel"):
+                # a retry would fail the same way. Treat it as finished, but only
+                # before any page was fetched; after that the replies are partial.
+                if cursor is None and error in ("thread_not_found", "channel_not_found", "not_in_channel"):
                     self.logger.warning(
                         f"Skipping replies of thread ts={thread_ts} in {channel_id}: {error}"
                     )
