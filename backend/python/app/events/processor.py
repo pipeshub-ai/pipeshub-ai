@@ -241,6 +241,10 @@ class Processor:
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
                         "processingStartedAt": None,
                     }
+                    # Left IN_PROGRESS with processingStartedAt cleared, the record reads as a
+                    # crashed parse and stale recovery requeues it on every pass.
+                    if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
+                        status_fields["parsingStatus"] = ProgressStatus.ENABLE_MULTIMODAL_MODELS.value
                     success = await self.graph_provider.update_node(
                         record_id,
                         CollectionNames.RECORDS.value,
