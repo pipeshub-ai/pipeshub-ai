@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.core import org_context
+from app.core.db.errors import DbTimeout, DeadlockDetected, LockTimeout, PoolTimeout, SerializationConflict
 from app.core.org_context import OrgContext, OrgMismatch, bind
 from app.modules.named_entities.keys import value_mention_key
 from app.schema.node_validator import SchemaValidationError
@@ -212,6 +213,10 @@ async def test_a_bad_value_row_changes_nothing_and_another_orgs_row_is_refused(w
         await w.p.replace_named_entity_values("r1", [w.vm("r1", "b"), w.vm("r1", "c", startMs="soon")])
     with pytest.raises(OrgMismatch):
         await w.p.replace_named_entity_values("r1", [orgs[1].vm("r1", "b")])
+    await w.p.replace_named_entity_values("r2", [w.vm("r2", "a")])
+    with pytest.raises(ValueError, match="other than the one"):
+        await w.p.replace_named_entity_values("r1", [w.vm("r1", "b"), w.vm("r2", "a", name="taken over")])     # a row of r2 under r1
+    assert (await w.node("valueMentions", value_mention_key("r2", "date", "a")))["name"] == "a"
     assert await w.values("r1") == {value_mention_key("r1", "date", "a")}
 
 
@@ -287,24 +292,36 @@ async def test_copy_never_crosses_orgs(w: Org, orgs: tuple[Org, Org]) -> None:
         assert await orgs[1].edges("dst") == set()
 
 
-async def test_a_failed_copy_changes_nothing_and_a_retry_completes(w: Org) -> None:
+class FailOn:
+    """A transaction that runs the statements of the copy and fails on the one that replaces the target's values, after the edges were inserted."""
+
+    def __init__(self, tx: object) -> None:
+        self._tx = tx
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._tx, name)
+
+    async def execute(self, sql: str, *a: object) -> object:
+        if "replace_named_entity_values_stale" in sql:
+            raise RuntimeError("store down")
+        return await self._tx.execute(sql, *a)
+
+
+async def test_a_failed_copy_changes_nothing_and_a_retry_completes(w: Org, monkeypatch: pytest.MonkeyPatch) -> None:
     await w.p.create_named_entities_if_absent([w.ne("A")])
     await w.record("src")
     await w.record("dst")
     await w.mention("src", "A")
     await w.p.replace_named_entity_values("src", [w.vm("src", "a")])
     real = w.p._q
-    calls = 0
 
-    async def second_statement_fails(fn: object, transaction: object = None, **kw: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise RuntimeError("store down")
-    w.p._q = second_statement_fails
+    async def failing_late(fn: object, transaction: object = None, **kw: object) -> object:
+        return await real(lambda tx: fn(FailOn(tx)), transaction, **kw)
+    monkeypatch.setattr(w.p, "_q", failing_late)
     with pytest.raises(RuntimeError):
         await w.p.copy_named_entity_mentions("src", "dst")
-    w.p._q = real
-    assert await w.edges("dst") == set() and await w.values("dst") == set()
+    monkeypatch.setattr(w.p, "_q", real)
+    assert await w.edges("dst") == set() and await w.values("dst") == set()          # the edge inserted before the failure went with it
     assert await w.p.copy_named_entity_mentions("src", "dst") == 2
 
 
@@ -361,6 +378,50 @@ async def test_delete_leaves_a_node_a_writer_holds_and_deletes_it_once_the_write
     assert await w.node("namedEntities", "A")
 
 
+async def test_a_create_that_clears_the_mark_between_the_find_and_the_delete_keeps_the_node(w: Org) -> None:
+    await w.p.create_named_entities_if_absent([w.ne("A"), w.ne("B")])
+    for k in ("A", "B"):
+        await w.p.update_node(k, "namedEntities", {"orphanedAt": 100})
+    found = await w.p.find_orphan_named_entities(w.org, 10, marked_before_ms=500)
+    assert found == ["A", "B"]
+    await w.p.create_named_entities_if_absent([w.ne("A")])                                      # a writer about to link A takes its mark back
+    assert await w.p.delete_orphan_named_entities(w.org, 10, marked_before_ms=500, entity_ids=found) == ["B"]
+    assert await w.node("namedEntities", "A") and "orphanedAt" not in await w.node("namedEntities", "A")
+
+
+async def hold(w: Org, key: str) -> str:
+    """Another connection holds the node's row."""
+    tid = await w.p.begin_transaction([], [])
+    await w.p.update_node(key, "namedEntities", {"updatedAtTimestamp": 2}, transaction=tid)
+    return tid
+
+
+async def test_mark_and_clear_skip_a_row_another_connection_holds_and_take_it_the_next_pass(w: Org) -> None:
+    await w.p.create_named_entities_if_absent([w.ne("A"), w.ne("B"), w.ne("L")])
+    await w.record("r1")
+    await w.mention("r1", "L")
+    tid = await hold(w, "A")
+    try:
+        assert await asyncio.wait_for(w.p.mark_orphan_named_entities(w.org, 5), 10) == 1            # B; A is held, not waited for
+    except BaseException:
+        await w.p.rollback_transaction(tid)
+        raise
+    await w.p.commit_transaction(tid)
+    assert "orphanedAt" not in await w.node("namedEntities", "A") and await w.p.mark_orphan_named_entities(w.org, 6) == 1
+    assert (await w.node("namedEntities", "A"))["orphanedAt"] == 6
+    await w.p.update_node("A", "namedEntities", {"orphanedAt": 9})
+    await w.mention("r1", "A")
+    await w.p.update_node("L", "namedEntities", {"orphanedAt": 9})
+    tid = await hold(w, "A")
+    try:
+        assert await asyncio.wait_for(w.p.clear_orphan_named_entity_marks(w.org), 10) == 1           # L; A is held
+    except BaseException:
+        await w.p.rollback_transaction(tid)
+        raise
+    await w.p.commit_transaction(tid)
+    assert await w.p.clear_orphan_named_entity_marks(w.org) == 1 and "orphanedAt" not in await w.node("namedEntities", "A")
+
+
 async def test_mark_marks_the_unmarked_orphans_and_clear_takes_off_the_marks_of_linked_nodes(w: Org, orgs: tuple[Org, Org]) -> None:
     await sweep_world(w)
     assert await w.p.mark_orphan_named_entities(orgs[1].org, 5) == 0
@@ -414,9 +475,10 @@ async def test_a_failed_sweep_step_leaves_everything_and_works_again(w: Org, mon
 
 
 async def test_the_sweep_retries_a_conflict_and_not_other_errors(w: Org) -> None:
-    class SerializationConflict(Exception):
-        pass
-    assert w.p.is_named_entity_write_retryable(SerializationConflict()) and not w.p.is_named_entity_write_retryable(RuntimeError("x"))
+    for retry in (SerializationConflict(), DeadlockDetected(), LockTimeout()):
+        assert w.p.is_named_entity_write_retryable(retry)
+    for other in (DbTimeout(), PoolTimeout(), RuntimeError("x")):
+        assert not w.p.is_named_entity_write_retryable(other)
 
 
 # ---- retries and jobs ------------------------------------------------------------------------------------------------------------------
@@ -435,6 +497,11 @@ async def test_a_retry_doubles_its_wait_with_each_failure_and_is_capped(w: Org) 
     assert await w.p.schedule_named_entity_persist_retry(w.org, "r3", "e", attempts_so_far=2) == 3
     r3 = await w.node("namedEntityPersistRetries", "r3")
     assert 239_000 <= r3["dueAt"] - r3["updatedAtTimestamp"] <= 241_000
+
+
+async def test_two_first_failures_of_a_record_both_count(w: Org) -> None:
+    got = await asyncio.gather(w.p.schedule_named_entity_persist_retry(w.org, "r1", "a"), w.p.schedule_named_entity_persist_retry(w.org, "r1", "b"))
+    assert sorted(got) == [1, 2] and (await w.node("namedEntityPersistRetries", "r1"))["attempts"] == 2
 
 
 async def test_a_marker_for_another_org_is_refused_and_nothing_is_written(w: Org, orgs: tuple[Org, Org]) -> None:
