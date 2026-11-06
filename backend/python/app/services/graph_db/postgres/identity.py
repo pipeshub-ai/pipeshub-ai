@@ -375,7 +375,7 @@ class IdentityMixin(PgBase):
                     except NotImplementedInPostgres:
                         pass
                     except Exception as e:
-                        self.logger.error("Person adoption failed for %s: %s", u.email, e)
+                        self.logger.error("Person adoption failed for user %s in org %s: %s", u.id, org_node, e)
                 member_edges = [{"from_id": u.id, "from_collection": "users", "to_id": org_node, "to_collection": "organizations", "createdAtTimestamp": u.created_at,
                                  "updatedAtTimestamp": u.updated_at, "entityType": "ORGANIZATION"} for u in new.values() if not u.is_guest]
                 await self.batch_create_edges(member_edges, CollectionNames.BELONGS_TO.value, tx)

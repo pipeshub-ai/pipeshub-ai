@@ -1,11 +1,13 @@
-"""`migrate_person_to_user` runs on every userAdded; its log lines name the user key, never the email."""
+"""`migrate_person_to_user` runs on every userAdded and for each new synced app user; its log lines, and its callers' failure
+lines, name the user key, never the email."""
 
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.models.entities import Person
+from app.config.constants.arangodb import Connectors
+from app.models.entities import AppUser, Person
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
@@ -82,3 +84,54 @@ async def test_neo4j_migration_failure_logs_user_key(caplog: pytest.LogCaptureFi
 
     assert not any(EMAIL in m for m in _messages(caplog))
     assert _messages(caplog, logging.ERROR) == ["Migrate person to user failed for user u1 in org org-1: graph down"]
+
+
+# ---- callers: batch_upsert_app_users adopts a Person for each new app user, and a failed adoption is logged, not raised ----
+
+def _app_user() -> AppUser:
+    return AppUser(
+        app_name=Connectors.SLACK, connector_id="c1", id="u1", source_user_id="src-1",
+        email=EMAIL, full_name="Alice Liddell",
+    )
+
+
+def _assert_adoption_failure_logged_by_id(caplog: pytest.LogCaptureFixture) -> None:
+    messages = _messages(caplog)
+    assert not any(EMAIL in m or "Alice Liddell" in m for m in messages)
+    assert _messages(caplog, logging.ERROR) == ["Person adoption failed for user u1 in org org-1: graph down"]
+
+
+@pytest.mark.parametrize("provider_cls", [ArangoHTTPProvider, Neo4jProvider])
+async def test_batch_upsert_app_users_logs_a_failed_adoption_by_user_id(provider_cls, caplog: pytest.LogCaptureFixture) -> None:
+    provider = provider_cls.__new__(provider_cls)
+    provider.logger = logging.getLogger(LOGGER_NAME)
+    provider.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1", "id": "org-1"}])
+    provider.get_document = AsyncMock(return_value={"_id": "apps/c1", "id": "c1"})
+    provider.get_user_by_email = AsyncMock(side_effect=[None, MagicMock(id="u1", is_active=False)])
+    provider.batch_upsert_nodes = AsyncMock()
+    provider.batch_create_edges = AsyncMock()
+    provider.migrate_person_to_user = AsyncMock(side_effect=RuntimeError("graph down"))
+
+    await provider.batch_upsert_app_users([_app_user()], transaction="txn-1")
+
+    _assert_adoption_failure_logged_by_id(caplog)
+
+
+async def test_postgres_batch_upsert_app_users_logs_a_failed_adoption_by_user_id(caplog: pytest.LogCaptureFixture) -> None:
+    pytest.importorskip("app.services.graph_db.postgres.provider")
+    from app.core.org_context import OrgContext, bind
+    from app.services.graph_db.postgres.provider import PostgresGraphProvider
+
+    provider = PostgresGraphProvider(logging.getLogger(LOGGER_NAME), MagicMock())
+    provider.get_all_orgs = AsyncMock(return_value=[{"id": "org-1"}])
+    provider._q = AsyncMock()
+    # lower(email) for the batch, then no existing user with that address.
+    provider._id_rows = AsyncMock(side_effect=[[{"raw": EMAIL, "low": EMAIL}], []])
+    provider.batch_upsert_nodes = AsyncMock()
+    provider.batch_create_edges = AsyncMock()
+    provider.migrate_person_to_user = AsyncMock(side_effect=RuntimeError("graph down"))
+
+    with bind(OrgContext("org-1", "user-1", "job", "job:test", "t")):
+        await provider.batch_upsert_app_users([_app_user()], transaction="txn-1")
+
+    _assert_adoption_failure_logged_by_id(caplog)
