@@ -550,7 +550,6 @@ class HierarchyMixin(PgBase):
             return False
 
 
-
 # ---- the knowledge hub's root listing, parent and trail --------------------------------------------------------------------------
 _KH_SORT_FIELDS = ("name", "createdAt", "updatedAt", "nodeType", "origin", "connector", "sizeInBytes")
 

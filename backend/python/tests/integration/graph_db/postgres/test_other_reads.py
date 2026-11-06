@@ -54,6 +54,25 @@ async def test_the_first_member_of_the_all_team_owns_it_and_the_next_only_read(w
         await p.add_user_to_all_team(_org(), "a")
 
 
+async def test_a_failed_lookup_of_the_user_raises_instead_of_leaving_them_out_and_they_join_on_retry(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await w.nodes("users", {"_key": "a"})
+    real = w.p._id_rows
+
+    async def broken(sql: str, *a: object, **k: object) -> list:
+        if "all_team_user_exists" in sql:
+            raise RuntimeError("store down")
+        return await real(sql, *a, **k)
+    monkeypatch.setattr(w.p, "_id_rows", broken)
+    with pytest.raises(RuntimeError):
+        await w.p.add_user_to_all_team(w.org, "a")
+    assert await w.p.get_document(f"all_{w.org}", "teams") is None and await members(w) == {}          # nothing was written
+    monkeypatch.undo()
+    await w.p.add_user_to_all_team(w.org, "a")
+    assert await members(w) == {"a": "OWNER"}
+    await w.p.add_user_to_all_team(w.org, "ghost")                                                      # a user who is not in the graph still adds nobody
+    assert await members(w) == {"a": "OWNER"}
+
+
 async def test_users_who_join_together_do_not_make_two_owners(w: World) -> None:
     keys = [f"u{i}" for i in range(8)]
     await w.nodes("users", *({"_key": k} for k in keys))
@@ -238,6 +257,14 @@ async def test_updating_an_edge_merges_removes_and_changes_what_the_grant_gives_
     assert not await p.update_edge("users/by", "teams/tm", {"role": "OWNER"}, "belongsTo")      # another collection
     with pytest.raises(ValueError, match="collection"):
         await p.update_edge("m", "tm", {"role": "OWNER"}, "permission")
+    await w.nodes("users", {"_key": "s"})
+    await w.edge("authenticatedAs", ("users", "m"), ("users", "s"), connectorId="c1", note="1")
+    await w.edge("authenticatedAs", ("users", "m"), ("users", "s"), connectorId="c2", note="2")
+    with pytest.raises(ValueError, match="name one of them"):                                          # two parallel edges would get one key
+        await p.update_edge("users/m", "users/s", {"connectorId": "c9"}, "authenticatedAs")
+    assert sorted(e["connectorId"] for e in await p.get_edges_from_node("users/m", "authenticatedAs")) == ["c1", "c2"]
+    assert await p.update_edge("users/m", "users/s", {"note": "x"}, "authenticatedAs")                 # a field that is not part of the key reaches both
+    assert [e["note"] for e in await p.get_edges_from_node("users/m", "authenticatedAs")] == ["x", "x"]
     with in_org(_org()):
         assert not await p.update_edge("users/m", "teams/tm", {"role": "OWNER"}, "permission")
     assert not await p.get_edges_from_node("users/m", "permission")

@@ -854,7 +854,8 @@ class IdentityMixin(PgBase):
         self._require_org(org_id)
         async with self._atomic(None) as tid:
             team_id = await self._all_team(org_id, tid)
-            if await self.check_collection_has_document("users", user_key, tid):
+            # a read that raises, not check_collection_has_document: a lookup that failed is not "the user is not in the graph"
+            if await self._id_rows("/* pipeshub:graph.all_team_user_exists */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = $2", [current_org_id(), user_key], tid):
                 await self._join_all_team(team_id, [user_key], owner_if_empty=True, tid=tid)
 
     async def ensure_all_team_with_users(self, org_id: str) -> None:
@@ -892,7 +893,8 @@ class IdentityMixin(PgBase):
     async def check_connector_name_uniqueness(self, instance_name: str, scope: str, org_id: str, user_id: str, collection: str, edge_collection: str | None = None,
                                               transaction: str | None = None) -> bool:
         """Whether no other instance of the scope holds this name (without case or surrounding space): the user's own for a personal one, the org's for a team one.
-        A check that cannot be made lets the name through, as on the other stores; the org relation is the one the org holds its instances by."""
+        A check that cannot be made lets the name through, as on the other stores."""
+        # edge_collection is ignored: orgAppRelation is the only relation an org holds its instances by
         try:
             return not await self.check_connector_name_exists(collection, instance_name, scope, org_id, user_id, transaction)
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
