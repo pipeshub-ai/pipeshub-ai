@@ -7,11 +7,10 @@ from app.config.constants.arangodb import CollectionNames, Connectors, RecordTyp
 from app.config.constants.neo4j import parse_node_id
 from app.core.org_context import current_org_id
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.models.entities import AppUserGroup, User
+from app.models.entities import AppUserGroup, User, substitute_user_email
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES
-from app.models.entities import substitute_user_email
 from app.models.source_dates import DATED_ONLY_TIME_RANGE_KEY, upload_times_undated
-from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.team_grant_role import (
     TEAM_GRANT_ROLE_CAP,
     TEAM_GRANT_ROLES,
@@ -469,10 +468,6 @@ class PermissionsMixin(PgBase):
                     admin = d.get("role") == "ADMIN" or d.get("orgRole") == "ADMIN"
                     return _ctx_perms("ADMIN" if admin else "MEMBER", admin=admin)
                 coll = {"record": "records", "recordGroup": "recordGroups", "app": "apps"}[graph_type]
-                found = await tx.fetchval("""/* pipeshub:graph.ctx_nodes */ SELECT count(*) FROM graph.nodes n WHERE n.org_id = $1 AND (
-                    (n.coll = $2 AND n.id = $3) OR (n.coll = 'users' AND n.id = $4)) """, org, coll, parent_id, user_key)
-                if found != 2:
-                    return _ctx_perms("READER")
                 if graph_type == "app":
                     return _ctx_perms(await self._app_role(tx, org, user_key, parent_id) or "READER")
                 got = await self._role_on(tx, org, user_key, coll, parent_id)
@@ -492,7 +487,7 @@ class PermissionsMixin(PgBase):
         if not user_key:
             return None
         record = await self.get_document(record_id, "records", transaction, raise_on_error=True)
-        if not record or not is_live_record(record):
+        if not record:
             return None
         checked = await self.check_access(user_key, org_id, node_ids=[record_id], transaction=transaction)
         if record_id not in checked.node_ids or record_id in checked.placeholder_ids:

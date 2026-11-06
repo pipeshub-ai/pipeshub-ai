@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from .test_access import APP, World, _org, rec
-from .test_access import w as w  # noqa: PLC0414
+from .test_access import w as w
 from .test_grants import failing, grant, in_org
 
 pytestmark = pytest.mark.integration
@@ -116,7 +116,7 @@ async def test_metadata_and_time_filters_keep_only_the_records_they_name(w: Worl
     await w.edge("belongsToTopic", ("records", "open2"), ("topics", "t2"))
     await w.p.update_node("open1", "records", {"sourceCreatedAtTimestamp": 100, "sourceLastModifiedTimestamp": 300})
     await w.p.update_node("open2", "records", {"sourceCreatedAtTimestamp": 200, "sourceLastModifiedTimestamp": 400})
-    got = lambda f=None, t=None: w.p.get_accessible_virtual_record_ids("uid-gm", w.org, f, t)  # noqa: E731
+    got = lambda f=None, t=None: w.p.get_accessible_virtual_record_ids("uid-gm", w.org, f, t)
     assert set((await got({"departments": ["Legal"]})).values()) == {"open1"}
     assert set((await got({"departments": ["Legal"], "topics": ["hr"]})).values()) == set()               # every filter must hold
     assert set((await got({"topics": ["tax", "hr"]})).values()) == {"open1", "open2"}
@@ -175,7 +175,7 @@ async def test_a_details_read_that_cannot_be_answered_raises_instead_of_refusing
     await world(w)
     real = w.p._q
     monkeypatch.setattr(w.p, "_q", failing)
-    with pytest.raises(Exception):  # noqa: B017, PT011
+    with pytest.raises(Exception):
         await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
     monkeypatch.setattr(w.p, "_q", real)
     assert await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
@@ -220,6 +220,12 @@ async def test_a_role_on_a_record_comes_from_the_best_grant_on_it_or_what_it_inh
     assert await ctx(w, "ret", "open1", "record") == abilities("READER")
     assert await ctx(w, "weird", "open1", "record") == LOW
     assert await ctx(w, "orgm", "open2", "record") == abilities("WRITER")           # the organization's grant
+    await w.edge("permission", ("organizations", w.org), ("records", "inRg2"), type="DOMAIN", role="OWNER")      # a share that is not the organization's grants nothing
+    assert await ctx(w, "orgm", "inRg2", "record") == LOW
+    await w.nodes("users", {"_key": "kbe"})
+    await w.edge("belongsTo", ("records", "k1"), ("apps", "kb1"))
+    await w.edge("permission", ("users", "kbe"), ("apps", "kb1"), type="USER", role="EDITOR")                   # a role no collection has is no grant on it
+    assert await ctx(w, "kbe", "k1", "record") == LOW and await ctx(w, "kbu", "k1", "record") == abilities("WRITER")
     assert await ctx(w, "nogate", "open1", "record") == LOW and await ctx(w, "orgm", "open1", "record") == LOW
     assert await ctx(w, "inh", "open1", "record", org=_org()) == LOW
     assert await ctx(w, "inh", "missing", "record") == LOW
