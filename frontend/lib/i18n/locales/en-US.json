@@ -4857,6 +4857,8 @@
     "serviceAgentBadgeTooltip": "This service agent has its own toolset credentials. It searches knowledge with its creator's access, so everyone who uses it sees results from what the creator can read.",
     "convertToServiceAgentTooltip": "Permanent: agent-level toolsets, shared with your whole organization, and knowledge searched with the creator's access. Cannot be undone.",
     "convertToServiceAgentTooltipNewAgent": "Creates this agent as a service agent: agent-level toolsets, shared with your whole organization, and knowledge searched with your access.",
+    "convertToServiceAgentTooltipNoOrg": "Permanent: agent-level toolsets and knowledge searched with the creator's access. Use the Share button to control who can access it. Cannot be undone.",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "Creates this agent as a service agent: agent-level toolsets and knowledge searched with your access. Use the Share button to control who can access it.",
     "agentActionsMenuAria": "Agent menu",
     "agentMenuCreateAsServiceAgent": "Create as service agent",
     "agentMenuConvertToServiceAgent": "Convert to service agent",
