@@ -125,7 +125,23 @@ describe('libs/services/structured-logging', () => {
       const record = log.firstCall.args[0];
       expect(record.organization_id_hash).to.equal('h:org-1');
       expect(record).to.not.have.any.keys('org_id', 'user_id');
-      expect(JSON.stringify(record)).to.not.contain('user-1');
+      // Neither the file JSON nor the text line shows a raw id: an EE build that only hashes keeps hiding them.
+      const formatted = (logger as any).logger.format.transform({ ...record }, {});
+      const fileLine = winston.format.json().transform({ ...formatted }, {})[Symbol.for('message')];
+      for (const rendered of [String(formatted[Symbol.for('message')]), String(fileLine)]) {
+        expect(rendered.replace('h:org-1', '')).to.not.contain('org-1').and.not.contain('user-1');
+        expect(rendered).to.not.match(/org_id|user_id/);
+      }
+      expect(JSON.parse(String(fileLine)).organization_id_hash).to.equal('h:org-1');
+    });
+
+    it('a legacy provider whose hash is null shows no org at all, as before', () => {
+      sinon.stub(seam, 'getProvider').returns(fakeProvider({ fileLoggingEnabled: () => false }));
+      const logger = new Logger({ service: 't' });
+      const log = sinon.stub((logger as any).logger, 'log');
+      runWithRequestContext({ rootId: 'root-1', orgId: 'org-1', userId: 'user-1' }, () => logger.info('m'));
+      expect(log.firstCall.args[0]).to.not.have.any.keys('org_id', 'user_id', 'organization_id_hash');
+      expect(JSON.stringify(log.firstCall.args[0])).to.not.contain('org-1').and.not.contain('user-1');
     });
 
     it('stamps raw ids with the default provider', () => {
