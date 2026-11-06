@@ -126,6 +126,21 @@ async def test_an_agent_comes_with_its_toolsets_knowledge_skills_servers_and_whe
     assert other["knowledge"] == [] and other["skills"] == [] and other["mcpServers"] == [] and [t["_key"] for t in a["toolsets"]] == ["ts"]      # nothing crosses between the two
 
 
+async def test_another_orgs_nodes_with_the_same_ids_never_reach_an_agents_document(w: World) -> None:
+    """Every join of the agent's document stays in the agent's org: another org holding the same agent, toolset, tool and app ids, plus a tool and an app
+    of its own under them, changes nothing."""
+    await full_agent(w)
+    before = await w.p.get_agent("ag", w.org)
+    other = _org()
+    with in_org(other):
+        ow = World(w.p, other)
+        await full_agent(ow)
+        await ow.nodes("agentTools", {"_key": "t9", "name": "leak", "fullName": "slack.leak"})
+        await ow.edge("toolsetHasTool", ("agentToolsets", "ts"), ("agentTools", "t9"))
+        await ow.nodes("apps", {"_key": "ghost-app", "name": "Leaked", "type": "GOOGLE_DRIVE"})
+    assert await w.p.get_agent("ag", w.org) == before
+
+
 async def test_the_org_share_is_the_orgs_own_grant_and_a_deleted_or_other_orgs_agent_is_not_there(w: World) -> None:
     await full_agent(w)
     await w.nodes("organizations", {"_key": w.org}, {"_key": "elsewhere"})
