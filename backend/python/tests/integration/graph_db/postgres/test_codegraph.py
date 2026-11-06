@@ -281,6 +281,17 @@ async def test_two_foreign_keys_of_one_type_between_a_pair_are_two_links(pg_db) 
     assert sorted(e["constraintName"] for e in edges) == ["fk_a", "fk_b"] and next(e for e in edges if e["constraintName"] == "fk_a")["note"] == "again"
 
 
+async def test_parallel_links_split_by_a_page_boundary_are_all_returned(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "t1"}, {"_key": "t2"}], "records")
+    await p.batch_upsert_node_relations([edge("t1", "t2", "FOREIGN_KEY", "records", "records", constraintName=name) for name in ("fk_a", "fk_b", "fk_c")])
+    out, after = [], ""
+    while page := await p.get_neighbors_for_nodes_by_relationship_types(["t1"], "records", ["FOREIGN_KEY"], "outbound", limit=1, after=after):
+        out += page
+        after = page[-1]["cursor"]
+    assert len(out) == 3 and len({r["cursor"] for r in out}) == 3
+
+
 def ctx(org: str) -> OrgContext:
     return OrgContext(org, None, "job", "job:test", "t")
 
