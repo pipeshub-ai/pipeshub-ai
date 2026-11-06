@@ -90,7 +90,7 @@ HARMLESS = frozenset("""
     schedule_named_entity_persist_retry schedule_named_entity_reextract schedule_named_entity_reproject set_record_properties
     stage_state_compare_and_set stage_state_create stage_state_get stage_states_delete_for_virtual_records
     stage_states_delete_unheld_revisions stage_states_for_revision stage_states_stale stage_states_unheld_revisions
-    stamp_kh_listing_state store_page_token update_drive_sync_state update_indexing_status_for_record_ids update_kb_permission
+    stamp_kh_listing_state store_page_token sweep_deleted_connector_writes update_drive_sync_state update_indexing_status_for_record_ids update_kb_permission
     update_knowledge_base update_queued_duplicates_status update_sync_point_if update_user_sync_state upsert_authenticated_as
     upsert_person_by_email upsert_sync_point
 """.split())

@@ -527,9 +527,10 @@ class TestHandleDelete:
 
         assert await self._delete_with_helper(service, helper) is True
 
-        assert [c for c in calls if "/services/connectors/" not in c][:4] == [
+        assert [c for c in calls if "/services/connectors/" not in c][:5] == [
             "/services/entityCleanup/pending/c1",
             "/services/storageRelease/pending/c1",
+            "/services/lateWriteSweep/pending/c1",
             "graph",
             "release",
         ]

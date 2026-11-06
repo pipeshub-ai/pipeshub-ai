@@ -371,14 +371,15 @@ class TestAConnectorDeleteTakesItsStageStates:
     @pytest.mark.asyncio
     async def test_its_stage_states_go_in_the_delete_transaction(self, provider) -> None:
         _connector_delete_ready(provider)
+        order: list[object] = []
+        provider._delete_stage_states_by_connector_id.side_effect = lambda txn, _c: order.append(txn) or (3, True)
+        provider.commit_transaction.side_effect = lambda txn: order.append(f"commit {txn}")
 
         result = await provider.delete_connector_instance("c1", "org1")
 
         assert result["success"] is True
-        assert [c.args for c in provider._delete_stage_states_by_connector_id.await_args_list] == [
-            ("txn1", "c1"),  # in the delete transaction
-            (None, "c1"),  # swept again after the commit, for states written meanwhile
-        ]
+        # In the delete transaction, then swept again after the commit, for states written meanwhile.
+        assert order == ["txn1", "commit txn1", None]
         assert "stageStates" in provider.begin_transaction.await_args.kwargs["write"]
         provider.commit_transaction.assert_awaited_once_with("txn1")
 

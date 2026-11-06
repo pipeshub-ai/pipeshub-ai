@@ -11523,42 +11523,43 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Failed to delete nodes from {collection} by connectorId: {str(e)}")
             return (0, False)
 
-    async def _sweep_writes_during_delete(self, connector_id: str) -> None:
+    async def sweep_deleted_connector_writes(self, connector_id: str) -> tuple[int, int]:
+        removed = await self.delete_blocks_by_connector_id(connector_id)
+        states, _ = await self._delete_stage_states_by_connector_id(None, connector_id)
+        return removed + states, await self._count_connector_blocks_and_stage_states(connector_id)
+
+    async def _sweep_writes_during_delete(self, connector_id: str) -> int | None:
         """Remove the blocks and stage states in-flight indexing wrote for a connector after its
         delete removed them: a duplicate code file projects its blocks, a stage job records its
-        state. The delete has committed and nothing runs it again, so the pass repeats, backing
-        off, until nothing of the connector is left; what outlasts every pass is logged as an error.
+        state. The pass repeats, backing off, until nothing of the connector is left. Returns
+        what is left (None when it could not be counted). A writer may still commit after the
+        last pass, so the connectors service keeps sweeping after the delete returns
+        (``late_write_sweep``).
         """
         removed = 0
         left: int | None = None
         for attempt in range(CASCADE_ATTEMPTS):
             try:
-                removed += await self.delete_blocks_by_connector_id(connector_id)
-            except Exception as e:
-                self.logger.warning(f"⚠️ Sweep of blocks written during delete of {connector_id} failed: {e}")
-            try:
-                states, _ = await self._delete_stage_states_by_connector_id(None, connector_id)
-                removed += states
-            except Exception as e:
-                self.logger.warning(f"⚠️ Sweep of stage states written during delete of {connector_id} failed: {e}")
-            try:
-                left = await self._count_connector_blocks_and_stage_states(connector_id)
+                found, left = await self.sweep_deleted_connector_writes(connector_id)
+                removed += found
             except Exception as e:
                 left = None
-                self.logger.warning(f"⚠️ Could not count what is left of connector {connector_id}: {e}")
+                self.logger.warning(f"⚠️ Sweep of what indexing wrote during delete of {connector_id} failed: {e}")
             if left == 0:
-                if removed:
-                    self.logger.warning(
-                        f"Connector {connector_id}: removed {removed} block(s) and stage state(s) "
-                        "written during its delete"
-                    )
-                return
+                break
             if attempt + 1 < CASCADE_ATTEMPTS:
                 await cascade_backoff(attempt, base=CONNECTOR_DELETE_BASE_SECONDS)
-        self.logger.error(
-            f"❌ Connector {connector_id} still has {left if left is not None else 'an unknown number of'} "
-            f"block(s) or stage state(s) after {CASCADE_ATTEMPTS} sweeps following its delete"
-        )
+        if removed:
+            self.logger.warning(
+                f"Connector {connector_id}: removed {removed} block(s) and stage state(s) written during its delete"
+            )
+        if left != 0:
+            self.logger.warning(
+                f"⚠️ Connector {connector_id} still has {left if left is not None else 'an unknown number of'} "
+                f"block(s) or stage state(s) after {CASCADE_ATTEMPTS} sweeps following its delete; "
+                "the late-write sweep removes them"
+            )
+        return left
 
     async def _count_connector_blocks_and_stage_states(self, connector_id: str) -> int:
         blocks = collection_to_label(CollectionNames.BLOCKS.value)
@@ -11953,6 +11954,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
                 orphan_types = 0
                 orphan_labels = 0
+                leftover: int | None = 0
                 # A caller-owned transaction has not committed. Reading late
                 # records outside it would see rows this delete is removing.
                 if created_transaction:
@@ -11985,7 +11987,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         self.logger.warning(
                             f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
                         )
-                    await self._sweep_writes_during_delete(connector_id)
+                    leftover = await self._sweep_writes_during_delete(connector_id)
                     try:
                         orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
                     except Exception as sweep_err:
@@ -12036,6 +12038,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     ),
                     "connector_id": connector_id,
                     "connector_name": connector.get("type"),
+                    # Blocks or stage states were still there when the delete returned; the
+                    # late-write sweep removes them.
+                    "cleanupPending": leftover != 0,
                 }
 
             except Exception as tx_error:

@@ -437,6 +437,7 @@ class TestAbstractMethodInventory:
         "get_trash_purge_stats",
         "purge_trash_kept_record_groups",
         "delete_blocks_for_records",
+        "sweep_deleted_connector_writes",
         "delete_connector_instance",
         "get_key_by_external_file_id",
         "organization_exists",

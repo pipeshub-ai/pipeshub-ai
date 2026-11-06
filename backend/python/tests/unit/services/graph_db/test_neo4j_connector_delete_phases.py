@@ -17,7 +17,9 @@ def _provider() -> Neo4jProvider:
     p.client = MagicMock(execute_query=AsyncMock(return_value=[]))
     # Every other coroutine the delete may call (cleanup steps added later) is a mock too.
     for name, _ in inspect.getmembers(Neo4jProvider, inspect.iscoroutinefunction):
-        if name not in ("_delete_connector_instance", "_sweep_writes_during_delete"):
+        if name not in (
+            "_delete_connector_instance", "_sweep_writes_during_delete", "sweep_deleted_connector_writes",
+        ):
             setattr(p, name, AsyncMock())
     p.get_document = AsyncMock(return_value={"type": "Jira"})
     p._collect_connector_entities = AsyncMock(return_value={
@@ -288,7 +290,7 @@ async def test_blocks_and_stage_states_written_during_the_delete_are_swept_until
 
     result = await p._delete_connector_instance("c1", "org")
 
-    assert result["success"] is True, result
+    assert result["success"] is True and result["cleanupPending"] is False, result
     assert [c.args for c in p.delete_blocks_by_connector_id.await_args_list] == [("c1",)] * 3
     assert p._delete_stage_states_by_connector_id.await_args_list[-1].args == (None, "c1")
     assert no_wait.await_args.kwargs["base"] >= 0.5
@@ -296,12 +298,35 @@ async def test_blocks_and_stage_states_written_during_the_delete_are_swept_until
 
 
 @pytest.mark.asyncio
-async def test_what_outlasts_every_sweep_is_logged_as_an_error(no_wait) -> None:
+async def test_what_outlasts_every_sweep_is_reported_pending_for_the_late_write_sweep(no_wait) -> None:
     p = _provider()
     p._count_connector_blocks_and_stage_states = AsyncMock(return_value=2)
 
     result = await p._delete_connector_instance("c1", "org")
 
-    assert result["success"] is True, result
+    assert result["success"] is True and result["cleanupPending"] is True, result
     assert p._count_connector_blocks_and_stage_states.await_count == CASCADE_ATTEMPTS
-    assert "still has 2 block(s) or stage state(s)" in p.logger.error.call_args.args[0]
+    assert any(
+        "still has 2 block(s) or stage state(s)" in c.args[0] and "late-write sweep" in c.args[0]
+        for c in p.logger.warning.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_one_late_write_pass_removes_blocks_and_stage_states_then_counts() -> None:
+    p = _provider()
+    p.delete_blocks_by_connector_id = AsyncMock(return_value=4)
+    p._delete_stage_states_by_connector_id = AsyncMock(return_value=(2, True))
+    p._count_connector_blocks_and_stage_states = AsyncMock(return_value=1)
+
+    assert await p.sweep_deleted_connector_writes("c1") == (6, 1)
+    p._delete_stage_states_by_connector_id.assert_awaited_once_with(None, "c1")
+
+
+@pytest.mark.asyncio
+async def test_a_late_write_pass_raises_what_the_store_raises() -> None:
+    """The late-write sweep retries a pass that failed; it must not read as an empty connector."""
+    p = _provider()
+    p._count_connector_blocks_and_stage_states = AsyncMock(side_effect=RuntimeError("unavailable"))
+    with pytest.raises(RuntimeError):
+        await p.sweep_deleted_connector_writes("c1")

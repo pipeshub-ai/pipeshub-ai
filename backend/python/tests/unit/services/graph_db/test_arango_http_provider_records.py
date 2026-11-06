@@ -3537,12 +3537,13 @@ class TestDeleteConnectorInstance:
         connected_provider.begin_transaction = AsyncMock(
             side_effect=lambda *a, **k: order.append("txn") or "txn1"
         )
+        connected_provider.commit_transaction = AsyncMock(side_effect=lambda *a, **k: order.append("commit"))
 
         result = await connected_provider.delete_connector_instance("c1", "org1")
 
         assert result["success"] is True
         # The second pass, after the commit, sweeps blocks in-flight indexing wrote meanwhile.
-        assert order == ["blocks", "txn", "blocks"]
+        assert order == ["blocks", "txn", "commit", "blocks"]
         assert [c.args for c in connected_provider.delete_blocks_by_connector_id.await_args_list] == [("c1",), ("c1",)]
 
     async def test_exception_returns_failure(self, connected_provider):
