@@ -203,7 +203,7 @@ async def test_apply_stamps_accounts_first_and_links_deals_to_them() -> None:
     graph.get_record_group_organization = AsyncMock(return_value="acme")
     graph.stamp_external_org_parents = AsyncMock(return_value=2)
     tx_store = MagicMock(
-        get_user_by_email=graph.get_user_by_email, get_user_by_source_id=graph.get_user_by_source_id,
+        get_users_by_emails=graph.get_users_by_emails, get_user_by_source_id=graph.get_user_by_source_id,
         delete_edges_between_collections=AsyncMock(), batch_create_entity_relations=AsyncMock(),
         get_record_group_organization=graph.get_record_group_organization,
         delete_record_entity_relations=AsyncMock(return_value=0),
@@ -266,3 +266,12 @@ async def test_a_failed_keying_is_partial_and_a_dry_run_skips_it() -> None:
     graph = _graph([])
     await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=io.StringIO())
     graph.batch_update_nodes.assert_not_awaited()
+
+
+async def test_a_batch_that_updated_fewer_accounts_than_asked_is_partial() -> None:
+    graph, out = _graph([]), io.StringIO()
+    graph.page_entity_index_source = AsyncMock(return_value=[{"_key": "a1", "name": "Acme"}])
+    graph.batch_update_nodes = AsyncMock(return_value=False)
+    code = await backfill(graph, MagicMock(), "org-1", apply=True, logger=logging.getLogger("t"), out=out)
+    assert code == EXIT_PARTIAL
+    assert _lines(out)[-1]["accounts_keyed"] is None
