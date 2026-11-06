@@ -7,7 +7,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -18,19 +18,19 @@ from .test_access import APP, World, _org
 from .test_access import w as w
 from .test_grants import failing, in_org
 
+if TYPE_CHECKING:
+    from app.core.db import Tx
+
 pytestmark = pytest.mark.integration
 
 
 async def snapshot(w: World, connector: str | None = None) -> tuple[set, set]:
-    """Every node and edge of the org (or, with a connector, the nodes naming it) as comparable tuples."""
-    def read(tx: Any):
-        async def go() -> tuple[set, set]:
-            nodes = {(r["coll"], r["id"]) for r in await tx.fetch("SELECT coll, id, doc->>'connectorId' AS c FROM graph.nodes WHERE org_id = $1 AND ($2::text IS NULL OR doc->>'connectorId' = $2)",
-                                                                 w.org, connector)}
-            edges = {tuple(r) for r in await tx.fetch("SELECT coll, from_coll, from_id, to_coll, to_id, ekey FROM graph.edges WHERE org_id = $1", w.org)}
-            return nodes, edges
-        return go()
-    return await w.p._q(read, None)
+    """Every node (naming the connector, when one is given) and every edge of the org as comparable tuples."""
+    async def go(tx: Tx) -> tuple[set, set]:
+        nodes = {(r["coll"], r["id"]) for r in await tx.fetch("SELECT coll, id FROM graph.nodes WHERE org_id = $1 AND ($2::text IS NULL OR doc->>'connectorId' = $2)", w.org, connector)}
+        edges = {tuple(r) for r in await tx.fetch("SELECT coll, from_coll, from_id, to_coll, to_id, ekey FROM graph.edges WHERE org_id = $1", w.org)}
+        return nodes, edges
+    return await w.p._q(go, None)
 
 
 async def connector(w: World, c: str, *, kind: str = "DRIVE", vrid: str = "v") -> None:
@@ -127,7 +127,7 @@ async def test_a_delete_that_fails_part_way_changes_nothing_and_a_retry_complete
     before = await snapshot(w)
     real = delete_module._remove_nodes
 
-    async def boom(tx: Any, org: str, coll: str, keys: list[str]) -> int:
+    async def boom(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
         if coll == "apps":
             raise RuntimeError("store down")
         return await real(tx, org, coll, keys)
@@ -144,7 +144,7 @@ async def test_a_delete_that_cannot_remove_everything_is_refused_and_changes_not
     await connector(w, "c1")
     before = await snapshot(w)
 
-    async def nothing(tx: Any, org: str, ids: list[str]) -> int:
+    async def nothing(tx: Tx, org: str, ids: list[str]) -> int:
         return 0
     monkeypatch.setattr(delete_module, "_remove_records", nothing)
     got = await w.p.delete_connector_instance("c1", w.org)
@@ -168,7 +168,7 @@ async def test_a_record_written_while_the_delete_ran_is_taken_with_it(w: World, 
     real = delete_module._remove_records
     calls = 0
 
-    async def late(tx: Any, org: str, ids: list[str]) -> int:
+    async def late(tx: Tx, org: str, ids: list[str]) -> int:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -185,7 +185,7 @@ async def test_the_instances_list_is_scoped_filtered_literal_and_newest_first(w:
                   {"_key": "c", "name": "100% Gamma", "type": "JIRA", "appGroup": "Atlassian", "scope": "personal", "createdBy": "ann", "createdAtTimestamp": 2},
                   {"_key": "d", "name": "Delta", "type": "X", "scope": "team", "createdBy": "ann", "createdAtTimestamp": "soon"})
     p = w.p
-    async def ids(**kw: Any) -> tuple[list[str], int]:
+    async def ids(**kw: str | bool | int | None) -> tuple[list[str], int]:
         got, total = await p.get_connector_instances_with_filters("apps", **kw)
         return [d["_key"] for d in got], total
     assert await ids(user_id="boss", is_admin=True) == (["b", "a", "d"], 3)
