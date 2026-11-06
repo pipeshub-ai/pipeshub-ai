@@ -45,6 +45,10 @@ def logging_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         monkeypatch.delenv(name, raising=False)
     L._parse_levels.cache_clear()
     L._parse_format.cache_clear()
+    # Start from a snapshot of this (cleared) env: one taken under another test's patched
+    # os.getenv would make the first create_logger re-apply levels over caplog's.
+    L._synced.clear()
+    L._sync_from_env()
     yield
     root.handlers[:] = handlers
     for lg in [root, *(lg for lg in logging.Logger.manager.loggerDict.values() if isinstance(lg, logging.Logger))]:
