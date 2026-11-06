@@ -145,12 +145,25 @@ class TestProvider:
 
         monkeypatch.setattr(logging_fields, "_log_once_last", {})
         provider(_HashOnly(raises=hook))
-        with oc.bind(oc.OrgContext("o1", "u1", "user", "jwt", "-")):
+        with oc.for_org("o1", job="j"), log_fields(run_id="r1", connector_id="c1"):
             first, second = _record("a"), _record("b")
         assert first.getMessage() == "a" and second.getMessage() == "b"
         assert capsys.readouterr().err.count("log context not added") == 1
+        fields = log_record_fields(first)
+        # One failing hook drops only what it makes: the bound and context fields stay.
+        assert fields["run_id"] == "r1" and fields["connector_id"] == "c1" and fields["ctx_kind"] == "job"
         if hook == "identity":
-            assert first.organization_id_hash == "h:o1"  # the hash survives a failing identity hook
+            assert first.organization_id_hash == "h:o1"
+        else:
+            assert not hasattr(first, "organization_id_hash")
+
+    def test_a_failing_context_read_keeps_the_bound_fields(self, provider, monkeypatch) -> None:
+        from app.utils import logging_fields
+
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
+        monkeypatch.setattr("app.utils.logger.peek_call_context", lambda: 1 / 0)
+        with log_fields(run_id="r1"):
+            assert log_record_fields(_record()) == {"run_id": "r1"}
 
 
 class TestRender:

@@ -336,6 +336,35 @@ class TestLogFailure:
         EC.log_failure(logger, "x.end", _raised(KeyError("k")))
         assert len(records) == 1 and records[0].getMessage() == "x.end"
 
+    def test_fallback_line_carries_no_exception_text(self, capture) -> None:
+        logger, records = capture
+
+        class RaisesOnce(logging.Filter):
+            fired = False
+
+            def filter(self, record: logging.LogRecord) -> bool:
+                if not RaisesOnce.fired:
+                    RaisesOnce.fired = True
+                    raise RuntimeError("filter broke")
+                return True
+
+        flt = RaisesOnce()
+        logger.addFilter(flt)
+        try:
+            exc = _raised(RuntimeError("tool said secret-arg see https://x.example/a?sig=abc"))
+            EC.log_failure(logger, "tool_call.end", exc, include_error_text=False)
+        finally:
+            logger.removeFilter(flt)
+        (record,) = records
+        out = TextFormatter().format(record)
+        assert record.exc_info is None and "secret-arg" not in out and "x.example" not in out
+        assert record.getMessage() == "tool_call.end" and log_record_fields(record) == {"error_type": "RuntimeError"}
+
+    def test_outcome_none_still_defaults_to_failure(self, capture) -> None:
+        logger, records = capture
+        EC.log_failure(logger, "x.end", _raised(TimeoutError()), outcome=None)
+        assert log_record_fields(records[0])["outcome"] == "failure"
+
     def test_text_is_redacted(self, capture) -> None:
         logger, records = capture
         msg = "call https://gen.example/v1?key=AIzaSyA1234567890abcdefghijklmnopqrstuv in org-AbCd1234"

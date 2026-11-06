@@ -142,6 +142,8 @@ if log_once(f"envelope:stripped:{topic}", 30): ...          # bounded keys only,
 - Work entering with no request: `org_context.for_org` / `system` / `bind` also scope the request context (same root, or a new
   `sys-` root; the org of the scope), so job lines show `[req:sys-…]` and messages published there carry `requestId` and `orgId`.
   `org_context.spawn_detached(coro, name=…)` gives the task a fresh `sys-<name>-<hex>` root; a sync started under it mints its own.
+  That root is shared by everything the task does and travels in what it publishes, so a loop that publishes per-unit work
+  uses `run_periodic` or binds a root per unit.
   `await run_periodic(name, interval_s, fn)` (`app.core.periodic`; start it with `spawn_detached`) runs each tick in a fresh context
   with its own root and `job=<name>`, and ends it with `job.tick.end` (DEBUG on success, the failure's level otherwise).
 - **Threads.** The context is copied by `asyncio.create_task`, `spawn_in_request`, `asyncio.to_thread` and

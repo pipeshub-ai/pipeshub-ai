@@ -52,6 +52,8 @@ TEXT_FORMAT = (
 
 
 _CALL_CONTEXT_IDS = ("conversation_id", "agent_id", "record_id", "connector_id")
+# Runs on every line with an org; the org ids in one process are few.
+_sanitized_org = functools.lru_cache(maxsize=256)(sanitize_root_id)
 
 
 def _identity(rc: RequestContext | None) -> tuple[OrgContext | None, ModelCallContext | None, str | None, str | None]:
@@ -71,42 +73,53 @@ def _identity(rc: RequestContext | None) -> tuple[OrgContext | None, ModelCallCo
     return oc, call, (rc.org_id if rc else None), None
 
 
-def _context_fields(oc: OrgContext | None, call: ModelCallContext | None, org: str | None, user: str | None) -> dict[str, object]:
-    """Identity as the provider's ``log_identity`` shows it, then the OrgContext kind and
-    source (not for users), the call context's ids, and the bound fields."""
-    ids = {k: v for k, v in (("org_id", org), ("user_id", user)) if v}
-    fields: dict[str, object] = dict(get_provider().log_identity(ids)) if ids else {}  # type: ignore[arg-type]
-    if oc is not None and oc.kind != "user":
-        fields["ctx_kind"] = oc.kind
-        fields["ctx_source"] = oc.source
-    if call is not None:
-        for key in _CALL_CONTEXT_IDS:
-            value = getattr(call, key)
-            if value:
-                fields[key] = value
-        fields["workload"] = call.workload.value
-    fields.update(current_log_fields())
-    return fields
-
-
 def _stamp_context(record: logging.LogRecord, rc: RequestContext | None) -> None:
-    # Must not raise: makeRecord runs outside any handler's error handling, often in an
-    # except block. The hash and the fields are guarded apart, so one hook cannot drop the other.
+    """Identity as the provider's ``log_identity`` shows it, then the OrgContext kind and
+    source (not for users), the call context's ids and the bound fields, in ``record._log_ctx``;
+    and the provider's ``hash_org_id`` as ``record.organization_id_hash``.
+
+    Must not raise: makeRecord runs outside any handler's error handling, often in an except
+    block. Each hook is guarded on its own, so a failing one drops only what it makes.
+    """
     try:
         oc, call, org, user = _identity(rc)
-        if org:
-            org_hash = get_provider().hash_org_id(sanitize_root_id(org) or org)
-            if org_hash:
-                record.organization_id_hash = org_hash  # an attribute, as the EE formatter reads it
     except Exception as exc:
         _note_context_failure(exc)
+        oc, call, org, user = None, None, None, None
+    bound = current_log_fields()
+    if oc is None and call is None and not org and not bound:
         return
     try:
-        fields = _context_fields(oc, call, org, user)
-        if fields:
-            record._log_ctx = fields  # underscored: an extra= key of the same name must not collide
+        provider = get_provider()
+        fields: dict[str, object] = {}
+        if org:
+            try:
+                org_hash = provider.hash_org_id(_sanitized_org(org) or org)
+                if org_hash:
+                    record.organization_id_hash = org_hash  # an attribute, as the EE formatter reads it
+            except Exception as exc:
+                _note_context_failure(exc)
+        ids = {k: v for k, v in (("org_id", org), ("user_id", user)) if v}
+        if ids:
+            try:
+                fields.update(provider.log_identity(ids))  # type: ignore[arg-type]
+            except Exception as exc:
+                _note_context_failure(exc)
+        if oc is not None and oc.kind != "user":
+            fields["ctx_kind"] = oc.kind
+            fields["ctx_source"] = oc.source
+        if call is not None:
+            for key in _CALL_CONTEXT_IDS:
+                value = getattr(call, key)
+                if value:
+                    fields[key] = value
+            fields["workload"] = call.workload.value
     except Exception as exc:
         _note_context_failure(exc)
+        fields = {}
+    fields.update(bound)
+    if fields:
+        record._log_ctx = fields  # underscored: an extra= key of the same name must not collide
 
 
 def _note_context_failure(exc: Exception) -> None:

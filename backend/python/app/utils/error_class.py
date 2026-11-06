@@ -188,7 +188,7 @@ def log_failure(
     """The one failure line, at the layer that handles ``exc``.
 
     Adds ``error_class`` (an explicit one wins), ``error_type``, ``error_message`` (message and
-    cause chain, redacted) and ``outcome="failure"``. The level is :func:`level_for` unless given.
+    cause chain, redacted) and ``outcome="failure"`` (also when ``outcome=None`` is passed). The level is :func:`level_for` unless given.
     The stack is written once, on the first line at ERROR or above. A later call for the same
     exception, or one raised ``from`` it, logs at DEBUG unless it asks for a higher level than
     the one already written. ``include_error_text=False`` leaves ``error_message`` out, for errors
@@ -204,8 +204,8 @@ def log_failure(
             return
         with_stack = emitted >= logging.ERROR and (prior is None or prior < logging.ERROR)
         extra = event_fields(event, {
-            "outcome": "failure",
             **fields,
+            "outcome": fields.get("outcome") or "failure",
             "error_class": cls,
             "error_type": type(exc).__name__,
             "error_message": (
@@ -221,5 +221,6 @@ def log_failure(
         with contextlib.suppress(AttributeError, TypeError):
             setattr(exc, _LOGGED_ATTR, max(prior or 0, emitted))
     except Exception:
+        # Text-free on purpose: this path skips the masking and include_error_text.
         with contextlib.suppress(Exception):
-            logger.log(level or logging.ERROR, event, exc_info=exc)
+            logger.log(level or logging.ERROR, event, extra={"error_type": type(exc).__name__}, stacklevel=2)

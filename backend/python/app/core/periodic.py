@@ -36,5 +36,6 @@ async def run_periodic(name: str, interval_s: float, fn: Callable[[], Awaitable[
     cancelling it does. Start it with ``spawn_detached``.
     """
     while True:
+        # _tick replaces the detached root with its own, on purpose: a sync started in a tick keeps the tick's root.
         await spawn_detached(_tick(name, fn), name=f"{name}:tick")
         await asyncio.sleep(interval_s)
