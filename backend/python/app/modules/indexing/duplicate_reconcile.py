@@ -163,10 +163,10 @@ async def retry_pending_duplicate_reconciles(
     """Reconcile primaries whose pending flag is due: their handler did not
     clear it within ``DUPLICATE_RECONCILE_GRACE_MS`` of the promotion.
 
-    Holds no ``record:<id>`` lease. The consumer drops an event whose record
-    lease it cannot take within seconds, so holding it through a reconcile
-    would lose a real update or delete; recovery's own lock already keeps
-    sweeps apart, and a reconcile is idempotent. What must not race is the
+    Holds no ``record:<id>`` lease. The consumer hands back an event whose
+    record lease it cannot take within seconds, so holding it through a
+    reconcile would hold up a real update or delete; recovery's own lock already
+    keeps sweeps apart, and a reconcile is idempotent. What must not race is the
     flag: it is cleared only while its due time is still the one this sweep
     read, so a promotion made meanwhile keeps its flag.
 
