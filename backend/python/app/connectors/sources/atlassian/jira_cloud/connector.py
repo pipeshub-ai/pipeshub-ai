@@ -2953,7 +2953,10 @@ class JiraConnector(BaseConnector):
                 # A deactivated account can no longer sign in to Jira; the grant is dormant.
                 self.logger.debug(f"  {project_key}: User permission skipped - account '{holder_param}' is inactive")
                 return grant_permissions
-            elif user_email:
+            elif user_email and self._user_read_unfinished and user_data.get("accountType", "atlassian") == "atlassian":
+                # Only a user list cut short leaves out a licensed account. After a complete read,
+                # one missing from it has no Jira product access (or is a portal customer), and
+                # Jira treats it as anonymous whatever the scheme names.
                 resolved_email = user_email
 
             if resolved_email:

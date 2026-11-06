@@ -4436,3 +4436,19 @@ class TestGroupSyncForbiddenNotification:
         connector._group_bulk_forbidden = False
         await connector._sync_user_groups([])
         connector.notify.assert_not_awaited()
+
+
+@pytest.mark.parametrize("read_unfinished,account_type,granted", [
+    (False, "atlassian", False),  # a complete user read without them: no Jira product access
+    (True, "atlassian", True),    # a cut-short read may have missed a licensed account
+    (True, "customer", False),    # a portal customer never browses the project
+])
+def test_a_browse_grant_to_an_account_outside_the_licensed_users(read_unfinished, account_type, granted) -> None:
+    connector = _make_connector()
+    connector._user_read_unfinished = read_unfinished
+    grant = {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-u", "user": {
+        "accountId": "acc-u", "emailAddress": "u@acme.com", "active": True, "accountType": account_type}}}
+
+    perms = connector._permissions_for_browse_grant(grant, "ENG", {}, {"acc-x": _make_app_user("x@acme.com", "acc-x")}, set())
+
+    assert [p.email for p in perms] == (["u@acme.com"] if granted else [])
