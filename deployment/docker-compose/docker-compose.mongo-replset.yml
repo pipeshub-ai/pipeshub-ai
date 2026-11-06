@@ -1,0 +1,32 @@
+# MongoDB as a one-member replica set (change streams), which the online move to PostgreSQL needs: the application keeps running while
+# the data is copied, so the migrator follows MongoDB's change stream. Nothing else changes; the application still connects with the
+# same MONGO_URI. Add it next to the base file and recreate the database container once:
+#
+#   PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replset.yml        (install.sh)
+#   docker compose -f docker-compose.yml -f docker-compose.mongo-replset.yml up -d mongodb
+#
+# A replica set with authentication needs a key file. It is generated into the data volume on first start (never printed), and the
+# member is initiated by the health check, which reports healthy only once this node is the primary.
+services:
+  mongodb:
+    entrypoint:
+      - sh
+      - -c
+      - |
+        f=/data/db/.pipeshub-keyfile
+        [ -s "$$f" ] || openssl rand -base64 48 > "$$f"
+        chmod 400 "$$f"
+        chown mongodb:mongodb "$$f"
+        exec docker-entrypoint.sh "$$@"
+      - _
+    command: ["mongod", "--bind_ip_all", "--replSet", "rs0", "--keyFile", "/data/db/.pipeshub-keyfile", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet -u "$$MONGO_INITDB_ROOT_USERNAME" --password="$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin
+          --eval "try { rs.status() } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongodb:27017'}]}) };
+          if (!db.hello().isWritablePrimary) quit(1)"
+      interval: 5s
+      timeout: 10s
+      retries: 20
