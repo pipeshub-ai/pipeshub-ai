@@ -72,6 +72,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "remove_nodes_by_field": (PROJECTED, ""),
     # kb.py
     "update_kb_permission": (PROJECTED, ""), "remove_kb_permission": (PROJECTED, ""),
+    "delete_kb_hub_app": (PROJECTED, ""),
     # permissions.py
     "batch_update_team_member_roles": (PROJECTED, ""), "delete_all_team_permissions": (PROJECTED, ""),
     # core.py, lookups.py: an edge's document changes (a grant's role or type is what the projection reads of it), and the sync's edges and the stale external memberships go
