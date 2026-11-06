@@ -460,6 +460,9 @@ class PermissionsMixin(PgBase):
             if org_id != org:
                 return _ctx_perms("READER")
 
+            if parent_id and parent_id not in (await self.check_access(user_key, org_id, node_ids=[parent_id], transaction=transaction)).node_ids:
+                return _ctx_perms("READER")    # no abilities on a node the access check refuses (lost connector gate, deleted target), whatever grant remains
+
             async def go(tx: Tx) -> dict[str, Any]:
                 if not parent_id:
                     row = await tx.fetchrow("/* pipeshub:graph.ctx_root_user */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = $2", org, user_key)
