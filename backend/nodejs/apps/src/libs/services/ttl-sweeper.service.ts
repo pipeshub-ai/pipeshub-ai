@@ -50,11 +50,14 @@ export async function sweepExpiredTemporaryChats(
             userId: row.userId,
           });
         } catch (error: unknown) {
-          log.warn('Temporary chat file cleanup failed; leaving row for retry', {
-            conversationId: row.id,
-            orgId: row.orgId,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          log.warn(
+            'Temporary chat file cleanup failed; leaving row for retry',
+            {
+              conversationId: row.id,
+              orgId: row.orgId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
           return null;
         }
       }
@@ -179,10 +182,8 @@ export class TtlSweeper {
           return total;
         });
       }
-      await this.guarded(
-        'temporary_chats_store',
-        removed,
-        () => sweepExpiredTemporaryChats(now, this.appConfig, this.logger),
+      await this.guarded('temporary_chats_store', removed, () =>
+        sweepExpiredTemporaryChats(now, this.appConfig, this.logger),
       );
       const total = Object.values(removed).reduce((a, b) => a + b, 0);
       if (total > 0) this.logger.info('TTL sweep removed rows', removed);
@@ -199,7 +200,7 @@ export class TtlSweeper {
   ): Promise<void> {
     try {
       removed[name] = await run();
-      if (removed[name])
+      if (removed[name] !== 0)
         docstoreMetrics.ttlSwept.inc({ target: name }, removed[name]);
     } catch (error) {
       docstoreMetrics.ttlSweepFailed.inc({ target: name });
