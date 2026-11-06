@@ -20,6 +20,7 @@ from .ops import (
     _key_of,
     _readable_blocks,
     _readable_keys,
+    _readable_neighbour_rows,
     _records_for_path,
     _repo_matches,
     attach_file_paths,
@@ -52,6 +53,8 @@ _NEIGHBOUR_FANOUT = 200
 # when they bite, never applied silently.
 _ROWS_PER_ANCHOR = 1000
 _HOP_ROW_LIMIT = 5000
+# Raw edge rows scanned per hop while looking for readable ones.
+_HOP_SCAN_LIMIT = 4 * _HOP_ROW_LIMIT
 
 # ---------------------------------------------------------------------------
 # Tool 1 — callers / callees
@@ -331,6 +334,7 @@ async def get_neighbour_impl(
             connector_id, org_id, include_tests=include_tests, access=access,
         )
     fanout_capped = len(anchors) > _NEIGHBOUR_FANOUT
+    incomplete = False
     anchors = anchors[:_NEIGHBOUR_FANOUT]
 
     anchor_names = {k: a.get("qualifiedName") for a in anchors
@@ -351,23 +355,16 @@ async def get_neighbour_impl(
             fanout_capped = True
         expand = frontier[:_NEIGHBOUR_FANOUT]
         row_limit = min(_HOP_ROW_LIMIT, len(expand) * _ROWS_PER_ANCHOR)
-        try:
-            # One row past the limit is the only way to know the limit bit:
-            # exactly `row_limit` rows is a complete answer, one more is not.
-            batch = list(await graph_provider.get_neighbors_for_nodes_by_relationship_types(
-                node_keys=expand,
-                node_collection=_BLOCKS,
-                relationship_types=relations,
-                direction=direction,
-                limit=row_limit + 1,
-                raise_on_error=True,
-            ) or [])
-        except Exception as exc:
-            logger.exception("Neighbour walk failed")
-            raise RuntimeError("Failed to walk the code graph") from exc
-        if len(batch) > row_limit:
-            fanout_capped = True
-            del batch[row_limit:]
+        # One readable row past the limit is the only way to know the limit bit:
+        # exactly `row_limit` rows is a complete answer, one more is not.
+        batch, over, spent = await _readable_neighbour_rows(
+            graph_provider, org_id, access, expand, relations, direction,
+            page=row_limit + 1, budget=_HOP_SCAN_LIMIT, want=row_limit,
+            connector_id=connector_id, include_tests=include_tests,
+            accept=lambda r: r.get("collection") == _BLOCKS,
+        )
+        fanout_capped = fanout_capped or over
+        incomplete = incomplete or spent
 
         next_frontier: list[str] = []
         for row in batch:
@@ -489,16 +486,24 @@ async def get_neighbour_impl(
         # Silence reads as absence: a model that thinks it saw every neighbour
         # will state a wrong conclusion confidently. A walk that hit its
         # traversal cap is truncated even when every fetched row fits the page.
-        "truncated": total > offset + limit or fanout_capped,
+        "truncated": total > offset + limit or fanout_capped or incomplete,
     }, anchors)
     if fanout_capped:
         result["fanout_capped"] = True
+    if incomplete:
+        result["incomplete"] = True
     if total > offset + limit:
         shown_to = offset + len(neighbors)
         result["next"] = (
             f"Showing neighbours {offset + 1}-{shown_to} of {total}. Continue "
             f"with offset={shown_to} (same arguments) for the rest."
         )
+    if incomplete:
+        cap_note = (
+            "The walk stopped scanning a node's edges before the end, so `total` is a lower "
+            "bound. Narrow with `edge_types` or `direction`."
+        )
+        result["next"] = f"{result['next']} {cap_note}" if "next" in result else cap_note
     if fanout_capped:
         cap_note = (
             "The walk hit its traversal cap, so `total` is a lower bound and a "
