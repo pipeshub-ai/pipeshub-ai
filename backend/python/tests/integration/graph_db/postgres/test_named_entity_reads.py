@@ -294,6 +294,8 @@ async def test_value_and_entity_constraints_must_both_hold_in_the_record(w: Org,
     assert await hits(w, None, NamedEntityQuery(date_start_ms=45 * DAY, date_end_ms=60 * DAY)) == (["r2"], False)
     assert await hits(w, None, NamedEntityQuery(date_start_ms=45 * DAY, date_end_ms=60 * DAY), within=["r1"]) == ([], False)
     assert (await w.p.get_records_for_named_entities("another-org", None, q)) == {"hits": [], "truncated": False}
+    assert (await w.p.get_records_for_named_entities("another-org", None, q, limit=1)) == {"hits": [], "truncated": False}      # not "too broad" for rows of another org
+    assert (await w.p.get_records_for_named_entities(w.org, None, q, limit=1))["truncated"] is True
 
 
 async def test_a_restricted_answer_is_the_unrestricted_one_cut_to_the_records_given(w: Org, orgs: tuple[Org, Org]) -> None:
