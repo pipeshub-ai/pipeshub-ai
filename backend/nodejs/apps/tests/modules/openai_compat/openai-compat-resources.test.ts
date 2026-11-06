@@ -13,6 +13,7 @@ import {
   createFile,
   fileContent,
   listFiles,
+  removeFile,
   retrieveFile,
 } from '../../../src/modules/openai_compat/controller/files.controller';
 import {
@@ -20,7 +21,11 @@ import {
   createVectorStore,
   createVectorStoreFile,
   listVectorStoreFiles,
+  modifyVectorStore,
+  removeVectorStore,
+  removeVectorStoreFile,
   retrieveFileBatch,
+  retrieveVectorStore,
   retrieveVectorStoreFile,
 } from '../../../src/modules/openai_compat/controller/vector-stores.controller';
 import { listProjects, projectObject } from '../../../src/modules/openai_compat/controller/projects.controller';
@@ -143,6 +148,23 @@ describe('openai_compat files, vector stores and projects against a fake collect
       if (!r) return void res.status(404).json({ error: { message: 'Record not found' } });
       res.json({ record: { recordName: r.name, sizeInBytes: r.bytes.length, createdAtTimestamp: 2000, indexingStatus: r.status, mimeType: r.mime }, knowledgeBase: { id: r.kbId } });
     });
+    fake.get('/api/v1/knowledgeBase/:kbId', (req, res) => {
+      const kb = kbs.get(req.params.kbId);
+      if (!kb) return void res.status(404).json({ error: { message: 'Not found' } });
+      res.json({ id: kb.id, name: kb.name, createdAtTimestamp: kb.createdAtTimestamp });
+    });
+    fake.put('/api/v1/knowledgeBase/:kbId', (req, res) => {
+      kbs.get(req.params.kbId)!.name = req.body.kbName;
+      res.json({});
+    });
+    fake.delete('/api/v1/knowledgeBase/:kbId', (req, res) => {
+      kbs.delete(req.params.kbId);
+      res.json({});
+    });
+    fake.delete('/api/v1/knowledgeBase/record/:id', (req, res) => {
+      records.delete(req.params.id);
+      res.json({});
+    });
     fake.get('/api/v1/knowledgeBase/stream/record/:id', (req, res) => {
       const r = records.get(req.params.id)!;
       res.setHeader('content-type', r.mime);
@@ -179,6 +201,11 @@ describe('openai_compat files, vector stores and projects against a fake collect
     app.get('/files', listFiles(deps));
     app.get('/files/:fileId', retrieveFile(deps));
     app.get('/files/:fileId/content', fileContent(deps));
+    app.delete('/files/:fileId', removeFile(deps));
+    app.get('/vector_stores/:vectorStoreId', retrieveVectorStore(deps));
+    app.post('/vector_stores/:vectorStoreId', modifyVectorStore(deps));
+    app.delete('/vector_stores/:vectorStoreId', removeVectorStore(deps));
+    app.delete('/vector_stores/:vectorStoreId/files/:fileId', removeVectorStoreFile(deps));
     app.post('/vector_stores', createVectorStore(deps));
     app.post('/vector_stores/:vectorStoreId/files', createVectorStoreFile(deps));
     app.get('/vector_stores/:vectorStoreId/files', listVectorStoreFiles(deps));
@@ -246,6 +273,22 @@ describe('openai_compat files, vector stores and projects against a fake collect
     const again = await (await json('GET', `/vector_stores/${vs.id}/file_batches/${batch.id}`)).json();
     expect(again.file_counts).to.include({ completed: 1, total: 1 });
     expect((await json('POST', `/vector_stores/${vs.id}/files`, { file_id: 'nope' })).status).to.equal(400);
+  });
+
+  it('reads, renames and deletes a vector store, its files and plain files', async () => {
+    const f = await upload('d.md', 'delta');
+    const vs = await (await json('POST', '/vector_stores', { name: 'Old', file_ids: [f.id] })).json();
+    const kbId = kbIdFromVectorStoreId(vs.id)!;
+    expect(await (await json('GET', `/vector_stores/${vs.id}`)).json()).to.include({ id: vs.id, name: 'Old' });
+    const renamed = await (await json('POST', `/vector_stores/${vs.id}`, { name: 'New' })).json();
+    expect(renamed).to.include({ id: vs.id, name: 'New' });
+    expect(renamed.file_counts.total).to.equal(1);
+    expect(await (await json('DELETE', `/vector_stores/${vs.id}/files/${f.id}`)).json()).to.include({ id: f.id, object: 'vector_store.file.deleted', deleted: true });
+    expect([...records.values()].filter((r) => r.kbId === kbId)).to.have.length(0);
+    expect(await (await json('DELETE', `/vector_stores/${vs.id}`)).json()).to.include({ id: vs.id, object: 'vector_store.deleted', deleted: true });
+    expect(kbs.has(kbId)).to.equal(false);
+    expect(await (await json('DELETE', `/files/${f.id}`)).json()).to.include({ id: f.id, object: 'file', deleted: true });
+    expect(records.has(recordIdFromFileId(f.id)!)).to.equal(false);
   });
 
   it('lists projects as organization.project objects', async () => {
