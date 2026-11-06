@@ -10,8 +10,8 @@ import uuid
 import pytest
 
 from app.agents.actions.code_graph.repos import list_code_repos
-from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.config.constants.arangodb import CollectionNames
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval import selection_scope as scope
 from tests.integration.graph_db.test_code_graph_real_backends import (  # noqa: F401
     _grant,
