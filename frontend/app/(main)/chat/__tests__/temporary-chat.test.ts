@@ -4,9 +4,13 @@ import { ChatApi } from '../api';
 import { apiClient, streamSSERequest } from '@/lib/api';
 import type { StreamChatRequest } from '../types';
 import {
+  clearTemporaryChatPurgePending,
   clearTemporaryChatSession,
+  consumeTemporaryChatPurgePending,
+  markTemporaryChatPurgePending,
   readTemporaryChatSession,
   writeTemporaryChatSession,
+  temporaryChatIdToPurgeOnNavigate,
 } from '../utils/temporary-chat-session';
 
 vi.mock('@/lib/api', () => ({
@@ -101,5 +105,62 @@ describe('temporary chat store and API', () => {
     expect(readTemporaryChatSession()).toEqual({ conversationId: 'abc123' });
     clearTemporaryChatSession();
     expect(readTemporaryChatSession()).toBeNull();
+  });
+
+  it('purges when leaving a temporary chat for another conversation or scoped new chat', () => {
+    expect(
+      temporaryChatIdToPurgeOnNavigate({
+        leavingIsTemporary: true,
+        leavingConvId: 'temp-1',
+        conversationId: 'other',
+        scopedNewChat: false,
+      }),
+    ).toBe('temp-1');
+    expect(
+      temporaryChatIdToPurgeOnNavigate({
+        leavingIsTemporary: true,
+        leavingConvId: 'temp-1',
+        conversationId: null,
+        scopedNewChat: true,
+      }),
+    ).toBe('temp-1');
+  });
+
+  it('does not purge a temporary chat on refresh of the same /chat/ URL', () => {
+    expect(
+      temporaryChatIdToPurgeOnNavigate({
+        leavingIsTemporary: true,
+        leavingConvId: 'temp-1',
+        conversationId: null,
+        scopedNewChat: false,
+      }),
+    ).toBeNull();
+    expect(
+      temporaryChatIdToPurgeOnNavigate({
+        leavingIsTemporary: false,
+        leavingConvId: 'regular-1',
+        conversationId: 'other',
+        scopedNewChat: false,
+      }),
+    ).toBeNull();
+  });
+
+  it('cancels a pending tab-close purge when the same tab refreshes', () => {
+    sessionStorage.clear();
+    localStorage.clear();
+    writeTemporaryChatSession('temp-1');
+    markTemporaryChatPurgePending('temp-1');
+    expect(consumeTemporaryChatPurgePending()).toBeNull();
+    expect(readTemporaryChatSession()).toEqual({ conversationId: 'temp-1' });
+  });
+
+  it('returns a pending purge id after the tab session is gone', () => {
+    sessionStorage.clear();
+    localStorage.clear();
+    markTemporaryChatPurgePending('temp-1');
+    clearTemporaryChatSession();
+    expect(consumeTemporaryChatPurgePending()).toBe('temp-1');
+    expect(consumeTemporaryChatPurgePending()).toBeNull();
+    clearTemporaryChatPurgePending();
   });
 });

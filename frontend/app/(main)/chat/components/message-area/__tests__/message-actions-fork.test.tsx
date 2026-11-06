@@ -78,6 +78,13 @@ describe('fork button on a message', () => {
     expect(screen.queryByLabelText('chat.forkFromHere')).toBeNull();
   });
 
+  it('still offers regenerate on a temporary chat, not fork', () => {
+    h.slot.isTemporaryChat = true;
+    renderActions('msg-2', true);
+    expect(screen.queryByLabelText('chat.fork')).toBeNull();
+    expect(screen.getByLabelText('chat.regenerate')).toBeTruthy();
+  });
+
   it('is still offered while ownership is not known yet', () => {
     h.slot.isOwner = null;
     renderActions('msg-2');

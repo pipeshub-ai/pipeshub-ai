@@ -143,6 +143,7 @@ import {
   TEMPORARY_CHAT_TITLE,
   temporaryExpiry,
 } from '../utils/temporary-chat';
+import { purgeTemporaryChatSideEffects } from '../utils/temporary-chat-cleanup';
 import { CONVERSATION_STATUS } from '../constants/constants';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
@@ -2779,7 +2780,17 @@ export const purgeTemporaryConversation =
       if (!isTemporarySession(existing)) {
         throw new BadRequestError('Not a temporary chat');
       }
-      await deleteConversationArtifacts(appConfig, String(conversationId), req);
+      // Artifacts first (strict); then this chat's attachment recordIds only
+      // (best-effort). A normal chat that uploaded the same file has a different
+      // recordId, so that copy is not touched.
+      await purgeTemporaryChatSideEffects(appConfig, String(conversationId), {
+        authorization:
+          typeof req.headers.authorization === 'string'
+            ? req.headers.authorization
+            : '',
+        orgId: String(orgId),
+        userId: String(userId),
+      });
       const result = await unitOfWork.run((tx) =>
         convRepo().hardDeleteTemporary(conversationId as string, actor, tx),
       );

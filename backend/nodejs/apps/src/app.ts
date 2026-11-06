@@ -373,8 +373,14 @@ export class Application {
       this.outboxDispatcher.start();
 
       // Mongo expires old notifications by itself; on PostgreSQL this does it (as the jobs role).
+      // appConfig lets the temporary-chat pass delete artifacts/attachments before the row.
       if (docStore() === 'postgres' && process.env.PG_JOBS_URL) {
-        this.ttlSweeper = new TtlSweeper(this.logger);
+        this.ttlSweeper = new TtlSweeper(
+          this.logger,
+          undefined,
+          undefined,
+          appConfig,
+        );
         this.ttlSweeper.start();
       }
 

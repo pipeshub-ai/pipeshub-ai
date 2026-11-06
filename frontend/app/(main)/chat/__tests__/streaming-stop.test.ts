@@ -881,4 +881,79 @@ describe('streamMessageForSlot — temporary chat stays off the sidebar', () => 
     expect(useChatStore.getState().pendingConversations[SLOT_ID]).toBeTruthy();
     streamSpy.mockRestore();
   });
+
+  it('does not insert a Recents row when a temporary chat completes', async () => {
+    type Cb = { onComplete?: (d: unknown) => void | Promise<void> };
+    let callbacks: Cb = {};
+    const streamSpy = vi.spyOn(ChatApi, 'streamMessage').mockImplementation(((_req: unknown, cb: Cb) => {
+      callbacks = cb;
+      return Promise.resolve();
+    }) as never);
+    useChatStore.setState({ pendingConversations: {}, conversations: [] });
+    seedSlot({
+      convId: null,
+      isTemp: true,
+      isTemporaryChat: true,
+      isStreaming: false,
+      runId: null,
+      messages: [],
+    });
+
+    await streamMessageForSlot(SLOT_ID, 'hello', { query: 'hello' } as never);
+    const now = new Date().toISOString();
+    await callbacks.onComplete?.({
+      conversation: {
+        _id: 'temp-conv-1',
+        title: 'Temporary chat',
+        createdAt: now,
+        updatedAt: now,
+        isShared: false,
+        messages: [
+          { _id: 'u1', messageType: 'user_query', content: 'hello', contentFormat: 'MARKDOWN', citations: [], followUpQuestions: [], feedback: [], createdAt: now, updatedAt: now },
+          { _id: 'b1', messageType: 'bot_response', content: 'hi', contentFormat: 'MARKDOWN', citations: [], followUpQuestions: [], feedback: [], createdAt: now, updatedAt: now },
+        ],
+      },
+    });
+
+    expect(useChatStore.getState().conversations.map((c) => c.id)).not.toContain('temp-conv-1');
+    expect(useChatStore.getState().slots[SLOT_ID]?.convId).toBe('temp-conv-1');
+    streamSpy.mockRestore();
+  });
+
+  it('still inserts a Recents row when a normal new chat completes', async () => {
+    type Cb = { onComplete?: (d: unknown) => void | Promise<void> };
+    let callbacks: Cb = {};
+    const streamSpy = vi.spyOn(ChatApi, 'streamMessage').mockImplementation(((_req: unknown, cb: Cb) => {
+      callbacks = cb;
+      return Promise.resolve();
+    }) as never);
+    useChatStore.setState({ pendingConversations: {}, conversations: [] });
+    seedSlot({
+      convId: null,
+      isTemp: true,
+      isTemporaryChat: false,
+      isStreaming: false,
+      runId: null,
+      messages: [],
+    });
+
+    await streamMessageForSlot(SLOT_ID, 'hello', { query: 'hello' } as never);
+    const now = new Date().toISOString();
+    await callbacks.onComplete?.({
+      conversation: {
+        _id: 'real-conv-1',
+        title: 'Hello',
+        createdAt: now,
+        updatedAt: now,
+        isShared: false,
+        messages: [
+          { _id: 'u1', messageType: 'user_query', content: 'hello', contentFormat: 'MARKDOWN', citations: [], followUpQuestions: [], feedback: [], createdAt: now, updatedAt: now },
+          { _id: 'b1', messageType: 'bot_response', content: 'hi', contentFormat: 'MARKDOWN', citations: [], followUpQuestions: [], feedback: [], createdAt: now, updatedAt: now },
+        ],
+      },
+    });
+
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toContain('real-conv-1');
+    streamSpy.mockRestore();
+  });
 });

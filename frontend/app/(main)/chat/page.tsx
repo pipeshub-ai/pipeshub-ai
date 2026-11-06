@@ -21,10 +21,15 @@ import { appliedFiltersFromNodes, restoreAppliedFilters } from '@/chat/utils/res
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
 import {
+  clearTemporaryChatPurgePending,
   clearTemporaryChatSession,
+  consumeTemporaryChatPurgePending,
+  markTemporaryChatPurgePending,
   readTemporaryChatSession,
+  temporaryChatIdToPurgeOnNavigate,
   writeTemporaryChatSession,
 } from '@/chat/utils/temporary-chat-session';
+import { ACCESS_TOKEN_STORAGE_KEY, useAuthStore } from '@/lib/store/auth-store';
 import {
   AgentsApi,
   buildAgentChatToolGroups,
@@ -326,9 +331,11 @@ function ChatContent() {
       const leaving = store.activeSlotId ? store.slots[store.activeSlotId] : null;
       if (leaving?.isTemporaryChat && leaving.convId) {
         clearTemporaryChatSession();
+        clearTemporaryChatPurgePending();
         void ChatApi.purgeTemporaryConversation(leaving.convId).catch(() => undefined);
       } else if (leaving?.isTemporaryChat) {
         clearTemporaryChatSession();
+        clearTemporaryChatPurgePending();
       }
 
       // 1. Detach visible thread only — background streams keep running (parallel chats)
@@ -542,14 +549,16 @@ function ChatContent() {
     }
 
     const leaving = store.activeSlotId ? store.slots[store.activeSlotId] : null;
-    if (
-      conversationId &&
-      leaving?.isTemporaryChat &&
-      leaving.convId &&
-      leaving.convId !== conversationId
-    ) {
+    const leavingTempId = temporaryChatIdToPurgeOnNavigate({
+      leavingIsTemporary: Boolean(leaving?.isTemporaryChat),
+      leavingConvId: leaving?.convId,
+      conversationId,
+      scopedNewChat: Boolean(agentId || projectId),
+    });
+    if (leavingTempId) {
       clearTemporaryChatSession();
-      void ChatApi.purgeTemporaryConversation(leaving.convId).catch(() => undefined);
+      clearTemporaryChatPurgePending();
+      void ChatApi.purgeTemporaryConversation(leavingTempId).catch(() => undefined);
     }
 
     if (!conversationId) {
@@ -1126,11 +1135,47 @@ function ChatContent() {
   }, [headerSharedWith]);
 
   useEffect(() => {
-    return useChatStore.subscribe((state) => {
+    return useChatStore.subscribe((state, prev) => {
       const slot = state.activeSlotId ? state.slots[state.activeSlotId] : null;
-      if (!slot?.isTemporaryChat) return;
+      if (!slot?.isTemporaryChat || !slot.convId) return;
+      const prevSlot =
+        prev.activeSlotId === state.activeSlotId ? prev.slots[prev.activeSlotId] : null;
+      // Only persist when this thread first gets an id. Writing on every
+      // store update re-saves a purged id while URL-sync still has the
+      // temporary slot active, so F5 would reopen a deleted chat.
+      if (prevSlot?.convId === slot.convId) return;
       writeTemporaryChatSession(slot.convId);
     });
+  }, []);
+
+  // Tab close vs refresh: pagehide fires for both. Mark a pending purge on
+  // hide; on the next load, sessionStorage still present means F5 (cancel),
+  // empty means the tab closed (hard-delete).
+  useEffect(() => {
+    const pendingId = consumeTemporaryChatPurgePending();
+    if (pendingId) {
+      const token =
+        useAuthStore.getState().accessToken ??
+        (typeof window !== 'undefined'
+          ? window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)
+          : null);
+      if (token) {
+        ChatApi.purgeTemporaryConversationOnExit(pendingId, token);
+      } else {
+        // Auth not ready — keep the marker for a later visit rather than drop it.
+        markTemporaryChatPurgePending(pendingId);
+      }
+    }
+
+    const onPageHide = (event: PageTransitionEvent) => {
+      if (event.persisted) return;
+      const store = useChatStore.getState();
+      const slot = store.activeSlotId ? store.slots[store.activeSlotId] : null;
+      if (!slot?.isTemporaryChat || !slot.convId) return;
+      markTemporaryChatPurgePending(slot.convId);
+    };
+    window.addEventListener('pagehide', onPageHide);
+    return () => window.removeEventListener('pagehide', onPageHide);
   }, []);
 
   // Show new chat view when no active slot, or slot is new with no messages

@@ -400,7 +400,7 @@ export function createConversationalRouter(container: Container): Router {
 
   /**
    * @route DELETE /api/v1/conversations/:conversationId/temporary
-   * @desc Hard-delete a temporary chat, its messages, citations and artifacts
+   * @desc Hard-delete a temporary chat, its messages, citations, artifacts and chat attachments
    */
   router.delete(
     '/:conversationId/temporary',
