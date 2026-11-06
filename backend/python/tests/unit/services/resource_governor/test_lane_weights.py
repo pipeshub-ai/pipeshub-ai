@@ -149,7 +149,8 @@ def test_weight3_is_not_starved_by_a_weight1_stream(make_budget: Callable[..., L
     for t in threads:
         t.start()
     try:
-        time.sleep(0.5)
+        # The contention case needs the streams to fill the limit before the waiter asks.
+        assert wait_until(lambda: others[0].held_count()[0] >= 3)
         started = time.monotonic()
         lease = waiter.acquire(weight=3, timeout=8)
         waited = time.monotonic() - started
@@ -187,10 +188,9 @@ def test_weight3_and_weight1_holders_all_finish_at_limit_3(make_budget: Callable
             errors.append(exc)
 
     threads = [threading.Thread(target=hold, args=(holders, f"h{i}")) for i in range(3)]
-    time.sleep(0)
     for t in threads:
         t.start()
-    time.sleep(0.05)
+    assert wait_until(lambda: holders.held_count()[0] == 3)
     waiters = {
         "second_process": [(other, "w1")],
         "two_waiters": [(other, "w1"), (third, "w2")],

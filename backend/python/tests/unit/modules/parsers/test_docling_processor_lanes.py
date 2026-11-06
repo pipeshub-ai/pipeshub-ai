@@ -565,6 +565,37 @@ def test_idle_shutdown_racing_submit() -> None:
     assert reaped > 0
 
 
+def test_a_submit_does_not_wait_for_the_idle_shutdown_to_join_its_children() -> None:
+    """submit runs on the event loop: it must not block while the reaper joins old children."""
+
+    class SlowToExit(ThreadPoolExecutor):
+        joining = threading.Event()
+        release = threading.Event()
+
+        def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+            if wait:
+                SlowToExit.joining.set()
+                SlowToExit.release.wait(10)
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    clock = FakeClock()
+    ex = dp._DoclingExecutor(1, idle=60, tick=3600, factory=lambda w: SlowToExit(w), clock=clock)  # type: ignore[arg-type]
+    ex.submit(int).result(timeout=5)
+    assert wait_for(lambda: ex._inflight == 0)
+    clock.t = 600
+    reaper = threading.Thread(target=ex.reap_if_idle)
+    reaper.start()
+    try:
+        assert SlowToExit.joining.wait(5)
+        started = time.monotonic()
+        ex.submit(int).result(timeout=5)
+        assert time.monotonic() - started < 1.0
+    finally:
+        SlowToExit.release.set()
+        reaper.join(10)
+        ex.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_submit_after_shutdown_creates_a_new_executor_and_keeps_the_lease(
     auto_threads: list[ThreadPoolExecutor], child: Child, make_budget: Callable[..., LaneBudget], processor: dp.DoclingProcessor, monkeypatch: pytest.MonkeyPatch

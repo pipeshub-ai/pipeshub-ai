@@ -325,8 +325,11 @@ class _DoclingExecutor:
             if self._executor is None or self._inflight > 0 or self._clock() - self._last_used < self._idle:
                 return False
             executor, self._executor = self._executor, None
-            executor.shutdown(wait=True)
-            return True
+        # submit runs on the event loop and takes this lock; joining the old
+        # children under it would stall the loop. The swap above is what keeps
+        # a submit from reaching the executor being shut down.
+        executor.shutdown(wait=True)
+        return True
 
     def drop_broken(self) -> None:
         with self._lock:
