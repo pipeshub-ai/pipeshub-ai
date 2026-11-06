@@ -171,16 +171,19 @@ class PermissionsMixin(PgBase):
                 return await tx.fetch("""/* pipeshub:graph.selection_nodes_live */ SELECT id, doc->>'connectorId' AS cid, doc->>'virtualRecordId' AS vrid FROM graph.nodes
                     WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) AND coalesce((doc->>'isDeleted')::boolean, false) = false""", org, coll, ids)
 
-            frontier = list(roots)
-            for _ in range(access_sql.MAX_HOPS + 1):
-                fresh = [r for r in await live(frontier) if r["id"] not in found]
+            rows = await live(list(roots))
+            for hop in range(access_sql.MAX_HOPS + 1):
+                fresh = [r for r in rows if r["id"] not in found]
                 found.update((r["id"], r) for r in fresh)
                 frontier = [r["id"] for r in fresh]
-                if not frontier or len(found) > limit:
+                if not frontier or len(found) > limit or hop == access_sql.MAX_HOPS:
                     break
-                frontier = [e["to_id"] for e in await tx.fetch("""/* pipeshub:graph.selection_nodes_children */ SELECT DISTINCT to_id FROM graph.edges WHERE org_id = $1
-                    AND coll = 'nodeRelations' AND from_coll = $2 AND to_coll = $2 AND from_id = ANY($3::text[]) AND doc->>'relationshipType' = ANY($4::text[])""",
-                                                              org, coll, frontier, ["PARENT_CHILD", "ATTACHMENT"])]
+                # only live children not found yet, and no more than would take the walk past the limit: a wide level is never read in full
+                rows = await tx.fetch("""/* pipeshub:graph.selection_nodes_children */ SELECT DISTINCT n.id, n.doc->>'connectorId' AS cid, n.doc->>'virtualRecordId' AS vrid
+                    FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = e.to_coll AND n.id = e.to_id
+                    WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = $2 AND e.to_coll = $2 AND e.from_id = ANY($3::text[])
+                      AND e.doc->>'relationshipType' = ANY($4::text[]) AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND n.id <> ALL($5::text[])
+                    LIMIT $6""", org, coll, frontier, ["PARENT_CHILD", "ATTACHMENT"], list(found), limit + 1 - len(found))
             if exact:
                 found.update((r["id"], r) for r in await live(exact) if r["id"] not in found)
             return list(found.values())[:limit + 1]

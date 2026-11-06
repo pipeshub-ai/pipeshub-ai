@@ -131,3 +131,14 @@ async def test_a_record_and_a_group_with_the_same_id_stay_apart(pg_db) -> None:
     await p.batch_create_edges([link("same", "gkid", coll="recordGroups")], "nodeRelations")
     assert await ids(p, record_ids=["same"]) == (set(), {"same", "rkid"})
     assert await ids(p, group_ids=["same"]) == ({"same", "gkid"}, set())
+
+
+async def test_a_wide_level_is_cut_only_past_the_limit_and_deleted_or_repeated_children_do_not_count(pg_db) -> None:
+    p = bound(pg_db)
+    kids = [f"k{i:02d}" for i in range(10)]
+    dead = [f"d{i:02d}" for i in range(10)]
+    await p.batch_upsert_nodes([rec(p.org, "wide")] + [rec(p.org, k) for k in kids] + [rec(p.org, d, isDeleted=True) for d in dead], "records")
+    await p.batch_create_edges([link("wide", k) for k in (*dead, *kids)] + [link("k00", "wide")], "nodeRelations")     # k00 -> wide closes a cycle
+    assert len((await ids(p, record_ids=["wide"], limit=11))[1]) == 11                 # exactly at the limit: every live node, none cut
+    assert len((await ids(p, record_ids=["wide"], limit=10))[1]) == 11                 # one past it: the caller reads it as too large
+    assert (await ids(p, record_ids=["wide"], limit=50))[1] == {"wide", *kids}
