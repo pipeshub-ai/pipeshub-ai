@@ -72,6 +72,7 @@ def _make_connector():
     c._slack_executor = None
     c._thread_pool_lease = MagicMock(shutdown_and_drain=AsyncMock())
     c._unreadable_channels = []
+    c._archived_channel_ids = set()
     c._channel_list_failed = False
     c._resilience_loaded = True
     c._resilience = None

@@ -495,6 +495,7 @@ class SlackConnector(BaseConnector):
         self._slack_executor: ThreadPoolLease | None = None
         # Channel names whose messages this run could not read, for one notice per run.
         self._unreadable_channels: list[str] = []
+        self._archived_channel_ids: set[str] = set()
         self._channel_list_failed = False
         # Set once Slack refuses the token in a run; parallel channel syncs see it too.
         self._token_refused = False
@@ -1261,6 +1262,7 @@ class SlackConnector(BaseConnector):
         # channel filters) never bleed into Phase 5 (thread-growth / change detection)
         self.channel_groups_cache.clear()
         self.channel_id_to_name_cache.clear()
+        self._archived_channel_ids.clear()
 
         cursor: Optional[str] = None
         record_groups: list[RecordGroup] = []
@@ -1269,8 +1271,9 @@ class SlackConnector(BaseConnector):
         while True:
             await self.rate_limiter.acquire(Tier.T2)
             ds   = await self._fresh_datasource()
+            # Archived channels stay readable in Slack, and a channel dropped from the
+            # list would lose its grants at the next full sync: list them, same ACL.
             resp = await ds.conversations_list(
-                exclude_archived=True,
                 types=types_param,
                 limit=PAGE_SIZE_CHANNELS,
                 cursor=cursor,
@@ -1325,6 +1328,8 @@ class SlackConnector(BaseConnector):
                         continue
                     if rg.name:
                         self.channel_id_to_name_cache[cid] = rg.name
+                    if cd.get("is_archived"):
+                        self._archived_channel_ids.add(cid)
                     page_items.append((rg, cd))
                 except Exception as exc:
                     self._full_sync_read_failed = True
@@ -1712,6 +1717,13 @@ class SlackConnector(BaseConnector):
 
             if not resp or not resp.success:
                 error = getattr(resp, "error", "no response")
+                if error == "not_in_channel" and channel_id in self._archived_channel_ids:
+                    # Slack does not let anyone join an archived channel.
+                    self.logger.warning(f"Channel {channel_id} is archived and the bot is not in it, skipping.")
+                    self._unreadable_channels.append(
+                        self.channel_id_to_name_cache.get(channel_id, channel_id)
+                    )
+                    break
                 if error == "not_in_channel" and not join_attempted:
                     # Bot is not a member — try joining (works for public channels)
                     self.logger.info(
