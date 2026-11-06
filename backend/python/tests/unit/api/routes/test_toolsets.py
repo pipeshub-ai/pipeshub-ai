@@ -8131,7 +8131,7 @@ class TestGetAuthenticatedToolsets:
             if "toolset-instances" in path:
                 return instances
             if "inst_none" in path:
-                return {"isAuthenticated": False, "authType": "NONE"}
+                return {"isAuthenticated": False, "authType": "NONE", "scope": "personal"}
             return None
 
         config_service.get_config = mock_get_config
@@ -8148,6 +8148,7 @@ class TestGetAuthenticatedToolsets:
         assert auth_by_instance["inst_none"] == {
             "isAuthenticated": True,
             "authType": "NONE",
+            "scope": "personal",
         }
 
     @pytest.mark.asyncio
