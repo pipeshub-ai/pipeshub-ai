@@ -86,10 +86,12 @@ async def test_the_tools_answer_try_again_not_user_not_found(call) -> None:
     assert "User not found" not in text
 
 
-async def test_a_store_failure_in_a_listing_never_shows_the_store_text() -> None:
+# the first reaches the selection browse, the second the bound user lookup in the listing itself
+@pytest.mark.parametrize("filters", [{"recordGroups": ["g1"]}, {"connectionApps": ["app-1"]}])
+async def test_a_store_failure_in_a_listing_never_shows_the_store_text(filters) -> None:
     store = Store()
     store.down = True
-    state = _state(store, apps=["app-1"], filters={"recordGroups": ["g1"]})
+    state = _state(store, apps=["app-1"], filters=filters)
     success, text = await KnowledgeGraph(state=state).list_files()
     assert not success
     assert PERMISSION_CHECK_UNAVAILABLE_MESSAGE in text
