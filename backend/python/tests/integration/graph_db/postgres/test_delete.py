@@ -39,7 +39,7 @@ def attach(f: str, t: str) -> dict:
     return {"from_id": f, "from_collection": "records", "to_id": t, "to_collection": "records", "relationshipType": "ATTACHMENT"}
 
 
-NO_ORG = {"delete_record": ("r", "u", "o"), "delete_record_by_external_id": ("c", "e", "u"), "unlink_nodes_missed_by_full_sync": ("c", {}),
+NO_ORG = {"delete_connector_instance": ("c", "o"), "delete_record": ("r", "u", "o"), "delete_record_by_external_id": ("c", "e", "u"), "unlink_nodes_missed_by_full_sync": ("c", {}),
           "_direct_attachment_ids": ("r", "o", None), "_attachments_to_delete": ("r", "o", None), "_collect_connector_entities": ("c",),
           "_refuse_without_delete_role": ("r", {}, "u", None), "_node_fields_by_id": ("records", ["a"], ("f",)), "_delete_all_edges_for_nodes": ("", ["records/a"], ["nodeRelations"])}
 METHODS = {n for n, f in vars(DeleteMixin).items() if not n.startswith("__") and callable(f)} - {"_drows"}

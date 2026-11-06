@@ -695,7 +695,7 @@ _AUDITED_CYPHER_WRITERS = frozenset({
     'take_back_kept_record_group', 'update_agent_permission', 'update_drive_sync_state', 'update_edge',
     'update_kb_permission', 'update_knowledge_base', 'update_node', 'update_node_fields_if',
     'update_node_fields_if_match', 'update_node_if_match', 'update_nodes_fields_if_match', 'update_sync_point_if',
-    'update_user_sync_state', 'upsert_authenticated_as', 'upsert_person_by_email', 'upsert_record_under_parent',
+    'update_user_sync_state', 'upsert_authenticated_as', 'upsert_person_by_email', 'upsert_person_by_source_key', 'upsert_record_under_parent',
     'upsert_sync_point'
 })
 
