@@ -41,6 +41,7 @@ from app.services.graph_db.postgres.base import (
 from app.services.graph_db.postgres.hierarchy import _EDGE_COLLS, _remove_records
 from app.services.graph_db.postgres.records import _rec, _uniq, _vis
 from app.services.graph_db.postgres.trash import _sweep_edges
+from app.services.graph_db.vector_membership_queries import PAGE_RECORD_FIELDS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -907,3 +908,56 @@ class LookupsMixin(PgBase):
         except Exception as e:
             self.logger.error(f"❌ Failed to get connector stats: {e}")
             return {"success": False, "message": str(e), "data": None}
+
+    # ---- the vector membership backfill: the next app to walk, and its records a page at a time ------------------------------------------------
+    async def get_app_needing_vector_membership_backfill(self, transaction: str | None = None) -> dict | None:
+        """The first connector instance (lowest id, byte order) not marked backfilled and not being deleted: under an org context that org's, under a system
+        context (the indexing loop) any org's, through the vetted cross-org read of instances. Neo4j picks an arbitrary one; the order makes the walk repeatable."""
+        if current_or_system().kind == "system":
+            apps = await self._system_apps_page(0, 1_000_000, None, None, None)      # shortcut: reads every instance to pick one; instances are few, a vetted filtered read when they are not
+            return next((a for a in apps if a.get("vectorMembershipBackfilled") in (None, False) and (a.get("status") or "") != "DELETING"), None)
+        d = await self._one("""/* pipeshub:graph.get_app_needing_vector_membership_backfill */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps'
+            AND coalesce(n.doc->'vectorMembershipBackfilled', 'null'::jsonb) IN ('null'::jsonb, 'false'::jsonb) AND coalesce(n.doc->>'status', '') <> 'DELETING'
+            ORDER BY n.id COLLATE "C" LIMIT 1""", current_org_id(), transaction=transaction)
+        return _arango(d, "apps") if d else None
+
+    async def page_records_for_vector_membership_backfill(self, connector_id: str, after_key: str | None, limit: int, transaction: str | None = None) -> list[dict]:
+        """The connector's records after ``after_key`` in key order (byte order, as the cursor compares), as ``PAGE_RECORD_FIELDS``. A failure raises: an empty page
+        reads as "finished" to the backfill, which would then mark the connector done having processed nothing. The ambient org's records only: the job binds the connector's own org."""
+        n = max(1, int(limit))
+        sql = """/* pipeshub:graph.page_records_for_vector_membership_backfill */ SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
+            AND n.doc->>'connectorId' = $2 AND ($3::text IS NULL OR n.id COLLATE "C" > $3::text COLLATE "C") ORDER BY n.id COLLATE "C" LIMIT $4"""
+        rows = await self._lrows(sql, current_org_id(), connector_id, after_key or None, n, transaction=transaction)      # one org: a system scope raises, no org is guessed
+        return [{"_key": r["id"], **{f: _doc(r["doc"]).get(f) for f in PAGE_RECORD_FIELDS if f != "_key"}} for r in rows]
+
+    async def _fetch_existing_file_names_in_parent(self, kb_id: str, parent_folder_id: str | None, transaction: str | None = None, *,
+                                                   raise_on_error: bool = False) -> set[tuple[str, str]]:
+        """``(lower name, mime type)`` of the live files directly under the folder, or at the root of the knowledge base (its records that have no parent
+        record and are not folders). A failure answers an empty set unless ``raise_on_error``."""
+        org = current_org_id()
+        try:
+            if parent_folder_id is None:
+                rows = await self._lrows("""/* pipeshub:graph.existing_file_names_in_kb_root */ SELECT r.doc->>'recordName' AS name, m.mime AS mime
+                    FROM graph.edges b JOIN graph.nodes kb ON kb.org_id = b.org_id AND kb.coll = 'apps' AND kb.id = b.to_id AND kb.doc->>'type' = 'KB'
+                    JOIN graph.nodes r ON r.org_id = b.org_id AND r.coll = 'records' AND r.id = b.from_id
+                    CROSS JOIN LATERAL (SELECT coalesce(r.doc->>'mimeType', (SELECT f.doc->>'mimeType' FROM graph.edges t JOIN graph.nodes f ON f.org_id = t.org_id
+                        AND f.coll = 'files' AND f.id = t.to_id AND f.doc->>'isFile' = 'true' WHERE t.org_id = b.org_id AND t.coll = 'isOfType' AND t.from_coll = 'records'
+                        AND t.from_id = r.id AND t.to_coll = 'files' ORDER BY f.id LIMIT 1)) AS mime) m
+                    WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2
+                      AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND NOT m.mime = ANY($3::text[])
+                      AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = b.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
+                        AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)""", org, kb_id, FOLDER_MIME_TYPES, transaction=transaction)
+            else:
+                rows = await self._lrows("""/* pipeshub:graph.existing_file_names_in_folder */ SELECT r.doc->>'recordName' AS name,
+                        coalesce(r.doc->>'mimeType', f.doc->>'mimeType') AS mime
+                    FROM graph.edges p JOIN graph.nodes r ON r.org_id = p.org_id AND r.coll = 'records' AND r.id = p.to_id
+                    JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'isOfType' AND t.from_coll = 'records' AND t.from_id = r.id AND t.to_coll = 'files'
+                    JOIN graph.nodes f ON f.org_id = p.org_id AND f.coll = 'files' AND f.id = t.to_id AND f.doc->>'isFile' = 'true'
+                    WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD' AND p.from_coll = 'records' AND p.from_id = $2
+                      AND p.to_coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false""", org, parent_folder_id, transaction=transaction)
+            return {(r["name"].lower(), str(r["mime"] or "")) for r in rows if r["name"]}
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch existing file names: {e}")
+            if raise_on_error:
+                raise
+            return set()
