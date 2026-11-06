@@ -1721,9 +1721,7 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
     async def check_connection(
         cls, auth_config: dict[str, Any], logger: Logger, *, public_only: bool = True
     ) -> ConnectionCheckResult:
-        # The address rule has nothing to check: the account identifier only ever names a host
-        # under snowflakecomputing.com (sql_api_base_url refuses anything else).
-        return await check_connection(auth_config, logger)
+        return await check_connection(auth_config, logger, public_only=public_only)
 
     async def test_connection_and_access(self) -> bool:
         if not self.runner:

@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from app.connectors.core.base.connector.connector_service import ConnectionCheckResult
 from app.connectors.sources.snowflake.connection_check import (
     CHECK_STATEMENT,
+    _default_data_source,
     check_connection,
     describe_failure,
 )
@@ -49,9 +50,9 @@ class Factory:
         return self.data_source
 
 
-async def run(auth, response) -> tuple:
+async def run(auth, response, *, public_only: bool = True) -> tuple:
     factory = Factory(response)
-    result = await check_connection(auth, _LOGGER, data_source_factory=factory)
+    result = await check_connection(auth, _LOGGER, public_only=public_only, data_source_factory=factory)
     return result, factory.data_source
 
 
@@ -95,12 +96,25 @@ class TestCheck:
         assert SnowflakeConnector.supports_connection_check()
 
     @pytest.mark.parametrize("public_only", [True, False])
-    async def test_the_connector_takes_the_address_rule_the_route_passes(self, public_only) -> None:
-        """The test-connection route passes the scope's address rule to every check."""
+    async def test_the_connector_passes_on_the_address_rule_the_route_gives_it(self, public_only) -> None:
         checked = ConnectionCheckResult(success=True, message="ok")
         with patch(f"{SnowflakeConnector.__module__}.check_connection", AsyncMock(return_value=checked)) as check:
             assert await SnowflakeConnector.check_connection(PAT, _LOGGER, public_only=public_only) is checked
-        check.assert_awaited_once_with(PAT, _LOGGER)
+        check.assert_awaited_once_with(PAT, _LOGGER, public_only=public_only)
+
+    async def test_a_personal_check_reaches_public_addresses_only(self) -> None:
+        """A private-link account name can resolve to a private address."""
+        _, ds = await run(PAT, ok(["ACME-PROD", "SVC", "PUBLIC", "WH"]), public_only=True)
+        ds.http.require_public_addresses.assert_called_once_with()
+
+    async def test_a_team_check_keeps_the_deployment_rule(self) -> None:
+        _, ds = await run(PAT, ok(["ACME-PROD", "SVC", "PUBLIC", "WH"]), public_only=False)
+        ds.http.require_public_addresses.assert_not_called()
+
+    async def test_the_real_client_takes_the_rule_before_its_first_request(self) -> None:
+        http = _default_data_source(parse_connection_settings({"auth": PAT})).http
+        http.require_public_addresses()
+        await http.close()
 
 
 def settings(auth=PAT) -> object:
