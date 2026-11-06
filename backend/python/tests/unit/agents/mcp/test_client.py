@@ -1445,9 +1445,13 @@ class TestResultsThatMissTheirSchemaAreKept:
         session = self._session()
         _keep_results_that_miss_their_schema(SimpleNamespace(session=session))  # type: ignore[arg-type]
 
-        await session.validate_tool_result("search", CallToolResult(content=[], structured_content={"b": 1}))
+        with caplog.at_level(logging.DEBUG):
+            await session.validate_tool_result("search", CallToolResult(content=[], structured_content={"b": "sentinel-v"}))
 
-        assert "declared schema" in caplog.text
+        (record,) = [r for r in caplog.records if r.getMessage() == "mcp.result.schema_mismatch"]
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record) == {"error_type": "RuntimeError"}
+        assert "sentinel-v" not in caplog.text
 
     async def test_a_failing_validation_listing_does_not_fail_the_call(self) -> None:
         from mcp.types import CallToolResult

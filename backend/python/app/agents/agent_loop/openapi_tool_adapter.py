@@ -38,6 +38,7 @@ _MAX_SUMMARY_CHARS = 200
 
 def _class_or(exc: BaseException, fallback: str) -> str:
     """`classify_error`, or `fallback` where it can only say internal: these failures are upstream answers, not our bugs."""
+    # shortcut: a bug of ours chained under the error also reads as `fallback`; no path chains one today, guard it if one does.
     cls = error_class.classify_error(exc)
     return fallback if cls == "internal" else cls
 

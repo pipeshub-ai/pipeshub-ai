@@ -322,7 +322,8 @@ def _keep_results_that_miss_their_schema(client: Client) -> None:
         try:
             await validate(name, result)
         except Exception as e:
-            logger.warning(f"MCP tool {name} returned output its declared schema doesn't allow; kept as is: {e}")
+            # Kept as is. Not the error's text: it quotes the result.
+            log_event(logger, "mcp.result.schema_mismatch", level=logging.WARNING, error_type=type(e).__name__)
 
     session.validate_tool_result = _validate_leniently
 

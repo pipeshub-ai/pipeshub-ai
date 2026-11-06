@@ -226,6 +226,7 @@ the batch is launched before the calls are dispatched.
 | `mcp.connect.end` | success DEBUG, failure INFO | `mcp_server_id`, `transport`, `mode`, `protocol_version`, `outcome`, `error_class`, `mcp_reason`, `status`, `error_type`, `cause_type` (the innermost cause's type), `duration_ms` |
 | `mcp.retry` | WARNING; `reason=renegotiate` INFO | `mcp_server_id`, `op` (connect, list, call), `reason` (token_refresh, resend, relist, renegotiate), `error_type` |
 | `mcp.discover.end` | a failure at its class's level; `reason=no_attached_tools` WARNING | `mcp_server_id`, `outcome`, `error_class`, `mcp_reason`, `error_type`, `source`, `duration_ms` |
+| `mcp.result.schema_mismatch` | WARNING (the result is kept) | `error_type` |
 | `mcp.load.end` | INFO, once per turn | `servers`, `servers_loaded`, `tools_listed`, `failed` |
 | `openapi.retry` | WARNING | `status`, `reason` |
 | `tool_approval.run_failed` | DEBUG in practice: the executor already logged it | `error_class`, `error_type` |
@@ -234,7 +235,9 @@ the batch is launched before the calls are dispatched.
   duplicate, skipped by Stop before it ran, or a parked call once its card is settled. A card never answered leaves only the DEBUG line. The success line at
   INFO is an agreed exception to "no more INFO": it is the one line per unit of work that says which tool ran, for whom, how long.
 - A tool hands a failure to the executor as `ToolOutput(cause=exc, end_fields={...})` or raises; it never logs and returns.
-  The executor logs it once (`log_failure`, so the stack prints only for `internal` and `misconfigured`).
+  The executor logs it once (`log_failure`, so the stack prints only for `internal` and `misconfigured`). Calls that fail with one
+  shared exception (a shared MCP listing, a memoised lookup) each keep their line at their own level, and the stack prints once:
+  when `error_class.logged_level(exc)` says it was already written at that level, the line is a `log_event` with the error fields.
 - Tool, MCP, OpenAPI and OAuth failures never log the error's text (`include_error_text=False`): a server's answer can quote the
   arguments. Nor a STDIO server's stderr: it can echo earlier calls' arguments and its environment. What the model sees (`ToolOutput.error`, an `isError` result, an HTTP body) is never a field.
 - `mcp.connect.end` (like `llm_call.end`) is an operation record: it stays at INFO when it failed, and the layer that retries or

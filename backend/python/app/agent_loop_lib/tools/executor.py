@@ -41,7 +41,7 @@ from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.tools.base import ToolOutput
 from app.agent_loop_lib.tools.errors import ToolNotFoundError, ToolValidationError
 from app.agent_loop_lib.tools.registry import ToolRegistry
-from app.utils.error_class import level_for, log_failure
+from app.utils.error_class import classify_error, level_for, log_failure, logged_level
 from app.utils.logging_fields import log_event, log_fields
 
 if TYPE_CHECKING:
@@ -88,9 +88,19 @@ def log_tool_call_end(
     if tool is not None:
         fields["tool"] = tool[:_MAX_LOGGED_TOOL_NAME]
     if cause is not None:
-        log_failure(
-            logger, "tool_call.end", cause, error_class=error_class, include_error_text=False,
-            outcome=outcome, reason=reason, **fields,
+        cls = error_class or classify_error(cause)
+        prior = logged_level(cause)
+        if prior is None or prior < level_for(cls):
+            # Marks it (an outer handler's line then drops to DEBUG); the stack once, at ERROR.
+            log_failure(
+                logger, "tool_call.end", cause, error_class=cls, include_error_text=False,
+                outcome=outcome, reason=reason, **fields,
+            )
+            return
+        # Already logged (another call failed with the same exception): this call's line, at its level, no second stack.
+        log_event(
+            logger, "tool_call.end", level=level_for(cls), outcome=outcome, reason=reason, error_class=cls,
+            error_type=type(cause).__name__, **fields,
         )
         return
     if outcome == "failure":

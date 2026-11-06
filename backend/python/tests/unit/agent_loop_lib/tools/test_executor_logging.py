@@ -277,10 +277,9 @@ class TestRaisedFromTheCall:
         assert record.levelno == logging.INFO
         assert (fields["outcome"], fields["error_class"], fields["duration_ms"]) == ("failure", "cancelled", 250)
 
-    async def test_a_tool_that_already_logged_its_error_makes_the_end_line_debug(
+    async def test_an_error_logged_before_keeps_the_end_line_at_its_level_without_a_second_stack(
         self, caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Known limit: a tool returns `cause=` or logs, never both."""
         caplog.set_level(logging.DEBUG)
 
         async def _logs_then_returns(**_kwargs: Any) -> ToolOutput:  # noqa: ANN401
@@ -290,8 +289,48 @@ class TestRaisedFromTheCall:
 
         await _executor(_Tool(_logs_then_returns)).call_tool(_call())
 
-        record, _ = _one_end(caplog)
-        assert record.levelno == logging.DEBUG
+        record, fields = _one_end(caplog)
+        assert record.levelno == logging.ERROR and record.exc_info is None
+        assert (fields["error_class"], fields["error_type"], fields["outcome"]) == ("internal", "KeyError", "failure")
+        assert len([r for r in caplog.records if r.exc_info and r.levelno > logging.DEBUG]) == 1
+
+    @pytest.mark.parametrize(("shared", "level"), [
+        (httpx.ReadTimeout("slow"), logging.WARNING),
+        (KeyError("k"), logging.ERROR),
+    ])
+    async def test_parallel_calls_failing_with_one_exception_each_get_their_line(
+        self, shared: BaseException, level: int, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """As when parallel first MCP calls share one listing, or tools share one memoised lookup."""
+        caplog.set_level(logging.DEBUG)
+        both_inside = asyncio.Barrier(2)
+
+        async def _shared_failure(**_kwargs: Any) -> ToolOutput:  # noqa: ANN401
+            await both_inside.wait()
+            raise shared
+
+        executor = _executor(_Tool(_shared_failure))
+        await asyncio.gather(executor.call_tool(_call(call_id="a")), executor.call_tool(_call(call_id="b")))
+
+        ends = _ends(caplog)
+        assert sorted((log_record_fields(r)["tool_call_id"], r.levelno) for r in ends) == [("a", level), ("b", level)]
+        assert {log_record_fields(r)["error_type"] for r in ends} == {type(shared).__name__}
+        assert len([r for r in ends if r.exc_info]) == (1 if level >= logging.ERROR else 0)
+
+    async def test_two_calls_raising_one_exception_each_get_their_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        shared = RuntimeError("boom")
+
+        async def _override() -> CoreToolResult:
+            raise shared
+
+        executor = _executor(_Tool(_returns(ToolOutput(success=True))))
+        for call_id in ("a", "b"):
+            with pytest.raises(RuntimeError):
+                await executor.call_tool(_call(call_id=call_id), override_execute=_override)
+
+        assert [r.levelno for r in _ends(caplog)] == [logging.ERROR, logging.ERROR]
+        assert len([r for r in caplog.records if r.exc_info and r.levelno > logging.DEBUG]) == 1
 
 
 class TestBinding:
