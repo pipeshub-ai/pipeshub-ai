@@ -1535,7 +1535,7 @@ async def update_record(
                 "timestamp": get_epoch_timestamp_in_ms(),
                 "location": "kb_root",
                 "kb": {},
-                "userPermission": "NONE",
+                "userPermission": None,  # unknown, not "NONE": that would read as a revoked permission,
             }
             hide_record_parents_unchecked(request, fallback)
             return fallback

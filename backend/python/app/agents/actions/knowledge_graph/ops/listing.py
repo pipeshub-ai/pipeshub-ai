@@ -32,7 +32,9 @@ from app.connectors.sources.localKB.handlers.kh_bounded import (
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.demo_data.chat import excluded_app_ids
+from app.modules.retrieval.selection_scope import unavailable_message
 from app.services.graph_db.interface.graph_db_provider import ALLOWED_FILTER_KEYS
 
 if TYPE_CHECKING:
@@ -471,4 +473,6 @@ async def execute_list_files(
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger
         logger_instance.error("knowledgegraph__list_files error: %s", exc, exc_info=True)
-        return False, json.dumps({"status": "error", "message": f"Listing error: {exc}"})
+        # The graph's own error text is never shown: a store failure says only "try again".
+        said = unavailable_message() if isinstance(exc, PermissionVerificationUnavailableError) else f"Listing error: {exc}"
+        return False, json.dumps({"status": "error", "message": said})

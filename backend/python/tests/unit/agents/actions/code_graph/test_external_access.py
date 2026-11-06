@@ -399,3 +399,9 @@ async def test_a_store_outage_is_a_503_not_a_hidden_repo_and_the_repos_return_wi
     assert client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN}).status_code == 503
     graph.down = False
     assert len(client.get("/api/v1/code-graph/repos").json()["repos"]) == 2
+
+
+async def test_a_repo_with_no_readable_file_stays_out_though_the_limit_names_its_connector(blobs) -> None:
+    """Readable repos are found first, then the limit is applied: a limit never makes a repo readable."""
+    client = _client(RecordGrantsOnly(deny={"rec-shop"}), user=WHOLE_CONNECTOR)
+    assert [r["repo"] for r in client.get("/api/v1/code-graph/repos").json()["repos"]] == ["acme/admin"]

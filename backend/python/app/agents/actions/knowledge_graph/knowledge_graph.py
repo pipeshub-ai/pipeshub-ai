@@ -37,7 +37,12 @@ from app.modules.agents.qna.chat_state import (
 )
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
-from app.modules.retrieval.selection_scope import connection_sources_of
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.modules.retrieval.selection_scope import (
+    connection_sources_of,
+    resolve_user_key,
+    unavailable_message,
+)
 from app.utils.chat_helpers import (
     keep_context_blocks_inside_connection,
     keep_row_summaries_inside_connection,
@@ -475,7 +480,10 @@ class KnowledgeGraph:
             node_id = record_id_shortener.resolve(node_id)
 
         # Get user key
-        user_key = await _get_user_key(graph_provider, user_id)
+        try:
+            user_key = await _get_user_key(graph_provider, user_id)
+        except PermissionVerificationUnavailableError:
+            return False, unavailable_message()
         if not user_key:
             return False, "User not found."
 
@@ -688,7 +696,10 @@ class KnowledgeGraph:
             return False, "No identifiers provided."
         idents = idents[:10]
 
-        user_key = await _get_user_key(graph_provider, user_id)
+        try:
+            user_key = await _get_user_key(graph_provider, user_id)
+        except PermissionVerificationUnavailableError:
+            return False, unavailable_message()
         if not user_key:
             return False, "User not found."
 
@@ -1733,15 +1744,9 @@ class KnowledgeGraph:
 
 
 async def _get_user_key(graph_provider: Any, user_id: str) -> str | None:
-    """Resolve user_id → internal _key via graph provider."""
-    try:
-        user = await graph_provider.get_user_by_user_id(user_id=user_id)
-        if user:
-            return user.get("_key") or user.get("id")
-        return None
-    except Exception as e:
-        logger.warning("Failed to get user key for %s: %s", user_id, e)
-        return None
+    """Resolve user_id → internal _key via graph provider. None: no such user.
+    Raises ``PermissionVerificationUnavailableError`` when the graph could not answer."""
+    return await resolve_user_key(graph_provider, user_id)
 
 
 # ---------------------------------------------------------------------------

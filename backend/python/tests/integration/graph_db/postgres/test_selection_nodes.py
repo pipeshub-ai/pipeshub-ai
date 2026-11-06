@@ -111,3 +111,23 @@ async def test_a_failed_read_while_checking_a_limit_raises_and_the_same_call_ans
         await outside_connection(p, "uid-1", p.org, ["x"], {"apps": ["c1"]})
     monkeypatch.setattr(inner, "_one", real)
     assert await outside_connection(p, "uid-1", p.org, ["x"], {"apps": ["c1"]}) == {"x"}   # a node the user cannot reach is outside, as it was
+
+
+async def test_a_deep_chain_is_walked_fifty_hops_and_no_further(pg_db) -> None:
+    p = bound(pg_db)
+    names = [f"n{i}" for i in range(60)]
+    await p.batch_upsert_nodes([rec(p.org, n) for n in names], "records")
+    await p.batch_create_edges([link(a, b) for a, b in zip(names, names[1:])], "nodeRelations")
+    got = (await ids(p, record_ids=["n0"], limit=1000))[1]
+    assert got == set(names[:51])                                                  # the root and 50 hops, as the other stores walk
+    assert (await ids(p, record_ids=["n10"], limit=1000))[1] == set(names[10:61])
+
+
+async def test_a_record_and_a_group_with_the_same_id_stay_apart(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "same"), rec(p.org, "rkid")], "records")
+    await p.batch_upsert_nodes([{"_key": "same", "orgId": p.org, "connectorId": "c1"}, {"_key": "gkid", "orgId": p.org, "connectorId": "c1"}], "recordGroups")
+    await p.batch_create_edges([link("same", "rkid")], "nodeRelations")
+    await p.batch_create_edges([link("same", "gkid", coll="recordGroups")], "nodeRelations")
+    assert await ids(p, record_ids=["same"]) == (set(), {"same", "rkid"})
+    assert await ids(p, group_ids=["same"]) == ({"same", "gkid"}, set())

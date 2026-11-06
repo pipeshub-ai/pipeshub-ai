@@ -76,15 +76,27 @@ _MEMO_MAX_ENTRIES = 256
 _memo: dict[tuple, tuple[float, SelectionScope]] = {}
 
 
+def unavailable_message() -> str:
+    """What a reader is told when the graph could not answer; never the store's own text."""
+    from app.modules.retrieval.retrieval_service import PERMISSION_CHECK_UNAVAILABLE_MESSAGE
+
+    return PERMISSION_CHECK_UNAVAILABLE_MESSAGE
+
+
 async def _answered(read: Awaitable[_T]) -> _T:
     """``read``, with a store failure raised as ``PermissionVerificationUnavailableError``.
-    A failed read is "could not tell", never "outside the limit" or "nothing selected"."""
+
+    A failed read is "could not tell", never "outside the limit" or "nothing selected".
+    The error carries a fixed reader-facing message and keeps the cause in ``__cause__``,
+    so driver or store text cannot reach a tool result. Every exception is mapped,
+    a programming error included: it surfaces as unavailable and is logged by the caller.
+    """
     try:
         return await read
-    except (PermissionVerificationUnavailableError, NotImplementedError):
+    except NotImplementedError:
         raise
     except Exception as exc:
-        raise PermissionVerificationUnavailableError(str(exc)) from exc
+        raise PermissionVerificationUnavailableError(unavailable_message()) from exc
 
 
 async def resolve_user_key(graph_provider: IGraphDBProvider, user_id: str) -> str | None:
@@ -257,9 +269,9 @@ async def resolve_selection_scope(
         return cached[1]
 
     if readable_only:
-        readable = (await graph_provider.check_access(
+        readable = (await _answered(graph_provider.check_access(
             user_key, org_id, node_ids=[*group_ids, *record_ids, *exact_ids],
-        )).node_ids
+        ))).node_ids
         group_ids = [i for i in group_ids if i in readable]
         record_ids = [i for i in record_ids if i in readable]
         exact_ids = [i for i in exact_ids if i in readable]
@@ -411,7 +423,7 @@ async def outside_connection(
     bound: dict[str, Any] = {}
     _set_bound(bound, CONNECTION_BOUND_FILTER_KEYS, connection_sources)
     _, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, bound)
-    access = await graph_provider.check_access(user_key, org_id, node_ids=ids, scopes=scopes)
+    access = await _answered(graph_provider.check_access(user_key, org_id, node_ids=ids, scopes=scopes))
     return set(ids) - set(access.node_ids_in_scope)
 
 
@@ -559,7 +571,7 @@ async def readable_named_nodes(
     ids = list(dict.fromkeys(i for node_ids in named.values() for i in node_ids))
     if not ids:
         return []
-    access = await graph_provider.check_access(user_key, org_id, node_ids=ids, scopes=bounds)
+    access = await _answered(graph_provider.check_access(user_key, org_id, node_ids=ids, scopes=bounds))
     readable = access.node_ids_in_scope if bounds else access.node_ids
     docs: dict[str, dict[str, Mapping[str, Any]]] = {}
     for collection in dict.fromkeys(_NAMED_COLLECTIONS.values()):
