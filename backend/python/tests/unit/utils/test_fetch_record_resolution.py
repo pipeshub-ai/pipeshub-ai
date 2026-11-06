@@ -578,7 +578,7 @@ class TestParseNow:
         monkeypatch.setenv("PARSE_NOW_MAX_PER_CALL", "50")
         ids = [f"rec-{i}" for i in range(12)]
         docs = _Docs({i: [_row("QUEUED")] for i in ids})
-        asker, send = _asker(wait=0.2)
+        asker, send = _asker(wait=0.5)
         polls_at_each_send: list[int] = []
 
         async def watching(*_a, **_kw) -> bool:
@@ -592,7 +592,7 @@ class TestParseNow:
 
         elapsed = time.monotonic() - started
         assert send.await_count == 12 and set(polls_at_each_send) == {0}  # no look before every ask
-        assert 0.15 < elapsed < 1.0  # one deadline, not twelve
+        assert 0.45 < elapsed < 3  # one 0.5 s deadline, not twelve (6 s)
         assert set(result["unavailable_reasons"].values()) == {PREPARING}
 
     async def test_a_mixed_batch_keeps_the_requested_order(self, stored_content) -> None:  # R17
@@ -724,9 +724,9 @@ class TestParseNow:
         asker, send = _asker(wait=0.05)
         first = await _parse_fetch(["rec-1"], docs, asker)
         docs.rows["rec-1"] = [_stored(_row("QUEUED"))]
-        started = time.monotonic()
+        reads_before = docs.reads["rec-1"]
         second = await _parse_fetch(["rec-1"], docs, asker)
 
         assert first["unavailable_reasons"]["rec-1"] == PREPARING
-        assert second["ok"] is True and time.monotonic() - started < 0.04
+        assert second["ok"] is True and docs.reads["rec-1"] == reads_before + 1  # one look, no wait
         assert send.await_count == 1
