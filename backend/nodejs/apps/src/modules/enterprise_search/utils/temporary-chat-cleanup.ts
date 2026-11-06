@@ -9,39 +9,37 @@ const CHAT_ATTACHMENT_CONNECTOR = 'ATTACHMENTS';
 const STAND_IN_TTL_SECONDS = 60;
 const ATTACHMENT_DELETE_TIMEOUT_MS = 15_000;
 
+type CitedMetadata = { recordId?: string; connector?: string };
+
 /** Chat-upload record ids on this conversation only — never KB/connector citations. */
 export function collectTemporaryChatAttachmentRecordIds(
   messages: Array<{
     attachments?: Array<{ recordId?: string } | null> | null;
     citations?: Array<{
-      citationData?: { metadata?: { recordId?: string; connector?: string } };
-      citationId?:
-        | string
-        | { metadata?: { recordId?: string; connector?: string } };
+      citationData?: { metadata?: CitedMetadata };
+      citationId?: string | { metadata?: CitedMetadata };
     }> | null;
   }>,
 ): string[] {
   const ids = new Set<string>();
-  for (const msg of messages ?? []) {
+  for (const msg of messages) {
     for (const att of msg.attachments ?? []) {
-      if (typeof att?.recordId === 'string' && att.recordId) {
+      if (typeof att?.recordId === 'string' && att.recordId !== '') {
         ids.add(att.recordId);
       }
     }
     for (const cit of msg.citations ?? []) {
-      const populated =
-        cit?.citationData ??
-        (cit?.citationId &&
-        typeof cit.citationId === 'object' &&
-        cit.citationId.metadata
-          ? cit.citationId
-          : null);
-      const recordId = populated?.metadata?.recordId;
-      if (typeof recordId !== 'string' || !recordId) continue;
-      if (
-        String(populated?.metadata?.connector ?? '').toUpperCase() ===
-        CHAT_ATTACHMENT_CONNECTOR
-      ) {
+      const citationId = cit.citationId;
+      const fromId =
+        typeof citationId === 'object' && citationId.metadata
+          ? citationId
+          : null;
+      const populated = cit.citationData ?? fromId;
+      const metadata = populated?.metadata;
+      const recordId = metadata?.recordId;
+      if (typeof recordId !== 'string' || recordId === '') continue;
+      const connector = metadata?.connector ?? '';
+      if (connector.toUpperCase() === CHAT_ATTACHMENT_CONNECTOR) {
         ids.add(recordId);
       }
     }
@@ -116,11 +114,7 @@ export async function purgeTemporaryChatSideEffects(
   conversationId: string,
   owner: { authorization: string; orgId: string; userId: string },
 ): Promise<void> {
-  await deleteConversationArtifactsOwnedBy(
-    appConfig,
-    conversationId,
-    owner,
-  );
+  await deleteConversationArtifactsOwnedBy(appConfig, conversationId, owner);
   await deleteTemporaryChatAttachments(
     appConfig,
     conversationId,

@@ -9179,16 +9179,6 @@ components:
           description: |
             Uploaded chat attachments to associate with this conversation turn (see
             `POST /conversations/attachments/upload`).
-        temporary:
-          type: boolean
-          description: |
-            When `true`, the conversation is a temporary chat: it is hidden
-            from history, search, archive and project lists, cannot be
-            shared, pinned, archived, forked, renamed or linked to a
-            project, and is hard-deleted when the client calls
-            `DELETE /conversations/{conversationId}/temporary` or when
-            `expiresAt` passes (24 hours). Cannot be combined with
-            `projectId`. Default `false`.
         projectId:
           type: string
           format: objectId
@@ -9202,8 +9192,8 @@ components:
             meaningful when creating a conversation.
             An OAuth token or PAT also needs `project:read`. An archived
             project answers `409`; a project the caller cannot see, `404`,
-            before any stream opens. Refused with `400` when `temporary`
-            is `true`.
+            before any stream opens. Refused with `400` on the stream route
+            when `temporary` is `true`.
         projectVisibility:
           type: string
           enum: [private, project]
@@ -9356,6 +9346,18 @@ components:
                 stream emits `CUSTOM` `{ name: "turn_started", value: { conversationId, userMessageId } }`
                 right after the question is saved and before the model starts. Ignored
                 otherwise; a request without it streams exactly as before.
+            temporary:
+              type: boolean
+              description: |
+                Honored only on `POST /conversations/stream` (not on
+                `POST /conversations/create`). When `true`, the conversation
+                is a temporary chat: it is hidden from history, search,
+                archive and project lists, cannot be shared, pinned,
+                archived, forked, renamed or linked to a project, and is
+                hard-deleted when the client calls
+                `DELETE /conversations/{conversationId}/temporary` or after
+                `expiresAt` when a sweeper pass succeeds. Cannot be combined
+                with `projectId`. Default `false`.
     CreateAgentConversationResponse:
       type: object
       description: |
@@ -11201,8 +11203,9 @@ components:
           type: string
           format: date-time
           description: |
-            When a temporary chat is removed if the client never purged it.
-            Absent on a normal conversation.
+            Expiry threshold for a temporary chat. After this time a sweeper
+            attempts hard-deletion (and may retry on a later pass if cleanup
+            fails). Absent on a normal conversation.
         projectId:
           type: string
           format: objectId
@@ -45256,8 +45259,9 @@ paths:
       description: |
         Hard-deletes a temporary chat the caller owns: the session, its
         messages, its citations and its artifacts. A normal conversation
-        answers `400`. Used when the user leaves a temporary chat; a TTL
-        sweep deletes anything left past `expiresAt`.
+        answers `400`. Used when the user leaves a temporary chat; on
+        Postgres deployments a TTL sweeper also attempts deletion after
+        `expiresAt` (and may retry if side-effect cleanup fails).
       operationId: purgeTemporaryConversation
       x-pipeshub-sdk: true
       security:
