@@ -149,7 +149,9 @@ def test_the_guard_is_usable_from_two_event_loops_in_turn(monkeypatch: pytest.Mo
 async def test_the_converter_properties_refuse_to_import_docling_on_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     """Reaching a sync converter from a coroutine before ensure_docling() must fail, not stall."""
     from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
-    from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
+    from app.modules.parsers.markdown.docling_markdown_parser import (
+        DoclingMarkdownParser,
+    )
     from app.modules.parsers.pdf.docling_processor import DoclingProcessor
     from app.modules.parsers.pptx.pptx_parser import PPTXParser
 
