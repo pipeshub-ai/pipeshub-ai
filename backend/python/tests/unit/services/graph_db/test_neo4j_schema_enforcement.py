@@ -210,7 +210,7 @@ _D, _I = "delete", "internal"
 
 CLASSIFICATION: dict[str, str] = {
     # ---- node creates (full validation)
-    "create_node_if_absent": _C, "ensure_nodes": _C, "create_taxonomy_node_if_absent": _C,
+    "create_node_if_absent": _C, "ensure_nodes": _C, "create_taxonomy_node_if_absent": _C, "create_organization_if_absent": _C,
     "stage_state_create": _C, "create_named_entities_if_absent": _C, "clone_agent_template": _C,
     # ---- node upserts (partial + lazy required)
     "batch_upsert_nodes": _UP, "batch_upsert_people": _UP, "batch_upsert_app_roles": _UP,
@@ -248,7 +248,7 @@ CLASSIFICATION: dict[str, str] = {
 }
 
 # Names filled in below from the first run of the classification test (deletes and maintenance).
-CLASSIFICATION.update(dict.fromkeys(("batch_delete_edges", "delete_all_edges_for_node", "delete_all_team_permissions", "delete_edge", "delete_edges_between_collections", "delete_edges_by_relationship_types", "delete_edges_by_source_keys", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_kb_hub_app", "delete_nodes", "delete_nodes_and_edges", "delete_parent_child_edge_to_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges", "hard_delete_agent", "hard_delete_all_agents", "reap_stale_external_app_relations", "remove_authenticated_as", "remove_kb_permission", "remove_nodes_by_field", "remove_sync_point", "remove_user_access_to_connector", "remove_user_access_to_record", "stage_states_delete_for_virtual_records", "stage_states_delete_unheld_revisions", "delete_agent", "delete_agent_template", "delete_blocks_by_connector_id", "delete_blocks_for_records", "delete_connector_instance", "delete_connector_sync_edges", "delete_dangling_named_entity_mentions", "delete_dangling_named_entity_values", "delete_inherit_permissions_relation_record_group", "delete_orphan_named_entities", "delete_record", "delete_record_by_external_id", "delete_sync_points_by_connector_id", "purge_trash_kept_record_groups", "purge_trashed_records", "drop_redundant_group_edges"), _D))
+CLASSIFICATION.update(dict.fromkeys(("batch_delete_edges", "delete_record_entity_relations", "delete_all_edges_for_node", "delete_all_team_permissions", "delete_edge", "delete_edges_between_collections", "delete_edges_by_relationship_types", "delete_edges_by_source_keys", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_kb_hub_app", "delete_nodes", "delete_nodes_and_edges", "delete_parent_child_edge_to_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges", "hard_delete_agent", "hard_delete_all_agents", "reap_stale_external_app_relations", "remove_authenticated_as", "remove_kb_permission", "remove_nodes_by_field", "remove_sync_point", "remove_user_access_to_connector", "remove_user_access_to_record", "stage_states_delete_for_virtual_records", "stage_states_delete_unheld_revisions", "delete_agent", "delete_agent_template", "delete_blocks_by_connector_id", "delete_blocks_for_records", "delete_connector_instance", "delete_connector_sync_edges", "delete_dangling_named_entity_mentions", "delete_dangling_named_entity_values", "delete_inherit_permissions_relation_record_group", "delete_orphan_named_entities", "delete_record", "delete_record_by_external_id", "delete_sync_points_by_connector_id", "purge_trash_kept_record_groups", "purge_trashed_records", "drop_redundant_group_edges"), _D))
 CLASSIFICATION.update(dict.fromkeys(("backfill_app_org_ids", "backfill_block_name_folded", "backfill_hierarchy", "backfill_indexed_copy_flags", "heal_taxonomy_alias_nodes", "migrate_legacy_kb_to_app", "migrate_person_to_user", "normalize_folder_mime_types", "restore_records", "soft_delete_records", "stamp_kh_listing_state", "kh_scope_forget", "kh_scope_mark_changed", "kh_scope_mark_stale", "kh_scope_reset_syncing", "kh_scope_restamp_stale", "kh_scope_stamp", "kh_scope_sync_ended", "clear_named_entity_persist_retry", "clear_orphan_named_entity_marks", "mark_orphan_named_entities", "schedule_named_entity_persist_retry", "schedule_named_entity_reextract", "schedule_named_entity_reproject", "migrate_agent_hub_knowledge", "name_knowledge_hub_parents", "reindex_record_group_records", "reindex_single_record", "unlink_nodes_missed_by_full_sync"), _I))
 
 # Names a method must start with to count as a write when its body holds no Cypher write keyword
@@ -979,8 +979,19 @@ COVERED = (
         "set_record_properties", "compare_and_set_indexing_status", "compare_and_set_record_fields",
         "update_indexing_status_for_record_ids", "reset_indexing_status_for_connector",
         "batch_update_connector_status", "update_drive_sync_state", "update_user_sync_state", "update_edge",
+        "create_organization_if_absent",
     }
 )
+
+
+async def test_an_extracted_organisation_is_validated_before_it_is_written() -> None:
+    """It builds its own node from typed arguments; a name of the wrong type is still rejected before any write."""
+    p = _provider()
+    await p.create_organization_if_absent("org-1", {"id": "o1", "name": "Acme", "normalizedName": "acme"})
+    assert p.client.execute_query.await_count == 1
+
+    p = _provider()
+    await _rejected(p, p.create_organization_if_absent("org-1", {"id": "o1", "name": 123}))
 
 # Payload-bearing methods this file does not drive, with the reason. Each needs a typed model, a
 # multi-statement fixture or a purpose-built graph, and is better pinned next to its own tests;
