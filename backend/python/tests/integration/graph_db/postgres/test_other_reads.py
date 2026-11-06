@@ -15,7 +15,7 @@ import pytest
 from app.core.org_context import OrgMismatch
 
 from .test_access import APP, World, _org, rec
-from .test_access import w as w  # noqa: PLC0414
+from .test_access import w as w
 from .test_grants import failing, grant, in_org
 from .test_kg_capture import log as capture_log
 
@@ -61,6 +61,28 @@ async def test_users_who_join_together_do_not_make_two_owners(w: World) -> None:
     roles = await members(w)
     assert sorted(roles) == sorted(keys) and list(roles.values()).count("OWNER") == 1
     assert (await w.p.get_document(f"all_{w.org}", "teams"))["createdBy"] in {k for k, r in roles.items() if r == "OWNER"}
+
+
+async def test_users_who_join_an_all_team_that_exists_and_is_empty_do_not_make_two_owners(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    keys = [f"u{i}" for i in range(8)]
+    real = w.p.check_collection_has_document
+
+    async def slow(*a: object, **k: object) -> bool:        # every joiner reaches the read of the team's members together: only the lock keeps them apart
+        await asyncio.sleep(0.3)
+        return await real(*a, **k)
+    monkeypatch.setattr(w.p, "check_collection_has_document", slow)
+    real_edges = w.p.batch_create_edges
+
+    async def slow_edges(*a: object, **k: object) -> bool:      # and none commits before all have read
+        await asyncio.sleep(0.3)
+        return await real_edges(*a, **k)
+    monkeypatch.setattr(w.p, "batch_create_edges", slow_edges)
+    await w.nodes("users", *({"_key": k} for k in keys))
+    await w.p.add_user_to_all_team(w.org, "ghost")                              # makes the team and adds nobody
+    assert await w.p.get_document(f"all_{w.org}", "teams") is not None and await members(w) == {}
+    await asyncio.gather(*(w.p.add_user_to_all_team(w.org, k) for k in keys))
+    roles = await members(w)
+    assert sorted(roles) == sorted(keys) and list(roles.values()).count("OWNER") == 1
 
 
 async def test_every_active_user_joins_the_all_team_the_oldest_owning_it_and_what_the_team_is_given_reaches_them(w: World) -> None:
@@ -229,7 +251,7 @@ async def test_updating_a_grant_is_logged_for_the_projection_like_any_other_gran
     p = w.p
 
     async def wipe() -> None:
-        async def go(tx) -> None:  # noqa: ANN001
+        async def go(tx) -> None:
             await tx.execute("/* pipeshub:test.clear_log */ SELECT kg.w_changes_delete(ARRAY(SELECT id FROM kg.graph_changes WHERE org_id = $1))", w.org)
         await p._q(go, None, write=True)
     await wipe()
@@ -317,7 +339,7 @@ async def test_failed_records_are_the_live_ones_of_the_connector_in_this_org_and
 async def test_departments_are_those_without_an_org_or_with_this_one(w: World) -> None:
     await w.nodes("departments", {"_key": "d1", "departmentName": "Legal"}, {"_key": "d2", "departmentName": "Sales", "orgId": w.org}, {"_key": "d3"})
     # World.nodes stamps the org on every document: the shared department is one stored with no org
-    async def strip(tx) -> None:  # noqa: ANN001
+    async def strip(tx) -> None:
         await tx.execute("UPDATE graph.nodes SET doc = doc - 'orgId' WHERE org_id = $1 AND coll = 'departments' AND id = 'd1'", w.org)
     await w.p._q(strip, None, write=True)
     p = w.p
@@ -364,7 +386,7 @@ async def test_a_failed_sync_clean_up_reports_it_and_leaves_what_it_could_not_re
 
 
 async def test_an_external_collaborator_keeps_the_app_only_while_a_grant_holds_it(w: World) -> None:
-    await w.nodes("users", {"_key": "ext", "userId": "uid-ext"}, {"_key": "ext2"}, {"_key": "member"}, {"_key": "ext3"}, {"_key": "ext4"}, {"_key": "ext5"}, {"_key": "ext6"})
+    await w.nodes("users", {"_key": "ext", "userId": "uid-ext"}, {"_key": "ext2"}, {"_key": "member"}, {"_key": "idle_member"}, {"_key": "ext3"}, {"_key": "ext4"}, {"_key": "ext5"}, {"_key": "ext6"})
     await w.nodes("groups", {"_key": "g4", "connectorId": APP}, {"_key": "g5", "connectorId": APP}, {"_key": "g6", "connectorId": APP})
     await w.nodes("person", {"_key": "pers", "email": "p@x.io"}, {"_key": "pers_kept", "email": "k@x.io"}, {"_key": "pers_busy", "email": "b@x.io"})
     await w.nodes("groups", {"_key": "grp", "connectorId": APP})
@@ -375,6 +397,7 @@ async def test_an_external_collaborator_keeps_the_app_only_while_a_grant_holds_i
                       ("pers_busy", "person")):
         await w.edge("userAppRelation", (coll, who), ("apps", APP), **flag)
     await w.edge("userAppRelation", ("users", "member"), ("apps", APP), isExternalUser=False)         # a real member is never at risk
+    await w.edge("userAppRelation", ("users", "idle_member"), ("apps", APP), isExternalUser=False)   # not even one who holds no grant
     await w.edge("permission", ("users", "ext"), ("records", "shared"), type="USER", role="READER")      # a direct grant on a live record of the connector
     await w.edge("permission", ("users", "ext2"), ("records", "trashed"), type="USER", role="READER")    # on a trashed one: not a grant
     await w.edge("permission", ("person", "pers_busy"), ("records", "elsewhere"), type="USER", role="READER")      # on another connector's: not a grant here
@@ -393,11 +416,11 @@ async def test_an_external_collaborator_keeps_the_app_only_while_a_grant_holds_i
     assert await p.get_document("pers", "person") is None and await p.get_document("pers_kept", "person") is not None
     assert await p.get_document("pers_busy", "person") is not None                                  # its membership went, but it still holds an edge
     left = {e["from_id"] for e in await p.get_edges_to_node(f"apps/{APP}", "userAppRelation")}
-    assert left == {"ext", "pers_kept", "member"}                                                    # ext2 and pers_busy went (a trashed grant, another connector's), the others hold
+    assert left == {"ext", "pers_kept", "member", "idle_member"}                                                    # ext2 and pers_busy went (a trashed grant, another connector's), the others hold
     assert await p.get_document("ext2", "users") is not None                                      # a user who lost the flagged edge stays a user
     await p.delete_edge("ext", "users", "shared", "records", "permission")                            # the grant taken away: the next pass reaps it
     assert await p.reap_stale_external_app_relations(APP) == 0
-    assert {e["from_id"] for e in await p.get_edges_to_node(f"apps/{APP}", "userAppRelation")} == {"pers_kept", "member"}
+    assert {e["from_id"] for e in await p.get_edges_to_node(f"apps/{APP}", "userAppRelation")} == {"pers_kept", "member", "idle_member"}
     with in_org(_org()):
         assert await p.reap_stale_external_app_relations(APP) == 0
     assert await p.reap_stale_external_app_relations("another-app") == 0

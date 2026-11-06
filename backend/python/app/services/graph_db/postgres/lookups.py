@@ -810,7 +810,7 @@ class LookupsMixin(PgBase):
                                     WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = u.from_coll AND m.from_id = u.from_id AND m.doc->>'type' = 'USER'
                                       AND m.to_coll IN ('groups', 'roles', 'teams') AND t.doc->>'connectorId' = $2 AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')) s
                 WHERE d.org_id = $1 AND d.coll = 'userAppRelation' AND d.to_coll = 'apps' AND d.to_id = $2 AND d.from_coll = s.from_coll AND d.from_id = s.from_id
-                  AND d.doc->>'isExternalUser' = 'true' RETURNING d.from_coll, d.from_id""", org, connector_id)
+                RETURNING d.from_coll, d.from_id""", org, connector_id)
             people = sorted({r["from_id"] for r in gone if r["from_coll"] == "person"})
             if not people:
                 return 0

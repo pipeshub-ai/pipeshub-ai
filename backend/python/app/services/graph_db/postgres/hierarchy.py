@@ -544,8 +544,7 @@ class HierarchyMixin(PgBase):
                   UNION
                   SELECT e.from_id FROM up JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = up.id AND e.to_coll = 'records' AND e.from_coll = 'records'
                     AND e.doc->>'relationshipType' = 'PARENT_CHILD')
-                SELECT EXISTS (SELECT 1 FROM up WHERE up.id = $3 AND EXISTS (SELECT 1 FROM graph.nodes a WHERE a.org_id = $1 AND a.coll = 'records' AND a.id = $3)
-                                 AND EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2))""", org, record_id, ancestor_id), transaction))
+                SELECT EXISTS (SELECT 1 FROM up WHERE up.id = $3)""", org, record_id, ancestor_id), transaction))
         except Exception:
             self.logger.exception("Is record descendant check failed")
             return False
