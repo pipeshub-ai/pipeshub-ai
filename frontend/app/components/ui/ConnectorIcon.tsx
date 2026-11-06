@@ -96,6 +96,7 @@ export type ConnectorType =
   | 'posthog'
   | 'brave'
   | 'stripe'
+  | 'paypal'
   | 'vercel'
   | 'docusign'
   | 'okta'
@@ -201,6 +202,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'posthog': { svg: null, fallback: 'insights' },
   'brave': { svg: svg('brave'), fallback: 'travel_explore' },
   'stripe': { svg: svg('stripe'), fallback: 'payments' },
+  'paypal': { svg: svg('paypal'), fallback: 'payments' },
   'vercel': { svg: svg('vercel'), fallback: 'code' },
   'docusign': { svg: svg('docusign'), fallback: 'draw' },
   'okta': { svg: svg('okta'), fallback: 'badge' },
@@ -270,6 +272,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['hugging-face', 'huggingface'], ['huggingface', 'huggingface'],
   ['brave', 'brave'],
   ['stripe', 'stripe'],
+  ['paypal', 'paypal'],
   ['vercel', 'vercel'],
   ['docusign', 'docusign'], ['okta', 'okta'],
   ['zapier', 'zapier'],
