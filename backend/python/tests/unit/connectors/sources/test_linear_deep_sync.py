@@ -809,6 +809,36 @@ class TestFetchIssuesForTeamBatch:
         assert await self._batches(connector) == []
         connector._transform_issue_to_ticket_record.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_an_indexed_issue_stays_in_its_team_when_archived_and_leaves_when_trashed(self) -> None:
+        live = {**_make_issue_data("iss-a", "ENG-9"), "archivedAt": None, "trashed": False, "team": {"id": "t1"}}
+        archived = {**live, "archivedAt": "2024-07-01T00:00:00.000Z", "updatedAt": "2024-07-01T00:00:00.000Z"}
+        page = lambda issue: GraphQLResponse(success=True, data={  # noqa: E731
+            "issues": {"nodes": [issue], "pageInfo": {"hasNextPage": False}}}, status_code=200)
+        connector, ds = self._connector_with_issue_pages(page(live), page(archived))
+        connector._transform_issue_to_ticket_record = LinearConnector._transform_issue_to_ticket_record.__get__(connector)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector._remover.remove = AsyncMock(return_value=True)
+
+        (indexed, _), = (await self._batches_for(connector, "t1"))[0][:1]
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=indexed)
+        (kept, permissions), = (await self._batches_for(connector, "t1"))[0][:1]
+
+        assert (kept.external_record_id, kept.external_record_group_id, permissions) == ("iss-a", "t1", [])
+
+        trash = MagicMock()
+        trash.trashed_issues = AsyncMock(side_effect=[
+            _mock_gql_response({"issues": {"nodes": [{**archived, "trashed": False}], "pageInfo": {"hasNextPage": False}}}),
+            _mock_gql_response({"issues": {"nodes": [{**archived, "trashed": True}], "pageInfo": {"hasNextPage": False}}}),
+        ])
+        connector._get_fresh_datasource = AsyncMock(return_value=trash)
+        connector.deletion_sync_point.store["trashed_issues"] = {"last_sync_time": 1700000000000}
+
+        await connector._sync_deleted_issues([(_team_rg(), [])])
+        connector._remover.remove.assert_not_awaited()
+        await connector._sync_deleted_issues([(_team_rg(), [])])
+        connector._remover.remove.assert_awaited_once_with("iss-a")
+
     async def _batches_for(self, connector: LinearConnector, team_id: str) -> list:
         with patch("app.connectors.sources.linear.connector.asyncio.sleep", new=AsyncMock()):
             return [b async for b in connector._fetch_issues_for_team_batch(team_id=team_id, team_key="ENG")]
