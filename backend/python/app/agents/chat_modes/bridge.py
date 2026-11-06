@@ -65,7 +65,7 @@ from app.agents.agent_loop.stream_bridge import (
     _pre_stream_error_frame,
     sse_queue_maxsize,
 )
-from app.agents.agent_loop.turn_log import AgentRunTiming, stop_reason_of
+from app.agents.agent_loop.turn_log import AgentRunTiming
 from app.agents.chat_modes.attachments import resolve_attachments
 from app.agents.chat_modes.custom_instructions import (
     resolve_custom_instructions as _resolve_custom_instructions,
@@ -573,7 +573,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         begin_run()
         agent: Any = None
         result: Any = None
-        stop_reason = "error"
+        stop_reason: str | None = "error"
+        parked = False
         failure: BaseException | None = None
         try:
             factory = PipesHubAgentFactory()
@@ -752,7 +753,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     run_timing.on_event(event)
                     await streamer.on_event(event)
                 result = agent.last_stream_result
-                stop_reason = stop_reason_of(result, awaiting_approval=tool_approvals.awaiting_approval(context))
+                stop_reason = None  # from `result`, inside `end()`
+                parked = tool_approvals.awaiting_approval(context)
 
                 await emit_run_usage(context, agent, result, model=model_name or None)
 
@@ -786,7 +788,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             # First, and without awaiting: a disconnect can cancel the awaits
             # below, and this must still run.
             discard_tasks(query_info.get("conversationId"))
-            run_timing.end(log, stop_reason, result=result, ledger=context.usage_ledger, exc=failure)
+            run_timing.end(
+                log, stop_reason, result=result, awaiting_approval=parked, ledger=context.usage_ledger, exc=failure,
+            )
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
@@ -806,6 +810,10 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             if item is _DONE:
                 break
             yield f"event: {item['event']}\ndata: {json.dumps(item['data'])}\n\n"
+    except Exception as exc:
+        # A frame that cannot be written: the turn failed here, not by a disconnect.
+        run_timing.end(log, "error", exc=exc)
+        raise
     finally:
         if heartbeat and not heartbeat.done():
             heartbeat.cancel()
@@ -815,8 +823,6 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         if heartbeat:
             tasks.append(heartbeat)
         await _await_tasks_draining(queue, tasks)
-        # A no-op once the producer logged; covers a producer cancelled before its first step.
-        run_timing.end(log, "client_disconnect")
 
 
 __all__ = ["run_chat_stream"]

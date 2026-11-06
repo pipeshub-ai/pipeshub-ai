@@ -1549,9 +1549,9 @@ async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # 
     if store is None:
         return
     try:
-        logger_.info("🔥 Warming up entity vector store in background")
+        logger_.info("Warming up entity vector store in background")
         await store.embedding_fingerprint()
-        logger_.info("✅ Entity vector store warmup complete")
+        logger_.info("Entity vector store warmup complete")
     except Exception as exc:
         logger_.warning("Entity vector store warmup failed (a later search retries): %s", exc)
 
@@ -1611,18 +1611,24 @@ async def _generate_chat_stream_via_agent_loop(
         container=getattr(request.app, "container", None),
         conversation_id=query_info.conversationId,
     ):
-        async with aclosing(
-            _stream_chat_via_agent_loop(
-                request=request,
-                query_info=query_info,
-                retrieval_service=retrieval_service,
-                graph_provider=graph_provider,
-                config_service=config_service,
-                cancellation_registry=cancellation_registry,
-            )
-        ) as inner:
-            async for event in inner:
-                yield event
+        try:
+            async with aclosing(
+                _stream_chat_via_agent_loop(
+                    request=request,
+                    query_info=query_info,
+                    retrieval_service=retrieval_service,
+                    graph_provider=graph_provider,
+                    config_service=config_service,
+                    cancellation_registry=cancellation_registry,
+                )
+            ) as inner:
+                async for event in inner:
+                    yield event
+        except Exception as exc:
+            # A turn that failed outside the agent loop (attachment check, prompts, the
+            # bridge's own setup) still gets its end line; the error propagates as before.
+            log_turn_end(logger, "error", exc=exc, code=classify_exception(exc)[0], run_id=query_info.runId)
+            raise
 
 
 async def _stream_chat_via_agent_loop(

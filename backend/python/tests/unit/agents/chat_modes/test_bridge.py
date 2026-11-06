@@ -20,6 +20,7 @@ import pytest
 
 from app.agent_loop_lib.core.responses import TokenUsage
 from app.agent_loop_lib.core.types import AgentResult, Goal
+from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext
 from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
 from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_SUMMARIES_ENV_VAR
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
@@ -1588,10 +1589,39 @@ async def _finalize(self, *, event_sink, agent_output=None, **kwargs) -> dict[st
     return {"answer": agent_output}
 
 
-def _creating(result: AgentResult | None, clarifying: list[Any] | None = None):  # noqa: ANN202
+def _event(event_type: EventType, payload: dict[str, Any], *, child: bool = False) -> AgentEvent:
+    root = RunContext(role_name="assistant", model="gpt-4")
+    return AgentEvent(event_type=event_type, run_context=root.child(role_name="sub") if child else root, payload=payload)
+
+
+# Two model turns, one tool call that failed; a sub-agent's turn inside it is not counted.
+_ONE_TOOL_TURN = (
+    _event(EventType.TURN_START, {"turn_index": 0}),
+    _event(EventType.TOOL_CALL, {"tool": "retrieval", "tool_call_id": "c1"}),
+    _event(EventType.TURN_START, {"turn_index": 0}, child=True),
+    _event(EventType.TOOL_RESULT, {"tool": "retrieval", "tool_call_id": "c1", "is_error": True}),
+    _event(EventType.TURN_START, {"turn_index": 1}),
+)
+
+
+def _creating(  # noqa: ANN202
+    result: AgentResult | None, clarifying: list[Any] | None = None, events: tuple[AgentEvent, ...] = (),
+):
+    def _agent() -> MagicMock:
+        agent = MagicMock()
+
+        async def _fake_stream(goal, **kwargs) -> AsyncIterator[AgentEvent]:
+            for event in events:
+                logging.getLogger("tests.chat_bridge.tool").info("tool ran")
+                yield event
+            agent.last_stream_result = result
+
+        agent.stream = _fake_stream
+        return agent
+
     async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple:
         context.usage_ledger.add("main", TokenUsage(input_tokens=50, output_tokens=5))
-        return _stream_agent(result), MagicMock(), MagicMock(constraints=[], description="g"), clarifying or []
+        return _agent(), MagicMock(), MagicMock(constraints=[], description="g"), clarifying or []
 
     return _fake_create
 
@@ -1623,16 +1653,48 @@ class TestTheAssistantTurnEndLine:
     """`run_chat_stream` ends every turn with one `agent_turn.end`, like the agent route."""
 
     async def test_a_finished_turn(self, turn_caplog: pytest.LogCaptureFixture) -> None:
-        with _a_built_turn(_creating(AgentResult(goal=Goal(description="g"), output="42", end_event="agent_complete"))):
+        result = AgentResult(goal=Goal(description="g"), output="42", end_event="agent_complete")
+        with _a_built_turn(_creating(result, events=_ONE_TOOL_TURN)):
             events = [chunk async for chunk in run_chat_stream(**_turn_kwargs(), model_name="gpt-4")]
+        _TURN_LOG.info("after the stream")
 
         assert events[-1].startswith("event: complete\n")
         [end] = _turn_ends(turn_caplog)
-        assert {k: end[k] for k in ("stop_reason", "run_id", "mode", "model", "llm_calls", "tokens_in", "level")} == {
+        assert {k: end[k] for k in (
+            "stop_reason", "run_id", "mode", "model", "llm_calls", "tokens_in", "turns", "tool_calls", "tool_errors",
+            "level",
+        )} == {
             "stop_reason": "done", "run_id": _RUN_ID, "mode": "agent", "model": "gpt-4",
-            "llm_calls": 1, "tokens_in": 50, "level": logging.INFO,
+            "llm_calls": 1, "tokens_in": 50, "turns": 2, "tool_calls": 1, "tool_errors": 1, "level": logging.INFO,
         }
         assert "query-sentinel" not in str(end)
+        by_message = {r.getMessage(): log_record_fields(r) for r in turn_caplog.records}
+        assert by_message["tool ran"]["run_id"] == _RUN_ID  # bound inside the run
+        assert "run_id" not in by_message["after the stream"]  # and nowhere else
+
+    async def test_a_frame_that_cannot_be_written_ends_the_turn_as_an_error(
+        self, turn_caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        agent = MagicMock()
+
+        async def _stream(goal, **kwargs) -> AsyncIterator[Any]:
+            await _sink.write({"event": "status", "data": object()})
+            await asyncio.sleep(30)
+            return
+            yield  # pragma: no cover - marks this an async generator
+
+        agent.stream = _stream
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple:
+            nonlocal _sink
+            _sink = context.event_sink
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        _sink: Any = None
+        with _a_built_turn(_fake_create), pytest.raises(TypeError):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs())]
+
+        assert [(e["stop_reason"], e["error_class"]) for e in _turn_ends(turn_caplog)] == [("error", "internal")]
 
     async def test_a_clarifying_question_is_awaiting_input(self, turn_caplog: pytest.LogCaptureFixture) -> None:
         with _a_built_turn(_creating(None, clarifying=[MagicMock()])):

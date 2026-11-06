@@ -49,11 +49,16 @@ def stop_reason_of(result: AgentResult, *, awaiting_approval: bool = False) -> s
     return "done" if result.success else "error"
 
 
+# Exits whose layer already logged the failure: `llm_call.failed`, or the context
+# guards' ERROR before `ContextBudgetExceeded`.
+_LOGGED_BY_THE_LAYER = frozenset({"llm_call_failed", "context_budget_exceeded"})
+
+
 def _end_level(stop_reason: str, fields: dict[str, Any]) -> int:
-    # Never two WARN+ lines for one failure: an LLM failure already logged `llm_call.failed`.
+    # Never two WARN+ lines for one failure.
     if stop_reason == "max_turns":
         return logging.WARNING
-    if stop_reason != "error" or fields.get("end_event") == "llm_call_failed":
+    if stop_reason != "error" or fields.get("end_event") in _LOGGED_BY_THE_LAYER:
         return logging.INFO
     cls = fields.get("error_class")
     return error_class.level_for(cls) if cls else logging.WARNING
@@ -126,15 +131,21 @@ class AgentRunTiming:
             self._timer.stop(("tool", payload.get("tool_call_id")))
 
     def end(
-        self, log: logging.Logger, stop_reason: str, *, result: AgentResult | None = None,
-        ledger: UsageLedger | None = None, exc: BaseException | None = None, **fields: Any,  # noqa: ANN401
+        self, log: logging.Logger, stop_reason: str | None, *, result: AgentResult | None = None,
+        awaiting_approval: bool = False, ledger: UsageLedger | None = None, exc: BaseException | None = None,
+        **fields: Any,  # noqa: ANN401
     ) -> None:
-        """Log `agent_turn.end` for this turn; only the first call logs. Never raises:
-        it runs in the `finally` that must still send the stream's last frame."""
+        """Log `agent_turn.end` for this turn; only the first call logs. ``stop_reason=None``
+        derives it from ``result`` here, so a bad result costs the line, never the answer.
+        Never raises: it runs in the `finally` that must still send the stream's last frame."""
         if self._ended:
             return
         self._ended = True
         try:
+            if stop_reason is None:
+                stop_reason = (
+                    stop_reason_of(result, awaiting_approval=awaiting_approval) if result is not None else "error"
+                )
             line: dict[str, Any] = {
                 "run_id": self._run_id, "model": self._model, "mode": self._mode,
                 "turns": self.turns, "tool_calls": self.tool_calls, "tool_errors": self.tool_errors,

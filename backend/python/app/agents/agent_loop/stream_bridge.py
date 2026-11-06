@@ -47,7 +47,7 @@ from app.agents.agent_loop.factory import PipesHubAgentFactory, card_already_ans
 from app.agents.agent_loop.hooks import CitationCollector
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
-from app.agents.agent_loop.turn_log import AgentRunTiming, stop_reason_of
+from app.agents.agent_loop.turn_log import AgentRunTiming
 from app.core.org_context import spawn_in_request
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
@@ -418,7 +418,8 @@ async def run_agent_loop_stream(
         begin_run()
         agent: Any = None
         result: Any = None
-        stop_reason = "error"
+        stop_reason: str | None = "error"
+        parked = False
         failure: BaseException | None = None
         try:
             if card_already_answered(context.previous_conversations, query_info.get("query", "")):
@@ -458,7 +459,8 @@ async def run_agent_loop_stream(
                     run_timing.on_event(event)
                     await streamer.on_event(event)
                 result = agent.last_stream_result
-                stop_reason = stop_reason_of(result, awaiting_approval=tool_approvals.awaiting_approval(context))
+                stop_reason = None  # from `result`, inside `end()`
+                parked = tool_approvals.awaiting_approval(context)
                 # A run that stopped for the person keeps its turn for the answer to carry on from.
                 await tool_approvals.keep_stopped_turn(context, agent)
                 if result.needs_input:
@@ -521,7 +523,9 @@ async def run_agent_loop_stream(
             discard_tasks(query_info.get("conversationId"))
             # Logged before _DONE so the line is written even when the
             # consumer stops waiting on this task after the last event.
-            run_timing.end(log, stop_reason, result=result, ledger=context.usage_ledger, exc=failure)
+            run_timing.end(
+                log, stop_reason, result=result, awaiting_approval=parked, ledger=context.usage_ledger, exc=failure,
+            )
             # Flush any pending coalesced events and signal the SSE
             # consumer loop FIRST, so the HTTP response closes promptly
             # after the last real event.  Cleanup (orphan cancellation,
@@ -577,6 +581,10 @@ async def run_agent_loop_stream(
                         mode=query_info.get("chatMode"), model=model_name,
                     )
             yield f"event: {item['event']}\ndata: {json.dumps(item['data'])}\n\n"
+    except Exception as exc:
+        # A frame that cannot be written: the turn failed here, not by a disconnect.
+        run_timing.end(log, "error", exc=exc)
+        raise
     finally:
         # Idempotent: a stream that errored or was cancelled before its first
         # event still reports where the time went.
@@ -608,8 +616,6 @@ async def run_agent_loop_stream(
             # sandbox_manager, so there's no cross-request interference.
             if heartbeat:
                 await asyncio.gather(heartbeat, return_exceptions=True)
-        # A no-op once the producer logged; covers a producer cancelled before its first step.
-        run_timing.end(log, "client_disconnect")
 
 
 __all__ = ["QueueEventSink", "run_agent_loop_stream", "sse_queue_maxsize"]

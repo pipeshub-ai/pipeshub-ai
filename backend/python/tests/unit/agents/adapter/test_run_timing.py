@@ -369,6 +369,28 @@ class TestTheClientGoingAway:
         fields = _end_fields(caplog)
         assert (fields["stop_reason"], fields["run_id"]) == ("client_disconnect", _RUN_ID)
 
+    async def test_a_frame_that_cannot_be_written_is_an_error_not_a_disconnect(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        def make(context: AgentContext) -> MagicMock:
+            agent = MagicMock()
+
+            async def _fake_stream(goal: object, **kwargs: object) -> AsyncIterator[AgentEvent]:
+                await context.event_sink.write({"event": "status", "data": object()})
+                await asyncio.sleep(30)
+                return
+                yield  # pragma: no cover - marks this an async generator
+
+            agent.stream = _fake_stream
+            return agent
+
+        with pytest.raises(TypeError):
+            await _run(None, make_agent=make)
+
+        fields = _end_fields(caplog)
+        assert (fields["stop_reason"], fields["error_class"]) == ("error", "internal")
+        assert [r.getMessage() for r in _warnings(caplog)] == ["agent_turn.failed"]
+
     async def test_a_logging_failure_still_ends_the_stream(self, caplog: pytest.LogCaptureFixture) -> None:
         with patch("app.agents.agent_loop.turn_log.log_event", side_effect=RuntimeError("log bug")):
             chunks = await asyncio.wait_for(_run(None), timeout=5)

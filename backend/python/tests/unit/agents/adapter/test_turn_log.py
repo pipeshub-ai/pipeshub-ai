@@ -59,8 +59,10 @@ class TestLevels:
         ("max_turns", {}, logging.WARNING),
         # Already reported by llm_call.failed.
         ("error", {"end_event": "llm_call_failed", "error_class": "misconfigured"}, logging.INFO),
+        # The context guard logged ERROR before raising.
+        ("error", {"end_event": "context_budget_exceeded"}, logging.INFO),
         # No other line says why: the end line is the report.
-        ("error", {"end_event": "context_budget_exceeded"}, logging.WARNING),
+        ("error", {}, logging.WARNING),
         ("error", {"error_class": "forbidden"}, logging.WARNING),
         ("error", {"error_class": "misconfigured"}, logging.ERROR),
     ])
@@ -117,6 +119,23 @@ class TestEnd:
         assert (fields["error_class"], fields["code"], fields["end_event"]) == (
             "rate_limited", "rate_limit", "llm_call_failed",
         )
+
+    def test_the_stop_reason_is_derived_from_the_result_when_not_given(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level(logging.DEBUG, logger=_LOG.name):
+            _timing().end(_LOG, None, result=_result(end_event="task_complete"), awaiting_approval=True)
+
+        assert log_record_fields(_end_lines(caplog)[0])["stop_reason"] == "awaiting_input"
+
+    def test_a_result_that_cannot_be_read_costs_the_line_not_the_caller(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level(logging.DEBUG):
+            _timing().end(_LOG, None, result=object())  # type: ignore[arg-type]
+
+        assert _end_lines(caplog) == []
+        assert "agent_turn.end failed" in [r.getMessage() for r in caplog.records]
 
     def test_only_the_first_end_logs(self, caplog: pytest.LogCaptureFixture) -> None:
         timing = _timing()
