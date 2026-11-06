@@ -27,6 +27,15 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="stripe" name="Stripe" />)).toBe('stripe icon');
   });
 
+  it.each(['Airtable', 'Team records'])("shows Airtable's catalog logo for %s", (name) => {
+    const { container } = render(<McpServerIcon typeId="airtable" name={name} />);
+
+    const image = container.querySelector('img');
+    expect(image?.getAttribute('alt')).toBe('airtable icon');
+    const sourcePath = new URL(image?.src ?? '', window.location.href).pathname;
+    expect(sourcePath).toBe('/icons/connectors/airtable.svg');
+  });
+
   it("shows Microsoft Learn's own logo, not the broad Microsoft match", () => {
     expect(logo(<McpServerIcon typeId="microsoft_learn" name="Microsoft Learn" />)).toBe('microsoft-learn icon');
   });
