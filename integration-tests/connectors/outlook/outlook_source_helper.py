@@ -748,6 +748,26 @@ class OutlookSourceHelper:
         user = await self._get_json(f"{_GRAPH_V1}/users/{user_id}?$select=accountEnabled", "account_enabled")
         return user.get("accountEnabled")
 
+    async def listed_account_enabled(self, user_id: str) -> bool | None:
+        """accountEnabled for ``user_id`` as the unfiltered GET /users list the connector pages shows it.
+
+        That list lags GET /users/{id}: an account the single read already shows
+        disabled can stay enabled in the list for a minute. Only the list tells a
+        test what the next sync will see. None when the user is not listed.
+        """
+        next_url: str | None = None
+        while True:
+            resp = await self.users_ds.users_user_list_user(
+                next_url=next_url, select=OutlookAPIFields.USER_SYNC_SELECT_FIELDS,
+            )
+            page = self._unwrap(resp, "listed_account_enabled")
+            for user in page.value or []:
+                if user.id == user_id:
+                    return user.account_enabled
+            next_url = page.odata_next_link
+            if not next_url:
+                return None
+
     async def create_group(self, display_name: str, mail_nickname: str) -> Any:
         """POST /groups — create a mail-enabled M365 (Unified) group. Returns the created group."""
         group = Group()

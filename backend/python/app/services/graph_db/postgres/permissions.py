@@ -21,7 +21,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     requested_scope_ids,
 )
 from app.services.graph_db.postgres import access as access_sql
-from app.services.graph_db.postgres.base import PgBase, _arango, _doc, _j
+from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.identity import _soft
 from app.services.graph_db.taxonomy import own_record_labels
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -213,11 +213,14 @@ class PermissionsMixin(PgBase):
         last = {ur["userId"]: ur.get("role") for ur in user_roles}
         if not last:
             return []
+        org = current_org_id()
+        for role in set(last.values()):
+            _VALIDATOR.validate_edge_update("permission", {"role": role, "updatedAtTimestamp": timestamp})
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.batch_update_team_member_roles */ UPDATE graph.edges e
             SET doc = jsonb_strip_nulls(e.doc || jsonb_build_object('role', x.role, 'updatedAtTimestamp', $4::bigint))
             FROM jsonb_to_recordset($3::jsonb) AS x("userId" text, role text)
             WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = x."userId" AND e.to_coll = 'teams' AND e.to_id = $2
-            RETURNING e.doc, e.from_id, e.to_id""", current_org_id(), team_id, _j([{"userId": u, "role": r} for u, r in last.items()]), timestamp), transaction, write=True)
+            RETURNING e.doc, e.from_id, e.to_id""", org, team_id, _j([{"userId": u, "role": r} for u, r in last.items()]), timestamp), transaction, write=True)
         return [{**_doc(r["doc"]), "from_id": r["from_id"], "to_id": r["to_id"], "from_collection": "users", "to_collection": "teams",
                  "_from": f"users/{r['from_id']}", "_to": f"teams/{r['to_id']}"} for r in rows]
 
