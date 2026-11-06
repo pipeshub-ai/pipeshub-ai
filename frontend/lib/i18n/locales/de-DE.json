@@ -4768,6 +4768,8 @@
     "serviceAgentBadgeTooltip": "Dieser Service-Agent nutzt eigene Toolset-Anmeldedaten. Er durchsucht Wissen mit dem Zugriff seines Erstellers, sodass alle Nutzer nur Ergebnisse aus dem sehen, was der Ersteller lesen darf.",
     "convertToServiceAgentTooltip": "Dauerhaft: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit dem Zugriff des Erstellers. Kann nicht rückgängig gemacht werden.",
     "convertToServiceAgentTooltipNewAgent": "Erstellt diesen Agenten als Service-Agent: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit Ihrem Zugriff.",
+    "convertToServiceAgentTooltipNoOrg": "Dauerhaft: agentbezogene Toolsets und Wissenssuche mit dem Zugriff des Erstellers. Verwenden Sie die Teilen-Schaltfläche, um den Zugriff zu steuern. Kann nicht rückgängig gemacht werden.",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "Erstellt diesen Agenten als Service-Agent: agentbezogene Toolsets und Wissenssuche mit Ihrem Zugriff. Verwenden Sie die Teilen-Schaltfläche, um den Zugriff zu steuern.",
     "agentActionsMenuAria": "Agentenmenü",
     "agentMenuCreateAsServiceAgent": "Als Service-Agent erstellen",
     "agentMenuConvertToServiceAgent": "In Service-Agent umwandeln",
