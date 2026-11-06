@@ -55,7 +55,7 @@ logger = logging.getLogger("replace-edges-memory-neo4j-it")
 POOL_ERROR = "Neo.TransientError.General.MemoryPoolOutOfMemoryError"
 OLD_PROPS = "{role: 'READER', type: 'USER', createdAtTimestamp: 1, updatedAtTimestamp: 2}"
 KIB = 1024
-# The largest pair of concurrent full swaps that passed 3 of 3 fresh containers (see notes in the slice file).
+# The largest pair of concurrent full swaps that passed 3 of 3 fresh containers at the small preset; 70k each failed.
 PAIR_THAT_FITS = int(os.environ.get("NEO4J_IT_PAIR_N", "60000"))
 
 
