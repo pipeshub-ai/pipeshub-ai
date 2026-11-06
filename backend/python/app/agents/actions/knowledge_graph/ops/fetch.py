@@ -14,7 +14,11 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
-from app.modules.retrieval.selection_scope import connection_sources_of
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.modules.retrieval.selection_scope import (
+    connection_sources_of,
+    unavailable_message,
+)
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import ToolOutput
@@ -352,7 +356,9 @@ async def execute_fetch_record(
         if outside and isinstance(result, dict):
             result["not_available_ids"] = [*(result.get("not_available_ids") or []), *outside]
     except Exception as exc:
-        return ToolOutput(success=False, error=str(exc)), citation_ref_mapper
+        # The graph's own error text is never shown: a store failure says only "try again".
+        error = unavailable_message() if isinstance(exc, PermissionVerificationUnavailableError) else str(exc)
+        return ToolOutput(success=False, error=error), citation_ref_mapper
 
     def _recovery_hint() -> str:
         reasons = result.get("unavailable_reasons", {})
