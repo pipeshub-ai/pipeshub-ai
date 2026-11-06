@@ -30,7 +30,7 @@ from app.services.graph_db.common.utils import (
     trash_purge_row,
 )
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
-from app.services.graph_db.postgres.base import PgBase, _doc, _j
+from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _doc, _j
 from app.services.graph_db.postgres.hierarchy import _EDGE_COLLS, _remove_records
 from app.services.graph_db.postgres.records import _rec, _uniq
 from app.services.graph_db.push_claim import (
@@ -81,6 +81,8 @@ class TrashMixin(PgBase):
         if not record_ids:
             return empty_soft_delete_result(batch_id)
         org = current_org_id()
+        _VALIDATOR.validate_node_update("records", {"isDeleted": True, "deleteSource": delete_source, "deleteBatchId": batch_id,
+                                                    **({"deletedByUserId": deleted_by_user_id} if deleted_by_user_id is not None else {})})
 
         async def go(tx: Tx) -> dict:
             roots, docs, _ = await self._walk_subtree(tx, record_ids, connector_id, list(follow), within_folder_id, include_trashed=include_trashed_roots, live_only=True)
@@ -108,6 +110,8 @@ class TrashMixin(PgBase):
         items = list({i["id"]: i for i in items}.values())      # an item named twice is restored once (Neo4j's UNWIND finds it twice and restores it)
         ids = [i["id"] for i in items]
         org = current_org_id()
+        for i in items:
+            _VALIDATOR.validate_node_update("records", i["set"])
 
         async def go(tx: Tx) -> list[str]:
             found = await tx.fetch("""/* pipeshub:graph.restore_records_lock */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[])
@@ -256,10 +260,12 @@ class TrashMixin(PgBase):
     async def record_purge_failure(self, record_ids: list[str], org_id: str, error: str, transaction: str | None = None) -> int:
         if not record_ids:
             return 0
+        org = current_org_id()
+        _VALIDATOR.validate_node_update("records", {"purgeLastError": error})
         rows = await self._qrows("""/* pipeshub:graph.record_purge_failure */ UPDATE graph.nodes n SET doc = n.doc || jsonb_build_object(
               'purgeAttempts', coalesce((n.doc->>'purgeAttempts')::int, 0) + 1, 'purgeLastError', $4::text)
             WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = ANY($2::text[]) AND n.doc->>'orgId' = $3 AND coalesce((n.doc->>'isDeleted')::boolean, false) RETURNING n.id""",
-                                current_org_id(), _uniq(record_ids), org_id, error, transaction=transaction, write=True)
+                                org, _uniq(record_ids), org_id, error, transaction=transaction, write=True)
         return len(rows)
 
     async def purge_trashed_records(self, record_ids: list[str], org_id: str, deleted_before: int, *, max_attempts: int = 5,
@@ -330,6 +336,8 @@ class TrashMixin(PgBase):
         """The conditional first write of a push. A create takes the knowledge base's row lock, so two creates of one key serialise and the second
         sees the first's record; an update changes the record only while it still holds ``expected``."""
         org = current_org_id()
+        if expected is not None:      # as Neo4j: only an update writes the new values (a create writes nothing here)
+            _VALIDATOR.validate_node_update("records", {"externalRecordId": new.document_id, "version": new.version})
 
         async def go(tx: Tx) -> PushClaim:
             if expected is None:      # a create takes the knowledge base's row lock, so two creates of one key serialise
@@ -357,6 +365,7 @@ class TrashMixin(PgBase):
     async def retag_push_record(self, *, key: str, kb_id: str, org_id: str, expected_revision: str, new_revision: str,
                                 transaction: str | None = None) -> bool:
         org = current_org_id()
+        _VALIDATOR.validate_node_update("records", {"externalRevisionId": new_revision})
         n = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.retag_push_record */ WITH u AS (UPDATE graph.nodes r
             SET doc = r.doc || jsonb_build_object('externalRevisionId', $5::text)
             WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2 AND r.doc->>'orgId' = $3 AND r.doc->>'connectorId' = $4

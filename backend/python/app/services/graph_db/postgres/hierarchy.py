@@ -21,6 +21,7 @@ from app.services.graph_db.common.utils import (
     select_canonical_chain_names,
 )
 from app.services.graph_db.postgres.base import (
+    _VALIDATOR,
     PgBase,
     _arango,
     _doc,
@@ -87,6 +88,7 @@ class HierarchyMixin(PgBase):
         rows: dict[tuple, dict] = {}
         for e in edges:
             fc, fi, tc, ti, props = _edge(e)
+            _VALIDATOR.validate_edge(collection, props)
             key = _ekey(collection, props)
             rows.setdefault((fc, fi, tc, ti, key), {"fc": fc, "fi": fi, "tc": tc, "ti": ti, "k": key, "doc": props})      # the first of a duplicate wins, as MERGE ... ON CREATE
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.create_edges_if_absent */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)

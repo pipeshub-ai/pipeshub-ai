@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
 from app.core.org_context import current_org_id
+from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.postgres.base import PgBase, _arango, _doc
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -396,6 +397,8 @@ class KbListingsMixin(PgBase):
             template.update({"_key": key, "id": key, "isActive": True, "isDeleted": False, "deletedAtTimestamp": None, "deletedByUserId": None,
                              "updatedAtTimestamp": now, "updatedByUserId": None, "createdAtTimestamp": now, "createdBy": None})
             return key if await self.batch_upsert_nodes([template], _TEMPLATES, transaction=transaction) else None
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error("❌ Failed to clone agent template: %s", e)
             return None

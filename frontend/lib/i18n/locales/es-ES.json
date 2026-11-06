@@ -1512,7 +1512,31 @@
       "webSearch": "Búsqueda web",
       "internalAndWebSearch": "Búsqueda interna + web"
     },
-    "searchDegraded": "Es posible que los resultados estén incompletos."
+    "searchDegraded": "Es posible que los resultados estén incompletos.",
+    "compare": {
+      "toggle": "Comparar modelos",
+      "pickTwo": "Elige {{max}} modelos para comparar.",
+      "pickedHint": "Cada pregunta la responden ambos modelos, lado a lado.",
+      "costNote": "Cada pregunta se ejecuta en ambos modelos, por lo que consume aproximadamente el doble. En el modo Agente, ambos pueden usar herramientas; las acciones que requieren aprobación se piden por separado en cada columna.",
+      "pillLabel": "Comparar {{picked}}/{{max}}",
+      "stop": "Detener",
+      "retry": "Reintentar",
+      "failed": "Este modelo no pudo responder. Inténtalo de nuevo.",
+      "useAnswer": "Usar esta respuesta",
+      "useAnswerLabel": "Usar la respuesta de {{model}}",
+      "columnLabel": "Respuesta de {{model}}",
+      "chooseConflict": "Esta respuesta aún no se puede conservar. Espera a que termine e inténtalo de nuevo.",
+      "chooseFailed": "No se pudo conservar esta respuesta. Inténtalo de nuevo.",
+      "primaryFallback": "Modelo",
+      "starting": "Iniciando...",
+      "status": {
+        "starting": "Iniciando",
+        "waiting": "En espera",
+        "streaming": "Respondiendo",
+        "done": "Listo",
+        "error": "Error"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
