@@ -397,7 +397,10 @@ class TaxonomyConsolidator:
         """The org's nodes whose redirect chain passes through ``key``."""
         found: list[str] = []
         frontier = [key]
-        while frontier and len(found) <= MAX_MERGE_REDIRECT_HOPS:
+        # The bound is chain depth (redirect hops), not how many nodes a level holds.
+        for _ in range(MAX_MERGE_REDIRECT_HOPS):
+            if not frontier:
+                break
             rows = await self.graph.get_nodes_by_field_in(
                 collection, MERGED_INTO_FIELD, frontier, return_fields=["id", "orgId"], raise_on_error=True,
             )

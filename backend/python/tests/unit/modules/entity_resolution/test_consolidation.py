@@ -732,6 +732,19 @@ class TestStrayEdges:
         if swept:
             assert graph.targets("late") == [(TOPICS, "a")]
 
+    async def test_a_wide_level_does_not_hide_a_deeper_follower(self) -> None:
+        """More direct followers than the hop limit must not stop the walk
+        before a follower of a follower."""
+        from app.modules.entity_resolution.consolidation import MAX_MERGE_REDIRECT_HOPS
+
+        graph = FakeGraph()
+        graph.node(TOPICS, "b", "B", ORG)
+        graph.node(TOPICS, "c", "C", ORG)
+        for i in range(MAX_MERGE_REDIRECT_HOPS + 2):
+            graph.node(TOPICS, f"f{i}", f"F{i}", ORG, mergedInto="b")
+        graph.node(TOPICS, "deep", "Deep", ORG, mergedInto="f0")
+        assert "deep" in await _consolidator(graph)._redirecting_to(TOPICS, ORG, "b")
+
     async def test_strays_are_paged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.modules.entity_resolution import consolidation
 
