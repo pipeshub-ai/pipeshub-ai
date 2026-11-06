@@ -112,7 +112,7 @@ async def test_the_selection_error_has_a_fixed_message_and_keeps_the_cause() -> 
 async def test_a_scope_check_that_could_not_answer_is_not_an_identifier_not_found(monkeypatch) -> None:
     from app.agents.actions.knowledge_graph.resolver import RecordResolver
 
-    async def one(_self, raw: str):
+    async def one(_self, raw: str) -> tuple[list, list[str]]:
         if raw == "PROJ-1":
             raise PermissionVerificationUnavailableError(PERMISSION_CHECK_UNAVAILABLE_MESSAGE)
         raise RuntimeError("no such key")
