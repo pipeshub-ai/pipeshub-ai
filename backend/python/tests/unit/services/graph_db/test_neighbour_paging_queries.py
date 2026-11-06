@@ -47,7 +47,10 @@ async def test_the_arango_cursor_ends_with_the_edge_key() -> None:
 async def test_the_neo4j_cursor_ends_with_the_edge_key() -> None:
     p, run = _neo4j()
     await p.get_neighbors_for_nodes_by_relationship_types(["a"], "blocks", ["CALLS"], "outbound", after="")
-    assert "+ elementId(rel) AS cursor" in run.call_args.args[0]
+    q = run.call_args.args[0]
+    assert "+ elementId(rel) AS cursor" in q
+    # labels() has no order, so a label in the key could differ between two pages of the same edge.
+    assert "labels(m)[0]" not in q.split("AS cursor")[0]
 
 
 async def test_the_postgres_cursor_ends_with_the_edge_key() -> None:

@@ -4195,9 +4195,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # cursor = the row's sort key; ORDER BY before LIMIT makes a page the
             # next slice of the whole ordered edge set.
             page = (
-                "WITH n, m, rel, labels(m)[0] AS label, "
-                "CASE WHEN startNode(rel).id = n.id THEN 'outbound' ELSE 'inbound' END AS dir "
-                "WITH n, m, rel, dir, n.id + '\\u0001' + dir + '\\u0001' + coalesce(label, '') + '\\u0001' "
+                # No label in the key: labels() has no order, and elementId(rel) already makes it unique.
+                "WITH n, m, rel, CASE WHEN startNode(rel).id = n.id THEN 'outbound' ELSE 'inbound' END AS dir "
+                "WITH n, m, rel, dir, n.id + '\\u0001' + dir + '\\u0001' "
                 "+ coalesce(m.id, '') + '\\u0001' + coalesce(rel.relationshipType, '') + '\\u0001' + elementId(rel) AS cursor "
                 "WHERE cursor > $after"
             ) if paged else ""
