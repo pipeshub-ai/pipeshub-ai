@@ -149,7 +149,7 @@ async def test_the_flat_listing_shows_a_user_with_a_role_what_the_collection_hol
         assert recs[1]["folder"] == {"id": "top", "name": "top"} and recs[3]["folder"] == {"id": "sub", "name": "sub"}
         assert recs[0]["fileRecord"]["sizeInBytes"] == 10 and "path" not in recs[0]["fileRecord"] and recs[0]["connectorName"] == "KNOWLEDGE_BASE"
         assert filters["permissions"] == [role] and filters["recordTypes"] == ["FILE", "MAIL"]
-        assert filters["folders"] == [{"id": f, "name": f} for f in ("gone-sub", "sub", "top", "trash", "zeta")]
+        assert filters["folders"] == [{"id": f, "name": f} for f in ("sub", "top", "zeta")]               # a trashed folder is not offered as a filter
     with other_org():
         assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10))[1] == 0
     # revoked: the grant goes and the listing goes with it; granted again it returns
@@ -182,6 +182,19 @@ async def test_the_flat_listing_filters_sorts_pages_and_lists_a_record_in_each_o
     assert sorted(ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, date_from=2, date_to=3))) == ["in-top", "in-top", "r2"]
     assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, date_from=500))[1] == 0
     assert (await w.p.list_kb_records("kb1", "me", w.org, -5, -1))[0] == []
+
+
+async def test_the_flat_listing_sorts_strings_by_code_point_and_numbers_by_value(w: World) -> None:
+    await kb(w, orgId=w.org)
+    await users(w, "me")
+    await grant(w, "me", "OWNER")
+    for i, name in enumerate(["b", "B", "a", "A", "Z", "ä"]):
+        await item(w, f"n{i}", recordName=name, createdAtTimestamp=[9, 10, 100, 2, 33, 1000][i], orgId=w.org)
+    names = lambda r: [x["recordName"] for x in r[0]]  # noqa: E731
+    asc = await w.p.list_kb_records("kb1", "me", w.org, 0, 10, sort_by="recordName", sort_order="asc")
+    assert names(asc) == ["A", "B", "Z", "a", "b", "ä"]                                      # code point: capitals first, whatever the database collation
+    assert names(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, sort_by="recordName", sort_order="desc")) == ["ä", "b", "a", "Z", "B", "A"]
+    assert [x["createdAtTimestamp"] for x in (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, sort_by="createdAtTimestamp", sort_order="asc"))[0]] == [2, 9, 10, 33, 100, 1000]
 
 
 async def test_a_failed_flat_listing_raises_and_the_next_call_answers(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -282,6 +295,14 @@ async def test_a_template_opens_for_its_own_grant_or_a_team_the_user_is_in_and_n
     assert (t["access_type"], t["can_edit"], t["can_delete"], t["can_share"]) == ("INDIVIDUAL", False, False, False)
     t = await w.p.get_template("t1", "member")
     assert (t["access_type"], t["user_role"], t["can_edit"], t["can_delete"]) == ("TEAM", "WRITER", True, False)
+    for team_key, role in (("ta", "READER"), ("tz", "OWNER"), ("tb", "WRITER")):                  # several teams: the highest role wins, whatever the order of the keys
+        await w.nodes("teams", {"_key": team_key})
+        await w.edge("permission", ("users", "member"), ("teams", team_key), type="USER", role="READER")
+        await w.edge("permission", ("teams", team_key), ("agentTemplates", "t1"), type="TEAM", role=role)
+    t = await w.p.get_template("t1", "member")
+    assert (t["access_type"], t["user_role"], t["can_delete"]) == ("TEAM", "OWNER", True)
+    await w.p.delete_edges_from("tz", "teams", "permission")
+    assert (await w.p.get_template("t1", "member"))["user_role"] == "WRITER"
     assert (await w.p.get_template("t1", "both"))["access_type"] == "INDIVIDUAL"                                    # the user's own grant first
     assert await w.p.get_template("t1", "stranger") is None and await w.p.get_template("t1", "nobody") is None and await w.p.get_template("nope", "own") is None
     with other_org():

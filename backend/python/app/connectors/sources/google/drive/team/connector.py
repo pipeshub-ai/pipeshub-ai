@@ -168,6 +168,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.sources.client.google.google import GoogleClient
+from app.sources.client.utils.utils import merge_scopes
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.connectors.core.base.error.stream_errors import (
@@ -199,6 +200,13 @@ FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup"
 # Shared drives this connector has synced, kept so a drive deleted from Workspace can be removed.
 SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
 FILTER_CLEANUP_PAGE_SIZE = 500
+
+
+
+def _delegated_scopes() -> list[str]:
+    """Every scope this connector's delegated tokens ask for: Drive as each user, the directory as the admin.
+    A domain-wide delegation grant missing any of them makes Google refuse the whole token request."""
+    return merge_scopes(GoogleClient.delegated_scopes_for("drive"), GoogleClient.delegated_scopes_for("admin"))
 
 
 @ConnectorBuilder("Drive Workspace")\
@@ -327,6 +335,7 @@ FILTER_CLEANUP_PAGE_SIZE = 500
         .with_agent_support(True)
     )\
     .build_decorator()
+
 class GoogleDriveTeamConnector(BaseConnector):
     def __init__(
         self,
@@ -530,10 +539,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"❌ Error initializing Google Drive enterprise connector: {ex}", exc_info=True)
             raise
 
-    @staticmethod
-    def _raise_setup_problem(error: Exception, admin_email: str | None) -> None:
+    def _raise_setup_problem(self, error: Exception, admin_email: str | None) -> None:
         """Raise what an admin must fix (such as a key that is not a key file) in words they can act on."""
-        message = message_for_connection_failure(error, personal=False, admin_email=admin_email)
+        message = message_for_connection_failure(error, personal=False, admin_email=admin_email, scopes=_delegated_scopes(),
+                                                     client_id=self._service_account_client_id())
         if message:
             raise ConnectorInitError(message) from error
 
@@ -583,13 +592,18 @@ class GoogleDriveTeamConnector(BaseConnector):
         """A run that left part of Drive unread must not have the links of what it did not see removed."""
         return FullSyncCoverage(complete=not self._sync_ledger.has_gaps)
 
-    def _new_run_report(self) -> DriveRunReport:
+    def _service_account_client_id(self) -> str | None:
+        """The service account's client ID from the saved key, the one an admin authorizes for delegation."""
         auth = ((self.config or {}).get("credentials") or {}).get("auth") or {}
         client_id = None
         try:
             client_id = json.loads(auth.get("serviceAccountJson") or "{}").get("client_id")
         except (TypeError, ValueError):
             client_id = auth.get("client_id")
+        return client_id or auth.get("client_id")
+
+    def _new_run_report(self) -> DriveRunReport:
+        auth = ((self.config or {}).get("credentials") or {}).get("auth") or {}
         return DriveRunReport(
             personal=False,
             notify=self.notify,
@@ -597,7 +611,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             sync_point=self.drive_delta_sync_point,
             logger=self.logger,
             admin_email=auth.get("adminEmail"),
-            client_id=client_id or auth.get("client_id"),
+            client_id=self._service_account_client_id(),
+            scopes=_delegated_scopes(),
         )
 
     async def _run_sync_steps(self) -> None:
@@ -1491,6 +1506,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                     await self._create_personal_record_group(user)
                 except Exception as e:
                     self._sync_ledger.note_incomplete()
+                    if self._run_report is not None and self._run_report.note_user_failure(e, user.email):
+                        continue
                     self.logger.error(
                         f"Failed to create 'My Drive' record group for user {user.email}: {e}",
                         exc_info=True
@@ -1629,11 +1646,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             self.logger.debug(f"Created 'My Drive' and 'Shared with Me' record groups for user {user.email} with drive ID {drive_id}")
 
-        except Exception as e:
-            self.logger.error(
-                f"Failed to create 'My Drive' record group for user {user.email}: {e}",
-                exc_info=True
-            )
+        except Exception:
+            # The caller decides how to report it: once per run for a setup problem.
             raise
 
     async def _process_drive_files_batch(
@@ -3359,8 +3373,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             self.logger.info(f"Completed Google Drive sync for user {user.email}")
 
-        except Exception as ex:
-            self.logger.error(f"❌ Error in Google Drive sync for user {user.email}: {ex}", exc_info=True)
+        except Exception:
+            # The batch that ran this user decides how to report it: once per run for a setup problem.
             raise
 
     async def sync_personal_drive(
@@ -4418,14 +4432,22 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                 results = await asyncio.gather(*sync_tasks, return_exceptions=True)
                 failed = sum(1 for result in results if isinstance(result, BaseException))
-                for result in results:
-                    if isinstance(result, BaseException) and self._run_report is not None:
-                        self._run_report.note_failure(result, impersonating_admin=False)
+                other_failures = 0
+                for user, result in zip(batch, results):
+                    if not isinstance(result, BaseException):
+                        continue
+                    if self._run_report is not None and self._run_report.note_user_failure(result, user.email):
+                        continue
+                    other_failures += 1
+                    self.logger.error(
+                        f"❌ Error in Google Drive sync for user {user.email}: {result}", exc_info=result
+                    )
                 if failed:
                     # A user whose sync raised was not fully listed; stale-record
                     # cleanup must not treat their files as deleted.
                     self._sync_ledger.note_incomplete()
-                    self.logger.warning(f"{failed} user sync(s) in this batch failed")
+                if other_failures:
+                    self.logger.warning(f"{other_failures} user sync(s) in this batch failed")
 
                 # Small delay between batches to prevent overwhelming the API
                 await asyncio.sleep(1)
@@ -4452,7 +4474,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             about = await self.drive_data_source.about_get(fields="user(emailAddress)")
         except Exception as e:
             self.logger.error("Google Workspace refused the connection test: %s", e)
-            message = message_for_connection_failure(e, personal=False, admin_email=admin_email)
+            message = message_for_connection_failure(e, personal=False, admin_email=admin_email, scopes=_delegated_scopes(),
+                                                     client_id=self._service_account_client_id())
             if message:
                 raise ConnectorInitError(message) from e
             return False
