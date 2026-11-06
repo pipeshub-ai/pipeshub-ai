@@ -44,7 +44,7 @@ READS = frozenset("""
     get_named_entity_mentions_in_records get_named_entity_values_in_records get_neighbors_by_relationship_types
     get_neighbors_for_nodes_by_relationship_types get_node_depths_batch get_node_relations_batch get_nodes_by_field_in
     get_nodes_by_field_prefix get_nodes_by_filters get_nodes_updated_since get_org_apps get_organization_record_reach get_organization_users get_page_token_db
-    get_parent_record_ids_by_relation_type get_permitted_entity_records get_person_by_email get_purgeable_trashed_records
+    get_parent_record_ids_by_relation_type get_permitted_entity_records get_person_by_email get_person_by_source_key get_purgeable_trashed_records
     get_record_by_conversation_index get_record_by_external_id get_record_by_external_revision_id get_record_by_id
     get_record_by_issue_key get_record_by_path get_record_by_weburl get_record_content_revs get_record_group_by_external_id
     get_record_group_by_id get_record_group_path get_record_group_virtual_record_ids get_record_key_by_external_id
@@ -94,7 +94,7 @@ HARMLESS = frozenset("""
     stage_states_delete_unheld_revisions stage_states_for_revision stage_states_stale stage_states_unheld_revisions
     stamp_kh_listing_state store_page_token update_drive_sync_state update_indexing_status_for_record_ids update_kb_permission
     update_knowledge_base update_queued_duplicates_status update_sync_point_if update_user_sync_state upsert_authenticated_as
-    upsert_person_by_email upsert_sync_point
+    upsert_person_by_email upsert_person_by_source_key upsert_sync_point
 """.split())
 
 STRUCTURAL = frozenset("""

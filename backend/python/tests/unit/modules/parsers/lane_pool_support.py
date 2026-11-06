@@ -181,3 +181,41 @@ def wait_for(predicate: Callable[[], object], seconds: float = 10.0, interval: f
             return True
         time.sleep(interval)
     return bool(predicate())
+
+
+def pid_after(seconds: float) -> int:
+    """A job for a real worker: sleep, then report the worker's pid."""
+    time.sleep(seconds)
+    return os.getpid()
+
+
+def double(x: int) -> int:
+    return x * 2
+
+
+def weighted_job(path: str, weight: int, seconds: float) -> int:
+    """A job body for the weighted gauge: it records its own start and end, with its weight,
+    in a file every process appends to (``O_APPEND``), and never reads the lease table."""
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(fd, f"start {weight} {time.monotonic():.6f}\n".encode())
+        time.sleep(seconds)
+        os.write(fd, f"end {weight} {time.monotonic():.6f}\n".encode())
+    finally:
+        os.close(fd)
+    return os.getpid()
+
+
+def peak_weight(path: str) -> int:
+    """The most weight that was running at one instant, from the gauge file."""
+    events = []
+    for line in open(path).read().splitlines():
+        kind, weight, stamp = line.split()
+        # An end sorts before a start at the same instant.
+        events.append((float(stamp), 0 if kind == "end" else 1, int(weight)))
+    events.sort()
+    active = peak = 0
+    for _, order, weight in events:
+        active += weight if order else -weight
+        peak = max(peak, active)
+    return peak

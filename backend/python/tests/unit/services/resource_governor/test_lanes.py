@@ -39,12 +39,13 @@ from tests.unit.lane_gauge import (
     first_line,
     gauge_job,
     max_overlap,
-    now,
     reap,
     start_role,
+    start_together,
 )
 
 if TYPE_CHECKING:
+    import subprocess
     from collections.abc import Callable
 
 GIB = 2**30
@@ -176,12 +177,11 @@ class TestOneBudget:
 class TestAcrossProcesses:
     def test_processes_in_one_domain_share_the_limit(self, lane_dir: Path, tmp_path: Path) -> None:
         gauge = tmp_path / "gauge"
-        start_at = now() + 1.0
         args = {
             "dir": str(lane_dir), "lanes": 2, "gauge": str(gauge), "seconds": 3.0,
-            "job_seconds": 0.05, "threads": 4, "start_at": start_at,
+            "job_seconds": 0.05, "threads": 4,
         }
-        procs = [start_role("run", args) for _ in range(3)]
+        procs, _ = start_together("run", args, 3)
         try:
             results = []
             for proc in procs:
@@ -200,13 +200,14 @@ class TestAcrossProcesses:
         for round_no in range(3):
             directory = lane_dir / f"r{round_no}"
             directory.mkdir(parents=True, mode=0o700)
-            start_at = now() + 1.2
             args = {
                 "dir": str(directory), "lanes": 8, "mem_limit": 10 * GIB, "mem_raw": int(9.5 * GIB),
-                "ws": int(0.75 * GIB), "start_at": start_at, "stop_at": start_at + 1.0, "calls": 40,
+                "ws": int(0.75 * GIB), "stop_after": 1.0, "calls": 40,
             }
-            blip = start_role("lock_blip", {"dir": str(directory), "start_at": start_at - 0.05, "seconds": 0.15})
-            procs = [start_role("admit", args) for _ in range(6)]
+            procs, blip = start_together(
+                "admit", args, 6, blip={"dir": str(directory), "before": 0.05, "seconds": 0.15}
+            )
+            assert blip is not None
             try:
                 admitted = sum(sum(first_line(p)["admitted"]) for p in procs)
                 for p in procs:
@@ -245,12 +246,11 @@ class TestAcrossProcesses:
         )
         try:
             assert first_line(holder)["admitted"] is True  # a resident exists: nobody is exempt
-            start_at = now() + 1.2
             args = {
                 "dir": str(lane_dir), "lanes": 16, "mem_limit": 10 * GIB, "mem_raw": GIB,
-                "ws": int(0.01 * GIB), "start_at": start_at, "stop_at": start_at + 0.6,
+                "ws": int(0.01 * GIB), "stop_after": 0.6,
             }
-            procs = [start_role("admit", args) for _ in range(8)]
+            procs, _ = start_together("admit", args, 8)
             try:
                 admitted = sum(first_line(p)["admitted"][0] for p in procs)
                 for p in procs:
@@ -404,6 +404,46 @@ class TestAcrossProcesses:
 # ---------------------------------------------------------------------------
 # A stopped ledger-lock holder must not stall lease callers
 # ---------------------------------------------------------------------------
+
+
+class TestStartTogether:
+    """The barrier helper itself: a failed start must not leave children behind."""
+
+    def test_a_child_that_dies_before_ready_takes_its_siblings_with_it(
+        self, lane_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tests.unit.lane_gauge as gauge_module
+
+        started: list = []
+        real = gauge_module.start_role
+
+        def recording(*a: object, **k: object) -> subprocess.Popen:
+            proc = real(*a, **k)
+            started.append(proc)
+            return proc
+
+        monkeypatch.setattr(gauge_module, "start_role", recording)
+        args = {"dir": str(lane_dir), "lanes": 4, "mem_limit": 10 * GIB, "mem_raw": GIB, "stop_after": 0.1}
+        try:
+            # The blip has no "dir", so it dies before it reports ready.
+            with pytest.raises(json.JSONDecodeError):
+                start_together("admit", args, 2, blip={"seconds": 0.1})
+            assert len(started) == 3
+            assert all(proc.poll() is not None for proc in started)
+        finally:
+            reap(*started)
+
+    def test_a_child_gives_up_when_the_go_file_never_comes(self, lane_dir: Path, tmp_path: Path) -> None:
+        args = {
+            "dir": str(lane_dir), "lanes": 4, "mem_limit": 10 * GIB, "mem_raw": GIB, "stop_after": 0.1,
+            "go": str(tmp_path / "never.go"), "go_timeout": 0.5,
+        }
+        proc = start_role("admit", args)
+        try:
+            assert first_line(proc) == {"ready": True}
+            assert proc.wait(timeout=15) != 0
+        finally:
+            reap(proc)
 
 
 class TestStoppedHolder:
@@ -732,7 +772,7 @@ class TestModes:
         try:
             stats = budget.stats()
             assert stats["slots"] == "shared" and stats["ledger"] == "ok"
-            (directory,) = [p for p in tmp_path.iterdir() if p.name.startswith("pipeshub-cpu-lanes-v1-64")]
+            (directory,) = [p for p in tmp_path.iterdir() if p.name.startswith("pipeshub-cpu-lanes-v2-64")]
             assert {"run", "resident", "ledger", "ledger.lock"} <= {p.name for p in directory.iterdir()}
             assert "presence" not in {p.name for p in directory.iterdir()}  # taken by the first pool, not by open()
         finally:

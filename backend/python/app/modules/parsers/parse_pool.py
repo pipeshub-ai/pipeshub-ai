@@ -464,8 +464,12 @@ def run_blocking(
     label: str = "",
     size: int = 0,
     timeout: float | None = None,
+    cancelled: threading.Event | None = None,
 ) -> T:
     """Run ``fn(*args)`` in a worker process, blocking the calling thread (never the event loop's).
+
+    Setting *cancelled* makes the job stop: one still waiting for a lane never starts, and
+    a running one has its worker killed, so a caller that went away does not leave a lane held.
 
     For work that must not allocate in this process: it uses a pool lane when
     this process owns a pool, and otherwise a worker started for this one job
@@ -478,6 +482,8 @@ def run_blocking(
     if os.name != "posix":
         return fn(*args)
     job = _Job(fn, args, label, size, timeout, require_worker=True)
+    if cancelled is not None:
+        job.cancelled = cancelled
     pool = _pool()
     if pool is not None:
         try:

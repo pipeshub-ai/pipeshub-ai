@@ -318,8 +318,9 @@ class SemanticMetadata(BaseModel):
     languages: Optional[list[str]] = None
     topics: Optional[list[str]] = None
     # Named by the classification call (KG-13 slice 3b); resolved against the
-    # org's organisations, not taxonomy.
-    organizations: list[str] = Field(default_factory=list)
+    # org's organisations, not taxonomy. None is unknown (a fallback summary),
+    # which keeps the record's organisation links; [] removes them.
+    organizations: list[str] | None = None
     record_id: Optional[str] = None
     categories: Optional[list[str]] = Field(default_factory=list)
     sub_category_level_1: Optional[str] = None

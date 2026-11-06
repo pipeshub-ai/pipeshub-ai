@@ -7853,6 +7853,7 @@ class TestSyncAccountsRemaining:
         org = connector.data_entities_processor.org_id
         extracted = taxonomy_node_key(org, "organizations", "globex")
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[])
         mock_tx.get_all_orgs = AsyncMock(side_effect=[
             [{"name": "Globex Corp", "_key": extracted, "isExternal": True, "parentOrgId": org}],
             [{"name": "Globex Corp", "id": extracted, "isExternal": True, "parentOrgId": org}],
@@ -9788,3 +9789,67 @@ class TestCappedDownload:
         response = MagicMock(status_code=200, headers={}, content=body)
         raw, status, _ = await connector._get_capped(_streaming_http_client(response), "https://x/img", {})
         assert status == 200 and raw is None
+
+
+class TestAccountsSharingAnExtractedOrganisation:
+    @staticmethod
+    def _account(account_id: str, name: str) -> SalesforceAccount:
+        return SalesforceAccount.model_validate({
+            "Id": account_id, "Name": name, "Type": "Customer",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000", "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+            "Opportunities": {"records": []},
+        })
+
+    @staticmethod
+    def _tx(connector: SalesforceConnector, extracted: str, prospect_edges: list[dict]) -> MagicMock:
+        org = connector.data_entities_processor.org_id
+        tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        tx.get_all_orgs = AsyncMock(return_value=[
+            {"name": "Acme", "_key": extracted, "id": extracted, "isExternal": True, "parentOrgId": org},
+        ])
+        tx.get_edges_from_node = AsyncMock(side_effect=lambda _o, collection, **_k: (
+            prospect_edges if collection == "prospect" else []
+        ))
+        for name in ("delete_edges_to", "delete_edges_from", "batch_upsert_orgs", "batch_create_edges"):
+            setattr(tx, name, AsyncMock())
+        return tx
+
+    @pytest.mark.asyncio
+    async def test_one_page_gives_the_extracted_node_to_one_account_and_counts_both_as_new(self) -> None:
+        from app.modules.entity_resolution.keys import taxonomy_node_key
+
+        connector = _make_connector()
+        extracted = taxonomy_node_key(connector.data_entities_processor.org_id, "organizations", "acme")
+        tx = self._tx(connector, extracted, [])
+        ids = await connector._sync_accounts(_async_iter_pages([
+            self._account("001000000000001AAA", "Acme Inc"), self._account("001000000000002AAA", "Acme LLC"),
+        ]))
+        written = tx.batch_upsert_orgs.await_args.args[0]
+        assert [w["_key"] for w in written].count(extracted) == 1
+        assert ids == {"001000000000001AAA", "001000000000002AAA"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("names", [("Acme", "Acme LLC"), ("Acme LLC", "Acme")])
+    async def test_an_exact_name_and_a_key_match_never_both_take_the_extracted_node(self, names: tuple[str, str]) -> None:
+        """"Acme" finds extraction's "Acme" node by name, "Acme LLC" by its key: one account takes it, in either order."""
+        from app.modules.entity_resolution.keys import taxonomy_node_key
+
+        connector = _make_connector()
+        extracted = taxonomy_node_key(connector.data_entities_processor.org_id, "organizations", "acme")
+        tx = self._tx(connector, extracted, [])
+        await connector._sync_accounts(_async_iter_pages([
+            self._account("001000000000001AAA", names[0]), self._account("001000000000002AAA", names[1]),
+        ]))
+        written = tx.batch_upsert_orgs.await_args.args[0]
+        assert [w["_key"] for w in written].count(extracted) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_node_another_account_holds_is_not_adopted(self) -> None:
+        from app.modules.entity_resolution.keys import taxonomy_node_key
+
+        connector = _make_connector()
+        extracted = taxonomy_node_key(connector.data_entities_processor.org_id, "organizations", "acme")
+        tx = self._tx(connector, extracted, [{"_to": f"organizations/{extracted}", "externalId": "001000000000001AAA"}])
+        await connector._sync_accounts(_async_iter_pages([self._account("001000000000002AAA", "Acme LLC")]))
+        (written,) = tx.batch_upsert_orgs.await_args.args[0]
+        assert written["_key"] != extracted

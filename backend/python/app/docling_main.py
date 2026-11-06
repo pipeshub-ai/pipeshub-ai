@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from app.config.constants.http_status_code import HttpStatusCode
 from app.containers.docling import DoclingAppContainer, initialize_container
 from app.modules.parsers.pdf.docling_processor import (
+    shutdown_docling_pool,
     set_resource_governor as set_docling_processor_governor,
 )
 from app.modules.parsers.pdf.pdf_rasterizer import (
@@ -124,6 +125,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("🔄 Shutting down Docling service")
+    shutdown_docling_pool()
     governor.stop()
     governor_task.cancel()
     try:
