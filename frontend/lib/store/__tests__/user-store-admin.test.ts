@@ -12,8 +12,13 @@ describe('selectRefreshedIsAdmin', () => {
   });
 
   it('returns the role once the refresh has finished', () => {
-    useUserStore.setState({ profile, isInitialized: true, error: null });
+    useUserStore.setState({ profile, isInitialized: true, isLoading: false, error: null });
     expect(selectRefreshedIsAdmin(useUserStore.getState())).toBe(true);
+  });
+
+  it('ignores the stored role while a retry is running', () => {
+    useUserStore.setState({ profile, isInitialized: true, isLoading: true, error: null });
+    expect(selectRefreshedIsAdmin(useUserStore.getState())).toBeNull();
   });
 
   it('ignores it when the refresh failed', () => {
