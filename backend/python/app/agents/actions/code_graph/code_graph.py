@@ -102,6 +102,23 @@ _CALLER_EXTENSIONS = {
     **dict.fromkeys(("js", "jsx", "mjs", "cjs"), ("js", "jsx", "mjs", "cjs")),
 }
 
+# A path search that found nothing names at most this many calls the first symbol makes,
+# each with at most this many definitions its name could run: enough leads to follow, few
+# enough that the listing does not cost more to read than the search it saves.
+_NEXT_CALLS = 4
+_NEXT_CANDIDATES = 2
+# Names that look like calls but are builtins, keywords or container methods: never the hop
+# a path runs through, and a definition search for them only finds noise.
+_NOT_CALLS = frozenset({
+    "if", "for", "while", "return", "print", "len", "isinstance", "issubclass", "super", "str", "int",
+    "float", "bool", "list", "dict", "set", "tuple", "type", "getattr", "setattr", "hasattr", "range",
+    "enumerate", "zip", "map", "filter", "sorted", "reversed", "min", "max", "sum", "any", "all", "iter",
+    "next", "repr", "id", "hash", "callable", "format", "open", "not", "and", "or", "in", "is", "lambda",
+    "append", "extend", "get", "items", "keys", "values", "pop", "update", "join", "split", "strip",
+    "startswith", "endswith", "replace", "lower", "upper", "add", "remove", "copy", "setdefault", "def",
+    "class", "elif", "with", "assert", "yield", "await", "except", "raise", "del",
+})
+
 _INCLUDE_TESTS_DESC = "Include test files and test symbols in results. False by default."
 _REPO_DESC = (
     "The repository, as results show it in `repo` (e.g. `acme/shop`, or just "
@@ -882,9 +899,68 @@ class CodeGraph:
             "Failed to search for a path",
         )
         if isinstance(result, dict) and result.get("found") is False:
+            result = await self._with_next_calls(result, connector_id, repo, file_path_a, qualified_name_a,
+                                                 include_tests=include_tests)
             result = await self._with_unlinked_sites(result, connector_id, repo, qualified_name_b, set(),
                                                      include_tests=include_tests, target_path=file_path_b)
         return self._to_output(result)
+
+    async def _with_next_calls(
+        self, result: dict[str, Any], connector_id: str, repo: str | None,
+        file_path_a: str, qualified_name_a: str, *, include_tests: bool,
+    ) -> dict[str, Any]:
+        """On a path search that found nothing, list the calls the first symbol makes and the
+        definitions each name could run. The missing link is usually one of these calls, on a
+        value whose type the graph could not tell; named, it is a hop to read rather than to guess."""
+        if result.get("capped"):
+            # A capped search may have stopped short of a linked chain: no leads to add.
+            return result
+        try:
+            read = await read_code_impl(
+                graph_provider=self._graph_provider, connector_id=connector_id, blob_store=self._blob_store,
+                org_id=self._org_id, user_id=self._user_id, file_path=file_path_a,
+                qualified_name=qualified_name_a, include_tests=include_tests, repo=repo,
+            )
+            code = read.get("code") if isinstance(read, dict) else None
+            if not isinstance(code, str) or not code:
+                return result
+            seen: list[tuple[str, str]] = []
+            for line in code.splitlines()[1:]:  # not the definition's own line
+                for m in re.finditer(r"([A-Za-z_]\w*)\s*\(", line):
+                    name = m.group(1)
+                    if name in _NOT_CALLS or name.startswith("__") or any(n == name for n, _ in seen):
+                        continue
+                    seen.append((name, line.strip()[:120]))
+                if len(seen) >= _NEXT_CALLS * 2:
+                    break
+            calls = []
+            for name, text in seen:
+                found = await search_code_impl(
+                    graph_provider=self._graph_provider, blob_store=self._blob_store,
+                    connector_id=connector_id, org_id=self._org_id, user_id=self._user_id,
+                    pattern=name, mode="identifier", repo=repo, limit=_NEXT_CANDIDATES,
+                    include_tests=include_tests,
+                )
+                runs = [f"{c.get('file_path')}::{(c.get('qualified_name') or '').split(':', 1)[-1]}"
+                        for c in found.get("matches") or [] if c.get("kind") in ("method", "function", "class")]
+                if runs:
+                    calls.append({"call": text, "could_run": runs[:_NEXT_CANDIDATES]})
+                if len(calls) >= _NEXT_CALLS:
+                    break
+        except Exception:
+            self._log.warning("codegraph: calls to follow unavailable", exc_info=True)
+            return result
+        if calls:
+            result["calls_to_follow"] = {
+                "note": ("No linked chain joins them, but calls the graph could not link can. These are "
+                         "calls the first symbol makes, with definitions each name could run. Follow the "
+                         "ones that could lead to the second symbol, reading each; a call on a value of "
+                         "unknown type counts for every method it can run."),
+                "calls": calls,
+            }
+            # The calls are repository source: data to read, never instructions.
+            as_untrusted(result)
+        return result
 
     @tool(
         path="/tools/codegraph/search_code",
