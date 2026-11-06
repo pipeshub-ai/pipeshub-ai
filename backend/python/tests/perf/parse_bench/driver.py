@@ -59,6 +59,9 @@ MIXES: dict[str, dict[str, int]] = {
     "scanned": {"scanned": 1},
     "tables": {"tables": 1},
     "figures": {"figures": 1},
+    # 2d arms: page renders for OCR (service-process rasterizer) and local Docling conversions.
+    "ocr": {"scanned": 2},
+    "docling": {"docx": 3, "digital": 1},
     "all": {"tables": 1, "figures": 1, "digital": 1, "docx": 1, "damaged": 1, "large": 1,
             "scanned": 1, "md": 1, "json": 1, "txt": 1},
 }
@@ -108,6 +111,7 @@ class TreeSampler(threading.Thread):
         self.peak_tree_pss = 0
         self.peak_threads = 0
         self.peak_parse_workers = 0
+        self.peak_executor_children = 0
         self.busy_gauge: BusyGauge | None = None
         self.cpu_sampled = 0.0
         self.procs: dict[int, dict[str, Any]] = {}
@@ -162,7 +166,7 @@ class TreeSampler(threading.Thread):
         procs = [self._me, *self._me.children(recursive=True)]
         roles: dict[int, str] = {}
         total_rss = total_pss = threads = cpu = 0
-        workers = 0
+        workers = executors = 0
         for proc in sorted(procs, key=lambda p: p.pid != self._me.pid):
             try:
                 with proc.oneshot():
@@ -180,6 +184,7 @@ class TreeSampler(threading.Thread):
             cpu += times.user + times.system
             workers += role == "parse_worker"
             now = time.time()
+            executors += role == "docling_or_pool"
             rec = self.procs.setdefault(proc.pid, {
                 "role": role, "first_rss": rss, "peak_rss": 0, "peak_threads": 0, "first_seen": now,
                 "cpu_s": 0.0, "series": [],
@@ -196,6 +201,7 @@ class TreeSampler(threading.Thread):
         self.peak_parent_rss = max(self.peak_parent_rss, self.procs[self._me.pid]["peak_rss"])
         self.peak_threads = max(self.peak_threads, threads)
         self.peak_parse_workers = max(self.peak_parse_workers, workers)
+        self.peak_executor_children = max(self.peak_executor_children, executors)
         self.cpu_sampled = max(self.cpu_sampled, cpu)
         self.check_limits(total_rss, self._ps.virtual_memory().percent)
 
@@ -768,6 +774,7 @@ def assemble(args: argparse.Namespace, raw: dict[str, Any], sampler: TreeSampler
                         "onnx_threads_total_peak": onnx_threads * sampler.peak_parse_workers},
             "workers": {
                 "peak_parse_workers": sampler.peak_parse_workers,
+                "peak_service_executor_children": sampler.peak_executor_children,
                 "parse_worker_peak_rss_mib": [round(p / report.MIB, 1) for p in peaks],
                 "parse_worker_peak_rss_median_mib": round(report.median(peaks) / report.MIB, 1),
                 "parse_worker_first_rss_mib": [round(w["first_rss"] / report.MIB, 1) for w in workers],
