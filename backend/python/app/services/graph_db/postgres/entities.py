@@ -125,6 +125,8 @@ class EntityMixin(PgBase):
         for d in docs:
             _VALIDATOR.validate_node(_VALUES, d)
         _own(docs, org)
+        if any(d.get("recordId") != record_id for d in docs):      # a row of another record would be written over that record's row of the same id
+            raise ValueError("a value row names a record other than the one being replaced")
         await self._q(lambda tx: _replace_values(tx, org, record_id, docs), transaction, write=True)
 
     async def copy_named_entity_mentions(self, source_key: str, target_key: str) -> int:
@@ -232,18 +234,17 @@ class EntityMixin(PgBase):
         now = get_epoch_timestamp_in_ms()
         marker = _marker(org, org_id, record_id, attempts=attempts_so_far + 1, lastError=error[:200])
         _VALIDATOR.validate_node(_RETRIES, marker)
-
-        async def go(tx: Tx) -> int:
-            r = await tx.fetchrow("""/* pipeshub:graph.schedule_named_entity_persist_retry_lock */ SELECT doc FROM graph.nodes
-                WHERE org_id = $1 AND coll = 'namedEntityPersistRetries' AND id = $2 FOR UPDATE""", org, record_id)
-            before = max(int((_doc(r["doc"]).get("attempts") or 0) if r else 0), attempts_so_far)
-            change = {"attempts": before + 1, "dueAt": now + int(min(PERSIST_RETRY_MAX_MS, PERSIST_RETRY_BASE_MS * 2.0 ** min(before, 64))),
-                      "lastError": error[:200], "updatedAtTimestamp": now}
-            await tx.execute("""/* pipeshub:graph.schedule_named_entity_persist_retry */ INSERT INTO graph.nodes AS t (org_id, coll, id, doc)
-                VALUES ($1, 'namedEntityPersistRetries', $2, $3::jsonb) ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = t.doc || $4::jsonb""",
-                             org, record_id, _j({**marker, "id": record_id, **change}), _j(change))
-            return before + 1
-        return await self._q(go, None, write=True)
+        due = now + int(min(PERSIST_RETRY_MAX_MS, PERSIST_RETRY_BASE_MS * 2.0 ** min(attempts_so_far, 64)))
+        # one statement, so two first failures of a record count both: the second waits for the first's row and adds to it
+        attempts = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.schedule_named_entity_persist_retry */ INSERT INTO graph.nodes AS t (org_id, coll, id, doc)
+            VALUES ($1, 'namedEntityPersistRetries', $2, $3::jsonb) ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = t.doc || jsonb_build_object(
+              'attempts', greatest(CASE WHEN jsonb_typeof(t.doc->'attempts') = 'number' THEN (t.doc->>'attempts')::numeric ELSE 0 END, $4::numeric) + 1,
+              'dueAt', $5::bigint + least($6::numeric, floor($7::numeric * power(2::numeric, least(greatest(
+                CASE WHEN jsonb_typeof(t.doc->'attempts') = 'number' THEN (t.doc->>'attempts')::numeric ELSE 0 END, $4::numeric), 64)))),
+              'lastError', $8::text, 'updatedAtTimestamp', $5::bigint)
+            RETURNING (t.doc->>'attempts')::int""", org, record_id, _j({**marker, "id": record_id, "dueAt": due}), attempts_so_far, now,
+                                                         PERSIST_RETRY_MAX_MS, PERSIST_RETRY_BASE_MS, error[:200]), None, write=True)
+        return int(attempts)
 
     async def schedule_named_entity_reextract(self, org_id: str, record_id: str) -> None:
         """Queue ``record_id`` to be extracted again from its stored blocks, due now. A pending re-extraction keeps its failure count and an earlier
