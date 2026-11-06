@@ -180,7 +180,7 @@ class TestRotatingTokenIsRenewed:
         new_access, _ = oauth.issued[0]
         assert {c.token for c in workspace.calls} == {new_access}
         assert dm in store.records
-        assert "Refreshing token for connector" in caplog.text
+        assert [r.levelno for r in caplog.records if r.getMessage() == "credential_refresh.end"] == [logging.INFO]
         assert _tokens_in(caplog.text) == set()
 
     @pytest.mark.parametrize("nested", [False, True], ids=["flat-answer", "authed-user-answer"])

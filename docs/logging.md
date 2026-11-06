@@ -134,8 +134,9 @@ if log_once(f"envelope:stripped:{topic}", 30): ...          # bounded keys only,
 ```
 
 - Bindable ids (`LOG_FIELD_NAMES`): `conversation_id`, `agent_id`, `run_id`, `parent_run_id`, `attempt`, `connector_id`,
-  `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`, `mcp_server_id`, `toolset_id`, `job`. A module that needs another
-  adds it there and here. Another key, or `org_id`/`user_id`, raises `ValueError`. `None` values are skipped. Pass literal keyword
+  `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`, `mcp_server_id`, `toolset_id`, `job`, and for credential
+  refresh `refresh_kind`, `trigger`, `provider`, `scheduled_by`. A module that needs another adds it there and here. A name with
+  a credential word in it (`token`, `secret`, `credential`, …) is masked like a secret, so ids never use one. Another key, or `org_id`/`user_id`, raises `ValueError`. `None` values are skipped. Pass literal keyword
   arguments, not a `**dict`. Do not hold `log_fields` across `yield` in an async generator.
 - `log_event(logger, event, /, *, level=logging.INFO, **fields)`: message = the event name; `None` values, identity names and record
   attribute names are dropped; `[file:line]` is the caller's.
@@ -186,6 +187,27 @@ except Exception as e:
   outcome="failure")`. `outcome` is `success`, `failure`, `partial` or `skipped` (cancellation is `failure` with `error_class=cancelled`).
 - `app.agents.agent_loop.error_classification` also has a `classify_error` (user-facing text). Where both are in scope, import this
   module qualified, as above.
+
+## Credential refresh
+
+The connector (and later toolset and MCP) token refresh services log through `app/utils/credential_refresh_log.py`, so one
+refresh of one credential reads the same everywhere:
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `credential_refresh.scheduled` | INFO when the refresh time is new, DEBUG when a scan re-arms the same one | `next_refresh_at` (UTC), `delay_s` |
+| `credential_refresh.start` | DEBUG | |
+| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `invalid_grant`, `config_missing`, `save_failed`, `recursion`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error` |
+| `credential_refresh.check_failed` | the failure's level; DEBUG when the attempt's `end` already logged it | as a failed `end` |
+| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated) |
+| `credential_refresh.deauthenticated` | WARNING | `reason`, `strikes`, `path`, `app_disabled_event` (`sent`, `direct_write`) |
+| `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields |
+
+Every line in a refresh carries `refresh_kind` (`connector`, `toolset`, `mcp`), `trigger` (`scan`, `scheduled`, `on_demand`), the
+kind's ids (`connector_id`, `connector_type`), `provider`, and the org as a job context when nothing else bound one. A timer
+firing gets its own `sys-credential_refresh-` root, with `scheduled_by` naming the root that armed it. Exactly one `end` is
+written per attempt, by the code that calls the token endpoint. A misconfigured credential (no OAuth client, the provider
+rejected our client) is ERROR with a stack once per credential per hour and DEBUG in between.
 
 ## Redaction
 
