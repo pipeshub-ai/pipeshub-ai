@@ -253,7 +253,7 @@ async def test_a_merge_moves_every_kind_of_edge_a_stub_can_hold_and_keeps_what_t
     assert [(e["from_id"], e["connectorId"]) for e in await p.get_edges_to_node("users/login", "authenticatedAs")] == [("other", "c3")]
     assert [(e["from_id"], e["edgeType"]) for e in await p.get_edges_to_node("users/login", "entityRelations")] == [("made", "CREATED_BY")]
     for coll in ("belongsTo", "userDriveRelation", "authenticatedAs", "entityRelations", "userAppRelation", "permission"):
-        assert not [e for e in await p.get_edges_from_node("users/stub1", coll) + await p.get_edges_to_node("users/stub1", coll)]      # nothing is left on the stub
+        assert not (await p.get_edges_from_node("users/stub1", coll) + await p.get_edges_to_node("users/stub1", coll))      # nothing is left on the stub
 
 
 async def test_two_verifications_of_one_address_cannot_both_go_through(w: World) -> None:
