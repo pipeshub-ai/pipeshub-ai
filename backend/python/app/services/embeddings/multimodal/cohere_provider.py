@@ -11,7 +11,7 @@ passing ``search_document`` directly.
 Batch image embedding via ``inputs`` is an embed-v4.0 feature (up to 96
 inputs); Cohere states embed-v3.0 does not support it at all — that
 generation needs the separate ``images`` parameter, one image per call.
-This provider therefore targets v4 and reports an older model as having no
+This provider therefore targets v4 and newer, and reports an older model as having no
 image support, so its images are indexed by their descriptions rather than
 through a request the docs do not cover.
 """
@@ -31,11 +31,14 @@ _CONCURRENCY_LIMIT = 10
 # the `inputs` parameter. Kept as a named constant so the reason survives.
 _IMAGE_INPUT_TYPE = "search_document"
 
+# Listed by exclusion, so a generation newer than this code keeps its image vectors.
+_NO_INPUTS_IMAGE_GENERATIONS = ("-v2", "-v3")
+
 
 def supports_inputs_image_batch(model_name: str | None) -> bool:
     """Whether this model generation can embed images via ``inputs``."""
     name = (model_name or "").lower()
-    return "v4" in name or "embed-4" in name
+    return bool(name) and not any(generation in name for generation in _NO_INPUTS_IMAGE_GENERATIONS)
 
 
 def cohere_image_input_type(model_name: str | None) -> str:
