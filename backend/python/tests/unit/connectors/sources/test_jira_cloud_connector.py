@@ -309,7 +309,9 @@ class TestInitCoverage:
     @pytest.mark.parametrize("kind", ["basic", "bare_token"])
     async def test_init_refuses_any_direct_client_to_a_host_that_is_not_atlassian(self, kind: str) -> None:
         """A rewritten authType (BASIC_AUTH, or API_TOKEN without email) builds these; they must not reach the private network."""
-        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorInitError,
+        )
         from app.sources.client.jira.jira import (
             JiraClient,
             JiraRESTClientViaToken,
