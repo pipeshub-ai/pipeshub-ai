@@ -176,7 +176,9 @@ async def normalize_emails_for_org(
                 for c in candidates
             ]
             try:
-                await graph.batch_upsert_nodes(update_nodes, CollectionNames.USERS.value)
+                upsert_result = await graph.batch_upsert_nodes(update_nodes, CollectionNames.USERS.value)
+                if not upsert_result:
+                    raise RuntimeError(f"batch_upsert_nodes returned falsy result: {upsert_result!r}")
                 stats["updated"] += len(update_nodes)
             except Exception as exc:
                 logger.exception("Failed to write normalized email batch for org %s", org_id)
@@ -279,6 +281,7 @@ async def run_normalization(
             "total_scanned": total_stats["total_scanned"],
             "total_updated": total_stats["total_updated"],
             "failed_batches": total_stats["total_failed_batches"],
+            "total_failed_batches": total_stats["total_failed_batches"],
             "applied": apply,
         })
         + "\n"

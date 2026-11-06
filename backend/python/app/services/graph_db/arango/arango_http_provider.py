@@ -7811,12 +7811,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str | None = None,
     ) -> dict[str, User]:
         """See :meth:`IGraphDBProvider.get_users_by_emails`."""
-        wanted = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
-        if not wanted:
+        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        if not wanted or not any(e.strip() for e in wanted):
             return {}
         scoped = org_id is not None
         org_filter = "FILTER user.orgId == @org_id" if scoped else ""
-        bind_vars = {"emails": wanted, **({"org_id": org_id} if scoped else {})}
+        query_emails = list(dict.fromkeys([*wanted, *(e.strip() for e in wanted if e.strip())]))
+        bind_vars = {"emails": query_emails, **({"org_id": org_id} if scoped else {})}
         # Direct comparison against normalized inputs allows the persistent index
         # on (orgId, email) to be used, while the case-insensitive fallback ensures
         # legacy unnormalized emails are findable during rollout.
@@ -7832,9 +7833,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for row in rows or []:
                 node = self._translate_node_from_arango(row)
                 u = User.from_arango_user(node)
-                key = (row.get("email") or "").strip().lower()
-                if key not in found or (u.is_active and not found[key].is_active):
-                    found[key] = u
+                raw_email = (row.get("email") or "").lower()
+                stripped = raw_email.strip()
+                for k in (raw_email, stripped):
+                    if k and (k not in found or (u.is_active and not found[k].is_active)):
+                        found[k] = u
+                for w in wanted:
+                    if w.strip() == stripped:
+                        if w not in found or (u.is_active and not found[w].is_active):
+                            found[w] = u
             return found
         except Exception as e:
             self.logger.error(f"❌ Get users by emails failed: {str(e)}")

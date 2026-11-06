@@ -6122,10 +6122,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self.client.execute_query(
                 query, parameters={"emails": wanted, **({"org_id": org_id} if scoped else {})}, txn_id=transaction,
             )
-            found: dict[str, User] = {}
+            matched_users: list[tuple[dict, User]] = []
             for row in results or []:
                 user_dict = self._neo4j_to_arango_node(dict(row["u"]), CollectionNames.USERS.value)
                 u = User.from_arango_user(user_dict)
+                matched_users.append((user_dict, u))
+            matched_users.sort(
+                key=lambda item: str(item[1].user_id or item[1].id or item[0].get("id") or item[0].get("_key") or "")
+            )
+
+            found: dict[str, User] = {}
+            for user_dict, u in matched_users:
                 key = (user_dict.get("email") or "").strip().lower()
                 if key not in found or (u.is_active and not found[key].is_active):
                     found[key] = u
@@ -6157,7 +6164,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (u:User)
             {where_clause}
             RETURN u
-            ORDER BY u.isActive DESC
+            ORDER BY coalesce(u.isActive, false) DESC, u.id ASC
             LIMIT 1
             """
 

@@ -10,6 +10,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from app.scripts.normalize_user_emails import (
+    EXIT_PARTIAL,
     EXIT_SUCCESS,
     build_parser,
     fetch_unnormalized_users,
@@ -137,3 +138,30 @@ async def test_already_normalized_users_report_zero_updates() -> None:
     completed = lines[-1]
     assert completed["total_scanned"] == 0
     assert completed["total_updated"] == 0
+
+
+@pytest.mark.asyncio
+async def test_falsy_batch_upsert_fails_batch_and_counts_zero_updated() -> None:
+    graph = MagicMock()
+    candidates = [
+        {"id": "u1", "orgId": "o1", "email": "Alice@Acme.COM", "newEmail": "alice@acme.com"},
+    ]
+    graph.fetch_unnormalized_users = AsyncMock(return_value=candidates)
+    # Return False (falsy) to simulate provider failure without raising
+    graph.batch_upsert_nodes = AsyncMock(return_value=False)
+
+    out = io.StringIO()
+    logger = logging.getLogger("test")
+
+    code = await run_normalization(graph, org_id="o1", apply=True, logger=logger, out=out, batch_size=10)
+    assert code == EXIT_PARTIAL
+    lines = _lines(out)
+    error_line = [item for item in lines if "error" in item]
+    assert len(error_line) == 1
+    assert error_line[0]["error"] == "RuntimeError"
+
+    completed = lines[-1]
+    assert completed["status"] == "completed"
+    assert completed["total_scanned"] == 1
+    assert completed["total_updated"] == 0
+    assert completed.get("total_failed_batches", completed.get("failed_batches")) == 1
