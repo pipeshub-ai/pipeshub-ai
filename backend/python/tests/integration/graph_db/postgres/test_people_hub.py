@@ -214,6 +214,12 @@ async def test_a_verified_email_merges_the_stubs_into_the_login_user_and_keeps_e
     assert await role(w, "bystander", "r") == "READER"                        # nobody else's edges moved
 
 
+async def test_a_verified_email_with_no_org_argument_keeps_the_users_org(w: World) -> None:
+    await merge_world(w)
+    await w.p.apply_verified_user_email(LOGIN, None, "new@x.io")      # type: ignore[arg-type]
+    assert (await w.p.get_document("login", "users")).get("orgId") == w.org      # an empty argument never overwrites the stored org
+
+
 async def test_a_merge_keeps_the_stronger_grant_whatever_the_type_of_either(w: World) -> None:
     await merge_world(w)
     await w.nodes("records", rec("same"), rec("lower"), rec("up"))
