@@ -678,7 +678,9 @@ class TestAutoTimelineField:
         assert timeline.auto_timeline_field(_range("2026-01-01", "2026-06-30")) is None
 
 
-async def _run_search(corpus: _Corpus, state: dict[str, Any] | None = None, **kwargs: Any) -> Any:  # noqa: ANN401
+async def _run_search(
+    corpus: _Corpus, state: dict[str, Any] | None = None, query: str = "slack bot problems", **kwargs: Any,  # noqa: ANN401
+) -> Any:  # noqa: ANN401
     from app.agents.actions.knowledge_graph.ops import search as search_op
 
     ranked = AsyncMock(return_value="ranked")
@@ -692,7 +694,7 @@ async def _run_search(corpus: _Corpus, state: dict[str, Any] | None = None, **kw
             patch(f"{_BUILDER}.enrich_records_with_graph_context", new_callable=AsyncMock), \
             patch(f"{_BUILDER}.enrich_records_with_address_links", new_callable=AsyncMock), \
             patch("app.modules.transformers.blob_storage.BlobStorage"):
-        return await search_op.execute_search(state or _state(corpus), "slack bot problems", **kwargs), ranked
+        return await search_op.execute_search(state or _state(corpus), query, **kwargs), ranked
 
 
 class TestTheSearchToolOverAWideSpan:
@@ -743,6 +745,57 @@ class TestTheSearchToolOverAWideSpan:
         )
 
         assert result == "ranked"
+
+    @pytest.mark.asyncio
+    async def test_an_identifier_alone_does_not_keep_a_wide_span_ranked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With the exact-text gate on, as without it, only exact_match keeps the ranked search;
+        the exact_match parameter's description says so, with this threshold."""
+        from app.agents.actions.knowledge_graph.entity_search_surface import (
+            EXACT_MATCH_PARAMETER,
+        )
+
+        monkeypatch.setenv("EXACT_TEXT_SEARCH_GATE", "true")
+        corpus = _Corpus(_THREE_MONTHS)
+
+        text, ranked = await _run_search(
+            corpus, query="BILL-2207 rollback", created_after="2026-03-01", created_before="2026-05-31",
+        )
+
+        ranked.assert_not_awaited()
+        assert text.startswith('Timeline for "BILL-2207 rollback"')
+        assert f"more than {timeline.AUTO_TIMELINE_MIN_DAYS} days" in EXACT_MATCH_PARAMETER.description
+
+    @pytest.mark.asyncio
+    async def test_a_search_that_asks_for_exact_text_stays_ranked(self) -> None:
+        """A timeline runs no exact-text pass, so it would ignore the request."""
+        corpus = _Corpus(_THREE_MONTHS)
+
+        result, ranked = await _run_search(
+            corpus, created_after="2026-03-01", created_before="2026-05-31", exact_match=True,
+        )
+
+        assert result == "ranked"
+        assert ranked.await_args.kwargs["exact_match"] is True
+        assert corpus.calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("extra_state", "kwargs"), [
+        ({}, {"entity_ids": ["dept-1"]}),
+        ({"filters": {"apps": ["slack-1"], "kb": [], "entityFilters": {"departments": ["d1"]}}}, {}),
+    ], ids=["entity-ids", "request-entity-filter"])
+    async def test_exact_match_inside_an_entity_scope_keeps_the_timeline(
+        self, extra_state: dict[str, Any], kwargs: dict[str, Any],
+    ) -> None:
+        """An entity-scoped search never runs the exact-text pass, so exact_match
+        would only trade the timeline's coverage for nothing."""
+        corpus = _Corpus(_THREE_MONTHS)
+
+        _, ranked = await _run_search(
+            corpus, _state(corpus, **extra_state),
+            created_after="2026-03-01", created_before="2026-05-31", exact_match=True, **kwargs,
+        )
+
+        ranked.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_switched_off_it_stays_ranked(self, monkeypatch: pytest.MonkeyPatch) -> None:

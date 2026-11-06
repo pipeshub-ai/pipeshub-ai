@@ -71,6 +71,7 @@ from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
 )
+from app.modules.retrieval.exact_terms import exact_text_search_wanted
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.modules.retrieval.result_merging import (
     CollectionResults,
@@ -111,6 +112,8 @@ from app.utils.pattern_match import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.agent_loop_lib.core.messages import Part
     from app.modules.agents.qna.chat_state import ChatState
     from app.modules.agents.record_escalation.models import FetchPlan
@@ -318,6 +321,13 @@ def _result_frame(
         coverage=coverage,
         plan=plan,
     )
+
+
+def _exact_text_can_run(state: Mapping[str, Any], entity_ids: list[str] | None) -> bool:
+    """Whether the exact-text pass could run: not inside an entity scope, which
+    it cannot honour (``entity_scoped`` in ``_execute_search``)."""
+    filters: Mapping[str, Any] = state.get("filters") or {}
+    return not entity_ids and not filters.get("entityFilters")
 
 
 def _note_provenance(
@@ -531,6 +541,7 @@ async def execute_search(
     entity_ids: list[str] | None = None,
     scope_virtual_record_ids: list[str] | None = None,
     preamble: str = "",
+    exact_match: bool = False,
 ) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope (see
     `_execute_search`).
@@ -540,9 +551,13 @@ async def execute_search(
     empty one searches nothing, and grep, which knows no such scope, stays off.
     ``preamble`` opens the result: the rendered text, where it counts toward
     the result size, or the ``entities`` field of a JSON result.
+    ``exact_match`` runs the exact-text pass whatever the query looks like
+    (``exact_text_search_wanted``).
 
     Without a scope, dates over a span longer than a month run the timeline
-    tool's search instead (``ops/timeline.automatic_timeline_search``).
+    tool's search instead (``ops/timeline.automatic_timeline_search``). It has no
+    exact-text pass, so ``exact_match`` keeps the ranked search, except inside an
+    entity scope, where that pass never runs either.
 
     With dates, the same search also runs once without them, and its best
     matches written outside the dates are listed after the results
@@ -561,7 +576,7 @@ async def execute_search(
             created_after=created_after, created_before=created_before,
             modified_after=modified_after, modified_before=modified_before,
         )
-    if scope_virtual_record_ids is None:
+    if scope_virtual_record_ids is None and not (exact_match and _exact_text_can_run(state or {}, entity_ids)):
         from app.agents.actions.knowledge_graph.ops.timeline import (
             automatic_timeline_search,
         )
@@ -579,6 +594,7 @@ async def execute_search(
         created_after=created_after, created_before=created_before,
         modified_after=modified_after, modified_before=modified_before,
         entity_ids=entity_ids, scope_virtual_record_ids=scope_virtual_record_ids, preamble=preamble,
+        exact_match=exact_match,
     )
     return with_json_preamble(result, preamble)
 
@@ -609,6 +625,7 @@ async def _execute_search(
     entity_ids: list[str] | None = None,
     scope_virtual_record_ids: list[str] | None = None,
     preamble: str = "",
+    exact_match: bool = False,
 ) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope.
 
@@ -871,7 +888,9 @@ async def _execute_search(
         # Filled by each grep command as it finishes, so a search that stops
         # waiting early (`keywordSearchBudget: "short"`) keeps those matches.
         grep_found: dict[str, dict[str, Any]] = {}
-        if config_service is not None and not entity_scoped:
+        if config_service is not None and not entity_scoped and exact_text_search_wanted(
+            query, exact_match=exact_match,
+        ):
             pattern_match_task = asyncio.create_task(
                 run_pattern_match_with_llm_grep(
                     query=query,
