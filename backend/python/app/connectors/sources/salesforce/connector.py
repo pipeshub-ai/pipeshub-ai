@@ -847,13 +847,19 @@ class SalesforceConnector(BaseConnector):
         nodes = [n for n in nodes if n.get("isExternal") is True and n.get("parentOrgId") in (None, org_id)]
         if not any(n.get("parentOrgId") is None for n in nodes):
             return nodes
-        owner = f"{CollectionNames.ORGS.value}/{org_id}"
-        owned = {
-            str(edge.get("_to") or "").split("/", 1)[-1]
-            for collection in (CollectionNames.PROSPECT.value, CollectionNames.CUSTOMER.value)
-            for edge in await tx_store.get_edges_from_node(owner, collection, raise_on_error=True)
-        }
+        owned = await self._account_org_owners(tx_store)
         return [n for n in nodes if n.get("parentOrgId") is not None or (n.get("_key") or n.get("id")) in owned]
+
+    async def _account_org_owners(self, tx_store: TransactionStore) -> dict[str, set[str | None]]:
+        """The organisations this org's own prospect or customer edges reach, each
+        with the Salesforce account ids those edges record."""
+        owner = f"{CollectionNames.ORGS.value}/{self.data_entities_processor.org_id}"
+        owners: dict[str, set[str | None]] = {}
+        for collection in (CollectionNames.PROSPECT.value, CollectionNames.CUSTOMER.value):
+            for edge in await tx_store.get_edges_from_node(owner, collection, raise_on_error=True):
+                key = str(edge.get("_to") or "").split("/", 1)[-1]
+                owners.setdefault(key, set()).add(edge.get("externalId"))
+        return owners
 
     def _create_org(self, **kwargs) -> Org:
         """An account's external organisation, recording the org it belongs to
@@ -4840,16 +4846,29 @@ class SalesforceConnector(BaseConnector):
                         for o in accounts_last(await self._own_external_orgs(tx_store, all_orgs))
                     }
                     external_keys = set(external_org_key_by_name.values())
+                    account_owners: dict[str, set[str | None]] | None = None
                     delete_tasks = []
                     for org, rg, _, _ in orgs_with_edges:
                         existing_key = external_org_key_by_name.get(org.name)
+                        adopted = False
+                        if existing_key is not None and existing_key == extracted_organization_id(org_id, org.name):
+                            # Extraction's node found by its exact name: claimed only as below, once per page.
+                            existing_key = None
                         if existing_key is None:
                             # A node documents named before the CRM synced the
                             # account (KG-13 3b): the account takes it over, so
                             # those records link to it. Only extraction's own
                             # deterministic key, never another account's.
                             extracted = extracted_organization_id(org_id, org.name)
-                            existing_key = extracted if extracted in external_keys else None
+                            # Not a node another account holds, nor one taken earlier in this page.
+                            if extracted in external_keys:
+                                if account_owners is None:
+                                    account_owners = await self._account_org_owners(tx_store)
+                                holders = account_owners.get(extracted, set())
+                                if holders <= {rg.external_group_id}:
+                                    existing_key = extracted
+                                    adopted = not holders  # a rename of its holder is not a first sync
+                                    external_keys.discard(extracted)
                         if existing_key is not None:
                             org.id = existing_key
                             delete_tasks.append(tx_store.delete_edges_to(
@@ -4867,9 +4886,9 @@ class SalesforceConnector(BaseConnector):
                                 CollectionNames.RECORD_GROUPS.value,
                                 CollectionNames.DEAL_OF.value,
                             ))
-                        else:
-                            if rg.external_group_id:
-                                newly_synced_account_ids.add(rg.external_group_id)
+                        if (existing_key is None or adopted) and rg.external_group_id:
+                            # An adopted node is old, but the account is first synced now.
+                            newly_synced_account_ids.add(rg.external_group_id)
                     if delete_tasks:
                         for _del in delete_tasks:
                             await _del

@@ -116,6 +116,12 @@ class ConcreteTransactionStore(TransactionStore):
     async def upsert_person_by_email(self, person, *, raise_on_error=False):
         return None
 
+    async def upsert_person_by_source_key(self, person, *, raise_on_error: bool = False) -> None:
+        return None
+
+    async def get_person_by_source_key(self, source_key, org_id) -> None:
+        return None
+
     async def ensure_app_membership(
         self, principal_id, principal_collection, connector_id, *,
         is_external, source_user_id=None,
@@ -301,6 +307,9 @@ class TestTransactionStore:
         store = ConcreteTransactionStore()
         await store.commit()
         assert store._committed is True
+
+    def test_a_store_that_does_not_say_is_never_transient(self) -> None:
+        assert ConcreteTransactionStore().is_transient_error(RuntimeError("x")) is False
 
     @pytest.mark.asyncio
     async def test_rollback(self):
