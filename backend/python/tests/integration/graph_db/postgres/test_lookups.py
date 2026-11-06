@@ -378,7 +378,8 @@ NO_ORG_CALLS = {
     "filter_linked_record_ids": (["a"],), "get_key_by_external_file_id": ("e",), "get_key_by_external_message_id": ("e",), "get_record_key_by_external_id": ("e", "c"),
     "get_failed_records_by_org": ("o", "c"), "get_documents_by_status": ("records", "s"), "get_departments": (), "delete_sync_points_by_connector_id": ("c",),
     "delete_connector_sync_edges": ("c",), "reap_stale_external_app_relations": ("c",),
-    "find_next_queued_duplicate": ("a",), "get_connector_instances_with_filters": ("apps",), "get_connector_stats": ("o", "c"),
+    "find_next_queued_duplicate": ("a",), "get_app_needing_vector_membership_backfill": (), "page_records_for_vector_membership_backfill": ("c", None, 1),
+    "_fetch_existing_file_names_in_parent": ("kb", None), "get_connector_instances_with_filters": ("apps",), "get_connector_stats": ("o", "c"),
 }
 NO_ORG_KW = {"find_file_by_name_in_parent": {"kb_id": "kb", "file_name": "f", "mime_type": "m"}, "link_record_to_group": {"inherit": True},
              "remove_nodes_by_field": {"field_value": 1}}
@@ -389,7 +390,7 @@ def test_every_public_method_of_the_module_is_in_the_no_org_cases() -> None:
     assert LOOKUP_METHODS == set(NO_ORG_CALLS)
 
 
-SWEEPS_BY_SYSTEM = {"get_records_pending_duplicate_reconcile"}
+SWEEPS_BY_SYSTEM = {"get_records_pending_duplicate_reconcile", "get_app_needing_vector_membership_backfill"}
 
 
 @pytest.mark.parametrize("name", sorted(NO_ORG_CALLS))
