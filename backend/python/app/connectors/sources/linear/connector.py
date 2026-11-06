@@ -4180,8 +4180,9 @@ class LinearConnector(BaseConnector):
             changed = []
             for project_id, record in stored.items():
                 stamp = self._project_children_stamp(listed.get(project_id) or {})
-                if (stamp and project_id not in self._refreshed_project_ids
-                        and not (record.external_revision_id or "").endswith(f":{stamp}")):
+                # No stamp (a list longer than the listing's page): refresh, so a team change is never missed.
+                if project_id not in self._refreshed_project_ids and (
+                        stamp is None or not (record.external_revision_id or "").endswith(f":{stamp}")):
                     changed.append(project_id)
             await self._refresh_projects(sorted(changed), team_ids)
         except Exception as e:

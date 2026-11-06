@@ -691,7 +691,8 @@ class TestProjectToRecords:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("changed", [True, False])
-    async def test_a_changed_team_set_refreshes_the_project_with_the_new_grants(self, changed) -> None:
+    @pytest.mark.parametrize("links_truncated", [False, True])
+    async def test_a_changed_team_set_refreshes_the_project_with_the_new_grants(self, changed, links_truncated) -> None:
         """A team change does not bump updatedAt; the stamp in the listing is what shows it."""
         project = _make_project_data()
         project["teams"] = _teams(("team-1", True), ("team-2", False))
@@ -704,6 +705,8 @@ class TestProjectToRecords:
         if changed:  # team-2 left the project after it was stored
             project["teams"] = _teams(("team-1", True))
         listed = {"proj-1": {"id": "proj-1", "teams": project["teams"]}}
+        if links_truncated:  # no stamp from the listing: refreshed whatever changed
+            listed["proj-1"]["externalLinks"] = {"nodes": [], "pageInfo": {"hasNextPage": True}}
         connector._reconciler.run_projects = AsyncMock(return_value=(0, listed, {"proj-1": stored}))
         processor = connector.data_entities_processor
         processor.on_new_records = AsyncMock()
@@ -712,10 +715,13 @@ class TestProjectToRecords:
 
         await connector._sync_deleted_projects([(rg, []), (MagicMock(external_group_id="team-2"), [])])
 
-        if not changed:
+        if not changed and not links_truncated:
             processor.on_new_records.assert_not_awaited()
             return
         written = processor.on_new_records.await_args.args[0]
+        if not changed:
+            assert written[0][1] and written[0][0].rewrite_permissions is True
+            return
         assert written[0][1] == [] and written[0][0].rewrite_permissions is True
 
     def test_the_stamp_follows_the_teams_and_reads_alike_from_the_listing_and_the_project(self) -> None:
