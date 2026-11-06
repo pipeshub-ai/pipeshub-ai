@@ -95,7 +95,8 @@ async def test_groups_departments_people_and_organizations_link_records_each_the
     await w.nodes("recordGroups", {"_key": "rgA", "connectorId": APP}, {"_key": "rgB", "connectorId": APP, "orgId": "other-org"})
     await w.nodes("departments", {"_key": "d1", "departmentName": "d"})
     await w.nodes("users", {"_key": "p1", "userId": "up1", "orgId": w.org}, {"_key": "p2", "userId": "up2", "orgId": "other-org"})
-    await w.nodes("organizations", {"_key": "ext", "isExternal": True, "parentOrgId": w.org}, {"_key": "ext2", "isExternal": True, "parentOrgId": "other-org"}, {"_key": "int"})
+    await w.nodes("organizations", {"_key": "ext", "isExternal": True, "parentOrgId": w.org}, {"_key": "ext2", "isExternal": True, "parentOrgId": "other-org"}, {"_key": "int"},
+                  {"_key": "ext3", "isExternal": False, "parentOrgId": w.org})
     await w.nodes("records", rec("a", **done()), rec("b", **done()), rec("c", **done()), rec("d", **done()), rec("e", **done()))
     await w.edge("belongsTo", ("records", "a"), ("recordGroups", "rgA"))
     await w.edge("belongsTo", ("records", "b"), ("recordGroups", "rgB"))
@@ -107,11 +108,12 @@ async def test_groups_departments_people_and_organizations_link_records_each_the
     await w.edge("entityRelations", ("records", "a"), ("organizations", "ext"), edgeType="ACCOUNT")
     await w.edge("entityRelations", ("records", "b"), ("organizations", "ext2"), edgeType="ACCOUNT")
     await w.edge("entityRelations", ("records", "c"), ("organizations", "int"), edgeType="ACCOUNT")
+    await w.edge("entityRelations", ("records", "c"), ("organizations", "ext3"), edgeType="ACCOUNT")
     refs = [ref("record_group", "rgA"), ref("record_group", "rgB"), ref("department", "d1"), ref("person", "p1"), ref("person", "p2"), ref("organization", "ext"),
-            ref("organization", "ext2"), ref("organization", "int")]
+            ref("organization", "ext2"), ref("organization", "int"), ref("organization", "ext3")]
     got = await w.p.get_entity_candidate_records(refs, w.org)
     assert {k: sorted(ids(v)) for k, v in got.items()} == {("record_group", "rgA"): ["a"], ("record_group", "rgB"): [], ("department", "d1"): ["c"], ("person", "p1"): ["a", "d"],
-                                                           ("person", "p2"): [], ("organization", "ext"): ["a"], ("organization", "ext2"): [], ("organization", "int"): []}
+                                                           ("person", "p2"): [], ("organization", "ext"): ["a"], ("organization", "ext2"): [], ("organization", "int"): [], ("organization", "ext3"): []}
     one = await w.p.get_entity_candidate_records([ref("person", "p1", outTypes=["ASSIGNED_TO"], inTypes=[])], w.org)
     assert ids(one[("person", "p1")]) == ["a"]
 
@@ -170,6 +172,23 @@ async def test_the_walk_stops_at_the_limit_and_the_next_window_starts_after_it(w
     assert ids(second) == ["old", "kept"] and second.window_size == 2
     narrow = (await w.p.get_permitted_entity_records([ref("named_entity", "E")], w.org, "u", app_level_connector_ids=[], limit_per_entity=5, window=3))[("named_entity", "E")]
     assert ids(narrow) == ["new", "mid", "old"] and narrow.window_size == 3
+
+
+async def test_the_limit_and_the_window_are_at_least_one_and_the_walk_stops_at_the_limit(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await entity_world(w, "other-org")
+    for r in ("new", "mid", "old", "kept"):
+        await w.edge("permission", ("users", "u"), ("records", r), type="USER", role="READER")
+    one = (await w.p.get_permitted_entity_records([ref("named_entity", "E")], w.org, "u", app_level_connector_ids=[], limit_per_entity=0, window=0))[("named_entity", "E")]
+    assert ids(one) == ["new"] and one.window_size == 1
+    asked = []
+    real = w.p._role_on
+
+    async def counting(*a: object, **k: object) -> object:
+        asked.append(a[-1])
+        return await real(*a, **k)
+    monkeypatch.setattr(w.p, "_role_on", counting)
+    two = (await w.p.get_permitted_entity_records([ref("named_entity", "E")], w.org, "u", app_level_connector_ids=[], limit_per_entity=2))[("named_entity", "E")]
+    assert ids(two) == ["new", "mid"] and asked == ["new", "mid"]                                  # no role is read past the limit
 
 
 async def test_within_bounds_the_candidates_before_the_walk_and_an_empty_within_admits_nothing(w: World) -> None:
@@ -329,7 +348,21 @@ async def test_the_record_groups_a_user_reaches_by_each_grant_and_what_inherits_
     await w.edge("permission", ("users", "acct"), ("recordGroups", "srcother"), type="USER", role="READER")        # ... not in another connector
     for parent, child_ in (("direct", "child"), ("child", "grandchild"), ("hidden_parent", "child_of_hidden"), ("direct", "deleted_child")):
         await w.edge("inheritPermissions", ("recordGroups", child_), ("recordGroups", parent))
+    await w.nodes("recordGroups", *({"_key": n, "connectorId": "conn"} for n in ("g_wrongmember", "g_wrongteam", "g_wrongorg", "g_wrongorgmember", "dup")))
+    await w.nodes("groups", {"_key": "grp2"})
+    await w.nodes("organizations", {"_key": "o2"})
+    await w.nodes("records", {"_key": "dup", "connectorId": "conn", "recordName": "dup"})
+    await w.edge("permission", ("users", "c1"), ("groups", "grp2"), type="GROUP", role="READER")           # not a membership
+    await w.edge("permission", ("groups", "grp2"), ("recordGroups", "g_wrongmember"), type="GROUP", role="READER")
+    await w.edge("permission", ("teams", "tm"), ("recordGroups", "g_wrongteam"), type="USER", role="READER")        # a team's grant has the team type
+    await w.edge("belongsTo", ("users", "c1"), ("organizations", "o2"), entityType="KB")
+    await w.edge("permission", ("organizations", "o2"), ("recordGroups", "g_wrongorgmember"), type="ORG", role="READER")   # the user belongs to o2 as something else
+    await w.edge("permission", ("organizations", "o1"), ("recordGroups", "g_wrongorg"), type="USER", role="READER")        # an org's grant has the org type
+    await w.edge("inheritPermissions", ("records", "dup"), ("recordGroups", "direct"))                    # a record of that key inherits; the group of that key does not
+    await w.nodes("apps", {"_key": "teamapp", "type": "JIRA", "name": "T"})
+    await w.edge("userAppRelation", ("teams", "tm"), ("apps", "teamapp"))
     got = await w.p.get_entity_access_context("uid-c1", w.org)
+    assert "teamapp" in {a["id"] for a in got["apps"]}                                                    # an app linked to the user's team
     assert got["record_group_ids"] == sorted(["direct", "viagroup", "viarole", "viateam", "viaorg", "hidden_parent", "child", "grandchild", "srcgrp"])
     only = await w.p.get_entity_access_context("uid-c1", w.org, source_ids=["conn"])
     assert "srcgrp" not in only["record_group_ids"] and "direct" in only["record_group_ids"]                          # the account's connector is not among the apps asked for
@@ -397,6 +430,8 @@ async def test_the_index_source_pages_a_scope_in_key_order(w: World) -> None:
     assert [r["_key"] for r in first] == ["r1", "r2"] and first[0]["name"] == "one" and first[0]["indexingStatus"] == "COMPLETED" and first[1]["isInternal"] is True
     assert [r["_key"] for r in await w.p.page_entity_index_source("records", APP, "r2", 5)] == ["r3"]
     assert await w.p.page_entity_index_source("records", "", None, 5) == [] and await w.p.page_entity_index_source("records", "nobody", None, 5) == []
+    await w.nodes("records", {"_key": "noscope", "connectorId": ""})
+    assert await w.p.page_entity_index_source("records", "", None, 5) == []                          # no scope names no rows, not the rows with an empty one
     assert len(await w.p.page_entity_index_source("records", APP, None, 0)) == 1                       # a page is at least one
     with pytest.raises(ValueError):
         await w.p.page_entity_index_source("nonsense", "", None, 5)
