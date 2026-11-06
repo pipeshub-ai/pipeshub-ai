@@ -94,13 +94,12 @@ async def test_a_store_failure_in_a_listing_never_shows_the_store_text() -> None
     assert not success
     assert PERMISSION_CHECK_UNAVAILABLE_MESSAGE in text
     assert "secret-host" not in text
+    assert "User not found" not in text
 
 
 async def test_the_selection_error_has_a_fixed_message_and_keeps_the_cause() -> None:
     store = Store()
-    store.down = True
     store.check_access = AsyncMock(side_effect=ConnectionError(SECRET))
-    store.down = False
     with pytest.raises(PermissionVerificationUnavailableError) as err:
         await mod.outside_connection(store, "u1", "org-1", ["x"], {"apps": ["a"]})
     assert str(err.value) == PERMISSION_CHECK_UNAVAILABLE_MESSAGE
