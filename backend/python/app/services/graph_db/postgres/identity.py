@@ -908,3 +908,146 @@ class IdentityMixin(PgBase):
             AND n.doc->>'scope' = $3 AND n.doc->>'isConfigured' = 'true' AND ($3 <> 'personal' OR $4::text IS NULL OR n.doc->>'createdBy' = $4)""",
                                   [current_org_id(), collection, scope, user_id or None], transaction)
         return rows[0]["n"]
+
+
+    # ---- agents: the document with what hangs off it, and the agents that use a model or a web search provider ---------------------------------------
+    async def _agent_targets(self, agent_ids: list[str], edge: str, node_coll: str) -> dict[str, list[dict]]:
+        """The documents ``agent_ids`` point at over ``edge``, per agent, by id: edges by their source, nodes by key."""
+        if not agent_ids:
+            return {}
+        org = current_org_id()
+        rows = await self._id_rows("""/* pipeshub:graph.agent_targets */ SELECT e.from_id AS agent, t.doc FROM graph.edges e
+            JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id
+            WHERE e.org_id = $1 AND e.coll = $2 AND e.from_coll = 'agentInstances' AND e.from_id = ANY($3::text[]) AND e.to_coll = $4 ORDER BY t.id""",
+                                   [org, edge, agent_ids, node_coll], None)
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            out.setdefault(r["agent"], []).append(_doc(r["doc"]))
+        return out
+
+    async def _tools_of(self, owners: list[dict], edge: str, fields: tuple[str, ...]) -> dict[str, list[dict]]:
+        """The tools of each toolset or MCP server document in ``owners``, as ``{_key, <fields>}``."""
+        if not owners:
+            return {}
+        rows = await self._id_rows("""/* pipeshub:graph.agent_tools */ SELECT e.from_id AS owner, t.doc FROM graph.edges e
+            JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = 'agentTools' AND t.id = e.to_id
+            WHERE e.org_id = $1 AND e.coll = $2 AND e.from_id = ANY($3::text[]) AND e.to_coll = 'agentTools' ORDER BY t.id""",
+                                   [current_org_id(), edge, [o["id"] for o in owners]], None)
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            d = _doc(r["doc"])
+            out.setdefault(r["owner"], []).append({"_key": d["id"], **{f: d.get(f) for f in fields}})
+        return out
+
+    async def _project_agents_toolsets_and_knowledge(self, agent_ids: list[str], transaction: str | None = None) -> dict[str, dict[str, list[dict]]]:
+        """For each agent its toolsets with their tools and its knowledge (a connector, with its filters read and the app's name); every id asked is present."""
+        out: dict[str, dict[str, list[dict]]] = {i: {"toolsets": [], "knowledge": []} for i in agent_ids}
+        sets = await self._agent_targets(agent_ids, "agentHasToolset", "agentToolsets")
+        tools = await self._tools_of([t for ts in sets.values() for t in ts], "toolsetHasTool", ("name", "fullName", "toolsetName", "description"))
+        for aid, docs in sets.items():
+            out[aid]["toolsets"] = [{"_key": t["id"], **{f: t.get(f) for f in ("name", "displayName", "type", "instanceId", "instanceName", "selectedTools")}, "tools": tools.get(t["id"], [])}
+                                    for t in docs]
+        know = await self._agent_targets(agent_ids, "agentHasKnowledge", "agentKnowledge")
+        ids = sorted({k.get("connectorId") for ks in know.values() for k in ks if k.get("connectorId")})
+        apps = {r["id"]: _doc(r["doc"]) for r in await self._id_rows(
+            "/* pipeshub:graph.agent_knowledge_apps */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])", [current_org_id(), ids], None)} if ids else {}
+        for aid, ks in know.items():
+            for k in ks:
+                raw, cid = k.get("filters"), k.get("connectorId")
+                parsed = raw if isinstance(raw, dict) else {}
+                if isinstance(raw, str):
+                    with contextlib.suppress(ValueError):
+                        parsed = json.loads(raw)
+                app = apps.get(cid)
+                out[aid]["knowledge"].append({"_key": k["id"], "connectorId": cid, "filters": raw, "filtersParsed": parsed, "name": app.get("name", "") if app else cid,
+                                              "type": app.get("type", "APP") if app else "UNKNOWN", "displayName": app.get("name", "") if app else cid})
+        return out
+
+    async def _project_agents_mcp_servers(self, agent_ids: list[str], transaction: str | None = None) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {i: [] for i in agent_ids}
+        servers = await self._agent_targets(agent_ids, "agentHasMcpServer", "agentMcpServers")
+        tools = await self._tools_of([s for ss in servers.values() for s in ss], "mcpServerHasTool", ("name", "fullName", "description"))
+        for aid, docs in servers.items():
+            out[aid] = [{"_key": s["id"], **{f: s.get(f) for f in ("name", "displayName", "typeId", "instanceId")}, "allTools": s.get("allTools") or False, "tools": tools.get(s["id"], [])}
+                        for s in docs]
+        return out
+
+    async def _project_agent_skills(self, agent_id: str, transaction: str | None = None) -> list[dict]:
+        fields = ("name", "description", "category", "subcategory", "version", "status", "deprecatedReason", "replacedBy")
+        return [{f: d.get(f) for f in fields} for d in (await self._agent_targets([agent_id], "agentHasSkill", "agentSkills")).get(agent_id, [])]
+
+    async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
+        """The live agent with its toolsets, knowledge, skills, MCP servers and ``shareWithOrg``; None when it is not there. No permission is checked: callers
+        call ``check_agent_permission`` first. An MCP read that fails leaves the list empty and marks ``mcpServersUnavailable``, so a save cannot detach every server."""
+        org = current_org_id()
+        try:
+            rows = await self._id_rows("""/* pipeshub:graph.get_agent */ SELECT doc, EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = $1 AND o.coll = 'permission' AND o.from_coll = 'organizations'
+                  AND ($3::text IS NULL OR o.from_id = $3) AND o.to_coll = 'agentInstances' AND o.to_id = a.id) AS shared FROM graph.nodes a WHERE a.org_id = $1 AND a.coll = 'agentInstances'
+                AND a.id = $2 AND coalesce((a.doc->>'isDeleted')::boolean, false) = false""", [org, agent_id, org_id or None], transaction)
+            if not rows:
+                return None
+            agent = _arango(_doc(rows[0]["doc"]), "agentInstances")
+            proj = (await self._project_agents_toolsets_and_knowledge([agent_id], transaction))[agent_id]
+            agent["toolsets"], agent["knowledge"] = proj["toolsets"], proj["knowledge"]
+            agent["skills"] = await self._project_agent_skills(agent_id, transaction)
+            try:
+                mcp = await self._project_agents_mcp_servers([agent_id], transaction)
+            except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+                raise
+            except Exception as e:
+                self.logger.warning("Agent MCP server enrichment failed for %s: %s", agent_id, e)
+                mcp, agent["mcpServersUnavailable"] = {}, True
+            agent["mcpServers"] = mcp.get(agent_id, [])
+            agent["shareWithOrg"] = bool(rows[0]["shared"])
+            return agent
+        except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+            raise
+        except Exception as e:
+            self.logger.error("Failed to get agent: %s", e)
+            return None
+
+    async def get_agents_by_model_key(self, org_id: str, model_key: str) -> list[dict]:
+        """The live agents of the org that use the model (its key, or a key that starts ``<key>_``): those a user of the org owns and those shared with the org."""
+        if not self._mine(org_id):
+            return []
+        try:
+            rows = await self._id_rows("""/* pipeshub:graph.get_agents_by_model_key */ WITH x AS (
+                  SELECT p.to_id AS agent FROM graph.edges b JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
+                    JOIN graph.edges p ON p.org_id = b.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentInstances'
+                      AND p.doc->>'type' = 'USER' AND p.doc->>'role' = 'OWNER'
+                  WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $2
+                  UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
+                    AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
+                SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
+                JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = x.agent AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
+                  AND jsonb_typeof(a.doc->'models') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(a.doc->'models') m WHERE m = $3 OR left(m, length($3) + 1) = $3 || '_')
+                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.doc->>'createdBy' ORDER BY a.id""", [current_org_id(), org_id, model_key], None)
+            return [dict(r) for r in rows]
+        except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+            raise
+        except Exception as e:
+            self.logger.error("Failed to get agents by model key: %s", e)
+            return []
+
+    async def get_agents_by_web_search_provider(self, org_id: str, provider: str) -> list[dict]:
+        """The live agents of the org that use the web search provider: those a user of the org owns and those shared with the org."""
+        if not self._mine(org_id):
+            return []
+        try:
+            rows = await self._id_rows("""/* pipeshub:graph.get_agents_by_web_search_provider */ WITH x AS (
+                  SELECT p.to_id AS agent FROM graph.edges b JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
+                    JOIN graph.edges p ON p.org_id = b.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentInstances'
+                      AND p.doc->>'type' = 'USER' AND p.doc->>'role' = 'OWNER'
+                  WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $2
+                  UNION SELECT p.to_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = $2
+                    AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
+                SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
+                JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = x.agent AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
+                  AND a.doc->>'webSearch' = $3
+                LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.doc->>'createdBy' ORDER BY a.id""", [current_org_id(), org_id, provider], None)
+            return [dict(r) for r in rows]
+        except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+            raise
+        except Exception as e:
+            self.logger.error("Failed to get agents by web search provider: %s", e)
+            return []
