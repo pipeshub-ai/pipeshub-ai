@@ -264,7 +264,9 @@ class TestGetUserKey:
     @pytest.mark.asyncio
     async def test_raises_unavailable_on_exception(self) -> None:
         from app.agents.actions.knowledge_graph.knowledge_graph import _get_user_key
-        from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+        from app.exceptions.graph_db_exceptions import (
+            PermissionVerificationUnavailableError,
+        )
         gp = AsyncMock()
         gp.get_user_by_user_id.side_effect = RuntimeError("db error")
         with pytest.raises(PermissionVerificationUnavailableError):

@@ -78,7 +78,9 @@ _memo: dict[tuple, tuple[float, SelectionScope]] = {}
 
 def unavailable_message() -> str:
     """What a reader is told when the graph could not answer; never the store's own text."""
-    from app.modules.retrieval.retrieval_service import PERMISSION_CHECK_UNAVAILABLE_MESSAGE
+    from app.modules.retrieval.retrieval_service import (
+        PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
+    )
 
     return PERMISSION_CHECK_UNAVAILABLE_MESSAGE
 

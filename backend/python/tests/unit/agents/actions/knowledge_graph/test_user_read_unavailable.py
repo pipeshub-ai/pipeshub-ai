@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph, _get_user_key
+from app.agents.actions.knowledge_graph.knowledge_graph import (
+    KnowledgeGraph,
+    _get_user_key,
+)
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval import selection_scope as mod
 from app.modules.retrieval.retrieval_service import PERMISSION_CHECK_UNAVAILABLE_MESSAGE

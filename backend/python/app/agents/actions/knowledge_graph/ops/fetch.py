@@ -15,7 +15,10 @@ from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.modules.retrieval.selection_scope import connection_sources_of, unavailable_message
+from app.modules.retrieval.selection_scope import (
+    connection_sources_of,
+    unavailable_message,
+)
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import ToolOutput

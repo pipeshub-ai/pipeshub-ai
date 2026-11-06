@@ -31,13 +31,13 @@ from app.agents.agent_loop.entity_search_tool import (
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
 )
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
-from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval.selection_scope import (
     connection_sources_of,
     resolve_user_key,
