@@ -116,7 +116,12 @@ export function clearTemporaryChatPurgePending(): void {
  * If the tab closed, sessionStorage is empty — return the id to hard-delete.
  */
 export function consumeTemporaryChatPurgePending(): string | null {
-  const raw = localStore()?.getItem(PENDING_PURGE_KEY);
+  let raw: string | null = null;
+  try {
+    raw = localStore()?.getItem(PENDING_PURGE_KEY) ?? null;
+  } catch {
+    return null;
+  }
   if (!raw) return null;
   let pending: PendingPurge | null = null;
   try {

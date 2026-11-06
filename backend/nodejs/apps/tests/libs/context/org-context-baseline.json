@@ -20,7 +20,7 @@
   "modules/auth/routes/orgAuthConfig.routes.ts": 1,
   "modules/configuration_manager/controller/cm_controller.ts": 3,
   "modules/configuration_manager/routes/cm_routes.ts": 3,
-  "modules/enterprise_search/controller/es_controller.ts": 45,
+  "modules/enterprise_search/controller/es_controller.ts": 46,
   "modules/knowledge_base/controllers/kb_controllers.ts": 5,
   "modules/mcp/controller/mcp.controller.ts": 1,
   "modules/oauth_provider/controller/oauth.app.controller.ts": 12,
