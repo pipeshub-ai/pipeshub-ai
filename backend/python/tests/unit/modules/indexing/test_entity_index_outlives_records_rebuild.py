@@ -225,7 +225,7 @@ class TestEmbeddingModelChange:
             assert await d.rebuild() == ["idle"]
 
         fingerprint = "openAI:text-embedding-3-small:6"
-        assert outcomes.count("connector") == 2 and outcomes.count("taxonomy") == 8
+        assert outcomes.count("connector") == 2 and outcomes.count("taxonomy") == 9
         assert d.entities.dimension == 6 and d.entities.deletions == 1
         assert len(d.entities.entity_points) == 2
         for point in d.entities.entity_points.values():

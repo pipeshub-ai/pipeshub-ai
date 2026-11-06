@@ -2332,9 +2332,11 @@ class TestSyncContacts:
         connector = _make_connector()
         dsp = connector.data_store_provider
         mock_tx = dsp.transaction.return_value
+        # the account an earlier sync wrote, reached by the org's own prospect edge
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[{"_to": "organizations/org-acme"}])
 
         async def nodes(collection, field, values) -> list[dict]:
-            return [{"id": "org-acme", "name": "Acme Corp"}] if collection == CollectionNames.ORGS.value else []
+            return [{"id": "org-acme", "name": "Acme Corp", "isExternal": True}] if collection == CollectionNames.ORGS.value else []
 
         async def first_attempt_rolled_back(func, *args) -> object:
             async with dsp.transaction() as tx_store:
@@ -2362,10 +2364,12 @@ class TestSyncContacts:
     async def test_a_changed_existing_contact_is_linked_from_its_stored_node(self) -> None:
         connector = _make_connector()
         mock_tx = connector.data_store_provider.transaction.return_value
+        # the account an earlier sync wrote, reached by the org's own prospect edge
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[{"_to": "organizations/org-acme"}])
 
         async def nodes(collection, field, values) -> list[dict]:
             if collection == CollectionNames.ORGS.value:
-                return [{"id": "org-acme", "name": "Acme Corp"}]
+                return [{"id": "org-acme", "name": "Acme Corp", "isExternal": True}]
             return [{"id": "person-stored", "email": "alice@example.com", "updatedAtTimestamp": 1}]
 
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=nodes)
@@ -6977,9 +6981,11 @@ class TestSyncContactsRemaining:
     async def test_creates_member_of_edge_for_changed_contact(self):
         connector = _make_connector()
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        # the account an earlier sync wrote, reached by the org's own prospect edge
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[{"_to": "organizations/org-node-1"}])
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
             [{"email": "alice@example.com", "id": "person-1", "updatedAtTimestamp": 100}],
-            [{"name": "Acme Corp", "id": "org-node-1"}],
+            [{"name": "Acme Corp", "id": "org-node-1", "isExternal": True}],
         ])
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.delete_edges_from = AsyncMock()
@@ -7813,6 +7819,8 @@ class TestSyncAccountsRemaining:
     async def test_deletes_stale_edges_for_existing_orgs(self):
         connector = _make_connector()
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        # the account an earlier sync wrote, reached by the org's own prospect edge
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[{"_to": "organizations/existing-org-1"}])
         mock_tx.get_all_orgs = AsyncMock(side_effect=[
             [{"name": "Acme", "_key": "existing-org-1", "isExternal": True}],
             [{"name": "Acme", "id": "existing-org-1", "isExternal": True}],
@@ -9523,6 +9531,90 @@ class TestCoverageFinalPush:
                 tx, "records", "externalRecordId", ["a", "b"], batch_size=2,
             )
         assert len(result) == 1
+
+
+def test_an_account_records_the_org_it_belongs_to() -> None:
+    """KG-13: an account is an organisation entity of its org only; the
+    org is what scopes it in search and in name matching."""
+    connector = _make_connector()
+    connector.data_entities_processor.org_id = "org-1"
+    account = connector._create_org(name="Acme", is_external=True)
+    assert account.to_arango_org()["parentOrgId"] == "org-1"
+    assert connector._create_org(name="Acme", is_external=True, parent_org_id="org-2").parent_org_id == "org-2"
+
+
+@pytest.mark.asyncio
+async def test_only_the_orgs_own_accounts_are_reused_by_name() -> None:
+    """Stamped with this org, or unstamped and reached by this org's own
+    prospect edge; never another org's, stamped or not."""
+    connector = _make_connector()
+    connector.data_entities_processor.org_id = "org-1"
+    tx = AsyncMock()
+    tx.get_edges_from_node = AsyncMock(side_effect=lambda node, collection, **_: (
+        [{"_from": node, "_to": "organizations/legacy-own"}] if collection == CollectionNames.PROSPECT.value else []
+    ))
+    nodes = [
+        {"_key": "stamped-own", "isExternal": True, "parentOrgId": "org-1"},
+        {"_key": "legacy-own", "isExternal": True},
+        {"_key": "legacy-foreign", "isExternal": True},
+        {"_key": "stamped-foreign", "isExternal": True, "parentOrgId": "org-2"},
+        {"_key": "org-1", "parentOrgId": "org-1"},  # an org, not an account
+    ]
+    own = await connector._own_external_orgs(tx, nodes)
+    assert [n["_key"] for n in own] == ["stamped-own", "legacy-own"]
+    tx.get_edges_from_node.assert_any_await(
+        "organizations/org-1", CollectionNames.PROSPECT.value, raise_on_error=True,
+    )
+
+    tx.get_edges_from_node.reset_mock()
+    assert await connector._own_external_orgs(tx, nodes[:1]) == nodes[:1]
+    tx.get_edges_from_node.assert_not_awaited()  # nothing unstamped: no edge read
+
+
+@pytest.mark.asyncio
+async def test_a_failed_ownership_read_stops_the_account_sync_before_any_write() -> None:
+    """Unknown is not empty: read as "no edges", every unstamped account would
+    get a duplicate node."""
+    connector = _make_connector()
+    connector.data_entities_processor.org_id = "org-1"
+    mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+    mock_tx.get_all_orgs = AsyncMock(return_value=[{"name": "Acme", "_key": "acme", "isExternal": True}])
+    mock_tx.get_edges_from_node = AsyncMock(side_effect=RuntimeError("edges unreadable"))
+    mock_tx.batch_upsert_orgs = AsyncMock()
+    account = SalesforceAccount.model_validate({
+        "Id": "001000000000001AAA", "Name": "Acme", "Type": "Customer",
+        "CreatedDate": "2024-01-01T00:00:00.000+0000", "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        "Opportunities": {"records": []},
+    })
+    with pytest.raises(RuntimeError, match="edges unreadable"):
+        await connector._sync_accounts(_async_iter_pages([account]))
+    mock_tx.batch_upsert_orgs.assert_not_awaited()
+    mock_tx.get_all_orgs.assert_awaited_with(raise_on_error=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stamp", [{"parentOrgId": "org-2"}, {}], ids=["stamped", "unstamped"])
+async def test_an_account_named_like_another_orgs_account_gets_its_own_node(stamp: dict) -> None:
+    connector = _make_connector()
+    connector.data_entities_processor.org_id = "org-1"
+    mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+    foreign = {"name": "Acme", "_key": "org-2-acme", "id": "org-2-acme", "isExternal": True, **stamp}
+    mock_tx.get_all_orgs = AsyncMock(side_effect=[[foreign], [foreign]])
+    mock_tx.get_edges_from_node = AsyncMock(return_value=[])  # org-1 reaches no account yet
+    mock_tx.delete_edges_to = AsyncMock()
+    mock_tx.delete_edges_from = AsyncMock()
+    mock_tx.batch_upsert_orgs = AsyncMock()
+    mock_tx.batch_create_edges = AsyncMock()
+    account = SalesforceAccount.model_validate({
+        "Id": "001000000000001AAA", "Name": "Acme", "Type": "Customer",
+        "CreatedDate": "2024-01-01T00:00:00.000+0000", "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        "Opportunities": {"records": []},
+    })
+    ids = await connector._sync_accounts(_async_iter_pages([account]))
+    (written,) = mock_tx.batch_upsert_orgs.await_args.args[0]
+    assert written["_key"] != "org-2-acme" and written["parentOrgId"] == "org-1"
+    assert "001000000000001AAA" in ids
+    mock_tx.delete_edges_to.assert_not_awaited()
 
 
 class TestConverterReachesTheBlock:

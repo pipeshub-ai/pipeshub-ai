@@ -133,7 +133,19 @@ class TestGuards:
         assert ok is True
         assert "ignoredEntityTypes" not in json.loads(text)
         _, search_kwargs = patched[1].call_args
-        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["record", "named_entity"], ["organization", "product"])
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (
+            ["organization", "record", "named_entity"], ["organization", "product"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_organisation_search_with_extraction_off_searches_the_organisation_entities(
+        self, patched, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        ok, _ = await execute_search_entities(_state(), "Orrin Biotech", entity_types=["organization"])
+        assert ok is True
+        _, search_kwargs = patched[1].call_args
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["organization"], None)
 
     @pytest.mark.asyncio
     async def test_a_person_search_with_extraction_off_searches_the_people_entities(
@@ -183,7 +195,7 @@ class TestGuards:
 class TestSearch:
     @pytest.mark.asyncio
     async def test_scope_comes_from_agent_sources(self, patched) -> None:
-        await execute_search_entities(_state(), "legal", entity_types=["topic", "organization"], top_k=99)
+        await execute_search_entities(_state(), "legal", entity_types=["topic", "product"], top_k=99)
 
         _, kwargs = patched[0].call_args
         assert kwargs["source_ids"] == ["conf-1", "kb-1"]

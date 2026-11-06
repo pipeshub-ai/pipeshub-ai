@@ -59,7 +59,7 @@ def test_sources_are_a_fixed_set() -> None:
         RECORDS, GROUPS, DEPARTMENTS, TOPICS,
         CollectionNames.CATEGORIES.value, CollectionNames.LANGUAGES.value,
         CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value,
-        CollectionNames.SUBCATEGORIES3.value, CollectionNames.USERS.value,
+        CollectionNames.SUBCATEGORIES3.value, CollectionNames.USERS.value, CollectionNames.ORGS.value,
     }
 
 
@@ -110,6 +110,7 @@ class TestNeo4j:
         query, params = _neo4j_call(p)
         assert "MATCH (n:Organization)" in query
         assert "n.entityIndexSweptAt IS NULL OR n.entityIndexSweptAt < $sweep_before" in query
+        assert "AND coalesce(n.isExternal, false) <> true" in query  # a CRM account is not an org to index
         assert params["sweep_before"] == 123
 
     async def test_records_page_is_keyset_on_connector(self) -> None:
@@ -162,6 +163,7 @@ class TestArango:
         query, binds = _arango_call(p)
         assert f"FOR doc IN {ORGS}" in query
         assert "doc.entityIndexSweptAt == null OR doc.entityIndexSweptAt < @sweep_before" in query
+        assert "FILTER doc.isExternal != true" in query  # a CRM account is not an org to index
         assert binds["sweep_before"] == 123
 
     async def test_records_page_is_keyset_on_connector(self) -> None:
