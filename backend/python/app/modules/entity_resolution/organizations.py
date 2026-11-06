@@ -71,9 +71,11 @@ def organization_key(name: str) -> str:
     return " ".join(words)
 
 
-def extracted_organization_id(org_id: str, name: str) -> str:
-    """The key extraction gives the org's organisation named ``name``."""
-    return taxonomy_node_key(org_id, CollectionNames.ORGS.value, organization_key(name))
+def extracted_organization_id(org_id: str, name: str) -> str | None:
+    """The key extraction gives the org's organisation named ``name``; None for a
+    name with no key (blank, or punctuation only), which extraction never names."""
+    name_key = organization_key(name)
+    return taxonomy_node_key(org_id, CollectionNames.ORGS.value, name_key) if name_key else None
 
 
 def accounts_last(rows: list[dict]) -> list[dict]:
