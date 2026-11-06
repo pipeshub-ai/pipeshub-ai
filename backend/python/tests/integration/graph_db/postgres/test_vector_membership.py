@@ -131,11 +131,19 @@ class _Lock:
         return True
 
 
-async def test_one_tick_of_the_job_pages_syncs_and_advances_in_each_apps_own_org(pg_provider, org_ctx) -> None:
+async def test_one_tick_of_the_job_pages_syncs_and_advances_in_each_apps_own_org(pg_provider, org_ctx, monkeypatch: pytest.MonkeyPatch) -> None:
     """The real context binding: the loop has no org of its own, two orgs hold a connector of the same id (one a legacy instance whose document
-    names no org), and every tick must move the cursor."""
-    tag, orgs = uuid.uuid4().hex[:8], [_org(), _org()]
-    cid = f"0000-tick-{tag}"      # sorts before the apps other tests leave behind, which the job walks lowest id first
+    names no org), and every tick must move the cursor. The cross-org listing is narrowed to the test's orgs, so no other app is touched."""
+    tag, orgs, outsider = uuid.uuid4().hex[:8], [_org(), _org()], _org()
+    cid = f"0000-tick-{tag}"
+    with org_ctx(outsider):                                     # sorts before the test's apps: left alone only because the listing is narrowed
+        await pg_provider.batch_upsert_nodes([{"_key": f"0000-early-{tag}", "type": "DRIVE", "orgId": outsider}], "apps")
+        before = await pg_provider.get_document(f"0000-early-{tag}", "apps")
+    real = pg_provider._system_apps_page
+
+    async def narrowed(*a: object, **k: object) -> list[dict]:
+        return [d for d in await real(*a, **k) if d.get("orgId") in orgs]
+    monkeypatch.setattr(pg_provider, "_system_apps_page", narrowed)
     for o in orgs:
         with org_ctx(o):
             await pg_provider.batch_upsert_nodes([{"_key": cid, "type": "DRIVE", **({"orgId": o} if o == orgs[0] else {})}], "apps")
@@ -145,8 +153,7 @@ async def test_one_tick_of_the_job_pages_syncs_and_advances_in_each_apps_own_org
     synced: list[tuple[str, str]] = []
 
     async def sync(vrid: str) -> None:
-        if org_context.current_org_id() in orgs:      # not the apps other tests left behind
-            synced.append((org_context.current_org_id(), vrid))
+        synced.append((org_context.current_org_id(), vrid))
     pipeline = SimpleNamespace(sync_vector_membership=sync, orgs_holding_points=lambda _v: [])
     token = org_context.push(None)
     try:
@@ -159,9 +166,11 @@ async def test_one_tick_of_the_job_pages_syncs_and_advances_in_each_apps_own_org
             with org_ctx(o):
                 assert await pg_provider.get_app_needing_vector_membership_backfill() is None
                 assert (await pg_provider.get_document(cid, "apps"))["vectorMembershipBackfilled"] is True
+        with org_ctx(outsider):
+            assert await pg_provider.get_document(f"0000-early-{tag}", "apps") == before
     finally:
         org_context.pop(token)
-        for o in orgs:
+        for o in (*orgs, outsider):
             with org_ctx(o):
                 await pg_provider._db.run(lambda tx, o=o: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", o), write=True)
 
