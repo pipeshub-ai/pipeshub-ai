@@ -137,3 +137,22 @@ async def test_personal_sync_withdraws_every_app_user_but_the_creator() -> None:
     c.data_entities_processor.withdraw_app_user_access = AsyncMock()
     await BaseConnector.withdraw_app_users_except_creator(c)
     c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c1", [bob])
+
+
+@pytest.mark.asyncio
+async def test_personal_cleanup_without_a_creator_email_withdraws_everyone() -> None:
+    c = MagicMock(creator_email=None, connector_id="c1")
+    bob = MagicMock(email="bob@x.com")
+    c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[bob])
+    c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+    await BaseConnector.withdraw_app_users_except_creator(c)
+    c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c1", [bob])
+
+
+@pytest.mark.asyncio
+async def test_a_failed_personal_cleanup_stops_the_sync() -> None:
+    # Content written after it would reach the links it could not remove.
+    c = MagicMock(creator_email="alice@x.com", connector_id="c1")
+    c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=RuntimeError("graph down"))
+    with pytest.raises(RuntimeError, match="graph down"):
+        await BaseConnector.withdraw_app_users_except_creator(c)

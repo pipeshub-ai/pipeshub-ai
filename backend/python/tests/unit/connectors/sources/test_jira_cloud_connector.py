@@ -1252,6 +1252,7 @@ class TestFetchUsersPhases:
 
         assert await connector._keep_licensed_users([licensed, unlicensed], mapping) == [licensed]
         connector._fetch_group_members.assert_awaited_once_with("g1", "jira-software-users")
+        assert connector._unlicensed_account_ids == {"unlic"}, "kept for the scheme's user grants"
 
     @pytest.mark.asyncio
     async def test_product_access_unknown_keeps_every_user(self) -> None:
@@ -4440,14 +4441,16 @@ class TestGroupSyncForbiddenNotification:
         connector.notify.assert_not_awaited()
 
 
-@pytest.mark.parametrize("read_unfinished,account_type,granted", [
-    (False, "atlassian", False),  # a complete user read without them: no Jira product access
-    (True, "atlassian", True),    # a cut-short read may have missed a licensed account
-    (True, "customer", False),    # a portal customer never browses the project
+@pytest.mark.parametrize("read_unfinished,account_type,unlicensed,granted", [
+    (False, "atlassian", False, False),  # a complete user read without them: no Jira product access
+    (True, "atlassian", False, True),    # a cut-short read may have missed a licensed account
+    (True, "customer", False, False),    # a portal customer never browses the project
+    (True, "atlassian", True, False),    # the licence filter left them out; a failed email lookup changes nothing
 ])
-def test_a_browse_grant_to_an_account_outside_the_licensed_users(read_unfinished, account_type, granted) -> None:
+def test_a_browse_grant_to_an_account_outside_the_licensed_users(read_unfinished, account_type, unlicensed, granted) -> None:
     connector = _make_connector()
     connector._user_read_unfinished = read_unfinished
+    connector._unlicensed_account_ids = {"acc-u"} if unlicensed else set()
     grant = {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-u", "user": {
         "accountId": "acc-u", "emailAddress": "u@acme.com", "active": True, "accountType": account_type}}}
 

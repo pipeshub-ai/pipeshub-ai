@@ -553,17 +553,15 @@ class BaseConnector(ABC):
         For personal connectors whose records inherit the app and that never link an
         authenticated source account: any other edge is access nobody granted (a link
         pass before ``link_new_users`` skipped personal connectors wrote them).
+
+        Fails closed: with no creator email every edge goes, and a failed read or
+        withdrawal raises, so the sync stops before writing content those edges reach.
         """
-        if not self.creator_email:
-            return
-        creator = self.creator_email.lower()
-        try:
-            users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
-            others = [u for u in users if (u.email or "").lower() != creator]
-            if others:
-                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, others)
-        except Exception as e:
-            self.logger.warning("Could not withdraw other users from personal connector %s: %s", self.connector_id, e)
+        creator = (self.creator_email or "").lower()
+        users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+        others = [u for u in users if not creator or (u.email or "").lower() != creator]
+        if others:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, others)
 
     async def ensure_connector_group_permission(self) -> Optional[Permission]:
         """Upsert the creator's ``USER_APP_RELATION`` edge and a pseudo
