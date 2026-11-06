@@ -18,6 +18,7 @@ import { Request, Response, NextFunction, RequestHandler } from 'express'
 import { Logger } from '../../../libs/services/logger.service'
 import { AuthTokenService } from '../../../libs/services/authtoken.service'
 import { makeOrgContext, runWithOrgContext } from '../../../libs/context/orgContext';
+import { findSessionRefusal } from '../../../libs/utils/user-session.utils';
 
 /**
  * Creates a middleware that redirects to frontend for OAuth authentication
@@ -54,42 +55,55 @@ export function createOAuthRedirectMiddleware(
         return
       }
 
-      // Verify the token
+      let decoded: Awaited<ReturnType<AuthTokenService['verifyToken']>>;
       try {
-        const decoded = await tokenService.verifyToken(token)
-        // Map decoded token to user object on request
-        // Using type assertion since Express Request.user is extensible
-        ;(req as any).user = {
-          id: decoded.userId,
-          userId: decoded.userId,
-          orgId: decoded.orgId,
-          email: decoded.email,
-          firstName: decoded.firstName,
-          lastName: decoded.lastName,
-          role: decoded.role,
-          accountType: decoded.accountType,
-        }
-        logger.debug('OAuth request authenticated', { userId: decoded.userId })
-        // The handler after this reads the person's organisation, which PostgreSQL needs bound.
-        const orgId = decoded.orgId as string | undefined;
-        if (orgId) {
-          runWithOrgContext(
-            makeOrgContext({
-              orgId,
-              userId: (decoded.userId as string | undefined) || null,
-              kind: 'user',
-              source: 'jwt',
-            }),
-            next,
-          );
-        } else {
-          next();
-        }
-      } catch (tokenError) {
-        // Token invalid/expired, redirect to frontend
-        logger.info('Token invalid/expired, redirecting to frontend OAuth page')
-        const redirectUrl = buildFrontendOAuthUrl(req, frontendUrl)
-        res.redirect(redirectUrl)
+        decoded = await tokenService.verifyToken(token);
+      } catch {
+        logger.info(
+          'Token invalid/expired, redirecting to frontend OAuth page',
+        );
+        res.redirect(buildFrontendOAuthUrl(req, frontendUrl));
+        return;
+      }
+
+      // A valid signature is not a live session: a personal access token, an
+      // OAuth token or a signed-out session has to sign in again first.
+      const refusal = await findSessionRefusal(decoded, logger);
+      if (refusal) {
+        logger.info('Session refused, redirecting to frontend OAuth page', {
+          refusal,
+        });
+        res.redirect(buildFrontendOAuthUrl(req, frontendUrl));
+        return;
+      }
+
+      // Map decoded token to user object on request
+      // Using type assertion since Express Request.user is extensible
+      ;(req as any).user = {
+        id: decoded.userId,
+        userId: decoded.userId,
+        orgId: decoded.orgId,
+        email: decoded.email,
+        firstName: decoded.firstName,
+        lastName: decoded.lastName,
+        role: decoded.role,
+        accountType: decoded.accountType,
+      }
+      logger.debug('OAuth request authenticated', { userId: decoded.userId })
+      // The handler after this reads the person's organisation, which PostgreSQL needs bound.
+      const orgId = decoded.orgId as string | undefined;
+      if (orgId) {
+        runWithOrgContext(
+          makeOrgContext({
+            orgId,
+            userId: (decoded.userId as string | undefined) || null,
+            kind: 'user',
+            source: 'jwt',
+          }),
+          next,
+        );
+      } else {
+        next();
       }
     } catch (error) {
       next(error)
