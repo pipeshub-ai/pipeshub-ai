@@ -1575,7 +1575,31 @@
       "webSearch": "網路搜尋",
       "internalAndWebSearch": "內部 + 網路搜尋"
     },
-    "searchDegraded": "結果可能不完整。"
+    "searchDegraded": "結果可能不完整。",
+    "compare": {
+      "toggle": "比較模型",
+      "pickTwo": "選擇 {{max}} 個模型進行比較。",
+      "pickedHint": "每個問題會由兩個模型並排回答。",
+      "costNote": "每個問題都會在兩個模型上執行，因此用量約為兩倍。在代理模式下，兩個模型都可以使用工具；需要核准的操作會在每一欄中分別詢問。",
+      "pillLabel": "比較 {{picked}}/{{max}}",
+      "stop": "停止",
+      "retry": "重試",
+      "failed": "此模型無法回答。請再試一次。",
+      "useAnswer": "使用此回答",
+      "useAnswerLabel": "使用 {{model}} 的回答",
+      "columnLabel": "{{model}} 的回答",
+      "chooseConflict": "此回答尚無法保留。請等待其完成後再試一次。",
+      "chooseFailed": "無法保留此回答。請再試一次。",
+      "primaryFallback": "模型",
+      "starting": "正在啟動...",
+      "status": {
+        "starting": "正在啟動",
+        "waiting": "等待中",
+        "streaming": "回答中",
+        "done": "已完成",
+        "error": "失敗"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",
