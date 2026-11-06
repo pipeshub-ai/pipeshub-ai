@@ -244,7 +244,7 @@ CLASSIFICATION: dict[str, str] = {
         "backfill_block_name_folded", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",
         "delete_blocks_for_records", "delete_edges_between_collections", "delete_edges_by_relationship_types", "delete_edges_by_source_keys",
         "delete_all_team_permissions", "remove_kb_permission", "delete_kb_hub_app", "delete_connector_sync_edges", "reap_stale_external_app_relations", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_nodes", "delete_parent_child_edge_to_record",
-        "delete_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges",
+        "delete_connector_instance", "delete_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges",
         "increment_node_field", "purge_trash_kept_record_groups", "purge_trashed_records", "remove_authenticated_as", "remove_nodes_by_field",
         "remove_sync_point", "stage_states_delete_for_virtual_records", "stage_states_delete_unheld_revisions",
         "unlink_nodes_missed_by_full_sync", "update_sync_point_if", "upsert_sync_point",
