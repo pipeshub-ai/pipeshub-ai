@@ -236,12 +236,13 @@ CLASSIFICATION: dict[str, str] = {
     "update_node_if_match": "replace",
     **dict.fromkeys(["batch_update_connector_status", "compare_and_set_indexing_status", "update_indexing_status_for_record_ids",
                      "stage_state_compare_and_set", "soft_delete_records", "restore_records", "record_purge_failure", "retag_push_record",
-                     "claim_push_record", "take_back_kept_record_group", "update_kb_permission"], "targeted"),
+                     "claim_push_record", "take_back_kept_record_group", "update_kb_permission", "reset_indexing_status_for_connector",
+                     "update_drive_sync_state"], "targeted"),
     **dict.fromkeys(["batch_create_edges", "create_edges_if_absent", "batch_upsert_node_relations", "ensure_app_membership", "ensure_team_app_edge",
-                     "upsert_authenticated_as", "link_record_to_group", "batch_update_team_member_roles", "update_edge"], "edge"),
+                     "upsert_authenticated_as", "link_record_to_group", "batch_update_team_member_roles", "update_edge", "update_user_sync_state"], "edge"),
     "batch_upsert_app_users": "delegates",       # builds users and edges, then calls batch_upsert_nodes and batch_create_edges
     **dict.fromkeys([
-        "backfill_block_name_folded", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",
+        "backfill_block_name_folded", "backfill_indexed_copy_flags", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",
         "delete_blocks_for_records", "delete_edges_between_collections", "delete_edges_by_relationship_types", "delete_edges_by_source_keys",
         "delete_all_team_permissions", "remove_kb_permission", "delete_kb_hub_app", "delete_connector_sync_edges", "reap_stale_external_app_relations", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_nodes", "delete_parent_child_edge_to_record",
         "delete_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges",
@@ -253,7 +254,8 @@ CLASSIFICATION: dict[str, str] = {
 #: Targeted writers whose every value comes from a typed argument that no schema narrows (a count, a free string, a constant), so no caller
 #: input can be invalid; they are classified for completeness and exercised only by the valid-path matrix where that is cheap.
 TYPED_ONLY = {"restore_records", "record_purge_failure", "retag_push_record", "claim_push_record", "take_back_kept_record_group",
-              "update_kb_permission"}      # its role is checked against OWNER/WRITER/READER first and its timestamps are generated
+              "update_kb_permission",      # its role is checked against OWNER/WRITER/READER first and its timestamps are generated
+              "update_drive_sync_state"}   # drives have no schema
 
 
 def test_every_writer_of_the_registry_is_classified_and_nothing_else_is() -> None:
@@ -309,6 +311,8 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
     ("cas_indexing_status bad", "compare_and_set_indexing_status", (["r1"], "NOT_STARTED", "NOT_A_STATUS"), {}),
     ("stage_state cas bad status", "stage_state_compare_and_set", ("s1", "NOT_STARTED", "NOT_A_STATUS", {}), {}),
     ("stage_state cas bad field", "stage_state_compare_and_set", ("s1", "NOT_STARTED", "IN_PROGRESS", {"attempt": "many"}), {}),
+    ("reset_indexing_status bad status", "reset_indexing_status_for_connector", ("c1", "NOT_A_STATUS"), {}),
+    ("update_user_sync_state bad field", "update_user_sync_state", ("a@x.io", 12345, "Drive"), {}),
     ("soft_delete bad source", "soft_delete_records", (["r1"], "c1"), {"delete_source": "NOT_A_SOURCE", "batch_id": "b1"}),
     # edges, with the properties of each edge collection
     *[(f"{fn} {coll} {'flat' if flat else 'arango'}", fn, ([edge(coll, flat, **GOOD_PROPS[coll]), edge(coll, flat, **BAD_PROPS[coll])], coll), {})
@@ -345,6 +349,9 @@ VALID: list[tuple[str, str, tuple, dict]] = [
     ("update_indexing_status_for_record_ids", "update_indexing_status_for_record_ids", (["r1"], "COMPLETED"), {}),
     ("stage_state cas", "stage_state_compare_and_set", ("s1", "NOT_STARTED", "IN_PROGRESS", {"attempt": 1}), {}),
     ("soft_delete", "soft_delete_records", (["r1"], "c1"), {"delete_source": "USER", "batch_id": "b1"}),
+    ("reset_indexing_status", "reset_indexing_status_for_connector", ("c1", "QUEUED"), {"reason": "rebuild"}),
+    ("update_user_sync_state", "update_user_sync_state", ("a@x.io", "IN_PROGRESS", "Drive"), {}),
+    ("update_drive_sync_state", "update_drive_sync_state", ("d1", "anything at all"), {}),
     *[(f"{fn} {coll} {'flat' if flat else 'arango'}", fn, ([edge(coll, flat, **GOOD_PROPS[coll])], coll), {})
       for fn in ("batch_create_edges", "create_edges_if_absent") for coll in GOOD_PROPS for flat in (False, True)],
     *[(f"batch_upsert_node_relations {'flat' if flat else 'arango'}", "batch_upsert_node_relations", ([edge("nodeRelations", flat, **GOOD_PROPS["nodeRelations"])],), {})
