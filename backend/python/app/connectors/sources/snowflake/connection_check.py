@@ -122,6 +122,7 @@ async def check_connection(
     auth_config: dict[str, Any],
     logger: Logger,
     *,
+    public_only: bool = True,
     data_source_factory: DataSourceFactory = _default_data_source,
 ) -> ConnectionCheckResult:
     """Try the setup form's auth settings with one statement."""
@@ -129,6 +130,10 @@ async def check_connection(
         settings = parse_connection_settings({"auth": auth_config})
         fingerprint = settings.signer().fingerprint if settings.auth_type == AuthType.KEY_PAIR else None
         data_source = data_source_factory(settings)
+        # The host stays under snowflakecomputing.com, but a private-link name such as
+        # acme.privatelink.snowflakecomputing.com can resolve to a private address.
+        if public_only:
+            data_source.http.require_public_addresses()
     except ValueError as e:
         return ConnectionCheckResult(success=False, message=str(e))
 
