@@ -385,7 +385,7 @@ async def test_an_org_argument_other_than_the_ambient_org_reaches_no_collection_
     await w.edge("permission", ("users", "c1"), ("recordGroups", "rgm"), type="USER", role="READER")
     assert (await w.p.get_entity_access_context("uid-c1", w.org))["record_group_ids"] == ["rgm"]
     got = await w.p.get_entity_access_context("uid-c1", "another-org")
-    assert got["record_group_ids"] == [] and "kb" not in {a["id"] for a in got["apps"]}             # nothing of this org is reached under another org's name
+    assert got["record_group_ids"] == [] and got["apps"] == []                                      # nothing of this org is reached under another org's name
 
 
 async def test_the_record_groups_a_user_reaches_by_each_grant_and_what_inherits_from_them(w: World) -> None:
@@ -475,25 +475,36 @@ async def test_the_index_candidate_is_an_app_or_organization_not_at_the_marker(w
         await w.p.get_entity_index_candidate("records", "m1")
 
 
-async def test_the_index_candidate_is_found_in_any_org_under_a_system_scope(pg_provider, org_ctx) -> None:
+async def test_the_index_candidate_is_found_in_any_org_under_a_system_scope(pg_provider, org_ctx, monkeypatch: pytest.MonkeyPatch) -> None:
     import uuid
     a, b, tag = uuid.uuid4().hex[:24], uuid.uuid4().hex[:24], uuid.uuid4().hex[:6]
-    for org in (a, b):
-        with org_ctx(org):
-            await pg_provider.batch_upsert_nodes([{"_key": org, "name": "o", "isActive": True, "orgId": org}], "organizations")
-    with org_ctx(b):
-        await pg_provider.batch_upsert_nodes([{"_key": f"app-{tag}", "type": "JIRA", "orgId": b, "entityIndexState": "old"}], "apps")
-    token = org_context.push(None)
+
+    real = pg_provider._sweep_orgs
+
+    async def ours() -> list[str | None]:                          # the real sweep, cut to the test's own orgs: the shared database holds other tests' apps
+        return [o for o in await real() if o is None or o in (a, b)]
+    monkeypatch.setattr(pg_provider, "_sweep_orgs", ours)
     try:
-        with org_context.system("test.index"):
-            found = await pg_provider.get_entity_index_candidate("apps", f"new-{tag}")
+        for org in (a, b):
+            with org_ctx(org):
+                await pg_provider.batch_upsert_nodes([{"_key": org, "name": "o", "isActive": True, "orgId": org}], "organizations")
+        with org_ctx(b):
+            await pg_provider.batch_upsert_nodes([{"_key": f"app-{tag}", "type": "JIRA", "entityIndexState": "old"}], "apps")      # a legacy app: no orgId
+        token = org_context.push(None)
+        try:
+            with org_context.system("test.index"):
+                found = await pg_provider.get_entity_index_candidate("apps", f"new-{tag}")
+        finally:
+            org_context.pop(token)
+        assert found["_key"] == f"app-{tag}" and found["orgId"] == b                # found in b, and named by its partition
+        with org_ctx(b):
+            assert (await pg_provider.get_entity_index_candidate("apps", f"new-{tag}"))["_key"] == f"app-{tag}"
+        with org_ctx(a):
+            assert await pg_provider.get_entity_index_candidate("apps", f"new-{tag}") is None
     finally:
-        org_context.pop(token)
-    assert found is not None and found["orgId"]                    # whichever org holds one that is not at the marker; this database holds others
-    with org_ctx(b):
-        assert (await pg_provider.get_entity_index_candidate("apps", f"new-{tag}"))["_key"] == f"app-{tag}"
-    with org_ctx(a):
-        assert await pg_provider.get_entity_index_candidate("apps", f"new-{tag}") is None
+        for org in (a, b):
+            with org_ctx(org):
+                await pg_provider._db.run(lambda tx, o=org: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", o), write=True)
 
 
 async def test_the_index_source_pages_a_scope_in_key_order(w: World) -> None:
@@ -586,7 +597,8 @@ async def test_the_entity_index_rebuild_ticks_with_no_ambient_org(w: World, monk
     )
     org_marker = entity_index_marker("fp", "st", version=ORG_PASS_VERSION)
     await w.nodes("organizations", {"_key": w.org, "isActive": True, "entityIndexState": org_marker, "entityIndexSweptAt": 4_000_000_000_000})      # not due
-    await w.nodes("apps", {"_key": "idx-app", "type": "JIRA", "name": "J"})
+    await w.p.batch_upsert_nodes([{"_key": "idx-app", "type": "JIRA", "name": "J"}], "apps")      # a legacy app: its document names no org
+    assert "orgId" not in await w.p.get_document("idx-app", "apps")
     await w.nodes("records", rec("ir1", connectorId="idx-app", recordName="one", indexingStatus="COMPLETED"))
     me = w.org
 

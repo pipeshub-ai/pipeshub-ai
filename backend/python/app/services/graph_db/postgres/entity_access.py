@@ -193,7 +193,7 @@ class EntityAccessMixin(PgBase):
                 JOIN graph.nodes s ON s.org_id = e.org_id AND s.coll = 'users' AND s.id = e.to_id
                 WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'users'""", org, uk)
             principals = [(uk, None), *((r["to_id"], r["cid"]) for r in linked)]
-            rows = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_apps */ SELECT DISTINCT a.id, a.doc FROM graph.nodes a WHERE a.org_id = $1 AND a.coll = 'apps' AND a.id IN (
+            rows = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_apps */ SELECT DISTINCT a.id, a.doc FROM graph.nodes a WHERE a.org_id = $1 AND $1 = $3 AND a.coll = 'apps' AND a.id IN (
                   SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'apps'
                   UNION SELECT t.to_id FROM graph.edges p JOIN graph.nodes tm ON tm.org_id = p.org_id AND tm.coll = 'teams' AND tm.id = p.to_id
                     JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'userAppRelation' AND t.from_coll = 'teams' AND t.from_id = tm.id AND t.to_coll = 'apps'
@@ -255,7 +255,8 @@ class EntityAccessMixin(PgBase):
                       AND (CASE WHEN $2 = 'apps' THEN coalesce(n.doc->>'status', '') <> $7 ELSE coalesce(n.doc->>'isExternal', 'false') <> 'true' END) ORDER BY n.id LIMIT 1""",
                                                               org, collection, ENTITY_INDEX_STATE_FIELD, marker, sweep_before, ENTITY_INDEX_SWEPT_AT_FIELD, APP_STATUS_DELETING), transaction)
                 if row:
-                    return _arango(_doc(row["doc"]), collection)
+                    doc = _arango(_doc(row["doc"]), collection)
+                    return {**doc, "orgId": org} if collection == "apps" else doc      # a legacy app with no orgId still names its org: the partition
         self._raise_failed(errors)
         return None
 
