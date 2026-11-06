@@ -2874,11 +2874,10 @@ export const purgeTemporaryConversation =
     next?: NextFunction,
   ): Promise<void> => {
     const requestId = req.context?.requestId;
-    const conversationId = String(req.params.conversationId ?? '');
+    const conversationId = req.params.conversationId ?? '';
     try {
-      const userId =
-        req.user?.userId != null ? String(req.user.userId) : undefined;
-      const orgId = req.user?.orgId != null ? String(req.user.orgId) : undefined;
+      const userId = req.user?.userId as string | undefined;
+      const orgId = req.user?.orgId as string | undefined;
       const actor = actorOf(orgId, userId);
       const existing = await convRepo().findOwned(
         CHAT_SCOPE,
@@ -2899,8 +2898,8 @@ export const purgeTemporaryConversation =
           typeof req.headers.authorization === 'string'
             ? req.headers.authorization
             : '',
-        orgId: String(orgId ?? ''),
-        userId: String(userId ?? ''),
+        orgId: orgId ?? '',
+        userId: userId ?? '',
       });
       const result = await unitOfWork.run((tx) =>
         convRepo().hardDeleteTemporary(conversationId, actor, tx),
