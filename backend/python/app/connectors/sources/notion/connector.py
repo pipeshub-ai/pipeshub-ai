@@ -1838,6 +1838,8 @@ class NotionConnector(BaseConnector):
 
             self.logger.info(f"Starting reindex for {len(records)} Notion records")
             await self._ensure_workspace_from_bot()
+            if not self._bot_user_ids:  # a reindex before any user sync: a page's untyped bot must not read as a person
+                await self._load_bot_user_ids()
 
             updated_records: list[tuple[Record, list[Permission], Record]] = []
             non_updated_records: List[Record] = []
@@ -4547,6 +4549,25 @@ class NotionConnector(BaseConnector):
         return all_file_records
 
     # ==================== Transform Helpers ====================
+
+    async def _load_bot_user_ids(self) -> None:
+        """The bots the workspace lists, as the user sync records them; a failure leaves them unknown."""
+        cursor = None
+        try:
+            while True:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.list_users(start_cursor=cursor, page_size=100)
+                if not response or not response.success or not response.data:
+                    return
+                data = response.data.json()
+                self._bot_user_ids.update(
+                    u["id"] for u in data.get("results") or [] if u.get("type") == "bot" and u.get("id"))
+                next_cursor = data.get("next_cursor")
+                if not data.get("has_more") or not next_cursor or next_cursor == cursor:
+                    return
+                cursor = next_cursor
+        except Exception as e:
+            self.logger.warning("Could not load Notion bot users: %s", e)
 
     async def _ensure_workspace_from_bot(self, *, refresh: bool = False) -> None:
         """Load the token's workspace from ``/users/me``; with ``refresh``, even when one is known.

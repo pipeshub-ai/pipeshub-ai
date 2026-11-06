@@ -9829,6 +9829,21 @@ class TestAccountsSharingAnExtractedOrganisation:
         assert ids == {"001000000000001AAA", "001000000000002AAA"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("names", [("Acme", "Acme LLC"), ("Acme LLC", "Acme")])
+    async def test_an_exact_name_and_a_key_match_never_both_take_the_extracted_node(self, names: tuple[str, str]) -> None:
+        """"Acme" finds extraction's "Acme" node by name, "Acme LLC" by its key: one account takes it, in either order."""
+        from app.modules.entity_resolution.keys import taxonomy_node_key
+
+        connector = _make_connector()
+        extracted = taxonomy_node_key(connector.data_entities_processor.org_id, "organizations", "acme")
+        tx = self._tx(connector, extracted, [])
+        await connector._sync_accounts(_async_iter_pages([
+            self._account("001000000000001AAA", names[0]), self._account("001000000000002AAA", names[1]),
+        ]))
+        written = tx.batch_upsert_orgs.await_args.args[0]
+        assert [w["_key"] for w in written].count(extracted) == 1
+
+    @pytest.mark.asyncio
     async def test_a_node_another_account_holds_is_not_adopted(self) -> None:
         from app.modules.entity_resolution.keys import taxonomy_node_key
 

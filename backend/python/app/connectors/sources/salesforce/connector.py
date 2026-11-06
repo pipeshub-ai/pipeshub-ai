@@ -4851,6 +4851,9 @@ class SalesforceConnector(BaseConnector):
                     for org, rg, _, _ in orgs_with_edges:
                         existing_key = external_org_key_by_name.get(org.name)
                         adopted = False
+                        if existing_key is not None and existing_key == extracted_organization_id(org_id, org.name):
+                            # Extraction's node found by its exact name: claimed only as below, once per page.
+                            existing_key = None
                         if existing_key is None:
                             # A node documents named before the CRM synced the
                             # account (KG-13 3b): the account takes it over, so

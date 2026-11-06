@@ -156,6 +156,23 @@ class TestNotionTeamWarning:
         assert NotionConnector._connector_metadata["config"]["isAdminAccessRequired"] is False
 
 
+class TestNotionPersonalBots:
+    @pytest.mark.asyncio
+    async def test_a_reindex_before_any_sync_learns_its_own_bot_without_listing_members(self) -> None:
+        connector = _make_connector()
+        response = _bot_response("ws-1")
+        response.data.json.return_value = {**response.data.json.return_value, "id": "bot-own"}
+        datasource = MagicMock()
+        datasource.retrieve_bot_user = AsyncMock(return_value=response)
+        datasource.list_users = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=datasource)
+
+        await connector._load_bot_user_ids()
+
+        assert connector._bot_user_ids == {"bot-own"}
+        datasource.list_users.assert_not_called()
+
+
 class TestNotionPersonalWorkspaceResolution:
     @pytest.mark.asyncio
     async def test_sync_users_resolves_workspace_without_listing_members(self):

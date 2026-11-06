@@ -165,6 +165,17 @@ class NotionPersonalConnector(NotionConnector):
         # when serializing, and the parent stamps this onto every record it builds.
         self.connector_name = Connectors.NOTION_PERSONAL
 
+    async def _load_bot_user_ids(self) -> None:
+        """Only the integration's own bot: a personal connection never enumerates the workspace's users."""
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.retrieve_bot_user()
+            bot_user = response.data.json() if response and response.success and response.data else {}
+            if isinstance(bot_user, dict) and bot_user.get("id"):
+                self._bot_user_ids.add(bot_user["id"])
+        except Exception as e:
+            self.logger.warning("Could not load the Notion bot user: %s", e)
+
     async def _sync_users(self) -> None:
         """Resolve the workspace from the bot user; never enumerate its members.
 

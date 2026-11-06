@@ -928,6 +928,49 @@ class TestNotionConnectorCleanup:
         )
 
 
+class TestNotionReindexKnowsTheBots:
+    @pytest.mark.asyncio
+    async def test_a_reindex_before_any_user_sync_loads_the_bots_before_it_reads_pages(self) -> None:
+        """A fresh connector that reindexes first must still mark a page's untyped bot author as a bot."""
+        connector = _make_connector()
+        connector.workspace_id = "ws-1"
+        bots = _make_api_response(success=True, data={
+            "results": [{"id": "person-1", "type": "person"}, {"id": "bot-1", "type": "bot"}],
+            "has_more": False, "next_cursor": None,
+        })
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=bots)
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        seen: list[set] = []
+
+        async def fetch(_record: object) -> None:
+            seen.append(set(connector._bot_user_ids))  # what the page's authorship would be judged by
+
+        connector._check_and_fetch_updated_record = AsyncMock(side_effect=fetch)
+        record = MagicMock()
+        record.id = "rec-1"
+        record.external_record_id = "page-1"
+        record.record_type = RecordType.FILE
+
+        await connector.reindex_records([record])
+
+        assert seen == [{"bot-1"}]
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_after_the_user_sync_does_not_list_users_again(self) -> None:
+        connector = _make_connector()
+        connector.workspace_id = "ws-1"
+        connector._bot_user_ids = {"bot-1"}
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._check_and_fetch_updated_record = AsyncMock(return_value=None)
+
+        await connector.reindex_records([MagicMock(id="rec-1", external_record_id="page-1", record_type=RecordType.FILE)])
+
+        mock_ds.list_users.assert_not_awaited()
+
+
 class TestNotionSyncUsersWorkspace:
     @pytest.mark.asyncio
     async def test_sync_users_person_and_bot(self):
