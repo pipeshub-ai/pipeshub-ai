@@ -28,6 +28,7 @@ from app.services.graph_db.postgres.base import (
     PgBase,
     _arango,
     _doc,
+    _external_ok,
     _j,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -63,6 +64,7 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
                 return default() if callable(default) else default
         return wrapper
     return deco
+
 
 
 
@@ -116,8 +118,12 @@ class IdentityMixin(PgBase):
     # ---- users and orgs ------------------------------------------------------------------------------------------
     @_soft(None, flag=True)
     async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
-        d = await self._one("/* pipeshub:graph.get_user_by_user_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND doc->>'userId' = $2 LIMIT 1",
-                            current_org_id(), user_id)
+        org = current_org_id()
+        if isinstance(user_id, str) and 0 < len(user_id) <= 200:      # the vetted read of graph_0004
+            d = await self._one("/* pipeshub:graph.user_by_user_id */ SELECT node_id, doc FROM graph.user_by_user_id($1)", user_id)
+        else:
+            d = await self._one("/* pipeshub:graph.get_user_by_user_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND doc->>'userId' = $2 LIMIT 1",
+                                org, user_id)
         return _arango(d, "users") if d else None
 
     @_soft(None, flag=True)
@@ -362,8 +368,12 @@ class IdentityMixin(PgBase):
     # ---- groups and roles ----------------------------------------------------------------------------------------
     @_soft(None, flag=True)
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> AppUserGroup | None:
-        rows = await self._id_rows("""/* pipeshub:graph.get_user_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'groups'
-            AND doc->>'externalGroupId' = $2 AND doc->>'connectorId' = $3 LIMIT 1""", [current_org_id(), external_id, connector_id], transaction)
+        org = current_org_id()
+        if _external_ok(connector_id, external_id):      # the vetted read of graph_0004
+            rows = await self._id_rows("/* pipeshub:graph.user_group_by_external */ SELECT node_id, doc FROM graph.user_group_by_external($1, $2)", [connector_id, external_id], transaction)
+        else:
+            rows = await self._id_rows("""/* pipeshub:graph.get_user_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'groups'
+                AND doc->>'externalGroupId' = $2 AND doc->>'connectorId' = $3 LIMIT 1""", [org, external_id, connector_id], transaction)
         return AppUserGroup.from_arango_base_user_group(_arango(_doc(rows[0]["doc"]), "groups")) if rows else None
 
     @_soft(list, flag=True)
@@ -396,8 +406,12 @@ class IdentityMixin(PgBase):
 
     @_soft(None, flag=True)
     async def get_app_role_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> AppRole | None:
-        rows = await self._id_rows("""/* pipeshub:graph.get_app_role_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'roles'
-            AND doc->>'externalRoleId' = $2 AND doc->>'connectorId' = $3 LIMIT 1""", [current_org_id(), external_id, connector_id], transaction)
+        org = current_org_id()
+        if _external_ok(connector_id, external_id):      # the vetted read of graph_0004
+            rows = await self._id_rows("/* pipeshub:graph.app_role_by_external */ SELECT node_id, doc FROM graph.app_role_by_external($1, $2)", [connector_id, external_id], transaction)
+        else:
+            rows = await self._id_rows("""/* pipeshub:graph.get_app_role_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'roles'
+                AND doc->>'externalRoleId' = $2 AND doc->>'connectorId' = $3 LIMIT 1""", [org, external_id, connector_id], transaction)
         return AppRole.from_arango_base_role(_arango(_doc(rows[0]["doc"]), "roles")) if rows else None
 
     async def batch_upsert_user_groups(self, user_groups: list, transaction: str | None = None) -> None:

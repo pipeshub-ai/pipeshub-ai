@@ -254,6 +254,21 @@ class PgBase:
         return {f: doc.get("id" if f == "_key" else f) for f in fields} if fields else _arango(doc, collection)
 
 
+_PG_TRUE = frozenset({"t", "tr", "tru", "true", "y", "ye", "yes", "on", "1"})
+
+
+def _pgbool(v: object) -> bool:
+    """``coalesce((doc->>key)::boolean, false)`` for a stored value: JSON null or absent is false, a boolean is itself, any other value reads as PostgreSQL reads its text."""
+    if v is None or isinstance(v, bool):
+        return bool(v)
+    return str(v).strip().lower() in _PG_TRUE
+
+
+def _external_ok(connector_id: object, external_id: object) -> bool:
+    """A (connector, external id) pair the vetted reads of graph_0004 accept; any other pair is read by the plain statement."""
+    return isinstance(connector_id, str) and isinstance(external_id, str) and 0 < len(connector_id) <= 200 and 0 < len(external_id) <= 2000
+
+
 def _field(name: str) -> str:
     return "id" if name == "_key" else name
 

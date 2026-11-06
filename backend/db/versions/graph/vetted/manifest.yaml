@@ -140,3 +140,107 @@ functions:
             WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
                        ELSE n.doc->f.k IS DISTINCT FROM f.v END)
         ORDER BY n.id LIMIT p_limit;
+
+# ---- more hot lookups (graph_0004) ------------------------------------------------------------------------------------------------
+# The same reason as the code graph's reads above: a plain statement under the service role reaches an expression index on the document
+# only through org_id. Each function answers one lookup the services make on every request or sync step, from the org of app.org_id.
+
+  # The records of one connector with one external id (index nodes_record_external); the caller picks the live or deleted one.
+  - name: graph.record_by_external
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_external_id, type: text, length: [1, 2000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalRecordId' = p_external_id
+        ORDER BY n.id LIMIT 100;
+
+  # The user with one userId (index nodes_user_userid).
+  - name: graph.user_by_user_id
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_user_id, type: text, length: [1, 200]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'users' AND n.doc->>'userId' = p_user_id
+        ORDER BY n.id LIMIT 1;
+
+  # The group of one connector with one external group id (index nodes_group_by_external).
+  - name: graph.user_group_by_external
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_external_id, type: text, length: [1, 2000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'groups' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalGroupId' = p_external_id
+        ORDER BY n.id LIMIT 1;
+
+  # The record group of one connector with one external group id (index nodes_group_external).
+  - name: graph.record_group_by_external
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_external_id, type: text, length: [1, 2000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'recordGroups' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalGroupId' = p_external_id
+        ORDER BY n.id LIMIT 1;
+
+  # The role of one connector with one external role id (index nodes_role_by_external).
+  - name: graph.app_role_by_external
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_external_id, type: text, length: [1, 2000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'roles' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalRoleId' = p_external_id
+        ORDER BY n.id LIMIT 1;
+
+  # The records of the org that hold any of the given virtual record ids (index nodes_record_vrid), whose own orgId is the org; up to 5000.
+  - name: graph.records_by_virtual_id
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_vrids, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 200]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'virtualRecordId' = ANY(p_vrids) AND n.doc->>'orgId' = v_org
+        ORDER BY n.id LIMIT 5000;
