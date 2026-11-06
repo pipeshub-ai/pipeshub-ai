@@ -2585,6 +2585,20 @@ class TestChecklistAudit:
 
         assert len(server.calls("POST", "/index.php/core/wipe/check")) == 1, "a 404 is an answer: no wipe"
 
+    async def test_the_wipe_calls_do_not_send_the_rejected_password(self, server, db, store) -> None:
+        """Nextcloud tries any credentials a request carries, so each one sent is one more failed sign-in."""
+        connector = await synced(server, db, store)
+        server.wipe_requested = True
+
+        with pytest.raises(ConnectorInitError, match="remote wipe"):
+            await connector.run_sync()
+
+        wipe_calls = server.calls("POST", "/index.php/core/wipe/")
+        assert [server._decoded_path(r)[len(server.base_path):] for r in wipe_calls] == [
+            "/index.php/core/wipe/check", "/index.php/core/wipe/success",
+        ]
+        assert not any("authorization" in r.headers for r in wipe_calls)
+
     async def test_an_unfinished_remote_wipe_is_asked_again_by_the_next_sync(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         server.wipe_requested = True

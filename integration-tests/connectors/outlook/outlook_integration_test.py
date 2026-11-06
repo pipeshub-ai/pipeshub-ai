@@ -109,6 +109,9 @@ _RECORDS = CollectionNames.RECORDS.value
 _RECORD_GROUPS = CollectionNames.RECORD_GROUPS.value
 _APPS = CollectionNames.APPS.value
 _AUTO_INDEX_OFF = ProgressStatus.AUTO_INDEX_OFF.value
+_INDEXING_UNSETTLED = frozenset(
+    s.value for s in (ProgressStatus.NOT_STARTED, ProgressStatus.QUEUED, ProgressStatus.IN_PROGRESS)
+)
 
 # The B2 sync can read the seed group's members before Graph drops S from them.
 _MEMBERSHIP_RESYNCS = 3
@@ -737,6 +740,17 @@ class TestReindex:
         new_subject = ctx.world.name("reindex updated")
         fresh = await ctx.helper.update_message(p, m["reindex_update"], {"subject": new_subject})
         assert mail_content_revision(fresh) != before.external_revision_id
+
+        # Reindex skips a record the indexer is still working on, so a reindex sent while
+        # the sync's own indexing of this mail is queued or running can be dropped and
+        # never fetch the edit.
+        async def _indexing_settled() -> bool:
+            status = (await _index_mark(ctx, before.id))[1]
+            return status is not None and status not in _INDEXING_UNSETTLED
+
+        await _await_condition(
+            _indexing_settled, "reindex-update mail's own indexing finished", timeout=C.REINDEX_TIMEOUT,
+        )
         _reindex_as(ctx, ctx.p.session, before.id)
 
         async def _updated() -> bool:
@@ -1042,9 +1056,11 @@ async def phase_b2(ctx: Ctx, phase_b1: dict[str, Any]) -> dict[str, Any]:
     await h.set_account_enabled(uid, False)
 
     async def _disabled() -> bool:
-        return await h.account_enabled(uid) is False
+        return await h.listed_account_enabled(uid) is False
 
-    await wait_until_outlook_condition(_disabled, description="throwaway user disabled")
+    await wait_until_outlook_condition(
+        _disabled, description="throwaway user disabled in the user list", timeout=600,
+    )
     await h.delete_group(phase_b1["new_group_id"])
     w.m365_group_ids.remove(phase_b1["new_group_id"])
     w.deleted_directory_ids.append(phase_b1["new_group_id"])
