@@ -13,7 +13,7 @@ import {
   UnauthorizedError,
   UnprocessableEntityError,
 } from './http.errors';
-import { BaseError } from './base.error';
+import { BaseError, withCause } from './base.error';
 
 /** The connector service's refusal of a write to a knowledge base that is being deleted. */
 export const KB_BEING_DELETED_MESSAGE =
@@ -176,23 +176,19 @@ const isConnectionRefused = (error: Indexed): boolean => {
 };
 
 /**
- * The error for a call to another PipesHub service that never got an answer:
- * 504 when it timed out, 503 when the service could not be reached (fetch's
- * "fetch failed", or axios's request with no response). Null for anything
- * else, including a call the service did answer. The one definition of
- * "unreachable", shared by `handleBackendError` and the error middleware.
+ * Whether a call to another PipesHub service never got an answer: 'timeout'
+ * when it timed out, 'unavailable' when the service could not be reached
+ * (fetch's "fetch failed", or axios's request with no response). Null for
+ * anything else, including a call the service did answer. The one definition
+ * of "unreachable", shared by `unansweredCallError` and the log taxonomy
+ * (`classifyError`).
  */
-export const unansweredCallError = (
+export const unansweredKind = (
   error: unknown,
-  operation: string,
-): HttpError | null => {
+): 'timeout' | 'unavailable' | null => {
   const source = asRecord(error);
   if (!source) return null;
-  const timedOut = (): HttpError => {
-    logger.error(`Timed out waiting for the service during ${operation}`);
-    return transientError(504, undefined, undefined);
-  };
-  if (asText(source.name) === 'TimeoutError') return timedOut();
+  if (asText(source.name) === 'TimeoutError') return 'timeout';
   const response = asRecord(source.response);
   // An answer with a status reached us; words like "fetch failed" in its body
   // describe the service's own work, not our connection to it.
@@ -208,18 +204,26 @@ export const unansweredCallError = (
     (source.detail === undefined || source.detail === null) &&
     isUnansweredAxiosCode(asText(source.code));
   if (noResponse && AXIOS_TIMEOUT_CODES.has(asText(source.code) ?? '')) {
-    return timedOut();
+    return 'timeout';
   }
-  if (!isConnectionRefused(source) && !noResponse) return null;
-  logger.error(`Could not reach the service during ${operation}`, {
-    cause:
-      asText(asRecord(source.cause)?.code) ??
-      asText(source.code) ??
-      asText(source.message),
-  });
-  return markClientSafe(
-    new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
-  );
+  return isConnectionRefused(source) || noResponse ? 'unavailable' : null;
+};
+
+/**
+ * The error for a call that never got an answer (see `unansweredKind`): 504
+ * when it timed out, 503 when the service could not be reached, carrying the
+ * original as its `cause`. Not logged here: whoever handles it logs it once.
+ */
+export const unansweredCallError = (error: unknown): HttpError | null => {
+  const kind = unansweredKind(error);
+  if (!kind) return null;
+  const mapped =
+    kind === 'timeout'
+      ? transientError(504, undefined, undefined)
+      : markClientSafe(
+          new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
+        );
+  return withCause(mapped, error);
 };
 
 /**
@@ -249,7 +253,7 @@ export const handleBackendError = (
     );
   }
 
-  const unanswered = unansweredCallError(source, operation);
+  const unanswered = unansweredCallError(source);
   if (unanswered) return unanswered;
 
   // axios-style `{ response: { status, data } }`, or a service command's

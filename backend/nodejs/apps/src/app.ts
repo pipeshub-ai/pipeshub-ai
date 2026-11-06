@@ -5,9 +5,6 @@ import express, { Express, Response } from 'express';
 import path from 'path';
 import helmet from 'helmet';
 import cors from 'cors';
-import morgan from 'morgan';
-import { IncomingMessage } from 'http';
-import { redactSensitiveQueryParams } from './libs/utils/log-redaction.utils';
 import http from 'http';
 import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
@@ -19,6 +16,7 @@ import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
 import { registerOAuthTokenService } from './libs/services/oauth-token-service.provider';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
+import { accessLog } from './libs/middlewares/access-log.middleware';
 import {
   runWithRequestContext,
   newSystemRoot,
@@ -32,7 +30,6 @@ import { docStore } from './libs/repositories/store-select';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
-import { accessLogLevel } from './libs/utils/api-path.utils';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
@@ -562,6 +559,9 @@ export class Application {
       }),
     );
 
+    // One access line per request; before the body parsers so their 400/413 are logged too.
+    this.app.use(accessLog());
+
     // Body parsing. /mcp has its own, smaller limit, and it must come first:
     // a JSON parser skips a body an earlier one has read, and one that came
     // after the shared 10 MB parser would never get to apply its limit.
@@ -569,53 +569,6 @@ export class Application {
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
-
-    // Logging — only log API requests, skip static assets.
-    // 'combined' logs the full request URL, and OAuth callbacks arrive as
-    // ?code=<authorization code> — a credential exchangeable for tokens by
-    // whoever reads the log. Same format, with those values redacted.
-    morgan.token('url-redacted', (req: IncomingMessage) =>
-      redactSensitiveQueryParams((req as { originalUrl?: string; url?: string }).originalUrl ?? req.url ?? ''),
-    );
-    // The Referer is client-supplied and can itself be an OAuth callback or a
-    // presigned URL, so it carries the same credentials the request line does.
-    morgan.token('referrer-redacted', (req: IncomingMessage) => {
-      const referrer = req.headers.referer ?? req.headers.referrer;
-      return typeof referrer === 'string'
-        ? redactSensitiveQueryParams(referrer)
-        : '-';
-    });
-    const combinedRedacted =
-      ':remote-addr - :remote-user [:date[clf]] ":method :url-redacted ' +
-      'HTTP/:http-version" :status :res[content-length] ":referrer-redacted" ' +
-      '":user-agent"';
-    // Evaluated after the response: a mounted router has rewritten req.path
-    // to its own mount-relative path by then, originalUrl keeps the full one.
-    const levelOf = (
-      req: { originalUrl: string },
-      res: { statusCode: number },
-    ): ReturnType<typeof accessLogLevel> =>
-      accessLogLevel(req.originalUrl.split('?')[0] ?? '', res.statusCode);
-    this.app.use(
-      morgan(combinedRedacted, {
-        stream: {
-          write: (message: string) => {
-            this.logger.info(message.trim());
-          },
-        },
-        skip: (req, res) => levelOf(req, res) !== 'info',
-      }),
-    );
-    this.app.use(
-      morgan(combinedRedacted, {
-        stream: {
-          write: (message: string) => {
-            this.logger.debug(message.trim());
-          },
-        },
-        skip: (req, res) => levelOf(req, res) !== 'debug',
-      }),
-    );
 
     // Global rate limiter - applies to all routes
     this.app.use(

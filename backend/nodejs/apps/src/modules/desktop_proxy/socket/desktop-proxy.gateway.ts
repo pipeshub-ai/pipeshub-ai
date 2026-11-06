@@ -13,6 +13,7 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { findSessionRefusal, findSessionRefusals } from '../../../config';
 import { LocalFsRelay } from './local-fs-relay';
+import { classifyError } from '../../../libs/utils/error-class';
 import {
   DesktopRegisterAck,
   DesktopRegisterPayload,
@@ -234,7 +235,12 @@ export class DesktopProxySocketGateway {
     let decoded: Awaited<ReturnType<AuthTokenService['verifyToken']>>;
     try {
       decoded = await this.authTokenService.verifyToken(extractedToken);
-    } catch {
+    } catch (error) {
+      // The socket is refused here, so this is the one place it is logged.
+      this.logger.warn('socket.auth.rejected', {
+        error_class: classifyError(error),
+        error,
+      });
       return new BadRequestError('Authentication token expired');
     }
 

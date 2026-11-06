@@ -1,4 +1,4 @@
-import winston from 'winston';
+import winston, { Logform } from 'winston';
 import axios from 'axios';
 import { Request } from 'express';
 import { injectable } from 'inversify';
@@ -32,7 +32,6 @@ export enum LogLevel {
   Warning = 'warning',
   Error = 'error',
 }
-
 
 const customLevels = {
   levels: {
@@ -99,7 +98,6 @@ export function getLogLevel(): LogLevel {
   return LogLevel.Info;
 }
 
-
 export interface LoggerConfig {
   service: string;
   level?: string;
@@ -108,8 +106,156 @@ export interface LoggerConfig {
 
 const DEFAULT_SERVICE = 'default-service';
 
-/** Shown in the text line as ` | k=v`, in this order, when the record has them. */
-const TEXT_FIELD_KEYS = ['org_id', 'user_id', ...LOG_CONTEXT_KEYS] as const;
+/** audit() logs on behalf of its caller, so its own frame is skipped like the logger's. */
+const AUDIT_FRAME = /[\\/]libs[\\/]services[\\/]audit\.[jt]s:/;
+
+/** Event fields a call site may pass in `meta`; they render like the context ids. */
+const EVENT_FIELD_KEYS = [
+  'method',
+  'route',
+  'status',
+  'duration_ms',
+  'client_ip',
+  'error_class',
+  'error_type',
+  'outcome',
+  'actor',
+  'target',
+  'reason',
+] as const;
+
+/** Shown in the text line as ` | k=v`, in this order (identity first, as in Python), when the record has them. */
+const TEXT_FIELD_KEYS = [
+  'org_id',
+  'user_id',
+  ...LOG_CONTEXT_KEYS,
+  ...EVENT_FIELD_KEYS,
+] as const;
+
+/** The top-level JSON keys after `request_id`, in order. */
+const JSON_FIELD_KEYS = [
+  'org_id',
+  'user_id',
+  'organization_id_hash',
+  'thread_id',
+  ...LOG_CONTEXT_KEYS,
+  ...EVENT_FIELD_KEYS,
+] as const;
+
+const HTTP_METHODS = new Set([
+  'GET',
+  'HEAD',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+  'OPTIONS',
+]);
+const OUTCOMES = new Set(['success', 'failure', 'partial', 'skipped']);
+const SNAKE_TOKEN = /^[a-z0-9_]{1,64}$/;
+const TYPE_NAME = /^[A-Za-z0-9_]{1,64}$/;
+const SHOWN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/;
+/** The ids PipesHub issues: Mongo ObjectId, UUID, or a `sys-`/`anon-` root. */
+const PIPESHUB_ID =
+  /^(?:[a-f0-9]{24}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?:sys|anon)-[A-Za-z0-9]{1,64})$/;
+
+export const isPipesHubId = (value: unknown): value is string =>
+  typeof value === 'string' && PIPESHUB_ID.test(value);
+
+const isText = (v: unknown): boolean => typeof v === 'string';
+const isIdValue = (v: unknown): boolean =>
+  typeof v === 'string' || typeof v === 'number';
+const matches =
+  (pattern: RegExp) =>
+  (v: unknown): boolean =>
+    typeof v === 'string' && pattern.test(v);
+
+/**
+ * A `meta` key becomes a field (` | k=v`, a JSON key) only when its value has
+ * the field's type; anything else stays in `metadata`. So `status` is always
+ * the HTTP status in both runtimes, and free text never reaches the suffix.
+ * `null` is kept (left out of the text, `null` in JSON).
+ */
+const FIELD_TYPES: Readonly<Record<string, (value: unknown) => boolean>> = {
+  ...Object.fromEntries(LOG_CONTEXT_KEYS.map((key) => [key, isIdValue])),
+  method: (v) => typeof v === 'string' && HTTP_METHODS.has(v),
+  route: isText,
+  status: Number.isInteger,
+  duration_ms: Number.isInteger,
+  client_ip: isText,
+  error_class: matches(SNAKE_TOKEN),
+  error_type: matches(TYPE_NAME),
+  outcome: (v) => typeof v === 'string' && OUTCOMES.has(v),
+  // An id as shown (raw, or a provider's hash); never an email or a name.
+  actor: matches(SHOWN_ID),
+  target: matches(SHOWN_ID),
+  reason: matches(SNAKE_TOKEN),
+  // Fill the identity only when the request context has none (an audit line before sign-in).
+  org_id: isPipesHubId,
+  user_id: isPipesHubId,
+  // Reserved: on the record for a provider (EE reads it), not printed by the default formats.
+  event_name: matches(EVENT_NAME),
+};
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+  if (value === null || typeof value !== 'object') return false;
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+};
+
+/** Splits a call site's `meta` into typed fields and the rest, which stays `metadata`. */
+function splitFields(meta: unknown): {
+  fields: Record<string, unknown>;
+  rest: unknown;
+} {
+  if (!isPlainObject(meta)) return { fields: {}, rest: meta };
+  const fields: Record<string, unknown> = {};
+  const rest: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(meta)) {
+    const fits = FIELD_TYPES[key];
+    if (fits && value === undefined) continue;
+    if (fits && (value === null || fits(value))) fields[key] = value;
+    else rest[key] = value;
+  }
+  const lifted = Object.keys(fields).length > 0;
+  return {
+    fields,
+    rest:
+      lifted && Object.keys(rest).length === 0
+        ? undefined
+        : lifted
+          ? rest
+          : meta,
+  };
+}
+
+/**
+ * How an org and a user id appear on a record, as the provider decides: with
+ * `logIdentity`, what it returns; without it, the legacy `hashOrgId` path
+ * (`organization_id_hash`, never a raw id). Used for the request's identity
+ * and for any other id that names a user (an audit actor).
+ */
+export function shownIdentity(ids: { org_id?: string; user_id?: string }): {
+  org_id?: string;
+  user_id?: string;
+  organization_id_hash?: string;
+} {
+  const provider = getProvider();
+  if (provider.logIdentity) {
+    const shown = provider.logIdentity({
+      ...(ids.org_id && { org_id: ids.org_id }),
+      ...(ids.user_id && { user_id: ids.user_id }),
+    });
+    return {
+      ...(shown.org_id && { org_id: shown.org_id }),
+      ...(shown.user_id && { user_id: shown.user_id }),
+    };
+  }
+  const orgHash =
+    ids.org_id && provider.hashOrgId ? provider.hashOrgId(ids.org_id) : null;
+  return orgHash ? { organization_id_hash: orgHash } : {};
+}
 
 /**
  * The text-line value rule shared with the Python side (docs/logging.md): bare
@@ -126,33 +272,151 @@ export function formatTextValue(value: string | number | boolean): string {
 /** null and undefined are left out of the text line. */
 function textFields(info: Record<string, unknown>): string {
   const pairs = TEXT_FIELD_KEYS.filter((key) => info[key] != null).map(
-    (key) => `${key}=${formatTextValue(info[key] as string | number | boolean)}`,
+    (key) =>
+      `${key}=${formatTextValue(info[key] as string | number | boolean)}`,
   );
   return pairs.length > 0 ? ` | ${pairs.join(' ')}` : '';
 }
 
-/** Request id, thread, identity (as the provider shows it) and bound ids, or nothing outside a context. */
-function logContextFields(): Record<string, unknown> {
+/**
+ * Request id, thread, bound ids, then the call's own fields (an explicit field
+ * beats a bound one, as in Python), then the identity as the provider shows it.
+ * An explicit org_id/user_id only fills an identity the context does not have.
+ */
+function recordFields(
+  fields: Record<string, unknown>,
+): Record<string, unknown> {
+  const { org_id: orgId, user_id: userId, ...own } = fields;
   const store = getRequestContext();
-  if (!store) return {};
-  const fields: Record<string, unknown> = {
+  const identity = shownIdentity({
+    org_id: store?.orgId ?? (orgId as string | undefined) ?? undefined,
+    user_id: store?.userId ?? (userId as string | undefined) ?? undefined,
+  });
+  if (!store) return { ...own, ...identity };
+  return {
     request_id: currentDisplayId(),
     thread_id: threadId,
     ...store.logFields,
+    ...own,
+    ...identity,
   };
-  const provider = getProvider();
-  if (provider.logIdentity) {
-    const shown = provider.logIdentity({
-      ...(store.orgId && { org_id: store.orgId }),
-      ...(store.userId && { user_id: store.userId }),
-    });
-    if (shown.org_id) fields.org_id = shown.org_id;
-    if (shown.user_id) fields.user_id = shown.user_id;
-  } else if (store.orgId && provider.hashOrgId) {
-    const orgHash = provider.hashOrgId(store.orgId);
-    if (orgHash) fields.organization_id_hash = orgHash;
+}
+
+const MESSAGE = Symbol.for('message');
+
+/** Every string, at any depth, through the text redactor (the JSON line's rule, as in Python). */
+function redactStrings(value: unknown): unknown {
+  if (typeof value === 'string') return redactSecretsInText(value);
+  if (Array.isArray(value)) return value.map(redactStrings);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, v]) => [key, redactStrings(v)]),
+    );
   }
-  return fields;
+  return value;
+}
+
+/** What the serialiser made of an Error: a name and a message (see serializeError). */
+const isSerializedError = (value: unknown): value is Record<string, unknown> =>
+  isPlainObject(value) && typeof value.name === 'string' && 'message' in value;
+
+/**
+ * One JSON object per line with the Python keys (docs/logging.md): timestamp,
+ * level, logger, filename, line, message, request_id, identity, the other
+ * fields, `error` (a serialised Error), everything else under `metadata`, stack.
+ */
+const jsonLine = winston.format((info) => {
+  const out: Record<string, unknown> = {
+    timestamp: info.timestamp,
+    level: info.level,
+    logger: info.service || DEFAULT_SERVICE,
+    filename: info.filename,
+    line: info.line,
+    message: info.message,
+    request_id: info.request_id ?? null,
+  };
+  for (const key of JSON_FIELD_KEYS) {
+    if (info[key] !== undefined) out[key] = info[key];
+  }
+  const { metadata } = info;
+  if (isSerializedError(metadata)) {
+    out.error = metadata;
+  } else if (isPlainObject(metadata) && isSerializedError(metadata.error)) {
+    const { error, ...rest } = metadata;
+    out.error = error;
+    if (Object.keys(rest).length > 0) out.metadata = rest;
+  } else if (metadata !== undefined) {
+    out.metadata = metadata;
+  }
+  if (info.stack !== undefined) out.stack = info.stack;
+  info[MESSAGE] = JSON.stringify(redactStrings(out), (_key, value: unknown) =>
+    typeof value === 'bigint' ? value.toString() : value,
+  );
+  return info;
+});
+
+const LOG_FORMATS = ['text', 'json'] as const;
+export type LogFormat = (typeof LOG_FORMATS)[number];
+
+/** `LOG_FORMAT`: `text` (default) or `json`, any case; anything else is text. */
+export function getLogFormat(): LogFormat {
+  return process.env.LOG_FORMAT?.trim().toLowerCase() === 'json'
+    ? 'json'
+    : 'text';
+}
+
+const textFormat = winston.format.combine(
+  // First, so the console line and the JSON file lines both get it.
+  redactMetadata(),
+  winston.format.timestamp(),
+  winston.format.errors({ stack: true }),
+  winston.format.printf((info) => {
+    const { message, metadata, stack, filename, line, request_id, thread_id } =
+      info;
+    const service = info.service || DEFAULT_SERVICE;
+
+    const ts =
+      typeof info.timestamp === 'string'
+        ? info.timestamp.replace('T', ' ').replace('Z', '').replace('.', ',')
+        : info.timestamp;
+
+    const rawLevel = String(
+      info[Symbol.for('level')] || info.level,
+    ).toUpperCase();
+    const levelColors: Record<string, string> = {
+      ERROR: '\x1b[31m',
+      WARNING: '\x1b[33m',
+    };
+    const levelStr = levelColors[rawLevel]
+      ? `${levelColors[rawLevel]}${rawLevel}\x1b[0m`
+      : rawLevel;
+
+    // Already redacted and de-cycled by logWithLevel.
+    let metaString = '';
+    if (metadata) {
+      try {
+        metaString = `\nmetadata: ${JSON.stringify(metadata, null, 2)}`;
+      } catch (error) {
+        metaString = '\nmetadata: [Circular Structure]';
+      }
+    }
+    const stackString = stack ? `\nstack: ${stack}` : '';
+    const fileInfo = filename ? `[${filename}:${line}]` : '';
+    // Present only when a request context is in flight.
+    const traceInfo =
+      request_id !== undefined ? `[req:${request_id} thr:${thread_id}] ` : '';
+
+    return `${ts} - ${service} - ${levelStr} - ${traceInfo}${fileInfo} - ${message}${textFields(info)}${metaString}${stackString}`;
+  }),
+);
+
+/** The console format for the current LOG_FORMAT, offered to the provider as its default. */
+function consoleFormat(): Logform.Format {
+  return getProvider().consoleFormat(
+    getLogFormat() === 'json'
+      ? winston.format.combine(textFormat, jsonLine())
+      : textFormat,
+  );
 }
 
 /**
@@ -206,45 +470,6 @@ export class Logger {
   }
 
   private initializeLogger(config?: LoggerConfig): winston.Logger {
-    const logFormat = winston.format.combine(
-      // First, so the console line and the JSON file lines both get it.
-      redactMetadata(),
-      winston.format.timestamp(),
-      winston.format.errors({ stack: true }),
-      winston.format.printf((info) => {
-        const { message, metadata, stack, filename, line, request_id, thread_id } = info;
-        const service = info.service || DEFAULT_SERVICE;
-
-        const ts =
-          typeof info.timestamp === 'string'
-            ? info.timestamp.replace('T', ' ').replace('Z', '').replace('.', ',')
-            : info.timestamp;
-
-        const rawLevel = String(info[Symbol.for('level')] || info.level).toUpperCase();
-        const levelColors: Record<string, string> = { ERROR: '\x1b[31m', WARNING: '\x1b[33m' };
-        const levelStr = levelColors[rawLevel]
-          ? `${levelColors[rawLevel]}${rawLevel}\x1b[0m`
-          : rawLevel;
-
-        // Already redacted and de-cycled by logWithLevel.
-        let metaString = '';
-        if (metadata) {
-          try {
-            metaString = `\nmetadata: ${JSON.stringify(metadata, null, 2)}`;
-          } catch (error) {
-            metaString = '\nmetadata: [Circular Structure]';
-          }
-        }
-        const stackString = stack ? `\nstack: ${stack}` : '';
-        const fileInfo = filename ? `[${filename}:${line}]` : '';
-        // Present only when a request context is in flight.
-        const traceInfo =
-          request_id !== undefined ? `[req:${request_id} thr:${thread_id}] ` : '';
-
-        return `${ts} - ${service} - ${levelStr} - ${traceInfo}${fileInfo} - ${message}${textFields(info)}${metaString}${stackString}`;
-      })
-    );
-
     const provider = getProvider();
     const transports: winston.transport[] = [];
     if (provider.fileLoggingEnabled()) {
@@ -252,31 +477,34 @@ export class Logger {
         new winston.transports.File({
           filename: 'error.log',
           level: LogLevel.Error,
-          format: winston.format.combine(logFormat, winston.format.json())
+          format: winston.format.combine(textFormat, winston.format.json()),
         }),
         new winston.transports.File({
           filename: 'combined.log',
-          format: winston.format.combine(logFormat, winston.format.json())
+          format: winston.format.combine(textFormat, winston.format.json()),
         }),
       );
     }
     transports.push(
-      new winston.transports.Console({
-        format: provider.consoleFormat(logFormat),
-      }),
+      new winston.transports.Console({ format: consoleFormat() }),
     );
 
     return winston.createLogger({
       levels: customLevels.levels,
       level: config?.level || getLogLevel(),
-      format: logFormat,
+      format: textFormat,
       // Not `service`: winston's defaultMeta overrides the record, and each named logger sets its own.
       defaultMeta: { service_tier: 'nodejs_service' },
       transports,
     });
   }
 
-  private sanitizeForLogging(obj: any, seen = new WeakSet()): any {
+  /** `withStack`: stacks are kept only on ERROR lines (a WARN says why without where, as in Python). */
+  private sanitizeForLogging(
+    obj: any,
+    seen = new WeakSet(),
+    withStack = true,
+  ): any {
     // Handle non-object types
     if (obj === null || typeof obj !== 'object') {
       return obj;
@@ -290,16 +518,20 @@ export class Logger {
 
     // Handle arrays
     if (Array.isArray(obj)) {
-      return obj.map(item => this.sanitizeForLogging(item, seen));
+      return obj.map((item) => this.sanitizeForLogging(item, seen, withStack));
     }
 
     if (obj instanceof Error) {
-      return this.serializeError(obj, seen);
+      return this.serializeError(obj, seen, withStack);
     }
     // Dates and Mongo ids have no own keys worth walking; JSON shows them through toJSON.
     const { toJSON } = obj as { toJSON?: unknown };
     if (typeof toJSON === 'function') {
-      return this.sanitizeForLogging((toJSON as () => unknown).call(obj), seen);
+      return this.sanitizeForLogging(
+        (toJSON as () => unknown).call(obj),
+        seen,
+        withStack,
+      );
     }
 
     // Handle objects
@@ -314,7 +546,7 @@ export class Logger {
         continue;
       }
       try {
-        sanitized[key] = this.sanitizeForLogging(value, seen);
+        sanitized[key] = this.sanitizeForLogging(value, seen, withStack);
       } catch (error) {
         sanitized[key] = '[Unable to serialize]';
       }
@@ -332,30 +564,41 @@ export class Logger {
   private serializeError(
     error: Error,
     seen: WeakSet<object>,
+    withStack: boolean,
   ): Record<string, unknown> {
-    const { code, cause } = error as { code?: unknown; cause?: unknown };
+    const { code, cause, status } = error as {
+      code?: unknown;
+      cause?: unknown;
+      status?: unknown;
+    };
     const out: Record<string, unknown> = axios.isAxiosError(error)
-      ? axiosErrorForLog(error, true)
+      ? axiosErrorForLog(error, withStack)
       : {
           name: error.name,
           ...((typeof code === 'string' || typeof code === 'number') && {
             code,
           }),
-          ...(error instanceof BaseError && {
-            statusCode: error.statusCode,
-            metadata: this.sanitizeForLogging(error.metadata, seen),
-          }),
+          ...(error instanceof BaseError
+            ? {
+                statusCode: error.statusCode,
+                metadata: this.sanitizeForLogging(
+                  error.metadata,
+                  seen,
+                  withStack,
+                ),
+              }
+            : Number.isInteger(status) && { status }),
           message:
             typeof error.message === 'string'
               ? redactSecretsInText(error.message)
               : undefined,
-          stack:
-            error.stack === undefined
-              ? undefined
-              : redactSecretsInText(error.stack),
+          ...(withStack &&
+            error.stack !== undefined && {
+              stack: redactSecretsInText(error.stack),
+            }),
         };
     if (cause !== undefined) {
-      out.cause = this.sanitizeForLogging(cause, seen);
+      out.cause = this.sanitizeForLogging(cause, seen, withStack);
     }
     return out;
   }
@@ -367,6 +610,26 @@ export class Logger {
     return Logger.forService(config);
   }
 
+  /**
+   * Re-reads LOG_LEVEL and LOG_FORMAT. index.ts calls it once dotenv has loaded
+   * `.env`: the imports before that already created the root from the process env.
+   */
+  static applyEnv(): void {
+    const root = Logger.getInstance();
+    root.logger.level = getLogLevel();
+    for (const transport of root.logger.transports) {
+      if (transport instanceof winston.transports.Console) {
+        transport.format = consoleFormat();
+      }
+    }
+    const requested = process.env.LOG_FORMAT?.trim().toLowerCase();
+    if (requested && !(LOG_FORMATS as readonly string[]).includes(requested)) {
+      root.warn('Unknown LOG_FORMAT, using text', {
+        value: requested.slice(0, 32),
+      });
+    }
+  }
+
   /** Adds to this logger's own metadata only; its service is fixed by the name it was created with. */
   updateDefaultMeta(metadata: Record<string, any>): void {
     this.defaultMeta = {
@@ -375,7 +638,7 @@ export class Logger {
     };
   }
 
-  private getCallerInfo(): { filename: string, line: number } {
+  private getCallerInfo(): { filename: string; line: number } {
     const error = new Error();
     Error.captureStackTrace(error);
 
@@ -383,10 +646,12 @@ export class Logger {
     const stackLines = error.stack?.split('\n') || [];
 
     // Find the first line that's not from the logger itself
-    const callerLine = stackLines.find(line =>
-      !line.includes('logger.service.ts') &&
-      !line.includes('at Logger.') &&
-      line.includes('at ')
+    const callerLine = stackLines.find(
+      (line) =>
+        !line.includes('logger.service.ts') &&
+        !AUDIT_FRAME.test(line) &&
+        !line.includes('at Logger.') &&
+        line.includes('at '),
     );
 
     let filename = 'unknown';
@@ -406,7 +671,7 @@ export class Logger {
     return { filename, line: lineNumber };
   }
 
-  private logWithLevel(level: string, message: string, meta?: any) {
+  private logWithLevel(level: LogLevel, message: string, meta?: any) {
     // Bail before getCallerInfo(): it captures and symbolises a stack trace,
     // which profiling put at ~5% of gateway CPU -- and it was being paid in
     // full for debug lines that the configured level then discarded.
@@ -422,13 +687,21 @@ export class Logger {
     // Redact here, not in the printf format: the file transports append
     // winston's json() after it, and json() re-serialises `info` from scratch,
     // so anything only cleaned inside printf still reaches the log file raw.
+    const { fields, rest } = splitFields(meta as unknown);
     this.logger.log({
       level,
       message,
-      metadata: meta === undefined ? undefined : this.sanitizeForLogging(meta),
+      metadata:
+        rest === undefined
+          ? undefined
+          : this.sanitizeForLogging(
+              rest,
+              new WeakSet(),
+              level === LogLevel.Error,
+            ),
       ...this.defaultMeta,
-      // Read at emit time; omitted entirely when there is no context.
-      ...logContextFields(),
+      // Read at emit time; the context part is omitted when there is no context.
+      ...recordFields(fields),
       ...callerInfo,
     });
   }

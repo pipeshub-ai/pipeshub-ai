@@ -9,15 +9,13 @@ import {
   UnsupportedMediaTypeError,
 } from '../errors/http.errors';
 import { isClientSafeError, isReaderWritten } from '../errors/reader-friendly';
+import { jsonResponse } from '../utils/error.middleware.utils';
+import { classifyRequestError, levelFor } from '../utils/error-class';
 import {
-  jsonResponse,
-  logError,
-  logLevelFor,
-} from '../utils/error.middleware.utils';
-import {
-  redactHeadersForLog,
-  redactQueryForLog,
-} from '../utils/log-redaction.utils';
+  markRequestError,
+  routeParams,
+  routeTemplate,
+} from './access-log.middleware';
 
 /**
  * What a reader is told when the failure is in PipesHub's own plumbing (a
@@ -105,27 +103,29 @@ export class ErrorMiddleware {
 
   static handleError() {
     return (error: Error, req: Request, res: Response, _next: NextFunction) => {
-      // Check if response has already been sent
-      if (res.headersSent) {
-        return;
-      }
-
       try {
         // A call to another PipesHub service that got no answer is a 503
         // (504 on a timeout) wherever it was thrown, not an unknown 500.
+        // The parser's own error is not kept as the cause: its message quotes the body.
         const mapped =
           error instanceof BaseError
             ? error
-            : (bodyParserError(error) ??
-              unansweredCallError(error, `${req.method} ${req.path}`));
+            : (bodyParserError(error) ?? unansweredCallError(error));
+        // Logged even when the response has started (a stream that failed
+        // midway): controllers no longer log what they pass on.
+        this.logRequestError(mapped ?? error, req, res);
+        if (res.headersSent) {
+          return;
+        }
         if (mapped) {
           this.handleBaseError(mapped, req, res);
         } else {
-          this.handleUnknownError(error, req, res);
+          this.handleUnknownError(req, res);
         }
       } catch (middlewareError) {
         // If even the error middleware fails, send a basic error response
         console.error('Error in error middleware:', middlewareError);
+        if (res.headersSent) return;
         jsonResponse(res, 500, {
           error: {
             code: 'MIDDLEWARE_ERROR',
@@ -137,19 +137,37 @@ export class ErrorMiddleware {
     };
   }
 
+  /**
+   * The one line for a failed request: what (method, route, status), why
+   * (error_class, the error with its cause; the stack only at ERROR) and,
+   * from the request context, who.
+   */
+  private static logRequestError(error: Error, req: Request, res: Response) {
+    const status = res.headersSent
+      ? res.statusCode
+      : error instanceof BaseError
+        ? error.statusCode
+        : 500;
+    const errorClass = classifyRequestError(error, status);
+    markRequestError(res, errorClass);
+    this.logger[levelFor(errorClass)]('http.request.error', {
+      method: req.method,
+      route: routeTemplate(req),
+      status,
+      error_class: errorClass,
+      error_type: error.name,
+      outcome: 'failure',
+      event_name: 'http.request.error',
+      error,
+      params: routeParams(req),
+    });
+  }
+
   private static handleBaseError(
     error: BaseError,
     req: Request,
     res: Response,
   ) {
-    logError(
-      this.logger,
-      'Application error',
-      error,
-      { request: this.getRequestContext(req) },
-      logLevelFor(error),
-    );
-
     // Never expose stack traces to clients - security best practice
     const isDevelopment =
       process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'dev';
@@ -216,12 +234,8 @@ export class ErrorMiddleware {
     );
   }
 
-  private static handleUnknownError(error: Error, req: Request, res: Response) {
-    logError(this.logger, 'Unhandled error', error, {
-      request: this.getRequestContext(req),
-    });
-
-    // The raw message is logged just above. It never goes to the client, not
+  private static handleUnknownError(req: Request, res: Response) {
+    // The raw message is in the log line. It never goes to the client, not
     // even outside production: the integration and compose setups run with
     // NODE_ENV=development, so that branch is reachable in real deployments.
     const requestId = req.context?.requestId;
@@ -236,18 +250,5 @@ export class ErrorMiddleware {
     // Ensure no stack traces are included (defense in depth)
     const sanitizedResponse = this.sanitizeErrorResponse(errorResponse);
     jsonResponse(res, 500, sanitizedResponse);
-  }
-
-  private static getRequestContext(req: Request) {
-    return {
-      method: req.method,
-      path: req.path,
-      // An OAuth callback that fails auth still carries ?code= here, and the
-      // Referer of a request made from a callback page carries it too.
-      query: redactQueryForLog(req.query),
-      params: req.params,
-      ip: req.ip,
-      headers: redactHeadersForLog(req.headers),
-    };
   }
 }

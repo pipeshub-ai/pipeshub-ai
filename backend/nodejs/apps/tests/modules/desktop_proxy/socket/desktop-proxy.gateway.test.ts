@@ -1,5 +1,9 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
+import jwt from 'jsonwebtoken'
+import { Logger } from '../../../../src/libs/services/logger.service'
+import { withCause } from '../../../../src/libs/errors/base.error'
+import { UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import sinon from 'sinon'
 import { DesktopProxySocketGateway } from '../../../../src/modules/desktop_proxy/socket/desktop-proxy.gateway'
 
@@ -97,6 +101,22 @@ describe('DesktopProxySocketGateway session checks', () => {
         email: 'old@x.com',
       })
       expect(findSessionRefusal.firstCall.args[0]).to.include({ userId: USER, orgId: ORG })
+    })
+
+    it('logs a refused token once, with why, and still answers it as an auth failure', async () => {
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      const expired = withCause(new UnauthorizedError('Invalid token'), new jwt.TokenExpiredError('jwt expired', new Date(0)))
+      const gateway = new DesktopProxySocketGateway(
+        { verifyToken: sinon.stub().rejects(expired) } as never,
+        { findSessionRefusal: sinon.stub().resolves(null) } as never,
+      ) as any
+
+      const error = await gateway.authenticateHandshake(makeSocket())
+
+      expect(error.message).to.equal('Authentication token expired')
+      expect(warn.calledOnce).to.be.true
+      expect(warn.firstCall.args[0]).to.equal('socket.auth.rejected')
+      expect(warn.firstCall.args[1]).to.include({ error_class: 'auth_expired', error: expired })
     })
 
     // A user revoked before a database outage must not get in during it.
