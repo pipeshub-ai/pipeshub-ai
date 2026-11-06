@@ -11,7 +11,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES
-from app.services.graph_db.postgres.base import NotImplementedInPostgres
+from app.services.graph_db.postgres.base import NotImplementedInPostgres, _pgbool
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,6 +25,8 @@ PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
 
 
 
+_VRID_SQL = "/* pipeshub:graph.records_by_virtual_id */ SELECT node_id, doc, doc->>'connectorId' AS app_id FROM graph.records_by_virtual_id($1::text[])"       # the vetted read of graph_0004
+_VRID_PAGE = 5000
 _HIER_TYPES = ["PARENT_CHILD", "ATTACHMENT"]
 _CHUNK = 10_000
 
@@ -287,11 +289,23 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
           AND t.coll IN ('records', 'recordGroups', 'apps') AND t.id = ANY($2::text[])""", org, node_ids)
     if vrids:
         seen_ids = {r["id"] for r in rows}
-        rows = [*rows, *(r for r in await tx.fetch("""/* pipeshub:graph.access_targets_vrid */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
+        found = None
+        if len(vrids) <= 1000 and all(0 < len(v) <= 200 for v in vrids):      # the vetted read of graph_0004: the deleted and placeholder records are dropped here
+            raw = await tx.fetch(_VRID_SQL, vrids)
+            if len(raw) < _VRID_PAGE:
+                asked = set(node_ids)
+                found = []
+                for r in raw:
+                    d = json.loads(r["doc"]) if isinstance(r["doc"], str) else r["doc"]
+                    if not _pgbool(d.get("isDeleted")) and (not _pgbool(d.get("isPlaceholder")) or r["node_id"] in asked):
+                        found.append({"coll": "records", "id": r["node_id"], "doc": r["doc"], "app_id": r["app_id"]})      # PostgreSQL's text of the id, as the other arms compare it
+        if found is None:
+            found = await tx.fetch("""/* pipeshub:graph.access_targets_vrid */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
             FROM graph.nodes t
             WHERE t.org_id = $1 AND t.doc->>'orgId' = $1 AND NOT coalesce((t.doc->>'isDeleted')::boolean, false)
               AND (NOT coalesce((t.doc->>'isPlaceholder')::boolean, false) OR t.id = ANY($2::text[]))
-              AND t.coll = 'records' AND t.doc->>'virtualRecordId' = ANY($3::text[])""", org, node_ids, vrids) if r["id"] not in seen_ids)]
+              AND t.coll = 'records' AND t.doc->>'virtualRecordId' = ANY($3::text[])""", org, node_ids, vrids)
+        rows = [*rows, *(r for r in found if r["id"] not in seen_ids)]
     targets = []
     for r in rows:
         doc = json.loads(r["doc"]) if isinstance(r["doc"], str) else dict(r["doc"])
@@ -314,7 +328,8 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
     kb = [(c, i, a) for c, i, d, a in pending if apps[a] and c == "records"]
     if kb:
         app_of_kb = {i: a for _, i, a in kb}
-        for r in await tx.fetch("/* pipeshub:graph.access_kb */ SELECT e.from_id, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.from_id = ANY($2::text[]) AND e.to_coll = 'apps' AND e.to_id = ANY($3::text[])",
+        # custom plan: the generic one reads every membership edge of the app (edges_by_target) instead of the asked records by key
+        for r in await tx.fetch_custom_plan("/* pipeshub:graph.access_kb */ SELECT e.from_id, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.from_id = ANY($2::text[]) AND e.to_coll = 'apps' AND e.to_id = ANY($3::text[])",
                                 org, [i for _, i, _ in kb], sorted({a for _, _, a in kb})):
             if app_of_kb[r["from_id"]] == r["to_id"]:      # a member of its own app, not of another that also opens everything
                 ok.add(r["from_id"])
