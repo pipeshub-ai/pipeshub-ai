@@ -203,39 +203,37 @@ async def below_seed(tx: Tx, org: str, ids: list[str], colls: list[str], appids:
 
 
 async def _down(tx: Tx, org: str, starts: list[Node], mode: str, granted_l: list[str], app_id: str = "") -> set[Node]:
-    """The nodes below ``starts`` over hierarchy edges, a level at a time (``MAX_HOPS``, as the walks up). The statement already leaves out the children the
-    hop rule of ``mode`` can never take, so they are not read back: ``app`` is ``_walk_app`` (not opened by the app), ``seed`` is ``_walk_seed``, ``group``
-    takes the live groups. A declared group of ``app_id`` is taken but not followed (its children do not reach the app through it)."""
-    granted = set(granted_l)
-    walk = _walk_app(opens=False, granted=granted) if mode == "app" else _walk_seed(granted)
+    """The nodes below ``starts`` over hierarchy edges, a level at a time (``MAX_HOPS``, as the walks up). The statement holds the whole hop rule of
+    ``mode`` (the child's rule, whether it inherits from its parent, whether it is granted), so a child the walk cannot take is never read back:
+    ``app`` is ``_walk_app`` (not opened by the app), ``seed`` is ``_walk_seed``, ``group`` takes the live groups. A declared group of ``app_id`` is
+    taken but not followed (its children do not reach the app through it)."""
     seen, frontier = set(starts), list(starts)
     reached: set[Node] = set()
     for _ in range(MAX_HOPS):
         if not frontier:
             break
         ids = [i for _, i in frontier]
-        kids: dict[Node, dict[str, Any]] = {}
-        edges: list[tuple[Node, Node]] = []
+        found: list[tuple[Node, Node, str | None, str | None]] = []
         for k in range(0, len(ids), _CHUNK):
             for r in await tx.fetch("""/* pipeshub:graph.access_children */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, n.doc->>'permissionModel' AS model,
-                  n.doc->>'connectorId' AS cid, coalesce(n.doc->>'accessRule', 'OPEN') AS rule
+                  n.doc->>'connectorId' AS cid
                 FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = e.to_coll AND n.id = e.to_id
+                LEFT JOIN graph.edges i ON i.org_id = e.org_id AND i.coll = 'inheritPermissions' AND i.from_coll = e.to_coll AND i.from_id = e.to_id
+                  AND i.to_coll = e.from_coll AND i.to_id = e.from_id
                 WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = ANY($6::text[]) AND e.from_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[])
                   AND NOT coalesce((n.doc->>'isDeleted')::boolean, false)
-                  AND CASE $4 WHEN 'app' THEN coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN') OR n.id = ANY($5::text[])
-                              WHEN 'seed' THEN coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN'
+                  AND CASE $4 WHEN 'app' THEN (i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN'))
+                                OR (n.id = ANY($5::text[]) AND ((i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') = 'RESTRICTED')
+                                                                 OR coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN')))
+                              WHEN 'seed' THEN coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN' AND (i.from_id IS NOT NULL OR n.id = ANY($5::text[]))
                               ELSE e.to_coll = 'recordGroups' END""", org, ids[k:k + _CHUNK], _HIER_TYPES, mode, granted_l, sorted({c for c, _ in frontier})):
-                c = (r["to_coll"], r["to_id"])
-                if (r["from_coll"], r["from_id"]) in seen and c not in seen:
-                    kids[c] = {"deleted": False, "rule": r["rule"], "model": r["model"], "cid": r["cid"]}
-                    edges.append(((r["from_coll"], r["from_id"]), c))
-        inh = await _inherit_pairs(tx, org, list(kids)) if mode != "group" and kids else set()
+                found.append(((r["from_coll"], r["from_id"]), (r["to_coll"], r["to_id"]), r["model"], r["cid"]))
         frontier = []
-        for p, c in edges:
-            if c not in seen and (mode == "group" or walk(c[1], (c, p) in inh, kids[c])):
+        for p, c, model, cid in found:
+            if p in seen and c not in seen:
                 seen.add(c)
                 reached.add(c)
-                if not (kids[c]["model"] == "RECORD_GROUP_LEVEL" and kids[c]["cid"] == app_id):
+                if not (model == "RECORD_GROUP_LEVEL" and cid == app_id):
                     frontier.append(c)
     return reached
 
