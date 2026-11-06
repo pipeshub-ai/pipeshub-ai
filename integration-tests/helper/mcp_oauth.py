@@ -166,13 +166,10 @@ def authorization_code_token(
     app: OAuthApp,
     *,
     scopes: Optional[list[str]] = None,
-    resource: Optional[str] = None,
     timeout: int = 30,
 ) -> dict:
     """
     Run the authorization-code + PKCE flow with API calls and return the token response.
-
-    ``resource`` (RFC 8707) asks for a token bound to that resource, as MCP hosts do for ``/mcp``.
 
     ``POST /api/v1/oauth2/authorize`` with a user session JWT and ``consent: granted``
     answers with ``{ redirectUrl }`` that carries the code, so no browser is needed.
@@ -219,7 +216,6 @@ def authorization_code_token(
                 "client_id": app.client_id,
                 "client_secret": app.client_secret,
                 "code_verifier": verifier,
-                **({"resource": resource} if resource else {}),
             },
             timeout=timeout,
         ),
