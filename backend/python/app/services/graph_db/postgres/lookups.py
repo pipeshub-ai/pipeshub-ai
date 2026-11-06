@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors, ProgressStatus
 from app.core.org_context import current_or_system, current_org_id
 from app.exceptions.graph_db_exceptions import (
     GraphQueryError,
@@ -20,6 +20,7 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
+    build_connector_stats_response,
     jira_issue_browse_url_regex,
     record_status_field,
 )
@@ -822,3 +823,78 @@ class LookupsMixin(PgBase):
         except Exception:
             self.logger.exception("Reap stale external app relations failed for %s", connector_id)
             return 0
+
+    async def find_next_queued_duplicate(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> dict | None:
+        """A queued, live record with the same md5 (and the same size when the reference has one) in the reference record's own org; none when the
+        reference has no md5 or no org. Reads the md5 by document field, which no index covers: a scan of the org's records."""
+        org = current_org_id()
+        try:
+            ref = await self._one("/* pipeshub:graph.find_next_queued_duplicate_ref */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2",
+                                  org, record_id, transaction=transaction)
+            if not ref or not ref.get("md5Checksum") or not ref.get("orgId"):
+                return None
+            size = ref.get("sizeInBytes")
+            d = await self._one("""/* pipeshub:graph.find_next_queued_duplicate */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
+                AND n.doc->>'md5Checksum' = $2 AND n.id <> $3 AND n.doc->>'indexingStatus' = 'QUEUED' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false
+                AND ($4::text IS NULL OR n.doc->>'sizeInBytes' = $4) AND n.doc->>'orgId' = $5 ORDER BY n.id LIMIT 1""",
+                                 org, ref["md5Checksum"], record_id, None if size is None else str(size), ref["orgId"], transaction=transaction)
+            return _arango(d, "records") if d else None
+        except Exception as e:
+            self.logger.error(f"❌ Failed to find next queued duplicate: {e}")
+            if raise_on_error:
+                raise
+            return None
+
+    async def get_connector_instances_with_filters(self, collection: str, scope: str | None = None, user_id: str | None = None, *, is_admin: bool = False,
+                                                   search: str | None = None, page: int = 1, limit: int = 20, transaction: str | None = None) -> tuple[list[dict], int]:
+        """One page of the instances the user may see, newest first, and the total. An admin sees the team's and their own; anyone else only their own (no user
+        sees nothing). ``search`` is a literal, case-insensitive "contains" on name, type and group (the Neo4j provider reads it as a regular expression)."""
+        org = current_org_id()
+        pattern = None if not search else "%" + search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        try:
+            rows = await self._lrows("""/* pipeshub:graph.get_connector_instances_with_filters */ SELECT n.doc, count(*) OVER () AS total FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND ($3::text IS NULL OR n.doc->>'scope' = $3)
+                  AND CASE WHEN $4 THEN (n.doc->>'scope' = 'team' OR n.doc->>'createdBy' = $5::text) ELSE n.doc->>'createdBy' = $5::text END
+                  AND ($6::text IS NULL OR lower(n.doc->>'name') LIKE $6 OR lower(n.doc->>'type') LIKE $6 OR lower(n.doc->>'appGroup') LIKE $6)
+                ORDER BY CASE WHEN jsonb_typeof(n.doc->'createdAtTimestamp') = 'number' THEN (n.doc->>'createdAtTimestamp')::numeric END DESC NULLS LAST, n.id OFFSET $7 LIMIT $8""",
+                                  org, collection, scope or None, is_admin, user_id, pattern, (max(page, 1) - 1) * limit, limit, transaction=transaction)
+            if rows:
+                return [_arango(_doc(r["doc"]), collection) for r in rows], rows[0]["total"]
+            total = await self._lrows("""/* pipeshub:graph.get_connector_instances_with_filters_total */ SELECT count(*) AS n FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND ($3::text IS NULL OR n.doc->>'scope' = $3)
+                  AND CASE WHEN $4 THEN (n.doc->>'scope' = 'team' OR n.doc->>'createdBy' = $5::text) ELSE n.doc->>'createdBy' = $5::text END
+                  AND ($6::text IS NULL OR lower(n.doc->>'name') LIKE $6 OR lower(n.doc->>'type') LIKE $6 OR lower(n.doc->>'appGroup') LIKE $6)""",
+                                      org, collection, scope or None, is_admin, user_id, pattern, transaction=transaction)
+            return [], total[0]["n"]
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get connector instances with filters: {e}")
+            return [], 0
+
+    async def get_connector_stats(self, org_id: str, connector_id: str, transaction: str | None = None) -> dict:
+        """Record counts of a collection (records that belong to its app) or a connector (records of the record groups that chain up to its app, up to 10 hops),
+        by type, indexing, extraction and entities state; a record in several groups counts once; internal, placeholder, deleted and folder records stay out."""
+        org = current_org_id()
+        statuses = [s.value for s in ProgressStatus]
+        try:
+            app = await self._one("/* pipeshub:graph.get_connector_stats_app */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps' AND n.id = $2",
+                                  org, connector_id, transaction=transaction)
+            is_kb = bool(app) and app.get("type") == Connectors.KNOWLEDGE_BASE.value
+            rows = [] if org_id != org else await self._lrows("""/* pipeshub:graph.get_connector_stats */ WITH RECURSIVE g(id, depth) AS (
+                  SELECT e.from_id, 1 FROM graph.edges e WHERE e.org_id = $1 AND NOT $3 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
+                    AND e.to_coll = 'apps' AND e.to_id = $2
+                  UNION SELECT e.from_id, g.depth + 1 FROM g JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
+                    AND e.to_coll = 'recordGroups' AND e.to_id = g.id WHERE g.depth < 10),
+                r AS (SELECT DISTINCT e.from_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records'
+                    AND ((NOT $3 AND e.to_coll = 'recordGroups' AND e.to_id IN (SELECT id FROM g)) OR ($3 AND e.to_coll = 'apps' AND e.to_id = $2)))
+                SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
+                       s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
+                FROM r JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND n.id = r.id
+                LEFT JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'stageStates' AND s.id = (n.doc->>'virtualRecordId') || ':' || (n.doc->>'contentRev') || ':entities'
+                WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
+                  AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($4::text[])
+                GROUP BY 1, 2, 3, 4""", org, connector_id, is_kb, FOLDER_MIME_TYPES, transaction=transaction)
+            result = build_connector_stats_response([dict(r) for r in rows], statuses, org_id, connector_id, origin="COLLECTION" if is_kb else "CONNECTOR")
+            return {"success": True, "data": result}
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get connector stats: {e}")
+            return {"success": False, "message": str(e), "data": None}

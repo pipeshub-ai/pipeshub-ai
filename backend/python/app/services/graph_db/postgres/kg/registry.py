@@ -74,6 +74,8 @@ WRITERS: dict[str, tuple[str, str]] = {
     "batch_update_team_member_roles": (PROJECTED, ""), "delete_all_team_permissions": (PROJECTED, ""),
     # core.py, lookups.py: an edge's document changes (a grant's role or type is what the projection reads of it), and the sync's edges and the stale external memberships go
     "update_edge": (PROJECTED, ""), "delete_connector_sync_edges": (PROJECTED, ""), "reap_stale_external_app_relations": (PROJECTED, ""),
+    # delete.py: a connector instance and everything of it goes in one unit
+    "delete_connector_instance": (PROJECTED, ""),
 }
 
 
