@@ -570,6 +570,16 @@ def _by_ends(edge: dict) -> tuple[str, ...]:
     return (str(edge.get("from_key", edge.get("from_id"))), str(edge.get("to_key", edge.get("to_id"))))
 
 
+# The timestamps of an edge: the only keys a diffed replace does not compare. Any other key counts as a
+# semantic property, so a key a caller adds later errs toward a rewrite.
+_EDGE_TIME_KEYS = ("createdAtTimestamp", "updatedAtTimestamp")
+
+
+def _semantic_props(props: dict) -> dict:
+    """*props* without the timestamps and without nulls (``SET r = map`` stores no null)."""
+    return {k: v for k, v in props.items() if k not in _EDGE_TIME_KEYS and v is not None}
+
+
 # Edges one statement moves; a hub node's millions go in batches.
 _EDGE_MOVE_BATCH = 5000
 
@@ -2445,22 +2455,58 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _replace_edges_to_cypher(
         self, to_id: str, to_collection: str, edges: list[dict], collection: str
     ) -> tuple[str, dict[str, Any]]:
-        """The statement of ``replace_edges_to`` up to its RETURN, so a caller can add to the same write."""
+        """The statement of ``replace_edges_to`` up to its RETURN, so a caller can add to the same write.
+
+        It moves only the difference between the stored edges and *edges*: the old
+        edges whose source is not in the new set are deleted, the new ones are merged,
+        and a kept edge is rewritten only when a property other than the two
+        timestamps changed. The statement ends with exactly one row, so a caller can
+        append writes that must run once. The member keys travel whole in ``$keep``:
+        a Python-side read of the old edges would be a separate transaction when
+        NEO4J_EXPLICIT_TRANSACTIONS is false, and would lose a member to a concurrent
+        replace of the same group.
+        """
         relationship_type = edge_collection_to_relationship(collection)
-        parameters: dict[str, Any] = {"to_id": to_id}
+        to_node_label = collection_to_label(to_collection)
+        parameters: dict[str, Any] = {"to_id": to_id, "time_keys": list(_EDGE_TIME_KEYS)}
+        keep: list[str] = []
         creates = []
         for i, ((from_label, to_label), rows) in enumerate(self._edges_by_labels(edges).items()):
-            parameters[f"edges_{i}"] = rows
+            # Duplicate members: the last row wins (the rows keep the order of the input per key).
+            members = list(
+                {row["from_key"]: {**row, "sem": _semantic_props(row["props"])} for row in rows}.values()
+            )
+            parameters[f"edges_{i}"] = members
+            if to_label == to_node_label:
+                keep.extend(f"{from_label}|{member['from_key']}" for member in members)
             creates.append(f"""
             CALL {{
                 UNWIND $edges_{i} AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
+                CALL {{
+                    WITH from, to
+                    MATCH (from)-[parallel:{relationship_type}]->(to)
+                    WITH parallel ORDER BY id(parallel) SKIP 1
+                    DELETE parallel
+                }}
                 MERGE (from)-[r:{relationship_type}]->(to)
-                SET r = edge.props
+                ON CREATE SET r = edge.props
+                WITH r, edge, r.createdAtTimestamp AS created
+                WHERE size([k IN keys(r) WHERE NOT k IN $time_keys]) <> size(keys(edge.sem))
+                    OR any(k IN keys(edge.sem) WHERE r[k] IS NULL OR r[k] <> edge.sem[k])
+                SET r = edge.sem,
+                    r.createdAtTimestamp = coalesce(created, edge.props.createdAtTimestamp),
+                    r.updatedAtTimestamp = edge.props.updatedAtTimestamp
             }}""")
+        parameters["keep"] = keep
         return f"""
-            OPTIONAL MATCH ()-[old:{relationship_type}]->(:{collection_to_label(to_collection)} {{id: $to_id}})
+            OPTIONAL MATCH (target:{to_node_label} {{id: $to_id}})
+            SET target.{_MATCH_LOCK} = true
+            REMOVE target.{_MATCH_LOCK}
+            WITH count(*) AS _
+            OPTIONAL MATCH (source)-[old:{relationship_type}]->(:{to_node_label} {{id: $to_id}})
+            WHERE NOT any(l IN labels(source) WHERE (l + '|' + source.id) IN $keep)
             DELETE old
             WITH count(*) AS _
             {"".join(creates)}""", parameters
@@ -2473,9 +2519,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         collection: str,
         transaction: str | None = None,
     ) -> None:
-        # One statement, so a failure deletes nothing: with NEO4J_EXPLICIT_TRANSACTIONS
-        # off (the default) a separate delete committed before the new edges were
-        # written, and a group whose rewrite failed was left with no members.
+        """Replace the *collection* edges into *to_id*.
+
+        Every edge in *edges* must target *to_id*: a source in the list keeps its old edge.
+        """
+        # One statement, so a failure deletes nothing: the code default of
+        # NEO4J_EXPLICIT_TRANSACTIONS is true, but false is a supported mode in
+        # which a separate delete would commit before the new edges were written,
+        # and a group whose rewrite failed was left with no members.
         statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection)
         await self.client.execute_query(
             f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction

@@ -940,6 +940,26 @@ class TestOnNewRecordGroupsAdvanced:
         assert (CollectionNames.INHERIT_PERMISSIONS.value, rg.id, "parent-rg-internal-id") in written
 
     @pytest.mark.asyncio
+    async def test_replaced_edges_all_point_at_the_replaced_node(self) -> None:
+        """replace_edges_to keeps an old edge whose source is in the new list, so every new edge must target to_id."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_record_group_by_external_id = AsyncMock(
+            return_value=RecordGroup(id="rg-1", external_group_id="ext-g1", name="G", group_type="DRIVE",
+                                     connector_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1"),
+        )
+        rg = RecordGroup(external_group_id="ext-g1", name="G", group_type="DRIVE",
+                         connector_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1")
+        org_grant = Permission(type=PermissionType.READ, entity_type=EntityType.ORG)
+
+        await proc.on_new_record_groups([(rg, [org_grant])])
+
+        to_id, to_collection, edges, _ = tx_store.replace_edges_to.await_args.args
+        assert edges
+        assert {(e["to_id"], e["to_collection"]) for e in edges} == {(to_id, to_collection)}
+
+    @pytest.mark.asyncio
     async def test_unknown_grants_keep_the_stored_ones(self) -> None:
         """None means the connector could not read the grants."""
         proc = _make_processor()
