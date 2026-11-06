@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
-import { ShareCommonApi } from '@/app/components/share/api';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { userDisplayName } from '@/lib/utils/formatters';
 import { SharedAvatarStack } from '@/app/components/share/shared-avatar-stack';
 import type { TFunction } from 'i18next';
 import { useUserStore } from '@/lib/store/user-store';
@@ -37,24 +38,7 @@ export function projectVisibilityLabel(
 export function AboutCard({ project, isOwner, onOpenShare }: AboutCardProps) {
   const { t } = useTranslation();
   const profile = useUserStore((s) => s.profile);
-  const [owner, setOwner] = useState<{ name: string; email?: string; avatarUrl?: string } | null>(null);
-
-  useEffect(() => {
-    if (isOwner) return;
-    let cancelled = false;
-    ShareCommonApi.getUsersByIds([project.userId])
-      .then((users) => {
-        if (cancelled) return;
-        const u = users[0];
-        setOwner(u ? { name: u.name, email: u.email, avatarUrl: u.avatarUrl } : null);
-      })
-      .catch(() => {
-        if (!cancelled) setOwner(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isOwner, project.userId]);
+  const owner = useUserDirectoryEntry(isOwner ? null : project.userId);
 
   const ownerAvatar = isOwner ? (
     <UserAvatar
@@ -66,11 +50,11 @@ export function AboutCard({ project, isOwner, onOpenShare }: AboutCardProps) {
       size={20}
     />
   ) : (
-    <UserAvatar fullName={owner?.name} email={owner?.email} src={owner?.avatarUrl} size={20} />
+    <UserAvatar fullName={owner?.name} email={owner?.email} src={owner?.profilePicture} size={20} />
   );
   const ownerName = isOwner
     ? t('chat.projects.workspace.youLabel', { defaultValue: 'You' })
-    : owner?.name?.trim() || owner?.email || t('chat.projects.roles.owner');
+    : userDisplayName(owner) ?? t('chat.projects.roles.owner');
 
   const visibilityLabel = projectVisibilityLabel(project, isOwner, t);
   const memberCount = project.members?.length ?? 0;

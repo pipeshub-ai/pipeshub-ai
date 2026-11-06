@@ -412,8 +412,9 @@ jobs:
       # simulator generates its instance, and the connector reaches it by service name over http, which the
       # override allows. So it never shares the live servicenow suite's shard 2, whose TC-SEC-01 must see an
       # http instance URL refused. CONNSIM_SERVICENOW_REF is connectors-simulator's main with the ServiceNow simulator
-      # (pipeshub-ai/connectors-simulator#12).
-      CONNSIM_SERVICENOW_REF: 822e257268957c31ecfca5abb1c8acd7d911657e
+      # (pipeshub-ai/connectors-simulator#12) off Dropbox's default port (#21): before that, the simulator refused
+      # to start because two simulators claimed 8109.
+      CONNSIM_SERVICENOW_REF: 72f5b98a07c958604c64b86ead785a2236a7516b
       SERVICENOW_SIM_IMAGE: pipeshub/connectors-simulator:servicenow-it
       NEEDS_SERVICENOW_SIM: ${{ (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'servicenow_sim')) && 'true' || 'false' }}
       # The zammad_sim suite runs against the Zammad simulator on shard 2. It needs no secret and no dataset: each test

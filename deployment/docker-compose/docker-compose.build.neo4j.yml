@@ -397,9 +397,9 @@ services:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-your_password}
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
-      - NEO4J_dbms_memory_heap_initial__size=1G
-      - NEO4J_dbms_memory_heap_max__size=2G
-      - NEO4J_dbms_memory_pagecache_size=1G
+      - NEO4J_dbms_memory_heap_initial__size=${NEO4J_HEAP_INITIAL:-1G}
+      - NEO4J_dbms_memory_heap_max__size=${NEO4J_HEAP_MAX:-2G}
+      - NEO4J_dbms_memory_pagecache_size=${NEO4J_PAGECACHE:-1G}
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -407,10 +407,10 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 3G
+          memory: ${NEO4J_MEMORY_LIMIT:-3G}
         reservations:
           cpus: '2'
-          memory: 2G
+          memory: ${NEO4J_MEMORY_RESERVATION:-2G}
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 10s
@@ -504,7 +504,7 @@ services:
           memory: ${QDRANT_MEMORY_LIMIT:-4G}
         reservations:
           cpus: '2'
-          memory: 2G
+          memory: ${QDRANT_MEMORY_RESERVATION:-2G}
     ulimits:
       nofile:
         soft: 50000

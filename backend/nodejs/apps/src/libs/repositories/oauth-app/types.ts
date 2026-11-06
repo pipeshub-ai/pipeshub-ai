@@ -168,6 +168,16 @@ export interface OAuthAppRepository {
   findByClientId(clientId: string): Promise<OAuthAppDto | null>;
   /** Adds scopes to the allowed list of the app with this id (never removes one). */
   addAllowedScopes(id: string, scopes: string[]): Promise<void>;
+  /**
+   * Replaces the scopes and grant types of a live dynamically registered app. Dynamic apps
+   * have no owner who edits them, so their grant follows the client's metadata and the
+   * instance's limits instead.
+   */
+  setDynamicGrant(
+    orgId: string,
+    id: string,
+    grant: Pick<OAuthAppDto, 'allowedScopes' | 'allowedGrantTypes'>,
+  ): Promise<void>;
   /** Client ids of live apps whose tokens act as the given user (a service account). */
   listClientIdsActingAs(userId: string): Promise<string[]>;
   /** Client ids of live apps the user created. */

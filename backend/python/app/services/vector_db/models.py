@@ -246,6 +246,8 @@ class HybridSearchRequest:
     limit: int = 10
     fusion_method: FusionMethod = FusionMethod.RRF
     with_payload: bool = True
+    # What one viewer may read (filters.ScopeFilter), ANDed with ``filter``; only a store that translates it accepts a request carrying one.
+    scope_filter: Any | None = None
 
 
 @dataclass

@@ -7,7 +7,11 @@ import {
   logError,
 } from '../../../src/libs/utils/error.middleware.utils'
 import { Logger } from '../../../src/libs/services/logger.service'
-import { AxiosError } from 'axios'
+import { InternalServerError } from '../../../src/libs/errors/http.errors'
+import { redactSensitiveQueryParams } from '../../../src/libs/utils/log-redaction.utils'
+import axios, { AxiosError } from 'axios'
+import http from 'node:http'
+import { AddressInfo } from 'node:net'
 
 describe('error.middleware.utils', () => {
   afterEach(() => {
@@ -191,7 +195,7 @@ describe('error.middleware.utils', () => {
       ['an axios-style error', () => Object.assign(new Error('Request failed'), {
         response: { status: 404, statusText: 'Not Found', data: { detail: 'gone' } },
       })],
-      // A real one has its own toJSON, which ignores the argument and adds the stack.
+      // A real one is summarised by extractErrorData, not through its own toJSON.
       ['a real AxiosError', () => new AxiosError(
         'Request failed with status code 404', 'ERR_BAD_REQUEST', undefined, undefined,
         { status: 404, statusText: 'Not Found', data: { detail: 'gone' }, headers: {}, config: {} } as never,
@@ -230,6 +234,242 @@ describe('error.middleware.utils', () => {
       expect((logger.error as sinon.SinonStub).calledOnce).to.be.true
       const call = (logger.error as sinon.SinonStub).firstCall
       expect(call.args[1].context).to.be.undefined
+    })
+  })
+})
+
+// Every value below is fake. A failed axios call carries its whole request in
+// `config`, with the body already a string, so no key-based redaction sees it.
+describe('error.middleware.utils: a failed axios call is logged without its request', () => {
+  const TOKEN_IN_ERROR = 'AIzaSyFAKE0Echoed0Token0000000000000000'
+  const LOWERCASE_TOKEN_IN_ERROR = 'abcdefghijklmnopqrstuvwxyz_abcdefghij'
+  const SECRETS = [
+    'RT-SECRET-123', // refresh_token
+    'CS-SECRET-456', // client_secret
+    'AUTH-CODE-789', // authorization code in the body
+    'QUERY-CODE-000', // authorization code in the query string
+    'PW-SECRET-444', // password in the URL's userinfo
+    'BASIC-CRED-111', // Authorization: Basic
+    'X-CUSTOM-222', // a header no redaction list names
+    'RESP-BODY-333', // a value the upstream echoed in its answer
+    TOKEN_IN_ERROR,
+    LOWERCASE_TOKEN_IN_ERROR,
+  ]
+  const expectNoSecret = (logged: unknown): void => {
+    const text = JSON.stringify(logged)
+    for (const secret of SECRETS) expect(text, `leaked ${secret}`).to.not.include(secret)
+  }
+
+  // A fake OAuth token endpoint that refuses every call.
+  const tokenHandler = (res: http.ServerResponse): void => {
+    res.writeHead(400, { 'content-type': 'application/json', 'set-cookie': 'sid=RESP-BODY-333' })
+    res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'Bad', echoed: 'RESP-BODY-333' }))
+  }
+  // A Map, so a request path such as `/__proto__` cannot reach Object.prototype.
+  const answers = new Map(Object.entries<(res: http.ServerResponse) => void>({
+    '/token': tokenHandler,
+    '/token-shaped': (res) => {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: TOKEN_IN_ERROR }))
+    },
+    '/lowercase-token': (res) => {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: LOWERCASE_TOKEN_IN_ERROR }))
+    },
+    '/invalid-client': (res) => {
+      res.writeHead(401, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'invalid_client' }))
+    },
+    '/too-long': (res) => {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'a'.repeat(65) }))
+    },
+    '/object': (res) => {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'RESP-BODY-333' } }))
+    },
+    '/text': (res) => {
+      res.writeHead(400, { 'content-type': 'text/plain' })
+      res.end('refresh_token RESP-BODY-333 was rejected')
+    },
+  }))
+  let server: http.Server
+  let base: string
+
+  before(async () => {
+    server = http.createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        const path = (req.url ?? '').split('?')[0]
+        // A request that never gets an answer, without depending on the host's network.
+        if (path === '/hang-up') return req.socket.destroy()
+        const handler = answers.get(path)
+        ;(typeof handler === 'function' ? handler : tokenHandler)(res)
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  })
+
+  after(() => new Promise<void>((resolve) => server.close(() => resolve())))
+
+  const failedCall = async (send: () => Promise<unknown>): Promise<AxiosError> => {
+    try {
+      await send()
+    } catch (error) {
+      if (axios.isAxiosError(error)) return error
+      throw error
+    }
+    throw new Error('expected the call to fail')
+  }
+  const oauthBody = { refresh_token: 'RT-SECRET-123', client_secret: 'CS-SECRET-456', code: 'AUTH-CODE-789' }
+  const tokenUrl = () => `http://client:PW-SECRET-444@${base.slice('http://'.length)}/token?code=QUERY-CODE-000&state=s`
+  const jsonTokenCall = (url = tokenUrl()) =>
+    failedCall(() =>
+      axios.post(url, oauthBody, {
+        headers: { Authorization: 'Basic BASIC-CRED-111', 'X-Custom-Cred': 'X-CUSTOM-222' },
+      }),
+    )
+  const stubLogger = () =>
+    ({ error: sinon.stub(), warn: sinon.stub() }) as unknown as Logger & {
+      error: sinon.SinonStub
+      warn: sinon.SinonStub
+    }
+  const loggedError = (error: unknown, level: 'error' | 'warn' = 'error') => {
+    const logger = stubLogger()
+    logError(logger, 'Unhandled error', error, undefined, level)
+    return logger[level].firstCall.args[1].error
+  }
+
+  it('drops the JSON body and headers, and keeps status, method, redacted url and the upstream code', async () => {
+    const url = tokenUrl()
+    const logged = loggedError(await jsonTokenCall(url))
+
+    expectNoSecret(logged)
+    expect(logged).to.include({
+      name: 'AxiosError',
+      code: 'ERR_BAD_REQUEST',
+      status: 400,
+      method: 'post',
+      upstreamError: 'invalid_grant',
+      url: redactSensitiveQueryParams(url),
+    })
+    expect(logged.url).to.include('client:').and.to.include('/token')
+    expect(logged).to.not.have.any.keys('config', 'request', 'response', 'headers', 'data')
+    expect(logged.stack).to.be.a('string')
+  })
+
+  for (const [name, body] of [
+    ['a form body (URLSearchParams)', new URLSearchParams(oauthBody)],
+    ['a text body', 'refresh_token=RT-SECRET-123&client_secret=CS-SECRET-456'],
+    ['a Buffer body', Buffer.from(JSON.stringify(oauthBody))],
+  ] as const) {
+    it(`drops ${name}`, async () => {
+      expectNoSecret(loggedError(await failedCall(() => axios.post(`${base}/token`, body))))
+    })
+  }
+
+  it('drops the request of an AxiosError rethrown with the original config, request and response', async () => {
+    const original = await jsonTokenCall()
+    const rethrown = new AxiosError('Failed to create user', original.code, original.config, original.request, original.response)
+    const logged = loggedError(rethrown)
+    expectNoSecret(logged)
+    expect(logged).to.include({ message: 'Failed to create user', status: 400 })
+  })
+
+  it('redacts a credential the message carries', async () => {
+    // No request body, so only the message can leak.
+    const original = await failedCall(() => axios.post(`${base}/token`))
+    const rethrown = new AxiosError(
+      'Redirect to https://app.example/cb?code=AUTH-CODE-789 failed',
+      original.code, original.config, original.request, original.response,
+    )
+    const logged = loggedError(rethrown)
+    expectNoSecret(logged)
+    expect(logged.message).to.include('https://app.example/cb')
+  })
+
+  it('redacts a quoted JSON credential the message carries', async () => {
+    // No request body, so only the message can leak.
+    const original = await failedCall(() => axios.post(`${base}/token`))
+    const rethrown = new AxiosError(
+      'Token endpoint answered {"access_token":"RT-SECRET-123","error":"invalid_grant"}',
+      original.code, original.config, original.request, original.response,
+    )
+    const logged = loggedError(rethrown)
+    expectNoSecret(logged)
+    expect(logged.message).to.include('"access_token":"[REDACTED]"').and.to.include('"error":"invalid_grant"')
+  })
+
+  it('keeps status, code, method and url when the error has no message', async () => {
+    const original = await jsonTokenCall()
+    const bare = new AxiosError(undefined, original.code, original.config, original.request, original.response)
+    const logged = loggedError(bare)
+    expectNoSecret(logged)
+    expect(logged).to.include({ code: 'ERR_BAD_REQUEST', status: 400, method: 'post' })
+    expect(logged.url).to.include('/token')
+  })
+
+  it('logs a call that got no answer by its code, without its body', async () => {
+    const logged = loggedError(await failedCall(() => axios.post(`${base}/hang-up`, oauthBody)))
+    expectNoSecret(logged)
+    expect(logged.code).to.be.a('string').and.not.equal('ERR_BAD_REQUEST')
+    expect(logged).to.include({ method: 'post' })
+    expect(logged.status).to.equal(undefined)
+  })
+
+  it('at warn level, logs neither the request nor the stack', async () => {
+    const logged = loggedError(await jsonTokenCall(), 'warn')
+    expectNoSecret(logged)
+    expect(logged).to.not.have.property('stack')
+  })
+
+  it('keeps a standard OAuth error code as upstreamError', async () => {
+    const logged = loggedError(await failedCall(() => axios.post(`${base}/invalid-client`)))
+    expect(logged).to.include({ status: 401, upstreamError: 'invalid_client' })
+  })
+
+  for (const [name, send] of [
+    ['a token-shaped string', () => axios.post(`${base}/token-shaped`)],
+    ['a lowercase credential-shaped string', () => axios.post(`${base}/lowercase-token`)],
+    ['an unlisted 65-character code', () => axios.post(`${base}/too-long`)],
+    ['an object', () => axios.post(`${base}/object`)],
+    ['a text body', () => axios.post(`${base}/text`)],
+    ['a Buffer body', () => axios.post(`${base}/token`, undefined, { responseType: 'arraybuffer' })],
+  ] as const) {
+    it(`keeps no upstream code when the answer's error is ${name}`, async () => {
+      const logged = loggedError(await failedCall(send))
+      expectNoSecret(logged)
+      expect(logged).to.not.have.property('upstreamError')
+    })
+  }
+
+  describe('through the real Logger (what reaches winston)', () => {
+    let winstonLog: sinon.SinonStub
+    beforeEach(() => {
+      winstonLog = sinon.stub((Logger.getInstance() as unknown as { logger: { log: () => void } }).logger, 'log')
+    })
+    afterEach(() => sinon.restore())
+
+    it('logError writes no secret', async () => {
+      logError(Logger.getInstance(), 'Unhandled error', await jsonTokenCall())
+      expect(winstonLog.callCount).to.equal(1)
+      expectNoSecret(winstonLog.firstCall.args[0])
+    })
+
+    // Guards: these were already safe, through sanitizeForLogging's Error branch.
+    it('an axios error handed to the logger directly, as a cause, or inside BaseError metadata writes no secret', async () => {
+      const logger = Logger.getInstance()
+      const error = await jsonTokenCall()
+      const wrapped = Object.assign(new Error('wrap'), { cause: error })
+      logger.error('as meta', error)
+      logger.error('under error', { error })
+      logger.error('under err', { err: error })
+      logger.error('as a cause', wrapped)
+      logError(logger, 'cause via logError', wrapped)
+      logError(logger, 'in metadata', new InternalServerError('x', { error }))
+      expect(winstonLog.callCount).to.equal(6)
+      for (const call of winstonLog.getCalls()) expectNoSecret(call.args[0])
     })
   })
 })

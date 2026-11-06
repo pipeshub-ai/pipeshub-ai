@@ -143,7 +143,16 @@ class _Txn:
             self._q = asyncio.Queue()
             self._task = spawn_in_request(self._main())
         fut = asyncio.get_running_loop().create_future()
-        await self._q.put((fn, fut))
+        from app.services.graph_db.postgres.kg.guard import current_writer
+        writers = current_writer.get()      # the task keeps the context of the call that opened it: each call brings its own writer along
+
+        async def as_this_caller(tx: Tx) -> Any:  # noqa: ANN401
+            token = current_writer.set(writers)
+            try:
+                return await fn(tx)
+            finally:
+                current_writer.reset(token)
+        await self._q.put((as_this_caller, fut))
         try:
             await asyncio.wait({fut, self._task}, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
@@ -179,6 +188,8 @@ class _Rollback(Exception):
 class PgBase:
     def __init__(self, logger: Logger, db: KernelDB, config_service: Any = None) -> None:  # noqa: ANN401
         self.logger, self._db = logger, db
+        from app.services.graph_db.postgres.kg.flush import install as install_kg
+        install_kg(db)        # the projection into kg: the guard before a graph write, the flush before COMMIT of the connectors service's unit
         self.config_service = config_service  # read by callers that build blob storage from the provider, as on Neo4j/Arango
         self._txns: dict[str, _Txn] = {}
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.services.pg_runtime import QUEUE_CHANNEL, RuntimeDb
+from app.utils.log_redaction import redact_secrets_in_text
 
 _GROUPS = """/* pipeshub:queue.groups */
 SELECT group_id FROM platform.queue_groups WHERE topic = $1 FOR SHARE"""
@@ -120,6 +121,11 @@ _BACKLOG = """/* pipeshub:queue.backlog */
 SELECT status, count(*) AS n FROM platform.queue_deliveries WHERE group_id = $1 AND topic = ANY($2::text[]) GROUP BY status"""
 _TOPICS = """/* pipeshub:queue.topics */
 SELECT DISTINCT topic FROM platform.queue_groups UNION SELECT DISTINCT topic FROM platform.queue_messages ORDER BY 1"""
+
+
+def stored_error(error: str) -> str:
+    """The text kept in ``last_error``: redacted first, then cut, so the cut cannot leave half a secret."""
+    return redact_secrets_in_text(error)[:500]
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,7 +255,7 @@ class PgQueue:
                     d.topic,
                     d.message_id,
                     d.attempts,
-                    error[:500],
+                    stored_error(error),
                     delay_s,
                     1 if refund else 0,
                 )
@@ -259,7 +265,7 @@ class PgQueue:
         async with await self._write() as tx:
             return (
                 await tx.execute(
-                    _DEAD, group_id, d.topic, d.message_id, d.attempts, error[:500]
+                    _DEAD, group_id, d.topic, d.message_id, d.attempts, stored_error(error)
                 )
             ).endswith(" 1")
 

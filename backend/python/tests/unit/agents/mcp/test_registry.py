@@ -78,6 +78,7 @@ class TestMCPRegistry:
         assert "atlassian_rovo" in type_ids
         assert "linear" in type_ids
         assert "notion" in type_ids
+        assert "airtable" in type_ids
         assert "slack" in type_ids
         assert "exa" in type_ids
         assert "box" in type_ids
@@ -90,6 +91,28 @@ class TestMCPRegistry:
         assert "docusign" in type_ids
         assert "okta" in type_ids
         assert "zoom" in type_ids
+
+    def test_airtable_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        airtable = registry.get_template("airtable")
+
+        assert airtable is not None
+        assert airtable.display_name == "Airtable"
+        assert airtable.transport == MCPTransport.STREAMABLE_HTTP
+        assert airtable.default_url == "https://mcp.airtable.com/mcp"
+        assert airtable.default_auth_mode == MCPAuthMode.OAUTH
+        assert airtable.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert airtable.supports_dcr is True
+        assert airtable.require_oauth_client is False
+        assert airtable.url_editable is False
+        assert airtable.authorization_url == "https://airtable.com/oauth2/v1/authorize"
+        assert airtable.token_url == "https://airtable.com/oauth2/v1/token"
+        assert airtable.default_scopes == []
+        assert airtable.icon == "/icons/connectors/airtable.svg"
+        assert airtable.documentation_url == (
+            "https://airtable.com/developers/agents/mcp/getting-started"
+        )
 
     def test_okta_and_docusign_catalog_entries(self) -> None:
         """Okta's address is per org, so it has no fixed URL and always asks for an OAuth app.
@@ -132,11 +155,14 @@ class TestMCPRegistry:
         assert zoom.token_url == "https://zoom.us/oauth/token"
         assert set(zoom.default_scopes) == {
             "meeting:read:search",
-            "meeting:write:meeting",
             "meeting:read:assets",
-            "meeting:update:meeting",
-            "meeting:delete:meeting",
-            "meeting:update:in_meeting_controls",
+            "agentic_search:read:search",
+            "cloud_recording:read:list_user_recordings",
+            "cloud_recording:read:content",
+            "docs:read:export",
+            "docs:write:import",
+            "hub:read:content",
+            "hub:write:content",
         }
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
