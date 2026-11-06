@@ -143,7 +143,15 @@ export function MessageActions({
   const router = useRouter();
   const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
   const forkLabel = isLastMessage ? t('chat.fork') : t('chat.forkFromHere');
-  const canFork = useChatStore((s) => (s.activeSlotId ? s.slots?.[s.activeSlotId]?.isOwner : undefined) !== false);
+  const isOwner = useChatStore((s) => {
+    const slot = s.activeSlotId ? s.slots?.[s.activeSlotId] : undefined;
+    return slot?.isOwner !== false;
+  });
+  const isTemporaryChat = useChatStore((s) => {
+    const slot = s.activeSlotId ? s.slots?.[s.activeSlotId] : undefined;
+    return Boolean(slot?.isTemporaryChat);
+  });
+  const canFork = isOwner && !isTemporaryChat;
   // Only the owner may rate or regenerate an agent chat (the server refuses a recipient with 404),
   // so a recipient of a shared agent chat is not offered those buttons.
   const isAgentThread = useChatStore((s) => Boolean(s.activeSlotId && s.slots?.[s.activeSlotId]?.threadAgentId));
@@ -786,7 +794,7 @@ export function MessageActions({
         )}
 
         {/* Regenerate - only show for the last message */}
-        {isLastMessage && messageId && canRegenerate && canFork && (
+        {isLastMessage && messageId && canRegenerate && isOwner && (
           <Tooltip content={t('chat.regenerate')} side="top">
             <IconButton
               variant="ghost"

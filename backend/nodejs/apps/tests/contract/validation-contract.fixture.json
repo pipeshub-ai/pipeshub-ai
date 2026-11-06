@@ -1117,6 +1117,21 @@
 {"id":"createConversationalRouter DELETE /:conversationId #0 query-empty","derive":"query-empty","expected":{"ok":"1b4428b9e40ab9ca"}},
 {"id":"createConversationalRouter DELETE /:conversationId #0 params-empty","derive":"params-empty","expected":{"status":400,"code":"VALIDATION_ERROR","message":"Conversation id is required.","errors":[["INVALID_TYPE","params.conversationId","Conversation id is required."]]}}
 ]},
+{"key":"createConversationalRouter DELETE /:conversationId/temporary #0","cases":[
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 valid","payload":{"params":{"conversationId":"507f1f77bcf86cd799439011"}},"expected":{"ok":"1b4428b9e40ab9ca"}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 minimal","payload":{"params":{"conversationId":"507f1f77bcf86cd799439011"}},"expected":{"ok":"1b4428b9e40ab9ca"}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 empty-all","payload":{},"expected":{"status":400,"code":"VALIDATION_ERROR","message":"Conversation id is required.","errors":[["INVALID_TYPE","params.conversationId","Conversation id is required."]]}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 body=[]","payload":{"params":{"conversationId":"507f1f77bcf86cd799439011"},"body":[]},"expected":{"ok":"4b01f12516f11ba5"}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 obj-empty@params","payload":{"params":{}},"expected":{"status":400,"code":"VALIDATION_ERROR","message":"Conversation id is required.","errors":[["INVALID_TYPE","params.conversationId","Conversation id is required."]]}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 extra@params","payload":{"params":{"conversationId":"507f1f77bcf86cd799439011","__qaExtra":"x"}},"expected":{"ok":"1b4428b9e40ab9ca"}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 bad:\"507f1f77bcf86cd799439011\"@params.conversationId","payload":{"params":{"conversationId":"507f1f77bcf86cd799439011"}},"expected":{"ok":"1b4428b9e40ab9ca"}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 str:ftp://x@params.conversationId","payload":{"params":{"conversationId":"ftp://x"}},"expected":{"status":400,"code":"VALIDATION_ERROR","message":"Invalid conversation ID format","errors":[["INVALID_STRING","params.conversationId","Invalid conversation ID format"]]}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 combo@params.conversationId+params","payload":{"params":{"$ne":null}},"expected":{"status":400,"code":"VALIDATION_ERROR","message":"Conversation id is required.","errors":[["INVALID_TYPE","params.conversationId","Conversation id is required."]]}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 body-absent","derive":"body-absent","expected":{"ok":"1b4428b9e40ab9ca"}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 body-empty","derive":"body-empty","expected":{"ok":"9ae9872a744c556b"}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 query-empty","derive":"query-empty","expected":{"ok":"1b4428b9e40ab9ca"}},
+{"id":"createConversationalRouter DELETE /:conversationId/temporary #0 params-empty","derive":"params-empty","expected":{"status":400,"code":"VALIDATION_ERROR","message":"Conversation id is required.","errors":[["INVALID_TYPE","params.conversationId","Conversation id is required."]]}}
+]},
 {"key":"createConversationalRouter POST /:conversationId/share #0","cases":[
 {"id":"createConversationalRouter POST /:conversationId/share #0 valid","payload":{"params":{"conversationId":"507f1f77bcf86cd799439011"},"body":{"userIds":["507f1f77bcf86cd799439011"]}},"expected":{"ok":"4588054bc7c4ecb0"}},
 {"id":"createConversationalRouter POST /:conversationId/share #0 minimal","payload":{"params":{"conversationId":"507f1f77bcf86cd799439011"},"body":{"userIds":["507f1f77bcf86cd799439011"]}},"expected":{"ok":"4588054bc7c4ecb0"}},

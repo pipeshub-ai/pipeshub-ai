@@ -10,7 +10,7 @@ const h = vi.hoisted(() => ({
   forkAgentConversation: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
-  slot: { convId: 'conv-1', threadAgentId: undefined as string | undefined, projectId: undefined as string | undefined, isOwner: true as boolean | null },
+  slot: { convId: 'conv-1', threadAgentId: undefined as string | undefined, projectId: undefined as string | undefined, isOwner: true as boolean | null, isTemporaryChat: false },
 }));
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: h.push }) }));
@@ -57,6 +57,7 @@ beforeEach(() => {
   h.slot.threadAgentId = undefined;
   h.slot.projectId = undefined;
   h.slot.isOwner = true;
+  h.slot.isTemporaryChat = false;
 });
 
 describe('fork button on a message', () => {
@@ -69,6 +70,19 @@ describe('fork button on a message', () => {
     h.slot.isOwner = false;
     renderActions('msg-2');
     expect(screen.queryByLabelText('chat.forkFromHere')).toBeNull();
+  });
+
+  it('is not offered on a temporary chat', () => {
+    h.slot.isTemporaryChat = true;
+    renderActions('msg-2');
+    expect(screen.queryByLabelText('chat.forkFromHere')).toBeNull();
+  });
+
+  it('still offers regenerate on a temporary chat, not fork', () => {
+    h.slot.isTemporaryChat = true;
+    renderActions('msg-2', true);
+    expect(screen.queryByLabelText('chat.fork')).toBeNull();
+    expect(screen.getByLabelText('chat.regenerate')).toBeTruthy();
   });
 
   it('is still offered while ownership is not known yet', () => {

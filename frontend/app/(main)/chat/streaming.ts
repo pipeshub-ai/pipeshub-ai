@@ -1055,7 +1055,7 @@ export async function streamMessageForSlot(
 
   // For new conversations, push a pending sidebar entry keyed by slotId
   const isNewConversation = slot.isTemp;
-  if (isNewConversation) {
+  if (isNewConversation && !slot.isTemporaryChat) {
     store.addPendingConversation(slotId);
   }
 
@@ -1591,23 +1591,25 @@ export async function streamMessageForSlot(
         const currentStore = useChatStore.getState();
         if (isNewConversation && newConvId) {
           currentStore.resolveSlotConvId(slotId, newConvId);
-          currentStore.resolvePendingConversation(
-            slotId,
-            {
-              id: newConvId,
-              title: data.conversation.title,
-              createdAt: data.conversation.createdAt,
-              updatedAt: data.conversation.updatedAt,
-              isShared: data.conversation.isShared,
-              lastActivityAt: data.conversation.lastActivityAt,
-              status: data.conversation.status,
-              modelInfo: data.conversation.modelInfo,
-              isOwner: true,
-              sharedWith: [],
-              projectId: data.conversation.projectId ?? slot.projectId ?? undefined,
-            },
-            { isAgentStream: Boolean(request.agentId) }
-          );
+          if (!slot.isTemporaryChat) {
+            currentStore.resolvePendingConversation(
+              slotId,
+              {
+                id: newConvId,
+                title: data.conversation.title,
+                createdAt: data.conversation.createdAt,
+                updatedAt: data.conversation.updatedAt,
+                isShared: data.conversation.isShared,
+                lastActivityAt: data.conversation.lastActivityAt,
+                status: data.conversation.status,
+                modelInfo: data.conversation.modelInfo,
+                isOwner: true,
+                sharedWith: [],
+                projectId: data.conversation.projectId ?? slot.projectId ?? undefined,
+              },
+              { isAgentStream: Boolean(request.agentId) }
+            );
+          }
         } else {
           const existingConvId = newConvId || slot.convId;
           if (existingConvId) {

@@ -20,6 +20,7 @@ import {
   archiveConversation,
   archiveSearch,
   deleteConversationById,
+  purgeTemporaryConversation,
   deleteSearchById,
   deleteSearchHistory,
   getAllConversations,
@@ -395,6 +396,19 @@ export function createConversationalRouter(container: Container): Router {
     ValidationMiddleware.validate(conversationIdParamsSchema),
     purgeBranchArtifacts(compareArtifacts),
     deleteConversationById(appConfig),
+  );
+
+  /**
+   * @route DELETE /api/v1/conversations/:conversationId/temporary
+   * @desc Hard-delete a temporary chat, its messages, citations, artifacts and chat attachments
+   */
+  router.delete(
+    '/:conversationId/temporary',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- used as a method reference by every route in this file
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    ValidationMiddleware.validate(conversationIdParamsSchema),
+    purgeTemporaryConversation(appConfig),
   );
 
   /**

@@ -175,8 +175,11 @@ describe('copySessionUpToMessage', () => {
     store.install()
     const { source, rows, owner, orgId } = seed(store, FORK_COPY_BATCH_SIZE + 5)
     ;(ChatSessionMessage.insertMany as unknown as sinon.SinonStub).onSecondCall().rejects(new InternalServerError('disk full'))
-    const deleteMessages = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    const deleteSession = sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
+    // install() already stubs these; reset so we can assert this failure path called them.
+    const deleteMessages = ChatSessionMessage.deleteMany as unknown as sinon.SinonStub
+    const deleteSession = ChatSession.deleteOne as unknown as sinon.SinonStub
+    deleteMessages.resetHistory()
+    deleteSession.resetHistory()
 
     try {
       await copySessionUpToMessage(source, String(rows[rows.length - 1]!._id), String(owner), String(orgId), {
@@ -198,8 +201,10 @@ describe('copySessionUpToMessage', () => {
     store.install()
     const { source, rows, owner, orgId } = seed(store, 3)
     ;(ChatSessionMessage.insertMany as unknown as sinon.SinonStub).onFirstCall().rejects(new Error('boom'))
-    const deleteMessages = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    const deleteSession = sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
+    const deleteMessages = ChatSessionMessage.deleteMany as unknown as sinon.SinonStub
+    const deleteSession = ChatSession.deleteOne as unknown as sinon.SinonStub
+    deleteMessages.resetHistory()
+    deleteSession.resetHistory()
 
     try {
       await copySessionUpToMessage(

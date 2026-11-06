@@ -76,6 +76,7 @@ function makeSlot(overrides: Partial<ChatSlot> = {}): ChatSlot {
     agentStreamTools: null,
     projectId: null,
     isTemp: false,
+    isTemporaryChat: false,
     isInitialized: true,
     hasLoaded: true,
     messages: [],
@@ -841,5 +842,118 @@ describe('Stop keeps the streamed partial answer when the server saved it empty'
     expect(earlier.content).not.toEqual([{ type: 'text', text: 'Regenerated partial' }]);
     regenSpy.mockRestore();
     fetchSpy.mockRestore();
+  });
+});
+
+describe('streamMessageForSlot — temporary chat stays off the sidebar', () => {
+  it('does not enqueue a pending sidebar row when the slot is a temporary chat', async () => {
+    const streamSpy = vi.spyOn(ChatApi, 'streamMessage').mockResolvedValue(undefined);
+    useChatStore.setState({ pendingConversations: {} });
+    seedSlot({
+      convId: null,
+      isTemp: true,
+      isTemporaryChat: true,
+      isStreaming: false,
+      runId: null,
+      messages: [],
+    });
+
+    await streamMessageForSlot(SLOT_ID, 'hello', { query: 'hello' } as never);
+
+    expect(useChatStore.getState().pendingConversations).toEqual({});
+    streamSpy.mockRestore();
+  });
+
+  it('still enqueues a pending sidebar row for a normal new chat', async () => {
+    const streamSpy = vi.spyOn(ChatApi, 'streamMessage').mockResolvedValue(undefined);
+    useChatStore.setState({ pendingConversations: {} });
+    seedSlot({
+      convId: null,
+      isTemp: true,
+      isTemporaryChat: false,
+      isStreaming: false,
+      runId: null,
+      messages: [],
+    });
+
+    await streamMessageForSlot(SLOT_ID, 'hello', { query: 'hello' } as never);
+
+    expect(useChatStore.getState().pendingConversations[SLOT_ID]).toBeTruthy();
+    streamSpy.mockRestore();
+  });
+
+  it('does not insert a Recents row when a temporary chat completes', async () => {
+    type Cb = { onComplete?: (d: unknown) => void | Promise<void> };
+    let callbacks: Cb = {};
+    const streamSpy = vi.spyOn(ChatApi, 'streamMessage').mockImplementation(((_req: unknown, cb: Cb) => {
+      callbacks = cb;
+      return Promise.resolve();
+    }) as never);
+    useChatStore.setState({ pendingConversations: {}, conversations: [] });
+    seedSlot({
+      convId: null,
+      isTemp: true,
+      isTemporaryChat: true,
+      isStreaming: false,
+      runId: null,
+      messages: [],
+    });
+
+    await streamMessageForSlot(SLOT_ID, 'hello', { query: 'hello' } as never);
+    const now = new Date().toISOString();
+    await callbacks.onComplete?.({
+      conversation: {
+        _id: 'temp-conv-1',
+        title: 'Temporary chat',
+        createdAt: now,
+        updatedAt: now,
+        isShared: false,
+        messages: [
+          { _id: 'u1', messageType: 'user_query', content: 'hello', contentFormat: 'MARKDOWN', citations: [], followUpQuestions: [], feedback: [], createdAt: now, updatedAt: now },
+          { _id: 'b1', messageType: 'bot_response', content: 'hi', contentFormat: 'MARKDOWN', citations: [], followUpQuestions: [], feedback: [], createdAt: now, updatedAt: now },
+        ],
+      },
+    });
+
+    expect(useChatStore.getState().conversations.map((c) => c.id)).not.toContain('temp-conv-1');
+    expect(useChatStore.getState().slots[SLOT_ID]?.convId).toBe('temp-conv-1');
+    streamSpy.mockRestore();
+  });
+
+  it('still inserts a Recents row when a normal new chat completes', async () => {
+    type Cb = { onComplete?: (d: unknown) => void | Promise<void> };
+    let callbacks: Cb = {};
+    const streamSpy = vi.spyOn(ChatApi, 'streamMessage').mockImplementation(((_req: unknown, cb: Cb) => {
+      callbacks = cb;
+      return Promise.resolve();
+    }) as never);
+    useChatStore.setState({ pendingConversations: {}, conversations: [] });
+    seedSlot({
+      convId: null,
+      isTemp: true,
+      isTemporaryChat: false,
+      isStreaming: false,
+      runId: null,
+      messages: [],
+    });
+
+    await streamMessageForSlot(SLOT_ID, 'hello', { query: 'hello' } as never);
+    const now = new Date().toISOString();
+    await callbacks.onComplete?.({
+      conversation: {
+        _id: 'real-conv-1',
+        title: 'Hello',
+        createdAt: now,
+        updatedAt: now,
+        isShared: false,
+        messages: [
+          { _id: 'u1', messageType: 'user_query', content: 'hello', contentFormat: 'MARKDOWN', citations: [], followUpQuestions: [], feedback: [], createdAt: now, updatedAt: now },
+          { _id: 'b1', messageType: 'bot_response', content: 'hi', contentFormat: 'MARKDOWN', citations: [], followUpQuestions: [], feedback: [], createdAt: now, updatedAt: now },
+        ],
+      },
+    });
+
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toContain('real-conv-1');
+    streamSpy.mockRestore();
   });
 });

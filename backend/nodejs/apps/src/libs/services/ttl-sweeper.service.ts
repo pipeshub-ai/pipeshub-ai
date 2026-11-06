@@ -1,8 +1,14 @@
 import { Logger } from './logger.service';
-import { spawnDetached, system } from '../context/orgContext';
+import { forOrg, spawnDetached, system } from '../context/orgContext';
 import { Tx, withJobsUow } from '../db';
 import { docstoreMetrics } from '../repositories/metrics';
+import { getConversationRepository } from '../repositories/conversation';
 import { retentionCutoff } from '../../modules/notification/utils/notification-api.utils';
+import { AppConfig } from '../../modules/tokens_manager/config/config';
+import {
+  mintTemporaryChatCleanupAuthorization,
+  purgeTemporaryChatSideEffects,
+} from '../../modules/enterprise_search/utils/temporary-chat-cleanup';
 
 const DEFAULT_INTERVAL_MS = 60_000;
 const BATCH = 5000;
@@ -12,6 +18,58 @@ const DELEGATION_EVENTS_KEEP_MS = 400 * 24 * HOUR_MS;
 
 // a row stays an hour past its expiry so that a caller can still say "expired" rather than "unknown"
 const expiredAnHourAgo = (now: Date): Date => new Date(now.getTime() - HOUR_MS);
+
+/**
+ * Removes expired temporary chats. When `appConfig` is set, deletes that chat's
+ * artifacts and chat-attachment records first (GPT-style ephemeral files).
+ * Artifact failure skips the hard-delete so a later pass can retry; attachment
+ * failures are logged inside the cleanup helper and do not block.
+ */
+export async function sweepExpiredTemporaryChats(
+  now: Date,
+  appConfig?: AppConfig,
+  log: Pick<Logger, 'warn' | 'error'> = Logger.getInstance({
+    service: 'TTL Sweeper',
+  }),
+): Promise<number> {
+  const repo = getConversationRepository();
+  if (!repo.isConnected()) return 0;
+  const expired = await repo.listExpiredTemporary(now, 200);
+  let n = 0;
+  for (const row of expired) {
+    if (!row.userId) continue;
+    const deleted = await forOrg(row.orgId, 'ttl-sweeper', async () => {
+      if (appConfig) {
+        try {
+          await purgeTemporaryChatSideEffects(appConfig, row.id, {
+            authorization: mintTemporaryChatCleanupAuthorization(appConfig, {
+              orgId: row.orgId,
+              userId: row.userId,
+            }),
+            orgId: row.orgId,
+            userId: row.userId,
+          });
+        } catch (error: unknown) {
+          log.warn(
+            'Temporary chat file cleanup failed; leaving row for retry',
+            {
+              conversationId: row.id,
+              orgId: row.orgId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+          return null;
+        }
+      }
+      return repo.hardDeleteTemporary(row.id, {
+        orgId: row.orgId,
+        userId: row.userId,
+      });
+    });
+    if (deleted) n += 1;
+  }
+  return n;
+}
 
 interface Target {
   name: string;
@@ -84,6 +142,7 @@ export class TtlSweeper {
     private readonly logger: Logger,
     private readonly intervalMs: number = DEFAULT_INTERVAL_MS,
     private readonly clock: () => Date = () => new Date(),
+    private readonly appConfig?: AppConfig,
   ) {}
 
   start(): void {
@@ -123,6 +182,9 @@ export class TtlSweeper {
           return total;
         });
       }
+      await this.guarded('temporary_chats_store', removed, () =>
+        sweepExpiredTemporaryChats(now, this.appConfig, this.logger),
+      );
       const total = Object.values(removed).reduce((a, b) => a + b, 0);
       if (total > 0) this.logger.info('TTL sweep removed rows', removed);
     } finally {
@@ -138,7 +200,7 @@ export class TtlSweeper {
   ): Promise<void> {
     try {
       removed[name] = await run();
-      if (removed[name])
+      if (removed[name] !== 0)
         docstoreMetrics.ttlSwept.inc({ target: name }, removed[name]);
     } catch (error) {
       docstoreMetrics.ttlSweepFailed.inc({ target: name });
