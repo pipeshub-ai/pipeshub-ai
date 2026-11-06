@@ -10,6 +10,7 @@ import {
   TEMPORARY_CHAT_TTL_MS,
 } from '../../../../src/modules/enterprise_search/utils/temporary-chat'
 import * as temporaryChatCleanup from '../../../../src/modules/enterprise_search/utils/temporary-chat-cleanup'
+import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { getConversationRepository } from '../../../../src/libs/repositories/conversation'
 import {
   sweepExpiredTemporaryChats,
@@ -405,6 +406,77 @@ describe('es_controller temporary chat', () => {
     expect(ids.sort()).to.deep.equal(['att-cited', 'att-temp'])
   })
 
+  it('mintTemporaryChatCleanupAuthorization returns a Bearer token for the owner', () => {
+    const token = temporaryChatCleanup.mintTemporaryChatCleanupAuthorization(
+      appConfig,
+      { orgId: String(ORG), userId: String(OWNER) },
+    )
+    expect(token.startsWith('Bearer ')).to.equal(true)
+    expect(token.length).to.be.greaterThan('Bearer '.length)
+  })
+
+  it('deleteTemporaryChatAttachments deletes this chat\'s upload recordIds', async () => {
+    const repo = getConversationRepository()
+    sinon.stub(repo, 'listAttachmentsAndCitedRecords').resolves([
+      { attachments: [{ recordId: 'att-1' }], citations: [] },
+    ] as never)
+    const fetchStub = sinon.stub(globalThis, 'fetch').resolves({
+      status: 204,
+    } as Response)
+    await temporaryChatCleanup.deleteTemporaryChatAttachments(
+      appConfig,
+      'conv-1',
+      'Bearer t',
+    )
+    expect(fetchStub.calledOnce).to.equal(true)
+    expect(String(fetchStub.firstCall.args[0])).to.include(
+      '/api/v1/chat/attachments/att-1',
+    )
+  })
+
+  it('deleteTemporaryChatAttachments keeps going after a rejected or failed delete', async () => {
+    const repo = getConversationRepository()
+    sinon.stub(repo, 'listAttachmentsAndCitedRecords').resolves([
+      {
+        attachments: [{ recordId: 'att-bad' }, { recordId: 'att-throw' }],
+        citations: [],
+      },
+    ] as never)
+    const fetchStub = sinon.stub(globalThis, 'fetch')
+    fetchStub.onFirstCall().resolves({ status: 500 } as Response)
+    fetchStub.onSecondCall().rejects(new Error('network down'))
+    await temporaryChatCleanup.deleteTemporaryChatAttachments(
+      appConfig,
+      'conv-1',
+      'Bearer t',
+    )
+    expect(fetchStub.callCount).to.equal(2)
+  })
+
+  it('purgeTemporaryChatSideEffects deletes artifacts then attachments', async () => {
+    const artifacts = sinon
+      .stub(conversationArtifacts, 'deleteConversationArtifactsOwnedBy')
+      .resolves()
+    const repo = getConversationRepository()
+    sinon.stub(repo, 'listAttachmentsAndCitedRecords').resolves([
+      { attachments: [{ recordId: 'att-1' }], citations: [] },
+    ] as never)
+    const fetchStub = sinon.stub(globalThis, 'fetch').resolves({
+      status: 204,
+    } as Response)
+    await temporaryChatCleanup.purgeTemporaryChatSideEffects(
+      appConfig,
+      'conv-1',
+      {
+        authorization: 'Bearer t',
+        orgId: String(ORG),
+        userId: String(OWNER),
+      },
+    )
+    expect(artifacts.calledOnce).to.equal(true)
+    expect(fetchStub.calledOnce).to.equal(true)
+    expect(artifacts.calledBefore(fetchStub)).to.equal(true)
+  })
 
   it('streamChat with temporary: true flags the session and does not use the query as the title', async () => {
     const streamChat = flows.find((f) => f.name === 'streamChat')
