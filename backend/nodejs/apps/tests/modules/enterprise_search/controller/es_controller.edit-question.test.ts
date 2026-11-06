@@ -63,7 +63,9 @@ function editFlow(options: {
         store.addMessage(session, { messageType: 'user_query', content: CARD_ANSWERS })
         store.addMessage(session, { messageType: 'bot_response', content: 'An earlier answer.' })
       }
-      // The harness keeps messages in memory but does not model deletes.
+      // Replace the harness deleteMany with one that also drops in-memory rows.
+      const current = ChatSessionMessage.deleteMany as { restore?: () => void }
+      if (typeof current.restore === 'function') current.restore()
       sinon.stub(ChatSessionMessage, 'deleteMany').callsFake(((filter: { _id: { $in: unknown[] } }) => {
         const doomed = new Set(filter._id.$in.map(String))
         for (let i = store.messages.length - 1; i >= 0; i -= 1) {

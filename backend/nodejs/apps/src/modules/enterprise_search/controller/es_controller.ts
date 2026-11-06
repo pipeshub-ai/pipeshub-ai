@@ -765,7 +765,7 @@ export const streamChat =
         initiator: String(userId),
         title: isTemporary
           ? TEMPORARY_CHAT_TITLE
-          : req.body.query.slice(0, 100),
+          : String(req.body.query ?? '').slice(0, 100),
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         // Store model and mode information
@@ -2771,14 +2771,15 @@ export const purgeTemporaryConversation =
     next?: NextFunction,
   ): Promise<void> => {
     const requestId = req.context?.requestId;
-    const { conversationId } = req.params;
+    const conversationId = String(req.params.conversationId ?? '');
     try {
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
+      const userId =
+        req.user?.userId != null ? String(req.user.userId) : undefined;
+      const orgId = req.user?.orgId != null ? String(req.user.orgId) : undefined;
       const actor = actorOf(orgId, userId);
       const existing = await convRepo().findOwned(
         CHAT_SCOPE,
-        conversationId as string,
+        conversationId,
         actor,
       );
       if (!existing) {
@@ -2790,16 +2791,16 @@ export const purgeTemporaryConversation =
       // Artifacts first (strict); then this chat's attachment recordIds only
       // (best-effort). A normal chat that uploaded the same file has a different
       // recordId, so that copy is not touched.
-      await purgeTemporaryChatSideEffects(appConfig, String(conversationId), {
+      await purgeTemporaryChatSideEffects(appConfig, conversationId, {
         authorization:
           typeof req.headers.authorization === 'string'
             ? req.headers.authorization
             : '',
-        orgId: String(orgId),
-        userId: String(userId),
+        orgId: String(orgId ?? ''),
+        userId: String(userId ?? ''),
       });
       const result = await unitOfWork.run((tx) =>
-        convRepo().hardDeleteTemporary(conversationId as string, actor, tx),
+        convRepo().hardDeleteTemporary(conversationId, actor, tx),
       );
       if (!result) {
         throw new NotFoundError('Conversation not found');
