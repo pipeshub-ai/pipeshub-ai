@@ -253,6 +253,9 @@ async def test_the_next_queued_duplicate_is_live_queued_same_md5_and_size_in_the
                   {"_key": "q-org", "md5Checksum": "m", "orgId": "elsewhere", "sizeInBytes": 10, "indexingStatus": "QUEUED"},
                   {"_key": "nomd5", "orgId": w.org, "indexingStatus": "COMPLETED"}, {"_key": "noorg", "md5Checksum": "m", "indexingStatus": "COMPLETED"})
     assert await w.p.find_next_queued_duplicate("ref") is None
+    await w.p.update_node("ref", "records", {"indexingStatus": "QUEUED"})
+    assert await w.p.find_next_queued_duplicate("ref") is None                  # a queued reference is not its own duplicate
+    await w.p.update_node("ref", "records", {"indexingStatus": "COMPLETED"})
     await w.nodes("records", {"_key": "q2", **same, "sizeInBytes": 10, "indexingStatus": "QUEUED"}, {"_key": "q1", **same, "sizeInBytes": 10, "indexingStatus": "QUEUED"})
     assert (await w.p.find_next_queued_duplicate("ref"))["_key"] == "q1"
     await w.p.update_node("ref", "records", {"sizeInBytes": None})
