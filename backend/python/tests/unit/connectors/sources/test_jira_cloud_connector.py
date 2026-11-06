@@ -306,6 +306,42 @@ class TestInitCoverage:
         assert connector.data_source is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["basic", "bare_token"])
+    async def test_init_refuses_any_direct_client_to_a_host_that_is_not_atlassian(self, kind: str) -> None:
+        """A rewritten authType (BASIC_AUTH, or API_TOKEN without email) builds these; they must not reach the private network."""
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorInitError,
+        )
+        from app.sources.client.jira.jira import (
+            JiraClient,
+            JiraRESTClientViaToken,
+            JiraRESTClientViaUsernamePassword,
+        )
+
+        rest = (JiraRESTClientViaUsernamePassword("http://10.1.2.3:8529/x?", "u", "p", "Basic") if kind == "basic"
+                else JiraRESTClientViaToken("http://arango:8529/x?", "t", "Bearer"))
+        connector = _make_connector()
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=JiraClient(rest))), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            with pytest.raises(ConnectorInitError, match="your-company.atlassian.net"):
+                await connector.init()
+        data_source.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_init_keeps_the_oauth_gateway_url(self) -> None:
+        from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaToken
+
+        gateway = "https://api.atlassian.com/ex/jira/cloud-1"
+        client = JiraClient(JiraRESTClientViaToken(gateway, "t"))
+        client.site_url = "https://acme.atlassian.net"
+        connector = _make_connector()
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=client)), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            data_source.return_value.get_current_user = AsyncMock(side_effect=Exception("offline"))
+            assert await connector.init() is True
+        assert client.get_client().get_base_url() == gateway
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("base_url", [
         "https://acme.atlassian.net",
         "https://acme.atlassian.net/jira",                              # Jira answers there too: synced before
@@ -1216,6 +1252,7 @@ class TestFetchUsersPhases:
 
         assert await connector._keep_licensed_users([licensed, unlicensed], mapping) == [licensed]
         connector._fetch_group_members.assert_awaited_once_with("g1", "jira-software-users")
+        assert connector._licensed_account_ids == {"lic"}, "kept for the scheme's user grants"
 
     @pytest.mark.asyncio
     async def test_product_access_unknown_keeps_every_user(self) -> None:
@@ -4402,3 +4439,40 @@ class TestGroupSyncForbiddenNotification:
         connector._group_bulk_forbidden = False
         await connector._sync_user_groups([])
         connector.notify.assert_not_awaited()
+
+
+@pytest.mark.parametrize("read_unfinished,account_type,licensed,granted", [
+    (False, "atlassian", None, False),       # a complete user read without them: no Jira product access
+    (True, "atlassian", None, True),         # a cut-short read may have missed a licensed account
+    (True, "customer", None, False),         # a portal customer never browses the project
+    (True, "atlassian", set(), False),       # outside the product groups, listed or not
+    (True, "atlassian", {"acc-u"}, True),    # in a product group but missing from the cut-short user read
+])
+def test_a_browse_grant_to_an_account_outside_the_licensed_users(read_unfinished, account_type, licensed, granted) -> None:
+    connector = _make_connector()
+    connector._user_read_unfinished = read_unfinished
+    connector._licensed_account_ids = licensed
+    grant = {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-u", "user": {
+        "accountId": "acc-u", "emailAddress": "u@acme.com", "active": True, "accountType": account_type}}}
+
+    perms = connector._permissions_for_browse_grant(grant, "ENG", {}, {"acc-x": _make_app_user("x@acme.com", "acc-x")}, set())
+
+    assert [p.email for p in perms] == (["u@acme.com"] if granted else [])
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_account_outside_the_product_groups_gets_no_browse_grant() -> None:
+    """A hidden-email account whose lookup failed never reaches the licence filter; the groups still decide."""
+    connector = _make_connector()
+    connector._fetch_group_members = AsyncMock(return_value=(["acc-x", "acc-lic"], True))
+    listed = [_make_app_user("x@acme.com", "acc-x")]
+    kept = await connector._keep_licensed_users(listed, {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]})
+    connector._user_read_unfinished = True  # what a failed email lookup leaves
+
+    def grant(account_id: str) -> dict:
+        return {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": account_id, "user": {
+            "accountId": account_id, "emailAddress": f"{account_id}@acme.com", "active": True, "accountType": "atlassian"}}}
+
+    users = {u.source_user_id: u for u in kept}
+    assert connector._permissions_for_browse_grant(grant("acc-unlic"), "ENG", {}, users, set()) == []
+    assert [p.email for p in connector._permissions_for_browse_grant(grant("acc-lic"), "ENG", {}, users, set())] == ["acc-lic@acme.com"]

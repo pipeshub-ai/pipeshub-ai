@@ -964,6 +964,19 @@ export class PgConversationRepository
     });
   }
 
+  // Compare models is off on this store (ChatCompareFeature), so no session ever has a branch.
+  listBranches(): Promise<ChatSessionDto[]> {
+    return Promise.resolve([]);
+  }
+
+  listStaleBranches(): Promise<ChatSessionDto[]> {
+    return Promise.resolve([]);
+  }
+
+  discardBranches(): Promise<void> {
+    return Promise.resolve();
+  }
+
   async unlinkProject(projectId: string, tx?: Tx): Promise<void> {
     const project = oidOf(projectId);
     if (!project) return;
