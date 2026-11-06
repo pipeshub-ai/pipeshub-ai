@@ -58,6 +58,9 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
         name = model_name or ""
         return name if name.startswith("models/") else f"models/{name}"
 
+    def supports_multimodal(self) -> bool:
+        return supports_image_input(self.model_name)
+
     @property
     def provider_name(self) -> str:
         return "gemini"

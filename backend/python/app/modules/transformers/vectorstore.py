@@ -1994,9 +1994,16 @@ class VectorStore(Transformer):
         return points
 
     async def _process_image_embeddings(
-        self, image_chunks: List[dict], image_base64s: List[str], record_id: str = ""
+        self,
+        image_chunks: List[dict],
+        image_base64s: List[str],
+        record_id: str = "",
+        collection_name: str = "",
     ) -> List[VectorPoint]:
         """Embed images via the provider the factory resolves for this config.
+
+        Returns the image points for the caller to store. Description fallbacks
+        are stored here, through the text path's batching.
 
         Guard: skip entirely if the record was deleted mid-flight.
         """
@@ -2017,7 +2024,8 @@ class VectorStore(Transformer):
             self.logger.warning(
                 f"Unsupported embedding provider for images: {self.embedding_provider}"
             )
-            return await self._description_points(image_chunks, record_id)
+            await self._store_descriptions(image_chunks, record_id, collection_name)
+            return []
 
         results = await provider.embed_images(image_base64s)
         failed = [r for r in results if r.embedding is None]
@@ -2028,18 +2036,22 @@ class VectorStore(Transformer):
                 f"{len(retriable)} of {len(results)} images failed to embed "
                 f"for record {record_id}: {retriable[0].error}"
             )
-        points = self._build_image_points(image_chunks, results)
-        points += await self._description_points([image_chunks[r.index] for r in failed], record_id)
-        return points
+        await self._store_descriptions(
+            [image_chunks[r.index] for r in failed], record_id, collection_name
+        )
+        return self._build_image_points(image_chunks, results)
 
-    async def _description_points(self, image_chunks: list[dict], record_id: str) -> list[VectorPoint]:
-        """Text points for images that cannot be embedded, as a text-only model would index them."""
+    async def _store_descriptions(
+        self, image_chunks: list[dict], record_id: str, collection_name: str
+    ) -> None:
+        """Index images that cannot be embedded by their descriptions, as a text-only model would."""
         documents = [
             Document(page_content=c["description"], metadata=c.get("metadata", {}))
             for c in image_chunks
             if c.get("description")
         ]
-        return await self._embed_documents_to_points(documents, record_id) if documents else []
+        if documents:
+            await self._process_document_chunks(documents, record_id, collection_name)
 
     async def _store_image_points(
         self, points: List[VectorPoint], collection_name: str
@@ -2186,15 +2198,6 @@ class VectorStore(Transformer):
             )
             return
 
-        points = await self._embed_documents_to_points(documents, record_id)
-        with stage("vector.upsert", detail=f"{len(points)} points"):
-            await self.vector_db_service.upsert_points(
-                collection_name=collection_name, points=points
-            )
-
-    async def _embed_documents_to_points(
-        self, documents: list[Document], record_id: str
-    ) -> list[VectorPoint]:
         texts = [doc.page_content for doc in documents]
 
         with stage(
@@ -2211,7 +2214,7 @@ class VectorStore(Transformer):
                 for doc in documents
             ])
 
-        return [
+        points: List[VectorPoint] = [
             VectorPoint(
                 id=deterministic_point_id(doc.metadata, doc.page_content),
                 dense_vector=dense,
@@ -2223,6 +2226,10 @@ class VectorStore(Transformer):
             )
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]
+        with stage("vector.upsert", detail=f"{len(points)} points"):
+            await self.vector_db_service.upsert_points(
+                collection_name=collection_name, points=points
+            )
 
     async def _process_document_chunks(
         self,
@@ -2331,7 +2338,9 @@ class VectorStore(Transformer):
         if image_chunks:
             image_base64s = [c.get("image_uri") for c in image_chunks]
             with stage("embed.image", detail=f"{len(image_chunks)} images"):
-                points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
+                points = await self._process_image_embeddings(
+                    image_chunks, image_base64s, record_id, collection_name
+                )
             with stage("vector.upsert", detail=f"{len(points)} image points"):
                 await self._store_image_points(points, collection_name)
 
@@ -2767,7 +2776,7 @@ class VectorStore(Transformer):
                 if image_chunks:
                     image_base64s = [c.get("image_uri") for c in image_chunks]
                     points = await self._process_image_embeddings(
-                        image_chunks, image_base64s, record_id
+                        image_chunks, image_base64s, record_id, collection_name
                     )
                     await self._store_image_points(points, collection_name)
             else:

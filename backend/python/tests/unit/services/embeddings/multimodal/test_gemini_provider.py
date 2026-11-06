@@ -18,6 +18,12 @@ class TestGeminiMultimodalProviderModelName:
         assert provider.model_name == "models/gemini-embedding-2"
 
 
+class TestGeminiMultimodalProviderCapability:
+    def test_a_text_only_model_is_not_sent_images(self) -> None:
+        assert not GeminiMultimodalProvider(api_key="k", model_name="gemini-embedding-001").supports_multimodal()
+        assert GeminiMultimodalProvider(api_key="k", model_name="gemini-embedding-2").supports_multimodal()
+
+
 class TestGeminiMultimodalProviderEmbedImages:
     @pytest.mark.asyncio
     async def test_embed_images_success(self) -> None:
