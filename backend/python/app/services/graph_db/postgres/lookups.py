@@ -924,19 +924,11 @@ class LookupsMixin(PgBase):
 
     async def page_records_for_vector_membership_backfill(self, connector_id: str, after_key: str | None, limit: int, transaction: str | None = None) -> list[dict]:
         """The connector's records after ``after_key`` in key order (byte order, as the cursor compares), as ``PAGE_RECORD_FIELDS``. A failure raises: an empty page
-        reads as "finished" to the backfill, which would then mark the connector done having processed nothing. Under a system context the connector's own org is used."""
+        reads as "finished" to the backfill, which would then mark the connector done having processed nothing. The ambient org's records only: the job binds the connector's own org."""
         n = max(1, int(limit))
         sql = """/* pipeshub:graph.page_records_for_vector_membership_backfill */ SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
             AND n.doc->>'connectorId' = $2 AND ($3::text IS NULL OR n.id COLLATE "C" > $3::text COLLATE "C") ORDER BY n.id COLLATE "C" LIMIT $4"""
-        if current_or_system().kind != "system":
-            rows = await self._lrows(sql, current_org_id(), connector_id, after_key or None, n, transaction=transaction)
-        else:
-            app = await self._system_read(lambda tx: tx.fetchrow("/* pipeshub:graph.system_app */ SELECT org_id FROM graph.system_app($1)", connector_id))
-            if not app:
-                return []
-            holder = app[0]          # the org that holds the connector's app
-            with org_context.for_org(holder, job="graph.vector_membership_backfill"):
-                rows = await self._lrows(sql, holder, connector_id, after_key or None, n)
+        rows = await self._lrows(sql, current_org_id(), connector_id, after_key or None, n, transaction=transaction)      # one org: a system scope raises, no org is guessed
         return [{"_key": r["id"], **{f: _doc(r["doc"]).get(f) for f in PAGE_RECORD_FIELDS if f != "_key"}} for r in rows]
 
     async def _fetch_existing_file_names_in_parent(self, kb_id: str, parent_folder_id: str | None, transaction: str | None = None, *,
@@ -946,7 +938,7 @@ class LookupsMixin(PgBase):
         org = current_org_id()
         try:
             if parent_folder_id is None:
-                rows = await self._lrows("""/* pipeshub:graph.existing_file_names_in_kb_root */ SELECT lower(r.doc->>'recordName') AS name_lower, m.mime AS mime
+                rows = await self._lrows("""/* pipeshub:graph.existing_file_names_in_kb_root */ SELECT r.doc->>'recordName' AS name, m.mime AS mime
                     FROM graph.edges b JOIN graph.nodes kb ON kb.org_id = b.org_id AND kb.coll = 'apps' AND kb.id = b.to_id AND kb.doc->>'type' = 'KB'
                     JOIN graph.nodes r ON r.org_id = b.org_id AND r.coll = 'records' AND r.id = b.from_id
                     CROSS JOIN LATERAL (SELECT coalesce(r.doc->>'mimeType', (SELECT f.doc->>'mimeType' FROM graph.edges t JOIN graph.nodes f ON f.org_id = t.org_id
@@ -957,14 +949,14 @@ class LookupsMixin(PgBase):
                       AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = b.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
                         AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)""", org, kb_id, FOLDER_MIME_TYPES, transaction=transaction)
             else:
-                rows = await self._lrows("""/* pipeshub:graph.existing_file_names_in_folder */ SELECT lower(r.doc->>'recordName') AS name_lower,
+                rows = await self._lrows("""/* pipeshub:graph.existing_file_names_in_folder */ SELECT r.doc->>'recordName' AS name,
                         coalesce(r.doc->>'mimeType', f.doc->>'mimeType') AS mime
                     FROM graph.edges p JOIN graph.nodes r ON r.org_id = p.org_id AND r.coll = 'records' AND r.id = p.to_id
                     JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'isOfType' AND t.from_coll = 'records' AND t.from_id = r.id AND t.to_coll = 'files'
                     JOIN graph.nodes f ON f.org_id = p.org_id AND f.coll = 'files' AND f.id = t.to_id AND f.doc->>'isFile' = 'true'
                     WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD' AND p.from_coll = 'records' AND p.from_id = $2
                       AND p.to_coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false""", org, parent_folder_id, transaction=transaction)
-            return {(r["name_lower"], str(r["mime"] or "")) for r in rows if r["name_lower"]}
+            return {(r["name"].lower(), str(r["mime"] or "")) for r in rows if r["name"]}
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch existing file names: {e}")
             if raise_on_error:

@@ -390,7 +390,7 @@ def test_every_public_method_of_the_module_is_in_the_no_org_cases() -> None:
     assert LOOKUP_METHODS == set(NO_ORG_CALLS)
 
 
-SWEEPS_BY_SYSTEM = {"get_records_pending_duplicate_reconcile", "get_app_needing_vector_membership_backfill", "page_records_for_vector_membership_backfill"}
+SWEEPS_BY_SYSTEM = {"get_records_pending_duplicate_reconcile", "get_app_needing_vector_membership_backfill"}
 
 
 @pytest.mark.parametrize("name", sorted(NO_ORG_CALLS))

@@ -23,6 +23,7 @@ on:
       - 'backend/python/app/services/graph_db/postgres/**'
       - 'backend/python/app/services/graph_db/**'
       - 'backend/python/app/modules/code_graph/**'
+      - 'backend/python/app/modules/indexing/vector_membership_backfill.py'
       - 'backend/python/app/models/entities.py'
       - 'backend/python/app/exceptions/graph_db_exceptions.py'
       - 'backend/python/app/utils/time_conversion.py'
