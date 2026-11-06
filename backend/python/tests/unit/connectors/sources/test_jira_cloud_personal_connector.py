@@ -46,6 +46,8 @@ def _make_deps():
     dep.on_record_deleted = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_user_by_user_id = AsyncMock(return_value=None)
+    dep.get_all_app_users = AsyncMock(return_value=[])
+    dep.withdraw_app_user_access = AsyncMock()
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
