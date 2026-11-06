@@ -518,7 +518,7 @@ class PermissionsMixin(PgBase):
         kb_info = None
         app = await self.get_document(record.get("connectorId"), "apps", transaction) if record.get("connectorId") and connector_name == Connectors.KNOWLEDGE_BASE.value else None
         if app and app.get("type") == _KB_TYPE and await self.get_user_kb_permission(app["id"], user_key, transaction=transaction):
-            kb_info = {"id": app["id"], "name": app.get("name"), "orgId": app.get("orgId")}
+            kb_info = {"id": app["id"], "name": app.get("name"), "orgId": org}
         role, source = best if best else ("READER", "CONNECTOR")      # a connector item carries no role; what the check admitted is read access
         record_out = {**record, "id": record["id"]}
         record_out.pop("_key", None)
