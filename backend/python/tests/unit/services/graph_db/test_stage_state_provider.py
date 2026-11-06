@@ -148,12 +148,18 @@ class TestNeo4jStageStates:
 
     @pytest.mark.asyncio
     async def test_create_merges_on_the_unique_id_and_reports_whether_it_created(self) -> None:
+        document = {
+            "id": "k", "orgId": "o", "virtualRecordId": "v", "rev": "r", "stage": "parse", "status": "QUEUED",
+            "stageVersion": 1, "recordIds": ["r1"], "connectorId": "c", "tier": "heavy", "priority": "interactive",
+            "trigger": "t", "textDigest": "a", "blocksDigest": "b", "textChars": 0, "hasTables": False,
+            "hasImages": False, "updatedAtMs": 1,
+        }
         provider = _neo4j([{"created": True}])
-        assert await provider.stage_state_create({"id": "k", "status": "QUEUED"})
+        assert await provider.stage_state_create(document)
         query = _query(provider.client.execute_query)
         assert "MERGE (n:StageState {id: $id}) ON CREATE SET n += $props" in query
         provider.client.execute_query = AsyncMock(return_value=[{"created": False}])
-        assert await provider.stage_state_create({"id": "k"}) is False
+        assert await provider.stage_state_create(document) is False
 
     @pytest.mark.asyncio
     async def test_cas_takes_the_write_lock_before_reading_status(self) -> None:

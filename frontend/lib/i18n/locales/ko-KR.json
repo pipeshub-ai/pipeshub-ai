@@ -1575,7 +1575,31 @@
       "webSearch": "웹 검색",
       "internalAndWebSearch": "내부 + 웹 검색"
     },
-    "searchDegraded": "결과가 완전하지 않을 수 있습니다."
+    "searchDegraded": "결과가 완전하지 않을 수 있습니다.",
+    "compare": {
+      "toggle": "모델 비교",
+      "pickTwo": "비교할 모델 {{max}}개를 선택하세요.",
+      "pickedHint": "각 질문에 두 모델이 나란히 답합니다.",
+      "costNote": "모든 질문이 두 모델에서 실행되므로 사용량이 약 두 배가 됩니다. 에이전트 모드에서는 두 모델 모두 도구를 사용할 수 있으며, 승인이 필요한 작업은 각 열에서 따로 확인합니다.",
+      "pillLabel": "비교 {{picked}}/{{max}}",
+      "stop": "중지",
+      "retry": "다시 시도",
+      "failed": "이 모델이 답변하지 못했습니다. 다시 시도하세요.",
+      "useAnswer": "이 답변 사용",
+      "useAnswerLabel": "{{model}}의 답변 사용",
+      "columnLabel": "{{model}}의 답변",
+      "chooseConflict": "이 답변은 아직 선택할 수 없습니다. 완료될 때까지 기다린 후 다시 시도하세요.",
+      "chooseFailed": "이 답변을 선택하지 못했습니다. 다시 시도하세요.",
+      "primaryFallback": "모델",
+      "starting": "시작하는 중...",
+      "status": {
+        "starting": "시작 중",
+        "waiting": "대기 중",
+        "streaming": "답변 중",
+        "done": "완료",
+        "error": "실패"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "화면 모드",

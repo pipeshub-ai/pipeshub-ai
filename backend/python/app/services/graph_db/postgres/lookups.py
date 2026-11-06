@@ -32,6 +32,7 @@ from app.services.graph_db.common.utils import (
 )
 from app.services.graph_db.postgres.base import (
     _LINK_COLLS,
+    _VALIDATOR,
     PgBase,
     _arango,
     _doc,
@@ -561,7 +562,15 @@ class LookupsMixin(PgBase):
             return 0
         org = current_org_id()
         now = get_epoch_timestamp_in_ms()
-        props = _j({"createdAtTimestamp": now, "updatedAtTimestamp": now})
+        stamps = {"createdAtTimestamp": now, "updatedAtTimestamp": now}
+        browse = {"relationshipType": "PARENT_CHILD", **stamps}
+        if record_group_id:      # the edges it will write, checked before the first statement
+            _VALIDATOR.validate_edge("belongsTo", stamps)
+            if inherit:
+                _VALIDATOR.validate_edge("inheritPermissions", stamps)
+            if browse_root:
+                _VALIDATOR.validate_edge("nodeRelations", browse)
+        props = _j(stamps)
 
         async def link(tx: Tx, coll: str) -> None:
             await tx.execute("""/* pipeshub:graph.link_record_to_group_edge */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
@@ -590,7 +599,7 @@ class LookupsMixin(PgBase):
                         SELECT $1, 'nodeRelations', 'recordGroups', g.id, 'records', r.id, '', $4::jsonb FROM graph.nodes r, graph.nodes g
                         WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2 AND g.org_id = $1 AND g.coll = 'recordGroups' AND g.id = $3
                         ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc""", org, record_id, record_group_id,
-                                     _j({"relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}))
+                                     _j(browse))
                 elif browse_root is False:
                     await tx.execute("""/* pipeshub:graph.link_record_to_group_unroot */ DELETE FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
                         AND e.from_coll = 'recordGroups' AND e.from_id = $3 AND e.to_coll = 'records' AND e.to_id = $2""", org, record_id, record_group_id)
@@ -615,6 +624,7 @@ class LookupsMixin(PgBase):
             return False
         doc = _node(node, collection)
         doc["id"] = key
+        _VALIDATOR.validate_node(collection, doc)
         r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = jsonb_strip_nulls($5::jsonb)
             WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->$4::text = $6::jsonb RETURNING 1) SELECT count(*) FROM u""",
                                                  org, collection, key, match_field, _j(doc), _j(match_value)), transaction, write=True)
