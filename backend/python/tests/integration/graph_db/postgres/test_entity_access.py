@@ -89,6 +89,8 @@ async def test_the_scan_cap_is_reported(w: World, monkeypatch: pytest.MonkeyPatc
     rows = (await w.p.get_entity_candidate_records([ref("named_entity", "E")], w.org, limit_per_entity=10))[("named_entity", "E")]
     assert rows.capped and len(rows) == 3
     assert (await w.p.get_entity_candidate_records([ref("named_entity", "E")], w.org, offset=50))[("named_entity", "E")].capped          # an empty page past the end still says so
+    monkeypatch.setattr(entity_access, "ENTITY_CANDIDATE_SCAN_CAP", 1)
+    assert not (await w.p.get_entity_candidate_records([ref("record", "new")], w.org))[("record", "new")].capped                       # a record named by itself is one row, never a scan
 
 
 async def test_groups_departments_people_and_organizations_link_records_each_their_own_way(w: World) -> None:
