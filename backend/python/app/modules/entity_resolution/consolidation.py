@@ -393,6 +393,13 @@ class TaxonomyConsolidator:
                 raise ValueError(f"redirect cycle or overlong chain at {collection}/{key}: {seen}")
             key = node.merged_into
 
+    async def _redirected_to(self, collection: str, org_id: str, keys: list[str]) -> list[str]:
+        """The org's nodes whose redirect is one of ``keys``."""
+        rows = await self.graph.get_nodes_by_field_in(
+            collection, MERGED_INTO_FIELD, keys, return_fields=["id", "orgId"], raise_on_error=True,
+        )
+        return [k for row in rows or [] if (k := row.get("id") or row.get("_key")) and row.get("orgId") == org_id]
+
     async def _redirecting_to(self, collection: str, org_id: str, key: str) -> list[str]:
         """The org's nodes whose redirect chain passes through ``key``."""
         found: list[str] = []
@@ -401,25 +408,15 @@ class TaxonomyConsolidator:
         for _ in range(MAX_MERGE_REDIRECT_HOPS):
             if not frontier:
                 break
-            rows = await self.graph.get_nodes_by_field_in(
-                collection, MERGED_INTO_FIELD, frontier, return_fields=["id", "orgId"], raise_on_error=True,
-            )
-            frontier = [
-                k for row in rows or []
-                if (k := row.get("id") or row.get("_key")) and row.get("orgId") == org_id and k != key and k not in found
-            ]
+            frontier = [k for k in await self._redirected_to(collection, org_id, frontier) if k != key and k not in found]
             found += frontier
         return found
 
     async def _flatten(self, collection: str, org_id: str, loser_key: str, winner_key: str) -> None:
         """Point the org's nodes that redirected to the loser at the winner,
         so no redirect leads to a node that is itself merged."""
-        rows = await self.graph.get_nodes_by_field_in(
-            collection, MERGED_INTO_FIELD, [loser_key], return_fields=["id", "orgId"], raise_on_error=True,
-        )
-        for row in rows or []:
-            key = row.get("id") or row.get("_key")
-            if key and key != winner_key and row.get("orgId") == org_id:
+        for key in await self._redirected_to(collection, org_id, [loser_key]):
+            if key != winner_key:
                 await self.graph.update_node(key, collection, {MERGED_INTO_FIELD: winner_key})
 
     async def _migration_target(self, collection: str, org_id: str, normalized: str) -> tuple[str, bool]:
