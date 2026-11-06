@@ -239,12 +239,14 @@ async def test_a_role_on_a_record_comes_from_the_best_grant_on_it_or_what_it_inh
     await world(w)
     await w.nodes("users", {"_key": "inh"}, {"_key": "weird"}, {"_key": "ret"}, {"_key": "orgm"})
     await w.nodes("organizations", {"_key": w.org})
+    await grant(w, "inh", "apps", APP)                                                    # the connector gate: without it the access check refuses the node
     await w.edge("permission", ("users", "inh"), ("recordGroups", "rg"), type="USER", role="OWNER")
     await w.edge("permission", ("users", "weird"), ("records", "open1"), type="USER", role="SUPERUSER")           # a role nobody ranks gives nothing
     await w.edge("permission", ("users", "ret"), ("records", "open1"), type="USER", role="COMMENTER")            # a retired role reads as READER
     await w.edge("permission", ("users", "v"), ("records", "open1"), type="USER", role="READER")
     await w.edge("permission", ("users", "v"), ("recordGroups", "rg"), type="USER", role="EDITOR")                 # the higher of the two
     await w.edge("belongsTo", ("users", "orgm"), ("organizations", w.org), entityType="ORGANIZATION")
+    await grant(w, "orgm", "apps", APP)
     await w.edge("permission", ("organizations", w.org), ("records", "open2"), type="ORG", role="WRITER")
     assert await ctx(w, "inh", "open1", "record") == abilities("OWNER")             # inherited from the record group
     assert await ctx(w, "inh", "open1", "folder") == abilities("OWNER")             # a folder is a record
@@ -268,10 +270,28 @@ async def test_a_role_on_a_record_comes_from_the_best_grant_on_it_or_what_it_inh
     assert await ctx(w, "gm", "rg", "recordGroup") == abilities("WRITER")           # the group's grant on the record group itself
 
 
+async def test_no_abilities_on_a_node_the_access_check_refuses_and_they_come_back(w: World) -> None:
+    await world(w)
+    await w.nodes("users", {"_key": "wg", "userId": "uid-wg"})
+    await grant(w, "wg", "recordGroups", "rg", "WRITER")
+    await grant(w, "wg", "records", "trashed", "WRITER")
+    assert await ctx(w, "wg", "open1", "record") == LOW and await ctx(w, "wg", "rg", "recordGroup") == LOW         # a WRITER grant without the connector gate
+    await grant(w, "wg", "apps", APP)
+    assert await ctx(w, "wg", "open1", "record") == abilities("WRITER") and await ctx(w, "wg", "rg", "recordGroup") == abilities("WRITER")   # live and gated
+    assert await ctx(w, "wg", "trashed", "record") == LOW                                                          # a deleted target
+    await w.p.update_node("trashed", "records", {"isDeleted": False})
+    assert await ctx(w, "wg", "trashed", "record") == abilities("WRITER")
+    await w.p.delete_edge("wg", "users", APP, "apps", "permission")
+    assert await ctx(w, "wg", "open1", "record") == LOW                                                            # the gate lost
+    await grant(w, "wg", "apps", APP)
+    assert await ctx(w, "wg", "open1", "record") == abilities("WRITER")                                            # and regained
+
+
 async def test_a_team_never_gives_more_than_writer_and_a_removed_member_loses_it(w: World) -> None:
     await world(w)
     await w.nodes("users", {"_key": "boss"})
     await w.edge("permission", ("users", "boss"), ("teams", "team"), type="USER", role="OWNER")
+    await grant(w, "boss", "apps", APP)
     await w.edge("permission", ("teams", "team"), ("recordGroups", "rg2"), type="TEAM")                           # no role: the member's team role applies, capped
     assert await ctx(w, "boss", "inRg2", "record") == abilities("WRITER")
     assert await ctx(w, "tm", "inRg2", "record") == abilities("READER")

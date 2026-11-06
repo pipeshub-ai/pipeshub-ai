@@ -793,7 +793,7 @@ class IdentityMixin(PgBase):
             connector_ids = await connector_ids_of_users(self, stubs)
             for stub in stubs:
                 await self._absorb_user_stub(keep_key, stub, tid)
-            await self.batch_upsert_nodes([{"id": keep_key, "userId": user_id, "orgId": org_id, "email": email, "updatedAtTimestamp": get_epoch_timestamp_in_ms()}], "users", tid)
+            await self.batch_upsert_nodes([{"id": keep_key, "userId": user_id, "orgId": org, "email": email, "updatedAtTimestamp": get_epoch_timestamp_in_ms()}], "users", tid)
         return {"email": email, "mergedStubKeys": stubs, "connectorIds": connector_ids}
 
     async def _absorb_user_stub(self, keep_key: str, stub_key: str, tid: str) -> None:

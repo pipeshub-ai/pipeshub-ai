@@ -193,6 +193,48 @@ async def test_the_builder_writes_the_cross_file_call(repo: _Repo) -> None:
     assert {r["key"] for r in one} == {r["key"] for r in rows}
 
 
+async def test_neighbours_page_in_cursor_order_and_resume_after_a_cursor(repo: _Repo) -> None:
+    await _build(repo)
+    keys = [repo.block("src/shop/a.py", "function:caller"), repo.block("src/shop/b.py", "function:target")]
+
+    async def page(after: str | None, limit: int) -> list[dict]:
+        return await repo.graph.get_neighbors_for_nodes_by_relationship_types(
+            node_keys=keys, node_collection=BLOCKS, relationship_types=[RecordRelations.CALLS.value],
+            direction="any", limit=limit, after=after, raise_on_error=True,
+        )
+
+    everything = await page("", 100)
+    assert len(everything) >= 2
+    cursors = [r["cursor"] for r in everything]
+    assert cursors == sorted(cursors) and len(set(cursors)) == len(cursors)
+    first, rest = await page("", 1), await page(everything[0]["cursor"], 100)
+    assert [r["cursor"] for r in first] == cursors[:1] and [r["cursor"] for r in rest] == cursors[1:]
+    assert await page(cursors[-1], 100) == []
+
+
+async def test_parallel_edges_split_by_a_page_boundary_are_all_returned(repo: _Repo) -> None:
+    await _build(repo)
+    caller, target = repo.block("src/shop/a.py", "function:caller"), repo.block("src/shop/b.py", "function:target")
+    await repo.graph.batch_upsert_node_relations([
+        {"from_id": caller, "from_collection": BLOCKS, "to_id": target, "to_collection": BLOCKS,
+         "relationshipType": RecordRelations.CALLS.value, "constraintName": name}
+        for name in ("p1", "p2")
+    ])
+
+    async def pages(limit: int) -> list[dict]:
+        out, after = [], ""
+        while page := await repo.graph.get_neighbors_for_nodes_by_relationship_types(
+                node_keys=[caller], node_collection=BLOCKS, relationship_types=[RecordRelations.CALLS.value],
+                direction="outbound", limit=limit, after=after, raise_on_error=True):
+            out += page
+            after = page[-1]["cursor"]
+        return out
+
+    whole, one_by_one = await pages(100), await pages(1)
+    assert len(whole) == 3 and len(one_by_one) == 3
+    assert [r["cursor"] for r in one_by_one] == [r["cursor"] for r in whole]
+
+
 async def test_a_rebuild_replaces_edges_in_place_and_keeps_their_creation_time(
     repo: _Repo,
 ) -> None:
