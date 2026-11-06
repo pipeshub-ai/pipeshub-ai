@@ -193,6 +193,16 @@ def edge(coll: str, flat: bool, **props: Any) -> dict:  # noqa: ANN401
     return {**ends, **props}
 
 
+def ne(key: str, **over: Any) -> dict:  # noqa: ANN401
+    """A named-entity node the schema accepts in full."""
+    return {"id": key, "orgId": ORG, "kind": "org", "name": "Acme", "normKey": "acme", "aliases": ["Acme"], "normalizedAliases": ["acme"],
+            "createdAtTimestamp": 1, "updatedAtTimestamp": 1, **over}
+
+
+def vm(key: str, **over: Any) -> dict:  # noqa: ANN401
+    return {"id": key, "orgId": ORG, "recordId": "r1", "kind": "date", "normKey": key, "name": "1 May", "startMs": 1, "endMs": 2, **over}
+
+
 GOOD_PROPS = {
     "belongsTo": {"entityType": "KB", "createdAtTimestamp": 1, "updatedAtTimestamp": 1},
     "userAppRelation": {"syncState": "NOT_STARTED", "lastSyncUpdate": 1, "createdAtTimestamp": 1},
@@ -240,6 +250,11 @@ CLASSIFICATION: dict[str, str] = {
                      "update_drive_sync_state"], "targeted"),
     **dict.fromkeys(["batch_create_edges", "create_edges_if_absent", "batch_upsert_node_relations", "ensure_app_membership", "ensure_team_app_edge",
                      "upsert_authenticated_as", "link_record_to_group", "batch_update_team_member_roles", "update_edge", "update_user_sync_state"], "edge"),
+    "create_named_entities_if_absent": "create", "replace_named_entity_values": "replace",
+    **dict.fromkeys(["schedule_named_entity_persist_retry", "schedule_named_entity_reextract", "schedule_named_entity_reproject"], "create"),
+    **dict.fromkeys(["add_named_entity_aliases", "mark_orphan_named_entities"], "targeted"),
+    **dict.fromkeys(["copy_named_entity_mentions", "delete_dangling_named_entity_mentions", "delete_dangling_named_entity_values", "delete_orphan_named_entities",
+                     "clear_orphan_named_entity_marks", "clear_named_entity_persist_retry"], "none"),
     "batch_upsert_app_users": "delegates",       # builds users and edges, then calls batch_upsert_nodes and batch_create_edges
     **dict.fromkeys([
         "backfill_block_name_folded", "backfill_indexed_copy_flags", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",
@@ -320,6 +335,14 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
     *[(f"batch_upsert_node_relations {'flat' if flat else 'arango'}", "batch_upsert_node_relations", ([edge("nodeRelations", flat, **BAD_PROPS["nodeRelations"])],), {})
       for flat in (False, True)],
     ("ensure_app_membership bad source id", "ensure_app_membership", ("u1", "users", "c1"), {"is_external": False, "source_user_id": 12345}),
+    ("create_named_entities bad member", "create_named_entities_if_absent", ([ne("n1"), ne("n2", kind=7)],), {}),
+    ("create_named_entities missing required", "create_named_entities_if_absent", ([without(ne("n1"), "normKey")],), {}),
+    ("replace_named_entity_values bad row", "replace_named_entity_values", ("r1", [vm("v1"), vm("v2", startMs="soon")]), {}),
+    ("add_named_entity_aliases bad alias", "add_named_entity_aliases", (ORG, "org", "n1", [12], ["a"]), {}),
+    ("mark_orphan_named_entities bad time", "mark_orphan_named_entities", (ORG, "soon"), {}),
+    ("schedule retry bad record id", "schedule_named_entity_persist_retry", (ORG, 12345, "boom"), {}),
+    ("schedule reextract bad record id", "schedule_named_entity_reextract", (ORG, 12345), {}),
+    ("schedule reproject bad record id", "schedule_named_entity_reproject", (ORG, 12345), {}),
     ("upsert_authenticated_as bad connector id", "upsert_authenticated_as", ("u1", "u2", 12345, ORG), {}),
 ]
 
@@ -356,6 +379,13 @@ VALID: list[tuple[str, str, tuple, dict]] = [
       for fn in ("batch_create_edges", "create_edges_if_absent") for coll in GOOD_PROPS for flat in (False, True)],
     *[(f"batch_upsert_node_relations {'flat' if flat else 'arango'}", "batch_upsert_node_relations", ([edge("nodeRelations", flat, **GOOD_PROPS["nodeRelations"])],), {})
       for flat in (False, True)],
+    ("create_named_entities", "create_named_entities_if_absent", ([ne("n1"), ne("n2")],), {}),
+    ("replace_named_entity_values", "replace_named_entity_values", ("r1", [vm("v1"), vm("v2")]), {}),
+    ("add_named_entity_aliases", "add_named_entity_aliases", (ORG, "org", "n1", ["Acme"], ["acme"]), {"_existing": ("n1",)}),
+    ("mark_orphan_named_entities", "mark_orphan_named_entities", (ORG, 1_700_000_000_000), {}),
+    ("schedule retry", "schedule_named_entity_persist_retry", (ORG, "r1", "boom", 2), {}),
+    ("schedule reextract", "schedule_named_entity_reextract", (ORG, "r1"), {}),
+    ("schedule reproject", "schedule_named_entity_reproject", (ORG, "r1"), {}),
     ("ensure_app_membership", "ensure_app_membership", ("u1", "users", "c1"), {"is_external": False, "source_user_id": "src-1"}),
     ("ensure_team_app_edge", "ensure_team_app_edge", ("c1", ORG), {}),
     ("upsert_authenticated_as", "upsert_authenticated_as", ("u1", "u2", "c1", ORG), {}),

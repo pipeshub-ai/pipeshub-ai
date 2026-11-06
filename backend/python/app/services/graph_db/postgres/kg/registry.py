@@ -82,6 +82,20 @@ WRITERS: dict[str, tuple[str, str]] = {
     # sync_state.py
     "update_user_sync_state": (NO_PROJECTION, "the sync state of a user's relation to an app is not an access field"), "update_drive_sync_state": (NO_PROJECTION, "the sync state of a drive node, not an access field"),
     "backfill_indexed_copy_flags": (NO_PROJECTION, _STATUS), "reset_indexing_status_for_connector": (NO_PROJECTION, _STATUS),
+    # entities.py
+    "create_named_entities_if_absent": (NO_PROJECTION, _ENTITY),
+    "add_named_entity_aliases": (NO_PROJECTION, _ENTITY),
+    "replace_named_entity_values": (NO_PROJECTION, _ENTITY),
+    "copy_named_entity_mentions": (NO_PROJECTION, _ENTITY),
+    "delete_dangling_named_entity_mentions": (NO_PROJECTION, _ENTITY),
+    "delete_dangling_named_entity_values": (NO_PROJECTION, _ENTITY),
+    "delete_orphan_named_entities": (NO_PROJECTION, _ENTITY),
+    "mark_orphan_named_entities": (NO_PROJECTION, _ENTITY),
+    "clear_orphan_named_entity_marks": (NO_PROJECTION, _ENTITY),
+    "schedule_named_entity_persist_retry": (NO_PROJECTION, _ENTITY),
+    "schedule_named_entity_reextract": (NO_PROJECTION, _ENTITY),
+    "schedule_named_entity_reproject": (NO_PROJECTION, _ENTITY),
+    "clear_named_entity_persist_retry": (NO_PROJECTION, _ENTITY),
 }
 
 
