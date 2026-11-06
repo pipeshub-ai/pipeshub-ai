@@ -42,6 +42,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import NodeType
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import Record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
@@ -259,6 +260,8 @@ class RecordResolver:
 
         seen_ids: set[str] = set()
         for ident, result in zip(identifiers, per_ident):
+            if isinstance(result, PermissionVerificationUnavailableError):
+                raise result                      # the scope could not be read: not the same as "not found"
             if isinstance(result, BaseException):
                 logger.warning("resolve_one failed for %r: %s", ident, result)
                 not_found.append(ident)
