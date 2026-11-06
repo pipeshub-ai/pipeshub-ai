@@ -206,12 +206,10 @@ class FakeGraph:
         return rows
 
     async def get_document(self, key, collection, transaction=None) -> dict[str, Any] | None:
-        if collection == ORGS and key in self.org_names:
-            if self.fail_org_lookup:
-                raise RuntimeError("graph down")
-            return {"_key": key, "name": self.org_names[key]}
-        if self.fail_org_lookup:
+        if collection == ORGS and self.fail_org_lookup:  # only organisation reads fail
             raise RuntimeError("graph down")
+        if collection == ORGS and key in self.org_names:
+            return {"_key": key, "name": self.org_names[key]}
         return None
 
     async def find_organizations(self, org_id, keys, transaction=None) -> list[dict[str, Any]]:

@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.modules.entity_resolution.organizations import usable_organization_names
+from app.modules.entity_resolution.organizations import (
+    accounts_last,
+    extracted_organization_id,
+    usable_organization_names,
+)
 
 
 def test_keeps_real_names_in_order_and_once() -> None:
@@ -64,3 +68,13 @@ def test_the_orgs_short_name_is_the_org() -> None:
         ["Northwind", "North", "Northwind Traders", "Acme"],
         org_name="Northwind Analytics", connector_name="DRIVE",
     ) == ["North", "Northwind Traders", "Acme"]
+
+
+@pytest.mark.parametrize("name", ["", "   ", "."])
+def test_a_name_with_no_key_has_no_extracted_id_and_does_not_break_the_account_order(name: str) -> None:
+    """A stored account whose name normalizes to nothing must not fail every account sync."""
+    assert extracted_organization_id("org-1", name) is None
+    extracted = {"_key": extracted_organization_id("org-1", "Acme"), "parentOrgId": "org-1", "name": "Acme"}
+    blank = {"_key": "acct-1", "parentOrgId": "org-1", "name": name}
+    assert accounts_last([blank, extracted]) == [extracted, blank]
+
