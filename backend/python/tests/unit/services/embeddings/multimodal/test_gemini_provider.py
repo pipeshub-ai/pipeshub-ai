@@ -24,6 +24,25 @@ class TestGeminiMultimodalProviderCapability:
         assert GeminiMultimodalProvider(api_key="k", model_name="gemini-embedding-2").supports_multimodal()
 
 
+class TestGeminiMultimodalProviderDimension:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("embedding_size", "requested"), [(768, 768), (None, None)])
+    async def test_it_requests_the_collections_width(self, embedding_size, requested) -> None:
+        provider = GeminiMultimodalProvider(
+            api_key="k", model_name="gemini-embedding-2", embedding_size=embedding_size,
+        )
+        client = MagicMock()
+        client.aio.models.embed_content = AsyncMock(
+            return_value=MagicMock(embeddings=[MagicMock(values=[0.1])])
+        )
+
+        with patch("google.genai.Client", return_value=client):
+            await provider.embed_images(["iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="])
+
+        config = client.aio.models.embed_content.await_args.kwargs["config"]
+        assert (config.output_dimensionality if config else None) == requested
+
+
 class TestGeminiMultimodalProviderEmbedImages:
     @pytest.mark.asyncio
     async def test_embed_images_success(self) -> None:

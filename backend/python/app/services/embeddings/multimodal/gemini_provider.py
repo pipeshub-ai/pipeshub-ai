@@ -41,9 +41,11 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
         model_name: str | None,
         normalize_fn: Callable[[str], Any] | None = None,
         logger: logging.Logger | None = None,
+        embedding_size: int | None = None,
     ) -> None:
         self.api_key = api_key
         self.model_name = self._normalize_model_name(model_name)
+        self.embedding_size = embedding_size
         # Consumed by IMultimodalEmbeddingProvider.normalize().
         self._normalize_fn = normalize_fn
         self.logger = logger
@@ -71,6 +73,12 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
 
         client = genai.Client(api_key=self.api_key)
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
+        # Without this an image comes back at the model's default width, whatever the text path was configured to.
+        config = (
+            types.EmbedContentConfig(output_dimensionality=self.embedding_size)
+            if self.embedding_size
+            else None
+        )
 
         async def embed_single(i: int, image_ref: str) -> ImageEmbeddingResult:
             normalized = await self.normalize(image_ref)
@@ -83,6 +91,7 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
                     response = await client.aio.models.embed_content(
                         model=self.model_name,
                         contents=[types.Part.from_bytes(data=raw_bytes, mime_type=mime_type)],
+                        config=config,
                     )
                     return ImageEmbeddingResult(
                         index=i, embedding=list(response.embeddings[0].values)

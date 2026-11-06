@@ -132,7 +132,7 @@ async def _index_and_upsert_images(vs, vector_db_service, collection: str, chunk
         "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
         return_value=FakeMultimodalProvider(dim=DIM),
     ):
-        points = await vs._process_image_embeddings(chunks, uris, record_id="rec-1")
+        points, _described = await vs._process_image_embeddings(chunks, uris, record_id="rec-1")
     await vector_db_service.upsert_points(collection, points)
     return points
 
