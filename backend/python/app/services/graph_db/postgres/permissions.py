@@ -546,7 +546,7 @@ class PermissionsMixin(PgBase):
             scope = requested_scope_ids(filters)
             if filters.get(STRICT_SCOPE_FILTER_KEY) and scope is None:
                 return {}
-            meta = [(edge, coll, field, filters[k]) for k, edge, coll, field in _META_FILTERS if k in filters and filters[k]]
+            meta = [(edge, coll, field, filters[k]) for k, edge, coll, field in _META_FILTERS if filters.get(k)]
             apps = [a for a in await self.get_gated_apps(user_key, org_id) if a.get("id") not in exclude_app_ids]
             if scope is None:
                 chosen = [a for a in apps if a.get("type") != _KB_TYPE or not a.get("isHidden")]

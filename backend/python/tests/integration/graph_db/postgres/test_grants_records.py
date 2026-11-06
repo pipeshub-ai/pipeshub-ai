@@ -116,7 +116,9 @@ async def test_metadata_and_time_filters_keep_only_the_records_they_name(w: Worl
     await w.edge("belongsToTopic", ("records", "open2"), ("topics", "t2"))
     await w.p.update_node("open1", "records", {"sourceCreatedAtTimestamp": 100, "sourceLastModifiedTimestamp": 300})
     await w.p.update_node("open2", "records", {"sourceCreatedAtTimestamp": 200, "sourceLastModifiedTimestamp": 400})
-    got = lambda f=None, t=None: w.p.get_accessible_virtual_record_ids("uid-gm", w.org, f, t)
+
+    async def got(f: dict | None = None, t: dict | None = None) -> dict:
+        return await w.p.get_accessible_virtual_record_ids("uid-gm", w.org, f, t)
     assert set((await got({"departments": ["Legal"]})).values()) == {"open1"}
     assert set((await got({"departments": ["Legal"], "topics": ["hr"]})).values()) == set()               # every filter must hold
     assert set((await got({"topics": ["tax", "hr"]})).values()) == {"open1", "open2"}
@@ -175,7 +177,7 @@ async def test_a_details_read_that_cannot_be_answered_raises_instead_of_refusing
     await world(w)
     real = w.p._q
     monkeypatch.setattr(w.p, "_q", failing)
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError):
         await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
     monkeypatch.setattr(w.p, "_q", real)
     assert await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
