@@ -75,6 +75,8 @@ WRITERS: dict[str, tuple[str, str]] = {
     "delete_kb_hub_app": (PROJECTED, ""),
     # permissions.py
     "batch_update_team_member_roles": (PROJECTED, ""), "delete_all_team_permissions": (PROJECTED, ""),
+    # core.py, lookups.py: an edge's document changes (a grant's role or type is what the projection reads of it), and the sync's edges and the stale external memberships go
+    "update_edge": (PROJECTED, ""), "delete_connector_sync_edges": (PROJECTED, ""), "reap_stale_external_app_relations": (PROJECTED, ""),
     # sync_state.py
     "update_user_sync_state": (NO_PROJECTION, "the sync state of a user's relation to an app is not an access field"), "update_drive_sync_state": (NO_PROJECTION, "the sync state of a drive node, not an access field"),
     "backfill_indexed_copy_flags": (NO_PROJECTION, _STATUS), "reset_indexing_status_for_connector": (NO_PROJECTION, _STATUS),
