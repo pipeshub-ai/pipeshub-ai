@@ -43,6 +43,11 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.data_store import DataStoreProvider, TransactionStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.core.sync_routing import (
+    carry_stored_version,
+    save_synced_records,
+    synced,
+)
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.connectors.core.base.sync_point.sync_point import (
@@ -905,7 +910,7 @@ class NotionConnector(BaseConnector):
                     elif records == []:
                         self._sync_incomplete = True
                 if batch:
-                    await self.data_entities_processor.on_new_records(batch)
+                    await self._save_content_records(batch)
 
             if object_type == "page":
                 await self._recheck_page_comments(live, stored_ids)
@@ -977,7 +982,7 @@ class NotionConnector(BaseConnector):
                 self._sync_incomplete = True
                 failed.append(obj_id)
         if batch:
-            await self.data_entities_processor.on_new_records(batch)
+            await self._save_content_records(batch)
         point: dict[str, Any] = {"after": slice_ids[-1]}
         if failed:
             point["retry"] = failed[: self._COMMENT_RECHECK_MAX_PAGES_PER_SYNC]
@@ -1013,7 +1018,7 @@ class NotionConnector(BaseConnector):
                 self._sync_incomplete = True
                 self._touched_data_sources.add(ds_id)
         if batch:
-            await self.data_entities_processor.on_new_records(batch)
+            await self._save_content_records(batch)
         await self._persist_touched_data_sources()
 
     def _touched_sync_point_key(self) -> str:
@@ -1824,7 +1829,7 @@ class NotionConnector(BaseConnector):
             self.logger.info(f"Starting reindex for {len(records)} Notion records")
             await self._ensure_workspace_from_bot()
 
-            updated_records: List[Tuple[Record, List[Permission]]] = []
+            updated_records: list[tuple[Record, list[Permission], Record]] = []
             non_updated_records: List[Record] = []
             gone_count = 0
             gone: list[Record] = []
@@ -1841,7 +1846,8 @@ class NotionConnector(BaseConnector):
                             gone.append(record)
                         continue
                     if updated:
-                        updated_records.append(updated)
+                        fresh, permissions = updated
+                        updated_records.append((fresh, permissions, record))
                     else:
                         non_updated_records.append(record)
                 except Exception as e:
@@ -1860,7 +1866,11 @@ class NotionConnector(BaseConnector):
                     await self._delete_records(gone)
 
             if updated_records:
-                await self.data_entities_processor.on_new_records(updated_records)
+                routed = []
+                for fresh, permissions, stored in updated_records:
+                    carry_stored_version(fresh, stored)
+                    routed.append(synced(fresh, permissions, stored))
+                await save_synced_records(self.data_entities_processor, routed)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
             if non_updated_records:
@@ -2486,7 +2496,7 @@ class NotionConnector(BaseConnector):
                 if records_with_permissions:
                     # Before the rows: a crash after them must still find their tables touched.
                     await self._persist_touched_data_sources()
-                    await self.data_entities_processor.on_new_records(records_with_permissions)
+                    await self._save_content_records(records_with_permissions)
                     self.logger.info(f"Saved batch of {len(records_with_permissions)} {object_type}(s) and files")
 
                 # Pagination - only continue if we haven't hit the sync point threshold
@@ -2544,6 +2554,25 @@ class NotionConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ {type_display} sync failed: {e}", exc_info=True)
             raise
+
+    async def _save_content_records(
+        self, rows: list[tuple[Record, list[Permission]]],
+    ) -> None:
+        """Write pages, data sources and their files on the path their revision asks for.
+
+        A stored record whose source revision moved publishes ``updateRecord``.
+        A first write, a placeholder and an unchanged revision stay on ``newRecord``.
+        """
+        if not rows:
+            return
+        routed = []
+        for record, permissions in rows:
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record.external_record_id,
+            )
+            carry_stored_version(record, existing)
+            routed.append(synced(record, permissions, existing))
+        await save_synced_records(self.data_entities_processor, routed)
 
     async def _records_for_search_object(
         self,

@@ -57,30 +57,43 @@ async def _hang(*_a, **_k) -> None:
 async def test_dead_broker_for_three_records_costs_one_producer_timeout_not_three(monkeypatch) -> None:
     monkeypatch.setattr(parse_now_module, "_PRODUCER_TIMEOUT_SECONDS", 0.2)
     docs = _Docs({f"r{i}": [_row("QUEUED")] for i in range(3)})
-    asker = _asker(AsyncMock(side_effect=_hang), wait=5)
+    in_flight, peak = 0, 0
+
+    async def hang_counting(*_a, **_k) -> None:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            await _hang()
+        finally:
+            in_flight -= 1
+
+    asker = _asker(AsyncMock(side_effect=hang_counting), wait=20)
 
     t0 = time.monotonic()
     result = await _fetch([f"r{i}" for i in range(3)], graph_provider=_provider(docs), parse_now=asker)
     elapsed = time.monotonic() - t0
 
-    assert elapsed < 1.0  # the requests ran together; nothing waited for a parse that was never asked for
+    assert peak == 3  # the three requests ran together, so they cost one producer timeout
+    assert elapsed < 10  # nothing waited out the 20 s budget for a parse that was never asked for
     assert result["ok"] is False and "being prepared" not in result["error"]  # R12: today's reply
 
 
 async def test_slow_broker_then_slow_graph_never_exceeds_the_one_budget(monkeypatch) -> None:
-    monkeypatch.setattr(parse_now_module, "_PRODUCER_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(parse_now_module, "_PRODUCER_TIMEOUT_SECONDS", 2)
 
     async def slow_send(*_a, **_k) -> bool:
-        await asyncio.sleep(0.15)  # just under the producer timeout
+        await asyncio.sleep(1.5)  # just under the producer timeout
         return True
 
     docs = _Docs({f"r{i}": [_row("QUEUED")] for i in range(3)})
-    asker = _asker(slow_send, wait=0.5)
+    asker = _asker(slow_send, wait=3)
 
     t0 = time.monotonic()
     await _fetch([f"r{i}" for i in range(3)], graph_provider=_provider(docs), parse_now=asker)
 
-    assert time.monotonic() - t0 < 0.5 + 0.25  # budget is wait_seconds in total, publish time included
+    # budget is wait_seconds in total, publish time included: 3 s, where adding the publish would be 4.5 s
+    assert time.monotonic() - t0 < 4
 
 
 # (wait, first read delay): the second row spends the whole budget before the wait starts, as a loaded runner can, so no marker read is made

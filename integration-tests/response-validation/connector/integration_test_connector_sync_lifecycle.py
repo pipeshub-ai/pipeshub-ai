@@ -102,13 +102,16 @@ class TestListConnectorInstances:
     def test_list_scope_defaults_to_team(
         self, connectors_api: ConnectorsClient, rss_connector: Any
     ) -> None:
-        default = connectors_api.list_instances(limit=200)
-        team = connectors_api.list_instances(scope="team", limit=200)
+        # Other workers create and delete connectors while this runs, so two
+        # whole-org listings can differ; filter both to this test's connector.
+        search = rss_connector.request_body["instanceName"]
+        default = connectors_api.list_instances(search=search, limit=200)
+        team = connectors_api.list_instances(scope="team", search=search, limit=200)
         assert default.status_code == 200, default.text
         assert team.status_code == 200, team.text
-        assert [c.get("_key") for c in default.json()["connectors"]] == [
-            c.get("_key") for c in team.json()["connectors"]
-        ]
+        team_keys = [c.get("_key") for c in team.json()["connectors"]]
+        assert team_keys == [rss_connector.connector_id]
+        assert [c.get("_key") for c in default.json()["connectors"]] == team_keys
         assert operation_parameter_default(_LIST, "scope") == "team"
 
     @pytest.mark.parametrize(

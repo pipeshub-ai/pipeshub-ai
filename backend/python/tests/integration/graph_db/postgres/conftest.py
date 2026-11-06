@@ -18,6 +18,14 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture(autouse=True)
+def _provider_contract_tests_skip_schema_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests exercise the provider's mechanics (deletes, hierarchy, trash, access, projection) on hand-built
+    nodes and edges, not payloads the application writes, so graph schema validation is off for this folder.
+    ``test_schema_enforcement.py`` turns it back on and checks it on a real database."""
+    monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "off")
+
+
 @pytest.fixture
 async def pg_db() -> AsyncIterator[KernelDB]:
     if not os.environ.get("PG_CORE_URL"):

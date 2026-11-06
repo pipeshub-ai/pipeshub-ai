@@ -801,7 +801,7 @@ class TestAppDisabledDrainsQueuedRecords:
             "name": "Drive", "type": "FILE", "appGroup": "Google",
             "createdAtTimestamp": 1000000,
         })
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.update_node = AsyncMock()
         gp.reset_indexing_status_for_connector = AsyncMock(
             side_effect=RuntimeError("graph unavailable")
         )
@@ -817,7 +817,7 @@ class TestAppDisabledDrainsQueuedRecords:
             })
 
         assert result is True
-        gp.batch_upsert_nodes.assert_awaited()
+        gp.update_node.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_sweep_runs_after_sync_cancellation(self):
