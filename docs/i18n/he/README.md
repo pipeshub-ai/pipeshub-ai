@@ -59,6 +59,35 @@
 
 PipesHub בונה **שכבת הקשר מאוחדת** מעל מסמכים, שיחות, נתונים מובנים, ויקי, טיקטים וקוד. המחברים מסנכרנים כל מקור יחד עם ההרשאות שלו. צינור האינדוקס מנתח את התוכן, מחלק אותו למקטעים, מפיק עבורו embeddings ומקשר רשומות, אנשים וישויות בגרף ידע.
 
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
 על השאלות עונה **לולאת סוכן**, ולא מעבר יחיד של "אחזור ואז יצירה". הסוכן מתכנן, קורא לכלים, קורא את התוצאות וממשיך עד שיש בידיו ראיות:
 
 - **חיפוש היברידי** — אחזור סמנטי ואחזור לפי מילות מפתח, כדי למצוא גם משמעות וגם מונחים מדויקים.
@@ -68,6 +97,14 @@ PipesHub בונה **שכבת הקשר מאוחדת** מעל מסמכים, שיח
 
 כל קריאה לכלי מסוננת לפי ההרשאות של המשתמש ששואל, וכל תשובה מצטטת את הבלוקים שמהם היא הגיעה.
 
+
+| | RAG על קטעי top-k | PipesHub |
+| --- | --- | --- |
+| **מה הסוכן רואה קודם** | כמה קטעי טקסט | השם, המיקום, המטא-דאטה והתקציר של כל רשומה, וגם הבלוקים שהתאימו |
+| **איך הוא מעמיק** | הוא לא יכול: אחזור אחד לכל שאלה | חיפוש היברידי, `grep`/`find` על רשומות, ניווט בתיקיות ושאילתות לגרף הידע, בלולאה |
+| **מבנה** | הולך לאיבוד בחיתוך לקטעים | כל מקור הופך ל-Blocks: סעיפים, טבלאות עם שורות ותאים, שרשורים, קוד, טבלאות SQL עם הסכמה שלהן |
+| **הרשאות** | לרוב בקירוב, בזמן האינדוקס | נבדקות מול ההרשאות של מערכת המקור עבור המשתמש המבקש, בכל קריאה לכלי |
+| **ציטוטים** | לפי קטע, אם בכלל | לפי בלוק: העמוד, תא הטבלה, השורה, השקופית או שורת הקוד, וציטוטים מומצאים מוסרים |
 
 ## תכונות
 

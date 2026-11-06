@@ -68,6 +68,35 @@ Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems
 
 PipesHub builds a **unified context layer** across documents, conversations, structured data, wikis, tickets and code. Connectors sync each source along with its permissions. The indexing pipeline parses, chunks and embeds the content, and links records, people and entities in a knowledge graph.
 
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
 Questions are answered by an **agent loop**, not a single retrieve-then-generate pass. The agent plans, calls tools, reads the results and keeps going until it has the evidence:
 
 - **Hybrid search** — semantic and keyword retrieval, so it matches both meaning and exact terms.
@@ -76,6 +105,14 @@ Questions are answered by an **agent loop**, not a single retrieve-then-generate
 - **Document reading** — opens the full source instead of trusting a single matched chunk.
 
 Every tool call is filtered by the asking user's permissions, and every answer cites the blocks it came from.
+
+| | Top-k chunk RAG | PipesHub |
+| --- | --- | --- |
+| **What the agent sees first** | A few text chunks | Each record's name, location, metadata and summary, plus the blocks that matched |
+| **How it digs further** | It can't: one retrieval per question | Hybrid search, `grep`/`find` over records, folder navigation and knowledge-graph lookups, in a loop |
+| **Structure** | Lost at chunking | Every source becomes Blocks: sections, tables with rows and cells, threads, code, SQL tables with their schema |
+| **Permissions** | Often approximated at index time | Checked against the source system's permissions for the requesting user, on every tool call |
+| **Citations** | Per chunk, if any | Per block: the page, table cell, row, slide or line, with invented citations removed |
 
 ## Benchmarks
 

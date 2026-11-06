@@ -57,6 +57,35 @@
 
 PipesHub costruisce un **livello di contesto unificato** su documenti, conversazioni, dati strutturati, wiki, ticket e codice. I connettori sincronizzano ogni sorgente insieme ai suoi permessi. La pipeline di indicizzazione analizza, suddivide in chunk e genera gli embedding dei contenuti, e collega record, persone ed entità in un knowledge graph.
 
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
 Le domande ricevono risposta da un **ciclo agentico**, non da un singolo passaggio "recupera e poi genera". L'agente pianifica, chiama gli strumenti, legge i risultati e prosegue finché non ha le prove:
 
 - **Ricerca ibrida** — recupero semantico e per parole chiave, per trovare sia il significato sia i termini esatti.
@@ -66,6 +95,14 @@ Le domande ricevono risposta da un **ciclo agentico**, non da un singolo passagg
 
 Ogni chiamata a uno strumento è filtrata in base ai permessi dell'utente che pone la domanda, e ogni risposta cita i blocchi da cui proviene.
 
+
+| | RAG con frammenti top-k | PipesHub |
+| --- | --- | --- |
+| **Cosa vede prima l'agente** | Alcuni frammenti di testo | Nome, posizione, metadati e riepilogo di ogni record, più i blocchi corrispondenti |
+| **Come approfondisce** | Non può: un solo recupero per domanda | Ricerca ibrida, `grep`/`find` sui record, navigazione tra cartelle e lookup nel knowledge graph, in un ciclo |
+| **Struttura** | Persa durante il chunking | Ogni fonte diventa Blocks: sezioni, tabelle con righe e celle, thread, codice, tabelle SQL con il loro schema |
+| **Permessi** | Spesso approssimati in fase di indicizzazione | Verificati sui permessi del sistema di origine per l'utente che fa la richiesta, a ogni chiamata di tool |
+| **Citazioni** | Per frammento, se ci sono | Per blocco: la pagina, la cella di tabella, la riga, la slide o la riga di codice, con le citazioni inventate rimosse |
 
 ## Funzionalità
 

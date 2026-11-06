@@ -57,6 +57,35 @@
 
 PipesHub; belgeler, konuşmalar, yapılandırılmış veriler, wiki'ler, ticket'lar ve kod üzerinde **birleşik bir bağlam katmanı** oluşturur. Bağlayıcılar her kaynağı izinleriyle birlikte senkronize eder. İndeksleme hattı içeriği ayrıştırır, parçalara böler, embedding'lerini çıkarır ve kayıtları, kişileri ve varlıkları bir bilgi grafında birbirine bağlar.
 
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
 Sorular tek bir "getir, sonra üret" adımıyla değil, bir **ajan döngüsüyle** yanıtlanır. Ajan plan yapar, araçları çağırır, sonuçları okur ve kanıtlara ulaşana kadar devam eder:
 
 - **Hibrit arama** — anlamsal ve anahtar kelime tabanlı arama; hem anlamı hem de tam terimleri yakalar.
@@ -66,6 +95,14 @@ Sorular tek bir "getir, sonra üret" adımıyla değil, bir **ajan döngüsüyle
 
 Her araç çağrısı soruyu soran kullanıcının izinlerine göre filtrelenir ve her yanıt, geldiği blokları kaynak olarak gösterir.
 
+
+| | Top-k parça RAG | PipesHub |
+| --- | --- | --- |
+| **Ajanın ilk gördüğü** | Birkaç metin parçası | Her kaydın adı, konumu, meta verisi ve özeti, artı eşleşen bloklar |
+| **Nasıl derine iner** | İnemez: soru başına tek getirme | Hibrit arama, kayıtlar üzerinde `grep`/`find`, klasör gezintisi ve bilgi grafı sorguları, bir döngü içinde |
+| **Yapı** | Parçalama sırasında kaybolur | Her kaynak Blocks'a dönüşür: bölümler, satır ve hücreleriyle tablolar, yazışma dizileri, kod, şemasıyla SQL tabloları |
+| **İzinler** | Çoğu zaman indeksleme anında yaklaşık olarak belirlenir | Her araç çağrısında, istekte bulunan kullanıcı için kaynak sistemin izinlerine göre denetlenir |
+| **Kaynak gösterme** | Varsa parça başına | Blok başına: sayfa, tablo hücresi, satır, slayt veya kod satırı; uydurma kaynaklar kaldırılır |
 
 ## Özellikler
 
