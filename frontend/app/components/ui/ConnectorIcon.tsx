@@ -100,6 +100,7 @@ export type ConnectorType =
   | 'docusign'
   | 'okta'
   | 'zapier'
+  | 'trello'
   // Generic / Fallback
   | 'web'
   | 'api'
@@ -204,6 +205,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'docusign': { svg: svg('docusign'), fallback: 'draw' },
   'okta': { svg: svg('okta'), fallback: 'badge' },
   'zapier': { svg: svg('zapier'), fallback: 'bolt' },
+  'trello': { svg: svg('trello'), fallback: 'view_kanban' },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
   // API toolsets (admin-uploaded OpenAPI specs)
@@ -271,6 +273,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['vercel', 'vercel'],
   ['docusign', 'docusign'], ['okta', 'okta'],
   ['zapier', 'zapier'],
+  ['trello', 'trello'],
   // Broad fallbacks (last — only match if nothing specific matched)
   // Google toolset slugs are bare (`docs`, `sheets`); check them before the `google` catch-all.
   ['docs', 'google-docs'], ['sheets', 'google-sheets'],
