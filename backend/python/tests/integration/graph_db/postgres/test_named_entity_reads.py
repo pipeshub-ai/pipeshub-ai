@@ -280,6 +280,21 @@ async def test_a_filter_too_broad_to_list_is_truncated_and_a_narrow_one_within_i
     assert await hits(w, ["G"], limit=2) == (["r0"], False)                                                # mentions by records that are gone do not count toward the cap
 
 
+async def test_rows_of_trashed_or_missing_records_and_dangling_edges_do_not_count_or_answer(w: Org, orgs: tuple[Org, Org]) -> None:
+    await w.record("a")
+    await w.record("t", isDeleted=True)
+    for r in ("a", "t", "m"):                                    # "m" names a record that is not in the graph
+        await w.p.replace_named_entity_values(r, [w.vm(r, "usd", kind="currency", name="$5", amountFloat=5.0, currency="USD", startMs=None, endMs=None)])
+    q = NamedEntityQuery(amount_min=1.0, amount_max=10.0)
+    assert await hits(w, None, q, limit=1) == (["a"], False)                                   # the dead rows are not "too many"
+    assert await hits(w, None, q, limit=1, within=["a", "t", "m"]) == (["a"], False)
+    await put(w, "D")
+    await w.mention("a", "D")
+    await w.mention("t", "D")
+    await w.p._db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'namedEntities' AND id = 'D'", w.org), write=True)
+    assert await hits(w, ["D"]) == await hits(w, ["D"], within=["a", "t"]) == ([], False)     # an edge to an entity that is gone names nothing, either way
+
+
 async def test_value_and_entity_constraints_must_both_hold_in_the_record(w: Org, orgs: tuple[Org, Org]) -> None:
     await value_world(w)
     await put(w, "Acme")
