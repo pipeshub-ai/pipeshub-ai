@@ -2299,6 +2299,7 @@ class TestFilterOptions:
                     "channels": [
                         {"id": "C1", "name": "general", "is_member": True},
                         {"id": "C2", "name": "general-public", "is_member": False},
+                        {"id": "C3", "name": "general-private", "is_private": True, "is_member": False},
                         {"id": None},
                     ],
                     "response_metadata": {"next_cursor": ""},
@@ -2311,7 +2312,7 @@ class TestFilterOptions:
         ):
             r = await c.get_filter_options("channel_ids", search="gen")
         assert r.success
-        assert [option.id for option in r.options] == ["C1"]
+        assert [option.id for option in r.options] == ["C1", "C2"]
 
         ds.conversations_list = AsyncMock(return_value=MagicMock(success=False, error="bad"))
         with (

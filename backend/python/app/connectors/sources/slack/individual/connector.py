@@ -1152,11 +1152,12 @@ class SlackIndividualConnector(BaseConnector):
                 if not self._should_include_channel_in_filter(cd):
                     continue
                 if (
-                    not cd.get("is_im")
+                    cd.get("is_private")
+                    and not cd.get("is_im")
                     and not cd.get("is_mpim")
                     and not cd.get("is_member")
                 ):
-                    continue
+                    continue  # a user token reads a public channel it is not in, never a private one
                 if include_ids and cid not in include_ids:
                     continue
 
@@ -4571,7 +4572,8 @@ class SlackIndividualConnector(BaseConnector):
                     if not cid:
                         continue
                     if (
-                        not ch.get("is_im")
+                        ch.get("is_private")
+                        and not ch.get("is_im")
                         and not ch.get("is_mpim")
                         and not ch.get("is_member")
                     ):
