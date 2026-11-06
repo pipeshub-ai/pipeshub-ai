@@ -1180,8 +1180,8 @@ class LinearGraphQLOperations:
                     projects(first: $first, after: $after, filter: $filter, includeArchived: $includeArchived) {
                         nodes {
                             id trashed archivedAt updatedAt teams(first: 50) { nodes { id } pageInfo { hasNextPage endCursor } }
-                            externalLinks(first: 50) { nodes { id updatedAt } pageInfo { hasNextPage } }
-                            projectMilestones(first: 50) { nodes { id updatedAt } pageInfo { hasNextPage } }
+                            externalLinks(first: 50) { nodes { id updatedAt } pageInfo { hasNextPage endCursor } }
+                            projectMilestones(first: 50) { nodes { id updatedAt } pageInfo { hasNextPage endCursor } }
                         }
                         pageInfo {
                             hasNextPage
