@@ -94,7 +94,7 @@ class ProjectsSync:
 
     async def _sync_projects(self) -> None:
         """Sync each project: members, issues, MRs, and code repository."""
-        projects = await self._resolve_projects_with_filters()
+        projects = await self._resolve_projects_with_filters(prune=True)
         if not projects:
             self.logger.warning("No projects to sync after applying filters")
             return
@@ -127,7 +127,7 @@ class ProjectsSync:
     # Project resolution
     # ------------------------------------------------------------------
 
-    async def _resolve_projects_with_filters(self) -> list[Project]:
+    async def _resolve_projects_with_filters(self, *, prune: bool = False) -> list[Project]:
         """Resolve projects to sync from sync filters.
 
         Semantics:
@@ -137,7 +137,8 @@ class ProjectsSync:
         - ``NOT_IN`` filters are subtractive.
 
         Also seeds ``c._gitlab_included_group_paths`` so each project's
-        ``RecordGroup`` can be linked to a parent group node.
+        ``RecordGroup`` can be linked to a parent group node. ``prune`` (the sync's
+        own call) removes stored projects a complete listing no longer names.
         """
         c = self.c
         if not c.data_source:
@@ -158,6 +159,7 @@ class ProjectsSync:
         proj_not_in = proj_paths if proj_op == FilterOperator.NOT_IN else []
 
         by_id: dict[int, Project] = {}
+        listing_complete = True
 
         if proj_in:
             for pth in proj_in:
@@ -182,6 +184,7 @@ class ProjectsSync:
                 if not gres.success:
                     self.logger.error("Could not list projects for group %s: %s", gp, gres.error)
                     c.note_failed_read(f"projects of group {gp}", gres)
+                    listing_complete = False
                     continue
                 for p in gres.data or []:
                     by_id[int(p.id)] = p
@@ -207,6 +210,12 @@ class ProjectsSync:
                 p for p in candidates
                 if not _namespace_under_any_prefix(_namespace_full_path(p), grp_not_in)
             ]
+
+        if prune and listing_complete and not proj_in:
+            # The path filter answers a missing project by its own 404 above; here a project
+            # that left the listing (transferred out of the group, deleted, unreadable) would
+            # otherwise keep the members it had on its last sync.
+            await c.removed_projects.remove_unlisted({int(p.id) for p in candidates})
 
         if not candidates:
             return []
@@ -372,6 +381,7 @@ class ProjectsSync:
         project_name = project.name
         dict_member: dict[int, GroupMember] = {}
         self.logger.info("Syncing users for project %s", project_name)
+        c._project_reader_ids.pop(int(project_id), None)
         members_res = await c.runtime.ds_call(
             c.data_source.list_project_members_all, project_id=project_id, get_all=True,
         )
@@ -381,7 +391,6 @@ class ProjectsSync:
         if listing_failed:
             c.note_failed_read(f"members of project {project.path_with_namespace}", members_res)
         if (listing_failed or listing_empty) and await c.data_entities_processor.has_stored_permissions(
-        c._project_reader_ids.pop(int(project_id), None)
             "record_group", c.connector_id, str(project_id), keep=True,
         ):
             # A list that could not be read, or came back empty, is not "nobody": the
@@ -438,6 +447,7 @@ class ProjectsSync:
         # that omitted an ancestor, or a project/group share. Work items inherit the
         # project, so a duplicate grant is harmless and a missing one hides the folder.
         c.users._inject_creator_member_into(dict_member)
+        c._project_reader_ids[int(project_id)] = project_reader_ids(dict_member.values())
 
         permission_project_level: list[Permission] = []
         permission_work_items_level: list[Permission] = []
@@ -447,7 +457,6 @@ class ProjectsSync:
 
         for member in dict_member.values():
             if not member_has_access(member):
-        c._project_reader_ids[int(project_id)] = project_reader_ids(dict_member.values())
                 continue
             permission = await self._transform_restrictions_to_permissions(member)
             if not permission:
