@@ -202,7 +202,7 @@ consumer's or the boot job's OrgContext. So every line of a run, the connector's
 | `sync_run.start_failed` | the failure's level | the `log_failure` fields |
 | `sync_step.failed` | ERROR, WARNING for an optional step | `step` (`status_write`, `idle_write`, `drain`, `unlink`, …), the `log_failure` fields |
 
-`outcome` on `sync_run.end`: `success`; `partial` (a full sync that finished but could not unlink what it did not see);
+`outcome` on `sync_run.end`: `success`; `partial` (a full sync that finished but did not unlink what it did not see: the connector skipped part of the source, or the unlink failed);
 `skipped` with `reason=<code>` (the connector declined, e.g. `DESKTOP_OFFLINE`); `failure` with `error_class=cancelled` and
 `reason` = `requested`, `shutdown`, `cancelled` or `lease_lost` for a stop; `failure` with the exception's class otherwise. A
 failed run's exception is logged once there; `SyncTaskManager` then logs it at DEBUG (`task.failed`).

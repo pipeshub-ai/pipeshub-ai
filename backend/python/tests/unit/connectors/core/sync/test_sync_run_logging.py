@@ -487,6 +487,19 @@ class TestEntryPoints:
         fields = _one(records, "inside run_sync")[1]
         assert fields["connector_type"] == "web" and fields["connector_id"] == "c1" and fields["run_id"]
 
+    async def test_the_stored_type_is_not_left_bound_after_a_direct_call(self) -> None:
+        service = self._service()
+        service.graph_provider.get_document = AsyncMock(
+            return_value={"id": "c1", "type": "Web", ConnectorStateKeys.IS_ACTIVE: False}
+        )
+        _, lease = await LocalSyncCoordinator(_log()).begin("c1")
+
+        with patch.object(service, "_drop_queued_intent", AsyncMock()):
+            result = await service._start_sync_with_lease("rss", {"connectorId": "c1", "orgId": "o1"}, lease, MagicMock())
+
+        assert result == (True, False)
+        assert "connector_type" not in current_log_fields()
+
     async def test_a_refused_admission_says_why(self, records) -> None:
         service = self._service()
         coordinator = MagicMock()
@@ -499,6 +512,27 @@ class TestEntryPoints:
         record, fields = _one(records, "sync_run.refused")
         assert record.levelno == logging.INFO and fields["reason"] == "refused_by_stop"
         assert fields["connector_id"] == "c1"
+
+    async def test_a_run_started_on_the_boot_path_names_the_instance(self, records) -> None:
+        from app.connectors.core.factory.connector_factory import ConnectorFactory
+
+        coordinator = LocalSyncCoordinator(_log())
+        connector = _connector(_logs_inside([]))
+        config_service = MagicMock(get_config=AsyncMock(return_value={"sync": {"selectedStrategy": "SCHEDULED"}}))
+
+        with patch.object(ConnectorFactory, "initialize_connector", AsyncMock(return_value=connector)), \
+             patch("app.connectors.core.factory.connector_factory.get_coordinator", return_value=coordinator):
+            result = await ConnectorFactory.create_and_start_sync(
+                name="rss", logger=_log(), data_store_provider=MagicMock(graph_provider=_gp()),
+                config_service=config_service, connector_id="c1", scope="team", created_by="u1",
+            )
+            await asyncio.gather(*coordinator._tasks.tasks_with_prefix("c1"))
+            await join_cleanup_tasks()
+
+        assert result is connector
+        fields = _one(records, "inside run_sync")[1]
+        assert fields["connector_type"] == "rss" and fields["connector_id"] == "c1" and fields["run_id"]
+        assert _one(records, "sync_run.end")[1]["connector_type"] == "rss"
 
     async def test_the_boot_path_names_the_instance_and_logs_a_start_failure(self, records) -> None:
         from app.connectors.core.factory.connector_factory import ConnectorFactory
