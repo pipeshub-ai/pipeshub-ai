@@ -9801,7 +9801,7 @@ class TestAccountsSharingAnExtractedOrganisation:
         })
 
     @staticmethod
-    def _tx(connector, extracted: str, prospect_edges: list[dict]):
+    def _tx(connector: SalesforceConnector, extracted: str, prospect_edges: list[dict]) -> MagicMock:
         org = connector.data_entities_processor.org_id
         tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         tx.get_all_orgs = AsyncMock(return_value=[

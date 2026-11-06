@@ -4517,11 +4517,10 @@ class TestLinkRecordToGroupEdgeCases:
 # ===========================================================================
 
 
-async def _source_id_read_that_fails(_source_id, _connector_id, *, raise_on_error: bool = False):
+async def _source_id_read_that_fails(_source_id: str, _connector_id: str, *, raise_on_error: bool = False) -> None:
     """A graph read that fails, as the store answers it: None unless the caller asks for the error."""
     if raise_on_error:
         raise RuntimeError("graph read timed out")
-    return None
 
 
 class TestHandleRecordPermissionsEntityTypes:
@@ -4552,7 +4551,7 @@ class TestHandleRecordPermissionsEntityTypes:
         tx_store = _make_tx_store()
         stored = {"rec-1": [{"from_id": "u-ann", "to_id": "rec-1"}]}  # the grant the record already has
 
-        async def replace(to_id, _coll, edges, _edge_coll):
+        async def replace(to_id: str, _coll: str, edges: list[dict], _edge_coll: str) -> None:
             stored[to_id] = edges
 
         tx_store.replace_edges_to = AsyncMock(side_effect=replace)
