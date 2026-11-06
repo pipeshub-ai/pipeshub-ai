@@ -2850,7 +2850,7 @@ class TestRecordRevision:
         assert record.external_revision_id == "1024:2026-08-01 10:00:00"
 
     @pytest.mark.asyncio
-    async def test_a_changed_body_publishes_a_content_update(self, servicenow_connector):
+    async def test_a_changed_body_publishes_a_content_update(self, servicenow_connector) -> None:
         stored = servicenow_connector._transform_to_article_webpage_record(
             KBKnowledge(sys_id="art1", number="KB-art1", short_description="Title",
                         text="<p>a</p>", kb_category="cat1", sys_updated_on="2026-08-26 09:15:00")
@@ -2873,7 +2873,7 @@ class TestRecordRevision:
         assert incoming.version == 3
 
     @pytest.mark.asyncio
-    async def test_a_touch_that_does_not_change_the_body_stays_an_upsert(self, servicenow_connector):
+    async def test_a_touch_that_does_not_change_the_body_stays_an_upsert(self, servicenow_connector) -> None:
         stored = servicenow_connector._transform_to_article_webpage_record(
             KBKnowledge(sys_id="art1", number="KB-art1", short_description="Title",
                         text="<p>a</p>", kb_category="cat1", sys_updated_on="2026-08-26 09:15:00")

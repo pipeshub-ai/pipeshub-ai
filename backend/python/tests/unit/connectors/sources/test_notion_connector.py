@@ -3006,7 +3006,7 @@ class TestReindexRecords:
         conn.data_entities_processor.reindex_existing_records.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_changed_page_publishes_a_content_update(self):
+    async def test_a_changed_page_publishes_a_content_update(self) -> None:
         conn = _make_connector_fullcov()
         stored = _make_webpage_record(external_revision_id="old", version=2)
         incoming = _make_webpage_record(external_revision_id="new", version=0)
@@ -3019,7 +3019,7 @@ class TestReindexRecords:
         assert incoming.version == 3
 
     @pytest.mark.asyncio
-    async def test_an_unchanged_page_stays_an_upsert(self):
+    async def test_an_unchanged_page_stays_an_upsert(self) -> None:
         conn = _make_connector_fullcov()
         stored = _make_webpage_record(external_revision_id="same", version=2)
         incoming = _make_webpage_record(external_revision_id="same", version=0)

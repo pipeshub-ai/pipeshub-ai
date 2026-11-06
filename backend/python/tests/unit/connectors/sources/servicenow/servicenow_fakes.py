@@ -214,7 +214,7 @@ class FakeRecordStore:
     def keys(self, record_type: str | None = None) -> list[str]:
         return sorted(k for k, r in self.records.items() if record_type is None or r.record_type == record_type)
 
-    async def on_record_content_update(self, record: Any, permissions: list | None = None) -> None:
+    async def on_record_content_update(self, record: object, permissions: list | None = None) -> None:
         await self.on_new_records([(record, [] if permissions is None else permissions)])
 
     async def on_new_records(self, pairs: list[tuple[Any, list]]) -> None:
