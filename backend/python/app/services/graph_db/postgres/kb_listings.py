@@ -132,9 +132,7 @@ class KbListingsMixin(PgBase):
                 else:
                     rskip, rlimit = skip - total_folders, limit
                 recs = await tx.fetch("""/* pipeshub:graph.children_records */ WITH recs AS (
-                      SELECT r.id, r.doc, f.doc AS fdoc FROM graph.nodes r
-                      LEFT JOIN LATERAL (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = te.org_id AND ff.coll = 'files' AND ff.id = te.to_id
-                                         WHERE te.org_id = r.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = r.id ORDER BY ff.id LIMIT 1) f ON true
+                      SELECT r.id, r.doc FROM graph.nodes r
                       WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false
                         AND CASE WHEN $3::text IS NULL
                           THEN NOT (r.doc->>'mimeType' = ANY($4::text[]))
@@ -151,17 +149,22 @@ class KbListingsMixin(PgBase):
                         AND ($6::text[] IS NULL OR r.doc->>'recordType' = ANY($6::text[])) AND ($7::text[] IS NULL OR r.doc->>'origin' = ANY($7::text[]))
                         AND ($8::text[] IS NULL OR r.doc->>'connectorName' = ANY($8::text[])) AND ($9::text[] IS NULL OR r.doc->>'indexingStatus' = ANY($9::text[])))
                     SELECT s.total, s.rtypes, s.origins, s.connectors, s.statuses, p.doc, p.fdoc, p.rn FROM
-                      (SELECT (SELECT count(*) FROM recs) AS total,
-                              (SELECT coalesce(array_agg(DISTINCT doc->>'recordType') FILTER (WHERE doc->>'recordType' IS NOT NULL), '{}') FROM recs) AS rtypes,
-                              (SELECT coalesce(array_agg(DISTINCT doc->>'origin') FILTER (WHERE doc->>'origin' IS NOT NULL), '{}') FROM recs) AS origins,
-                              (SELECT coalesce(array_agg(DISTINCT coalesce(doc->>'connectorName', 'KNOWLEDGE_BASE')), '{}') FROM recs) AS connectors,
-                              (SELECT coalesce(array_agg(DISTINCT doc->>'indexingStatus') FILTER (WHERE doc->>'indexingStatus' IS NOT NULL), '{}') FROM recs) AS statuses) s
-                      LEFT JOIN LATERAL (SELECT x.doc, x.fdoc, row_number() OVER (ORDER BY
+                      (SELECT count(*) AS total,
+                              coalesce(array_agg(DISTINCT doc->>'recordType') FILTER (WHERE doc->>'recordType' IS NOT NULL), '{}') AS rtypes,
+                              coalesce(array_agg(DISTINCT doc->>'origin') FILTER (WHERE doc->>'origin' IS NOT NULL), '{}') AS origins,
+                              coalesce(array_agg(DISTINCT coalesce(doc->>'connectorName', 'KNOWLEDGE_BASE')), '{}') AS connectors,
+                              coalesce(array_agg(DISTINCT doc->>'indexingStatus') FILTER (WHERE doc->>'indexingStatus' IS NOT NULL), '{}') AS statuses FROM recs) s
+                      LEFT JOIN LATERAL (SELECT q.doc, q.rn, (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = te.org_id AND ff.coll = 'files' AND ff.id = te.to_id
+                                                              WHERE te.org_id = $1 AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = q.id ORDER BY ff.id LIMIT 1) AS fdoc
+                                         FROM (SELECT x.id, x.doc, row_number() OVER (ORDER BY
                             (CASE WHEN $10::int = 1 AND $11::boolean THEN x.doc->>'recordName' END) COLLATE "C" ASC, (CASE WHEN $10::int = 1 AND NOT $11::boolean THEN x.doc->>'recordName' END) COLLATE "C" DESC,
                             (CASE WHEN $10::int = 2 AND $11::boolean THEN x.doc->'createdAtTimestamp' END) ASC, (CASE WHEN $10::int = 2 AND NOT $11::boolean THEN x.doc->'createdAtTimestamp' END) DESC,
                             (CASE WHEN $10::int = 3 AND $11::boolean THEN x.doc->'updatedAtTimestamp' END) ASC, (CASE WHEN $10::int = 3 AND NOT $11::boolean THEN x.doc->'updatedAtTimestamp' END) DESC,
-                            (CASE WHEN $10::int = 4 AND $11::boolean THEN x.fdoc->'sizeInBytes' END) ASC, (CASE WHEN $10::int = 4 AND NOT $11::boolean THEN x.fdoc->'sizeInBytes' END) DESC, x.id) AS rn
-                                         FROM recs x ORDER BY rn OFFSET $12 LIMIT $13) p ON true ORDER BY p.rn""",
+                            (CASE WHEN $10::int = 4 AND $11::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
+                                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) ASC,
+                            (CASE WHEN $10::int = 4 AND NOT $11::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
+                                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) DESC, x.id) AS rn
+                                               FROM recs x ORDER BY rn OFFSET $12 LIMIT $13) q) p ON true ORDER BY p.rn""",
                                      org, kb_id, folder_id, FOLDER_MIME_TYPES, search or None, record_types or None, origins or None, connectors or None,
                                      indexing_status or None, key, asc, rskip, rlimit, _KB)
                 records = [_child_record(r["doc"], r["fdoc"]) for r in recs if r["doc"] is not None]
@@ -187,6 +190,7 @@ class KbListingsMixin(PgBase):
     async def get_folder_children(self, kb_id: str, folder_id: str, skip: int, limit: int, level: int = 1, search: str | None = None,
                                   record_types: list[str] | None = None, origins: list[str] | None = None, connectors: list[str] | None = None,
                                   indexing_status: list[str] | None = None, sort_by: str = "name", sort_order: str = "asc", transaction: str | None = None) -> dict:
+        """The caller must validate that the folder is in the knowledge base (``validate_folder_in_kb``): the listing reads the folder by id."""
         current_org_id()
         return await self._children(kb_id, folder_id, skip, limit, level, search, record_types, origins, connectors, indexing_status, sort_by, sort_order, transaction)
 
@@ -209,7 +213,7 @@ class KbListingsMixin(PgBase):
                   SELECT r.id, r.doc, f.id AS fid, f.doc->>'recordName' AS fname FROM folders f
                     JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' AND e.from_id = f.id AND e.to_coll = 'records'
                     JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = e.to_id
-                  UNION
+                  UNION ALL
                   SELECT r.id, r.doc, NULL, NULL FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
                     JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = b.from_id
                   WHERE $5::text IS NULL AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
@@ -218,12 +222,16 @@ class KbListingsMixin(PgBase):
                 kept AS (SELECT c.* FROM live c WHERE ($7::text IS NULL OR position(lower($7::text) IN lower(c.doc->>'recordName')) > 0 OR position(lower($7::text) IN lower(c.doc->>'externalRecordId')) > 0)
                     AND ($8::text[] IS NULL OR c.doc->>'recordType' = ANY($8::text[])) AND ($9::text[] IS NULL OR c.doc->>'origin' = ANY($9::text[]))
                     AND ($10::text[] IS NULL OR c.doc->>'connectorName' = ANY($10::text[])) AND ($11::text[] IS NULL OR c.doc->>'indexingStatus' = ANY($11::text[]))
-                    AND ($12::bigint IS NULL OR (c.doc->>'createdAtTimestamp')::numeric >= $12) AND ($13::bigint IS NULL OR (c.doc->>'createdAtTimestamp')::numeric <= $13))
-                SELECT s.total, p.doc, p.fdoc, p.fid, p.fname, p.rn FROM (SELECT (SELECT count(*) FROM kept) AS total) s
-                  LEFT JOIN LATERAL (SELECT x.doc, x.fid, x.fname, row_number() OVER (ORDER BY (CASE WHEN $17::boolean THEN x.doc->$14::text END) ASC, (CASE WHEN NOT $17::boolean THEN x.doc->$14::text END) DESC, x.id) AS rn,
-                       (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = $1 AND ff.coll = 'files' AND ff.id = te.to_id
-                        WHERE te.org_id = $1 AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = x.id ORDER BY ff.id LIMIT 1) AS fdoc
-                     FROM kept x ORDER BY rn OFFSET $15 LIMIT $16) p ON true ORDER BY p.rn""",
+                    AND ($12::bigint IS NULL OR (c.doc->>'createdAtTimestamp')::numeric >= $12) AND ($13::bigint IS NULL OR (c.doc->>'createdAtTimestamp')::numeric <= $13)),
+                ranked AS (SELECT x.id, x.doc, x.fid, x.fname, row_number() OVER (ORDER BY
+                    (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'string' AND $17::boolean THEN x.doc->>$14::text END) COLLATE "C" ASC,
+                    (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'string' AND NOT $17::boolean THEN x.doc->>$14::text END) COLLATE "C" DESC,
+                    (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'number' AND $17::boolean THEN (x.doc->>$14::text)::numeric END) ASC,
+                    (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'number' AND NOT $17::boolean THEN (x.doc->>$14::text)::numeric END) DESC, x.id) AS rn FROM kept x)
+                SELECT s.total, p.doc, p.fdoc, p.fid, p.fname, p.rn FROM (SELECT count(*) AS total FROM ranked) s
+                  LEFT JOIN LATERAL (SELECT q.doc, q.fid, q.fname, q.rn, (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = $1 AND ff.coll = 'files' AND ff.id = te.to_id
+                        WHERE te.org_id = $1 AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = q.id ORDER BY ff.id LIMIT 1) AS fdoc
+                     FROM (SELECT * FROM ranked WHERE rn > $15::bigint AND rn <= $15::bigint + $16::bigint) q) p ON true ORDER BY p.rn""",
                                  org, kb_id, FOLDER_MIME_TYPES, _KB, folder_id, org_id, search or None, record_types or None, origins or None, connectors or None,
                                  indexing_status or None, date_from or None, date_to or None, sort_by, max(skip, 0), max(limit, 0), sort_order.upper() == "ASC")
             filt = await tx.fetchrow("""/* pipeshub:graph.list_kb_records_filters */ WITH kb AS (SELECT k.id FROM graph.nodes k WHERE k.org_id = $1 AND k.coll = 'apps' AND k.id = $2 AND k.doc->>'type' = $4),
@@ -243,7 +251,7 @@ class KbListingsMixin(PgBase):
                        (SELECT coalesce(array_agg(DISTINCT doc->>'origin') FILTER (WHERE doc->>'origin' IS NOT NULL), '{}') FROM live) AS origins,
                        (SELECT coalesce(array_agg(DISTINCT doc->>'connectorName') FILTER (WHERE doc->>'connectorName' IS NOT NULL), '{}') FROM live) AS connectors,
                        (SELECT coalesce(array_agg(DISTINCT doc->>'indexingStatus') FILTER (WHERE doc->>'indexingStatus' IS NOT NULL), '{}') FROM live) AS statuses,
-                       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', f.id, 'name', f.doc->'recordName') ORDER BY f.id), '[]'::jsonb) FROM folders f) AS folders""",
+                       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', f.id, 'name', f.doc->'recordName') ORDER BY f.id), '[]'::jsonb) FROM folders f WHERE coalesce((f.doc->>'isDeleted')::boolean, false) = false) AS folders""",
                                   org, kb_id, FOLDER_MIME_TYPES, _KB, org_id)
             records = []
             for r in rows:
@@ -274,7 +282,7 @@ class KbListingsMixin(PgBase):
         own = {"mine": 1, "shared": 2}.get(ownership, 0)
 
         async def go(tx: Tx) -> tuple[list[dict], dict[str, int]]:
-            base = """/* pipeshub:graph.list_accessible_artifacts */ WITH g AS (
+            rows = await tx.fetch("""/* pipeshub:graph.list_accessible_artifacts */ WITH g AS (
                   SELECT rec.id, rec.doc AS rdoc, art.doc AS adoc, perm.doc AS pdoc, coalesce(perm.doc->>'role' = 'OWNER', false) AS owned
                   FROM graph.nodes u JOIN graph.edges perm ON perm.org_id = u.org_id AND perm.coll = 'permission' AND perm.from_coll = 'users' AND perm.from_id = u.id
                       AND perm.to_coll = 'records' AND perm.doc->>'type' = 'USER'
@@ -287,15 +295,27 @@ class KbListingsMixin(PgBase):
                     AND ($4::text IS NULL OR position(lower($4::text) IN lower(coalesce(art.doc->>'name', ''))) > 0 OR position(lower($4::text) IN lower(coalesce(art.doc->>'logicalName', ''))) > 0)
                     AND ($5::text[] IS NULL OR art.doc->>'artifactType' = ANY($5::text[])) AND ($6::text IS NULL OR art.doc->>'conversationId' = $6)
                     AND ($7::bigint IS NULL OR (rec.doc->>'createdAtTimestamp')::numeric >= $7) AND ($8::bigint IS NULL OR (rec.doc->>'createdAtTimestamp')::numeric <= $8))
-                """
-            rows = await tx.fetch(base + """SELECT g.rdoc, g.adoc, g.pdoc FROM g WHERE ($9::int = 0 OR ($9::int = 1 AND g.owned) OR ($9::int = 2 AND NOT g.owned))
+                SELECT g.rdoc, g.adoc, g.pdoc FROM g WHERE ($9::int = 0 OR ($9::int = 1 AND g.owned) OR ($9::int = 2 AND NOT g.owned))
                 ORDER BY (CASE WHEN $10::int = 1 AND $11::boolean THEN g.adoc->>'name' END) COLLATE "C" ASC, (CASE WHEN $10::int = 1 AND NOT $11::boolean THEN g.adoc->>'name' END) COLLATE "C" DESC,
                          (CASE WHEN $10::int = 2 AND $11::boolean THEN g.rdoc->'createdAtTimestamp' END) ASC, (CASE WHEN $10::int = 2 AND NOT $11::boolean THEN g.rdoc->'createdAtTimestamp' END) DESC,
                          (CASE WHEN $10::int = 3 AND $11::boolean THEN g.rdoc->'updatedAtTimestamp' END) ASC, (CASE WHEN $10::int = 3 AND NOT $11::boolean THEN g.rdoc->'updatedAtTimestamp' END) DESC,
                          (CASE WHEN $10::int = 4 AND $11::boolean THEN g.adoc->>'artifactType' END) COLLATE "C" ASC, (CASE WHEN $10::int = 4 AND NOT $11::boolean THEN g.adoc->>'artifactType' END) COLLATE "C" DESC, g.id
                 OFFSET $12 LIMIT $13""", org, user_id, org_id, search or None, artifact_types, conversation_id or None, date_from or None, date_to or None, own, key,
                                   (sort_order or "").lower() == "asc", max(skip, 0), max(limit, 0))
-            tallies = await tx.fetch(base + "SELECT g.owned, count(*) AS total FROM g GROUP BY g.owned", org, user_id, org_id, search or None, artifact_types,
+            tallies = await tx.fetch("""/* pipeshub:graph.list_accessible_artifacts_counts */ WITH g AS (
+                  SELECT rec.id, rec.doc AS rdoc, art.doc AS adoc, perm.doc AS pdoc, coalesce(perm.doc->>'role' = 'OWNER', false) AS owned
+                  FROM graph.nodes u JOIN graph.edges perm ON perm.org_id = u.org_id AND perm.coll = 'permission' AND perm.from_coll = 'users' AND perm.from_id = u.id
+                      AND perm.to_coll = 'records' AND perm.doc->>'type' = 'USER'
+                    JOIN graph.nodes rec ON rec.org_id = u.org_id AND rec.coll = 'records' AND rec.id = perm.to_id
+                    JOIN graph.edges te ON te.org_id = u.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = rec.id AND te.to_coll = 'artifacts'
+                    JOIN graph.nodes art ON art.org_id = u.org_id AND art.coll = 'artifacts' AND art.id = te.to_id
+                  WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2 AND rec.doc->>'orgId' = $3 AND rec.doc->>'recordType' = 'ARTIFACT'
+                    AND coalesce((rec.doc->>'isDeleted')::boolean, false) = false AND art.doc->>'artifactType' <> 'TOOL_RESULT'
+                    AND coalesce((art.doc->>'isTemporary')::boolean, false) = false AND coalesce(art.doc->>'visibility', 'VISIBLE') = 'VISIBLE'
+                    AND ($4::text IS NULL OR position(lower($4::text) IN lower(coalesce(art.doc->>'name', ''))) > 0 OR position(lower($4::text) IN lower(coalesce(art.doc->>'logicalName', ''))) > 0)
+                    AND ($5::text[] IS NULL OR art.doc->>'artifactType' = ANY($5::text[])) AND ($6::text IS NULL OR art.doc->>'conversationId' = $6)
+                    AND ($7::bigint IS NULL OR (rec.doc->>'createdAtTimestamp')::numeric >= $7) AND ($8::bigint IS NULL OR (rec.doc->>'createdAtTimestamp')::numeric <= $8))
+                SELECT g.owned, count(*) AS total FROM g GROUP BY g.owned""", org, user_id, org_id, search or None, artifact_types,
                                      conversation_id or None, date_from or None, date_to or None)
             counts = {"mine": 0, "shared": 0}
             for t in tallies:
@@ -325,19 +345,20 @@ class KbListingsMixin(PgBase):
         org = current_org_id()
         try:
             r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.get_template */ SELECT t.doc, a.access, a.role, a.pid, a.created, a.updated FROM graph.nodes t,
-                LATERAL (SELECT 'INDIVIDUAL' AS access, p.doc->>'role' AS role, p.doc->>'id' AS pid, p.doc->'createdAtTimestamp' AS created, p.doc->'updatedAtTimestamp' AS updated, 0 AS ord
+                LATERAL (SELECT 'INDIVIDUAL' AS access, p.doc->>'role' AS role, p.doc->>'id' AS pid, p.doc->'createdAtTimestamp' AS created, p.doc->'updatedAtTimestamp' AS updated, 0 AS ord, 0 AS rk
                            FROM graph.nodes u JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id
                              AND p.to_coll = 'agentTemplates' AND p.to_id = t.id AND p.doc->>'type' = 'USER'
                            WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2
                          UNION ALL
-                         SELECT 'TEAM', g.doc->>'role', g.doc->>'id', g.doc->'createdAtTimestamp', g.doc->'updatedAtTimestamp', 1
+                         SELECT 'TEAM', g.doc->>'role', g.doc->>'id', g.doc->'createdAtTimestamp', g.doc->'updatedAtTimestamp', 1,
+                                CASE g.doc->>'role' WHEN 'OWNER' THEN 4 WHEN 'ORGANIZER' THEN 3 WHEN 'WRITER' THEN 2 WHEN 'READER' THEN 1 ELSE 0 END
                            FROM graph.nodes u JOIN graph.edges m ON m.org_id = u.org_id AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = u.id
                              AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER'
                              JOIN graph.nodes tm ON tm.org_id = u.org_id AND tm.coll = 'teams' AND tm.id = m.to_id
                              JOIN graph.edges g ON g.org_id = u.org_id AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = tm.id
                              AND g.to_coll = 'agentTemplates' AND g.to_id = t.id AND g.doc->>'type' = 'TEAM'
                            WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2
-                         ORDER BY ord LIMIT 1) a
+                         ORDER BY ord, rk DESC, pid LIMIT 1) a
                 WHERE t.org_id = $1 AND t.coll = 'agentTemplates' AND t.id = $3 AND coalesce((t.doc->>'isDeleted')::boolean, false) = false""",
                                                       org, user_id, template_id), transaction)
         except Exception as e:
