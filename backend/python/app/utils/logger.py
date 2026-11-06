@@ -9,6 +9,7 @@ import asyncio
 import functools
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -132,6 +133,7 @@ def _redact_all_handlers() -> None:
 # add; anything else on a record came from ``extra=`` and is a field.
 _RESERVED = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {
     "message", "asctime", "request_id", "task", "trace", "color_message",
+    "stack",  # JSON's traceback key: a field of that name would show in text and vanish in JSON
 }
 _UNREDACTED_TYPES = (int, float, bool, type(None))
 _is_credential_key = functools.lru_cache(maxsize=1024)(is_credential_name)
@@ -194,6 +196,14 @@ class TextFormatter(RedactingFormatter):
         return f"{color}{formatted}{self.RESET}" if color else formatted
 
 
+def _json_value(value: object) -> object:
+    if isinstance(value, str):
+        return redact_secrets_in_text(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)  # NaN and Infinity are not JSON
+    return value
+
+
 class JsonFormatter(logging.Formatter):
     """One JSON object per line. Every string is redacted before it is
     serialised, so an escaped newline cannot hide a private key."""
@@ -213,12 +223,10 @@ class JsonFormatter(logging.Formatter):
             "request_id": getattr(record, "request_id", "") or None,
         }
         for key, value in _record_fields(record).items():
-            out.setdefault(key, redact_secrets_in_text(value) if isinstance(value, str) else value)
+            out.setdefault(key, _json_value(value))
         stack = self._stack(record)
         if stack:
             out["stack"] = redact_secrets_in_text(stack)
-        else:
-            out.pop("stack", None)
         return json.dumps(out, ensure_ascii=False, default=str)
 
     def _stack(self, record: logging.LogRecord) -> str:
@@ -502,8 +510,11 @@ def install_log_redaction() -> None:
     values re-read.
     """
     _sync_from_env(force=True)
+    provider = get_provider()
+    # After a LOG_FORMAT change the console handler holds the plain new default until routed again.
+    _route_root_handlers(provider)
     if _parse_format(os.getenv("LOG_FORMAT", "")) == "json":
-        _route_uvicorn_handlers(get_provider())
+        _route_uvicorn_handlers(provider)
     _redact_all_handlers()
 
 

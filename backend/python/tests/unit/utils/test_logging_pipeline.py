@@ -542,6 +542,21 @@ class TestJson:
 # ---------------------------------------------------------------------------
 
 
+class TestJsonEdgeValues:
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_floats_stay_valid_json(self, value: float) -> None:
+        def strict(constant: str) -> None:  # NaN/Infinity are not JSON; Python's loader would accept them
+            raise ValueError(constant)
+
+        out = json.loads(JsonFormatter().format(_record(ratio=value)), parse_constant=strict)
+        assert out["ratio"] == str(value)
+
+    def test_a_field_named_stack_is_reserved_in_text_and_json(self) -> None:
+        record = _record(stack="s1", kept=1)
+        assert "stack" not in json.loads(JsonFormatter().format(record))
+        assert TextFormatter().format(record).endswith(" | kept=1")
+
+
 class TestFormatAfterImport:
     def test_log_format_from_a_late_env_is_honoured(self, console, monkeypatch) -> None:
         create_logger("t_late_fmt").info("text-line")
@@ -567,6 +582,16 @@ class TestFormatAfterImport:
         logging.getLogger("app.t.plain").info("Authorization: Bearer SENTINEL-plain")
         assert type(provider.defaults_seen[-1]).__name__ == "JsonFormatter"
         assert "SENTINEL-plain" not in console.getvalue()
+
+    def test_startup_sync_routes_the_provider_formatter_after_a_format_change(self, console, monkeypatch) -> None:
+        provider = _Provider(formatter=L.RedactingFormatter("PROVIDER %(message)s"))
+        monkeypatch.setattr("app.utils.logger.get_provider", lambda: provider)
+        create_logger("t_route_late")
+        monkeypatch.setenv("LOG_FORMAT", "json")
+        L.install_log_redaction()  # lifespan: no create_logger call follows
+        logging.getLogger("app.t.route").info("after-lifespan")
+        assert console.getvalue().splitlines()[-1] == "PROVIDER after-lifespan"
+        assert type(provider.defaults_seen[-1]).__name__ == "JsonFormatter"
 
 
 class TestUvicorn:

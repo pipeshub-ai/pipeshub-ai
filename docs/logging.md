@@ -55,11 +55,11 @@ JSON (`LOG_FORMAT=json`): one object per line.
 | --- | --- |
 | `timestamp` | UTC, ISO 8601, milliseconds, `Z` |
 | `level` | lowercase level name, the same in both runtimes: `debug`, `info`, `warning`, `error`, `critical` |
-| `logger` | the Python logger name (Node's `service` is a different thing: the process tier) |
+| `logger` | the Python logger name (Node's `service` is its module or facade name; the process tier is `service_tier`) |
 | `filename`, `line` | the call site |
 | `message` | the message with `%` arguments applied |
 | `request_id` | the bound request id, or `null` |
-| fields | each `extra=` field with its JSON type; a field named like a standard key does not replace it |
+| fields | each `extra=` field with its JSON type (NaN and infinities as strings); a field named like a standard key does not replace it, and `stack` is reserved (left out in text and JSON) |
 | `stack` | traceback and `stack_info`, when present |
 
 A logging provider (`app/utils/structured_logging`) may supply its own console formatter, decide whether per-service files are
