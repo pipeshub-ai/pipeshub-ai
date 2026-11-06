@@ -3,13 +3,13 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
-import * as artifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 import {
   TEMPORARY_CHAT_ACTION_ERROR,
   TEMPORARY_CHAT_TITLE,
   TEMPORARY_CHAT_TTL_MS,
 } from '../../../../src/modules/enterprise_search/utils/temporary-chat'
+import * as temporaryChatCleanup from '../../../../src/modules/enterprise_search/utils/temporary-chat-cleanup'
 import { getConversationRepository } from '../../../../src/libs/repositories/conversation'
 import {
   sweepExpiredTemporaryChats,
@@ -241,7 +241,9 @@ describe('es_controller temporary chat', () => {
 
   it('purge deletes the temporary row and its messages, and leaves a normal chat', async () => {
     const store = fresh()
-    sinon.stub(artifacts, 'deleteConversationArtifacts').resolves()
+    const sideEffects = sinon
+      .stub(temporaryChatCleanup, 'purgeTemporaryChatSideEffects')
+      .resolves()
     const temp = store.addSession({
       orgId: ORG,
       userId: OWNER,
@@ -262,6 +264,8 @@ describe('es_controller temporary chat', () => {
     })
     expect(purged.error).to.equal(undefined)
     expect(purged.status).to.equal(204)
+    expect(sideEffects.calledOnce).to.equal(true)
+    expect(sideEffects.firstCall.args[1]).to.equal(String(temp._id))
     expect(store.session(temp._id)).to.equal(undefined)
     expect(store.messagesOf(temp._id)).to.deep.equal([])
     expect(store.session(kept._id)?.title).to.equal('kept')
@@ -342,6 +346,60 @@ describe('es_controller temporary chat', () => {
     expect(await sweepExpiredTemporaryChats(new Date())).to.equal(1)
     expect(del.calledOnce).to.equal(true)
   })
+
+  it('sweepExpiredTemporaryChats cleans files before hard-delete when appConfig is set', async () => {
+    const repo = getConversationRepository()
+    sinon.stub(repo, 'isConnected').returns(true)
+    sinon.stub(repo, 'listExpiredTemporary').resolves([
+      { id: 's1', orgId: String(ORG), userId: String(OWNER) },
+    ])
+    const sideEffects = sinon
+      .stub(temporaryChatCleanup, 'purgeTemporaryChatSideEffects')
+      .resolves()
+    const del = sinon
+      .stub(repo, 'hardDeleteTemporary')
+      .resolves({ session: { _id: 's1' } } as never)
+    expect(await sweepExpiredTemporaryChats(new Date(), appConfig)).to.equal(1)
+    expect(sideEffects.calledOnce).to.equal(true)
+    expect(sideEffects.firstCall.args[1]).to.equal('s1')
+    expect(del.calledOnce).to.equal(true)
+  })
+
+  it('sweepExpiredTemporaryChats skips hard-delete when artifact cleanup fails', async () => {
+    const repo = getConversationRepository()
+    sinon.stub(repo, 'isConnected').returns(true)
+    sinon.stub(repo, 'listExpiredTemporary').resolves([
+      { id: 's1', orgId: String(ORG), userId: String(OWNER) },
+    ])
+    sinon
+      .stub(temporaryChatCleanup, 'purgeTemporaryChatSideEffects')
+      .rejects(new Error('connectors down'))
+    const del = sinon.stub(repo, 'hardDeleteTemporary')
+    expect(await sweepExpiredTemporaryChats(new Date(), appConfig)).to.equal(0)
+    expect(del.called).to.equal(false)
+  })
+
+  it('collectTemporaryChatAttachmentRecordIds keeps only this chat\'s attachment ids', () => {
+    const ids = temporaryChatCleanup.collectTemporaryChatAttachmentRecordIds([
+      {
+        attachments: [{ recordId: 'att-temp' }, { recordId: 'att-temp' }],
+        citations: [
+          {
+            citationData: {
+              metadata: { recordId: 'kb-1', connector: 'DRIVE' },
+            },
+          },
+          {
+            citationData: {
+              metadata: { recordId: 'att-cited', connector: 'ATTACHMENTS' },
+            },
+          },
+        ],
+      },
+    ])
+    expect(ids.sort()).to.deep.equal(['att-cited', 'att-temp'])
+  })
+
 
   it('streamChat with temporary: true flags the session and does not use the query as the title', async () => {
     const streamChat = flows.find((f) => f.name === 'streamChat')
