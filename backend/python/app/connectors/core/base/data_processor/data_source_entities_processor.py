@@ -2236,8 +2236,23 @@ class DataSourceEntitiesProcessor:
         ):
             record.queued_at = get_epoch_timestamp_in_ms()
 
-    @staticmethod
-    def _keeps_stored_indexing(record: Record, existing_record: Record, *, reindex_restored: bool) -> bool:
+    @classmethod
+    def _content_changed(cls, new_record: Record, old_record: Record) -> bool:
+        """Whether indexing would read *new_record* differently from *old_record*.
+
+        A new revision, but also the same bytes read as another file type (a GCS
+        object whose Content-Type changed keeps its MD5 revision; a rename to
+        another extension keeps a Drive revision) or a code file at another path,
+        which is part of what was embedded. The save and a move decide on it alike.
+        """
+        return (
+            new_record.external_revision_id != old_record.external_revision_id
+            or cls._file_type_changed(new_record, old_record)
+            or cls._code_path_changed(new_record, old_record)
+        )
+
+    @classmethod
+    def _keeps_stored_indexing(cls, record: Record, existing_record: Record, *, reindex_restored: bool) -> bool:
         """Whether a connector save leaves the stored indexing state as it is.
 
         It does when the content indexing saw is unchanged and the stored status
@@ -2255,7 +2270,7 @@ class DataSourceEntitiesProcessor:
         """
         if record.is_placeholder or reindex_restored:
             return False
-        if record.external_revision_id != existing_record.external_revision_id:
+        if cls._content_changed(record, existing_record):
             return False
         stored = existing_record.indexing_status
         if stored == ProgressStatus.QUEUED.value:
@@ -3782,11 +3797,7 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
-                    needs_reindex = (
-                        content_changed
-                        or self._file_type_changed(new_record, old_record)
-                        or self._code_path_changed(new_record, old_record)
-                    )
+                    needs_reindex = self._content_changed(new_record, old_record)
 
                     is_kb_item = new_record.origin == OriginTypes.UPLOAD
                     if not is_kb_item:

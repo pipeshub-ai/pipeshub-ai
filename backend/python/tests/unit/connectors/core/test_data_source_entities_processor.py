@@ -7596,9 +7596,15 @@ class TestProcessRecordCompletedReindex:
             weburl="http://old",
             external_revision_id="rev-1",
             is_placeholder=False,
+            record_name="doc",
+            mime_type="text/plain",
+            file_path=None,
         )
         tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
         record = MagicMock()
+        # Same type and path as the stored row: only the revision decides here.
+        record.mime_type = "text/plain"
+        record.file_path = None
         record.org_id = "org1"
         record.connector_id = "conn-1"
         record.external_record_id = "ext-1"

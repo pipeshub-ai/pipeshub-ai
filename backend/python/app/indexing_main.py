@@ -1482,6 +1482,15 @@ def _republishes_since_queued(record: dict[str, Any], enabled_at: object = None)
     return max(1, count)
 
 
+def _is_clock(value: object) -> bool:
+    """Whether a stored timestamp can be read as epoch milliseconds."""
+    try:
+        float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _republish_wait_ms(after_seconds: float, republishes: int) -> float:
     cap = max(after_seconds, STRANDED_REPUBLISH_BACKOFF_CAP_SECONDS)
     # The exponent is clamped only so a corrupt counter cannot overflow.
@@ -1813,13 +1822,17 @@ async def _republish_stranded_records(
                             rate_limited_resent += 1
                     continue
 
-                # Aged from the newest of three clocks, so any one being fresh
-                # keeps the row out. queuedAtTimestamp is the platform's own
-                # "put in line for indexing" time. updatedAt cannot carry this
-                # alone: connectors may fill it with source-system time (a Jira
-                # issue last edited a year ago), which made every freshly synced
-                # row look stranded and sent it twice; it stays in the max for
-                # rows written before queuedAtTimestamp existed.
+                # Aged from the newest of the platform's own clocks, so any one
+                # being fresh keeps the row out. queuedAtTimestamp is when the
+                # row was last put in line for indexing (a connector save that
+                # asks for indexing, the compare-and-set to QUEUED after a
+                # publish, a retry). updatedAtTimestamp counts only for a
+                # row without one (written before it existed): it says nothing
+                # about the row's event. Connectors may fill it with
+                # source-system time (a Jira issue last edited a year ago), and
+                # a sync rewrites it on every save, changed or not, so on a
+                # source synced more often than the minimum age a lost event
+                # was never re-sent.
                 # lastRepublishedAt is our own: publishing changes nothing about
                 # the row, so without it a record stays eligible and every tick
                 # sends another copy of the same event -- worst precisely when
@@ -1830,10 +1843,12 @@ async def _republish_stranded_records(
                 # appEnabled re-queue is sending it, and a copy from here
                 # would reach the consumer twice. Its own clocks are of the
                 # park, often hours older.
+                queued_at = record.get("queuedAtTimestamp")
                 clocks: list[float] = []
                 for value in (
-                    record.get("queuedAtTimestamp"),
-                    record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
+                    queued_at,
+                    None if _is_clock(queued_at)
+                    else record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
                     record.get("lastRepublishedAt"),
                     enabled_at.get(connector_id) if parked_while_off else None,
                 ):

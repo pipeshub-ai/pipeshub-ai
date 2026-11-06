@@ -183,3 +183,41 @@ async def test_changed_password_protected_record_starts_clean() -> None:
 
     assert processed.indexing_status != ProgressStatus.PASSWORD_PROTECTED.value
     assert processed.md5_hash is None
+
+
+@pytest.mark.parametrize(
+    "status", [ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, ProgressStatus.COMPLETED.value]
+)
+async def test_same_revision_read_as_another_mime_type_is_indexed_again(status: str) -> None:
+    """A GCS object whose Content-Type changed keeps its MD5 revision: the same bytes,
+    read as another type, may now be supported or parse differently."""
+    stored = _stored(status, mime_type="application/octet-stream")
+    incoming = _incoming()
+    incoming.mime_type = "application/pdf"
+    processed, _ = await _processor()._process_record(incoming, [], _store(stored))
+
+    assert processed.indexing_status == ProgressStatus.NOT_STARTED.value
+
+
+async def test_same_revision_renamed_to_another_extension_is_indexed_again() -> None:
+    stored = _stored(ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, record_name="a.bin")
+    processed, _ = await _processor()._process_record(_incoming(), [], _store(stored))
+
+    assert processed.indexing_status == ProgressStatus.NOT_STARTED.value
+
+
+async def test_a_type_change_with_auto_indexing_off_is_left_for_manual_indexing() -> None:
+    stored = _stored(ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, record_name="a.bin")
+    incoming = _incoming(status=ProgressStatus.AUTO_INDEX_OFF.value)
+    processed, _ = await _processor()._process_record(incoming, [], _store(stored))
+
+    assert processed.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+async def test_same_revision_and_type_keeps_the_verdict() -> None:
+    stored = _stored(ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, mime_type="application/pdf")
+    incoming = _incoming()
+    incoming.mime_type = "application/pdf"
+    processed, _ = await _processor()._process_record(incoming, [], _store(stored))
+
+    assert processed.indexing_status == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value

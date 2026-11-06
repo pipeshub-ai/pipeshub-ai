@@ -3142,6 +3142,24 @@ class TestRepublishStrandedRecords:
         producer.send_event.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_resave_does_not_hide_a_lost_event(self) -> None:
+        """A sync rewrites updatedAtTimestamp on every save, changed or not, and sends
+        nothing for a record already queued. Aged on it, a record on a source synced
+        more often than the minimum age would never be re-sent."""
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(queuedAtTimestamp=1, updatedAtTimestamp=get_epoch_timestamp_in_ms())
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
     async def test_a_stale_queue_stamp_is_still_recovered(self) -> None:
         graph = _sweep_graph(
             {ProgressStatus.NOT_STARTED.value: [self._old_record(queuedAtTimestamp=1)]},
