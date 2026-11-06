@@ -17,6 +17,7 @@ from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.services.graph_db.interface.graph_db_provider import CodeFileInfo
 from app.services.graph_db.postgres.base import (
     _LINK_COLLS,
+    _VALIDATOR,
     PgBase,
     _arango,
     _doc,
@@ -214,6 +215,7 @@ class CodeGraphMixin(PgBase):
                 raise ValueError("ensure_nodes requires every node to carry an id")
             d = {k: v for k, v in n.items() if k not in ("_key", "_id")}
             d["id"] = n.get("id") or n["_key"]
+            _VALIDATOR.validate_node(collection, d)
             docs.append({"id": d["id"], "doc": d})
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.ensure_nodes */ INSERT INTO graph.nodes (org_id, coll, id, doc)
             SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb) FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb)
@@ -250,6 +252,7 @@ class CodeGraphMixin(PgBase):
             fc = e.get("from_collection") or (e["_from"].split("/")[0] if "/" in e.get("_from", "") else "")
             tc = e.get("to_collection") or (e["_to"].split("/")[0] if "/" in e.get("_to", "") else "")
             props = {k: v for k, v in e.items() if k not in ("from_id", "to_id", "from_collection", "to_collection", "_from", "_to")}
+            _VALIDATOR.validate_edge(_LINKS, props)
             key = _ekey(_LINKS, props)       # the type, and the constraint name where there is one: two foreign keys of one type between one pair are two edges
             same = groups.setdefault((fk, tk, key), [])
             # The same edge named once with its collections and once without is one edge; repeats apply in order, a null clears the property (``r += props``).
@@ -483,6 +486,7 @@ class CodeGraphMixin(PgBase):
             return []
         if "indexingStatus" in fields:
             fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
+        _VALIDATOR.validate_node_update("records", fields)
         # Locks are taken in id order, and the revision is read after the lock.
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.compare_and_set_record_fields */ WITH l AS (SELECT id FROM graph.nodes
             WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'contentRev' = $3 ORDER BY id FOR UPDATE)
@@ -505,12 +509,14 @@ class CodeGraphMixin(PgBase):
 
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
         org = current_org_id()
+        _VALIDATOR.validate_node(_STAGES, document)
         return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.stage_state_create */ WITH i AS (INSERT INTO graph.nodes (org_id, coll, id, doc)
             VALUES ($1, $2, $3, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each($4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)) ON CONFLICT (org_id, coll, id) DO NOTHING RETURNING 1) SELECT count(*) FROM i""",
                                                   org, _STAGES, document["id"], _j(document)), None, write=True))
 
     async def stage_state_compare_and_set(self, key: str, expected: str, new: str, fields: dict[str, Any], *, expected_attempt: int | None = None) -> bool:
         org = current_org_id()
+        _VALIDATOR.validate_node_update(_STAGES, {**fields, "status": new})
         return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.stage_state_compare_and_set */ WITH u AS (UPDATE graph.nodes n
             SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $5::jsonb || jsonb_build_object('status', $4::text)) AS _nv WHERE _nv.value <> 'null'::jsonb)
             WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->>'status' = $6 AND ($7::bigint IS NULL OR (n.doc->>'attempt')::bigint = $7)

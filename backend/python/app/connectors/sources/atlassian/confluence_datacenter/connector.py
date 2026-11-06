@@ -80,6 +80,10 @@ from app.connectors.sources.atlassian.core.confluence_dc_removal import (
     item_revision_marker,
     stored_map,
 )
+from app.connectors.sources.atlassian.core.confluence_sync import (
+    save_synced_records,
+    synced,
+)
 from app.sources.client.http.http_retry import call_with_retry
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -1080,8 +1084,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 else AccessRule.STRICT
             )
 
-            await self.data_entities_processor.on_new_records(
-                [(webpage_record, permissions)]
+            await save_synced_records(
+                self.data_entities_processor,
+                [synced(webpage_record, permissions, existing_record)],
             )
             self.logger.info(
                 "Backfilled space homepage %s (%s) for space %s — omitted from CQL search",
@@ -1379,8 +1384,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             else AccessRule.STRICT
                         )
 
-                        # Add item to batch
-                        records_with_permissions.append((webpage_record, permissions))
+                        # Add item to batch. A content change publishes updateRecord.
+                        records_with_permissions.append(synced(webpage_record, permissions, existing_record))
                         total_synced += 1
                         self.logger.debug(f"{content_type.capitalize()} {item_title}: {len(permissions)} permissions")
 
@@ -1444,7 +1449,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                         # Attachments follow the page's access through inheritance.
                                         attachment_record.inherit_permissions = True
                                         attachment_record.rewrite_permissions = True
-                                        records_with_permissions.append((attachment_record, []))
+                                        records_with_permissions.append(
+                                            synced(attachment_record, [], existing_attachment)
+                                        )
                                         total_attachments_synced += 1
                                         self.logger.debug(f"Attachment: {attachment_record.record_name}")
 
@@ -1470,12 +1477,12 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             )
                             # Comments already have indexing status set; just count them
                             # (Note: comments now includes attachment records too)
-                            comment_count = sum(1 for rec, _ in comments if rec.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT])
+                            comment_count = sum(1 for rec, *_ in comments if rec.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT])
                             if not content_comments_indexing_enabled:
-                                for rec, _ in comments:
+                                for rec, *_ in comments:
                                     if rec.record_type in (RecordType.COMMENT, RecordType.INLINE_COMMENT):
                                         rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                            for comment_record, _ in comments:
+                            for comment_record, *_ in comments:
                                 # Comments follow the page's access through inheritance.
                                 comment_record.inherit_permissions = True
                             records_with_permissions.extend(comments)
@@ -1492,7 +1499,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                 # Save batch to database
                 if records_with_permissions:
-                    await self.data_entities_processor.on_new_records(records_with_permissions)
+                    await save_synced_records(self.data_entities_processor, records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments + comments)")
 
                 # Extract next page token from _links.next
@@ -2270,13 +2277,21 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
             records_with_permissions = []
             for attachment_data in attachments:
+                attachment_id = attachment_data.get("id")
+                existing_attachment = None
+                if attachment_id:
+                    existing_attachment = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id,
+                        external_record_id=attachment_id,
+                    )
                 file_record = self._transform_to_attachment_file_record(
                     attachment_data=attachment_data,
                     parent_external_record_id=comment_id,
                     parent_external_record_group_id=parent_space_id,
                     parent_node_id=comment_node_id,
                     parent_record_type=comment_record_type,
-                    api_base_url=attachment_api_base_url
+                    api_base_url=attachment_api_base_url,
+                    existing_record=existing_attachment,
                 )
                 if file_record:
                     # Apply indexing filter
@@ -2284,7 +2299,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                     file_record.inherit_permissions = True
                     file_record.rewrite_permissions = True
-                    records_with_permissions.append((file_record, []))
+                    records_with_permissions.append(synced(file_record, [], existing_attachment))
 
             return records_with_permissions
 
@@ -2390,7 +2405,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         if comment_record:
                             comment_record.inherit_permissions = True
                             comment_record.rewrite_permissions = True
-                            all_comments.append((comment_record, []))
+                            all_comments.append(synced(comment_record, [], existing_comment))
 
                             # Sync comment attachments (explicit child attachments)
                             comment_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
@@ -2577,7 +2592,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         if child_record:
                             child_record.inherit_permissions = True
                             child_record.rewrite_permissions = True
-                            all_children.append((child_record, []))
+                            all_children.append(synced(child_record, [], existing_child))
 
                             # Sync comment attachments (explicit child attachments)
                             child_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT

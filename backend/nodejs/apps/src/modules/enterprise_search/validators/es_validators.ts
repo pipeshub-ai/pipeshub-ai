@@ -460,6 +460,9 @@ const enterpriseSearchCreateBodySchema = z.object({
   ...keywordSearchFieldsSchema,
 });
 
+/** Opt-in: this turn is also being answered by a second model (Compare models); the stream announces the question's id early. */
+const compareTurnSchema = z.boolean().optional();
+
 export const enterpriseSearchCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema,
 });
@@ -478,6 +481,7 @@ const universalStreamChatModeSchema = z.enum(UNIVERSAL_STREAM_CHAT_MODES, {
 export const enterpriseSearchStreamCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema.extend({
     chatMode: universalStreamChatModeSchema,
+    compareTurn: compareTurnSchema,
   }),
 });
 
@@ -674,6 +678,7 @@ export const addMessageStreamParamsSchema = z.object({
   params: z.object(conversationIdParam),
   body: addMessageBodySchema.extend({
     chatMode: universalStreamChatModeSchema,
+    compareTurn: compareTurnSchema,
   }),
 });
 
@@ -1710,4 +1715,28 @@ export const agentAttachmentUploadSchema = z.object({
 
 export const agentAttachmentRecordIdParamsSchema = z.object({
   params: z.object({ ...agentKeyParam, ...recordIdParam }),
+});
+
+// ---------------------------------------------------------------------------
+// Compare models: a hidden branch conversation answers the same question
+// ---------------------------------------------------------------------------
+
+/** `compare/branch` body: the saved question to re-ask in the branch. */
+export const compareBranchParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: z.object({ userMessageId: objectId('message ID') }),
+});
+
+export const compareListParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+});
+
+/** `compare/choose` body: `primary` keeps the conversation's own answer, a branch id swaps that branch's turn in. */
+export const compareChooseParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: z.object({
+    choice: z.string().regex(/^(primary|[a-f0-9]{24})$/i, {
+      message: "choice must be 'primary' or a branch conversation ID",
+    }),
+  }),
 });

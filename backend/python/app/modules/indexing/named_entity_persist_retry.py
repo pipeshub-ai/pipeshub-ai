@@ -12,7 +12,7 @@ consumer holds while it processes the record) from reading the blob to the end
 of the write, so a retry and the record's own indexing never interleave. It only
 tries the lease: a record being indexed is skipped, since that indexing writes
 newer entities anyway. The write is bounded well under the time a delivery
-waits for the lease, so a retry never makes the consumer give up on an update.
+waits for the lease, so a retry never makes the consumer hand back an update.
 On ArangoDB, and on Neo4j with explicit transactions, the write is also
 conditional: it lands only while its retry is still the one it read, in the
 same transaction as the mention and value replace, and a normal write of the
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 MAX_PERSIST_ATTEMPTS = 8
 # Under INDEXING_RECORD_LEASE_WAIT_SECONDS (10 s by default): a delivery that
-# waits longer for the record lease is treated as already handled.
+# waits longer for the record lease is handed back and comes again later.
 RETRY_WRITE_TIMEOUT_SECONDS = 8.0
 _LEASE_SECONDS = 60.0
 

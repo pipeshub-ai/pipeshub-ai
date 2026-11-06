@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import {
+  HEADER_MCP_RELAY,
   newAnonRoot,
   runWithRequestContext,
   sanitizeRootId,
@@ -92,8 +93,12 @@ export const requestContextMiddleware = (
 ): void => {
   req.context = createRequestContext(req);
   // Bind the id for the whole request so the Logger tags every line.
+  const relay = req.headers[HEADER_MCP_RELAY];
   runWithRequestContext(
-    { rootId: req.context.requestId },
+    {
+      rootId: req.context.requestId,
+      ...(typeof relay === 'string' ? { mcpRelay: relay } : {}),
+    },
     () => next(),
   );
 };
