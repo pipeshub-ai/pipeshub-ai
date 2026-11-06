@@ -2301,10 +2301,10 @@ class TestBuildImagePoints:
 
         assert len(points) == 1
 
-    def test_dimension_mismatch_among_multiple_results_only_drops_bad_one(self):
-        """A result whose dimension doesn't match the collection's expected
-        embedding size must be dropped (and logged), not upserted with a
-        mismatched vector — while matching results are still kept."""
+    def test_dimension_mismatch_raises_instead_of_dropping_the_image(self) -> None:
+        """A mismatched vector must not be upserted, and dropping it would end
+        the record COMPLETED without the image."""
+        from app.exceptions.indexing_exceptions import EmbeddingError
         from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 
         vs = _make_vectorstore()
@@ -2318,11 +2318,8 @@ class TestBuildImagePoints:
             ImageEmbeddingResult(index=1, embedding=[0.1, 0.2]),
         ]
 
-        points = vs._build_image_points(image_chunks, results)
-
-        assert len(points) == 1
-        assert points[0].payload["metadata"] == {"i": 0}
-        vs.logger.error.assert_called()
+        with pytest.raises(EmbeddingError, match="got 2, expected 3"):
+            vs._build_image_points(image_chunks, results)
 
 
 # ===================================================================

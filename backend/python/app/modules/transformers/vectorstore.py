@@ -1959,10 +1959,10 @@ class VectorStore(Transformer):
         Skips any index that errored or came back without an embedding —
         provider implementations always return one result per input index
         (never raise), so this is the single place that decides what
-        "failed to embed" means for indexing purposes. Also skips any result
-        whose dimension doesn't match the collection: mixing dimensions in
-        one collection makes cosine similarity meaningless and some vector
-        DBs would otherwise reject the whole upsert batch over one bad point.
+        "failed to embed" means for indexing purposes. Raises on any result
+        whose dimension doesn't match the collection: mixing dimensions in one
+        collection makes cosine similarity meaningless, and dropping the point
+        would end the record COMPLETED without the image.
         """
         points: List[VectorPoint] = []
         for result in results:
@@ -1973,11 +1973,10 @@ class VectorStore(Transformer):
                     )
                 continue
             if self.embedding_size is not None and len(result.embedding) != self.embedding_size:
-                self.logger.error(
+                raise EmbeddingError(
                     f"Image embedding dimension mismatch for index {result.index}: "
-                    f"got {len(result.embedding)}, expected {self.embedding_size}. Skipping point."
+                    f"got {len(result.embedding)}, expected {self.embedding_size}"
                 )
-                continue
             chunk: dict[str, Any] = image_chunks[result.index]
             points.append(
                 VectorPoint(
@@ -2036,10 +2035,11 @@ class VectorStore(Transformer):
                 f"{len(retriable)} of {len(results)} images failed to embed "
                 f"for record {record_id}: {retriable[0].error}"
             )
+        points = self._build_image_points(image_chunks, results)
         await self._store_descriptions(
             [image_chunks[r.index] for r in failed], record_id, collection_name
         )
-        return self._build_image_points(image_chunks, results)
+        return points
 
     async def _store_descriptions(
         self, image_chunks: list[dict], record_id: str, collection_name: str
