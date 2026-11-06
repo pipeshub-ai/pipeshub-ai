@@ -14,12 +14,19 @@ from app.config.constants.arangodb import (
     Connectors,
     DeleteSource,
     EntityRelations,
+    FOLDER_MIME_TYPES,
     EventTypes,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
     RecordRelations,
 )
+from app.connectors.core.base.data_processor.record_organizations import (
+    link_record_organization,
+)
+from app.connectors.core.base.data_processor.record_people import link_record_people
+from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
+from app.connectors.core.base.data_processor.system_files import is_office_lock_file, is_system_file_name
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
@@ -65,8 +72,6 @@ from app.models.entities import (
     User,
     WebpageRecord,
 )
-from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
-from app.connectors.core.base.data_processor.system_files import is_office_lock_file, is_system_file_name
 from app.connectors.core.base.data_processor.record_links import (
     addresses_linking_to,
     link_target,
@@ -77,6 +82,7 @@ from app.services.cache.invalidation_hooks import (
     notify_connector_permissions_changed,
     notify_connector_sync_completed,
     notify_kb_records_changed,
+    notify_principals_changed,
 )
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
@@ -86,7 +92,14 @@ from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     FolderChangedDuringDelete,
 )
+from app.services.messaging.config import Topic
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.record_titles import (
+    DELETE as TITLE_DELETE,
+    UPSERT as TITLE_UPSERT,
+    build_record_title_message,
+    clean_record_title,
+)
 from app.telemetry.modules.soft_delete_metrics import record_restored, record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge, remaining_record_keys
@@ -1467,6 +1480,92 @@ class DataSourceEntitiesProcessor:
             ],
         )
 
+    @staticmethod
+    def _title_event_due(record: Record, existing_record: Record | None, *, restored: bool = False) -> bool:
+        """Whether saving *record* over *existing_record* changed what its title point holds.
+
+        Compared with the stored row, not with the indexing status: a record that is unchanged
+        but not yet indexed needs no title event, its point is already there.
+        """
+        return (
+            existing_record is None
+            or restored
+            or (bool(existing_record.is_placeholder) and not record.is_placeholder)
+            or record.record_name != getattr(existing_record, "record_name", None)
+            or record.record_group_id != getattr(existing_record, "record_group_id", None)
+        )
+
+    @staticmethod
+    def _has_title_point(record: Record) -> bool:
+        """Records that get no title point: internal ones, stubs, KB folders and unnamed records."""
+        return (
+            clean_record_title(record.record_name) is not None
+            and not record.is_internal
+            and not record.is_placeholder
+            and record.mime_type not in FOLDER_MIME_TYPES
+            and not (
+                record.origin == OriginTypes.UPLOAD
+                and isinstance(record, FileRecord)
+                and record.is_file is False
+            )
+        )
+
+    async def _publish_record_titles(
+        self,
+        upserts: Iterable[Record] = (),
+        deletes: Iterable[tuple[str, str | None]] = (),
+    ) -> None:
+        """Publish the name of each record, so it is findable before it is indexed.
+
+        **Call this only after the transaction has committed**: the consumer re-reads the graph.
+        Never raises: the title is a hint, and a sync must not fail over it. A title that is not
+        published stays missing until the record is next saved or the entity index is rebuilt. Names are kept out of the logs.
+        """
+        try:
+            now = get_epoch_timestamp_in_ms()
+            messages: dict[str, tuple[str, dict[str, Any]]] = {}
+            for record in upserts:
+                if not self._has_title_point(record):
+                    continue
+                messages[record.id] = (
+                    record.id,
+                    build_record_title_message(
+                        org_id=self.org_id or record.org_id,
+                        record_id=record.id,
+                        record_name=clean_record_title(record.record_name),
+                        connector_id=record.connector_id,
+                        record_group_id=record.record_group_id,
+                        event_type=TITLE_UPSERT,
+                        timestamp=now,
+                    ),
+                )
+            for record_id, connector_id in deletes:
+                messages[record_id] = (
+                    record_id,
+                    build_record_title_message(
+                        org_id=self.org_id,
+                        record_id=record_id,
+                        record_name=None,
+                        connector_id=connector_id,
+                        record_group_id=None,
+                        event_type=TITLE_DELETE,
+                        timestamp=now,
+                    ),
+                )
+            if not messages:
+                return
+            acked = await self.messaging_producer.send_messages(
+                Topic.RECORD_TITLE_EVENTS.value, list(messages.values())
+            )
+            refused = sum(1 for ok in acked if not ok)
+            if refused:
+                self.logger.warning(
+                    "%d of %d record title event(s) were not accepted by the broker",
+                    refused, len(messages),
+                )
+        except Exception as e:
+            self.logger.warning("Record title events were not published (%s)", e)
+
     async def _create_hierarchy_edge(
         self,
         tx_store: TransactionStore,
@@ -1786,189 +1885,16 @@ class DataSourceEntitiesProcessor:
 
         return moved
 
-    async def _prepare_ticket_user_edge(
-        self,
-        ticket: TicketRecord,
-        user_email: str | None,
-        edge_type: EntityRelations,
-        timestamp_attr_name: str,
-        fallback_timestamp_attr: str,
-        tx_store: TransactionStore,
-        edge_type_name: str
-    ) -> dict[str, Any] | None:
-        """
-        Helper method to prepare a ticket-user edge data dictionary.
+    async def _handle_record_people(self, record: Record, tx_store: TransactionStore) -> None:
+        """Link the record to the members it names (assignee, sender,
+        reviewer...) and to the CRM account it belongs to; see
+        ``record_people`` and ``record_organizations``."""
 
-        Args:
-            ticket: The TicketRecord to create edge for
-            user_email: Email of the user to link to
-            edge_type: The type of edge (ASSIGNED_TO, CREATED_BY, REPORTED_BY)
-            timestamp_attr_name: Name of the connector-provided timestamp attribute
-            fallback_timestamp_attr: Name of the fallback timestamp attribute
-            tx_store: The transaction store
-            edge_type_name: Human-readable name for logging
+        def propagate(error: Exception) -> bool:
+            return self._must_propagate(error, tx_store)
 
-        Returns:
-            Edge data dictionary if user is found, None otherwise
-        """
-        if not user_email:
-            return None
-
-        try:
-            # Only get existing user by email - do not create if not found
-            user = await tx_store.get_user_by_email(user_email)
-
-            if not user:
-                return None
-
-            # Use connector-provided timestamp if available, otherwise fallback
-            source_timestamp = None
-            # Try primary timestamp first
-            if hasattr(ticket, timestamp_attr_name):
-                timestamp_value = getattr(ticket, timestamp_attr_name, None)
-                if timestamp_value is not None:
-                    source_timestamp = timestamp_value
-
-            # If primary is None or not set, try fallback
-            if source_timestamp is None and hasattr(ticket, fallback_timestamp_attr):
-                fallback_value = getattr(ticket, fallback_timestamp_attr, None)
-                if fallback_value is not None:
-                    # Use fallback timestamp even if 0 (it's the best we have)
-                    source_timestamp = fallback_value
-
-            edge_data = {
-                "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
-                "_to": f"{CollectionNames.USERS.value}/{user.id}",
-                "edgeType": edge_type.value,
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
-            if source_timestamp is not None:
-                edge_data["sourceTimestamp"] = source_timestamp
-
-            return edge_data
-        except Exception as e:
-            if self._must_propagate(e, tx_store):
-                raise
-            self.logger.warning(f"Failed to create {edge_type_name} edge for ticket {ticket.id}: {str(e)}")
-            return None
-
-    async def _handle_ticket_user_edges(self, ticket: TicketRecord, tx_store: TransactionStore) -> None:
-        """
-        Create entity relationship edges for tickets (ASSIGNED_TO, CREATED_BY, REPORTED_BY).
-
-        This method creates edges in the entityRelations collection linking tickets to users.
-        It first deletes existing edges for this ticket to avoid duplicates, then creates new ones.
-
-        Args:
-            ticket: The TicketRecord to create edges for
-            tx_store: The transaction store
-        """
-        # First, delete existing ticket-user edges for this ticket to avoid duplicates
-        try:
-            await tx_store.delete_edges_from(ticket.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
-        except Exception as e:
-            if self._must_propagate(e, tx_store):
-                raise
-            self.logger.warning(f"Failed to delete existing ticket-user edges for ticket {ticket.id}: {str(e)}")
-
-        edges_to_create = []
-
-        # Create ASSIGNED_TO edge if assignee exists and user is found
-        assignee_edge = await self._prepare_ticket_user_edge(
-            ticket=ticket,
-            user_email=ticket.assignee_email,
-            edge_type=EntityRelations.ASSIGNED_TO,
-            timestamp_attr_name="assignee_source_timestamp",
-            fallback_timestamp_attr="source_updated_at",
-            tx_store=tx_store,
-            edge_type_name="ASSIGNED_TO"
-        )
-        if assignee_edge:
-            edges_to_create.append(assignee_edge)
-
-        # Create CREATED_BY edge if creator exists and user is found
-        creator_edge = await self._prepare_ticket_user_edge(
-            ticket=ticket,
-            user_email=ticket.creator_email,
-            edge_type=EntityRelations.CREATED_BY,
-            timestamp_attr_name="creator_source_timestamp",
-            fallback_timestamp_attr="source_created_at",
-            tx_store=tx_store,
-            edge_type_name="CREATED_BY"
-        )
-        if creator_edge:
-            edges_to_create.append(creator_edge)
-
-        # Create REPORTED_BY edge if reporter exists and user is found
-        reporter_edge = await self._prepare_ticket_user_edge(
-            ticket=ticket,
-            user_email=ticket.reporter_email,
-            edge_type=EntityRelations.REPORTED_BY,
-            timestamp_attr_name="reporter_source_timestamp",
-            fallback_timestamp_attr="source_created_at",
-            tx_store=tx_store,
-            edge_type_name="REPORTED_BY"
-        )
-        if reporter_edge:
-            edges_to_create.append(reporter_edge)
-
-        # Batch create all edges using specialized method that includes edgeType in UPSERT match
-        if edges_to_create:
-            await tx_store.batch_create_entity_relations(edges_to_create)
-            self.logger.debug(f"Created {len(edges_to_create)} entity relation edges for ticket {ticket.id}")
-
-    async def _handle_project_lead_edge(self, project: ProjectRecord, tx_store: TransactionStore) -> None:
-        """
-        Create entity relationship edge for project lead (LEAD_BY).
-
-        This method creates an edge in the entityRelations collection linking project to lead user.
-        It first deletes existing entity relation edges for this project to avoid duplicates, then creates a new one.
-
-        Args:
-            project: The ProjectRecord to create edge for
-            tx_store: The transaction store
-        """
-        # First, delete existing entity relation edges for this project to avoid duplicates
-        # Note: Projects currently only have LEAD_BY edges, but we delete all to be safe
-        try:
-            await tx_store.delete_edges_from(project.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
-        except Exception as e:
-            if self._must_propagate(e, tx_store):
-                raise
-            self.logger.warning(f"Failed to delete existing entity relation edges for project {project.id}: {str(e)}")
-
-        # Create LEAD_BY edge if lead exists and user is found
-        if not project.lead_email:
-            return
-
-        try:
-            # Only get existing user by email - do not create if not found
-            user = await tx_store.get_user_by_email(project.lead_email)
-
-            if not user:
-                return
-
-            # Use source_updated_at if available, otherwise source_created_at
-            source_timestamp = project.source_updated_at or project.source_created_at
-
-            edge_data = {
-                "_from": f"{CollectionNames.RECORDS.value}/{project.id}",
-                "_to": f"{CollectionNames.USERS.value}/{user.id}",
-                "edgeType": EntityRelations.LEAD_BY.value,
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
-            if source_timestamp is not None:
-                edge_data["sourceTimestamp"] = source_timestamp
-
-            # Create the edge using specialized method that includes edgeType in UPSERT match
-            await tx_store.batch_create_entity_relations([edge_data])
-            self.logger.debug(f"Created LEAD_BY entity relation edge for project {project.id} -> user {user.id}")
-        except Exception as e:
-            if self._must_propagate(e, tx_store):
-                raise
-            self.logger.warning(f"Failed to create LEAD_BY edge for project {project.id}: {str(e)}")
+        await link_record_people(record, tx_store, self.logger, propagate)
+        await link_record_organization(record, tx_store, self.logger, propagate)
 
     async def _handle_message_entity_edges(self, message: MessageRecord, tx_store: TransactionStore) -> None:
         """
@@ -2576,6 +2502,39 @@ class DataSourceEntitiesProcessor:
             self._log_failure(f"Failed to update permissions for record {record.id}: {e}", e, exc_info=True)
             raise
 
+    async def _write_content_edges(self, record: Record, tx_store: TransactionStore) -> None:
+        """The edges a record's own content implies: links, people, mentions."""
+        # Handle related external records (issue links, project links, FK relations, etc.)
+        # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
+        # to clean up stale link edges even when related_external_records is empty (handles removed links)
+        # A MessageRecord's links are pasted addresses, and a PullRequestRecord's
+        # are the addresses and issue keys in its text (see record_links). An
+        # edit can remove one, so they are always cleaned up as well.
+        # None, unlike [], means the connector did not read the record's links on
+        # this save (a Slack reindex): its link edges are kept as they are.
+        if (
+            isinstance(
+                record,
+                (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord, PullRequestRecord),
+            )
+            and not (isinstance(record, MessageRecord) and record.related_external_records is None)
+        ):
+            await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
+
+        # Records that pasted this record's address before it was indexed. On
+        # every save: on Neo4j's default auto-commit sessions the record row is
+        # already stored when this read runs, so skipping a same-address re-save
+        # would leave a failed read unrepaired for good.
+        await self._join_records_linking_here(record, tx_store)
+
+        # Edges to the members a ticket, project, mail, comment, pull request
+        # or deal names (ASSIGNED_TO, AUTHORED_BY, ADDRESSED_TO, ...).
+        await self._handle_record_people(record, tx_store)
+
+        # Create message entity relation edges (MENTIONED_IN, INVOLVED_IN) if record is a MessageRecord
+        if isinstance(record, MessageRecord):
+            await self._handle_message_entity_edges(record, tx_store)
+
     async def _process_record(
         self,
         record: Record,
@@ -2588,8 +2547,13 @@ class DataSourceEntitiesProcessor:
         narrowed_connectors: set[str] | None = None,
         permissions_fetched: bool = False,
         replace_permissions: bool = False,
+        title_changes: dict[str, Record] | None = None,
     ) -> tuple[Record | None, list[PendingMove]]:
         """Upsert a record and its edges.
+
+        ``title_changes`` collects, by id, the records whose name or group this call
+        created or changed; the caller publishes them once its transaction commits
+        (see :meth:`_publish_record_titles`).
 
         ``narrowed_connectors``: see :meth:`_link_record_to_group`.
 
@@ -2940,40 +2904,12 @@ class DataSourceEntitiesProcessor:
         if existing_record is not None:
             pending_moves = await self._handle_updated_record(record, existing_record, tx_store, old_path)
 
-        # Handle related external records (issue links, project links, FK relations, etc.)
-        # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
-        # to clean up stale link edges even when related_external_records is empty (handles removed links)
-        # A MessageRecord's links are pasted addresses, and a PullRequestRecord's
-        # are the addresses and issue keys in its text (see record_links). An
-        # edit can remove one, so they are always cleaned up as well.
-        # None, unlike [], means the connector did not read the record's links on
-        # this save (a Slack reindex): its link edges are kept as they are.
-        if (
-            isinstance(
-                record,
-                (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord, PullRequestRecord),
-            )
-            and not (isinstance(record, MessageRecord) and record.related_external_records is None)
-        ):
-            await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
-
-        # Records that pasted this record's address before it was indexed. On
-        # every save: on Neo4j's default auto-commit sessions the record row is
-        # already stored when this read runs, so skipping a same-address re-save
-        # would leave a failed read unrepaired for good.
-        await self._join_records_linking_here(record, tx_store)
-
-        # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord
-        if isinstance(record, TicketRecord):
-            await self._handle_ticket_user_edges(record, tx_store)
-
-        # Create project-lead relationship edge (LEAD_BY) if record is a ProjectRecord
-        if isinstance(record, ProjectRecord):
-            await self._handle_project_lead_edge(record, tx_store)
-
-        # Create message entity relation edges (MENTIONED_IN, INVOLVED_IN) if record is a MessageRecord
-        if isinstance(record, MessageRecord):
-            await self._handle_message_entity_edges(record, tx_store)
+        # The edges below come from what the record says: its links, the people
+        # it names, who it mentions. A placeholder says none of that, and one
+        # saved over the real record (an ancestor backfill racing the record's
+        # own sync) would replace the real record's edges with nothing.
+        if not record.is_placeholder:
+            await self._write_content_edges(record, tx_store)
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
         # A full sync no longer deletes permission edges before it starts, so the
@@ -2999,12 +2935,10 @@ class DataSourceEntitiesProcessor:
         #if existing_record:
 
 
-        # Create record if it doesn't exist
-        # Record download function
-        # Create a permission edge between the record and the app with sync status if it doesn't exist
-        if existing_record is None:
-            return record, pending_moves
-
+        if title_changes is not None and self._title_event_due(
+            record, existing_record, restored=restored_from_trash
+        ):
+            title_changes[record.id] = record
         return record, pending_moves
 
     async def _reset_indexing_status_to_queued(self, record_id: str, tx_store: TransactionStore) -> None:
@@ -3100,9 +3034,13 @@ class DataSourceEntitiesProcessor:
         records_to_publish: list[Record],
         pending_moves: list[PendingMove],
         moved_virtual_record_ids: list[tuple[str, str | None]],
+        title_changes: dict[str, Record] | None = None,
     ) -> None:
         """Move the blobs, publish the indexing events and send the membership
         refreshes of one committed slice of ``on_new_records``."""
+        # Before the indexing events and for every record, AUTO_INDEX_OFF ones included:
+        # the filters below are about whether there is anything to index.
+        await self._publish_record_titles((title_changes or {}).values())
         publishable: list[Record] = []
         for record in records_to_publish:
             # Skip publishing indexing events for records with AUTO_INDEX_OFF status
@@ -3199,6 +3137,7 @@ class DataSourceEntitiesProcessor:
                 # exactly the case this exists for, and every one of those filters
                 # would drop it.
                 moved_virtual_record_ids: list[tuple[str, str | None]] = []
+                title_changes: dict[str, Record] = {}
                 pending_moves: list[PendingMove] = []
                 async with self._drop_access_after(narrowed_connectors), self._sync_transaction(explicit=True) as store:
                     tx_store = _BatchLookups(store)
@@ -3216,6 +3155,7 @@ class DataSourceEntitiesProcessor:
                             narrowed_connectors=narrowed_connectors,
                             permissions_fetched=True,
                             replace_permissions=replace,
+                            title_changes=title_changes,
                         )
                         pending_moves.extend(moves)
 
@@ -3225,7 +3165,7 @@ class DataSourceEntitiesProcessor:
                 # unchanged and would redo none of it. A slice that rolled back
                 # does not get here.
                 await self._after_slice_committed(
-                    records_to_publish, pending_moves, moved_virtual_record_ids
+                    records_to_publish, pending_moves, moved_virtual_record_ids, title_changes
                 )
         except Exception as e:
             self._log_failure(f"Transaction on_new_records failed: {str(e)}", e)
@@ -3243,6 +3183,7 @@ class DataSourceEntitiesProcessor:
         pending_moves: list[PendingMove] = []
         should_publish = False
         processed_record: Record | None = None
+        title_changes: dict[str, Record] = {}
         # A content update that brings no grants must keep the stored ones: a
         # record flagged ``rewrite_permissions`` would otherwise be rewritten
         # with nothing and lose all access. Only an explicit list (even []) replaces.
@@ -3255,6 +3196,7 @@ class DataSourceEntitiesProcessor:
                 moved_virtual_record_ids,
                 narrowed_connectors=narrowed_connectors,
                 replace_permissions=replace,
+                title_changes=title_changes,
             )
 
             if processed_record is not None and processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
@@ -3264,6 +3206,7 @@ class DataSourceEntitiesProcessor:
             elif processed_record is not None:
                 should_publish = True
 
+        await self._publish_record_titles(title_changes.values())
         await self._publish_membership_sync(moved_virtual_record_ids)
         await self._flush_pending_blob_moves(pending_moves)
 
@@ -3296,6 +3239,7 @@ class DataSourceEntitiesProcessor:
         """
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         narrowed_connectors: set[str] = set()
+        title_changes: dict[str, Record] = {}
         async with self._drop_access_after(narrowed_connectors), self._sync_transaction(explicit=True) as tx_store:
             if getattr(tx_store, "explicit", False) is not True:
                 # Without one transaction the claim commits alone, and two creates of a key can both win it.
@@ -3312,6 +3256,7 @@ class DataSourceEntitiesProcessor:
             processed, pending_moves = await self._process_record(
                 record, [], tx_store, moved_virtual_record_ids,
                 publishes_event=content_changed, narrowed_connectors=narrowed_connectors,
+                title_changes=title_changes,
             )
             if processed is None:
                 raise PushRecordSkipped(record.id)
@@ -3328,6 +3273,7 @@ class DataSourceEntitiesProcessor:
             # A push opened before the delete's marker read the KB as live in its snapshot (Arango).
             # Read it again outside the transaction, so a marker committed since is seen.
             await self._refuse_if_kb_not_live(record.connector_id)
+        await self._publish_record_titles(title_changes.values())
         await self._publish_membership_sync(moved_virtual_record_ids)
         await self._flush_pending_blob_moves(pending_moves)
         if not content_changed:
@@ -3419,12 +3365,13 @@ class DataSourceEntitiesProcessor:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         narrowed_connectors: set[str] = set()
         pending_moves: list[PendingMove] = []
+        title_changes: dict[str, Record] = {}
         async with self._drop_access_after(narrowed_connectors), self._sync_transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
             processed_record, process_moves = await self._process_record(
                 record, [], tx_store, moved_virtual_record_ids, publishes_event=False,
-                narrowed_connectors=narrowed_connectors,
+                narrowed_connectors=narrowed_connectors, title_changes=title_changes,
             )
             pending_moves.extend(process_moves)
             if processed_record and existing_record is not None:
@@ -3432,6 +3379,7 @@ class DataSourceEntitiesProcessor:
                 await tx_store.batch_upsert_records([processed_record])
 
         await self._flush_pending_blob_moves(pending_moves)
+        await self._publish_record_titles(title_changes.values())
 
         # This path deliberately publishes no indexing event and preserves the
         # indexing lifecycle, so nothing downstream would ever recompute
@@ -3476,6 +3424,7 @@ class DataSourceEntitiesProcessor:
         duplicate_delete_payloads: list[dict] = []
         fallback_pending_moves: list[PendingMove] = []
         moved_with_old_path: list[tuple[Record, Record, str | None]] = []
+        title_changes: dict[str, Record] = {}
         narrowed_connectors: set[str] = set()
 
         def _is_publishable(record: Record) -> bool:
@@ -3534,7 +3483,8 @@ class DataSourceEntitiesProcessor:
 
                     if old_record is None:
                         processed, process_moves = await self._process_record(
-                            new_record, permissions, tx_store, permissions_fetched=permissions_fetched
+                            new_record, permissions, tx_store, permissions_fetched=permissions_fetched,
+                            title_changes=title_changes,
                         )
                         fallback_pending_moves.extend(process_moves)
                         if processed:
@@ -3692,6 +3642,8 @@ class DataSourceEntitiesProcessor:
                         if new_record.origin == OriginTypes.UPLOAD
                         else await self._handle_record_group(new_record, tx_store)
                     )
+                    if self._title_event_due(new_record, old_record):
+                        title_changes[new_record.id] = new_record
 
                     if needs_reindex:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
@@ -3824,6 +3776,7 @@ class DataSourceEntitiesProcessor:
             # reindexing off updateRecord must never see graph=new location while
             # storage/Mongo still says old location.
             await self._flush_pending_blob_moves(pending_moves + fallback_pending_moves)
+            await self._publish_record_titles(title_changes.values())
 
             # Publish events outside the transaction.
             def _publishable(candidates: list[Record]) -> list[Record]:
@@ -3938,7 +3891,9 @@ class DataSourceEntitiesProcessor:
                 # Raising rolls the whole batch back, so it is never half restored.
                 raise await self._restore_refusal(tx_store, connector_id, items, reclaim, ids, restored)
         record_restored(DeleteSource(restore_source).value, len(restored))
-        await notify_kb_records_changed(connector_id)
+        await notify_kb_records_changed(connector_id, getattr(self, "org_id", None) or None)
+        # The trash dropped the title points; write them back (after the commit).
+        await self._publish_record_titles((await self.get_typed_records_by_ids(restored)).values())
         return restored
 
     @staticmethod
@@ -4101,6 +4056,8 @@ class DataSourceEntitiesProcessor:
                 )
             return False
         await self._publish_delete_events((result or {}).get("eventData"))
+        # A record that was never indexed has no deleteRecord event, but has a title point.
+        await self._publish_record_titles(deletes=[(record_id, existing.get("connectorId") or None)])
         return False
 
     async def _remember_deleted_code_files(self, records: list[dict] | list[str]) -> None:
@@ -4384,8 +4341,13 @@ class DataSourceEntitiesProcessor:
             #
             # No-ops unless connector_id is a KB; connectors invalidate on sync
             # completion instead, so a mid-sync delete does not thrash the cache.
-            await notify_kb_records_changed(connector_id)
+            await notify_kb_records_changed(connector_id, getattr(self, "org_id", None) or None)
         unpublished_record_ids = await self._publish_delete_events((result or {}).get("eventData"))
+        await self._publish_record_titles(deletes=[
+            (d["record_id"], connector_id)
+            for d in (result or {}).get("deleted_records") or []
+            if isinstance(d, dict) and d.get("record_id")
+        ])
         if unpublished_record_ids:
             result = dict(result or {})
             result["vectorCleanupPending"] = True
@@ -4505,6 +4467,7 @@ class DataSourceEntitiesProcessor:
             connector_id=connector_id,
             org_id=result.get("org_id"),
             marked=len(result["deleted_records"]),
+            record_ids=[r["record_id"] for r in result["deleted_records"] if r.get("record_id")],
             virtual_record_ids=result.get("virtual_record_ids", []),
             batch_id=batch_id,
             delete_source=delete_source,
@@ -4525,6 +4488,7 @@ class DataSourceEntitiesProcessor:
         connector_id: str,
         org_id: str | None,
         marked: int,
+        record_ids: list[str],
         virtual_record_ids: list[str],
         batch_id: str,
         delete_source: DeleteSource,
@@ -4533,8 +4497,9 @@ class DataSourceEntitiesProcessor:
         source = DeleteSource(delete_source).value
         record_soft_deleted(source, marked)
         if marked:
-            await notify_kb_records_changed(connector_id)
+            await notify_kb_records_changed(connector_id, org_id)
             await self._access_changed([connector_id], org_id)
+        await self._publish_record_titles(deletes=[(rid, connector_id) for rid in record_ids])
         return await self._publish_soft_delete_events(
             org_id=org_id or self.org_id,
             connector_id=connector_id,
@@ -5464,6 +5429,7 @@ class DataSourceEntitiesProcessor:
             async with self.data_store_provider.transaction() as tx_store:
                 reaped = await tx_store.reap_stale_external_app_relations(connector_id)
             if reaped:
+                await self._access_changed([connector_id])
                 self.logger.info(
                     "Removed %d orphaned person node(s) while reaping connector %s",
                     reaped,
@@ -6421,6 +6387,8 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self._log_failure(f"Failed to delete user group {group_id}: {str(e)}", e,exc_info=True)
             raise
+        finally:
+            await notify_principals_changed(self.org_id or None)      # a group that held access is gone (or may be)
 
     @retry_on_deadlock()
     async def migrate_group_permissions_to_user(

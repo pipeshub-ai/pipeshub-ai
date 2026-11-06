@@ -16,14 +16,17 @@ from qdrant_client.http.models import (  # type: ignore
     BinaryQuantization,
     BinaryQuantizationConfig,
     Distance,
+    FieldCondition as QdrantFieldCondition,
     Filter,
     FilterSelector,
     HasIdCondition,
     HnswConfigDiff,
     KeywordIndexParams,
     KeywordIndexType,
+    MatchValue,
     Modifier,
     OptimizersConfigDiff,
+    PayloadSchemaType,
     ProductQuantization,
     ProductQuantizationConfig,
     CompressionRatio,
@@ -38,6 +41,13 @@ from qdrant_client.http.models import (  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.filters import (
+    forbid_org_in_payload,
+    is_missing,
+    keep_org_in_overwrite,
+    require_filter_org,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -726,6 +736,8 @@ class QdrantService(IVectorDBService):
         self._assert_connected()
         if field_schema.get("type") == "keyword":
             schema = KeywordIndexParams(type=KeywordIndexType.KEYWORD)
+        elif field_schema.get("type") == "integer":
+            schema = PayloadSchemaType.INTEGER
         else:
             schema = field_schema  # type: ignore
         try:
@@ -886,6 +898,7 @@ class QdrantService(IVectorDBService):
                 "most of the collection. Pair it with a value match "
                 "(e.g. connectorIds)."
             )
+        require_filter_org(filter)
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
         # wait=True: callers sequence work after a delete (the connector cleanup
@@ -912,6 +925,8 @@ class QdrantService(IVectorDBService):
                 "every point in the collection. Populate at least one filter "
                 "condition (e.g. virtualRecordId)."
             )
+        require_filter_org(points)
+        keep_org_in_overwrite(payload, points)
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(points)
         await self.client.overwrite_payload(  # type: ignore
@@ -932,6 +947,8 @@ class QdrantService(IVectorDBService):
                 "set_payload called with an empty filter — this would update the entire "
                 "collection. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        require_filter_org(filter)
+        forbid_org_in_payload(payload)
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
         # wait=True for the same reason as delete_points: the connector cleanup
@@ -948,8 +965,13 @@ class QdrantService(IVectorDBService):
         collection_name: str,
         point_ids: List[str],
         payload: dict,
+        *,
+        org_id: str,
     ) -> None:
         self._assert_connected()
+        if is_missing(org_id):
+            raise OrgRequired("update_payload_by_ids needs the org of the points")
+        forbid_org_in_payload(payload)
         if not point_ids:
             return
         # A plain id list fails the whole call with a 404 if any id is missing;
@@ -957,7 +979,10 @@ class QdrantService(IVectorDBService):
         await self.client.set_payload(  # type: ignore
             collection_name=collection_name,
             payload=payload,
-            points=FilterSelector(filter=Filter(must=[HasIdCondition(has_id=list(point_ids))])),
+            points=FilterSelector(filter=Filter(must=[
+                HasIdCondition(has_id=list(point_ids)),
+                QdrantFieldCondition(key="metadata.orgId", match=MatchValue(value=org_id)),
+            ])),
             wait=True,
         )
 

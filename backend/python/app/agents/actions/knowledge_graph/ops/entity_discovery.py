@@ -38,6 +38,7 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+from app.utils.not_indexed import not_indexed_note
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -62,8 +63,9 @@ MAX_QUERIES = 5
 _ENTITY_KIND_NAMES: frozenset[str] = frozenset(kind.value for kind in EntityKind)
 
 
-def _error(message: str) -> str:
-    return json.dumps({"status": "error", "message": message})
+def _error(message: str, *, retryable: bool = False) -> str:
+    """``retryable``: the search could not run (not a bad request), so an API caller is told to try again, not to fix its request."""
+    return json.dumps({"status": "error", "message": message, **({"retryable": True} if retryable else {})})
 
 
 async def execute_search_entities(
@@ -98,14 +100,15 @@ async def execute_search_entities(
     entity_vector_store = state.get("entity_vector_store")
     graph_provider = state.get("graph_provider")
     if not entity_vector_store or not graph_provider:
-        return False, _error("Entity search is not available in this deployment")
+        return False, _error("Entity search is not available in this deployment", retryable=True)
 
     requested = [str(t).strip().lower() for t in (entity_types or []) if str(t).strip()]
     kinds = [str(k).strip().lower() for k in (named_entity_kinds or []) if str(k).strip()]
     # A kind put in entity_types ("organization") was ignored, leaving only the
-    # other types searched; it is a named-entity kind.
+    # other types searched; it is a named-entity kind. One that is also an
+    # entity type ("person") stays one too, so it is searched with extraction off.
     kinds = list(dict.fromkeys([*kinds, *(t for t in requested if t in _ENTITY_KIND_NAMES)]))
-    requested = [t for t in requested if t not in _ENTITY_KIND_NAMES]
+    requested = [t for t in requested if t not in _ENTITY_KIND_NAMES or t in SEARCHABLE_ENTITY_TYPES]
     kind_notes: list[str] = []
     asked_kinds = bool(kinds)
     if entity_search_offered:
@@ -156,11 +159,12 @@ async def execute_search_entities(
         logger.warning("search_entities timed out", exc_info=True)
         return False, _error(
             "Entity search timed out before it could confirm which matches you can access — "
-            "this is not an empty result. Try again, or use knowledgegraph__search."
+            "this is not an empty result. Try again, or use knowledgegraph__search.",
+            retryable=True,
         )
     except EntityAccessError:
         logger.warning("search_entities failed", exc_info=True)
-        return False, _error("Entity search failed — try again.")
+        return False, _error("Entity search failed — try again.", retryable=True)
 
     ignored = sorted(set(requested) - SEARCHABLE_ENTITY_TYPES)
     if not hits:
@@ -310,6 +314,9 @@ def _render_hits(
             item["apps"] = apps
         if hit.entity_type == RECORD_ENTITY_TYPE:
             item["entityId"] = _short(hit.entity_id, shortener)
+            if not hit.indexed:
+                item["indexingStatus"] = hit.indexing_status
+                item["note"] = not_indexed_note(hit.indexing_status)
             shown_record_ids.append(hit.entity_id)
         elif previews_left > 0 and hit.records:
             previews_left -= 1

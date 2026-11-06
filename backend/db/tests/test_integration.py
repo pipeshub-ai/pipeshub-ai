@@ -66,19 +66,20 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
     return d
 
 
-# the modules besides the kernel: platform (the store fence, background jobs and the runtime tables) and the document store's branches
+# the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
-MODULES = ("platform", *DOCSTORE_BRANCHES)
-HEADS = {"kernel": (15, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (3, 0), "platform_data": (4, 0), "graph": (1, 0)}
+MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
+HEADS = {"kernel": (17, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
+         "graph": (2, 0), "kg": (6, 0), "retrieval": (2, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"kernel_0015", "platform_0004", "content_0003", "oauth_0003", "platform_data_0004", "graph_0001"}
+REVISION_HEADS = {"platform_0004", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0006", "retrieval_0002"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
 
 
 def test_fresh_install(db):
     cluster, name = db
     r = run_migrate(cluster.url(name, MIGRATE))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "epoch kernel=15 min_code=11" in r.stdout and "epoch platform_data=4 min_code=0" in r.stdout
+    assert "epoch kernel=17 min_code=11" in r.stdout and "epoch platform_data=4 min_code=0" in r.stdout
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
         assert {n for (n,) in c.execute("SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname IN ('kernel','platform')")} \
@@ -95,7 +96,7 @@ def test_service_role_grants(db):
     assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
     with connect(cluster, name, "pipeshub_node_login") as c:
         c.execute("SET ROLE pipeshub_node")
-        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == 15
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == 17
         c.execute("SELECT kernel.assert_profile_epoch(1)")
         with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState, match="expects 2"):
             c.execute("SELECT kernel.assert_profile_epoch(2)")
@@ -136,7 +137,7 @@ def test_bare_database_as_superuser(bare_db):
     assert run_migrate(url, **skip).returncode == 0                                            # second run: ownership is consistent
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
-        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 16
+        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 18
         assert c.execute("SELECT count(*) FROM pg_tables WHERE schemaname = 'kernel' AND tableowner <> 'pipeshub_owner'").fetchone()[0] == 0
         assert c.execute("SELECT NOT has_database_privilege('pipeshub_query', current_database(), 'TEMP')").fetchone()[0]
 
@@ -206,7 +207,7 @@ def test_failed_revision_rolls_back_cleanly(db, tmp_path):
         assert c.execute("SELECT note FROM probe.t1 LIMIT 1").fetchone() is None
         versions = {v for (v,) in c.execute("SELECT version_num FROM kernel.alembic_version")}
         # the probe fails mid-run; the branches that ran before it (in an order Alembic does not fix) are complete revisions, never partial
-        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in MODULES))) for v in versions)
+        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in (*MODULES, "graph", "kg")))) for v in versions)
     assert epochs(cluster, name)["probe"] == (1, 0)
     write_probe(tmp_path)                                                              # the fix is a plain re-run
     r = run_migrate(url, **env)
@@ -231,7 +232,7 @@ def test_contract_epochs_and_dev_downgrade(db, tmp_path):
     assert r.returncode == 0, r.stdout
     assert epochs(cluster, name) == {"kernel": (1, 11)}                      # the contract stays
     assert run_migrate(url, **env).returncode == 0                                     # and forward again
-    assert epochs(cluster, name)["kernel"] == (15, 11)
+    assert epochs(cluster, name)["kernel"] == (17, 11)
 
 
 def test_one_module_down_and_up_leaves_a_clean_catalog(db):
@@ -490,6 +491,56 @@ def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrade
     assert epochs(cluster, name) == HEADS
 
 
+def test_the_jobs_role_can_read_the_organisation_gauges_through_functions_and_the_revision_round_trips(db):
+    cluster, name = db
+    url = cluster.url(name, MIGRATE)
+    assert run_migrate(url).returncode == 0
+    policies = "SELECT count(*) FROM pg_policies WHERE schemaname = 'identity' AND policyname = 'jobs_all'"
+    gauges = {"gauge_user_counts": ["org_id", "n"], "gauge_live_orgs": ["org_id", "account_type", "domain"], "gauge_auth_configs": ["org_id", "auth_steps"]}
+    with connect(cluster, name) as c:
+        for org in ("a" * 24, "b" * 24):
+            c.execute("INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, created_at, updated_at) VALUES (%s, 'x.test', 'a@x.test', 'business', now(), now())", (org,))
+            c.execute("INSERT INTO identity.users (org_id, id, slug, email, created_at, updated_at) VALUES (%s, %s, 'user-1', 'a@x.test', now(), now())", (org, "a" * 24))
+            c.execute("INSERT INTO identity.org_auth_config (org_id, id, auth_steps, created_at, updated_at) VALUES (%s, %s, '[1]', now(), now())", (org, "a" * 24))
+        assert c.execute(policies).fetchone()[0] == 3      # this revision only adds the functions: the jobs role keeps its three tables
+        tables = [r[0] for r in c.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'").fetchall()]
+        assert len(tables) == 11
+        c.execute("SET ROLE pipeshub_jobs")      # no app.org_id: the system context of the gauges
+        for fn, cols in gauges.items():
+            cur = c.execute(f"SELECT * FROM identity.{fn}()")
+            assert [d.name for d in cur.description] == cols and len(cur.fetchall()) == 2
+        readable = ("users", "orgs", "org_auth_config")
+        for t in tables:
+            if t in readable:
+                assert len(c.execute(f"SELECT 1 FROM identity.{t}").fetchall()) == 2
+            else:
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    c.execute(f"SELECT 1 FROM identity.{t}")
+        c.execute("RESET ROLE")
+        for fn in gauges:
+            who = [r[0] for r in c.execute("SELECT r.rolname FROM pg_roles r WHERE has_function_privilege(r.oid, %s::regprocedure, 'EXECUTE') AND NOT r.rolsuper ORDER BY 1", (f"identity.{fn}()",))]
+            assert who == ["pipeshub_jobs", "pipeshub_vetted_identity"], who      # the grant, and the owner
+        c.execute("DELETE FROM identity.org_auth_config; DELETE FROM identity.users; DELETE FROM identity.orgs")
+    r = run_migrate(url, "downgrade", "identity_0004", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert [tuple(x) for x in c.execute("SELECT table_name, privilege_type FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity' ORDER BY 1, 2")] == [
+            (t, "SELECT") for t in ("org_auth_config", "orgs", "users")]
+        assert c.execute(policies).fetchone()[0] == 3
+        assert c.execute("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'identity' AND p.proname LIKE 'gauge\\_%%'").fetchone()[0] == 0
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+    with connect(cluster, name) as c:      # PGOPTIONS does not reach the migration session (env.py sets its own options), a role setting does
+        c.execute("ALTER ROLE pipeshub_migrate SET search_path = identity, public")
+    r = run_migrate(url, PG_MIGRATE_SURFACE_CHECK="skip")      # the surface lists the role setting; the asserts below check what the run left
+    assert r.returncode == 0, r.stdout
+    assert epochs(cluster, name) == HEADS
+    with connect(cluster, name) as c:      # the tables are found whatever the session's search_path is
+        assert c.execute(policies).fetchone()[0] == 3
+        assert c.execute("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'").fetchone()[0] == 3
+        assert c.execute("SELECT count(*) FROM information_schema.routine_privileges WHERE grantee = 'pipeshub_jobs' AND routine_schema = 'identity'").fetchone()[0] == 3
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+
+
 def test_the_one_running_job_index_comes_and_goes_with_the_platform_job_functions(db):
     """A database that is already past kernel_0011 gets the index from platform_0002, and a downgrade of it takes the index away again."""
     cluster, name = db
@@ -701,3 +752,23 @@ def test_an_older_build_tells_the_operator_to_roll_forward_when_the_newer_schema
     _as_newer_build(cluster, name, min_code=99)
     r = run_migrate(url)
     assert r.returncode == 2 and "roll forward" in r.stdout, r.stdout
+
+
+def test_an_install_with_such_helpers_upgrades_to_the_pinned_writes_revision(db):
+    """kernel_0015 -> kernel_0016 on a database that already holds admin-owned helpers with constructs the routine rules refuse in a vetted function's reach:
+    the run must succeed (the migrate job exits 4 and rolls back on any catalog violation)."""
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url, PG_MIGRATE_SURFACE_CHECK="skip").returncode == 0
+    r = run_migrate(url, "downgrade", "kernel_0015", PG_MIGRATE_ALLOW_DOWNGRADE="1", PG_MIGRATE_SURFACE_CHECK="skip")
+    assert r.returncode == 0, r.stdout + r.stderr
+    with cluster.admin(name) as c:
+        c.execute("CREATE FUNCTION public.h_set() RETURNS void LANGUAGE plpgsql AS 'BEGIN SET LOCAL statement_timeout = 5; END'")
+        c.execute("CREATE FUNCTION public.h_analyze() RETURNS void LANGUAGE plpgsql AS 'BEGIN ANALYZE; END'")
+        c.execute("CREATE FUNCTION public.h_temp() RETURNS void LANGUAGE plpgsql AS 'BEGIN CREATE TEMP TABLE h_t (a int); END'")
+        c.execute("CREATE FUNCTION public.h_cfg() RETURNS text LANGUAGE sql AS $$ SELECT set_config('statement_timeout', '5', true) $$")
+        c.execute("CREATE FUNCTION public.h_ret(a int) RETURNS int LANGUAGE sql RETURN a + 1")
+    r = run_migrate(url, PG_MIGRATE_SURFACE_CHECK="skip")
+    assert r.returncode == 0, r.stdout + r.stderr
+    with cluster.admin(name) as c:
+        assert c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall() == []

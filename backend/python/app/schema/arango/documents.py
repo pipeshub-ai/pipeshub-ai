@@ -28,6 +28,8 @@ orgs_schema = {
             "phone": {"type": ["string", "null"]},
             "dunsId": {"type": ["string", "null"]},
             "isExternal": {"type": "boolean", "default": False},
+            # The org an external organisation (a CRM account) belongs to.
+            "parentOrgId": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
@@ -210,6 +212,21 @@ app_schema = {
             "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},
             "vectorMembershipBackfillVrids": {"type": ["integer", "null"]},
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
+            # app.services.permissions.structure_generation: moves with every structural write of the connector
+            "scopeProjectionGeneration": {"type": ["number", "null"]},  # incremented in AQL, which computes in doubles
+            "scopeProjectionUnsafe": {"type": ["boolean", "number", "null"]},  # a mark: true (older code) or a time
+            "scopeProjectionOpened": {"type": ["number", "null"]},  # writes started that could not be undone, and finished (see unclosed_writes)
+            "scopeProjectionClosed": {"type": ["number", "null"]},
+            # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
+            "scopeBackfillState": {"type": ["string", "null"]},
+            "scopeBackfillAfter": {"type": ["string", "null"]},
+            "scopeBackfillVersion": {"type": ["integer", "null"]},
+            "scopeBackfillGeneration": {"type": ["integer", "null"]},
+            "scopeBackfillStructureGeneration": {"type": ["number", "null"]},  # what the pass read first
+            "scopeBackfillUnsafe": {"type": ["boolean", "number", "null"]},
+            "scopeBackfillRecords": {"type": ["integer", "null"]},
+            "scopeBackfillStale": {"type": ["integer", "null"]},
+            "scopeBackfillError": {"type": ["string", "null"]},
             # app.modules.indexing.entity_index_rebuild
             "entityIndexState": {"type": ["string", "null"]},
             "entityIndexPhase": {"type": ["string", "null"]},

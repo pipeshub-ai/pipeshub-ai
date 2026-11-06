@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { apiClient } from '@/lib/api/axios-instance';
+import { onSessionEnd } from '@/lib/api/session-cache';
 
 // ========================================
 // Types
@@ -62,6 +63,10 @@ let bgPollTimer: ReturnType<typeof setTimeout> | null = null;
 let bgPollRun = 0;
 let bgPolling = false;
 let isRetrying = false;
+// A retry left over from the last session never settles, and would turn every later retry away.
+onSessionEnd(() => {
+  isRetrying = false;
+});
 
 // ========================================
 // Store
