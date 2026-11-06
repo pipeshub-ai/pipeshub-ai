@@ -158,6 +158,21 @@ async def test_the_virtual_record_lookup_admits_what_the_plain_statement_admitte
     assert set(new[0].records_by_vrid) == {"v3"} and new[0].records_by_vrid["v3"] in {"real", "twin"}      # only a live, readable record is cited by its virtual record id
 
 
+async def test_a_numeric_connector_id_names_its_app_as_postgresql_reads_it_on_both_arms(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A connectorId stored as a JSON number names the app whose id is PostgreSQL's text of it ("0.0000001", never Python's "1e-07"), on the vetted read
+    and the statement alike: a member of that knowledge base opens the record, and a user who is not a member does not."""
+    await w.nodes("apps", {"_key": "0.0000001", "type": "KB"}, {"_key": "1e-07", "type": "CONNECTOR", "isActive": True})
+    await w.edge("permission", ("users", "u"), ("apps", "0.0000001"), type="USER", role="READER")
+    await w.edge("permission", ("users", "other"), ("apps", "1e-07"), type="USER", role="READER")
+    await w.nodes("records", {"_key": "n", "connectorId": 0.0000001, "virtualRecordId": "v1", "recordName": "n"})
+    await w.edge("belongsTo", ("records", "n"), ("apps", "0.0000001"))
+    await w.edge("permission", ("users", "other"), ("records", "n"), type="USER", role="READER")
+    for page in (5000, 0):                                   # the vetted read, then the plain statement
+        monkeypatch.setattr("app.services.graph_db.postgres.access._VRID_PAGE", page)
+        assert (await w.p.check_access("u", w.org, virtual_record_ids=["v1"])).records_by_vrid == {"v1": "n"}, page
+        assert (await w.p.check_access("other", w.org, virtual_record_ids=["v1"])).records_by_vrid == {}, page
+
+
 async def test_a_flag_the_database_cannot_read_fails_the_check_as_the_cast_did(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     """A virtual record whose ``isDeleted`` is no boolean must not read as live: both the vetted read and the statement refuse, alike."""
     await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
