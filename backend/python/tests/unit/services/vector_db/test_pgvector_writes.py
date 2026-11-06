@@ -64,10 +64,11 @@ def test_a_payload_merge_cannot_move_a_point() -> None:
     assert writes._merge_args({"a": 1, "connectorIds": ["c"], "page_content": "t"}) == ('{"a":1}', "t")
 
 
-def test_the_only_string_built_statements_are_the_three_that_splice_a_compiled_filter() -> None:
+def test_the_only_string_built_statements_are_the_five_that_splice_a_compiled_filter() -> None:
     """The runtime's static SQL checks over the whole package (no session SQL, every literal statement tagged). A statement built from
-    parts is allowed in exactly three places of ``writes.py``, where the compiled filter's structure is spliced in (every value in it a
-    ``$n`` bound parameter, which ``test_sql_filters`` pins); any other built statement fails here and in the shared guard."""
+    parts is allowed in exactly five places, where a compiled filter's structure is spliced in (every value in it a ``$n`` bound
+    parameter, which ``test_sql_filters`` pins): four in ``writes.py`` and the scroll in ``reads.py``. Any other built statement fails here
+    and in the shared guard."""
     import ast
 
     from app.core.db import sql_lint
@@ -76,13 +77,17 @@ def test_the_only_string_built_statements_are_the_three_that_splice_a_compiled_f
     found = sql_lint.scan_paths(sorted(root.glob("*.py")))
     assert [str(f) for f in found if "string-built" not in f.rule] == []
     built = [f for f in found if "string-built" in f.rule]
-    assert {Path(f.path).name for f in built} == {"writes.py"}
-    tree = ast.parse((root / "writes.py").read_text())
-    owner = {n: f.name for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) for n in range(f.lineno, f.end_lineno + 1)}
-    assert sorted(owner[f.line] for f in built) == ["delete_batch", "group_keys_matching", "merge_payload"]
+
+    def owner(path: str, line: int) -> str:
+        tree = ast.parse(Path(path).read_text())
+        return next(f.name for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) and f.lineno <= line <= f.end_lineno)
+
+    assert sorted((Path(f.path).name, owner(f.path, f.line)) for f in built) == [
+        ("reads.py", "scroll"), ("writes.py", "delete_batch"), ("writes.py", "group_keys_matching"), ("writes.py", "merge_payload"),
+        ("writes.py", "point_ids_matching")]
     for name in ("reads.py", "writes.py"):
         text = (root / name).read_text()
-        assert text.count("/* pipeshub:pgvector.") >= text.count("tx.fetch") + text.count("tx.execute") - 3
+        assert text.count("/* pipeshub:pgvector.") >= text.count("tx.fetch") + text.count("tx.execute") - 5
 
 
 def test_a_point_without_a_payload_is_refused_as_having_no_org_not_crashed_on() -> None:
@@ -165,6 +170,83 @@ async def test_a_group_write_replaces_only_the_arrays_it_carries() -> None:
     import json
 
     rows = json.loads(seen[0][2])
-    assert rows == [{"k": "g", "c": ["c9"], "r": None, "x": None}]                        # the other two arrays are absent, not empty
+    assert rows == [{"k": "g", "c": ["c9"], "r": None, "x": None, "p": None, "a": None, "s": None, "v": None, "n": None}]   # absent, not empty
     members = json.loads(seen[1][2])
     assert members == [{"k": "g", "kind": 1, "members": ["c9"]}]                             # and only connector members are diffed
+
+
+STAMP = {"scopeStamp": "union", "pathIds": ["s1", "p1"], "aclScope": ["s1"], "scopeFieldsVersion": 5, "scopeGeneration": 3}
+
+
+def test_a_stamped_point_stores_the_scope_fields_with_its_group_and_not_in_its_payload() -> None:
+    b = writes.prepare([pt(1, connectorIds=["c1"], **STAMP)])
+    assert b.groups == {"r1": {"connectorIds": ["c1"], "pathIds": ["s1", "p1"], "aclScope": ["s1"], "scopeStamp": "union",
+                               "scopeFieldsVersion": 5, "scopeGeneration": 3}}
+    assert not any(k in b.payloads[0] for k in STAMP)                  # group-level only: one row per record, not per chunk
+
+
+def test_a_payload_without_scope_keys_has_no_scope_row() -> None:
+    assert writes.membership_of({"connectorIds": ["c"]}) == {"connectorIds": ["c"]}
+    assert writes.membership_of(STAMP) == {"scopeStamp": "union", "pathIds": ["s1", "p1"], "aclScope": ["s1"], "scopeFieldsVersion": 5, "scopeGeneration": 3}
+    stale = {"scopeStamp": "legacy", "pathIds": [], "aclScope": [], "scopeFieldsVersion": 0, "scopeGeneration": 0}       # the stale marker is a whole stamp
+    assert writes.membership_of(stale)["scopeFieldsVersion"] == 0
+    assert writes.membership_of({**STAMP, "scopeGeneration": -2})["scopeGeneration"] == -2                           # a process that could not read it
+
+
+@pytest.mark.parametrize("key", sorted(STAMP))
+def test_a_stamp_missing_any_field_is_refused_not_completed_with_a_default(key: str) -> None:
+    partial = {k: v for k, v in STAMP.items() if k != key}
+    with pytest.raises(PgVectorError, match=key):
+        writes.membership_of(partial)
+    with pytest.raises(PgVectorError):
+        writes.prepare([pt(1, **partial)])                      # and the write is refused whole: nothing is stored
+
+
+def test_a_lone_scope_list_is_refused_not_dropped() -> None:
+    with pytest.raises(PgVectorError, match="scopeStamp"):
+        writes.membership_of({"pathIds": ["x"]})
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("scopeStamp", None), ("scopeStamp", ""), ("scopeStamp", 3), ("scopeStamp", ["union"]),
+    ("scopeFieldsVersion", None), ("scopeFieldsVersion", True), ("scopeFieldsVersion", 1.9), ("scopeFieldsVersion", "5"),
+    ("scopeFieldsVersion", 2**31), ("scopeFieldsVersion", -(2**31) - 1),
+    ("scopeGeneration", None), ("scopeGeneration", False), ("scopeGeneration", 3.0), ("scopeGeneration", "x"), ("scopeGeneration", 3 * 10**10),
+    ("pathIds", None), ("pathIds", {"a": 1}), ("pathIds", "abc"), ("pathIds", [1, 2]), ("pathIds", ["a", None]), ("pathIds", [["a"]]),
+    ("aclScope", None), ("aclScope", {"a": 1}), ("aclScope", "abc"), ("aclScope", [True]),
+])
+def test_a_scope_field_of_the_wrong_type_or_range_is_refused_naming_the_field(key: str, value: object) -> None:
+    with pytest.raises(PgVectorError, match=key):
+        writes.membership_of({**STAMP, key: value})
+
+
+def test_the_edges_of_a_valid_stamp_are_accepted() -> None:
+    row = writes.membership_of({**STAMP, "scopeFieldsVersion": 2**31 - 1, "scopeGeneration": -(2**31), "pathIds": ("a", "b"), "aclScope": []})
+    assert row["scopeFieldsVersion"] == 2**31 - 1 and row["scopeGeneration"] == -(2**31) and row["pathIds"] == ["a", "b"] and row["aclScope"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_group_write_mirrors_the_stamp_lists_as_member_kinds_four_and_five() -> None:
+    import json
+    from datetime import UTC, datetime
+
+    won = [{"group_key": "g", "connector_ids": [], "record_group_ids": [], "root_record_group_ids": [], "path_ids": ["s1", "p1"], "acl_scope": None}]
+    seen: list[tuple] = []
+
+    class Tx(RecordingTx):
+        async def fetch(self, sql: str, *args: object) -> list[dict]:
+            seen.append(args)
+            return won
+
+        async def execute(self, sql: str, *args: object) -> str:
+            seen.append(args)
+            return "INSERT 0 0"
+
+    group = writes.membership_of(STAMP)
+    assert await writes.write_groups(Tx(), A, 1, {"g": group}, datetime.now(UTC), allow_empty=True) == 1
+    assert json.loads(seen[0][2])[0]["s"] == "union" and json.loads(seen[0][2])[0]["n"] == 3
+    members = {(m["kind"], tuple(m["members"])) for m in json.loads(seen[1][2])}
+    assert members == {(4, ("s1", "p1")), (5, ())}                       # a NULL list of the row is an empty member set, not a crash
+    seen.clear()
+    await writes.write_groups(Tx(), A, 1, {"g": {"connectorIds": ["c"]}}, datetime.now(UTC), allow_empty=True)
+    assert {m["kind"] for m in json.loads(seen[1][2])} == {1}              # a write without a stamp leaves kinds 4 and 5 alone

@@ -14,6 +14,9 @@ from tests.support.vector_db import (
 # ---------------------------------------------------------------------------
 
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _make_vectorstore():
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
     from app.modules.transformers.vectorstore import VectorStore
@@ -2702,6 +2705,33 @@ class TestRecordPresenceAcrossBatches:
             assert await presence.check() is False  # 3 s later: read again, gone
 
         assert graph.get_document.await_count == 2
+
+    @staticmethod
+    async def _graph_down(key, collection, transaction=None, *, raise_on_error=False) -> None:
+        """What the providers do: a failed read answers None unless told to raise."""
+        if raise_on_error:
+            raise ConnectionError("graph unreachable")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_fails_the_record_instead_of_skipping_its_batches(self) -> None:
+        from app.exceptions.indexing_exceptions import VectorStoreError
+        from app.modules.transformers.vectorstore import _DEFAULT_DOCUMENT_BATCH_SIZE
+
+        vs = self._store(AsyncMock(side_effect=self._graph_down))
+
+        with pytest.raises(VectorStoreError) as failure:
+            await vs._process_document_chunks(
+                self._docs(2 * _DEFAULT_DOCUMENT_BATCH_SIZE), "rec-1", "test_collection"
+            )
+
+        assert isinstance(failure.value.__cause__, ConnectionError)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_does_not_drop_the_images(self) -> None:
+        vs = self._store(AsyncMock(side_effect=self._graph_down))
+
+        with pytest.raises(ConnectionError):
+            await vs._process_image_embeddings([{"metadata": {}}], ["data:image/png;base64,AAAA"], "rec-1")
 
 
 # ===================================================================

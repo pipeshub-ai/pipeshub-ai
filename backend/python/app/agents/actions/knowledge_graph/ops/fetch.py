@@ -127,6 +127,7 @@ def resolve_block_cap(requested_max: int | None) -> int:
 # "try again shortly" is not buried among ids that will never resolve.
 _UNAVAILABLE_PHRASING = {
     "not_indexed_yet": "exists, but its content is not indexed yet",
+    "content_being_prepared": "exists, and its content is being prepared — ask again shortly",
     "storage_error": "could not be read right now (storage error) — retrying may work",
     "not_available": "not available",
 }
@@ -136,7 +137,7 @@ def _unavailable_note(
     not_available: list[str],
     reasons: dict[str, str],
     record_id_shortener: Any = None,  # noqa: ANN401
-    not_indexed: dict[str, dict[str, str]] | None = None,
+    not_indexed: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """A per-id explanation, or an empty string when every id resolved.
 
@@ -154,12 +155,12 @@ def _unavailable_note(
     described: list[str] = []
     for record_id in not_available:
         reason = reasons.get(record_id, "not_available")
-        if reason == "not_indexed_yet" and record_id in not_indexed:
+        if reason in ("not_indexed_yet", "content_being_prepared") and record_id in not_indexed:
             entry = not_indexed[record_id]
             block = entry.get("context") or f"Record ID: {record_id}"
             if record_id_shortener is not None:
                 block = record_id_shortener.shorten_record_ids_in_text(block)
-            described.append(f"{block}\n{not_indexed_note(entry.get('status'))}")
+            described.append(f"{block}\n{not_indexed_note(entry.get('status'), entry.get('preparing'))}")
             continue
         # `shorten_if_known` never mints a label for an id the model has not
         # already seen -- an invented "R7" would be worse than the raw id.
@@ -249,6 +250,7 @@ async def execute_fetch_record(
     from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
     from app.agents.agent_loop.tool_adapter import _to_tool_output
     from app.modules.agents.qna.chat_state import remember_record_ids
+    from app.modules.pipeline.parse_now import ParseNow, optional_redis
     from app.modules.retrieval.context.targeted import (
         focused_read_chars,
         targeted_retrieval_enabled,
@@ -325,12 +327,18 @@ async def execute_fetch_record(
         # never more than the read it replaces.
         budget.max_chars = min(budget.max_chars, focused_limit * max(len(record_ids), 1))
 
+    config_service = getattr(context, "config_service", None) or getattr(context.graph_provider, "config_service", None)
     structured_tool = create_fetch_full_record_tool(
         virtual_records,
         org_id=context.org_id,
         graph_provider=context.graph_provider,
         user_id=context.user_id,
         connection_sources=connection_sources_of((context.tool_state or {}).get("filters")),
+        # A continuation reads what the first page left stored; it never starts a parse.
+        parse_now=(
+            ParseNow(config_service, logger, redis_provider=await optional_redis(config_service, logger))
+            if config_service is not None and start_block == 0 else None
+        ),
     )
     try:
         # A record outside what the turn is limited to is answered like one

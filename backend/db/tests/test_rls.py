@@ -45,8 +45,9 @@ def test_catalog_is_clean_and_covers_every_kind(org_db):
         stored = {f"graph.{t}": "org" for t in ("nodes", "edges")}      # partitioned: the leaves are not registry rows
         stored |= {f"content.{t}": "org" for t in ("documents", "projects", "project_members")}
         stored |= {f"identity.{t}": "org" for t in ("orgs", "users", "user_groups", "user_group_members", "org_auth_config", "user_activities", "used_reset_links", "org_logos", "user_pictures", "slug_counters", "user_credentials")}
-        stored |= {f"oauth.{t}": "org" for t in ("apps", "access_tokens", "refresh_tokens", "authorization_codes", "device_authorizations", "service_account_delegations", "delegation_events")}
+        stored |= {f"oauth.{t}": "org" for t in ("apps", "access_tokens", "refresh_tokens", "authorization_codes", "device_authorizations", "service_account_delegations", "delegation_events", "agent_registrations")}
         stored |= {"integrations.slack_threads": "org"}
+        stored |= {f"kg.{t}": "org" for t in ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state", "restamp_queue")}
         stored |= {f"platform.{t}": "org" for t in ("notifications", "mail_log", "connectors_config", "outbox", "docstore_changes")}
         assert rows == {"kt.docs": "org", "kt.events": "org", "kt.cfg": "lineage", "kt.apps": "org", "kt.tokens": "global",
                 "platform.consumer_inbox": "org", "platform.deployment_profile": "internal", "platform.jobs": "internal",

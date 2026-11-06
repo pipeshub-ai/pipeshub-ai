@@ -220,6 +220,8 @@ python -m app.scripts.kg_taxonomy merge|unmerge ...
 python -m app.scripts.kg_taxonomy legacy --org ORG
 python -m app.scripts.kg_taxonomy migrate-legacy --org ORG [--apply]
 python -m app.scripts.kg_taxonomy unmigrate-legacy ...
+python -m app.scripts.kg_taxonomy strays --org ORG
+python -m app.scripts.kg_taxonomy sweep-strays --org ORG [--apply]
 ```
 
 - `consolidate` only merges nodes of one org and collection whose names share
@@ -271,7 +273,10 @@ python -m app.scripts.kg_taxonomy unmigrate-legacy ...
   - Aliases the winner learned are kept after `unmerge`. On Neo4j, the alias
     nodes then point at both nodes.
   - Indexing that resolved to the loser just before the merge can link to it
-    after the merge finished; re-running the merge moves those edges.
+    after the merge finished. `strays` lists merged nodes the org's records
+    still link to, and `sweep-strays` moves those edges on to where each node
+    redirects. A sweep is a re-run of the merge, so `unmerge` still restores
+    the swept edges.
   - Category hierarchy edges are not moved; nothing reads them today.
 
 ## Entity index rebuild
@@ -280,8 +285,10 @@ The `entities` collection is a projection of the graph. The indexing service
 rebuilds it in the background (`app/modules/indexing/entity_index_rebuild.py`),
 without extraction or model calls other than embedding:
 
-- **Per connector** (app document): its record groups, then its indexed,
-  non-deleted, named records, written as on the index path.
+- **Per connector** (app document): its record groups, then its named records,
+  indexed or not (a record is findable by name before it is indexed; see
+  `docs/indexing-service.md` section 4.12), written as on the index path. The
+  points of trashed records are deleted.
 - **Per org** (org document): its canonical taxonomy nodes and its
   departments (including global ones). Membership is read from the graph and
   replaces the stored one; a node no record reaches has its point deleted.

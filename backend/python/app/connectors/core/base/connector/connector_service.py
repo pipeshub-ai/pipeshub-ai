@@ -95,6 +95,11 @@ class ConnectorSyncSkippedError(Exception):
         self.code = code
 
 
+class IncompleteSyncError(RuntimeError):
+    """A sync that finished without writing every project it read: the run fails, but a full sync still removes
+    what it saw gone from the parts it read in full (the runner), and the parts it kept as stored stay linked."""
+
+
 # Held by a sync for its whole run and by a user-link pass, so the two never overlap on one
 # connector. Keyed by id, not instance: a connector can be rebuilt between the two.
 _SYNC_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
@@ -390,6 +395,10 @@ class BaseConnector(ABC):
         connector syncs. The steps are the sync's own, so the source alone decides what the
         new user may reach; they must be idempotent.
         """
+        # A personal connector inherits a team class's steps, but its records inherit the app:
+        # linking other source users would hand them the creator's records.
+        if self.scope == ConnectorScope.PERSONAL.value:
+            return
         for step in self.user_link_steps:
             await getattr(self, step)()
 
@@ -537,6 +546,22 @@ class BaseConnector(ABC):
                 self.creator_email,
                 e,
             )
+
+    async def withdraw_app_users_except_creator(self) -> None:
+        """Remove every user-app edge of this connector but the creator's.
+
+        For personal connectors whose records inherit the app and that never link an
+        authenticated source account: any other edge is access nobody granted (a link
+        pass before ``link_new_users`` skipped personal connectors wrote them).
+
+        Fails closed: with no creator email every edge goes, and a failed read or
+        withdrawal raises, so the sync stops before writing content those edges reach.
+        """
+        creator = (self.creator_email or "").lower()
+        users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+        others = [u for u in users if not creator or (u.email or "").lower() != creator]
+        if others:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, others)
 
     async def ensure_connector_group_permission(self) -> Optional[Permission]:
         """Upsert the creator's ``USER_APP_RELATION`` edge and a pseudo

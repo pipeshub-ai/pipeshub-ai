@@ -44,6 +44,10 @@ import {
 
 const CLIENT_SECRET_LENGTH = 32;
 
+/** Token lifetimes, in seconds, of a dynamically registered client. */
+export const DYNAMIC_ACCESS_TOKEN_LIFETIME = 3600;
+export const DYNAMIC_REFRESH_TOKEN_LIFETIME = 2592000;
+
 export const APP_WORKSPACE_MISMATCH_MESSAGE =
   'This application belongs to a different workspace. Switch to that workspace and try again.';
 
@@ -57,6 +61,38 @@ export function isAppUsableInOrg(app: OAuthAppDto, orgId: string): boolean {
     return true;
   }
   return app.orgId === orgId;
+}
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * RFC 8252 §7.3: a native app listens on a port it picks at run time, so a loopback redirect URI
+ * registered without a port matches the same URI on any port.
+ */
+export function loopbackMatchesAnyPort(
+  registered: string,
+  requested: string,
+): boolean {
+  let r: URL;
+  let q: URL;
+  try {
+    r = new URL(registered);
+    q = new URL(requested);
+  } catch {
+    return false;
+  }
+  return (
+    r.protocol === 'http:' &&
+    r.port === '' &&
+    LOOPBACK_HOSTS.has(r.hostname) &&
+    q.protocol === r.protocol &&
+    q.hostname === r.hostname &&
+    q.pathname === r.pathname &&
+    q.search === r.search &&
+    q.hash === '' &&
+    !q.username &&
+    !q.password
+  );
 }
 
 type WorkspaceMismatchDetails = (app: OAuthAppDto) => Record<string, string>;
@@ -346,6 +382,8 @@ export class OAuthAppService {
    * registered dynamically, without review, should be able to obtain.
    */
   async createDynamicClient(params: {
+    /** A client metadata document URL; a random id otherwise. */
+    clientId?: string;
     orgId: string;
     createdBy: string;
     name: string;
@@ -366,7 +404,7 @@ export class OAuthAppService {
     this.validateGrantTypes(params.allowedGrantTypes);
     this.validateDcrRedirectUris(params.redirectUris);
 
-    const clientId = randomUUID();
+    const clientId = params.clientId ?? randomUUID();
     const clientSecret = this.generateClientSecret();
     const clientSecretEncrypted = this.encryptionService.encrypt(clientSecret);
 
@@ -385,8 +423,8 @@ export class OAuthAppService {
       logoUrl: params.logoUrl,
       isConfidential: params.isConfidential,
       isDynamic: true,
-      accessTokenLifetime: 3600,
-      refreshTokenLifetime: 2592000,
+      accessTokenLifetime: DYNAMIC_ACCESS_TOKEN_LIFETIME,
+      refreshTokenLifetime: DYNAMIC_REFRESH_TOKEN_LIFETIME,
     });
 
     this.logger.info('Dynamically registered OAuth client', {
@@ -653,13 +691,22 @@ export class OAuthAppService {
    * Delete OAuth app (soft delete)
    */
   async deleteApp(appId: string, orgId: string, userId: string): Promise<void> {
-    const app = await getOAuthAppRepository().updateOwned(
+    const repo = getOAuthAppRepository();
+    const found = await repo.findOwned(orgId, userId, appId);
+    if (!found) {
+      throw new NotFoundError('OAuth app not found');
+    }
+    // Deleted only once its tokens are gone: a deleted app cannot be found again to retry.
+    await this.setStatusAndRevokeTokens(
       orgId,
       userId,
-      appId,
-      { isDeleted: true, deletedBy: userId, status: OAuthAppStatus.REVOKED },
+      found,
+      OAuthAppStatus.REVOKED,
     );
-
+    const app = await repo.updateOwned(orgId, userId, appId, {
+      isDeleted: true,
+      deletedBy: userId,
+    });
     if (!app) {
       throw new NotFoundError('OAuth app not found');
     }
@@ -723,12 +770,12 @@ export class OAuthAppService {
       throw new BadRequestError('OAuth app is already suspended');
     }
 
-    const updated = await repo.updateOwned(orgId, userId, appId, {
-      status: OAuthAppStatus.SUSPENDED,
-    });
-    if (!updated) {
-      throw new NotFoundError('OAuth app not found');
-    }
+    const updated = await this.setStatusAndRevokeTokens(
+      orgId,
+      userId,
+      app,
+      OAuthAppStatus.SUSPENDED,
+    );
 
     this.logger.info('OAuth app suspended', {
       appId: updated._id,
@@ -736,6 +783,32 @@ export class OAuthAppService {
     });
 
     return this.toAppResponse(updated);
+  }
+
+  /**
+   * Sets the status, which stops new tokens, then revokes the ones the app already issued: token
+   * checks do not read the status, so those would work until they expire. A failed revocation
+   * puts the previous status back, so the same call can be retried.
+   */
+  private async setStatusAndRevokeTokens(
+    orgId: string,
+    userId: string,
+    app: OAuthAppDto,
+    status: OAuthAppStatus,
+  ): Promise<OAuthAppDto> {
+    const repo = getOAuthAppRepository();
+    const previous = app.status;
+    const updated = await repo.updateOwned(orgId, userId, app._id, { status });
+    if (!updated) {
+      throw new NotFoundError('OAuth app not found');
+    }
+    try {
+      await this.oauthTokenService.revokeAllTokensForApp(updated.clientId);
+    } catch (error) {
+      await repo.updateOwned(orgId, userId, app._id, { status: previous });
+      throw error;
+    }
+    return updated;
   }
 
   /**
@@ -809,7 +882,10 @@ export class OAuthAppService {
    * Validate redirect URI for an app
    */
   validateRedirectUriForApp(app: OAuthAppDto, redirectUri: string): void {
-    if (!app.redirectUris.includes(redirectUri)) {
+    if (
+      !app.redirectUris.includes(redirectUri) &&
+      !app.redirectUris.some((r) => loopbackMatchesAnyPort(r, redirectUri))
+    ) {
       throw new InvalidRedirectUriError(
         'redirect_uri does not match any registered URIs',
         { providedUri: redirectUri },
@@ -858,11 +934,25 @@ export class OAuthAppService {
   }
 
   /**
-   * DCR redirect URIs: HTTPS, loopback HTTP, or private-use schemes (RFC 8252).
-   * `javascript:` / `data:` / `file:` / `vbscript:` are rejected.
+   * DCR and metadata document redirect URIs: HTTPS, loopback HTTP, or an app's own scheme
+   * (RFC 8252 §7.1). An app scheme must look like one: reverse-domain (`com.example.app:/cb`)
+   * or followed by `//` (`cursor://…`, `vscode://…`). That refuses `mailto:`, `tel:`, `sms:`
+   * and the like, where the code would be handed to something that is not the client.
    */
   validateDcrRedirectUris(uris: string[]): void {
-    const blocked = new Set(['javascript:', 'data:', 'file:', 'vbscript:']);
+    // Browser and network schemes that are never an app's callback, though they can look like one.
+    const blocked = new Set([
+      'javascript:',
+      'data:',
+      'file:',
+      'vbscript:',
+      'blob:',
+      'about:',
+      'filesystem:',
+      'ftp:',
+      'ws:',
+      'wss:',
+    ]);
     for (const uri of uris) {
       let parsed: URL;
       try {
@@ -875,7 +965,14 @@ export class OAuthAppService {
           `Redirect URI must not contain a fragment: ${uri}`,
         );
       }
-      if (blocked.has(parsed.protocol)) {
+      const appScheme =
+        parsed.protocol !== 'https:' && parsed.protocol !== 'http:';
+      if (
+        blocked.has(parsed.protocol) ||
+        (appScheme &&
+          !parsed.protocol.includes('.') &&
+          !uri.startsWith(`${parsed.protocol}//`))
+      ) {
         throw new InvalidRedirectUriError(
           `Redirect URI scheme is not allowed: ${uri}`,
         );

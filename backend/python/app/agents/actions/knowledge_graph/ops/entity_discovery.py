@@ -38,6 +38,7 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+from app.utils.not_indexed import not_indexed_note
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -104,9 +105,10 @@ async def execute_search_entities(
     requested = [str(t).strip().lower() for t in (entity_types or []) if str(t).strip()]
     kinds = [str(k).strip().lower() for k in (named_entity_kinds or []) if str(k).strip()]
     # A kind put in entity_types ("organization") was ignored, leaving only the
-    # other types searched; it is a named-entity kind.
+    # other types searched; it is a named-entity kind. One that is also an
+    # entity type ("person") stays one too, so it is searched with extraction off.
     kinds = list(dict.fromkeys([*kinds, *(t for t in requested if t in _ENTITY_KIND_NAMES)]))
-    requested = [t for t in requested if t not in _ENTITY_KIND_NAMES]
+    requested = [t for t in requested if t not in _ENTITY_KIND_NAMES or t in SEARCHABLE_ENTITY_TYPES]
     kind_notes: list[str] = []
     asked_kinds = bool(kinds)
     if entity_search_offered:
@@ -312,6 +314,9 @@ def _render_hits(
             item["apps"] = apps
         if hit.entity_type == RECORD_ENTITY_TYPE:
             item["entityId"] = _short(hit.entity_id, shortener)
+            if not hit.indexed:
+                item["indexingStatus"] = hit.indexing_status
+                item["note"] = not_indexed_note(hit.indexing_status)
             shown_record_ids.append(hit.entity_id)
         elif previews_left > 0 and hit.records:
             previews_left -= 1

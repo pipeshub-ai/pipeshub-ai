@@ -5,11 +5,18 @@
  * connected via StreamableHTTP transport.
  */
 
+import { createHash } from 'crypto';
+import { KeyObject } from 'node:crypto';
 import { Response, NextFunction } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger, getLogLevel } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
+import {
+  MCP_RELAY_HEADER,
+  relayKey,
+  signMcpRelay,
+} from '../../../libs/middlewares/mcp-relay';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import {
   clientTags,
@@ -36,6 +43,7 @@ const logger = Logger.getInstance({
 // ESM-only modules — imported eagerly at module load, Node caches the result
 const mcpServerModule = import('@pipeshub-ai/mcp/esm/mcp-server/server.js');
 const coreModule = import('@pipeshub-ai/mcp/esm/core.js');
+const httpModule = import('@pipeshub-ai/mcp/esm/lib/http.js');
 
 /**
  * Activation signals for the MCP path. The transport is stateless, so every
@@ -175,9 +183,10 @@ function recordActivityFromProps(
  * Creates a stateless MCP server per request, connected to the PipeshubCore SDK
  * using the caller's bearer token.
  */
-export const handleMCPRequest =
-  (appConfig: AppConfig) =>
-  async (
+export const handleMCPRequest = (appConfig: AppConfig) => {
+  // Built on first use, not with the router: the secret is read once the config is loaded.
+  let relaySigningKey: KeyObject | undefined;
+  return async (
     req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
@@ -189,10 +198,21 @@ export const handleMCPRequest =
 
       const { createMCPServer } = await mcpServerModule;
       const { PipeshubCore } = await coreModule;
+      const { HTTPClient } = await httpModule;
 
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });
+      // The tools call the REST API over loopback; the header tells it those calls belong to this one.
+      relaySigningKey ??= relayKey(appConfig.scopedJwtSecret);
+      const relay = signMcpRelay(relaySigningKey, token);
+      const httpClient = new HTTPClient().addHook(
+        'beforeRequest',
+        (request) => {
+          request.headers.set(MCP_RELAY_HEADER, relay);
+          return request;
+        },
+      );
 
       const { server: mcpServer } = createMCPServer({
         logger: {
@@ -209,6 +229,7 @@ export const handleMCPRequest =
           new PipeshubCore({
             security: { bearerAuth: token },
             serverURL,
+            httpClient,
           }),
       });
 
@@ -221,7 +242,8 @@ export const handleMCPRequest =
         mayReadCode(req.user) &&
         (await callerHasCodeRepos(
           codeDeps,
-          `${req.user?.orgId}:${req.user?.userId}`,
+          // Per token too: an app's knowledge limit narrows which repos it reads.
+          `${req.user?.orgId}:${req.user?.userId}:${createHash('sha256').update(codeDeps.authorization).digest('hex')}`,
         ))
       ) {
         // A client asking for code only (`/mcp?tools=code`) is not sent the
@@ -251,6 +273,14 @@ export const handleMCPRequest =
           : (server._instructions ?? '') + CODE_GRAPH_INSTRUCTIONS;
       }
 
+      // A client that hangs up cancels the call: closing aborts the running handlers' signals.
+      res.on('close', () => {
+        mcpServer.close().catch((error: unknown) => {
+          logger.warn('Closing the MCP server failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      });
       await mcpServer.connect(transport);
       const connectedProps = mcpConnectedProps(req);
       const toolCallProps = mcpToolCallProps(req);
@@ -292,3 +322,4 @@ export const handleMCPRequest =
       next(error);
     }
   };
+};

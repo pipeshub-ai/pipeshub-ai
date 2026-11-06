@@ -941,6 +941,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.services.permissions.wiring import register_viewer_scope_version
 
     await register_viewer_scope_version(app_container.config_service(), logger)
+    from app.services.permissions.wiring import register_scope_generation
+
+    await register_scope_generation(app_container.config_service(), logger)
 
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
@@ -1302,7 +1305,6 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     try:
         logger.debug(f"Applying authentication for path: {request_path}")
         authenticated_request = await authMiddleware(request)
-        return await call_next(authenticated_request)
 
     except HTTPException as exc:
         # Handle authentication errors
@@ -1311,6 +1313,16 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     except Exception as e:
         # Handle unexpected errors
         logger.error(f"Unexpected error during authentication for {request_path}: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error"},
+        )
+
+    try:
+        return await call_next(authenticated_request)
+    except Exception:
+        # call_next re-raises the route's exception; log it once here, inside the request context.
+        logger.exception("Unhandled exception while processing %s %s", request.method, request_path)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": "Internal server error"},

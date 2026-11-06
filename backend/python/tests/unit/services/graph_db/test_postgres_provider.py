@@ -13,11 +13,16 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.postgres import core
 from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase
 from app.services.graph_db.postgres.codegraph import CodeGraphMixin
+from app.services.graph_db.postgres.delete import DeleteMixin
 from app.services.graph_db.postgres.hierarchy import HierarchyMixin
 from app.services.graph_db.postgres.identity import IdentityMixin
+from app.services.graph_db.postgres.kb import KbMixin
+from app.services.graph_db.postgres.kb_listings import KbListingsMixin
+from app.services.graph_db.postgres.lookups import LookupsMixin
 from app.services.graph_db.postgres.permissions import PermissionsMixin
 from app.services.graph_db.postgres.provider import PostgresGraphProvider, unimplemented
 from app.services.graph_db.postgres.records import RecordsMixin
+from app.services.graph_db.postgres.trash import TrashMixin
 
 FACTORY = "app.services.graph_db.graph_db_provider_factory.GraphDBProviderFactory"
 
@@ -104,7 +109,7 @@ def _mismatches(name: str) -> list[str]:
 
 
 IMPLEMENTED = sorted(n for n, _ in inspect.getmembers(IGraphDBProvider, inspect.isfunction)
-                     if not n.startswith("_") and n not in unimplemented() and n in {*vars(core.CoreMixin), *vars(PermissionsMixin), *vars(IdentityMixin), *vars(CodeGraphMixin), *vars(RecordsMixin), *vars(HierarchyMixin)})
+                     if not n.startswith("_") and n not in unimplemented() and n in {*vars(core.CoreMixin), *vars(PermissionsMixin), *vars(IdentityMixin), *vars(CodeGraphMixin), *vars(RecordsMixin), *vars(HierarchyMixin), *vars(TrashMixin), *vars(LookupsMixin), *vars(DeleteMixin), *vars(KbMixin), *vars(KbListingsMixin)})
 
 
 @pytest.mark.parametrize("name", IMPLEMENTED)
@@ -121,7 +126,7 @@ def test_the_foundation_implements_the_generic_documents_and_edges() -> None:
 
 def test_no_name_is_defined_by_a_mixin_and_the_base_class() -> None:
     """A name defined twice is silently decided by the MRO."""
-    names = {m: {n for n in vars(m) if not (n.startswith("__") and n.endswith("__"))} for m in (core.CoreMixin, PermissionsMixin, IdentityMixin, CodeGraphMixin, RecordsMixin, HierarchyMixin)}
+    names = {m: {n for n in vars(m) if not (n.startswith("__") and n.endswith("__"))} for m in (core.CoreMixin, PermissionsMixin, IdentityMixin, CodeGraphMixin, RecordsMixin, HierarchyMixin, TrashMixin, LookupsMixin, DeleteMixin, KbMixin, KbListingsMixin)}
     mixins = list(names)
     assert not [n for i, a in enumerate(mixins) for b in mixins[i + 1:] for n in names[a] & names[b]], "defined by two mixins"
     assert not [n for ns in names.values() for n in ns if n in vars(PgBase)]
@@ -185,3 +190,24 @@ async def test_ping_runs_one_constant_select_through_the_service_role() -> None:
     db.runtime_uow.return_value.__aexit__ = AsyncMock(return_value=False)
     await PgBase(logging.getLogger("t"), db).ping()
     tx.fetchval.assert_awaited_once_with("/* pipeshub:graph.ping */ SELECT 1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("org_id", "found"), [(None, True), ("o1", True), ("o2", False)])
+async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, found: bool) -> None:
+    """An ``org_id`` is checked against the bound org, never put into the query: a different org reads as no user."""
+    from app.core.org_context import for_org
+    from app.services.graph_db.postgres import identity
+
+    p = object.__new__(IdentityMixin)
+    p.logger = logging.getLogger("t")
+    p._one = AsyncMock(return_value={"email": "a@x.io"})
+    user = object()
+    with for_org("o1", job="t"), patch.object(identity, "_arango", lambda d, _c: d), \
+            patch.object(identity.User, "from_arango_user", return_value=user):
+        got = await p.get_user_by_email("A@x.io", org_id=org_id)
+    assert got is (user if found else None)
+    if found:
+        assert p._one.await_args.args[1:] == ("o1", "A@x.io")
+    else:
+        p._one.assert_not_awaited()

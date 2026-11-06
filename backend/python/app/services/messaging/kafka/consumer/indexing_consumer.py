@@ -146,7 +146,7 @@ class _InFlightOffset:
     """One buffered offset's outstanding claim on the commit watermark.
 
     ``__process_message_wrapper`` has several paths that deliberately return
-    without committing (shutdown, a contended record lease). Committing
+    without committing (shutdown, a failed hand-back). Committing
     ``offset + 1`` per message let a later message cover those; a watermark
     does not, so an offset nobody resolves stalls every later commit on its
     partition. Each path therefore states which end it reached, and the
@@ -154,12 +154,14 @@ class _InFlightOffset:
     a stalled watermark is never the silent default.
     """
 
-    __slots__ = ("tp", "offset", "resolved")
+    __slots__ = ("tp", "offset", "resolved", "epoch")
 
-    def __init__(self, tp: "TopicPartition", offset: int) -> None:
+    def __init__(self, tp: "TopicPartition", offset: int, epoch: int | None = None) -> None:
         self.tp = tp
         self.offset = offset
         self.resolved = False
+        # The partition's assignment when this delivery began; None when unknown.
+        self.epoch = epoch
 
 
 class _ReadOutcome:
@@ -216,6 +218,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         disposition_sink: Optional[AbandonedMessageSink] = None,
         connector_off_filter: ConnectorOffFilter | None = None,
         stage_admission: "concurrency.StageAdmission | None" = None,
+        priority_lane: "concurrency.PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
     ) -> None:
         self.logger = logger
@@ -241,6 +244,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if stage_admission is not None and governor is not None:
             raise ValueError("a pipeline-stage consumer admits through its own limit, not a governor")
         self.stage_admission = stage_admission
+        if priority_lane is not None and stage_admission is not None:
+            raise ValueError("a consumer is a pipeline stage or the priority lane, not both")
+        # The consumer of the priority topic: reads past the backlog, on caps of its own.
+        self.priority_lane = priority_lane
         # Shared by every indexing consumer in the process (see WorkerLoop); None runs a loop of
         # this consumer's own.
         self._shared_worker = worker
@@ -326,6 +333,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._partitions_with_data: set[TopicPartition] = set()
         # Partitions revoked since the last poll; see __read_phase.
         self._revoked_since_poll: set[TopicPartition] = set()
+        # Bumped on every revocation: a delivery of an earlier assignment settles nothing, however late it ends.
+        self._partition_epoch: dict[TopicPartition, int] = {}
         self._deferred_messages: deque[
             tuple[TopicPartition, ConsumerRecord, StreamMessage, FairnessKey]
         ] = deque()
@@ -399,7 +408,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # Legacy static semaphores, created in the worker thread's event loop.
             self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
             self.indexing_semaphore = asyncio.Semaphore(
-                self.stage_admission.limit if self.stage_admission else messaging_env.max_concurrent_indexing
+                concurrency.local_index_permits(self)
             )
             self.logger.info("Worker thread event loop started with semaphores initialized")
 
@@ -431,7 +440,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self._shared_worker.add_exit_listener(self._stop_taking_work)
             self._shared_worker.call(lambda: self._on_worker_loop_started(loop))
             # Reported once, under the record consumer: every consumer on the loop sees the same lag.
-            self.loop_lag_monitor = self._shared_worker.lag_monitor if self.stage_admission is None else None
+            self.loop_lag_monitor = self._shared_worker.lag_monitor if self.stage_admission is None and self.priority_lane is None else None
             self.worker_loop_ready.set()
             return
 
@@ -831,6 +840,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if not revoked_set:
             return
         self._revoked_since_poll.update(revoked_set)
+        for tp in revoked_set:
+            self._partition_epoch[tp] = self._partition_epoch.get(tp, 0) + 1
 
         purged = self._scheduler.purge(lambda item: item[0] in revoked_set)
         for tp in revoked_set:
@@ -992,14 +1003,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         record runs beside it.
 
         This replaces -- rather than merely relaxes -- the per-partition
-        rule. ``record_lease_wait_seconds`` documents that the cluster-wide
-        ``record:`` lease is "only contended by duplicate in-flight
-        deliveries of the same record", and the loser of that contention is
-        dropped as already-handled. That assumption holds today *because* a
-        partition only ever has one message in flight. Letting a partition
-        run several at once without this check would put two genuinely
-        different events for one record (a create and its update) into that
-        contention, and silently discard one.
+        rule. Letting a partition run several at once without this check would
+        put two different events for one record (a create and its update) into
+        contention for the cluster-wide ``record:`` lease, and the loser would
+        spend an index slot waiting before it is handed back.
         """
         with self._partition_lock:
             if record_key in self._in_flight_records:
@@ -1845,8 +1852,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         once, and commit if that let the watermark advance.
 
         ``done=True`` means this delivery is finished with (processed,
-        re-queued, dead-lettered, or superseded by a duplicate that holds the
-        record lease) and the watermark may pass it. ``done=False`` means it
+        re-queued or dead-lettered) and the watermark may pass it. ``done=False`` means it
         was not processed and must be redelivered, so it becomes a floor the
         watermark stops at until the offset is read again.
 
@@ -1870,6 +1876,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # from nothing and commit past offsets the next owner still needs.
             if self.consumer is None or tp in self._revoked_since_poll:
                 return
+            # The revocation flag is cleared at the next poll; a delivery that ends after that is still of the
+            # revoked assignment, and settling it would commit from a watermark rebuilt without its backlog.
+            if in_flight.epoch is not None and in_flight.epoch != self._partition_epoch.get(tp, 0):
+                return
             watermark = (
                 offset_tracker.mark_done(tp, offset)
                 if done
@@ -1881,6 +1891,45 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 await self.consumer.commit({tp: watermark})  # type: ignore
 
         await self._run_on_main_loop(do_resolve())
+
+    async def __rebuffer_after_failed_handback(
+        self,
+        message: ConsumerRecord,
+        parsed: StreamMessage,
+        in_flight: "_InFlightOffset | None",
+        delay_s: float | None,
+    ) -> None:
+        """Put a message nothing re-published back in the buffer.
+
+        A redelivery floor would not do: the read position is already past the
+        offset, so only a restart brings it back, and the dwell sweep commits
+        past it first. A buffered offset floors the watermark with no dwell clock.
+        """
+        if not self.running:
+            await self.__resolve_offset(in_flight, done=False)
+            return
+        tp = TopicPartition(message.topic, message.partition)
+        delay = delay_s if delay_s is not None else _compute_retry_backoff_seconds(1)
+        parsed.payload["_retry_not_before"] = time.time() + delay
+
+        async def rebuffer() -> None:
+            epoch = in_flight.epoch if in_flight is not None else None
+            # Revoked meanwhile: nothing committed it, so the next owner reads it.
+            if tp in self._revoked_since_poll or (
+                epoch is not None and epoch != self._partition_epoch.get(tp, 0)
+            ):
+                return
+            self._offset_tracker.track(tp, message.offset)
+            key = self.key_extractor.extract(parsed)
+            accepted = self._scheduler.enqueue(
+                key, (tp, message, parsed), not_before=self.__retry_not_before(parsed)
+            )
+            if accepted != EnqueueResult.ACCEPTED:
+                self._deferred_messages.append((tp, message, parsed, key))
+
+        await self._run_on_main_loop(rebuffer())
+        if in_flight is not None:
+            in_flight.resolved = True
 
     async def __sweep_stale_offsets(self) -> None:
         """Force-resolve offsets held past the dwell budget.
@@ -1970,7 +2019,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             key, (tp, message, parsed) = dispatched
             metrics.record_dispatch("kafka", key[0] if key else "unknown")
-            in_flight = _InFlightOffset(tp, message.offset)
+            in_flight = _InFlightOffset(tp, message.offset, self._partition_epoch.get(tp, 0))
             record_key = self.__record_key(message, parsed) if parallel else None
             reserved = (
                 self.__reserve_record(record_key)
@@ -2691,21 +2740,17 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         leases=distributed_leases,
                     )
                 if not record_lease_held:
-                    outcome = "contended" if self.running else "stopped"
-                    if self.running:
-                        self.logger.debug(
-                            f"Record lease contended for {message_id}; another "
-                            "in-flight duplicate delivery already owns it, so "
-                            "this delivery is finished with"
-                        )
-                    # Resolved as done, not redelivered: the duplicate holding
-                    # the lease is processing this record, and if it fails it
-                    # re-queues under the same tracking id. Leaving it
-                    # unresolved would pin the commit watermark for the whole
-                    # partition -- the pre-watermark code relied on a later
-                    # message's offset+1 commit covering this one.
-                    await self.__resolve_offset(in_flight, done=True)
-                    return False
+                    if not self.running:
+                        outcome = "stopped"
+                        await self.__resolve_offset(in_flight, done=False)
+                        return False
+                    # Re-published, not left unresolved: redelivery by offset
+                    # would pin the commit watermark for the whole partition.
+                    raise concurrency.RecordLeaseHeld(
+                        f"{record_pool} not free within "
+                        f"{messaging_env.record_lease_wait_seconds:.0f}s",
+                        delay_s=messaging_env.record_lease_wait_seconds,
+                    )
 
             parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
 
@@ -2785,7 +2830,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     parse_tier = event.data.tier if event.data else None
                                     timeline.mark(timing.PARSE_REQUESTED)
                                     if self.governor is not None:
-                                        parse_lease_pool = concurrency.parse_lease_pool(parse_tier)
+                                        parse_lease_pool = concurrency.parse_lease_pool(parse_tier, self)
                                     # Node-local gate first, cluster lease
                                     # second. The gate is an asyncio Event and
                                     # costs nothing to queue on, so it absorbs
@@ -2994,10 +3039,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 except Exception as requeue_error:
                     self.logger.error(
                         "Failed to re-queue %s after its admission wait: %s. "
-                        "Leaving the offset uncommitted for redelivery",
+                        "Keeping it for redelivery",
                         message_id, requeue_error,
                     )
-                    await self.__resolve_offset(in_flight, done=False)
+                    if self._scheduler is None:
+                        # The future's callback seeks back here. Returning would
+                        # let the next message's commit cover this offset.
+                        raise
+                    await self.__rebuffer_after_failed_handback(
+                        message, parsed_message, in_flight, e.delay_s
+                    )
                     return False
             await self.__settle_done(message, in_flight)
             return False

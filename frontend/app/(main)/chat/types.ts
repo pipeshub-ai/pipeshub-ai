@@ -910,6 +910,8 @@ export interface SSECompleteEvent {
     timestamp: string;
     duration: number;
     searchDegraded?: boolean;
+    /** Name-only hits for records whose content is not indexed yet. */
+    unindexedMatches?: UnindexedMatch[];
   };
 }
 
@@ -996,6 +998,8 @@ export interface StreamChatRequest {
   projectId?: string;
   /** The person's answer to a tool approval card; the call itself is saved server-side. */
   toolApproval?: ToolApprovalAnswer;
+  /** Compare mode only: asks the server for a `turn_started` event once the question is saved. */
+  compareTurn?: true;
 }
 
 export type ToolApprovalDecision = 'allow' | 'deny';
@@ -1308,6 +1312,13 @@ export interface SearchResultItem {
   virtual_record_id?: string;
   block_index?: number;
   block_group_index?: number;
+}
+
+export interface UnindexedMatch {
+  recordId: string;
+  recordName: string;
+  connector?: string | null;
+  note?: string;
 }
 
 export interface SearchResponse {

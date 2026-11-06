@@ -281,6 +281,17 @@ async def test_two_foreign_keys_of_one_type_between_a_pair_are_two_links(pg_db) 
     assert sorted(e["constraintName"] for e in edges) == ["fk_a", "fk_b"] and next(e for e in edges if e["constraintName"] == "fk_a")["note"] == "again"
 
 
+async def test_parallel_links_split_by_a_page_boundary_are_all_returned(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "t1"}, {"_key": "t2"}], "records")
+    await p.batch_upsert_node_relations([edge("t1", "t2", "FOREIGN_KEY", "records", "records", constraintName=name) for name in ("fk_a", "fk_b", "fk_c")])
+    out, after = [], ""
+    while page := await p.get_neighbors_for_nodes_by_relationship_types(["t1"], "records", ["FOREIGN_KEY"], "outbound", limit=1, after=after):
+        out += page
+        after = page[-1]["cursor"]
+    assert len(out) == 3 and len({r["cursor"] for r in out}) == 3
+
+
 def ctx(org: str) -> OrgContext:
     return OrgContext(org, None, "job", "job:test", "t")
 
@@ -375,6 +386,22 @@ async def test_neighbours_by_direction_with_a_self_loop(pg_db) -> None:
     assert await keys("outbound", ["IMPORTS"]) == ["c"] and await keys("inbound", ["IMPORTS"]) == []
     many = await p.get_neighbors_for_nodes_by_relationship_types(["a", "c"], "blocks", ["CALLS"], "any")
     assert sorted((n["anchorKey"], n["key"]) for n in many) == [("a", "a"), ("a", "b"), ("a", "c"), ("c", "a")]
+
+
+async def test_neighbours_page_in_cursor_order_and_resume_after_a_cursor(pg_db) -> None:
+    p = bound(pg_db)
+    await blocks(p, "a", "b", "c", "d")
+    await p.batch_upsert_node_relations([edge("a", "d", "CALLS"), edge("a", "b", "CALLS"), edge("c", "a", "CALLS"), edge("a", "c", "IMPORTS")])
+
+    async def page(after, limit) -> list[dict]:
+        return await p.get_neighbors_for_nodes_by_relationship_types(["a"], "blocks", ["CALLS", "IMPORTS"], "any", limit=limit, after=after)
+    everything = await page("", 100)
+    cursors = [r["cursor"] for r in everything]
+    assert len(cursors) == 4 and cursors == sorted(cursors)
+    assert [(r["direction"], r["key"]) for r in everything] == [("inbound", "c"), ("outbound", "b"), ("outbound", "c"), ("outbound", "d")]
+    assert [r["cursor"] for r in await page("", 1)] == cursors[:1] and [r["cursor"] for r in await page(cursors[1], 100)] == cursors[2:]
+    assert await page(cursors[-1], 100) == []
+    assert all("cursor" not in r for r in await p.get_neighbors_for_nodes_by_relationship_types(["a"], "blocks", ["CALLS"], "any"))     # unpaged callers are unchanged
 
 
 async def test_one_batch_of_links_merges_repeats_clears_nulls_and_keeps_types_apart(pg_db) -> None:
@@ -503,3 +530,34 @@ async def test_the_retention_reads_carry_each_rows_org(pg_db) -> None:
         for read in (sys_p.get_switch_pointers, sys_p.get_revision_pointers):
             got = {x["virtualRecordId"]: x["orgId"] for x in await read(None, 100000) if x["virtualRecordId"].endswith(tag)}
             assert got == {f"v{i}-{tag}": o for i, o in enumerate(orgs)}
+
+
+async def test_the_inactive_connector_sweep_changes_only_the_org_it_runs_under(pg_db) -> None:
+    from app.core.org_context import for_org
+    from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+    orgs = [new_org(), new_org()]
+    tag = uuid.uuid4().hex
+    for o in orgs:
+        p = bound(pg_db, o)
+        await p.batch_upsert_nodes([{"_key": f"c-{tag}", "isActive": False, "orgId": o}], "apps")
+        await p.batch_upsert_nodes([{"_key": f"r-{tag}", "orgId": o, "connectorId": f"c-{tag}", "origin": "CONNECTOR", "indexingStatus": "QUEUED"}], "records")
+    provider = StandInProvider(logging.getLogger("cg"), pg_db)
+    with for_org(orgs[0], job="test.queued_sweep"):
+        assert await _sweep_queued_records_for_inactive_connectors(graph_provider=provider, logger=logging.getLogger("cg"), page_size=50, org_id=orgs[0]) == 1
+    assert (await bound(pg_db, orgs[0]).get_document(f"r-{tag}", "records"))["indexingStatus"] == "AUTO_INDEX_OFF"
+    assert (await bound(pg_db, orgs[1]).get_document(f"r-{tag}", "records"))["indexingStatus"] == "QUEUED"
+
+
+async def test_a_pointer_page_that_ends_on_a_shared_virtual_record_id_holds_every_orgs_pointer_of_it(pg_db) -> None:
+    orgs = [new_org(), new_org()]
+    vrid = f"v-{uuid.uuid4().hex}"
+    for i, o in enumerate(orgs):
+        p = bound(pg_db, o)
+        await p.batch_upsert_nodes([{"_key": o, "name": f"org{i}"}], "organizations")
+        await p.batch_upsert_nodes([{"_key": vrid, "documentId": f"d{i}", "switchSeq": 1, "retired": [], "currentRev": f"r{i}"}], "virtualRecordToDocIdMapping")
+    sys_p = StandInProvider(logging.getLogger("cg"), pg_db)
+    with org_context.system("test.pointer_page"):
+        for read in (sys_p.get_switch_pointers, sys_p.get_revision_pointers):
+            got = [x for x in await read(vrid[:-1] + chr(ord(vrid[-1]) - 1), 1) if x["virtualRecordId"] == vrid]
+            assert sorted(x["orgId"] for x in got) == sorted(orgs)       # a page of one still holds both, so a walk that continues after it misses neither

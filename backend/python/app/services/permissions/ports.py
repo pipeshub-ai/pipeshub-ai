@@ -7,7 +7,10 @@ and ArangoDB, `fakes.py` over plain dicts. Dependency direction: retrieval -> pe
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 @dataclass(frozen=True)
@@ -80,4 +83,66 @@ class PrincipalView(Protocol):
 
     async def readable(self, org_id: str, who: Principal, node_ids: frozenset[str]) -> frozenset[str]:
         """The subset of `node_ids` the graph check admits to this viewer (`who` is what `principal` returned)."""
+        ...
+
+
+@dataclass(frozen=True)
+class StampNode:
+    """A record, record group or app, with what a stamper needs to know about it. Viewer-independent. An app is a node
+    only because a hierarchy may reach it (it then belongs on a path); it is never a scope."""
+
+    id: str
+    kind: str  # "record" | "group" | "app"
+    connector_id: str
+    #: Hierarchy parents (PARENT_CHILD and ATTACHMENT edges into it), by id. Parents that do not exist are left out.
+    parents: tuple[str, ...] = ()
+    #: The parents it inherits access from (INHERIT_PERMISSIONS edges).
+    inherits: frozenset[str] = frozenset()
+    #: accessRule as stored; None reads OPEN.
+    rule: str | None = None
+    deleted: bool = False
+    placeholder: bool = False
+    #: At least one PERMISSION edge into it.
+    granted: bool = False
+    #: A record group that declares its own readers (permissionModel RECORD_GROUP_LEVEL).
+    group_level: bool = False
+    #: The record groups it belongs to (BELONGS_TO), or for a group its parent groups. Apps are not listed.
+    groups: tuple[str, ...] = ()
+    vrid: str | None = None
+    #: A BELONGS_TO edge to the app itself (what makes a record a member of an app that opens everything).
+    belongs_app: bool = False
+
+
+@dataclass(frozen=True)
+class StampApp:
+    connector_type: str
+    #: APP_LEVEL permission model or a KB: membership of the app admits everything in it.
+    opens: bool
+    #: Some record group of the app is RECORD_GROUP_LEVEL.
+    has_group_level: bool
+
+
+#: How deep `subtree_vrids` walks; a subtree with anything below this depth is refused (`ViewerScopesUnavailable`), not cut.
+SUBTREE_DEPTH = 200
+
+
+class StampGraph(Protocol):
+    """What a stamper reads. Read-only, independent of any viewer, and not cached by the implementation."""
+
+    async def app(self, org_id: str, app_id: str) -> StampApp: ...
+
+    async def nodes(self, org_id: str, ids: frozenset[str]) -> dict[str, StampNode]:
+        """The records, record groups and apps (`kind` "app") of this organisation among `ids`; ids that do not exist are absent. The projector
+        needs the app node: a record whose route to the app is not in `nodes` is refused, not stamped."""
+        ...
+
+    async def record_page(self, org_id: str, app_id: str, after: str | None, limit: int) -> list[str]:
+        """Up to `limit` record ids of the app, ordered, strictly after `after` (deleted ones included). A failed read raises."""
+        ...
+
+    async def subtree_vrids(self, org_id: str, ids: Sequence[str]) -> list[str]:
+        """The virtual record ids of these records and of the records of these groups, and of everything below them over hierarchy edges only (PARENT_CHILD and
+        ATTACHMENT; every edge of the path must be one, so a record reached only through a link edge such as SIBLING is not in the subtree), in no
+        particular order. A restriction, a move or a delete reaches the descendants. Ids that do not exist in this organisation add nothing. A failed
+        read raises, and so does a subtree deeper than `SUBTREE_DEPTH` (200); the caller must then treat the whole connector as reached: a record that deep would never be hidden by an answer cut short."""
         ...

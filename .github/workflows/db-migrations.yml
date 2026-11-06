@@ -25,33 +25,50 @@ jobs:
       fail-fast: false
       matrix:
         pg: ['17', '18']
-        shard: [rls, integration, graph, vetted, placement]
+        shard: [rls, integration, graph, vetted, pins, placement, upkeep, upgrade, kg]
         include:
           - shard: rls
             files: tests/test_rls.py tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
-            min_tests: 440
+            min_tests: 448
             suites: ''
           - shard: integration
             files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py
-            min_tests: 54
+            min_tests: 56
             suites: ''
           - shard: graph
             files: tests/test_graph.py tests/test_retrieval.py
-            min_tests: 55
-            suites: '--expect-suite tests.test_graph=34 --expect-suite tests.test_retrieval=21'
+            min_tests: 62
+            suites: '--expect-suite tests.test_graph=41 --expect-suite tests.test_retrieval=22'
           - shard: vetted
             files: tests/test_vetted.py tests/test_vetted_kernel.py tests/test_change_log.py
-            min_tests: 423
+            min_tests: 533
+            suites: ''
+          - shard: pins
+            files: tests/test_vetted_pins.py tests/test_vetted_pins_k2.py tests/test_vetted_pins_k3.py tests/test_vetted_org_policy.py
+            min_tests: 351
             suites: ''
           - shard: placement
             files: tests/test_placement.py
             min_tests: 16
             suites: '--expect-suite tests.test_placement=16'
+          - shard: upkeep
+            files: tests/test_upkeep.py
+            min_tests: 36
+            suites: '--expect-suite tests.test_upkeep=36'
+          - shard: upgrade
+            files: tests/test_pins_upgrade.py
+            min_tests: 8
+            suites: ''
+          - shard: kg
+            files: tests/test_kg_schema.py tests/test_kg_writers.py tests/test_kg_downgrade.py
+            min_tests: 293
+            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=278 --expect-suite tests.test_kg_downgrade=7'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: ${{ matrix.shard != 'upgrade' && 1 || 0 }}      # the upgrade test starts from the tree before kernel_0016, read from the history
 
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -83,6 +100,7 @@ jobs:
           python -m db.lib.vetted check db/versions/kernel/vetted/manifest.yaml
           python -m db.lib.vetted check db/versions/platform/vetted/manifest.yaml
           python -m db.lib.vetted check db/versions/graph/vetted/manifest.yaml
+          python -m db.lib.vetted check db/versions/kg/vetted/manifest.yaml
           python -m db.lib.vetted check db/versions/retrieval/vetted/manifest.yaml
 
       - name: Empty database to heads, then the org isolation catalog check
@@ -92,6 +110,7 @@ jobs:
         env:
           PG_ADMIN_URL: postgresql://postgres@127.0.0.1:5432/ci_catalog
           PG_BOOTSTRAP_EXTENSIONS: vector,pg_trgm
+          PG_BOOTSTRAP_ALLOW_NO_PASSWORD: '1'   # the CI server trusts local logins
           PG_MIGRATE_URL: postgresql+psycopg://pipeshub_migrate@127.0.0.1:5432/ci_catalog
         run: |
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE ci_catalog'
@@ -121,7 +140,10 @@ jobs:
           python3 scripts/assert_no_skips.py "$RUNNER_TEMP/db-junit.xml" --min-tests ${{ matrix.min_tests }} $SUITES \
             --allow='-kernel.org_parent_ids]' --allow='-kernel.org_lineage]' --allow='-platform.job_start]' --allow='-platform.job_finish]' \
             --allow='-platform.job_checkpoint]' --allow='-identity.oldest_org]' --allow='-identity.org_count]' \
+            --allow='-identity.gauge_user_counts]' --allow='-identity.gauge_live_orgs]' --allow='-identity.gauge_auth_configs]' \
             --allow='-kt.set_note_title]' --allow='-kt.token_owner]' --allow='-ku.item_labels]' \
+            --allow='-kt.w_fence_add]' --allow='-kt.w_fence_remove]' --allow='-kt.w_fence_reason]' --allow='-kt.w_changes_ack]' \
+            --allow='-kt.w_keys_add]' --allow='-kt.w_pref_put]' \
             --allow='-retrieval.collection_create]' \
             --allow='-retrieval.collection_mark_deleting]' \
             --allow='-retrieval.collection_stamp_set]' \

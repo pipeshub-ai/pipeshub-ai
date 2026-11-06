@@ -28,6 +28,14 @@ EXTRACTION_DEFERRED_FIELD = "extractionDeferred"
 #: take before the remaining images are stored undescribed. Unset means no limit.
 IMAGE_DESCRIPTION_BUDGET_S = "image_description_budget_s"
 
+#: ``TransformContext.settings`` key: the run is a parse-now run, so once the content is stored the record is marked
+#: ``parseNowStatus=STORED`` (see ``app.modules.indexing.parse_now_marker``).
+PARSE_NOW = "parse_now"
+
+#: ``TransformContext.settings`` key: store the content and mark it, nothing else. No vectors, no entity points, no
+#: reconciliation metadata, no status on the record, no hand-off to the pipeline stages.
+STORE_ONLY = "store_only"
+
 
 class TransformContext(BaseModel):
     record: Record

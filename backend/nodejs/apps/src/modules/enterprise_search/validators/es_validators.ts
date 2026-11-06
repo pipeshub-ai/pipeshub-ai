@@ -460,6 +460,9 @@ const enterpriseSearchCreateBodySchema = z.object({
   ...keywordSearchFieldsSchema,
 });
 
+/** Opt-in: this turn is also being answered by a second model (Compare models); the stream announces the question's id early. */
+const compareTurnSchema = z.boolean().optional();
+
 export const enterpriseSearchCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema,
 });
@@ -478,6 +481,7 @@ const universalStreamChatModeSchema = z.enum(UNIVERSAL_STREAM_CHAT_MODES, {
 export const enterpriseSearchStreamCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema.extend({
     chatMode: universalStreamChatModeSchema,
+    compareTurn: compareTurnSchema,
   }),
 });
 
@@ -674,6 +678,7 @@ export const addMessageStreamParamsSchema = z.object({
   params: z.object(conversationIdParam),
   body: addMessageBodySchema.extend({
     chatMode: universalStreamChatModeSchema,
+    compareTurn: compareTurnSchema,
   }),
 });
 
@@ -1363,6 +1368,31 @@ export const enterpriseSearchRetrieveSchema = z.object({
   }),
 });
 
+/**
+ * Exact-text search. The pattern is literal text unless `regex` is true; the
+ * AI service refuses what it cannot run (back-references, an invalid
+ * expression) and answers 400 with the reason.
+ */
+export const enterpriseSearchGrepSchema = z.object({
+  body: z.object({
+    pattern: z
+      .string()
+      .min(1, { message: 'A pattern is required' })
+      .max(500, { message: 'A pattern must be at most 500 characters' })
+      .refine((value) => !/[\r\n\0]/.test(value), {
+        message: 'A pattern must be one line',
+      }),
+    regex: z.boolean().optional(),
+    caseSensitive: z.boolean().optional(),
+    filters: filtersSchema,
+    paths: z.array(z.string().min(1).max(256)).max(20).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    contextLines: z.number().int().min(0).max(10).optional(),
+    maxMatchesPerRecord: z.number().int().min(1).max(50).optional(),
+    timeBudgetMs: z.number().int().min(500).max(30000).optional(),
+  }),
+});
+
 const ENTITY_TYPES = [
   'department',
   'category',
@@ -1685,4 +1715,28 @@ export const agentAttachmentUploadSchema = z.object({
 
 export const agentAttachmentRecordIdParamsSchema = z.object({
   params: z.object({ ...agentKeyParam, ...recordIdParam }),
+});
+
+// ---------------------------------------------------------------------------
+// Compare models: a hidden branch conversation answers the same question
+// ---------------------------------------------------------------------------
+
+/** `compare/branch` body: the saved question to re-ask in the branch. */
+export const compareBranchParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: z.object({ userMessageId: objectId('message ID') }),
+});
+
+export const compareListParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+});
+
+/** `compare/choose` body: `primary` keeps the conversation's own answer, a branch id swaps that branch's turn in. */
+export const compareChooseParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: z.object({
+    choice: z.string().regex(/^(primary|[a-f0-9]{24})$/i, {
+      message: "choice must be 'primary' or a branch conversation ID",
+    }),
+  }),
 });

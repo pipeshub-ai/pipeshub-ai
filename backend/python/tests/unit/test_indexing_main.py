@@ -1112,6 +1112,13 @@ class TestRecoverCutShortEnrichment:
 class TestStartKafkaConsumers:
     """Tests for start_kafka_consumers()."""
 
+    @pytest.fixture(autouse=True)
+    def _no_record_title_consumer(self) -> "Iterator[None]":
+        # Wired and tested in tests/unit/modules/indexing/test_record_title_wiring.py; here it would take
+        # a consumer from the factory fakes these tests queue up for the record and stage consumers.
+        with patch("app.indexing_main._start_record_title_consumer", new_callable=AsyncMock):
+            yield
+
     async def test_success_non_neo4j(self) -> None:
         """Record consumer is started successfully for non-neo4j data store."""
         from app.indexing_main import start_kafka_consumers
@@ -1122,6 +1129,7 @@ class TestStartKafkaConsumers:
         
         mock_producer = MagicMock()
         mock_producer.initialize = AsyncMock()
+        priority_consumer = MagicMock(start=AsyncMock())
         stage_consumer = MagicMock(start=AsyncMock())
         admin = MagicMock(ensure_topics_exist=AsyncMock())
 
@@ -1133,32 +1141,41 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[mock_consumer, stage_consumer]) as create_consumer,
+            patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[mock_consumer, priority_consumer, stage_consumer]) as create_consumer,
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
         ):
             consumers = await start_kafka_consumers(mock_container)
 
-        assert len(consumers) == 2
+        assert len(consumers) == 3
         assert consumers[0][0] == "record"
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
-        # The stage consumer shares the retry producer, which the record entry owns and closes.
-        assert consumers[1] == ("pipeline.classify", stage_consumer, None)
-        admin.ensure_topics_exist.assert_awaited_once_with(["pipeline.classify"])
+        # The priority and stage consumers share the retry producer, which the record entry owns and closes.
+        assert consumers[1] == ("record-events-priority", priority_consumer, None)
+        assert consumers[2] == ("pipeline.classify", stage_consumer, None)
+        assert [call.args[0] for call in admin.ensure_topics_exist.await_args_list] == [
+            ["record-events-priority"], ["pipeline.classify"],
+        ]
         runtime = mock_container.pipeline_runtime.return_value
         runtime.publisher.bind.assert_called_once()
         assert runtime.publisher.bind.call_args.args[0] is mock_producer
-        stage_kwargs = create_consumer.call_args_list[1].kwargs
+        priority_kwargs = create_consumer.call_args_list[1].kwargs
+        assert priority_kwargs["priority_lane"].heavy_limit == 1 and priority_kwargs["priority_lane"].light_limit == 3
+        assert priority_kwargs["disposition_sink"] is not runtime.handler  # the record handler, as the record consumer has
+        assert "stage_admission" not in priority_kwargs
+        priority_consumer.start.assert_awaited_once()
+        stage_kwargs = create_consumer.call_args_list[2].kwargs
         assert stage_kwargs["stage_admission"].stage == "classify"
         assert stage_kwargs["stage_admission"].limit == 2
         assert stage_kwargs["disposition_sink"] is runtime.handler
         stage_consumer.start.assert_awaited_once_with(runtime.handler)
-        # Both consumers run their handlers on one shared worker loop.
+        # Every consumer runs its handlers on one shared worker loop.
         worker = create_consumer.call_args_list[0].kwargs["worker"]
         assert isinstance(worker, WorkerLoop)
-        assert create_consumer.call_args_list[1].kwargs["worker"] is worker
+        assert priority_kwargs["worker"] is worker
+        assert create_consumer.call_args_list[2].kwargs["worker"] is worker
 
     async def test_success_neo4j(self) -> None:
         """Startup under Neo4j is now ordinary.
@@ -1179,6 +1196,7 @@ class TestStartKafkaConsumers:
 
         mock_producer = MagicMock()
         mock_producer.initialize = AsyncMock()
+        priority_consumer = MagicMock(start=AsyncMock())
         stage_consumer = MagicMock(start=AsyncMock())
         admin = MagicMock(ensure_topics_exist=AsyncMock())
 
@@ -1190,32 +1208,41 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[mock_consumer, stage_consumer]) as create_consumer,
+            patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[mock_consumer, priority_consumer, stage_consumer]) as create_consumer,
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
         ):
             consumers = await start_kafka_consumers(mock_container)
 
-        assert len(consumers) == 2
+        assert len(consumers) == 3
         assert consumers[0][0] == "record"
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
-        # The stage consumer shares the retry producer, which the record entry owns and closes.
-        assert consumers[1] == ("pipeline.classify", stage_consumer, None)
-        admin.ensure_topics_exist.assert_awaited_once_with(["pipeline.classify"])
+        # The priority and stage consumers share the retry producer, which the record entry owns and closes.
+        assert consumers[1] == ("record-events-priority", priority_consumer, None)
+        assert consumers[2] == ("pipeline.classify", stage_consumer, None)
+        assert [call.args[0] for call in admin.ensure_topics_exist.await_args_list] == [
+            ["record-events-priority"], ["pipeline.classify"],
+        ]
         runtime = mock_container.pipeline_runtime.return_value
         runtime.publisher.bind.assert_called_once()
         assert runtime.publisher.bind.call_args.args[0] is mock_producer
-        stage_kwargs = create_consumer.call_args_list[1].kwargs
+        priority_kwargs = create_consumer.call_args_list[1].kwargs
+        assert priority_kwargs["priority_lane"].heavy_limit == 1 and priority_kwargs["priority_lane"].light_limit == 3
+        assert priority_kwargs["disposition_sink"] is not runtime.handler  # the record handler, as the record consumer has
+        assert "stage_admission" not in priority_kwargs
+        priority_consumer.start.assert_awaited_once()
+        stage_kwargs = create_consumer.call_args_list[2].kwargs
         assert stage_kwargs["stage_admission"].stage == "classify"
         assert stage_kwargs["stage_admission"].limit == 2
         assert stage_kwargs["disposition_sink"] is runtime.handler
         stage_consumer.start.assert_awaited_once_with(runtime.handler)
-        # Both consumers run their handlers on one shared worker loop.
+        # Every consumer runs its handlers on one shared worker loop.
         worker = create_consumer.call_args_list[0].kwargs["worker"]
         assert isinstance(worker, WorkerLoop)
-        assert create_consumer.call_args_list[1].kwargs["worker"] is worker
+        assert priority_kwargs["worker"] is worker
+        assert create_consumer.call_args_list[2].kwargs["worker"] is worker
 
     async def test_connector_off_filter_reaches_the_record_consumer(self) -> None:
         """The container's filter is what lets the consumer settle a turned-off
@@ -1266,8 +1293,11 @@ class TestStartKafkaConsumers:
         ):
             await start_kafka_consumers(mock_container)
 
-        admissions = [c.kwargs["stage_admission"] for c in create_consumer.call_args_list[1:]]
+        admissions = [c.kwargs["stage_admission"] for c in create_consumer.call_args_list[1:] if "stage_admission" in c.kwargs]
         assert admissions and all(admission.workers == 3 for admission in admissions)
+        # The priority lane's lease pools are sized for them too.
+        (lane,) = [c.kwargs["priority_lane"] for c in create_consumer.call_args_list[1:] if "priority_lane" in c.kwargs]
+        assert lane.workers == 3
 
     async def test_distributed_concurrency_failure_aborts_startup(self) -> None:
         """Redis is a startup requirement: an unreachable one fails the boot.
@@ -1364,10 +1394,12 @@ class TestStageTopicsUnavailable:
 
         mock_container = _make_container()
         record_consumer = MagicMock(start=AsyncMock())
+        priority_consumer = MagicMock(start=AsyncMock())
         stage_consumer = MagicMock(start=AsyncMock())
         producer = MagicMock(initialize=AsyncMock())
         denied = RuntimeError("TopicAuthorizationFailedError")
-        admin = MagicMock(ensure_topics_exist=AsyncMock(side_effect=[denied, denied, None]))
+        # The priority topic first; then the stage topics are refused twice.
+        admin = MagicMock(ensure_topics_exist=AsyncMock(side_effect=[None, denied, denied, None]))
         runtime = mock_container.pipeline_runtime.return_value
 
         with (
@@ -1378,22 +1410,23 @@ class TestStageTopicsUnavailable:
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[record_consumer, stage_consumer]),
+            patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[record_consumer, priority_consumer, stage_consumer]),
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
+            patch("app.indexing_main._start_record_title_consumer", new_callable=AsyncMock),
             patch("app.indexing_main._TOPIC_RETRY_FIRST_S", 0.0),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
         ):
             consumers = await start_kafka_consumers(mock_container)
 
-            assert [entry[0] for entry in consumers] == ["record"]
+            assert [entry[0] for entry in consumers] == ["record", "record-events-priority"]
             record_consumer.start.assert_awaited_once()
             # Unbound, a claim stays QUEUED for the sweeper instead of waiting on a missing topic.
             runtime.publisher.bind.assert_not_called()
             await mock_container.stage_startup_task
 
-        assert admin.ensure_topics_exist.await_count == 3
-        assert consumers[1] == ("pipeline.classify", stage_consumer, None)
+        assert admin.ensure_topics_exist.await_count == 4
+        assert consumers[2] == ("pipeline.classify", stage_consumer, None)
         runtime.publisher.bind.assert_called_once()
         assert runtime.publisher.bind.call_args.args[0] is producer
         stage_consumer.start.assert_awaited_once_with(runtime.handler)
@@ -1406,10 +1439,11 @@ class TestStageTopicsUnavailable:
         runtime.registry.names.return_value = ("classify", "entities")
         runtime.stage_limits = {"classify": 2, "entities": 2}
         record_consumer = MagicMock(start=AsyncMock())
+        priority_consumer = MagicMock(start=AsyncMock())
         classify_first = MagicMock(start=AsyncMock(), stop=AsyncMock())
         entities_first = MagicMock(start=AsyncMock(side_effect=RuntimeError("broker blip")), stop=AsyncMock())
         classify, entities = MagicMock(start=AsyncMock()), MagicMock(start=AsyncMock())
-        admin = MagicMock(ensure_topics_exist=AsyncMock(side_effect=[RuntimeError("denied"), None, None]))
+        admin = MagicMock(ensure_topics_exist=AsyncMock(side_effect=[None, RuntimeError("denied"), None, None]))
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
@@ -1421,10 +1455,11 @@ class TestStageTopicsUnavailable:
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch(
                 "app.indexing_main.MessagingFactory.create_consumer",
-                side_effect=[record_consumer, classify_first, entities_first, classify, entities],
+                side_effect=[record_consumer, priority_consumer, classify_first, entities_first, classify, entities],
             ),
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
+            patch("app.indexing_main._start_record_title_consumer", new_callable=AsyncMock),
             patch("app.indexing_main._TOPIC_RETRY_FIRST_S", 0.0),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
         ):
@@ -1435,7 +1470,8 @@ class TestStageTopicsUnavailable:
         classify_first.stop.assert_awaited_once()
         entities_first.stop.assert_awaited_once()
         assert [(entry[0], entry[1]) for entry in consumers] == [
-            ("record", record_consumer), ("pipeline.classify", classify), ("pipeline.entities", entities),
+            ("record", record_consumer), ("record-events-priority", priority_consumer),
+            ("pipeline.classify", classify), ("pipeline.entities", entities),
         ]
         classify.start.assert_awaited_once()
         entities.start.assert_awaited_once()
@@ -1448,6 +1484,59 @@ class TestStageTopicsUnavailable:
         container.worker_loop = None
         waiting = asyncio.create_task(asyncio.sleep(3600))
         container.stage_startup_task = waiting
+
+        await stop_kafka_consumers(container)
+
+        assert waiting.cancelled()
+
+
+class TestPriorityTopicUnavailable:
+    """A broker that cannot create the priority topic must not stop records being indexed."""
+
+    async def test_the_record_consumer_runs_and_the_priority_consumer_starts_once_its_topic_exists(self) -> None:
+        from app.indexing_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        runtime = mock_container.pipeline_runtime.return_value
+        runtime.registry.names.return_value = ()
+        runtime.registry.topic_for.side_effect = lambda name: f"pipeline.{name}"
+        record_consumer = MagicMock(start=AsyncMock())
+        priority_consumer = MagicMock(start=AsyncMock())
+        denied = RuntimeError("TopicAuthorizationFailedError")
+        # Refused at startup and once more in the background, then created; the stage topics have none.
+        admin = MagicMock(ensure_topics_exist=AsyncMock(side_effect=[denied, denied, None, None]))
+
+        with (
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[record_consumer, priority_consumer]),
+            patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
+            patch("app.indexing_main._TOPIC_RETRY_FIRST_S", 0.0),
+            patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
+        ):
+            consumers = await start_kafka_consumers(mock_container)
+
+            assert [entry[0] for entry in consumers] == ["record"]
+            record_consumer.start.assert_awaited_once()
+            await mock_container.priority_startup_task
+
+        assert consumers[1] == ("record-events-priority", priority_consumer, None)
+        priority_consumer.start.assert_awaited_once()
+
+    async def test_shutdown_cancels_a_priority_start_still_waiting_for_its_topic(self) -> None:
+        from app.indexing_main import stop_kafka_consumers
+
+        container = _make_container()
+        container.kafka_consumers = []
+        container.worker_loop = None
+        waiting = asyncio.create_task(asyncio.sleep(3600))
+        container.priority_startup_task = waiting
 
         await stop_kafka_consumers(container)
 
@@ -2243,7 +2332,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         graph.get_document = AsyncMock(side_effect=unreadable_graph)
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2279,7 +2369,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         graph.get_document = AsyncMock(side_effect=unreadable_graph)
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2306,7 +2397,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         )
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2332,7 +2424,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         )
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2359,7 +2452,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         )
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2387,7 +2481,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         )
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2407,7 +2502,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         graph.get_document = AsyncMock(return_value=None)
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2427,7 +2523,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         )
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2446,7 +2543,7 @@ def _orphan_graph(mappings, records_by_vrid, trashed_by_vrid=None):
     happily accept a misspelled pagination keyword.
     """
     graph = AsyncMock()
-    state = {"rows": list(mappings)}
+    state = {"rows": [{"orgId": "o1", **row} for row in mappings]}  # a mapping row names its org
 
     async def _paged(
         collection,
@@ -2491,9 +2588,9 @@ class TestSweepOrphanedVirtualRecordMappings:
         """The scan cursor is module state that persists across ticks."""
         import app.indexing_main as m
 
-        m._orphan_sweep_cursor = 0
+        m._orphan_sweep_cursor = {}
         yield
-        m._orphan_sweep_cursor = 0
+        m._orphan_sweep_cursor = {}
 
     @pytest.mark.asyncio
     async def test_rows_left_by_an_incomplete_drop_are_reclaimed(self):
@@ -2518,6 +2615,7 @@ class TestSweepOrphanedVirtualRecordMappings:
             pipeline=pipeline,
             logger=MagicMock(),
             page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 2
@@ -2541,6 +2639,7 @@ class TestSweepOrphanedVirtualRecordMappings:
 
         swept = await _sweep_orphaned_virtual_record_mappings(
             graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2565,6 +2664,7 @@ class TestSweepOrphanedVirtualRecordMappings:
             pipeline=pipeline,
             logger=MagicMock(),
             page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2587,6 +2687,7 @@ class TestSweepOrphanedVirtualRecordMappings:
             pipeline=pipeline,
             logger=MagicMock(),
             page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2613,6 +2714,7 @@ class TestSweepOrphanedVirtualRecordMappings:
             pipeline=pipeline,
             logger=MagicMock(),
             page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2632,17 +2734,19 @@ class TestSweepOrphanedVirtualRecordMappings:
         pipeline = AsyncMock()
 
         await m._sweep_orphaned_virtual_record_mappings(
-            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=5
+            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=5,
+            org_id="org-1",
         )
 
         scanned = m.ORPHAN_SCAN_MAX_PAGES_PER_TICK * 5
         assert _scanned_vrids(graph) == [f"vr{i}" for i in range(scanned)]
         assert graph.get_virtual_record_ids_in_use.await_count == m.ORPHAN_SCAN_MAX_PAGES_PER_TICK
-        assert m._orphan_sweep_cursor == scanned
+        assert m._orphan_sweep_cursor == {"org-1": scanned}
 
         graph.get_virtual_record_ids_in_use.reset_mock()
         await m._sweep_orphaned_virtual_record_mappings(
-            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=5
+            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=5,
+            org_id="org-1",
         )
 
         assert _scanned_vrids(graph)[0] == f"vr{scanned}"
@@ -2665,6 +2769,7 @@ class TestSweepOrphanedVirtualRecordMappings:
 
         swept = await _sweep_orphaned_virtual_record_mappings(
             graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert graph.get_virtual_record_ids_in_use.await_count == 2
@@ -2687,6 +2792,7 @@ class TestSweepOrphanedVirtualRecordMappings:
 
         swept = await _sweep_orphaned_virtual_record_mappings(
             graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2702,10 +2808,11 @@ class TestSweepOrphanedVirtualRecordMappings:
         graph = _orphan_graph(rows, records_by_vrid={"vr-live": [{}]})
 
         await m._sweep_orphaned_virtual_record_mappings(
-            graph_provider=graph, pipeline=AsyncMock(), logger=MagicMock(), page_size=5
+            graph_provider=graph, pipeline=AsyncMock(), logger=MagicMock(), page_size=5,
+            org_id="org-1",
         )
 
-        assert m._orphan_sweep_cursor == 0
+        assert m._orphan_sweep_cursor == {"org-1": 0}
 
 
 # ===================================================================
@@ -2739,6 +2846,7 @@ async def _run_stranded(graph, producer=None, concurrency_manager=None, read_bac
         concurrency_manager=concurrency_manager,
         page_size=100,
         read_backlog=read_backlog,
+        org_id="org-1",
     )
 
 
@@ -3032,6 +3140,24 @@ class TestRepublishStrandedRecords:
             assert await _run_stranded(graph, producer) == 0
 
         producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_metadata_saves_do_not_keep_a_lost_event_from_recovery(self) -> None:
+        """A QUEUED row whose event was lost, saved again and again by syncs, is still recovered."""
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(
+                        queuedAtTimestamp=1, updatedAtTimestamp=get_epoch_timestamp_in_ms()
+                    )
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
 
     @pytest.mark.asyncio
     async def test_a_stale_queue_stamp_is_still_recovered(self) -> None:
@@ -3678,12 +3804,19 @@ class TestRecoveryAsksTheRecordConsumerForItsBacklog:
         graph = AsyncMock()
         graph.get_documents_paginated = AsyncMock(side_effect=_paged)
         graph.get_document = AsyncMock(return_value={"isActive": True})
+        graph.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1"}])
 
         with _stranded_env():
             await recover_in_progress_records(container, graph)
 
         consumer.lane_backlog.assert_awaited_once_with("record-events")
         container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+
+def _graph_with_orgs(*orgs: str) -> AsyncMock:
+    graph = AsyncMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": o} for o in orgs])
+    return graph
 
 
 class TestLaneUpkeepInTheRecoveryPass:
@@ -3714,7 +3847,7 @@ class TestLaneUpkeepInTheRecoveryPass:
         with patch("app.indexing_main.lane_assignments_in_use", return_value=None), \
              patch("app.indexing_main.run_lane_upkeep", new_callable=AsyncMock) as upkeep:
             await _upkeep_lanes(
-                graph_provider=MagicMock(), read_backlog=read, logger=MagicMock(),
+                graph_provider=_graph_with_orgs("org-1"), read_backlog=read, logger=MagicMock(),
             )
 
         upkeep.assert_not_awaited()
@@ -3732,13 +3865,14 @@ class TestLaneUpkeepInTheRecoveryPass:
                  side_effect=RuntimeError("redis gone"),
              ) as upkeep:
             await _upkeep_lanes(
-                graph_provider=MagicMock(),
+                graph_provider=_graph_with_orgs("org-2"),
                 read_backlog=AsyncMock(side_effect=ConnectionError("broker down")),
                 logger=logger,
             )
 
         assert upkeep.await_args.kwargs["backlog"] is None
         assert upkeep.await_args.kwargs["assignments"] is assignments
+        assert upkeep.await_args.kwargs["org_ids"] == ["org-2"]      # the organisations are listed when the upkeep runs, not before the stale scan
         logger.warning.assert_called_once()
 
 
@@ -4041,3 +4175,266 @@ class TestStopKafkaConsumersClosesRecordHandler:
         c.logger = MagicMock(return_value=MagicMock())
 
         await stop_kafka_consumers(c)
+
+
+class TestSweepsRunUnderEachOrganisation:
+    """The sweeps after the record scan read and write under the organisation they are given, and none runs without one."""
+
+    @staticmethod
+    def _graph(orgs: dict[str, list[dict]]) -> AsyncMock:
+        from app.core.org_context import current_org_id
+
+        seen: list[tuple[str, str]] = []
+        graph = AsyncMock()
+        graph.seen = seen
+        graph.get_all_orgs = AsyncMock(return_value=[{"_key": o} for o in orgs])
+
+        async def paged(collection, skip=0, limit=50, filters=None, sort_field=None, raise_on_error=False, **_: object) -> list[dict]:
+            org = current_org_id()          # raises, as the PostgreSQL store does, when no organisation is bound
+            seen.append((collection, org))
+            if skip:
+                return []
+            return [r for r in orgs[org] if r["orgId"] == (filters or {}).get("orgId") and r.get("indexingStatus") == (filters or {}).get("indexingStatus")]
+
+        graph.get_documents_paginated = AsyncMock(side_effect=paged)
+        graph.get_document = AsyncMock(return_value={"isActive": False})
+
+        async def update_node(key, collection, fields, *a, **k: object) -> bool:
+            seen.append(("update:" + key, current_org_id()))
+            return True
+
+        graph.update_node = AsyncMock(side_effect=update_node)
+        return graph
+
+    @pytest.mark.asyncio
+    async def test_the_inactive_connector_sweep_updates_each_record_under_its_own_org(self) -> None:
+        from app.core.org_context import for_org
+        from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+        rec = lambda o: {"_key": f"r-{o}", "orgId": o, "connectorId": "c", "origin": "CONNECTOR", "indexingStatus": "QUEUED"}  # noqa: E731
+        graph = self._graph({"o1": [rec("o1")], "o2": [rec("o2")]})
+        for org in ("o1", "o2"):
+            with for_org(org, job="test"):
+                assert await _sweep_queued_records_for_inactive_connectors(graph_provider=graph, logger=MagicMock(), page_size=10, org_id=org) == 1
+        updates = {(k, o) for k, o in graph.seen if k.startswith("update:")}
+        assert updates == {("update:r-o1", "o1"), ("update:r-o2", "o2")}
+
+    @pytest.mark.asyncio
+    async def test_a_sweep_without_an_org_context_reads_nothing(self) -> None:
+        from app.core.org_context import MissingOrgContext
+        from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+        graph = self._graph({"o1": []})
+        with pytest.raises(MissingOrgContext):
+            await _sweep_queued_records_for_inactive_connectors(graph_provider=graph, logger=MagicMock(), page_size=10, org_id="o1")
+
+    @pytest.mark.asyncio
+    async def test_the_orphan_sweep_keeps_a_cursor_for_each_org(self) -> None:
+        import app.indexing_main as m
+        from app.core.org_context import for_org
+
+        m._orphan_sweep_cursor = {}
+        mapping = lambda o, i: {"_key": f"v{o}{i}", "orgId": o}  # noqa: E731
+        calls: list[tuple[str, int]] = []
+
+        async def paged(collection, skip=0, limit=50, filters=None, **_: object) -> list[dict]:
+            from app.core.org_context import current_org_id
+            calls.append((current_org_id(), skip))
+            return [mapping(filters["orgId"], i) for i in range(limit)] if skip == 0 else []
+
+        graph = AsyncMock()
+        graph.get_documents_paginated = AsyncMock(side_effect=paged)
+        graph.get_virtual_record_ids_in_use = AsyncMock(side_effect=lambda v, **k: set(v))
+        for org in ("o1", "o2"):
+            with for_org(org, job="test"):
+                await m._sweep_orphaned_virtual_record_mappings(graph_provider=graph, pipeline=MagicMock(), logger=MagicMock(), page_size=3, org_id=org)
+        assert set(m._orphan_sweep_cursor) == {"o1", "o2"}
+        assert all(o in ("o1", "o2") for o, _ in calls)
+        m._orphan_sweep_cursor = {}
+
+    @pytest.mark.asyncio
+    async def test_lane_upkeep_reads_every_orgs_connectors_and_frees_only_a_lane_found_in_none(self) -> None:
+        from app.modules.indexing import lane_upkeep
+
+        apps = {"o1": [{"_key": "c1", "type": "SLACK", "scope": "team", "orgId": "o1"}], "o2": [{"_key": "c2", "type": "SLACK", "scope": "team", "orgId": "o2"}]}
+
+        async def paged(collection, skip=0, limit=50, filters=None, **_: object) -> list[dict]:
+            from app.core.org_context import current_org_id
+            org = current_org_id()
+            return [] if skip else [a for a in apps[org] if a["orgId"] == filters["orgId"]]
+
+        graph = AsyncMock()
+        graph.get_documents_paginated = AsyncMock(side_effect=paged)
+        found = await lane_upkeep._read_apps(graph, MagicMock(), ["o1", "o2"])
+        assert set(found) == {"c1", "c2"}
+        assert await lane_upkeep._read_apps(graph, MagicMock(), []) is None      # no organisation to read under: nothing is freed
+
+
+class TestOnePassFailingForAnOrganisationDoesNotStopTheOthers:
+    @pytest.mark.asyncio
+    async def test_a_sweep_that_raises_for_one_org_still_runs_for_the_later_ones(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        graph = _graph_with_orgs("org-a", "org-b")
+        graph.get_documents_paginated = AsyncMock(return_value=[])
+        seen: list[str] = []
+
+        async def sweep(*, org_id: str, **_: object) -> int:
+            seen.append(org_id)
+            if org_id == "org-a":
+                raise RuntimeError("a provider bug")
+            return 0
+
+        with patch("app.indexing_main._sweep_queued_records_for_inactive_connectors", side_effect=sweep), _stranded_env():
+            await recover_in_progress_records(container, graph)
+
+        assert seen == ["org-a", "org-b"]
+
+
+class TestAFailedOrganisationListingIsNotAnEmptyInstall:
+    @pytest.mark.asyncio
+    async def test_the_listing_asks_the_store_to_raise(self) -> None:
+        from app.indexing_main import _all_org_ids
+
+        graph = _graph_with_orgs("org-a")
+        assert await _all_org_ids(graph) == ["org-a"]
+        assert all(c.kwargs.get("raise_on_error") is True for c in graph.get_all_orgs.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_pass_whose_listing_fails_says_so_and_does_not_raise(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        graph = _graph_with_orgs("org-a")
+        graph.get_all_orgs = AsyncMock(side_effect=RuntimeError("graph unavailable"))
+        graph.get_documents_paginated = AsyncMock(return_value=[])
+        sweep = AsyncMock(return_value=0)
+        container = _make_container()
+        with patch("app.indexing_main._sweep_queued_records_for_inactive_connectors", sweep), _stranded_env():
+            await recover_in_progress_records(container, graph)
+        sweep.assert_not_awaited()
+        assert any("could not be listed" in str(c.args[0]) for c in container.logger.return_value.warning.call_args_list)
+
+
+class TestOneOrganisationsStaleScanFailingDoesNotStopTheOthers:
+    @pytest.mark.asyncio
+    async def test_the_scan_of_the_next_organisation_and_the_later_passes_still_run(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        graph = _graph_with_orgs("org-a", "org-b")
+        scanned: list[str] = []
+
+        async def read(collection: str, *, filters: dict | None = None, **_: object) -> list[dict]:
+            org = (filters or {}).get("orgId")
+            if filters and filters.get("indexingStatus") == "IN_PROGRESS":
+                scanned.append(org)
+                if org == "org-a":
+                    raise RuntimeError("a graph read failed")
+            return []
+
+        graph.get_documents_paginated = AsyncMock(side_effect=read)
+        queued = AsyncMock(return_value=0)
+        with patch("app.indexing_main._sweep_queued_records_for_inactive_connectors", queued), _stranded_env():
+            await recover_in_progress_records(container, graph)
+
+        assert scanned == ["org-a", "org-b"]
+        assert [c.kwargs["org_id"] for c in queued.await_args_list] == ["org-a", "org-b"]
+
+
+class TestMappingsThatNameNoOrganisation:
+    @staticmethod
+    def _graph(pages: list[list[dict]], *, in_use: set[str] | None = None, trashed: set[str] | None = None) -> AsyncMock:
+        graph = AsyncMock()
+        graph.get_documents_paginated = AsyncMock(side_effect=pages)
+
+        async def used(vrids: list[str], *, visibility: object = None) -> set[str]:
+            return (trashed or set()) & set(vrids) if visibility is not None else (in_use or set()) & set(vrids)
+
+        graph.get_virtual_record_ids_in_use = AsyncMock(side_effect=used)
+        return graph
+
+    @staticmethod
+    def _pipeline(owners: dict[str, set[str]], outcomes: dict[str, str] | None = None) -> tuple[MagicMock, list[tuple[str, str | None]]]:
+        from app.core import org_context
+
+        cleaned: list[tuple[str, str | None]] = []
+        pipeline = MagicMock()
+        pipeline.orgs_holding_points = AsyncMock(side_effect=lambda vrid: owners.get(vrid, set()))
+        pipeline.release_orphan_mapping = AsyncMock(return_value=True)
+
+        async def rewrite(vrid: str) -> str:
+            cleaned.append((vrid, org_context.current_org_id()))
+            return (outcomes or {}).get(vrid, "deleted")
+
+        pipeline.rewrite_or_delete_vector_membership = rewrite
+        return pipeline, cleaned
+
+    @pytest.mark.asyncio
+    async def test_each_owning_organisations_points_are_cleaned_for_that_virtual_record_only_and_the_row_goes_with_the_last(self) -> None:
+        import app.indexing_main as m
+
+        m._unscoped_mapping_cursor = 0
+        page = [{"_key": "bare"}, {"_key": "scoped", "orgId": "o1"}, {"_key": "marked", "orgNotResolved": True}, {"_key": "used"}, {"_key": "trash"}, {"_key": "empty"}]
+        graph = self._graph([page], in_use={"used"}, trashed={"trash"})
+        pipeline, cleaned = self._pipeline({"bare": {"o2", "o1"}, "used": {"o1"}, "trash": {"o1"}})
+        swept = await m._clean_mappings_without_org(graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=10)
+        assert cleaned == [("bare", "o1"), ("bare", "o2")]               # only that virtual record, once under each owner
+        pipeline.release_orphan_mapping.assert_awaited_once_with("empty")      # no points left: the row goes at once
+        assert swept == 2
+
+    @pytest.mark.asyncio
+    async def test_a_row_another_organisation_still_holds_points_of_is_kept(self) -> None:
+        import app.indexing_main as m
+
+        m._unscoped_mapping_cursor = 0
+        pipeline, cleaned = self._pipeline({"bare": {"o1", "o2"}}, {"bare": "kept"})
+        swept = await m._clean_mappings_without_org(graph_provider=self._graph([[{"_key": "bare"}]]), pipeline=pipeline, logger=MagicMock(), page_size=10)
+        assert cleaned == [("bare", "o1"), ("bare", "o2")] and swept == 0
+
+    @pytest.mark.asyncio
+    async def test_a_mapping_that_cannot_be_cleaned_does_not_stop_the_others(self) -> None:
+        import app.indexing_main as m
+
+        m._unscoped_mapping_cursor = 0
+        pipeline, cleaned = self._pipeline({"good": {"o1"}})
+        pipeline.orgs_holding_points = AsyncMock(side_effect=[RuntimeError("points unreadable"), {"o1"}])
+        logger = MagicMock()
+        swept = await m._clean_mappings_without_org(graph_provider=self._graph([[{"_key": "bad"}, {"_key": "good"}]]), pipeline=pipeline, logger=logger, page_size=10)
+        assert cleaned == [("good", "o1")] and swept == 1 and logger.error.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_the_recovery_pass_reaches_the_rows_that_name_no_organisation(self) -> None:
+        """Through the real entry point: the per-organisation scan never lists such a row, so this fails if the unscoped pass stops being run."""
+        import app.indexing_main as m
+        from app.indexing_main import recover_in_progress_records
+
+        m._unscoped_mapping_cursor = 0
+        container = _make_container()
+        pipeline, cleaned = self._pipeline({"bare": {"org-a"}})
+        container.indexing_pipeline = MagicMock(return_value=pipeline)
+        graph = _graph_with_orgs("org-a")
+
+        async def read(collection: str, *, filters: dict | None = None, **_: object) -> list[dict]:
+            if collection == CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value and not filters:
+                return [{"_key": "bare"}]
+            return []
+
+        graph.get_documents_paginated = AsyncMock(side_effect=read)
+        graph.get_virtual_record_ids_in_use = AsyncMock(return_value=set())
+        with _stranded_env():
+            await recover_in_progress_records(container, graph)
+        assert cleaned == [("bare", "org-a")]
+
+    @pytest.mark.asyncio
+    async def test_a_store_that_keeps_every_row_under_an_org_has_none_to_look_for(self) -> None:
+        import app.indexing_main as m
+        from app.core.org_context import SystemContextNotAllowed
+
+        m._unscoped_mapping_cursor = 0
+        graph = AsyncMock()
+        graph.get_documents_paginated = AsyncMock(side_effect=SystemContextNotAllowed("x"))
+        pipeline, cleaned = self._pipeline({})
+        logger = MagicMock()
+        assert await m._clean_mappings_without_org(graph_provider=graph, pipeline=pipeline, logger=logger, page_size=10) == 0
+        assert cleaned == [] and logger.warning.call_count == 0 and logger.error.call_count == 0

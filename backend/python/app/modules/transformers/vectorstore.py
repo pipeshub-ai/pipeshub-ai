@@ -15,6 +15,7 @@ No LangChain QdrantVectorStore is imported or used.
 
 import asyncio
 import codecs
+import contextlib
 import inspect
 import json
 import logging
@@ -31,6 +32,7 @@ from langchain_core.documents import Document
 
 from app.config.constants.ai_models import TOKENIZE_MAX_CHARS, TOKENIZE_MAX_ITEMS
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import MissingOrgContext, current_or_system, for_org
 from app.exceptions.indexing_exceptions import (
     ChunkingError,
     DocumentProcessingError,
@@ -54,14 +56,20 @@ from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.error_classifier import format_exception_chain
+from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.filters import org_for_filter
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
+    STALE_SCOPE,
+    mark_scope_stale,
     reset_membership_context,
     resolve_virtual_record_state,
     rewrite_or_delete_virtual_record,
+    scope_fields_for_state,
+    scope_org_id,
     set_membership_context,
     sync_vector_membership,
     vector_point_payload,
@@ -995,6 +1003,7 @@ class _RecordPresence:
         self._present_since: float | None = None
 
     async def check(self) -> bool:
+        """Whether the record exists. A failed read raises: it must not read as a deletion."""
         async with self._lock:
             started = time.monotonic()
             if (
@@ -1003,7 +1012,7 @@ class _RecordPresence:
             ):
                 return True
             record_doc = await self._graph_provider.get_document(
-                self._record_id, CollectionNames.RECORDS.value
+                self._record_id, CollectionNames.RECORDS.value, raise_on_error=True
             )
             self._present_since = started if record_doc is not None else None
             return record_doc is not None
@@ -1265,12 +1274,22 @@ class VectorStore(Transformer):
 
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
         with stage("vector.delete"):
-            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
-        tokens = await self._bind_membership(virtual_record_id)
+            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name, org_id=org_id)
+        # The stamp is computed under the organisation of the record (enforced context checks read the ambient one), so a caller
+        # with none bound gets the one it names; a context already bound is left as it is.
         try:
-            await self._process_document_chunks([summary_doc], record_id, collection_name)
-        finally:
-            reset_membership_context(tokens)
+            current_or_system()
+            org_scope: contextlib.AbstractContextManager = contextlib.nullcontext()
+        except MissingOrgContext:
+            org_scope = for_org(org_id, job="index_record_summary") if org_id else contextlib.nullcontext()
+        with org_scope:
+            tokens = await self._bind_membership(virtual_record_id, org_id=org_id)
+            try:
+                await self._process_document_chunks([summary_doc], record_id, collection_name)
+            finally:
+                reset_membership_context(tokens)
+            # The membership and the stamp were read before the embedding: what changed meanwhile is applied now, as for the other points
+            await self._resync_membership_after_write(virtual_record_id, record_id)
         self.logger.debug("✅ Indexed record summary for record %s", record_id)
 
     # ------------------------------------------------------------------
@@ -1423,6 +1442,7 @@ class VectorStore(Transformer):
                 e,
                 exc_info=True,
             )
+            await mark_scope_stale(self.vector_db_service, self.collection_locator, virtual_record_id, self.logger)
 
     async def _record_is_gone(self, record_id: str) -> bool:
         """True only when the graph positively reports the record as absent.
@@ -1443,7 +1463,7 @@ class VectorStore(Transformer):
             return False
 
     async def _bind_membership(
-        self, virtual_record_id: str, record: Optional["Record"] = None
+        self, virtual_record_id: str, record: Optional["Record"] = None, org_id: str | None = None
     ):
         """Resolve VRID membership and bind it for the points about to be written.
 
@@ -1476,8 +1496,15 @@ class VectorStore(Transformer):
                 "vector filters until backfilled",
                 virtual_record_id,
             )
+        # Scope fields (permission model): written only while ACL_SCOPE_FIELDS is on. A failure never fails indexing; the
+        # point is marked stale and the post-index resync or the back-fill recomputes it.
+        scope = None
+        if scope_fields_enabled():
+            # the summary point has no record in hand: its caller names the org, then the ambient one
+            org_id = getattr(record, "org_id", None) or org_id or scope_org_id()
+            scope = await scope_fields_for_state(self.graph_provider, state, org_id, self.logger) if org_id else STALE_SCOPE
         return set_membership_context(
-            connector_ids, record_group_ids, root_record_group_ids
+            connector_ids, record_group_ids, root_record_group_ids, scope
         )
 
     # ------------------------------------------------------------------
@@ -1651,14 +1678,15 @@ class VectorStore(Transformer):
         )
 
     async def delete_blocks_by_ids(
-        self, block_ids: set, virtual_record_id: str, collection_name: str
+        self, block_ids: set, virtual_record_id: str, collection_name: str, *, org_id: str | None = None,
     ) -> None:
         """Delete embeddings for specific block IDs scoped to a virtual record."""
         if not block_ids:
             return
+        org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
-                must={"blockId": list(block_ids), "virtualRecordId": virtual_record_id}
+                must={"orgId": org_id, "blockId": list(block_ids), "virtualRecordId": virtual_record_id}
             )
             await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.info(
@@ -1675,10 +1703,11 @@ class VectorStore(Transformer):
     # Embeddings deletion (full record)
     # ------------------------------------------------------------------
 
-    async def delete_embeddings(self, virtual_record_id: str, collection_name: str) -> None:
+    async def delete_embeddings(self, virtual_record_id: str, collection_name: str, *, org_id: str | None = None) -> None:
+        org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
-                must={"virtualRecordId": virtual_record_id}
+                must={"orgId": org_id, "virtualRecordId": virtual_record_id}
             )
             await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.debug(
@@ -1696,7 +1725,7 @@ class VectorStore(Transformer):
         """Delete all vector points for a record, resolving the collection internally."""
         ctx = self._record_context(org_id, record)
         collection_name = self.collection_registry.resolve_write_collection(ctx)
-        await self.delete_embeddings(virtual_record_id, collection_name)
+        await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
     # ------------------------------------------------------------------
     # Image embedding (provider dispatch via MultimodalEmbeddingFactory)
@@ -1774,7 +1803,7 @@ class VectorStore(Transformer):
         Guard: skip entirely if the record was deleted mid-flight.
         """
         record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
+            record_id, CollectionNames.RECORDS.value, raise_on_error=True
         )
         if record_doc is None:
             self.logger.warning(
@@ -2055,6 +2084,7 @@ class VectorStore(Transformer):
         record_id: str,
         virtual_record_id: str,
         collection_name: str,
+        org_id: str | None = None,
     ) -> None:
         if not chunks:
             raise EmbeddingError("No chunks provided for embedding creation")
@@ -2070,7 +2100,7 @@ class VectorStore(Transformer):
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
         with stage("vector.delete"):
-            await self.delete_embeddings(virtual_record_id, collection_name)
+            await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
         self.logger.debug(
             f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
@@ -2137,7 +2167,7 @@ class VectorStore(Transformer):
                 summary_block_id_set = {
                     f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"
                 }
-                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
+                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name, org_id=org_id)
 
                 if record is not None:
                     semantic_metadata = getattr(record, "semantic_metadata", None)
@@ -2150,7 +2180,7 @@ class VectorStore(Transformer):
 
             if not blocks and not block_groups:
                 if block_ids_to_delete:
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
                 await self._cleanup_orphaned_embeddings_if_needed(
                     record_id, virtual_record_id, org_id, record
                 )
@@ -2472,7 +2502,7 @@ class VectorStore(Transformer):
             if not documents_to_embed:
                 self.logger.warning("⚠️ No documents to embed after filtering by block type")
                 if block_ids_to_delete:
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
                 await self._cleanup_orphaned_embeddings_if_needed(
                     record_id, virtual_record_id, org_id, record
                 )
@@ -2486,7 +2516,7 @@ class VectorStore(Transformer):
                 # sit beside their replacements, so they go first.
                 reindexed_ids = {b.id for b in blocks} | {bg.id for bg in block_groups}
                 with stage("vector.delete"):
-                    await self.delete_blocks_by_ids(reindexed_ids, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(reindexed_ids, virtual_record_id, collection_name, org_id=org_id)
                 if block_ids_to_delete:
                     # A block id in both sets was just replaced; deleting it now would drop
                     # the new points.
@@ -2502,12 +2532,12 @@ class VectorStore(Transformer):
                     )
                     await self._store_image_points(points, collection_name)
             else:
-                await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name)
+                await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name, org_id=org_id)
 
             if block_ids_to_delete:
                 self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
                 with stage("vector.delete"):
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
 
             self.logger.debug(
                 f"✅ Indexing complete for record {record_id}: "

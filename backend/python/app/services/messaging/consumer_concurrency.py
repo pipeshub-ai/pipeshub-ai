@@ -134,6 +134,57 @@ class StageAdmission:
         return self.limit * self.workers
 
 
+@dataclass(frozen=True)
+class PriorityLane:
+    """Admission for the consumer of the priority topic: its own caps and its own lease pools.
+
+    The lane runs the same handler as the record consumer, but a record on it is waited for by
+    a reader, so it must neither queue behind the backlog nor be able to crowd it out. It keeps
+    the governor's gates (their limits still protect memory) but asks for them ahead of queued
+    normal waiters, and it counts its in-flight records against these two small caps. Its
+    cluster leases are pools of their own, for the same reason: the backlog holds the normal ones.
+    """
+
+    # This process's records in flight, per tier.
+    heavy_limit: int
+    light_limit: int
+    # Worker processes running this consumer side by side (INDEXING_UVICORN_WORKERS).
+    workers: int = 1
+
+    def __post_init__(self) -> None:
+        if self.heavy_limit < 1 or self.light_limit < 1:
+            raise ValueError("priority lane limits must be >= 1")
+        if self.workers < 1:
+            raise ValueError("priority lane worker count must be >= 1")
+
+    @property
+    def limit(self) -> int:
+        return self.heavy_limit + self.light_limit
+
+    def tier_limit(self, tier: ParseTier) -> int:
+        return self.heavy_limit if tier is ParseTier.HEAVY else self.light_limit
+
+    @property
+    def index_lease_pool(self) -> str:
+        return "indexing:priority"
+
+    @property
+    def index_lease_limit(self) -> int:
+        """Every worker process takes the same lease, so it is sized for all of them."""
+        return self.limit * self.workers
+
+    def parse_lease_pool(self, tier: ParseTier | None) -> str:
+        return "parsing:light:priority" if tier is ParseTier.LIGHT else "parsing:priority"
+
+    def parse_lease_limit(self, tier: ParseTier | None) -> int:
+        return self.tier_limit(ParseTier.LIGHT if tier is ParseTier.LIGHT else ParseTier.HEAVY) * self.workers
+
+
+def _lane(host: object) -> "PriorityLane | None":
+    # getattr: consumers and test hosts built without the lane have no such attribute.
+    return getattr(host, "priority_lane", None)
+
+
 class ConcurrencyHost(Protocol):
     """Structural type for the attributes these helpers rely on."""
 
@@ -155,6 +206,8 @@ class ConcurrencyHost(Protocol):
     governor: "ResourceGovernor | None"
     # Set only on pipeline-stage consumers, which never have a governor.
     stage_admission: "StageAdmission | None"
+    # Set only on the consumer of the priority topic.
+    priority_lane: "PriorityLane | None"
     parsing_semaphore: Any
     indexing_semaphore: Any
     # Created inside the consumer's worker thread and dropped with its loop,
@@ -237,9 +290,8 @@ async def acquire_distributed_slot(
 
     With ``deadline_seconds`` set, gives up (returning False) after that many
     seconds instead of waiting indefinitely — used for the per-record lease,
-    which is contended by duplicate in-flight deliveries of the *same* record
-    and must not convoy the whole pipeline while already holding the outer
-    indexing permit.
+    which is contended only by other work on the *same* record and must not
+    convoy the whole pipeline while already holding the outer indexing permit.
 
     Contention and failure are backed off separately, and only failure is
     budgeted. Contention is normal: the pool is full and this record waits its
@@ -536,6 +588,8 @@ def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     """
     if host.stage_admission is not None:
         return host.stage_admission.lease_limit
+    if (lane := _lane(host)) is not None:
+        return lane.index_lease_limit
     governor = host.governor
     if governor is not None:
         tier = effective_index_tier(host, tier)
@@ -591,6 +645,12 @@ def slot_pool_limit(host: ConcurrencyHost, pool: str) -> int:
     if host.stage_admission is not None:
         # A stage consumer's one pool is its own permits.
         return host.stage_admission.limit
+    lane = _lane(host)
+    if lane is not None:
+        # The lane's own caps, so each org's share of them is what the share planner divides.
+        if pool == Pool.INDEX_LIGHT.value:
+            return lane.light_limit
+        return lane.heavy_limit if pool == Pool.INDEX_HEAVY.value else lane.limit
     governor = host.governor
     if governor is None:
         return messaging_env.max_concurrent_indexing
@@ -626,7 +686,18 @@ def admission_lease_pool(host: ConcurrencyHost, tier: ParseTier | None) -> str:
     """The cluster-wide lease pool this host's index permit counts against."""
     if host.stage_admission is not None:
         return host.stage_admission.lease_pool
+    if (lane := _lane(host)) is not None:
+        return lane.index_lease_pool
     return index_lease_pool(tier)
+
+
+def local_index_permits(host: ConcurrencyHost) -> int:
+    """Records the legacy (governor-less) index semaphore admits at once."""
+    if host.stage_admission is not None:
+        return host.stage_admission.limit
+    if (lane := _lane(host)) is not None:
+        return lane.limit
+    return messaging_env.max_concurrent_indexing
 
 
 def work_key(payload: "Mapping[str, object]", fallback: str) -> str:
@@ -655,6 +726,8 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     more than a handful of local LIGHT_PARSE slots, so the node-local
     gate never sees demand and stays on its floor.
     """
+    if (lane := _lane(host)) is not None:
+        return lane.parse_lease_limit(tier)
     governor = host.governor
     if governor is not None:
         if tier is ParseTier.LIGHT:
@@ -663,13 +736,16 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     return messaging_env.max_concurrent_parsing
 
 
-def parse_lease_pool(tier: ParseTier | None) -> str:
+def parse_lease_pool(tier: ParseTier | None, host: "ConcurrencyHost | None" = None) -> str:
     """Redis pool name for the cluster-wide parsing lease of *tier*.
 
     Split by tier because the two ceilings differ: a light record must not
     consume one of the few heavy-parse leases a Docling PDF holds for
-    minutes.
+    minutes. The priority lane's parses count against pools of their own.
     """
+    lane = _lane(host) if host is not None else None
+    if lane is not None:
+        return lane.parse_lease_pool(tier)
     return "parsing:light" if tier is ParseTier.LIGHT else "parsing"
 
 
@@ -758,6 +834,10 @@ class GateWaiterToken:
         """Call once the local indexing gate/semaphore has been acquired."""
         if self._admitted or self._released:
             return
+        if _lane(self._host) is not None:
+            # The lane's cap is on records in flight, not on records waiting, so it counts
+            # a record until the task ends.
+            return
         self._admitted = True
         self._host.gate_waiters.remove(self._tier)
 
@@ -789,7 +869,9 @@ def index_gates_saturated(host: ConcurrencyHost) -> bool:
     only signal — matching pre-governor behaviour exactly.
     """
     governor = host.governor
-    if governor is None:
+    # The priority lane is not held back by the backlog filling the pools: its own caps and
+    # the gates' priority acquire are what bound it.
+    if governor is None or _lane(host) is not None:
         return False
     return all(
         governor.gate(pool).in_use >= governor.gate(pool).limit
@@ -827,6 +909,8 @@ def pending_task_ceiling(host: ConcurrencyHost) -> int:
     stream entries a node cannot start on only delays their redelivery
     elsewhere.
     """
+    if (lane := _lane(host)) is not None:
+        return lane.limit
     if os.getenv("MAX_PENDING_INDEXING_TASKS"):
         return messaging_env.max_pending_indexing_tasks
     governor = host.governor
@@ -932,6 +1016,8 @@ def _tier_ceiling(
     ``_PENDING_TASKS_PER_INDEX_SLOT`` times the tier's *current* limit,
     floored so a braked pool still refills its gate from the queue.
     """
+    if (lane := _lane(host)) is not None:
+        return lane.tier_limit(tier)
     governor = host.governor
     if (
         governor is None
@@ -1001,6 +1087,11 @@ class Admission:
     released: bool = False
 
 
+def _priority_kwargs(host: ConcurrencyHost) -> dict[str, bool]:
+    """Gate arguments of the priority lane; none for any other consumer."""
+    return {"priority": True} if _lane(host) is not None else {}
+
+
 async def acquire_index_slot(
     host: ConcurrencyHost, tier: ParseTier | None
 ) -> "Admission":
@@ -1023,7 +1114,7 @@ async def acquire_index_slot(
         # the gate never issued and release it later, freeing someone else's.
         # No timeout is passed here, so False is unreachable today — the point
         # is that adding one can't silently corrupt the gate's accounting.
-        if not await gate.acquire():
+        if not await gate.acquire(**_priority_kwargs(host)):
             raise RuntimeError(
                 f"Index admission denied for pool {index_pool(resolved_tier).value}"
             )
@@ -1096,6 +1187,18 @@ class MemoryAdmissionTimeout(ParseAdmissionTimeout):
     reservations ahead of it do, and one bigger than the whole budget runs
     once nothing else is reserved, so counting it would fail a big record only
     for being big.
+    """
+
+    counts_toward_backstop = False
+
+
+class RecordLeaseHeld(RequeueWithoutAttempt):
+    """Something else held the record's lease past the wait: a stage, a retention
+    sweep, an unexpired lease of a dead replica, a duplicate delivery, or Redis is down.
+
+    Not counted toward the delivery backstop: a live holder can outlast every
+    hand-back (a long record takes minutes), and failing the record for that would
+    be worse than the wait. The lease ends with its holder or its term.
     """
 
     counts_toward_backstop = False
@@ -1235,7 +1338,9 @@ async def acquire_download_slot(
     *timeout*, raises ``ParseAdmissionTimeout`` instead of waiting on.
     """
     governor = host.governor
-    if governor is None or effective_index_tier(host, tier) is not ParseTier.HEAVY:
+    # The priority lane's own cap on heavy records bounds the content it holds; sharing the
+    # backlog's first-come places would put it behind records waiting minutes for a parse slot.
+    if governor is None or _lane(host) is not None or effective_index_tier(host, tier) is not ParseTier.HEAVY:
         return None
     ahead = governor.download_ahead
     if not await ahead.acquire(timeout):
@@ -1266,7 +1371,7 @@ async def acquire_parsing_slot(
         pool = gate_pool(resolved_tier)
         gate = governor.gate(pool)
         started = time.monotonic()
-        if not await gate.acquire(cost=cost, timeout=timeout):
+        if not await gate.acquire(cost=cost, timeout=timeout, **_priority_kwargs(host)):
             raise ParseAdmissionTimeout(pool.value, timeout or 0.0)
         # Braked here: the parsing and Docling services, when they share this memory,
         # admit the parse without braking it again.

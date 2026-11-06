@@ -16,7 +16,13 @@ import {
   buildWwwAuthenticateHeader,
 } from '../middlewares/oauth.auth.middleware';
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service';
+import {
+  agentAuthEnabled,
+  AGENT_CLAIM_GRANT,
+  JWT_BEARER_GRANT,
+} from '../constants/agent-auth.constants';
 import { AgentMcpScopes, mcpDiscoveryScopes } from '../config/scopes.config';
+import { cimdEnabled } from '../services/client_metadata_document';
 import { renderAuthMd } from '../utils/auth-md';
 
 /**
@@ -115,6 +121,9 @@ export class OIDCProviderController {
       ? await this.firstPartyDeviceAppService.getOrCreate()
       : null;
 
+    // Registration follows first-party device login, and needs the app it signs in as.
+    const agentAuth = agentAuthEnabled() && deviceClientId !== null;
+
     const config: OpenIDConfiguration = {
       issuer: this.appConfig.oauthIssuer,
       authorization_endpoint: `${baseUrl}/authorize`,
@@ -124,11 +133,22 @@ export class OIDCProviderController {
       introspection_endpoint: `${baseUrl}/introspect`,
       jwks_uri: `${backendUrl}/.well-known/jwks.json`,
       ...(dcrEnabled ? { registration_endpoint: `${baseUrl}/register` } : {}),
+      ...(cimdEnabled() ? { client_id_metadata_document_supported: true } : {}),
       ...(deviceEnabled
         ? { device_authorization_endpoint: `${baseUrl}/device_authorization` }
         : {}),
       ...(deviceClientId
         ? { pipeshub_device_client_id: deviceClientId }
+        : {}),
+      ...(agentAuth
+        ? {
+            agent_auth: {
+              skill: `${backendUrl}/auth.md`,
+              identity_endpoint: `${backendUrl}/api/v1/agent/identity`,
+              claim_endpoint: `${backendUrl}/api/v1/agent/identity/claim`,
+              identity_types_supported: ['service_auth'],
+            },
+          }
         : {}),
       scopes_supported: this.scopeValidatorService
         .getAllScopes()
@@ -141,6 +161,7 @@ export class OIDCProviderController {
         ...(deviceEnabled
           ? ['urn:ietf:params:oauth:grant-type:device_code']
           : []),
+        ...(agentAuth ? [JWT_BEARER_GRANT, AGENT_CLAIM_GRANT] : []),
         // Service-account delegation, advertised only where it exists.
         // Listing a grant the token endpoint will always refuse would send
         // integrators down a road that ends in an error, and discovery is
@@ -229,7 +250,7 @@ export class OIDCProviderController {
       : null;
 
     const metadata: OAuthProtectedResourceMetadata = {
-      resource: `${backendUrl}/mcp`,
+      resource: this.oauthTokenService.mcpResource,
       authorization_servers: [backendUrl],
       scopes_supported: mcpDiscoveryScopes(this.appConfig.mcpScopes),
       bearer_methods_supported: ['header'],

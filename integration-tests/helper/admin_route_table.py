@@ -34,7 +34,7 @@ from helper import suite_extensions
 ABSENT_ID = "65f0c0ffee00000000000000"
 INVALID_ID = "not-an-id"
 
-# userAdminCheck and adminValidator both throw ForbiddenError with
+# userAdminCheck throws ForbiddenError with
 # ADMIN_ACCESS_REQUIRED_MESSAGE (user_management/services/user-admin.service.ts).
 NODE_REFUSAL_STATUS = 403
 NODE_REFUSAL_MESSAGE = "You need admin access to do this. Ask an admin in your organisation."
@@ -77,7 +77,7 @@ def _no_admin(method: str, path: str, why: str, **kw: Any) -> AdminRoute:
 _CM = "/api/v1/configurationManager"
 
 NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
-    # orgAuthConfig.routes.ts (adminValidator)
+    # orgAuthConfig.routes.ts (router-level userAdminCheck)
     AdminRoute("GET", "/api/v1/orgAuthConfig/authMethods"),
     AdminRoute("GET", "/api/v1/orgAuthConfig/signInRemoval"),
     _no_admin("POST", "/api/v1/orgAuthConfig",
@@ -355,6 +355,8 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/mcp_servers.py::get_oauth_config": "a personal server is its owner's",
     "api/routes/mcp_servers.py::update_oauth_config": "a personal server is its owner's",
     "api/routes/mcp_servers.py::delete_instance": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::set_instance_logo": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::remove_instance_logo": "a personal server is its owner's",
     # A member checks the URL of a server they could add: a personal one, public only.
     "api/routes/mcp_servers.py::discover_oauth_metadata_endpoint": "a member's URL must be public",
     # Everyone gets the listing; only admins see how an org server is reached.

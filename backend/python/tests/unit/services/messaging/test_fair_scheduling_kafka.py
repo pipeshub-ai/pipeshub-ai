@@ -11,13 +11,16 @@ scheduling is disabled.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiokafka import TopicPartition
 
+from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import messaging_env
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
@@ -26,7 +29,13 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     _ReadOutcome,
     _SchedulerRebalanceListener,
 )
-from app.services.messaging.scheduling.interface import FairSchedulerConfig
+from app.services.messaging.scheduling.interface import (
+    EnqueueResult,
+    FairSchedulerConfig,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 @pytest.fixture
@@ -396,12 +405,9 @@ class TestParallelPartitionDispatch:
     ):
         """The invariant that replaces per-partition serialisation.
 
-        ``record_lease_wait_seconds`` documents the cluster-wide ``record:``
-        lease as "only contended by duplicate in-flight deliveries of the
-        same record", and the loser of that contention is dropped as
-        already-handled. Dispatching a create and its update together would
-        put two genuinely different events into that contention and silently
-        discard one.
+        Dispatching a create and its update together would put two different
+        events into contention for the cluster-wide ``record:`` lease, and the
+        loser would spend an index slot waiting before it is handed back.
         """
         consumer = self._consumer(logger, plain_config, parallel=True)
         tp = TopicPartition("record-events", 0)
@@ -962,11 +968,11 @@ class TestWatermarkClaimIsAlwaysSettled:
         consumer.main_loop = None
         return consumer
 
-    async def test_contended_record_lease_resolves_as_done(
+    async def test_done_offsets_release_the_watermark(
         self, logger, plain_config
     ):
-        """A contended lease means a duplicate delivery owns the record, so
-        this delivery is finished with. Leaving it unresolved was the bug."""
+        """A handed-back delivery resolves as done once it is re-published;
+        leaving it unresolved would pin the watermark."""
         consumer = self._consumer(logger, plain_config)
         tp = TopicPartition("record-events", 0)
         tracker = consumer._offset_tracker
@@ -1063,6 +1069,86 @@ class TestWatermarkClaimIsAlwaysSettled:
         await consumer._IndexingKafkaConsumer__sweep_stale_offsets()
 
         consumer.consumer.commit.assert_not_awaited()
+
+
+class TestFailedHandBackKeepsTheMessage:
+    """A hand-back whose re-publish fails has no copy on the topic, so this offset is the only one left."""
+
+    def _consumer(self, logger, plain_config) -> IndexingKafkaConsumer:
+        consumer = _make_consumer(logger, plain_config, _fair_config())
+        consumer.consumer = MagicMock()
+        consumer.consumer.commit = AsyncMock()
+        consumer.main_loop = None
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer._requeue_message = AsyncMock(side_effect=RuntimeError("broker unavailable"))
+
+        async def handler(_message) -> AsyncGenerator[None, None]:
+            raise concurrency.RecordLeaseHeld("record lease held", delay_s=30.0)
+            yield
+
+        consumer.message_handler = handler
+        return consumer
+
+    async def _hand_back(self, consumer, tp) -> _InFlightOffset:
+        tracker = consumer._offset_tracker
+        tracker.track(tp, 0)
+        tracker.mark_dispatched(tp, 0)
+        tracker.track(tp, 1)
+        in_flight = _InFlightOffset(tp, 0, 0)
+        result = await consumer._IndexingKafkaConsumer__process_message_wrapper(
+            _make_message(offset=0, record_id="rec-1"), in_flight=in_flight
+        )
+        assert result is False
+        return in_flight
+
+    async def test_it_goes_back_in_the_buffer_and_nothing_commits_past_it(
+        self, logger, plain_config
+    ) -> None:
+        consumer = self._consumer(logger, plain_config)
+        tp = TopicPartition("record-events", 0)
+
+        in_flight = await self._hand_back(consumer, tp)
+
+        assert in_flight.resolved
+        assert consumer._scheduler.pending_count == 1
+        # Not due yet: it holds no slot while it waits out the delay.
+        assert consumer._scheduler.dequeue(can_dispatch=lambda _item: True) is None
+        # The sweep is what lost it before: a buffered offset has no dwell clock.
+        assert consumer._offset_tracker.stale_offsets(0.0) == []
+        await consumer._IndexingKafkaConsumer__resolve_offset(_InFlightOffset(tp, 1, 0), done=True)
+        for call in consumer.consumer.commit.await_args_list:
+            assert call.args[0][tp] <= 0
+
+    async def test_a_full_buffer_parks_it_instead_of_dropping_it(
+        self, logger, plain_config
+    ) -> None:
+        consumer = self._consumer(logger, plain_config)
+        consumer._scheduler.enqueue = MagicMock(return_value=EnqueueResult.BUFFER_FULL)
+        tp = TopicPartition("record-events", 0)
+
+        await self._hand_back(consumer, tp)
+
+        assert [entry[1].offset for entry in consumer._deferred_messages] == [0]
+        assert consumer._offset_tracker.stale_offsets(0.0) == []
+
+    async def test_during_shutdown_it_stays_uncommitted_for_the_next_process(
+        self, logger, plain_config
+    ) -> None:
+        consumer = self._consumer(logger, plain_config)
+        tp = TopicPartition("record-events", 0)
+        rebuffer = consumer._IndexingKafkaConsumer__rebuffer_after_failed_handback
+        consumer.running = False
+        consumer._offset_tracker.track(tp, 0)
+        in_flight = _InFlightOffset(tp, 0, 0)
+        parsed = MagicMock(payload={})
+
+        await rebuffer(_make_message(offset=0, record_id="rec-1"), parsed, in_flight, 30.0)
+
+        assert consumer._scheduler.pending_count == 0
+        for call in consumer.consumer.commit.await_args_list:
+            assert call.args[0][tp] <= 0
 
 
 class TestDwellNeverSkipsUnprocessedMessages:
@@ -1205,6 +1291,27 @@ class TestRebalancePurge:
         # test_partition_offset_tracker.py::TestRevoke).
         consumer._offset_tracker.track(tp1, 100)
         assert consumer._offset_tracker.mark_done(tp1, 100) == 101
+
+    @pytest.mark.parametrize("done", [True, False])
+    async def test_a_job_finishing_after_the_next_poll_commits_nothing(
+        self, logger, plain_config, done
+    ) -> None:
+        consumer = _make_consumer(logger, plain_config, _fair_config())
+        consumer.consumer = MagicMock()
+        consumer.consumer.commit = AsyncMock()
+        tp = TopicPartition("record-events", 0)
+        for offset in range(9):
+            consumer._offset_tracker.track(tp, offset)
+
+        await consumer._on_partitions_revoked([tp])
+        # What the first getmany() after the rebalance does; offsets 0..7 have
+        # not been re-read.
+        consumer._revoked_since_poll.clear()
+        await consumer._IndexingKafkaConsumer__resolve_offset(
+            _InFlightOffset(tp, 8), done=done
+        )
+
+        consumer.consumer.commit.assert_not_awaited()
 
 
 class TestDisabledIsCurrentFifo:

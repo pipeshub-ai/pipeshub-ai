@@ -71,6 +71,9 @@ class IVectorDBService(ABC):
     # Capabilities and health (new)
     # ------------------------------------------------------------------
 
+    #: Whether a search request may carry a ``ScopeFilter`` (``filters.ScopeFilter``); a store that cannot refuses one.
+    supports_scope_filter = False
+
     @abstractmethod
     def get_capabilities(self) -> VectorDBCapabilities:
         """Return static capability descriptor for this provider."""
@@ -272,8 +275,13 @@ class IVectorDBService(ABC):
         collection_name: str,
         point_ids: List[str],
         payload: dict,
+        *,
+        org_id: str,
     ) -> None:
-        """Merge ``payload`` into the points with these ids, by id.
+        """Merge ``payload`` into the points of ``org_id`` with these ids, by id.
+
+        Ids that belong to another org are left alone, as if they did not exist; a
+        missing or blank ``org_id`` raises ``OrgRequired``.
 
         Unlike ``set_payload``, which finds its points with a search (an
         OpenSearch ``update_by_query`` cannot see a document until the index
@@ -308,6 +316,10 @@ class IVectorDBService(ABC):
     ) -> None:
         """Delete matching points.
 
+        Like ``overwrite_payload`` and ``set_payload``, the filter must pin ``metadata.orgId`` to one
+        non-blank org in MUST (``filters.require_filter_org``); otherwise ``OrgRequired`` is raised and
+        nothing is touched. An org-only filter is allowed: it removes a whole organisation.
+
         ``refresh=True`` asks the provider to make the write immediately
         visible to a subsequent read. Only pass it when the caller re-reads the
         matched set to decide whether it is done — on OpenSearch it forces a
@@ -323,6 +335,7 @@ class IVectorDBService(ABC):
         payload: dict,
         points: FilterExpression,
     ) -> None:
+        """Replace the payload of matching points. ``points`` must pin ``metadata.orgId`` (see ``delete_points``)."""
         raise NotImplementedError
 
     @abstractmethod
@@ -335,7 +348,7 @@ class IVectorDBService(ABC):
     ) -> None:
         """Merge ``payload`` into matching points without replacing the rest.
 
-        See ``delete_points`` for ``refresh``.
+        See ``delete_points`` for ``refresh`` and for the org the filter must pin.
 
         Must not use Qdrant ``overwrite_payload`` (that drops ``page_content``).
         Rejects an empty filter — the same safety rule as ``delete_points``.

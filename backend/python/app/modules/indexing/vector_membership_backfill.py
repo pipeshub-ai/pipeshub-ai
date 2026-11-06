@@ -14,8 +14,10 @@ from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
+from app.core.org_context import for_org
 from app.services.messaging.config import RedisConfig, messaging_env
 from app.services.messaging.utils import MessagingUtils
+from app.services.vector_db.org_metrics import ORG_SKIPPED
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -235,6 +237,9 @@ async def _resolve_indexing_pipeline(app_container: Any) -> Any | None:  # noqa:
     return pipeline
 
 
+_APP_ORG_FIELD = "orgId"  # the org property of the app document the backfill walks, not a claim
+
+
 async def run_vector_membership_backfill_tick(
     *,
     logger: Logger,
@@ -269,9 +274,31 @@ async def run_vector_membership_backfill_tick(
 
     failed = 0
     vrids = distinct_non_empty_vrids(page)
+    # The membership write acts for one org. Each point set is written for the org its record names (a VRID shared by two orgs is
+    # synced once per org); a record that names none falls back to the app's own org, which the loop has no ambient context for.
+    app_org = app.get(_APP_ORG_FIELD)
+    orgs_of: dict[str, list[str]] = {}
+    for row in page:
+        row_vrid, row_org = row.get("virtualRecordId"), row.get("orgId")
+        if isinstance(row_vrid, str) and row_org and row_org not in orgs_of.setdefault(row_vrid, []):
+            orgs_of[row_vrid].append(row_org)
     for processed, vrid in enumerate(vrids, start=1):
+        owners = orgs_of.get(vrid) or ([str(app_org)] if app_org else [])
         try:
-            await pipeline.sync_vector_membership(vrid)
+            if not owners:
+                # No record and no app names an org: the points are what is left that names their owners. Syncing under each owner
+                # recomputes the membership and re-stamps (or invalidates) the scope fields of its points, and only of this record.
+                owners = sorted(await pipeline.orgs_holding_points(vrid))
+            if not owners:
+                # No point holds this record, so there is no stamp to invalidate and nothing to sync. Not a failure.
+                ORG_SKIPPED.inc("membership_backfill")
+                logger.info(
+                    "Vector membership backfill: virtualRecordId=%s connector=%s has no org and no points; nothing to sync",
+                    vrid, connector_id,
+                )
+            for org_id in owners:
+                with for_org(org_id, job="vector_membership_backfill"):
+                    await pipeline.sync_vector_membership(vrid)
         except asyncio.CancelledError:
             raise
         except Exception:

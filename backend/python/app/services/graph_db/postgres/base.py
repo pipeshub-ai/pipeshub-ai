@@ -143,7 +143,16 @@ class _Txn:
             self._q = asyncio.Queue()
             self._task = spawn_in_request(self._main())
         fut = asyncio.get_running_loop().create_future()
-        await self._q.put((fn, fut))
+        from app.services.graph_db.postgres.kg.guard import current_writer
+        writers = current_writer.get()      # the task keeps the context of the call that opened it: each call brings its own writer along
+
+        async def as_this_caller(tx: Tx) -> Any:  # noqa: ANN401
+            token = current_writer.set(writers)
+            try:
+                return await fn(tx)
+            finally:
+                current_writer.reset(token)
+        await self._q.put((as_this_caller, fut))
         try:
             await asyncio.wait({fut, self._task}, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
@@ -179,6 +188,8 @@ class _Rollback(Exception):
 class PgBase:
     def __init__(self, logger: Logger, db: KernelDB, config_service: Any = None) -> None:  # noqa: ANN401
         self.logger, self._db = logger, db
+        from app.services.graph_db.postgres.kg.flush import install as install_kg
+        install_kg(db)        # the projection into kg: the guard before a graph write, the flush before COMMIT of the connectors service's unit
         self.config_service = config_service  # read by callers that build blob storage from the provider, as on Neo4j/Arango
         self._txns: dict[str, _Txn] = {}
 
@@ -262,15 +273,20 @@ def _match(filters: dict | None, in_filters: dict | None, first: int, n: str = "
     return sql, args
 
 
-# Filter keys with an expression index (graph_0001): a literal predicate on the same expression lets the planner use it. Keys are from this list only.
-_HOT = {"blocks": ("recordId", "nameFolded"), "codeFiles": ("filePath",)}
-
-
-def _hot_values(collection: str, filters: dict | None) -> tuple[str | None, str | None, str | None]:
-    """Literal values of the indexed keys (recordId, nameFolded, filePath) for a bound, null-when-absent predicate; only the collections of ``_HOT`` have them."""
+def _hot(collection: str, filters: dict | None) -> tuple[str, tuple[str, ...]] | None:
+    """The vetted read (graph_0003) that serves a lookup by an indexed key of the document, as ``(function, its leading arguments)``, or None when the
+    filters name none of them (or exceed what the function accepts). Row-level security hides the expression indexes (graph_0001) from a plain statement."""
     f = filters or {}
-    keys = _HOT.get(collection, ())
-    return tuple(f[k] if k in keys and isinstance(f.get(k), str) else None for k in ("recordId", "nameFolded", "filePath"))  # type: ignore[return-value]
+    if not 0 < len(f) <= 32 or not all(0 < len(k) <= 200 for k in f):
+        return None
+    rec, conn, name, path = (f.get(k) if isinstance(f.get(k), str) else "" for k in ("recordId", "connectorId", "nameFolded", "filePath"))
+    if collection == "blocks" and 0 < len(rec) <= 200:
+        return "blocks_by_record", (rec,)
+    if collection == "blocks" and 0 < len(conn) <= 200 and 0 < len(name) <= 1000:
+        return "blocks_by_name", (conn, name)
+    if collection == "codeFiles" and 0 < len(path) <= 2000:
+        return "code_files_by_path", (path,)
+    return None
 
 
 _LINK_COLLS = ["nodeRelations", "recordLinks"]  # a link is a nodeRelations row with a link type, or a recordLinks row

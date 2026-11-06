@@ -422,7 +422,7 @@ if TYPE_CHECKING:
         EntityCandidateRows,
         PermittedEntityRows,
     )
-    from app.services.permissions.ports import HierarchyView
+    from app.services.permissions.ports import HierarchyView, StampGraph
 
 
 def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
@@ -834,6 +834,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def page_record_ids_by_type(
+        self,
+        org_id: str,
+        record_types: list[str],
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """Ids of ``org_id``'s non-deleted records whose ``recordType`` is in
+        ``record_types``, in key order, after ``after_key``, at most ``limit``.
+        For operator backfills that page through one org's records. A zero
+        ``limit`` returns no ids.
+
+        Raises:
+            ValueError: if ``limit`` is negative.
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_typed_records_batch(
         self,
         record_ids: list[str],
@@ -1097,9 +1117,12 @@ class IGraphDBProvider(ABC):
         edges: list[dict],
         collection: str,
         transaction: str | None = None,
-    ) -> bool:
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
-        Batch create edges/relationships between nodes.
+        Batch create edges/relationships between nodes. With ``count_created`` it returns how many edges the call created
+        (a found edge that was only rewritten is not one) instead of True; ``edge_effects.note_created`` gets their end ids either way.
 
         Args:
             edges (List[Dict]): List of edges in generic format:
@@ -1124,8 +1147,10 @@ class IGraphDBProvider(ABC):
         edges: list[dict],
         collection: str,
         transaction: str | None = None,
-    ) -> None:
-        """Create the edges that are not there and leave the ones that are untouched.
+        *,
+        count_created: bool = False,
+    ) -> int | None:
+        """Create the edges that are not there and leave the ones that are untouched. With ``count_created`` it returns how many it created.
 
         The create-only counterpart of :meth:`batch_create_edges`, which replaces an
         existing edge's properties. For a repair or a re-run that must not reset what
@@ -1139,7 +1164,9 @@ class IGraphDBProvider(ABC):
         self,
         edges: list[dict],
         transaction: str | None = None,
-    ) -> bool:
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
         Batch upsert record relation edges.
 
@@ -1151,9 +1178,11 @@ class IGraphDBProvider(ABC):
             edges: Edge documents with _from, _to, relationshipType and
                 optionally constraintName
             transaction: Optional transaction ID
+            count_created: return how many edges the call created instead of True (Neo4j and ArangoDB; the
+                PostgreSQL store raises NotImplementedError for True)
 
         Returns:
-            bool: True if successful
+            bool | int: True if successful, or the number of edges created when ``count_created``
 
         Raises:
             Exception: propagated from the database on failure
@@ -1620,7 +1649,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a specific node.
@@ -1705,6 +1736,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Walk one hop from many nodes at once along the given relationship types.
@@ -1720,6 +1752,10 @@ class IGraphDBProvider(ABC):
             relationship_types (List[str]): Relationship type values to follow
             direction (str): "outbound", "inbound", or "any"
             limit (int): Maximum rows to return across the whole frontier
+            after (Optional[str]): Keyset paging. ``None`` keeps the unordered
+                single query. Any string (``""`` for the first page) returns rows
+                in ascending ``cursor`` order whose ``cursor`` is greater than it;
+                pass the last row's ``cursor`` to get the next page.
             transaction (Optional[str]): Optional transaction context
 
         Returns:
@@ -2357,7 +2393,9 @@ class IGraphDBProvider(ABC):
         undone. See ``app.modules.indexing.duplicate_reconcile``.
 
         Returns:
-            ``[{"_key", "duplicateReconcileAttempts", "duplicateReconcileDueAt"}]``.
+            ``[{"_key", "orgId", "duplicateReconcileAttempts", "duplicateReconcileDueAt"}]``. The read spans
+            every organisation (the caller runs it under a system context); ``orgId`` is the organisation
+            the follow-up for that row runs under.
 
         Raises:
             Exception: on query failure.
@@ -3386,13 +3424,15 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> Optional['User']:
         """
         Get a user by email address.
 
         None means there is no such user. A read that fails also answers None unless
         ``raise_on_error`` is set, which a caller needs when it would act on "no such
-        user" (replacing a record's permissions without them, say).
+        user" (replacing a record's permissions without them, say). With ``org_id``,
+        only that org's users are read: an address is not unique across orgs.
 
         Args:
             email (str): User email
@@ -3400,6 +3440,26 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[Dict]: User data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_users_by_emails(
+        self,
+        emails: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        org_id: str | None = None,
+    ) -> dict[str, 'User']:
+        """
+        Get the users whose email is any of ``emails``, in one query.
+
+        Matching ignores case. The result maps each matched address, lowercased,
+        to its user; an address with no user is absent, and no addresses give
+        ``{}`` without a query. Scoping, and a failed read, follow
+        :meth:`get_user_by_email`: a failed read answers ``{}`` unless
+        ``raise_on_error`` is set.
         """
         pass
 
@@ -4949,6 +5009,48 @@ class IGraphDBProvider(ABC):
         Concrete and failing, like ``check_access``: a backend without it must be refused loudly, never read as
         "no scopes"."""
         raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
+
+    async def increment_node_field(
+        self, key: str, collection: str, field: str, transaction: str | None = None
+    ) -> int | None:
+        """Add one to a numeric field of a node in one statement, under the node's write lock, and return the new value (None when the
+        node does not exist). Never read-then-write: two transactions that both increment get two different values. The default is a
+        read and a write; the graph providers override it."""
+        node = await self.get_document(key, collection, transaction=transaction, raise_on_error=True)
+        if node is None:
+            return None
+        value = int(node.get(field) or 0) + 1
+        if not await self.update_node(key, collection, {field: value}, transaction):
+            return None  # the node went away between the read and the write
+        return value
+
+    async def get_structure_of_nodes(
+        self, collection: str, node_ids: list[str], transaction: str | None = None, *, raise_on_error: bool = False
+    ) -> dict[str, frozenset]:
+        """For each node of ``collection``, the hierarchy (PARENT_CHILD, ATTACHMENT), group (BELONGS_TO) and inherit edges that decide
+        its access, as hashable tuples, and whether it has any grant (a PERMISSION edge into it; which grants, never). Read inside ``transaction`` when given. This default asks edge by edge; the
+        graph providers override it with one query for all the nodes."""
+        out: dict[str, frozenset] = {}
+        for node_id in node_ids:
+            me = f"{collection}/{node_id}"
+            edges: set[tuple] = set()
+            for edge_collection in (CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value):
+                for e in await self.get_edges_from_node(me, edge_collection, transaction=transaction, raise_on_error=raise_on_error) or []:
+                    edges.add((edge_collection, e.get("_from"), e.get("_to")))
+            for e in await self.get_edges_to_node(me, CollectionNames.NODE_RELATIONS.value, transaction=transaction, raise_on_error=raise_on_error) or []:
+                if e.get("relationshipType") in ("PARENT_CHILD", "ATTACHMENT"):
+                    edges.add((CollectionNames.NODE_RELATIONS.value, e.get("_from"), e.get("_to"), e.get("relationshipType")))
+            if await self.get_edges_to_node(me, CollectionNames.PERMISSION.value, transaction=transaction, raise_on_error=raise_on_error):
+                edges.add(("granted", node_id))
+            out[node_id] = frozenset(edges)
+        return out
+
+    def permission_stamp_graph(self) -> "StampGraph":
+        """What a scope-field stamper reads about records and record groups, for `app.services.permissions.ScopeProjector`.
+
+        Concrete and failing, like ``permission_hierarchy_view``: a backend without it must be refused loudly, never read
+        as "every record is its container"."""
+        raise NotImplementedError(f"{type(self).__name__} has no permission stamp graph")
 
     @abstractmethod
     async def get_entity_access_context(
@@ -8365,6 +8467,54 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_people(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """Members of ``org_id`` linked to the record, itself of ``org_id``, by an ``entityRelations``
+        edge in either direction (record -> user from ``record_people``,
+        user -> record from message mentions), each once:
+        ``{"id", "name", "email"}``. ``name`` is the user's full name or
+        None.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_organizations(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """External organisations of ``org_id`` (``isExternal``, with
+        ``parentOrgId == org_id``) linked to the record by an
+        ``entityRelations`` edge, each once: ``{"id", "name"}``.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_group_organization(
+        self, record_group_id: str, org_id: str, transaction: str | None = None,
+    ) -> str | None:
+        """The external organisation of ``org_id`` a CRM account's record
+        group belongs to (its ``dealOf`` edge), or None.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def stamp_external_org_parents(self, org_id: str) -> int:
+        """Set ``parentOrgId = org_id`` on the external organisations the
+        org ``org_id`` has a ``prospect`` or ``customer`` edge to and
+        that carry no owning org yet (written before accounts recorded one).
+        Returns how many were stamped.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_permitted_entity_records(
         self,
         refs: list[dict[str, Any]],
@@ -8458,9 +8608,11 @@ class IGraphDBProvider(ABC):
         org_id: str,
         transaction: str | None = None,
     ) -> dict[tuple[str, str], dict[str, list[str]]]:
-        """Which connectors and record groups still reach each taxonomy entity,
-        from the graph: the distinct ``connectorId`` / ``recordGroupId`` of
-        non-deleted records in ``org_id`` with a ``belongsTo*`` edge to it.
+        """Which connectors and record groups still reach each taxonomy entity
+        or person, from the graph: the distinct ``connectorId`` /
+        ``recordGroupId`` of non-deleted records in ``org_id`` with a
+        ``belongsTo*`` edge to it, or for a person an ``entityRelations`` edge
+        in either direction (a person of another org reaches nothing).
 
         The entity vector store's stored membership is only a projection of
         this; connector cleanup uses it before deleting a point that looks
@@ -8468,8 +8620,8 @@ class IGraphDBProvider(ABC):
 
         Args:
             refs: ``{"id": str, "type": str}`` for ``department``, ``category``,
-                ``subcategory`` (levels 1-3), ``topic`` or ``language``; other
-                types are ignored.
+                ``subcategory`` (levels 1-3), ``topic``, ``language`` or
+                ``person``; other types are ignored.
             org_id: Organization scope. Empty returns ``{}`` without querying.
             transaction: Optional transaction id.
 
@@ -8608,6 +8760,27 @@ class IGraphDBProvider(ABC):
 
         Returns:
             ``[{"_key", "name", "records"}]``, at most ``limit``.
+        """
+        pass
+
+    @abstractmethod
+    async def find_merged_taxonomy_nodes_with_edges(
+        self,
+        collection: str,
+        org_id: str,
+        limit: int,
+        after_key: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Nodes of ``org_id`` in ``collection`` that were merged into another
+        (``mergedInto`` set) yet still have record edges from the org's
+        records, trashed ones included, with how many distinct such records
+        each has, ordered by key after ``after_key``. Indexing that resolved
+        to a node just before it was merged links to it afterwards; these are
+        the edges a re-run of the merge would move.
+
+        Returns:
+            ``[{"_key", "name", "mergedInto", "records"}]``, at most ``limit``.
         """
         pass
 

@@ -6,6 +6,7 @@ import { createMockAppConfig } from '../../../helpers/fixtures/config.fixture'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
 import { requestContextMiddleware } from '../../../../src/libs/middlewares/request.context'
+import { isMcpRelay, MCP_RELAY_HEADER, relayKey } from '../../../../src/libs/middlewares/mcp-relay'
 
 // The controller is imported AFTER mock-mcp-global.ts has patched require.cache
 // for @pipeshub-ai/mcp/* and @modelcontextprotocol/sdk, so all ESM deps resolve
@@ -312,6 +313,20 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(registered).to.deep.equal([])
     })
 
+    it('asks again for another token of the same user, whose knowledge limit may differ', async () => {
+      fetchStub.onFirstCall().resolves(repos([]))
+      fetchStub.onSecondCall().resolves(repos([{ repo: 'acme/shop' }]))
+      await serve('cg-two-tokens', list)
+      expect(registered).to.deep.equal([])
+      const req = createMockRequest({
+        headers: { authorization: 'Bearer other' },
+        user: { userId: 'cg-two-tokens', orgId: 'org-1' },
+        body: list,
+      })
+      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+      expect(registered).to.deep.equal([...CODE_GRAPH_TOOL_NAMES])
+    })
+
     it('leaves them out for an OAuth token without code:read, without asking', async () => {
       await serve('cg-no-scope', list, { isOAuth: true, oauthScopes: ['semantic:read', 'connector:read'] })
       expect(registered).to.deep.equal([])
@@ -383,6 +398,49 @@ describe('MCP Controller — handleMCPRequest', () => {
       await serve('cg-other', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'pipeshub_search' } })
       expect(fetchStub.called).to.equal(false)
       expect(registered).to.deep.equal([])
+    })
+  })
+
+  describe('loopback calls and disconnects', () => {
+    it("marks the tools' API calls with a relay header bound to the caller's token", async () => {
+      let capturedOpts: any
+      mcpCoreExports.PipeshubCore = function (opts: any) { capturedOpts = opts }
+      mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
+        opts.getSDK()
+        return { server: { registerTool: () => undefined, connect: sinon.stub().resolves() } }
+      })
+      const req = createMockRequest({ headers: { authorization: 'Bearer tok-1' }, body: {} })
+
+      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+
+      const outgoing = new Request('http://localhost:3000/api/v1/search', {
+        headers: { authorization: 'Bearer tok-1' },
+      })
+      for (const hook of capturedOpts.httpClient.hooks) hook(outgoing)
+      const relayed = {
+        headers: {
+          authorization: 'Bearer tok-1',
+          [MCP_RELAY_HEADER]: outgoing.headers.get(MCP_RELAY_HEADER) ?? undefined,
+        },
+      }
+      const key = relayKey(appConfig.scopedJwtSecret)
+      expect(isMcpRelay(relayed as any, key)).to.be.true
+      expect(isMcpRelay({ headers: { ...relayed.headers, authorization: 'Bearer other' } } as any, key)).to.be.false
+    })
+
+    it('closes the server when the client hangs up, which aborts the running tool call', async () => {
+      const close = sinon.stub().resolves()
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { registerTool: () => undefined, connect: sinon.stub().resolves(), close },
+      })
+      const res = createMockResponse()
+
+      await handleMCPRequest(appConfig)(createMockRequest({ headers: {}, body: {} }), res as any, createMockNext())
+
+      const onClose = res.on.getCalls().find((c: any) => c.args[0] === 'close')
+      expect(onClose, 'close listener').to.exist
+      onClose!.args[1]()
+      expect(close.calledOnce).to.be.true
     })
   })
 
