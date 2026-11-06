@@ -25,8 +25,11 @@ vi.mock('@/app/components/sidebar', () => ({
   SidebarBase: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   ICON_SIZE_DEFAULT: 16,
 }));
-vi.mock('@/config', () => ({ ChatSidebarFooter: () => null }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/config', async () => {
+  const ext = await vi.importActual<typeof import('@/app/(main)/chat/chat-extension')>('@/app/(main)/chat/chat-extension');
+  return { ChatSidebarFooter: () => null, chatSlots: ext.defaultChatSlots, chatExtension: ext.defaultChatExtension };
+});
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 vi.mock('@/lib/navigation', () => ({
   Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
 }));

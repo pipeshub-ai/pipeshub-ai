@@ -133,6 +133,17 @@ describe('the rejected-files toast', () => {
     expect(t.description).toContain('1 unsupported type · 2 duplicate names · 1 other error');
   });
 
+  it('says an empty file is empty, in words', () => {
+    notifyUploadFailures(failed('EMPTY_FILE'), 30);
+    expect(toasts()[0]).toMatchObject({ variant: 'info', title: "1 file can't be uploaded" });
+    expect(toasts()[0].description).toContain('This file is empty. Add some content and upload it again.');
+  });
+
+  it('counts empty files apart from unsupported ones in a mix', () => {
+    notifyUploadFailures(failed('UNSUPPORTED_TYPE', 'EMPTY_FILE', 'EMPTY_FILE'), 30);
+    expect(toasts()[0].description).toContain('1 unsupported type · 2 empty files');
+  });
+
   it('treats only informational rejections as info', () => {
     notifyUploadFailures(failed('DUPLICATE_NAME'), 30);
     expect(toasts()[0]).toMatchObject({ variant: 'info', title: "1 file can't be uploaded" });

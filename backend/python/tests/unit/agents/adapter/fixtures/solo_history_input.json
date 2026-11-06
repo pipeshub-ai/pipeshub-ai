@@ -1,0 +1,17 @@
+{
+  "query": "and what about Q3?",
+  "previousConversations": [
+    {"role": "user_query", "content": "What is the revenue?", "attachments": [{"recordId": "r1", "recordName": "q2.pdf"}], "referenceData": [{"id": "x"}]},
+    {"role": "bot_response", "content": "Revenue was $5M [1].", "citations": [{"id": "c1"}], "tool_results": [
+      {"tool_name": "knowledgebase.search", "result": "found 3", "status": "success", "tool_id": "t1", "args": {"query": "revenue"}},
+      {"tool_name": "x.y", "result": {"k": 1}, "status": "error", "tool_id": "t2", "args": "not-json"},
+      {"tool_name": "art.tool", "result": "big", "status": "success", "tool_id": "t3", "args": {"a": 1}, "artifact_id": "art-1", "result_summary": "sum"}
+    ]},
+    {"role": "user_query", "content": "  [bracket start]  "},
+    {"role": "user_query", "content": null},
+    {"role": "user_query", "content": 42},
+    {"role": "bot_response", "content": "System note", "futureField": {"nested": [1, 2]}},
+    {"role": "system", "content": "timeline row"},
+    {"role": "user_query", "content": "User selections: EU"}
+  ]
+}

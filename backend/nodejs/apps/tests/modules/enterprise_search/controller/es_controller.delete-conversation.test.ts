@@ -5,6 +5,7 @@ import mongoose from 'mongoose'
 import * as artifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
+import { withOwnerGrant } from '../helpers/conversation-grant'
 
 const CONTROLLER = '../../../../src/modules/enterprise_search/controller/es_controller'
 const USER_ID = new mongoose.Types.ObjectId('aaaaaaaaaaaaaaaaaaaaaaaa')
@@ -61,12 +62,12 @@ describe('es_controller deleteConversationById on a replica set', () => {
     const res = { status: sinon.stub().returnsThis(), json: sinon.stub() }
     const next = sinon.stub()
     await controller.deleteConversationById({} as never)(
-      {
+      withOwnerGrant({
         params: { conversationId },
         user: { userId: USER_ID, orgId: ORG_ID },
         context: { requestId: 'r1' },
         headers: {},
-      } as never,
+      }) as never,
       res as never,
       next,
     )

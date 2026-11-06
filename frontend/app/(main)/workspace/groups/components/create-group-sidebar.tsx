@@ -7,8 +7,12 @@ import { useToastStore } from '@/lib/store/toast-store';
 import {
   WorkspaceRightPanel,
   FormField,
+  LabeledTextField,
   SearchableCheckboxDropdown,
+  useFormValidation,
 } from '../../components';
+import { workspaceNameProblem } from '../../name-rules';
+import { fieldErrorsOf } from '@/lib/api/api-error';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
 import { groupSaveRefusalMessage } from '../save-error';
@@ -62,8 +66,15 @@ export function CreateGroupSidebar({
     serviceAccountBadge: t('workspace.serviceAccounts.memberBadge'),
   });
 
-  // Form validation
-  const isFormValid = createGroupName.trim().length > 0;
+  // Same rule as a team name: required, at most 100 characters.
+  const validation = useFormValidation<'name'>({
+    name: workspaceNameProblem(createGroupName, t),
+  });
+  const isFormValid = validation.isValid;
+  const resetValidation = validation.reset;
+  useEffect(() => {
+    if (!isCreatePanelOpen) resetValidation();
+  }, [isCreatePanelOpen, resetValidation]);
 
   // Handle submit
   const handleSubmit = useCallback(async () => {
@@ -97,20 +108,25 @@ export function CreateGroupSidebar({
       closeCreatePanel();
       onCreateSuccess?.();
     } catch (error) {
-      addToast({
-        variant: 'error',
-        title: t(
-          'workspace.groups.create.errorGeneric',
-          'Failed to create group'
-        ),
-        description: groupSaveRefusalMessage(error),
-        duration: 5000,
-      });
+      // A reason the server pinned to the name shows on the field, not as a toast.
+      const onField = validation.applyServerErrors(fieldErrorsOf(error), ['name']);
+      if (!onField) {
+        addToast({
+          variant: 'error',
+          title: t(
+            'workspace.groups.create.errorGeneric',
+            'Failed to create group'
+          ),
+          description: groupSaveRefusalMessage(error),
+          duration: 5000,
+        });
+      }
     } finally {
       setIsCreating(false);
     }
   }, [
     isFormValid,
+    validation.applyServerErrors,
     createGroupName,
     createGroupUserIds,
     setIsCreating,
@@ -150,37 +166,19 @@ export function CreateGroupSidebar({
         <FormField
           label={t('workspace.groups.create.nameLabel', 'Group Name')}
           required
+          error={validation.errorFor('name')}
         >
-          <input
-            type="text"
+          <LabeledTextField
             value={createGroupName}
-            onChange={(e) => setCreateGroupName(e.target.value)}
+            onChange={(e) => {
+              setCreateGroupName(e.target.value);
+              validation.clearServerError('name');
+            }}
+            onBlur={() => validation.touch('name')}
             placeholder={t(
               'workspace.groups.create.namePlaceholder',
               'e.g. Data Engineering'
             )}
-            style={{
-              width: '100%',
-              height: 44, // the touch-target minimum; also ~12px around the 20px line
-              padding: '0 12px',
-              backgroundColor: 'var(--color-surface)',
-              border: '1px solid var(--slate-a5)',
-              borderRadius: 'var(--radius-2)',
-              fontSize: 14,
-              lineHeight: '20px',
-              fontFamily: 'var(--default-font-family)',
-              color: 'var(--slate-12)',
-              outline: 'none',
-              boxSizing: 'border-box',
-            }}
-            onFocus={(e) => {
-              e.currentTarget.style.border = '2px solid var(--accent-8)';
-              e.currentTarget.style.padding = '0 11px';
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = '0 12px';
-            }}
           />
         </FormField>
 

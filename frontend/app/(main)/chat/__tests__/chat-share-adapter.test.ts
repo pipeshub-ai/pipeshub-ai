@@ -13,7 +13,10 @@ vi.mock('@/app/(main)/workspace/users/api', () => ({ UsersApi: { getUsersByIds: 
 vi.mock('@/app/(main)/agents/api', () => ({ AgentsApi: { fetchAgentConversation: h.fetchAgentConversation } }));
 vi.mock('../api', () => ({ ChatApi: { fetchConversation: h.fetchConversation } }));
 vi.mock('../project-api', () => ({ ProjectApi: {} }));
-vi.mock('@/config', () => ({ useAuthStore: { getState: () => ({ user: null }) } }));
+vi.mock('@/config', async (importOriginal) => ({
+  chatExtension: (await importOriginal<typeof import('@/config')>()).chatExtension,
+  useAuthStore: { getState: () => ({ user: null }) },
+}));
 vi.mock('@/lib/store/user-store', () => ({ useUserStore: { getState: () => ({ profile: h.profile }) } }));
 
 import { useChatStore } from '../store';

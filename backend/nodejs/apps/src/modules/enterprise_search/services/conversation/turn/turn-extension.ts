@@ -1,0 +1,280 @@
+import type { ProjectDto } from '../../../../projects/types/project.interfaces';
+import { Response } from 'express';
+import { ClientSession, Types } from 'mongoose';
+import { AuthenticatedUserRequest } from '../../../../../libs/middlewares/types';
+import { AppConfig } from '../../../../tokens_manager/config/config';
+import {
+  AIServiceResponse,
+  IChatAttachmentRef,
+  IChatSessionDocument,
+  IChatSessionMessageDocument,
+  IMessage,
+  IMessagePart,
+} from '../../../types/conversation.interfaces';
+import { ChatTarget } from '../../../utils/ai-chat-payload';
+import { ResolvedProjectLink } from '../../../utils/project-context';
+import type { RunLimits } from '../../../utils/turn-stream';
+import { TurnGate } from './turn-gate';
+import { TurnRun } from './turn-run';
+import { ConversationTurnDeps } from './turn-deps';
+
+/** Who answers one turn, and where its AI-backend request goes. The session's own identity never changes. */
+export interface TurnResponder {
+  readonly target: ChatTarget;
+  /** Set when an agent other than the conversation's own answers; stamped on the answer rows. */
+  readonly respondingAgentKey?: string;
+}
+
+/** The request fields that describe the user's message. */
+export interface TurnBody {
+  query: string;
+  attachments?: IChatAttachmentRef[];
+  resume?: { toolCallMessageId: string };
+  [field: string]: unknown;
+}
+
+export interface FirstSendPreparation {
+  readonly responder: TurnResponder;
+  /** Whatever the extension needs again in its later first-send hooks; opaque to the handlers. */
+  readonly state?: unknown;
+}
+
+export type TurnMode = 'stream' | 'plain';
+
+export interface FirstTurnInput {
+  deps: ConversationTurnDeps;
+  req: AuthenticatedUserRequest;
+  target: ChatTarget;
+  userId: Types.ObjectId | string;
+  orgId: Types.ObjectId | string;
+  body: TurnBody;
+  attachments?: IChatAttachmentRef[];
+  link: ResolvedProjectLink;
+  preparation: FirstSendPreparation;
+}
+
+export interface FollowUpAppendInput {
+  req: AuthenticatedUserRequest;
+  target: ChatTarget;
+  userId: Types.ObjectId | string;
+  orgId: Types.ObjectId | string;
+  body: TurnBody;
+  attachments?: IChatAttachmentRef[];
+  gate: TurnGate;
+}
+
+export interface AppendedTurn {
+  conversation: IChatSessionDocument;
+  userRow: IChatSessionMessageDocument;
+  run: TurnRun;
+}
+
+export interface FollowUpContext {
+  previousConversations: Array<Record<string, unknown>>;
+  project?: ProjectDto;
+  /** Fields added to the AI-backend payload of this turn. */
+  aiPayload?: Record<string, unknown>;
+}
+
+/** A first send the extension answered itself, with no AI run: the handler only returns. */
+export interface NoRunReply {
+  req: AuthenticatedUserRequest;
+  res: Response;
+  deps: ConversationTurnDeps;
+  turn: AppendedTurn;
+  mode: TurnMode;
+  projectId?: string;
+  startTime: number;
+  requestId?: string;
+}
+
+/** The run whose answer row is being saved. */
+export interface TurnAnswerContext {
+  conversation: IChatSessionDocument;
+  run?: TurnRun;
+}
+
+/**
+ * What the extension adds to the answer one request's run saves. It sees the run's custom events as
+ * they pass (they are still forwarded), may change the answer row before it is written, and acts
+ * inside the answer's write once the row is stored.
+ */
+export interface TurnAnswerHooks {
+  observe(eventName: string, value: unknown): void;
+  prepare(row: IMessage, context: TurnAnswerContext): Promise<IMessage>;
+  /** Runs in the answer's write: a throw fails the write. */
+  stored(
+    row: IChatSessionMessageDocument,
+    context: TurnAnswerContext & { dbSession: ClientSession | null },
+  ): Promise<void>;
+  /**
+   * What a run stopped before its answer arrived saves of what streamed (it gets no `prepare`, and
+   * mentions nobody). Absent, it is saved as it streamed.
+   */
+  redactStopped?(
+    text: string,
+    parts?: IMessagePart[],
+  ): { text: string; parts?: IMessagePart[] };
+}
+
+/** How a run ended, for those who watched its answer being written. */
+export type LiveAnswerStatus = 'complete' | 'failed' | 'stopped';
+
+/**
+ * What a live citation says of its record: the fields a citation chip draws, each one the saved citation also keeps
+ * (`citation.schema`). Nothing else the AI backend sends goes out.
+ */
+export interface LiveCitationMetadata {
+  recordId: string;
+  recordName?: string;
+  recordType?: string;
+  origin?: string;
+  connector?: string;
+  connectorId?: string;
+  connectorInstanceName?: string;
+  mimeType?: string;
+  extension?: string;
+  webUrl?: string;
+  previewRenderable?: boolean;
+  hideWeburl?: boolean;
+  pageNum?: number[];
+  blockNum?: number[];
+  bounding_box?: Array<{ x: number; y: number }>;
+  updatedAt?: string;
+}
+
+/** One citation of an answer being written: what its number points at. */
+export interface LiveCitation {
+  /** The cited passage. */
+  content: string;
+  /** The number the answer's text uses for it. */
+  chunkIndex: number;
+  citationType: string;
+  metadata: LiveCitationMetadata;
+}
+
+/**
+ * How far the answer so far is numbered. Its first `settledLength` UTF-16 code units (JavaScript string length) are
+ * the AI backend's numbered copy, its citations written as numbered links; the text after them streamed since, raw.
+ * `items` are the citations the numbers point at, in the order the copy lists them.
+ */
+export interface LiveCitations {
+  settledLength: number;
+  items: readonly LiveCitation[];
+}
+
+/** One look at a run's answer as it is written. An absent `steps` or `citations` keeps the last ones told. */
+export interface LiveAnswerSnapshot {
+  /** The text after the run's last tool call: the answer so far, as a stopped run would save it. */
+  answer: string;
+  /** What came before the answer: the tool calls and the text written between them. */
+  steps?: readonly IMessagePart[];
+  citations?: LiveCitations;
+}
+
+/**
+ * The answer of one run as it is written, for readers other than the asker's own stream: told a snapshot each time
+ * any part of it changes, then once how the run ended.
+ */
+export interface LiveAnswer {
+  text(snapshot: LiveAnswerSnapshot): void;
+  done(status: LiveAnswerStatus): void;
+}
+
+/** What the stream relay may ask about a turn. */
+export interface TurnStreamExtension {
+  /** Describes the agent that answered, for the final frame; undefined when the conversation's own agent did. */
+  respondingAgentView(
+    run: TurnRun,
+  ): Promise<Record<string, unknown> | undefined>;
+  /** When the server ends this run if its AI backend stalls. */
+  runLimits(run: TurnRun, conversation: IChatSessionDocument): RunLimits;
+  /** One per request; absent, the answer is saved as the AI backend gave it. */
+  answer?: TurnAnswerHooks;
+  /** Absent, or undefined for this run: nobody else sees the answer before it is saved. */
+  liveAnswer?(
+    run: TurnRun,
+    conversation: IChatSessionDocument,
+  ): LiveAnswer | undefined;
+}
+
+/**
+ * The turn pipeline's extension points. The defaults are a single-author conversation: no
+ * preconditions beyond the route guard, the conversation's own assistant or agent answers, and
+ * nothing is added to the AI-backend request.
+ */
+export interface TurnExtension {
+  /** Before a streaming first send opens its stream. */
+  screenFirstSend(req: AuthenticatedUserRequest, body: TurnBody): void;
+  /** Before a first send writes anything; may reject. */
+  prepareFirstSend(args: {
+    req: AuthenticatedUserRequest;
+    deps: ConversationTurnDeps;
+    target: ChatTarget;
+    body: TurnBody;
+    mode: TurnMode;
+  }): Promise<FirstSendPreparation>;
+  /** Creates the conversation with the caller's first `user_query`. */
+  createFirstTurn(input: FirstTurnInput): Promise<AppendedTurn>;
+  /** True when the extension already answered the request and no AI run follows. */
+  replyWithoutRun(reply: NoRunReply): Promise<boolean>;
+  /** Who answers a follow-up turn. */
+  responderFor(
+    req: AuthenticatedUserRequest,
+    target: ChatTarget,
+  ): TurnResponder;
+  /** The agent, other than the conversation's own, that answers this request; undefined for the conversation's own. */
+  respondingAgentKeyOf(req: AuthenticatedUserRequest): string | undefined;
+  /** Appends the caller's `user_query` to an existing conversation. */
+  appendFollowUp(input: FollowUpAppendInput): Promise<AppendedTurn>;
+  /** What the AI backend is told about a follow-up. */
+  followUpContext(
+    req: AuthenticatedUserRequest,
+    turn: AppendedTurn,
+    deps: ConversationTurnDeps,
+  ): Promise<FollowUpContext>;
+  /** What the AI backend is told when an answer is generated again: the rows before its question. */
+  regenerationContext(args: {
+    req: AuthenticatedUserRequest;
+    deps: ConversationTurnDeps;
+    conversation: IChatSessionDocument;
+    question: IMessage;
+    history: IMessage[];
+    gate: TurnGate;
+  }): Promise<{
+    previousConversations: Array<Record<string, unknown>>;
+    aiPayload: Record<string, unknown>;
+  }>;
+  /** Extra fields of the `conversation_created` frame and of a non-streaming reply. */
+  createdFrameFields(req: AuthenticatedUserRequest): Record<string, unknown>;
+  /** Fields every AI-backend request for this conversation carries. */
+  aiPayloadFields(conversation: IChatSessionDocument): Record<string, unknown>;
+  /**
+   * Stops a run the caller named. Null when there is nothing to cancel; otherwise the AI backend's
+   * answer.
+   */
+  cancelRun(args: {
+    req: AuthenticatedUserRequest;
+    appConfig: AppConfig;
+    conversationId: string;
+    runId: string;
+  }): Promise<AIServiceResponse<unknown> | null>;
+  /** The tool name a custom AI-backend event is stored under as a `tool_call` card; undefined, it is not stored. */
+  toolCardFor(eventName: string): string | undefined;
+  /** The stream relay's questions for this request. */
+  streamFor(
+    req: AuthenticatedUserRequest,
+    deps: ConversationTurnDeps,
+  ): TurnStreamExtension;
+  /** The query text the markup checks run on. */
+  queryForValidation(query: string): string;
+  /**
+   * How a first send titles a chat whose first question is `question`, for those words or edited ones, so that an
+   * edit of that question can tell an unrenamed title and move it.
+   */
+  titleRule(args: {
+    req: AuthenticatedUserRequest;
+    deps: ConversationTurnDeps;
+    question: IMessage;
+  }): Promise<(query: string) => string>;
+}

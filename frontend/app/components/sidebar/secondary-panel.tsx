@@ -1,7 +1,7 @@
 'use client';
 
 import { Flex, Box } from '@radix-ui/themes';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import {
   SIDEBAR_WIDTH,
   HEADER_HEIGHT,
@@ -23,7 +23,8 @@ import type { SecondaryPanelProps } from './types';
  * Reusable across Chat, KB, and other sidebars.
  */
 export function SecondaryPanel({ header, children }: SecondaryPanelProps) {
-  const isMobile = useIsMobile();
+  // Inside the navigation drawer the panel fills the drawer.
+  const isMobile = useIsBelowDesktop();
 
   return (
     <Flex

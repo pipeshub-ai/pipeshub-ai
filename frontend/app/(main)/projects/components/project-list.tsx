@@ -13,6 +13,7 @@ import {
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { IconMenuItem } from '@/app/components/ui/icon-menu-item';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ProjectApi } from '@/chat/project-api';
@@ -49,8 +50,8 @@ export function projectCardActions(project: Pick<ProjectSummary, 'role' | 'isPin
 }
 
 const ACTION_ICON: Record<ProjectCardAction, string> = {
-  pin: 'star_outline',
-  unpin: 'star',
+  pin: 'keep',
+  unpin: 'keep_off',
   archive: 'archive',
   unarchive: 'unarchive',
   delete: 'delete',
@@ -133,7 +134,7 @@ function ProjectCard({ project, onOpen, onAction, isBusy = false }: ProjectCardP
             <MaterialIcon name="folder" size={18} color={project.color || 'var(--accent-11)'} />
           </Box>
           <Flex align="center" gap="2">
-            {project.isPinned && <MaterialIcon name="star" size={16} color="var(--amber-9)" />}
+            {project.isPinned && <MaterialIcon name="keep" variant="filled" size={16} color="var(--text-secondary)" />}
             <Text size="1" style={{ color: 'var(--slate-10)' }}>
               {t(`chat.projects.roles.${project.role === 'none' ? 'viewer' : project.role}`)}
             </Text>
@@ -212,25 +213,17 @@ function ProjectCard({ project, onOpen, onAction, isBusy = false }: ProjectCardP
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content side="bottom" align="end" sideOffset={4} style={{ minWidth: 170 }}>
-              {actions.map((action) => {
-                const danger = action === 'delete' || action === 'leave';
-                const color = danger ? 'var(--red-11)' : 'var(--slate-11)';
-                return (
-                  <DropdownMenu.Item
-                    key={action}
-                    color={danger ? 'red' : undefined}
-                    disabled={isBusy}
-                    onSelect={() => onAction(action)}
-                  >
-                    <Flex align="center" gap="2">
-                      <MaterialIcon name={ACTION_ICON[action]} size={16} color={color} />
-                      <Text size="2" style={{ color }}>
-                        {t(ACTION_LABEL_KEY[action])}
-                      </Text>
-                    </Flex>
-                  </DropdownMenu.Item>
-                );
-              })}
+              {actions.map((action) => (
+                <IconMenuItem
+                  key={action}
+                  icon={ACTION_ICON[action]}
+                  color={action === 'delete' || action === 'leave' ? 'red' : undefined}
+                  disabled={isBusy}
+                  onSelect={() => onAction(action)}
+                >
+                  {t(ACTION_LABEL_KEY[action])}
+                </IconMenuItem>
+              ))}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
         </Box>

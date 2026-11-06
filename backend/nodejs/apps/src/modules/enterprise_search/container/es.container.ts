@@ -5,6 +5,14 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { ProjectServiceAccessAdapter } from '../../projects/services/project-access.adapter';
+import { resolveCallerTeamIds } from '../../projects/utils/team-membership';
+import { MongoUserDirectory } from '../../user_management/services/user-directory.service';
+import { CONVERSATION_TYPES } from '../services/conversation/conversation.types';
+import { IConversationGuards } from '../services/conversation/http/conversation-guards';
+import { DefaultConversationGuards } from '../services/conversation/http/default-conversation-guards';
+import { MongoConversationHistory } from '../services/conversation/persistence/message-history';
+import { ConversationTurnDeps } from '../services/conversation/turn/turn-deps';
 
 const loggerConfig = {
   service: 'Enterprise Search Service',
@@ -63,6 +71,21 @@ export class EnterpriseSearchAgentContainer {
       container
         .bind<AuthMiddleware>('AuthMiddleware')
         .toConstantValue(authMiddleware);
+      container
+        .bind<IConversationGuards>(CONVERSATION_TYPES.ConversationGuards)
+        .toConstantValue(
+          new DefaultConversationGuards({
+            projects: new ProjectServiceAccessAdapter(),
+            teamIdsOf: (req) => resolveCallerTeamIds(req, appConfig),
+          }),
+        );
+      container
+        .bind<ConversationTurnDeps>(CONVERSATION_TYPES.ConversationTurnDeps)
+        .toConstantValue({
+          feed: new MongoConversationHistory(),
+          users: new MongoUserDirectory(),
+          appConfig,
+        });
       this.logger.info(
         'Enterprise Search Agent services initialized successfully',
       );

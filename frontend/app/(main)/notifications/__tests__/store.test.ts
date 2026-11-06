@@ -9,6 +9,7 @@ vi.mock('../api', async (importOriginal) => {
     NotificationsApi: {
       ...actual.NotificationsApi,
       list: vi.fn(),
+      getStats: vi.fn(),
     },
   };
 });
@@ -50,6 +51,7 @@ function makeUnreadBatch(count: number, startId = 1): NotificationListItem[] {
 describe('useNotificationStore', () => {
   beforeEach(() => {
     vi.mocked(NotificationsApi.list).mockReset();
+    vi.mocked(NotificationsApi.getStats).mockReset();
     useNotificationStore.setState({
       notifications: [],
       unreadCount: 0,
@@ -136,6 +138,31 @@ describe('useNotificationStore', () => {
     expect(useNotificationStore.getState().notifications[0].title).toBe('New');
     expect(useNotificationStore.getState().notifications).toHaveLength(1);
     expect(useNotificationStore.getState().unreadCount).toBe(1);
+  });
+
+  it('upsertNotification counts a loaded row turning unread, and uncounts one turning read', () => {
+    useNotificationStore.getState().setInitialPage(
+      makePage([makeNotification({ _id: '1', status: 'read' }), makeNotification({ _id: '2', status: 'unread' })]),
+    );
+    useNotificationStore.setState({ unreadCount: 1 });
+
+    useNotificationStore.getState().upsertNotification(makeNotification({ _id: '1', status: 'unread' }));
+    expect(useNotificationStore.getState().unreadCount).toBe(2);
+
+    useNotificationStore.getState().upsertNotification(makeNotification({ _id: '2', status: 'read' }));
+    expect(useNotificationStore.getState().unreadCount).toBe(1);
+    expect(NotificationsApi.getStats).not.toHaveBeenCalled();
+  });
+
+  it('upsertNotification takes the server count for a row that was not loaded', async () => {
+    vi.mocked(NotificationsApi.getStats).mockResolvedValue({ unreadCount: 7, readCount: 3, archivedCount: 0 });
+    useNotificationStore.setState({ unreadCount: 7 });
+
+    useNotificationStore.getState().upsertNotification(makeNotification({ _id: 'elsewhere', status: 'unread' }));
+    expect(useNotificationStore.getState().unreadCount).toBe(7);
+
+    await vi.waitFor(() => expect(useNotificationStore.getState().readCount).toBe(3));
+    expect(useNotificationStore.getState().unreadCount).toBe(7);
   });
 
   it('markRead updates status without changing unreadCount', () => {

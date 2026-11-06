@@ -8,7 +8,10 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ProjectsFeature } from '../../../../src/modules/projects/utils/projects-feature'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { AuthenticatedUserRequest } from '../../../../src/libs/middlewares/types'
+import { withOwnerGrant } from '../helpers/conversation-grant'
 import { IProjectDocument, ProjectAccess } from '../../../../src/modules/projects/types/project.interfaces'
+import { testAcl } from '../helpers/test-extensions'
+import { useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions'
 
 const USER_ID = 'aaaaaaaaaaaaaaaaaaaaaaaa'
 const ORG_ID = 'bbbbbbbbbbbbbbbbbbbbbbbb'
@@ -30,7 +33,7 @@ function createMockRequest(body: Record<string, unknown>): AuthenticatedUserRequ
     query: {},
     user: { userId: USER_ID, orgId: ORG_ID },
   }
-  return req as AuthenticatedUserRequest
+  return withOwnerGrant(req) as AuthenticatedUserRequest
 }
 
 function createMockResponse(): MockResponse {
@@ -49,6 +52,9 @@ describe('setConversationProject response', () => {
     // The flag is read from the worker's settings store, which an earlier test file may have connected.
     sinon.stub(ProjectsFeature, 'isEnabled').resolves(true)
   })
+  beforeEach(() => useConversationExtensions({ acl: testAcl }))
+  afterEach(() => useConversationExtensions(undefined))
+
   afterEach(() => {
     sinon.restore()
   })
@@ -56,7 +62,7 @@ describe('setConversationProject response', () => {
   it('returns projectId and projectVisibility as null after unlinking', async () => {
     sinon.stub(ChatSession, 'findOne').resolves(sessionDoc({ _id: CONVERSATION_ID }))
     // An unlinked session has neither field; the response must still carry both keys.
-    sinon.stub(ChatSession, 'findOneAndUpdate').resolves(sessionDoc({ _id: CONVERSATION_ID }))
+    const update = sinon.stub(ChatSession, 'findOneAndUpdate').resolves(sessionDoc({ _id: CONVERSATION_ID }))
 
     const res = createMockResponse()
     const next = sinon.stub<[], void>()
@@ -73,6 +79,7 @@ describe('setConversationProject response', () => {
       projectId: null,
       projectVisibility: null,
     })
+    expect((update.firstCall.args[1] as Record<string, unknown>).$inc).to.deep.equal({ aclVersion: 1 })
   })
 
   it('returns the linked projectId and visibility', async () => {
@@ -84,7 +91,7 @@ describe('setConversationProject response', () => {
     sinon.stub(ChatSession, 'findOne').resolves(sessionDoc({ _id: CONVERSATION_ID }))
     sinon.stub(ProjectService, 'assertAccess').resolves(access)
     sinon.stub(ProjectService, 'touchActivity').resolves()
-    sinon.stub(ChatSession, 'findOneAndUpdate').resolves(
+    const update = sinon.stub(ChatSession, 'findOneAndUpdate').resolves(
       sessionDoc({ _id: CONVERSATION_ID, projectId: projectObjectId, projectVisibility: 'private' }),
     )
 
@@ -98,5 +105,6 @@ describe('setConversationProject response', () => {
     const body = res.json.firstCall.args[0]
     expect(body.projectId.toString()).to.equal(PROJECT_ID)
     expect(body.projectVisibility).to.equal('private')
+    expect((update.firstCall.args[1] as Record<string, unknown>).$inc).to.deep.equal({ aclVersion: 1 })
   })
 })

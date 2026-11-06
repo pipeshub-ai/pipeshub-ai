@@ -106,6 +106,22 @@ class TestConfluenceAttachmentUploader:
         assert results[0].to_dict()["stored_as"] == "diagram (2).png"
 
     @pytest.mark.asyncio
+    async def test_third_copy_of_a_name_gets_a_name_the_page_lacks(self) -> None:
+        ds = _datasource(upload_content_attachment=AsyncMock(side_effect=[
+            _resp(400, text=_DUPLICATE),
+            _resp(400, text=_DUPLICATE),
+            _resp(200, _uploaded_body(title="diagram (a1b2c3d4).png")),
+        ]))
+        with patch("app.agents.actions.confluence.attachments.secrets.token_hex", return_value="a1b2c3d4"):
+            results = await ConfluenceAttachmentUploader(ds).upload(
+                AttachmentTarget(destination_id="123"), [_resolved()],
+            )
+        names = [call.args[1] for call in ds.upload_content_attachment.await_args_list]
+        assert names == ["diagram.png", "diagram (2).png", "diagram (a1b2c3d4).png"]
+        assert results[0].success
+        assert results[0].stored_filename == "diagram (a1b2c3d4).png"
+
+    @pytest.mark.asyncio
     async def test_gives_up_after_three_names(self) -> None:
         ds = _datasource(upload_content_attachment=AsyncMock(return_value=_resp(400, text=_DUPLICATE)))
         results = await ConfluenceAttachmentUploader(ds).upload(AttachmentTarget(destination_id="123"), [_resolved()])

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
 
 const state = vi.hoisted(() => ({ mobile: false, path: '/chat/' }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => state.mobile }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => state.mobile, useIsBelowDesktop: () => state.mobile }));
 vi.mock('next/navigation', () => ({ usePathname: () => state.path }));
 
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';

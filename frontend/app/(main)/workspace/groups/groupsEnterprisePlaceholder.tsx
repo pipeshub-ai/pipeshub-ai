@@ -2,8 +2,7 @@
 
 import { Flex, Heading, Text } from '@radix-ui/themes';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { PAGE_PADDING_TOP, usePagePaddingTop } from '@/app/(main)/workspace/components/settings-page-container';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
@@ -13,7 +12,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
  */
 export default function GroupsEnterprisePlaceholder() {
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
+  const pagePaddingTop = usePagePaddingTop(PAGE_PADDING_TOP);
 
   return (
     <Flex
@@ -27,7 +26,7 @@ export default function GroupsEnterprisePlaceholder() {
       <Flex
         direction="column"
         gap="1"
-        style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP, paddingBottom: 24 }}
+        style={{ paddingTop: pagePaddingTop, paddingBottom: 24 }}
       >
         <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
           {t('workspace.groups.title')}

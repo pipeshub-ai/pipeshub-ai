@@ -236,32 +236,10 @@ export function agentStrategyToApiSegment(strategy: AgentStrategy): AgentStrateg
 }
 
 /**
- * Segments accepted by agent stream/regenerate HTTP bodies (`chatMode` field).
- * Only the current canonical segments — outgoing requests always go through
- * {@link agentStrategyToApiSegment}, which never produces the legacy
- * `verification` wire value; restoring THAT from persisted history is
- * `apply-conversation-model-info.ts`'s job, not this outgoing-request path.
+ * `chatMode` on every `/api/v1/agents/...` stream and regenerate: those routes take quick mode only, and refuse
+ * anything else with a 400. A constant, so neither a strategy nor a chat's older mode can lose a send that way.
  */
-const AGENT_HTTP_CHAT_MODES: readonly AgentStrategyApiSegment[] = [
-  'auto',
-  'quick',
-  'planExecute',
-  'deep',
-];
-
-/**
- * Map internal {@link StreamChatModePayload} to the plain `chatMode` string
- * expected by POST `/api/v1/agents/.../stream` (Python agent routes).
- */
-export function streamChatModeToAgentApiChatMode(
-  chatMode: StreamChatModePayload
-): AgentStrategyApiSegment {
-  if (typeof chatMode === 'string' && chatMode.startsWith('agent:')) {
-    const rest = chatMode.slice(6) as AgentStrategyApiSegment;
-    if (AGENT_HTTP_CHAT_MODES.includes(rest)) return rest;
-  }
-  return 'auto';
-}
+export const AGENT_ROUTE_CHAT_MODE = 'quick' satisfies AgentStrategyApiSegment;
 
 /** Configuration for a single query mode option in the selector panel. */
 export interface QueryModeConfig {
@@ -670,6 +648,8 @@ export interface SSEConnectedEvent {
    * If the backend later async-refines titles, `complete` still refreshes list/title state.
    */
   title?: string;
+  /** The run's id as the server knows it (same value as the `X-Run-Id` header), when it sends one. */
+  runId?: string;
 }
 
 /** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */
@@ -827,6 +807,11 @@ export interface MessagePart {
   approvalAnswer?: 'allowed' | 'declined' | 'expired';
   /** On the `mcp_sign_in` part: the reply's sign-in card. Not activity, so never in the timeline. */
   servers?: McpSignInServer[];
+  /**
+   * Set by this client, never by the server, on the ask_user_question call that showed a card, once the card is
+   * answered or replied to in the chat (`payload.repliedInChat`): the card and its answers, drawn as that call's row.
+   */
+  question?: { payload: AskUserQuestionPayload; answers?: Record<string, AskUserQuestionAnswer> };
   runId?: string;
   roleName?: string;
   parts?: MessagePart[];
@@ -879,6 +864,12 @@ export interface ConversationMessage {
   parts?: MessagePart[];
   /** Set when this bot response was cut short by a user-initiated Stop (see Node's `IMessage.status`). */
   status?: 'stopped';
+  /** The run that wrote this row. A question still without an answer carries the id a cancel has to name. */
+  runId?: string;
+  /** Tools the person asking had not connected; the answer went on without them. Parsed before use. */
+  unavailableTools?: unknown;
+  /** An `error` row: the refusal's code, for its asker only. */
+  errorCode?: string;
 }
 
 export interface ConversationCompleteData {
@@ -901,6 +892,8 @@ export interface ConversationCompleteData {
   __v: number;
   projectId?: string;
   projectVisibility?: 'private' | 'project';
+  /** `'turn'`: `messages` holds only this turn's rows, to merge by id into the rows already loaded. */
+  frame?: 'turn';
 }
 
 export interface SSECompleteEvent {
@@ -1033,9 +1026,8 @@ export interface ToolApprovalDetails {
  *
  * `isScopedAgent` distinguishes the two very different consumers of Agent
  * `QueryMode`: a conversation scoped to a specific custom Agent (`agentId`
- * set) still needs the `agent:<strategy>` wire value — its endpoint
- * (`agent.py`) unwraps that via {@link streamChatModeToAgentApiChatMode} to
- * drive `PipesHubAgentFactory`'s loop selection. The *main* chat's Agent
+ * set) gets the `agent:<strategy>` value here, though its routes are sent
+ * {@link AGENT_ROUTE_CHAT_MODE} whatever this says. The *main* chat's Agent
  * mode (no `agentId` — "Universal Agent Mode") has no such strategy
  * concept server-side (`chat_modes/policy.py`'s `AGENT_POLICY` decides
  * internal-search vs web-search vs both from the query itself), so it must
@@ -1097,8 +1089,22 @@ export interface AvailableLlmModel {
  */
 export type ActiveMessageAction =
   | null
-  | { type: 'regenerate'; messageId: string; appliedFilters?: AppliedFilters }
-  | { type: 'editQuery'; messageId: string; text: string; appliedFilters?: AppliedFilters; attachments?: AttachmentRef[] };
+  | {
+      type: 'regenerate';
+      messageId: string;
+      appliedFilters?: AppliedFilters;
+      /** The answer's slot, when it is not the active one. */
+      slotId?: string;
+    }
+  | {
+      type: 'editQuery';
+      messageId: string;
+      text: string;
+      appliedFilters?: AppliedFilters;
+      attachments?: AttachmentRef[];
+      /** The answer's slot, when it is not the active one (an agent thread's, or a private one's). */
+      slotId?: string;
+    };
 
 // ── Multi-Chat Slot Types ──
 
@@ -1148,6 +1154,13 @@ export interface ChatSlot {
    * tab's connection dropped (refresh, closed tab). Drives `startRemoteRunPoll`.
    */
   remoteRunInProgress: boolean;
+  /**
+   * The run to cancel while `remoteRunInProgress` holds for a run this person started: the id on the question the
+   * server has not answered yet. `null` when it is not theirs to stop or the chat is followed another way.
+   */
+  remoteRunId: string | null;
+  /** Stop was pressed for the remote run: one cancel went out, and the button waits for the server's answer. */
+  remoteStopRequested: boolean;
 
   /** Messages in assistant-ui ThreadMessageLike[] format. */
   messages: ThreadMessageLike[];
@@ -1260,6 +1273,25 @@ export interface ChatSlot {
    * to restore model + mode in the input when the user returns to this tab.
    */
   conversationModelInfo?: ModelInfo;
+  /** Questions waiting their turn, first in first out (`utils/queued-send.ts`); absent or empty when nothing waits. */
+  queue?: QueuedSend[];
+  /** Text to give back to the composer (an edited queued question, a refused send); the composer takes it and clears it. */
+  composerRestore?: string | null;
+  /** The composer holds text: a queued question is edited only into an empty box. */
+  composerHasText?: boolean;
+}
+
+/** A question waiting its turn in a chat's queue while the chat is busy. */
+export interface QueuedSend {
+  query: string;
+  attachments?: AttachmentRef[];
+  /** The question's id in the queue; it goes out as the message's client id where the request has one. */
+  clientMessageId: string;
+  queuedAt: number;
+  /** The server refused it when its turn came: the queue waits here until it is retried, edited or removed. */
+  failed?: string;
+  /** Sources the question names with `@`: they scope it when it goes. */
+  mentionIds?: string[];
 }
 
 // ── Search types ──────────────────────────────────────────────────────

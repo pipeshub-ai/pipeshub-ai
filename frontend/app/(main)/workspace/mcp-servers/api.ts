@@ -46,7 +46,8 @@ export const McpServersApi = {
   },
 
   async createInstance(payload: McpServerInstancePayload): Promise<McpServerInstance> {
-    const { data } = await apiClient.post(`${BASE_URL}/instances`, payload);
+    // The form shows the reason itself (on a field, or in one toast), so the global toast stays off.
+    const { data } = await apiClient.post(`${BASE_URL}/instances`, payload, { suppressErrorToast: true });
     return data;
   },
 
@@ -59,7 +60,9 @@ export const McpServersApi = {
     instanceId: string,
     payload: McpServerInstancePayload,
   ): Promise<McpServerInstance & { credentialsReset?: boolean }> {
-    const { data } = await apiClient.put(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}`, payload);
+    const { data } = await apiClient.put(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}`, payload, {
+      suppressErrorToast: true,
+    });
     return data;
   },
 

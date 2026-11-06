@@ -136,21 +136,9 @@ type ChatStoreState = ReturnType<typeof useChatStore.getState>;
 
 function applyModeAndStrategy(
   store: ChatStoreState,
-  rawMode: string,
+  mode: string,
   isAgentContext: boolean
 ): void {
-  const mode = rawMode === 'web_search' ? 'web-search' : rawMode;
-
-  if (mode === 'web-search') {
-    store.setQueryMode('web-search');
-    return;
-  }
-
-  if (mode === 'image') {
-    store.setQueryMode('image');
-    return;
-  }
-
   const hasAgentPrefix = mode.startsWith('agent:');
   const agentSegment = hasAgentPrefix
     ? mode.slice(6)
@@ -184,7 +172,9 @@ function applyModeAndStrategy(
     return;
   }
 
-  store.setQueryMode('chat');
+  // An older chat (`internal_search`, `web_search`, `image`) opens in agent mode too. Nothing in the app chooses those
+  // modes now, and settings outlive the chat: leaving them here would carry over to the next new chat.
+  store.setQueryMode('agent');
   store.setMode('chat');
 }
 

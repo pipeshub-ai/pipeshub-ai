@@ -1,6 +1,7 @@
 'use client';
 
-import { Flex, IconButton } from '@radix-ui/themes';
+import { Flex, IconButton, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ELEMENT_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 
@@ -15,6 +16,11 @@ interface ChatSectionHeaderProps {
   isCollapsed?: boolean;
   /** Called when the collapse chevron is clicked */
   onToggleCollapse?: () => void;
+  /**
+   * `rail`: the main chat rail's group heading. A 40px row (the 32px label row with a 4px band above
+   * and below), a plain-text title, and a + with a touch-sized hit area under a coarse pointer.
+   */
+  size?: 'default' | 'rail';
 }
 
 /**
@@ -29,41 +35,43 @@ export function ChatSectionHeader({
   onTitleClick,
   isCollapsed,
   onToggleCollapse,
+  size = 'default',
 }: ChatSectionHeaderProps) {
+  const { t } = useTranslation();
+  const isRail = size === 'rail';
   return (
     <Flex
       align="center"
       justify="between"
       style={{
-        height: ELEMENT_HEIGHT,
+        height: isRail ? `calc(${ELEMENT_HEIGHT}px + var(--space-2))` : ELEMENT_HEIGHT,
         padding: '0 var(--space-3)',
+        flexShrink: 0,
       }}
     >
-      <span
+      <Text
+        size="1"
         onClick={onToggleCollapse ?? onTitleClick}
         style={{
-          fontSize: 12,
-          fontWeight: 500,
-          lineHeight: 'var(--line-height-1)',
-          letterSpacing: '0.04px',
-          color: 'var(--slate-11)',
+          color: 'var(--text-secondary)',
           cursor: (onToggleCollapse ?? onTitleClick) ? 'pointer' : 'default',
           flex: 1,
         }}
       >
         {title}
-      </span>
+      </Text>
       <Flex align="center" gap="1">
         {onAdd && !isCollapsed && (
           <IconButton
             variant="ghost"
             size="1"
             color="gray"
+            className={isRail ? 'touch-hit' : undefined}
             onClick={(e) => { e.stopPropagation(); onAdd(); }}
-            aria-label={addAriaLabel ?? 'Add'}
+            aria-label={addAriaLabel ?? t('chat.addToSection', { section: title })}
             style={{ margin: 0 }}
           >
-            <MaterialIcon name="add" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />
+            <MaterialIcon name="add" size={ICON_SIZE_DEFAULT} color="var(--text-secondary)" />
           </IconButton>
         )}
         {onToggleCollapse && (
@@ -72,19 +80,16 @@ export function ChatSectionHeader({
             size="1"
             color="gray"
             onClick={onToggleCollapse}
-            aria-label={isCollapsed ? 'Expand section' : 'Collapse section'}
-            style={{
-              margin: 0,
-              transition: 'transform 0.2s ease',
-            }}
+            aria-label={isCollapsed ? t('chat.expandSection') : t('chat.collapseSection')}
+            style={{ margin: 0 }}
           >
             <MaterialIcon
               name="expand_more"
               size={ICON_SIZE_DEFAULT}
-              color="var(--slate-11)"
+              color="var(--text-secondary)"
               style={{
                 transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
-                transition: 'transform 0.2s ease',
+                transition: 'transform var(--motion-control) var(--motion-ease)',
                 display: 'block',
               }}
             />

@@ -9,7 +9,7 @@ duplicated -- only the framing is undone here.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from fastapi.responses import JSONResponse
@@ -107,9 +107,14 @@ def _parse_block(block: str) -> SSEFrame | None:
 class StreamOutcome:
     completion: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
+    # The root run's custom events the caller asked to keep, in stream order: a
+    # streamed run hands them to Node as they happen, a collected one with its answer.
+    events: tuple[dict[str, Any], ...] = field(default=())
 
     def to_response(self) -> JSONResponse:
         if self.completion is not None:
+            if self.events:
+                return JSONResponse(content={**self.completion, "events": list(self.events)})
             return JSONResponse(content=self.completion)
         if self.error is not None:
             return _error_response(self.error)
@@ -118,6 +123,7 @@ class StreamOutcome:
 
 def _error_response(error: dict[str, Any]) -> JSONResponse:
     code = error.get("code") if isinstance(error.get("code"), str) else None
+    details = error.get("details")
     return JSONResponse(
         status_code=_status_for_error(error, code),
         content={
@@ -126,6 +132,8 @@ def _error_response(error: dict[str, Any]) -> JSONResponse:
             "message": error.get("message") or error.get("error") or NO_RESPONSE_MESSAGE,
             "searchResults": [],
             "records": [],
+            # What the client needs to offer a fix, as the streamed error frame carries it.
+            **({"details": details} if isinstance(details, dict) else {}),
         },
     )
 
@@ -144,9 +152,19 @@ def _completion_from(frame: SSEFrame) -> dict[str, Any] | None:
     return frame.data
 
 
+def _kept_event(frame: SSEFrame, keep: frozenset[str]) -> dict[str, Any] | None:
+    """`{name, value}` of a custom event named in `keep`, in either protocol."""
+    if frame.event == AGUIEventType.CUSTOM.value:
+        name, value = frame.data.get("name"), frame.data.get("value")
+    else:
+        name, value = frame.event, frame.data
+    return {"name": name, "value": value} if isinstance(name, str) and name in keep else None
+
+
 async def collect_stream_outcome(
     body_iterator: AsyncIterable[str | bytes],
     is_disconnected: Callable[[], Awaitable[bool]] | None = None,
+    keep_events: frozenset[str] = frozenset(),
 ) -> StreamOutcome:
     """Consumes the whole stream and returns its root run's LAST terminal frame.
 
@@ -160,17 +178,24 @@ async def collect_stream_outcome(
     `is_disconnected` is checked between chunks so a caller that gave up
     stops the agent loop instead of leaving it to run to completion unseen.
     The iterator is always closed, which runs the generator's own cleanup.
+
+    `keep_events` names the root run's custom events that go back with the
+    answer (`StreamOutcome.events`); every other one is dropped as before.
     """
     parser = SSEFrameParser()
     completion: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
+    events: list[dict[str, Any]] = []
 
     def absorb(frames: Iterator[SSEFrame]) -> None:
         nonlocal completion, error
         for frame in frames:
             if not isinstance(frame.data, dict) or frame.data.get("parentRunId") is not None:
                 continue
-            if frame.event in _COMPLETION_EVENTS:
+            kept = _kept_event(frame, keep_events) if keep_events else None
+            if kept is not None:
+                events.append(kept)
+            elif frame.event in _COMPLETION_EVENTS:
                 result = _completion_from(frame)
                 if result is not None:
                     completion, error = result, None
@@ -190,7 +215,7 @@ async def collect_stream_outcome(
         aclose = getattr(iterator, "aclose", None)
         if aclose is not None:
             await aclose()
-    return StreamOutcome(completion=completion, error=error)
+    return StreamOutcome(completion=completion, error=error, events=tuple(events))
 
 
 __all__ = [

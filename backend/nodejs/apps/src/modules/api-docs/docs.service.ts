@@ -7,6 +7,7 @@ import * as yaml from 'js-yaml';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../../libs/services/logger.service';
+import { withSpecFragments } from './spec-fragments';
 
 /**
  * Module metadata for documentation
@@ -196,13 +197,14 @@ export class ApiDocsService {
     ];
     const specPath = paths.find((p) => fs.existsSync(p));
     if (!specPath) {
-      this.logger.warn(`PipesHub OpenAPI spec not found in any of: ${paths.join(', ')}`);
+      this.logger.warn(
+        `PipesHub OpenAPI spec not found in any of: ${paths.join(', ')}`,
+      );
       return;
     }
 
     try {
       const spec = yaml.load(fs.readFileSync(specPath, 'utf8')) as SpecNode;
-      this.mergedSpec = spec;
       for (const overlayPath of specOverlays) {
         try {
           mergeSpec(
@@ -216,6 +218,7 @@ export class ApiDocsService {
           });
         }
       }
+      this.mergedSpec = withSpecFragments(spec);
       this.logger.info('Merged OpenAPI spec loaded successfully');
     } catch (error) {
       this.logger.warn('Failed to load merged OpenAPI spec', {
@@ -390,7 +393,7 @@ export class ApiDocsService {
    * Get a specific module's OpenAPI spec (filtered from merged spec)
    */
   getModuleSpec(moduleId: string): any | null {
-    const module = this.modules.find(m => m.id === moduleId);
+    const module = this.modules.find((m) => m.id === moduleId);
     if (!module) {
       return null;
     }

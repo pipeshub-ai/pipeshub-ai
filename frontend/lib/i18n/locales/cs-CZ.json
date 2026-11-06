@@ -126,8 +126,24 @@
     "createPageDescription": "Toto je samostatná stránka pro vytvoření agenta. Připojte sem svůj formulář nebo odsud přesměrujte na tvůrce agentů.",
     "pageTitle": "Agenti",
     "comingSoon": "Již brzy",
-    "missingAgentKey": "Chybí klíč agenta. Otevřete agenta z postranního panelu chatu nebo použijte platný odkaz.",
-    "loading": "Načítání…"
+    "missingAgentKey": "Chybí klíč agenta. Otevřete agenta ze stránky Agenti nebo použijte platný odkaz.",
+    "loading": "Načítání…",
+    "index": {
+      "columnAgent": "Agent",
+      "columnOwner": "Vlastník",
+      "rowActions": "Akce pro {{name}}",
+      "loading": "Načítání agentů…",
+      "loadFailedTitle": "Agenty se nepodařilo načíst",
+      "loadFailedDescription": "Zkontrolujte připojení a zkuste to znovu.",
+      "emptyTitle": "Zatím žádní agenti",
+      "emptyDescription": "Zde se zobrazí agenti, které vytvoříte nebo můžete používat.",
+      "emptyDescriptionCanCreate": "Zde se zobrazí agenti, které vytvoříte nebo můžete používat. Nového vytvoříte tlačítkem Nový agent.",
+      "searchPlaceholder": "Hledat agenty…",
+      "searchLabel": "Hledat agenty",
+      "closeSearch": "Zavřít hledání",
+      "noSearchMatchesTitle": "Vašemu hledání neodpovídají žádní agenti",
+      "noSearchMatchesDescription": "Zkuste hledat jinak."
+    }
   },
   "projects": {
     "pageTitle": "Projekty",
@@ -152,7 +168,8 @@
     "noSearchResults": "Hledání „{{query}}“ neodpovídá žádný projekt",
     "noSearchResultsHint": "Zkuste jiný název nebo vymažte hledání.",
     "clearSearch": "Vymazat hledání",
-    "cardActionsLabel": "Akce pro {{name}}"
+    "cardActionsLabel": "Akce pro {{name}}",
+    "loadingList": "Načítání projektů…"
   },
   "timeGroup": {
     "today": "Dnes",
@@ -169,7 +186,9 @@
     "copiedCode": "Zkopírováno",
     "remoteImageBlocked": "Externí obrázek nebyl načten",
     "remoteImageFrom": "z {{host}}",
-    "remoteImageLoad": "Načíst obrázek"
+    "remoteImageLoad": "Načíst obrázek",
+    "usingTool": "Používám nástroj…",
+    "delegatingTo": "Předávám agentovi {{name}}…"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Nahrávání se nezdařilo",
@@ -210,6 +229,7 @@
       "sizeLimitDescription": "Limit je {{maxMb}} MB na soubor. Požádejte správce o zvýšení limitu pro nahrávání.",
       "sizeLimitDescriptionAdmin": "Limit je {{maxMb}} MB na soubor. Můžete jej zvýšit v sekci Labs pracovního prostoru.",
       "unsupportedDescription": "Nepodporovaný typ souboru.",
+      "emptyDescription": "Tento soubor je prázdný. Přidejte do něj obsah a nahrajte ho znovu.",
       "duplicateDescription": "Soubor s tímto názvem zde již existuje.",
       "trackerHint": "Podrobnosti najdete v panelu nahrávání níže.",
       "openLabs": "Otevřít Labs"
@@ -223,6 +243,10 @@
       "unsupported_few": "{{count}} nepodporované typy",
       "unsupported_many": "{{count}} nepodporovaného typu",
       "unsupported_other": "{{count}} nepodporovaných typů",
+      "empty_one": "{{count}} prázdný soubor",
+      "empty_few": "{{count}} prázdné soubory",
+      "empty_many": "{{count}} prázdného souboru",
+      "empty_other": "{{count}} prázdných souborů",
       "duplicate_one": "{{count}} duplicitní název",
       "duplicate_few": "{{count}} duplicitní názvy",
       "duplicate_many": "{{count}} duplicitního názvu",
@@ -365,6 +389,12 @@
     "searchChats": "Hledat v chatech",
     "inbox": "Doručené",
     "notifications": "Oznámení",
+    "searchChatsPlaceholder": "Hledat chaty…",
+    "searchChatsFailed": "Chaty se nepodařilo prohledat. Zkuste to znovu.",
+    "loadChatsFailed": "Chaty se nepodařilo načíst. Zkuste to znovu.",
+    "loadingChats": "Načítání chatů…",
+    "inboxUnread": "Doručené, nepřečtené: {{count}}",
+    "inboxTooltip": "Doručené: co se stalo a co potřebuje vaši pozornost",
     "home": "Domů"
   },
   "artifacts": {
@@ -447,7 +477,11 @@
     },
     "loadFailed": "Nepodařilo se načíst oznámení",
     "updateFailed": "Oznámení se nepodařilo aktualizovat",
-    "removeFailed": "Oznámení se nepodařilo odebrat"
+    "removeFailed": "Oznámení se nepodařilo odebrat",
+    "loadingList": "Načítání oznámení…",
+    "emptyBody": "Zde se zobrazí sdílení, zmínky a změny ve vašich chatech.",
+    "showMore": "Zobrazit více",
+    "showLess": "Zobrazit méně"
   },
   "action": {
     "find": "Najít",
@@ -710,7 +744,11 @@
     "expand": "Rozbalit postranní panel",
     "close": "Zavřít postranní panel",
     "collapse": "Sbalit postranní panel",
-    "navigation": "Navigace"
+    "navigation": "Navigace",
+    "hide": "Skrýt postranní panel",
+    "show": "Zobrazit postranní panel",
+    "hideWithShortcut": "Skrýt postranní panel ({{shortcut}})",
+    "showWithShortcut": "Zobrazit postranní panel ({{shortcut}})"
   },
   "menu": {
     "reindex": "Přeindexovat",
@@ -877,6 +915,8 @@
     "heyUser": "Dobrý den, {{name}} 👋",
     "heyUserDefaultName": "vítejte",
     "askAnything": "Zeptejte se na cokoli...",
+    "askOrSearchWorkspace": "Zeptejte se nebo vyhledejte cokoli v {{workspace}}...",
+    "askAboutPaste": "Zeptejte se na vložený obsah...",
     "quick": "Rychlý",
     "listening": "Poslouchám...",
     "voiceInputNotSupported": "Hlasový vstup není v tomto prohlížeči podporován",
@@ -895,6 +935,7 @@
       "searchCollections": "Hledat kolekce",
       "searchActions": "Hledat akce",
       "actionsTab": "Akce",
+      "filterTabsLabel": "Co zobrazit",
       "noConnectors": "Pro tohoto agenta nejsou nakonfigurovány žádné konektory.",
       "noCollections": "Pro tohoto agenta nejsou nakonfigurovány žádné kolekce.",
       "noCollectionMatches": "Vašemu hledání neodpovídají žádné kolekce.",
@@ -926,6 +967,12 @@
       "resetDefaults": "Obnovit výchozí nastavení projektu"
     },
     "aiModelsTooltip": "Modely AI",
+    "modelChip": {
+      "ariaLabel": "Model: {{name}}, úsilí uvažování {{effort}}. Otevřít nastavené modely.",
+      "ariaLabelNoEffort": "Model: {{name}}. Otevřít nastavené modely.",
+      "tooltip": "{{name}} · od {{provider}} · úsilí {{effort}}",
+      "tooltipNoEffort": "{{name}} · od {{provider}}"
+    },
     "attachmentTooltip": "Přiložit soubory",
     "micTooltip": "Hlasový vstup",
     "uploadYourFile": "Nahrajte svůj soubor",
@@ -942,6 +989,7 @@
     "yourChats": "Vaše chaty",
     "noChatsFound": "Nebyly nalezeny žádné chaty",
     "noChatsYet": "Zatím žádné chaty",
+    "yourChatsEmpty": "Tady se zobrazí vaše chaty",
     "searchCollections": "Hledat konektory a kolekce",
     "loadingCollections": "Načítání kolekcí…",
     "failedToLoadCollections": "Nepodařilo se načíst kolekce",
@@ -972,14 +1020,14 @@
     "feedbackCategoryUnclearExplanation": "Nejasné vysvětlení",
     "feedbackCategoryPoorCitations": "Nekvalitní citace",
     "feedbackCategoryOther": "Jiné...",
-    "like": "Užitečné",
-    "dislike": "Neužitečné",
+    "like": "Líbí se mi",
+    "dislike": "Nelíbí se mi",
     "copy": "Kopírovat",
     "fork": "Rozvětvit chat",
     "forkFromHere": "Rozvětvit odtud",
     "regenerate": "Vygenerovat znovu",
     "readAloud": "Přečíst nahlas",
-    "stopReading": "Zastavit čtení",
+    "stopReading": "Zastavit předčítání",
     "ttsNotSupported": "Převod textu na řeč není v tomto prohlížeči podporován",
     "ttsFailed": "Nepodařilo se přečíst nahlas. Zkuste to prosím znovu.",
     "copiedAsMarkdown": "Zkopírováno jako Markdown",
@@ -989,6 +1037,7 @@
     "showMoreCitations_few": "Zobrazit {{count}} další citace",
     "showMoreCitations_many": "Zobrazit {{count}} další citace",
     "showMoreCitations_other": "Zobrazit {{count}} dalších citací",
+    "editNotSaved": "Úprava se neuložila. Zkuste to znovu.",
     "markdownWithCitations": "Markdown s citacemi",
     "onlyTextWithoutCitations": "Pouze text bez citací",
     "differentModesOfQuery": "Různé režimy dotazu",
@@ -997,14 +1046,10 @@
     "generatingTitle": "Vytváření chatu…",
     "newChat": "Nový chat",
     "startChat": "Zahájit chat",
-    "searchAgents": "Hledat agenty…",
-    "noAgentsFound": "Nebyli nalezeni žádní agenti",
-    "failedToLoadAgents": "Nepodařilo se načíst agenty",
-    "backToChatHome": "Všechny chaty",
+    "backToAgents": "Všichni agenti",
     "agentSidebarLabel": "Agent",
     "agentNameLoading": "Načítání…",
     "sharedAgentChat": "Sdílený chat s agentem",
-    "myAgents": "Moji agenti",
     "moreAgents": "Další agenti",
     "agentHeaderMenuAria": "Možnosti agenta",
     "agentMenuNewChat": "Nový chat",
@@ -1018,14 +1063,17 @@
     "deleteAgentConfirm": "Smazat tohoto agenta?",
     "deleteAgentDescription": "Agent s názvem",
     "deleteAgentWarning": "bude trvale odstraněn z Pipeshub. Chaty, které ho používají, nemusí nadále fungovat podle očekávání.",
-    "agentListRowMenuAria": "Možnosti agenta",
     "failedToDeleteAgent": "Nepodařilo se smazat agenta",
     "rename": "Přejmenovat",
     "archive": "Archivovat",
     "deleteChat": "Smazat",
     "pin": "Připnout",
     "unpin": "Odepnout",
-    "pinned": "Připnuté",
+    "pinned": "Připnuté chaty",
+    "pinnedChatsEmpty": "Tady se zobrazí chaty, které připnete",
+    "pinnedRowSuffix": ", připnuto",
+    "sidebarRunning": "Pracuje se na pozadí",
+    "sidebarRunningOpen": "Pracuje se",
     "pinFailed": "Chat se nepodařilo připnout",
     "unpinFailed": "Chat se nepodařilo odepnout",
     "export": {
@@ -1488,6 +1536,7 @@
     },
     "scrollAttachmentsLeft": "Posunout přílohy doleva",
     "scrollAttachmentsRight": "Posunout přílohy doprava",
+    "attachmentsGroup": "Přílohy",
     "toolValidation": {
       "tooManyTools": "Je vybráno příliš mnoho nástrojů. Kvůli výkonnostním limitům je na jeden požadavek povoleno nejvýše 1024 nástrojů.",
       "multipleInstances": "Více instancí stejného typu akce ({{types}}) nelze použít společně. Otevřete panel Akce a vyberte pouze jednu instanci od každého typu."
@@ -1507,13 +1556,16 @@
       "removePastedText": "Odebrat vložený text",
       "showInTextField": "Zobrazit v textovém poli",
       "previewLoadFailed": "Nepodařilo se načíst obsah",
-      "copyText": "Kopírovat",
+      "copyText": "Kopírovat do schránky",
+      "copied": "Zkopírováno",
+      "copyFailed": "Text se nepodařilo zkopírovat",
       "closePreview": "Zavřít",
       "loadingPreview": "Načítání…",
-      "pasteMeta_one": "{{chars}} znaků · {{count}} řádek",
-      "pasteMeta_few": "{{chars}} znaků · {{count}} řádky",
-      "pasteMeta_many": "{{chars}} znaků · {{count}} řádku",
-      "pasteMeta_other": "{{chars}} znaků · {{count}} řádků"
+      "pasteMeta_one": "{{count}} řádek · {{chars}} znaků",
+      "pasteMeta_few": "{{count}} řádky · {{chars}} znaků",
+      "pasteMeta_many": "{{count}} řádku · {{chars}} znaků",
+      "pasteMeta_other": "{{count}} řádků · {{chars}} znaků",
+      "pasteChipLabel": "{{label}}, {{meta}}. Otevřít ke čtení."
     },
     "voiceSttNotConfigured": "Pro povolení hlasového vstupu nakonfigurujte v nastavení Modely AI model pro převod řeči na text (STT).",
     "voiceSttLoading": "Zjišťování možností rozpoznávání řeči…",
@@ -1536,6 +1588,20 @@
     "models": "Modely",
     "manage": "Spravovat",
     "configuredModels": "Nakonfigurované modely",
+    "seeMoreModels": "Zobrazit další modely",
+    "loadingModels": "Načítání modelů…",
+    "loadingSources": "Načítání zdrojů…",
+    "modelProviderBy": "od {{provider}}",
+    "modelTags": {
+      "default": "Výchozí",
+      "reasoning": "Uvažování",
+      "multimodal": "Multimodální"
+    },
+    "noConnectorsYet": "Zatím žádné konektory. Aplikace, které připojíte v Konektorech, se zobrazí zde.",
+    "expandPanel": "Rozbalit panel",
+    "collapsePanel": "Sbalit panel",
+    "cancelEditQuery": "Zrušit úpravy",
+    "cancelRegenerate": "Zrušit opětovné generování",
     "reasoningEffort": {
       "label": "Míra uvažování",
       "overrideHint": "Kliknutím znovu použijete výchozí hodnotu.",
@@ -1545,7 +1611,11 @@
       "low": "Nízká",
       "medium": "Střední",
       "high": "Vysoká",
-      "max": "Maximální"
+      "max": "Maximální",
+      "effortLabel": "Míra",
+      "faster": "Rychlejší",
+      "smarter": "Chytřejší",
+      "noLadder": "Tento model odpovídá v jednom průchodu, bez nastavení míry uvažování."
     },
     "universalAgent": {
       "toolsLoadError": "Nepodařilo se načíst dostupné akce.",
@@ -1589,7 +1659,8 @@
       "notice": {
         "expired": "{{tool}} na {{server}} se nespustil: platnost požadavku vypršela. Pokud je to stále potřeba, zeptejte se znovu.",
         "passed": "{{tool}} na {{server}} nebyl schválen, takže se nespustil.",
-        "waiting": "{{tool}} na {{server}} čeká na schválení vlastníkem konverzace."
+        "waiting": "{{tool}} na {{server}} čeká na schválení vlastníkem konverzace.",
+        "waitingFor": "{{tool}} na {{server}} čeká na schválení uživatelem {{name}}."
       },
       "receipt": {
         "allowed": "Povolili jste {{tool}}",
@@ -1628,7 +1699,10 @@
       "preview": "Náhled artefaktu",
       "loadingPreview": "Načítání náhledu",
       "download": "Stáhnout artefakt",
-      "downloading": "Stahování artefaktu"
+      "downloading": "Stahování artefaktu",
+      "previewButton": "Náhled",
+      "previewFile": "Náhled souboru {{name}}",
+      "downloadFile": "Stáhnout {{name}}"
     },
     "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také.",
     "noResultsFor": "Pro „{{query}}“ nebyly nalezeny žádné výsledky",
@@ -1645,6 +1719,150 @@
       "webSearch": "Vyhledávání na webu",
       "internalAndWebSearch": "Interní + webové vyhledávání"
     },
+    "stoppedBeforeAnswer": "Zastaveno dříve, než začala odpověď",
+    "connectTools": {
+      "blockedTitle": "Pro použití tohoto agenta připojte tyto nástroje",
+      "serviceAccountTitle": "Nástroje tohoto agenta nejsou připojené",
+      "noticeTitle": "Tato odpověď nemohla použít některé nástroje",
+      "chip": "Některé nástroje nejsou připojené",
+      "chipAction": "Připojit",
+      "kindAction": "Akce",
+      "showMore": "Zobrazit další ({{count}})",
+      "askAdmin": "Požádejte správce o připojení",
+      "serviceAccount": "Tento agent používá vlastní připojení. Požádejte správce, aby v nástroji Agent Builder připojil {{tools}}.",
+      "toolsetUnavailable": "Přihlášení zde nelze spustit. Připojte ho v části Pracovní prostor → Akce.",
+      "connectedAskAgain": "Připojeno. Zeptejte se znovu, abyste ho použili.",
+      "couldNotUse": "{{agent}} nemohl použít {{tools}}",
+      "defaultAgent": "Agent"
+    },
+    "atMenu": {
+      "label": "Návrhy zmínek",
+      "sources": "Zdroje",
+      "browseSources": "Procházet všechny zdroje",
+      "allSources": "Všechny zdroje",
+      "showMore": "Zobrazit další",
+      "nMore": "Další: {{count}}",
+      "noMatches": "Žádné shody",
+      "keysHint": "↑ ↓ pohyb · Enter výběr · → otevřít zdroj · Esc zavřít",
+      "keysHintTick": "↑ ↓ pohyb · Enter výběr · Alt+Enter zaškrtnutí · → otevřít zdroj · Esc zavřít",
+      "tooManySources": "Zpráva může uvádět nejvýše {{max}} zdrojů. Některé odeberte a odešlete ji znovu."
+    },
+    "answerFailedTitle": "Tato odpověď selhala",
+    "answerFailedRetry": "Zkusit znovu",
+    "cannotOpenSource": "Tento dokument nemůžete otevřít. Mohl být odstraněn, nebo k němu nemáte přístup.",
+    "queue": {
+      "title": "Ve frontě · {{count}}",
+      "hint": "Každá se odešle, až bude hotová odpověď před ní.",
+      "clearAll": "Vymazat vše",
+      "listLabel": "Zprávy ve frontě",
+      "edit": "Upravit",
+      "editBusy": "Chcete-li upravit tuto zprávu, odešlete nebo vymažte tu, kterou právě píšete",
+      "remove": "Odebrat z fronty",
+      "retry": "Zkusit znovu",
+      "heldAfterRefusal": "Neodesláno: na předchozí zprávu se nepodařilo odpovědět.",
+      "full": "Do fronty můžete zařadit nejvýše {{count}} zpráv. Počkejte, až se některá odešle, nebo jednu odeberte.",
+      "collapse": "Skrýt zprávy ve frontě",
+      "expand": "Zobrazit zprávy ve frontě",
+      "files_one": "{{count}} soubor",
+      "files_few": "{{count}} soubory",
+      "files_many": "{{count}} souboru",
+      "files_other": "{{count}} souborů"
+    },
+    "rowActions": "Akce pro {{title}}",
+    "archivedDescription": "{{title}} najdete v Nastavení pracovního prostoru, v sekci Archivované chaty.",
+    "undo": "Vrátit zpět",
+    "renameFailedTitle": "Chat se nepodařilo přejmenovat",
+    "renameFailedDescription": "Zůstává mu původní název. Zkuste to znovu.",
+    "renameFieldLabel": "Nový název",
+    "expandSection": "Rozbalit sekci",
+    "collapseSection": "Sbalit sekci",
+    "addToSection": "Přidat do: {{section}}",
+    "agentNotFound": {
+      "title": "Tento agent neexistuje nebo k němu už nemáte přístup",
+      "description": "Zkontrolujte odkaz nebo se zeptejte osoby, která vám ho sdílela.",
+      "back": "Zpět na chaty"
+    },
+    "latestMessages": "Nejnovější zprávy",
+    "questionRail": "Otázky v tomto chatu",
+    "sendFeedback": "Odeslat zpětnou vazbu",
+    "question": {
+      "copied": "Zkopírováno",
+      "edit": "Upravit",
+      "pastedCode": "Vložený kód"
+    },
+    "confidenceLevel": "Míra jistoty",
+    "runError": {
+      "stoppedTitle": "Tuto odpověď jste zastavili",
+      "stoppedBody": "Dokončené kroky zůstávají v průběhu výše.",
+      "stoppedBodyPartial": "Co bylo napsáno před zastavením, zůstává výše."
+    },
+    "answerPanel": {
+      "label": "O této odpovědi",
+      "opener": "Kontext",
+      "openerHint": "Kontext: zdroje, citace a výstupy",
+      "close": "Zavřít kontext",
+      "resize": "Změnit velikost panelu",
+      "sources": "Zdroje",
+      "citations": "Citace",
+      "context": "Kontext",
+      "outputs": "Výstupy",
+      "pending": "Doplní se, jakmile odpověď dorazí.",
+      "noOutputsTitle": "Zatím nic nevzniklo",
+      "noOutputsBody": "Požádejte o dokument, tabulku nebo shrnutí a vytvořené soubory se uloží sem.",
+      "anythingYouCanOpen": "Mohlo být použito cokoli, co můžete otevřít",
+      "sourcesLabel": "Zdroje: {{names}}",
+      "sourcesEmptyTitle": "Zatím nic nepřečteno",
+      "sourcesEmptyBody": "Zeptejte se na něco, k čemu jsou potřeba vaše připojené aplikace, a dokumenty, ze kterých odpověď vychází, se shromáždí zde.",
+      "citationsEmptyTitle": "Zatím nic necitováno",
+      "citationsEmptyBody": "Každé tvrzení v odpovědi je propojeno s pasáží, ze které pochází. Tyto odkazy se zobrazí zde.",
+      "contextCollections": "Kolekce",
+      "contextConnectors": "Konektory",
+      "contextFiles": "Soubory",
+      "contextFolderInCollection": "Složka v kolekci",
+      "contextEmptyTitle": "Zatím nic nepřipojeno",
+      "contextEmptyBody": "Zde jsou uvedeny kolekce, připojené aplikace a soubory, na které tento chat zaměříte.",
+      "anythingTheyCanOpen": "Mohlo být použito cokoli, co může otevřít {{name}}",
+      "anythingOwnerCanOpen": "Mohlo být použito cokoli, co může otevřít vlastník chatu"
+    },
+    "trail": {
+      "reasoning": "Přemýšlení",
+      "subAgent": "Podagent",
+      "usedSkills_one": "Použita {{count}} dovednost",
+      "usedSkills_other": "Použito dovedností: {{count}}",
+      "usedSkills_few": "Použito dovedností: {{count}}",
+      "usedSkills_many": "Použito dovedností: {{count}}",
+      "exploredSearches_one": "Provedeno vyhledávání: {{count}}",
+      "exploredSearches_other": "Provedeno vyhledávání: {{count}}",
+      "exploredSearches_few": "Provedeno vyhledávání: {{count}}",
+      "exploredSearches_many": "Provedeno vyhledávání: {{count}}",
+      "ranTools_one": "Spuštěn {{count}} nástroj",
+      "ranTools_other": "Spuštěno nástrojů: {{count}}",
+      "ranTools_few": "Spuštěno nástrojů: {{count}}",
+      "ranTools_many": "Spuštěno nástrojů: {{count}}",
+      "thoughtFor": "Přemýšlení trvalo {{duration}}",
+      "thoughtThrough_one": "Promyšlen {{count}} krok",
+      "thoughtThrough_other": "Promyšleno kroků: {{count}}",
+      "thoughtThrough_few": "Promyšleno kroků: {{count}}",
+      "thoughtThrough_many": "Promyšleno kroků: {{count}}",
+      "steps_one": "{{count}} krok",
+      "steps_other": "Kroků: {{count}}",
+      "steps_few": "Kroků: {{count}}",
+      "steps_many": "Kroků: {{count}}",
+      "stoppedAfter": "Zastaveno po {{duration}}",
+      "stopped": "Zastaveno",
+      "done": "Hotovo",
+      "showAllSteps": "Zobrazit všechny kroky",
+      "showFewer": "Zobrazit méně",
+      "durationSeconds": "{{value}} s",
+      "durationMinutes": "{{minutes}} min {{seconds}} s"
+    },
+    "citationPill": {
+      "number": "Citace {{number}}: {{name}}"
+    },
+    "citationPopover": {
+      "page": "Strana {{page}}",
+      "paragraph": "Odstavec {{paragraph}}"
+    },
     "searchDegraded": "Výsledky mohou být neúplné."
   },
   "workspaceMenu": {
@@ -1658,7 +1876,9 @@
     "documentation": "Dokumentace",
     "darkMode": "Tmavý režim",
     "lightMode": "Světlý režim",
-    "organisations": "Organizace"
+    "organisations": "Organizace",
+    "triggerLabel": "Menu pracovního prostoru a účtu {{name}}",
+    "triggerLabelNoName": "Menu pracovního prostoru a účtu"
   },
   "workspace": {
     "users": {
@@ -1721,7 +1941,12 @@
         "edit": "Upravit",
         "resendInviteSuccess": "Pozvánka byla znovu odeslána",
         "resendInviteSuccessDescription": "Pozvánka byla znovu odeslána na {{email}}",
-        "resendInviteError": "Pozvánku se nepodařilo znovu odeslat"
+        "resendInviteError": "Pozvánku se nepodařilo znovu odeslat",
+        "changeRoleUndo": "Zpět",
+        "changeRoleRestored": "Role byla obnovena",
+        "changeRoleRestoredDescription": "{{name}} je opět {{role}}",
+        "changeRoleUndoError": "Roli se nepodařilo obnovit",
+        "changeRoleUndoErrorDescription": "{{name}} je stále {{role}}. Změňte roli znovu, abyste ji vrátili."
       },
       "profile": {
         "title": "Profil",
@@ -1811,7 +2036,10 @@
         "invalidBlocksSend_one": "{{count}} neplatná adresa je označená červeně. Opravte ji nebo odeberte, abyste mohli odeslat pozvánky.",
         "invalidBlocksSend_few": "{{count}} neplatné adresy jsou označené červeně. Opravte je nebo odeberte, abyste mohli odeslat pozvánky.",
         "invalidBlocksSend_many": "{{count}} neplatné adresy jsou označené červeně. Opravte je nebo odeberte, abyste mohli odeslat pozvánky.",
-        "invalidBlocksSend_other": "{{count}} neplatných adres je označeno červeně. Opravte je nebo odeberte, abyste mohli odeslat pozvánky."
+        "invalidBlocksSend_other": "{{count}} neplatných adres je označeno červeně. Opravte je nebo odeberte, abyste mohli odeslat pozvánky.",
+        "warnMember": "{{email}} už je členem, takže na tuto adresu nebude odeslána žádná pozvánka.",
+        "warnInvited": "{{email}} už byl(a) pozván(a). Dalším odesláním se pozvánka odešle znovu.",
+        "warnMany": "Některé adresy už jsou členy nebo už byly pozvány. Členové se přeskočí a čekající pozvánky se odešlou znovu."
       },
       "bulk": {
         "resendInvite": "Znovu odeslat pozvánku",
@@ -2485,7 +2713,12 @@
     "common": {
       "loadingUsers": "Načítání uživatelů...",
       "noUsersAvailable": "Nejsou k dispozici žádní uživatelé",
-      "selected": "Vybráno: {{count}}"
+      "selected": "Vybráno: {{count}}",
+      "validation": {
+        "nameRequired": "Zadejte název.",
+        "nameTooLong": "Název může mít nejvýše {{max}} znaků.",
+        "descriptionTooLong": "Popis může mít nejvýše {{max}} znaků."
+      }
     },
     "filters": {
       "role": "Role",
@@ -5340,7 +5573,8 @@
       "section": "API akce",
       "connectTooltip": "Připojte ji v části Akce",
       "serviceAccountBlocked": "Agenti se servisním účtem mohou používat jen API akce se sdílenými přihlašovacími údaji nebo bez přihlášení."
-    }
+    },
+    "nameTooLong": "Název může mít nejvýše {{max}} znaků."
   },
   "recordView": {
     "sections": {
@@ -5722,17 +5956,16 @@
     }
   },
   "askUserQuestion": {
-    "questionsHeadingSingular": "Otázka :",
-    "questionsHeadingPlural": "Otázky :",
+    "questionsHeadingSingular": "Otázka",
+    "questionsHeadingPlural": "Otázky",
     "answered": "Zodpovězeno",
     "showLess": "Zobrazit méně",
     "showMore": "Zobrazit více",
     "noPreference": "[Bez preference]",
+    "skipped": "Přeskočeno",
     "somethingElse": "Něco jiného",
-    "questionAskedSingular": "Položená otázka:",
-    "questionAskedPlural": "Položené otázky:",
-    "quickQuestionSingular": "Rychlá otázka :",
-    "quickQuestionPlural": "Rychlé otázky :",
+    "quickQuestionSingular": "Rychlá otázka",
+    "quickQuestionPlural": "Rychlé otázky",
     "stepOf": "Krok {{step}} z {{total}}",
     "selectedCount": "Vybráno: {{count}}",
     "describeYourAnswer": "Popište svou odpověď…",
@@ -5745,7 +5978,10 @@
     "selectMany": "Vyberte všechny, které platí",
     "skipAll": "Přeskočit vše",
     "expired": "Platnost této otázky vypršela. Pokračujte odpovědí v chatu.",
-    "repliedInChat": "Odpověděli jste v chatu."
+    "repliedInChat": "Odpověděli jste v chatu.",
+    "unknownPerson": "Bývalý člen",
+    "waitingFor": "Čeká se na odpověď uživatele {{name}}",
+    "waitingForYou": "Čeká se na vaši odpověď"
   },
   "errorToast": {
     "accessDenied": "Přístup odepřen",
@@ -5756,8 +5992,21 @@
     "serverError": "Chyba serveru",
     "timedOut": "Vypršel časový limit požadavku",
     "somethingWentWrong": "Něco se pokazilo",
-    "tryAgainShortly": "Zkuste to prosím za chvíli znovu",
-    "connectedServiceProblem": "Problém s připojenou službou"
+    "serverBusy": "Server je přetížený",
+    "connectedServiceProblem": "Problém s připojenou službou",
+    "accessDeniedDescription": "Nemáte oprávnění to udělat. Požádejte o přístup správce pracovního prostoru.",
+    "invalidRequestDescription": "Některé údaje nejsou platné. Zkontrolujte je a zkuste to znovu.",
+    "notFoundDescription": "Možná byla přesunuta nebo smazána. Obnovte stránku a zkuste to znovu.",
+    "actionRequiredDescription": "Od chvíle, kdy jste začali, se něco změnilo. Zkontrolujte údaje a zkuste to znovu.",
+    "connectionErrorDescription": "Zkontrolujte připojení k internetu a zkuste to znovu.",
+    "serverErrorDescription": "Server to nedokázal dokončit. Zkuste to za chvíli znovu. Pokud se to opakuje, kontaktujte správce pracovního prostoru.",
+    "timedOutDescription": "Server odpovídal příliš dlouho. Zkuste to znovu.",
+    "somethingWentWrongDescription": "Nepovedlo se to. Zkuste to znovu. Pokud se to opakuje, kontaktujte správce pracovního prostoru.",
+    "serverBusyDescription": "Chvíli počkejte a zkuste to znovu."
+  },
+  "loading": {
+    "default": "Načítání…",
+    "items": "Načítání položek…"
   },
   "validation": {
     "password": {
@@ -5829,7 +6078,13 @@
     "alreadyRemoved": "Už odebráno",
     "alreadyRemovedDescription": "{{name}} už přístup neměl(a)",
     "removeConfirmTitle": "Odebrat přístup?",
-    "removeConfirmDescription": "{{name}} okamžitě ztratí přístup. Později můžete znovu sdílet."
+    "removeConfirmDescription": "{{name}} okamžitě ztratí přístup. Později můžete znovu sdílet.",
+    "removeSelection": "Odebrat {{name}}",
+    "peopleCanSee_one": "Tento chat vidí {{count}} osoba",
+    "peopleCanSee_few": "Tento chat vidí {{count}} osoby",
+    "peopleCanSee_many": "Tento chat vidí {{count}} osoby",
+    "peopleCanSee_other": "Tento chat vidí {{count}} osob",
+    "loadingPeople": "Načítání lidí…"
   },
   "demoData": {
     "badge": {

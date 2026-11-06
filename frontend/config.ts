@@ -26,7 +26,6 @@ export { WorkspaceMenu } from '@/app/components/workspace-menu/menu';
 export { GuestGuard } from '@/app/components/ui/guest-guard';
 export { AgentBuilder } from '@/app/(main)/agents/agent-builder/agent-builder';
 export { CreateAgentDialog } from '@/app/(main)/agents/components/create-agent-dialog';
-export { AgentSidebarListRow } from '@/app/(main)/chat/sidebar/agent-sidebar-list-row';
 export { ChatSidebarFooter } from '@/app/(main)/chat/sidebar/footer';
 export { AgentChatHeader } from '@/app/(main)/chat/components/agent-chat-header';
 export { OAuthAppSelector } from '@/app/(main)/workspace/connectors/components/authenticate-tab/oauth-app-selector';
@@ -36,6 +35,7 @@ export { isMcpInstanceReadOnly, McpInheritedBadge, McpInheritedCallout } from '@
 export { useUserPermission } from '@/lib/hooks/use-user-permission';
 export { PermissionLockIcon } from '@/app/components/ui/permission-lock-icon';
 export { PermissionDeniedDialog, usePermissionDeniedDialog } from '@/app/components/ui/permission-denied-dialog';
+export { useAgentRowShare } from '@/app/(main)/chat/sidebar/agent-row-share';
 export { InheritedConfigNotice } from '@/app/(main)/workspace/components/inherited-config-notice';
 export { KbListView } from '@/app/(main)/knowledge-base/components/kb-list-view';
 export { KbGridView } from '@/app/(main)/knowledge-base/components/kb-grid-view';
@@ -70,4 +70,14 @@ export { ModelSelectorExtraOptions } from '@/app/(main)/chat/components/chat-pan
 export { aiModelFormOptions } from '@/app/(main)/workspace/ai-models/ai-model-form-options';
 export { PickedModelExtraFields } from '@/app/(main)/workspace/ai-models/components/picked-model-extra-fields';
 
+// Chat extension points
+export { defaultChatExtension as chatExtension, defaultChatSlots as chatSlots } from '@/app/(main)/chat/chat-extension';
 
+// Notification panel and socket
+export { defaultNotificationExtension as notificationExtension } from '@/app/(main)/notifications/notification-extension';
+
+// Profile page sections
+export { ProfileExtraSections } from '@/app/(main)/workspace/profile/components/profile-extra-sections';
+
+// Agent builder
+export { defaultAgentBuilderExtension as agentBuilderExtension } from '@/app/(main)/agents/agent-builder/agent-builder-extension';

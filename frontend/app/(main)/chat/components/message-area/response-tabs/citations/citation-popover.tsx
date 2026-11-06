@@ -19,7 +19,7 @@ interface CitationPopoverContentProps {
 }
 
 /**
- * Expanded citation preview shown inside a HoverCard.
+ * Expanded citation preview shown in the citation popover.
  */
 function CitationPopoverContentInner({
   citation,
@@ -60,23 +60,27 @@ function CitationPopoverContentInner({
   return (
     <Flex direction="column" gap="4">
       {/* ── Header: source + action buttons ── */}
-      <Flex align="center" justify="between">
-        <Flex align="center" gap="2">
-          <ConnectorIcon type={citation.connector} size={20} />
+      <Flex align="center" justify="between" width="100%" gap="2">
+        <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+          <ConnectorIcon type={citation.connector} size={16} />
           <Text
             size="1"
+            title={config.sourceLabel}
             style={{
-              color: 'var(--slate-a11)',
+              color: 'var(--text-secondary)',
               lineHeight: 'var(--line-height-1)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
             }}
           >
             {config.sourceLabel}
           </Text>
         </Flex>
 
-        <Flex align="center" gap="2">
+        <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
           {canOpenSource && !isLocalFsSource && !isCollectionSource && citation.webUrl && !citation.hideWeburl && (
-            <Button asChild size="1" variant="outline" color="gray" tabIndex={-1}>
+            <Button asChild size="1" variant="surface" color="gray" radius="small">
               <Link
                 href={citation.webUrl}
                 target="_blank"
@@ -91,9 +95,9 @@ function CitationPopoverContentInner({
           {canOpenSource && (isLocalFsSource || isCollectionSource) && (
             <Button
               size="1"
-              variant="outline"
+              variant="surface"
               color="gray"
-              tabIndex={-1}
+              radius="small"
               onClick={handleOpenInSource}
               style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
             >
@@ -107,9 +111,8 @@ function CitationPopoverContentInner({
               <Button
               size="1"
               variant="solid"
-              tabIndex={-1}
               onClick={handlePreview}
-              style={{ cursor: 'pointer', backgroundColor: 'var(--emerald-9)' }}
+              style={{ cursor: 'pointer' }}
             >
               {t('chat.recordActions.preview')}
             </Button>
@@ -126,7 +129,7 @@ function CitationPopoverContentInner({
             size="2"
             weight="medium"
             style={{
-              color: 'var(--slate-12)',
+              color: 'var(--text-primary)',
               lineHeight: 'var(--line-height-2)',
               wordBreak: 'break-word',
             }}
@@ -147,7 +150,7 @@ function CitationPopoverContentInner({
             <Text
               size="1"
               style={{
-                color: 'var(--slate-12)',
+                color: 'var(--text-primary)',
                 lineHeight: 'var(--line-height-1)',
                 display: '-webkit-box',
                 WebkitLineClamp: 4,
@@ -170,9 +173,9 @@ function CitationPopoverContentInner({
               size="1"
               variant="soft"
               color="gray"
-              style={{ fontWeight: 500 }}
+              style={{ fontWeight: 400 }}
             >
-              Page {p}
+              {t('chat.citationPopover.page', { page: p })}
             </Badge>
           ))}
           {citation.blockNum?.map((b) => (
@@ -181,9 +184,9 @@ function CitationPopoverContentInner({
               size="1"
               variant="soft"
               color="gray"
-              style={{ fontWeight: 500 }}
+              style={{ fontWeight: 400 }}
             >
-              Paragraph {b}
+              {t('chat.citationPopover.paragraph', { paragraph: b })}
             </Badge>
           ))}
         </Flex>

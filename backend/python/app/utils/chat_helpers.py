@@ -1910,6 +1910,33 @@ def _annotate_node_relations(
     logger.info("Record relation enrichment: %d records enriched", enriched_count)
 
 
+async def accessible_node_names(
+    graph_provider: IGraphDBProvider,
+    node_ids: set[str],
+    user_id: str,
+    org_id: str,
+    *,
+    with_placeholders: bool = False,
+) -> dict[str, str]:
+    """The nodes among ``node_ids`` (records, record groups, apps) the user may
+    access, each with its current name, from one ``check_access``. No identity
+    means nothing is accessible; a user lookup that fails raises
+    PermissionVerificationUnavailableError, as the check itself does.
+    Placeholder records are left out unless ``with_placeholders``."""
+    if not node_ids or not user_id or not org_id:
+        return {}
+    try:
+        user = await graph_provider.get_user_by_user_id(user_id, raise_on_error=True)
+    except Exception as exc:
+        raise PermissionVerificationUnavailableError(str(exc)) from exc
+    user_key = (user or {}).get("id") or (user or {}).get("_key")
+    if not user_key:
+        return {}
+    found = await graph_provider.check_access(user_key, org_id, node_ids=node_ids)
+    ids = found.node_ids if with_placeholders else found.node_ids - found.placeholder_ids
+    return {node_id: found.names.get(node_id, "") for node_id in ids}
+
+
 async def accessible_node_ids(
     graph_provider: IGraphDBProvider,
     node_ids: set[str],
@@ -1918,25 +1945,18 @@ async def accessible_node_ids(
     *,
     with_placeholders: bool = False,
 ) -> set[str]:
-    """The subset of ``node_ids`` (records, record groups, apps) the user may
-    access. No identity means nothing is accessible; a user lookup that fails
-    raises PermissionVerificationUnavailableError, as the check itself does.
+    """The subset of ``node_ids`` the user may access (``accessible_node_names``).
 
     A placeholder record is left out: it is shown in listings, but it is not a
     record to read, so a caller that serves a record's content or metadata gets
     the same answer as for one the user cannot read. ``with_placeholders`` keeps
     placeholders in, for a caller that only names related records."""
-    if not node_ids or not user_id or not org_id:
-        return set()
-    try:
-        user = await graph_provider.get_user_by_user_id(user_id, raise_on_error=True)
-    except Exception as exc:
-        raise PermissionVerificationUnavailableError(str(exc)) from exc
-    user_key = (user or {}).get("id") or (user or {}).get("_key")
-    if not user_key:
-        return set()
-    result = await graph_provider.check_access(user_key, org_id, node_ids=node_ids)
-    return set(result.node_ids if with_placeholders else result.node_ids - result.placeholder_ids)
+    return set(
+        await accessible_node_names(
+            graph_provider, node_ids, user_id, org_id,
+            with_placeholders=with_placeholders,
+        )
+    )
 
 
 async def accessible_node_ids_for_enrichment(

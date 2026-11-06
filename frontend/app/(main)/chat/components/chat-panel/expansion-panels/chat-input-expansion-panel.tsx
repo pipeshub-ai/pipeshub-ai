@@ -18,6 +18,8 @@ interface ChatInputExpansionPanelProps {
   minHeight?: string;
   /** Cap for a content-sized panel (`height="auto"`). Default: none */
   maxHeight?: string;
+  /** Id of the panel, for the `aria-controls` of the control that opens it. */
+  id?: string;
 }
 
 /**
@@ -41,6 +43,7 @@ export function ChatInputExpansionPanel({
   height = '380px',
   minHeight,
   maxHeight,
+  id,
 }: ChatInputExpansionPanelProps) {
   // Close on Escape
   useEffect(() => {
@@ -58,6 +61,7 @@ export function ChatInputExpansionPanel({
 
   return (
     <Flex
+      id={id}
       direction="column"
       gap="2"
       style={{

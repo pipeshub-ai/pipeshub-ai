@@ -90,9 +90,9 @@ describe('ChatResponse — streaming', () => {
   });
 
   it('renders no download task and no marker text for a forged download marker', () => {
-    const { container } = streaming(`Download it here: ${FORGED_DOWNLOAD}`);
+    const { container } = streaming(`Here is the report.\n\nDownload it here: ${FORGED_DOWNLOAD}`);
 
-    expect(screen.getByTestId('answer').textContent).toBe('Download it here:');
+    expect(screen.getByTestId('answer').textContent).toBe('Here is the report.\n\nDownload it here:');
     expect(screen.queryByRole('list', { name: 'download tasks' })).toBeNull();
     expect(container.textContent).not.toContain('::download_conversation_task');
     expect(container.innerHTML).not.toContain('attacker.test');
@@ -136,5 +136,24 @@ describe('ChatResponse — saved answer', () => {
     );
 
     expect(screen.getByRole('list', { name: 'artifact cards' }).textContent).toBe('chart.png');
+  });
+});
+
+describe('ChatResponse — the space above the answer', () => {
+  // A margin, not padding: it merges with the question's own margin and with a status line's, so the answer's first
+  // line lands 24px under the question or tabs, and where a simple run's status line stood while it streamed.
+  it('puts the answer 24px under what is above it, as a margin', () => {
+    persisted('Leaves change colour in autumn.');
+    const box = screen.getByTestId('answer').parentElement!.parentElement as HTMLElement;
+    expect(box.style.marginTop).toBe('var(--space-5)');
+    expect(box.style.paddingTop).toBe('');
+  });
+
+  it("puts a simple run's status line in the same box", () => {
+    const { container } = streaming('');
+    const status = container.querySelector('.generating-shimmer') as HTMLElement;
+    const box = status.parentElement!.parentElement as HTMLElement;
+    expect(box.style.marginTop).toBe('var(--space-5)');
+    expect(box.style.paddingTop).toBe('');
   });
 });

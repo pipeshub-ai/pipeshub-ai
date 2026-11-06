@@ -34,6 +34,8 @@ import {
   type KnowledgeTreeNode,
 } from './connectors-collections/knowledge-tree';
 import { CollectionLeadingIcon } from './connectors-collections/collection-row';
+import { MAX_TOOLSETS_LIST_LIMIT, ToolsetsApi, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
+import { ToolsetConnectRows, actionName, actionsToConnect } from './toolset-connect-rows';
 import { hasAnyFilter, sameSelection } from '@/chat/utils/tree-selection';
 import type { ChatKnowledgeFilters } from '@/chat/types';
 
@@ -696,10 +698,44 @@ export function AgentScopedResourcesPanel({
     [search]
   );
 
-  const filteredToolGroups = useMemo(
-    () => filterGroupsBySearch(toolGroups),
-    [filterGroupsBySearch, toolGroups]
-  );
+  // The agent's actions the person has not signed in to: listed with Connect, as the main chat's Actions tab does,
+  // instead of as ready. An agent that runs with its own credentials has nothing for them to connect.
+  const agentIsServiceAccount = useChatStore((s) => s.agentIsServiceAccount);
+  const connectHere = !isProject && actionsEnabled && !agentIsServiceAccount;
+  const [unconnected, setUnconnected] = useState<BuilderSidebarToolset[]>([]);
+  const loadUnconnected = useCallback(async () => {
+    try {
+      const { toolsets } = await ToolsetsApi.getAllMyToolsets({
+        authStatus: 'not-authenticated',
+        limitPerPage: MAX_TOOLSETS_LIST_LIMIT,
+      });
+      setUnconnected(toolsets);
+    } catch (err) {
+      // The tab still lists the agent's actions; only Connect is missing.
+      console.error('[AgentScopedResourcesPanel] Failed to load actions to connect', err);
+      setUnconnected([]);
+    }
+  }, []);
+  useEffect(() => {
+    if (connectHere && tab === 'actions') void loadUnconnected();
+  }, [connectHere, tab, loadUnconnected]);
+  const toolsetsToConnect = useMemo(() => {
+    if (!connectHere) return [];
+    const agents = new Set(toolGroups.flatMap((g) => (g.instanceId ? [g.instanceId] : [])));
+    return actionsToConnect(
+      unconnected.filter((ts) => Boolean(ts.instanceId && agents.has(ts.instanceId))),
+      new Set()
+    );
+  }, [connectHere, unconnected, toolGroups]);
+  const filteredToolsetsToConnect = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? toolsetsToConnect.filter((ts) => actionName(ts).toLowerCase().includes(q)) : toolsetsToConnect;
+  }, [toolsetsToConnect, search]);
+
+  const filteredToolGroups = useMemo(() => {
+    const toConnect = new Set(toolsetsToConnect.map((ts) => ts.instanceId));
+    return filterGroupsBySearch(toolGroups).filter((g) => !g.instanceId || !toConnect.has(g.instanceId));
+  }, [filterGroupsBySearch, toolGroups, toolsetsToConnect]);
 
   const filteredMcpGroups = useMemo(
     () => filterGroupsBySearch(mcpGroups),
@@ -746,6 +782,7 @@ export function AgentScopedResourcesPanel({
     footerLinkAriaLabel,
     renderGroupIcon,
     renderToolIcon,
+    extraRows,
   }: {
     groups: ChatToolGroupRow[];
     keyPrefix: string;
@@ -758,8 +795,10 @@ export function AgentScopedResourcesPanel({
     footerLinkAriaLabel: string;
     renderGroupIcon: (group: ChatToolGroupRow) => React.ReactNode;
     renderToolIcon: (fullName: string, group: ChatToolGroupRow) => React.ReactNode;
+    /** Rows under the groups: the agent's actions to connect. */
+    extraRows?: React.ReactNode;
   }) => {
-    if (groups.length === 0) {
+    if (groups.length === 0 && !extraRows) {
       return (
         <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
           {emptyText}
@@ -897,6 +936,8 @@ export function AgentScopedResourcesPanel({
           );
         })}
 
+        {extraRows}
+
         <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
           <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {footerCaption}
@@ -1000,11 +1041,11 @@ export function AgentScopedResourcesPanel({
         {tab === 'connectors' && (
           <>
             {connectors.length === 0 ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+              <Text size="2" style={{ color: 'var(--text-secondary)', padding: 'var(--space-3)' }}>
                 {copy.noConnectors}
               </Text>
             ) : filteredConnectors.length === 0 && !searchingServer ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+              <Text size="2" style={{ color: 'var(--text-secondary)', padding: 'var(--space-3)' }}>
                 {search.trim().length < KB_MIN_SEARCH_QUERY_LENGTH
                   ? t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })
                   : t('chat.noConnectorsFound')}
@@ -1025,11 +1066,11 @@ export function AgentScopedResourcesPanel({
         {tab === 'collections' && (
           <>
             {collectionRows.length === 0 ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+              <Text size="2" style={{ color: 'var(--text-secondary)', padding: 'var(--space-3)' }}>
                 {copy.noCollections}
               </Text>
             ) : filteredCollections.length === 0 && !searchingServer ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+              <Text size="2" style={{ color: 'var(--text-secondary)', padding: 'var(--space-3)' }}>
                 {search.trim().length < KB_MIN_SEARCH_QUERY_LENGTH
                   ? t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })
                   : t('chat.agentResources.noCollectionMatches', {
@@ -1094,6 +1135,21 @@ export function AgentScopedResourcesPanel({
               const toolPrefix = fullName.includes('.') ? fullName.slice(0, fullName.indexOf('.')) : fullName;
               return <ConnectorIcon type={resolveConnectorType(toolPrefix)} size={16} />;
             },
+            extraRows:
+              filteredToolsetsToConnect.length > 0 ? (
+                <ToolsetConnectRows
+                  toolsets={filteredToolsetsToConnect}
+                  rowStyle={OLIVE_ROW}
+                  renderIcon={(ts) => (
+                    <AgentToolsetRowIcon
+                      toolsetSlug={ts.toolsetType ?? ts.name}
+                      label={actionName(ts)}
+                      iconPath={ts.iconPath || undefined}
+                    />
+                  )}
+                  onConnected={() => void loadUnconnected()}
+                />
+              ) : undefined,
           })}
 
         {tab === 'mcp' &&

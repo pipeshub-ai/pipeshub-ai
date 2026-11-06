@@ -32,7 +32,8 @@ import {
   type ShareRole,
   type ShareSubmission,
 } from './types';
-import { LottieLoader } from '../ui/lottie-loader';
+import { ListSkeleton } from '../ui/list-skeleton';
+import { useDeferredLoading } from '../ui/use-deferred-loading';
 import { toast } from '@/lib/store/toast-store';
 
 interface ShareSidebarProps {
@@ -43,6 +44,8 @@ interface ShareSidebarProps {
   onShareSuccess?: () => void;
   /** Optional content rendered above the members list (e.g. org-wide toggle). */
   headerContent?: React.ReactNode;
+  /** Typed into the people search each time the sidebar opens. */
+  initialSearch?: string;
 }
 
 export function ShareSidebar({
@@ -51,6 +54,7 @@ export function ShareSidebar({
   adapter,
   onShareSuccess,
   headerContent,
+  initialSearch,
 }: ShareSidebarProps) {
   const isMobile = useIsMobile();
   const { t } = useTranslation();
@@ -106,6 +110,7 @@ export function ShareSidebar({
 
   // Loading
   const [isLoading, setIsLoading] = useState(false);
+  const loadingPeople = useDeferredLoading(isLoading);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Reset state when sidebar closes
@@ -120,6 +125,11 @@ export function ShareSidebar({
     // paginated.reset is stable; omit from deps to avoid reset loops on every render
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  useEffect(() => {
+    if (open && initialSearch) updateSearchQuery(initialSearch);
+    // Only the moment of opening matters; later typing in the field must not be overwritten.
+  }, [open, initialSearch]);
 
   // Fetch non-user data when sidebar opens (paginated users are handled by the hook)
   useEffect(() => {
@@ -398,7 +408,7 @@ export function ShareSidebar({
           display: 'flex',
           flexDirection: 'column',
           transform: 'none',
-          animation: 'slideInFromRight 0.2s ease-out',
+          animation: 'slideInFromRight var(--motion-surface) var(--motion-ease)',
         }}
       >
         <VisuallyHidden>
@@ -519,8 +529,9 @@ export function ShareSidebar({
                 color="gray"
                 size="2"
                 onClick={() => onOpenChange(false)}
+                aria-label={t('common.close')}
               >
-                <MaterialIcon name="close" size={16} color="var(--slate-11)" />
+                <MaterialIcon name="close" size={16} color="var(--text-secondary)" />
               </IconButton>
             </Flex>
 
@@ -556,30 +567,53 @@ export function ShareSidebar({
             >
               {headerContent}
 
-              {isLoading ? (
-                <Flex align="center" justify="center" style={{ padding: '40px 0' }}>
-                  <LottieLoader variant="loader" size={32} showLabel />
-                </Flex>
-              ) : (
+              {loadingPeople.visible ? (
+                <ListSkeleton
+                  variant="two-line"
+                  glyphSize={32}
+                  glyphShape="circle"
+                  appearDelayMs={0}
+                  exiting={loadingPeople.exiting}
+                  statusLabel={t('shareSidebar.loadingPeople')}
+                />
+              ) : isLoading ? null : (
                 <>
-                  {/* Suggested teams */}
+                  {/* Suggested teams. Creating a team sits on this row, not in the
+                      footer, so the footer keeps one secondary and one primary. */}
+                  {adapter.supportsTeams && (
+                    <Flex
+                      align="center"
+                      justify={filteredTeams.length > 0 ? 'between' : 'end'}
+                      gap="2"
+                      style={{ marginTop: 'var(--space-2)', marginBottom: 'var(--space-2)' }}
+                    >
+                      {filteredTeams.length > 0 && (
+                        <Text
+                          size="1"
+                          weight="medium"
+                          style={{
+                            color: 'var(--text-secondary)',
+                            letterSpacing: '0.05em',
+                          }}
+                        >
+                          {t('shareSidebar.suggestedTeams')}
+                        </Text>
+                      )}
+                      <Button
+                        variant="ghost"
+                        color="gray"
+                        size="1"
+                        onClick={() => setCurrentView('create-team')}
+                      >
+                        <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+                          <MaterialIcon name="add" size={14} color="var(--emerald-11)" />
+                        </span>
+                        {t('shareSidebar.createNewTeam')}
+                      </Button>
+                    </Flex>
+                  )}
                   {adapter.supportsTeams && filteredTeams.length > 0 && (
                     <>
-                      <Text
-                        size="1"
-                        weight="medium"
-                        style={{
-                          color: 'var(--slate-11)',
-                          marginTop: 8,
-                          marginBottom: 8,
-                          display: 'block',
-                          // textTransform: 'uppercase',
-                          letterSpacing: '0.05em',
-                          fontStyle: 'normal',
-                        }}
-                      >
-                        {t('shareSidebar.suggestedTeams')}
-                      </Text>
                       {filteredTeams.map((team) => (
                         <ShareableRow
                           key={team.id}
@@ -737,20 +771,9 @@ export function ShareSidebar({
                 color="gray"
                 size="2"
                 onClick={() => onOpenChange(false)}
-                // style={{borderRadius: 'var(--radius-2)', border: '1px solid var(--slate-a8)'}}
               >
                 {t('action.cancel')}
               </Button>
-
-              {adapter.supportsTeams && (
-                <Button
-                  variant="outline"
-                  size="2"
-                  onClick={() => setCurrentView('create-team')}
-                >
-                  {t('shareSidebar.createNewTeam')}
-                </Button>
-              )}
 
               <LoadingButton
                 variant="solid"
@@ -759,7 +782,6 @@ export function ShareSidebar({
                 disabled={selectedItems.length === 0 || selectedItems.some((s) => s.isInvalid)}
                 loading={isSubmitting}
                 loadingLabel={t('shareSidebar.sharing')}
-                style={selectedItems.length > 0 && !isSubmitting && !selectedItems.some((s) => s.isInvalid) ? { backgroundColor: 'var(--emerald-10)' } : undefined}
               >
                 {t('action.share')}
               </LoadingButton>
@@ -774,7 +796,7 @@ export function ShareSidebar({
             </AlertDialog.Description>
             <Flex gap="2" justify="end" mt="4">
               <AlertDialog.Cancel>
-                <Button variant="soft" color="gray">
+                <Button variant="outline" color="gray">
                   {t('action.cancel')}
                 </Button>
               </AlertDialog.Cancel>

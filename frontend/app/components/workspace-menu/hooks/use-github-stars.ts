@@ -17,6 +17,37 @@ function cacheKey(apiUrl: string): string {
   return `pipeshub:github-stars:v2:${apiUrl}`;
 }
 
+function failureKey(apiUrl: string): string {
+  return `${cacheKey(apiUrl)}:failed`;
+}
+
+/**
+ * When the last fetch failed, kept across reloads: GitHub refuses anonymous calls past a small hourly cap per
+ * address, and a page that tried again on every load only added a failed request (a 403 in the console) each time.
+ */
+function lastFailureOf(apiUrl: string): number {
+  const memory = lastFailureAt.get(apiUrl);
+  if (memory !== undefined) return memory;
+  if (typeof window === 'undefined') return 0;
+  try {
+    const stored = Number(window.localStorage.getItem(failureKey(apiUrl)));
+    return Number.isFinite(stored) ? stored : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function noteFailure(apiUrl: string): void {
+  const now = Date.now();
+  lastFailureAt.set(apiUrl, now);
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(failureKey(apiUrl), String(now));
+  } catch {
+    /* quota / privacy mode: the in-memory backoff still holds */
+  }
+}
+
 function formatStars(count: number): string {
   return count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count);
 }
@@ -55,19 +86,19 @@ function isFresh(entry: CacheEntry | null): entry is CacheEntry {
 async function fetchStars(apiUrl: string): Promise<string | null> {
   const existing = inflight.get(apiUrl);
   if (existing) return existing;
-  const failedAt = lastFailureAt.get(apiUrl) ?? 0;
+  const failedAt = lastFailureOf(apiUrl);
   if (Date.now() - failedAt < STALE_RETRY_MS) return null;
 
   const request = (async () => {
     try {
       const res = await fetch(apiUrl);
       if (!res.ok) {
-        lastFailureAt.set(apiUrl, Date.now());
+        noteFailure(apiUrl);
         return null;
       }
       const data = (await res.json()) as { stargazers_count?: number };
       if (typeof data.stargazers_count !== 'number') {
-        lastFailureAt.set(apiUrl, Date.now());
+        noteFailure(apiUrl);
         return null;
       }
       const formatted = formatStars(data.stargazers_count);
@@ -76,7 +107,7 @@ async function fetchStars(apiUrl: string): Promise<string | null> {
       writePersistedCache(cacheKey(apiUrl), entry);
       return formatted;
     } catch {
-      lastFailureAt.set(apiUrl, Date.now());
+      noteFailure(apiUrl);
       return null;
     } finally {
       inflight.delete(apiUrl);

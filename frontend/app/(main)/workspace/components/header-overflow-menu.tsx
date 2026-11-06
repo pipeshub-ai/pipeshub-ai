@@ -4,6 +4,7 @@ import React from 'react';
 import { DropdownMenu } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { IconMenuItem } from '@/app/components/ui/icon-menu-item';
 
 export interface HeaderOverflowItem {
   label: string;
@@ -42,10 +43,9 @@ export function HeaderOverflowMenu({ items }: { items: HeaderOverflowItem[] }) {
       </DropdownMenu.Trigger>
       <DropdownMenu.Content align="end">
         {items.map((item) => (
-          <DropdownMenu.Item key={item.label} onSelect={item.onSelect}>
-            <MaterialIcon name={item.icon} size={16} color="var(--gray-11)" />
+          <IconMenuItem key={item.label} icon={item.icon} onSelect={item.onSelect}>
             {item.label}
-          </DropdownMenu.Item>
+          </IconMenuItem>
         ))}
       </DropdownMenu.Content>
     </DropdownMenu.Root>

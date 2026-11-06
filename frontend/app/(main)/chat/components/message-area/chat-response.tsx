@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useCallback, useEffect, useLayoutEffect, useContext } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
 import { AppliedFilters } from '../applied-filters';
@@ -12,15 +12,18 @@ import { StatusMessageComponent } from './status-message';
 import { MessageActions } from './message-actions';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
-import { ArtifactsPanel, isArtifactGone } from './artifacts-panel';
+import { ArtifactsPanel } from './artifacts-panel';
+import { useArtifactActions } from './use-artifact-actions';
 import {
   AskUserQuestionCard,
   askUserQuestionOwnsRow,
   showsStoppedMarker,
   buildResumeMessage,
   isAskUserQuestionExpired,
+  normalizeAskUserQuestionPayload,
 } from './ask-user-question-card';
-import { McpConnectRequiredCard } from './mcp-connect-required-card';
+import { ConnectToolsCard } from './connect-tools-card';
+import { UnavailableToolsNotice } from './unavailable-tools-notice';
 import { McpSignInCard } from './mcp-sign-in-card';
 import { ToolApprovalCard, ToolApprovalReceipts } from './tool-approval-card';
 import {
@@ -31,26 +34,38 @@ import {
   withoutWaitingLine,
 } from '../../tool-approval';
 import { mcpSignInServers } from '../../mcp-sign-in';
-import { mcpConfigMissingDetails, type ChatStreamErrorInfo } from '../../stream-error';
+import { cannotRun, toolsBlockedDetails, type ChatStreamErrorInfo } from '../../stream-error';
+import type { UnavailableTool } from '../../unavailable-tools';
 import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity } from './agent-activity';
+import { TRAIL_FOLD_EVENT } from './keep-on-screen';
 import { ExpandableUserQuery } from './expandable-user-query';
+import { SentPasteChip } from './sent-paste-chip';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
+import { AnswerFailed } from './answer-failed';
+import { RunErrorCard } from './run-error-card';
+import { chatSlots } from '@/config';
+import type { ChatResponseLayout, ChatResponseParts } from '../../chat-extension';
+import { withoutFailedTurn, type MessagePair, type RetryTurn } from './message-pairs';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
+import { AnswerSlotContext, answerSlotIdNow, useAnswerSlotId } from './answer-slot-scope';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, AppliedFilterNode, MessagePart } from '../../types';
+import { AnswerPanelScope } from '../answer-panel/answer-panel-store';
+import { SourcesButton, sourceConnectors } from '../answer-panel/sources-button';
+import type { AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
+import { mayBeNarration } from '../../utils/narration-hold';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
-import { extractAnswerMarkers, isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
-import { isAskUserQuestionTool, splitPartsAtQuestion } from '../../utils/tool-display';
-import { BELOW_APP_KEYS, hasAnyFilter } from '../../utils/tree-selection';
+import { extractAnswerMarkers } from '../../utils/parse-download-markers';
+import { isAskUserQuestionTool, shownQuestionOf } from '../../utils/tool-display';
+import { hasAnyFilter } from '../../utils/tree-selection';
+import { mentionedNodes } from '../../utils/node-mentions';
 import { DownloadTasks } from './download-tasks';
 import {
   isPresentationFile,
@@ -64,27 +79,30 @@ import { isPastedTextAttachment } from '../../utils/paste-attachment';
 import { useTranslation } from 'react-i18next';
 import { CitationMessageRowKeyContext } from './response-tabs/citations/citation-popover-control';
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
+import { useNarrationGlide } from './narration-glide';
+
+/** The question's time: the clock today, the date and the clock before today. */
+function formatQuestionTime(isoString: string): string {
+  const date = new Date(isoString);
+  if (isNaN(date.getTime())) return '';
+  const time = { hour: 'numeric', minute: '2-digit' } as const;
+  return date.toDateString() === new Date().toDateString()
+    ? date.toLocaleTimeString(undefined, time)
+    : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...time });
+}
 
 // Stable empty reference — avoids creating new objects in default params
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
-function formatMessageTime(isoString: string): string {
-  const date = new Date(isoString);
-  if (isNaN(date.getTime())) return '';
-  const now = new Date();
-  const isToday = date.toDateString() === now.toDateString();
-  const timeStr = date.toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-  if (isToday) return timeStr;
-  return date.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
+// The card every chat draws the run's work in. No bottom padding: the activity inside ends with its own bottom
+// margin. A step of light above the page, as wide as the answer column; it sets the work apart, so no rule follows it.
+const ACTIVITY_CARD_STYLE: React.CSSProperties = {
+  border: '1px solid var(--olive-5)',
+  background: 'var(--olive-2)',
+  borderRadius: 'var(--radius-3)',
+  padding: 'var(--space-3) var(--space-3) 0',
+  marginBottom: 'var(--space-5)',
+};
 
 function buildQuestionCardReadAloudText(payload: AskUserQuestionPayload): string {
   const parts: string[] = [];
@@ -100,7 +118,7 @@ interface FeedbackInfo {
   value?: 'like' | 'dislike';
 }
 
-interface ChatResponseProps {
+export interface ChatResponseProps {
   question: string;
   answer: string;
   citationMaps?: CitationMaps;
@@ -119,6 +137,13 @@ interface ChatResponseProps {
   isLastMessage?: boolean;
   /** This reply's row in the thread (`messagePairs[].key`): an approval card's answer carries it on. */
   rowId?: string;
+  /**
+   * The row's identity on screen, which stays the same when the streamed reply is swapped for the saved one.
+   * Not read while the answer shows the step timeline (it has no clock to key).
+   */
+  renderKey?: string;
+  /** The page joined this run part-way (reloaded mid-answer). Not read while the answer shows the step timeline. */
+  resumed?: boolean;
   /** Streaming content — only passed for the currently-streaming message */
   streamingContent?: string;
   /** Current status message — only passed for the currently-streaming message */
@@ -128,7 +153,7 @@ interface ChatResponseProps {
   /** Artifacts generated during streaming (coding sandbox, etc.) */
   streamingArtifacts?: ChatArtifact[];
   /** recordId -> highest version seen anywhere in this conversation (see `MessageList`) — powers the "newer version available" hint on older cards. */
-  latestArtifactVersions?: Map<string, number>;
+  latestArtifactVersions?: ReadonlyMap<string, number>;
   /** Live agent-activity transcript — only passed for the currently-streaming message. */
   streamingParts?: MessagePart[];
   /** Persisted agent-activity transcript from `ConversationMessage.parts` (absent for older messages). */
@@ -151,24 +176,24 @@ interface ChatResponseProps {
   status?: 'stopped';
   /** The server's error code and details when this reply is a failed run. */
   streamError?: ChatStreamErrorInfo;
+  /** Tools the person asking had not connected; the answer went on without them. */
+  unavailableTools?: UnavailableTool[];
+  /** The run failed: `answer` is the error text. */
+  failed?: boolean;
+  /** Resend the turn; offered on a failed last answer to someone who can send in this chat. */
+  onRetry?: (turn: RetryTurn) => void;
+  /** The viewer can send in this chat; regenerate is offered only then. */
+  canSend?: boolean;
   /**
    * No assistant row exists for this question (see `buildMessagePairs`). The
    * question is drawn on its own: an answer area, tabs and message actions
    * would all be empty controls over a reply that was never produced.
    */
   unanswered?: boolean;
-}
-
-/**
- * The nodes the question named with @, to show as chips in it. A message saved
- * before that was recorded falls back to its folders and records: an app or a
- * collection is often named like an ordinary word.
- */
-function mentionedNodes(applied: AppliedFiltersData | undefined): AppliedFilterNode[] {
-  if (!applied) return [];
-  const all = [...(applied.apps ?? []), ...(applied.kb ?? []), ...BELOW_APP_KEYS.flatMap((key) => applied[key] ?? [])];
-  if (all.some((node) => typeof node.mentioned === 'boolean')) return all.filter((node) => node.mentioned);
-  return BELOW_APP_KEYS.flatMap((key) => applied[key] ?? []);
+  /** The pair this row draws, for row extensions. */
+  pair?: MessagePair;
+  /** Row layout from the list body. */
+  layout?: ChatResponseLayout;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -200,12 +225,28 @@ export const ChatResponse = React.memo(function ChatResponse({
   feedbackInfo,
   status,
   streamError,
+  unavailableTools,
+  failed = false,
+  onRetry,
+  canSend = true,
   unanswered = false,
+  pair,
+  layout,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
-  const mcpConnectDetails = isStreaming ? null : mcpConfigMissingDetails(streamError);
+  const blockedTools = isStreaming ? null : toolsBlockedDetails(streamError);
   const isMobile = useIsMobile();
+  const ext = chatSlots.useResponseExtension({ pair, layout, question, isStreaming, isLastMessage, unanswered });
+  // From 1024px a chat's own list has the column beside it, which takes the answer's tabs whether it is open or shut.
+  const panelScope = useContext(AnswerPanelScope);
+  const panelTakesTabs = panelScope?.column === true;
+  // From 1024px the tabs are not drawn under the question (the right column, or a room's own panel, holds them), so the
+  // answer starts 16px under the question, with no line between them. Below that the inline tabs follow the question.
+  const wideRow = !unanswered && (panelTakesTabs || ext.headline?.compact === false);
+  // Text that streamed as the answer and moves into the trail glides there (`useNarrationGlide`).
+  const shellRef = useRef<HTMLDivElement>(null);
+  useNarrationGlide(shellRef, isStreaming);
 
   /** Shown only if the stream is active but no SSE status has arrived yet */
   const streamingFallbackStatus = useMemo(
@@ -243,13 +284,14 @@ export const ChatResponse = React.memo(function ChatResponse({
   // we track the active expanded message ID in the slot store.
   const [localTab, setLocalTab] = useState<ResponseTab>('answer');
 
+  const scopedSlotId = useContext(AnswerSlotContext);
+  const answerSlotId = useAnswerSlotId();
   // Read the slot-level activeExpandedMessageId so we can reset to 'answer'
   // when a different message becomes the expanded one.
   const activeExpandedMessageId = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.activeExpandedMessageId ?? null : null
+    answerSlotId ? s.slots[answerSlotId]?.activeExpandedMessageId ?? null : null
   );
   const updateSlot = useChatStore((s) => s.updateSlot);
-  const activeSlotId = useChatStore((s) => s.activeSlotId);
   const setPreviewFile = useChatStore((s) => s.setPreviewFile);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
 
@@ -310,114 +352,14 @@ export const ChatResponse = React.memo(function ChatResponse({
     [setPreviewFile, setPreviewMode],
   );
 
-  /**
-   * Streams `artifact.recordId` at `overrideVersion` (defaulting to
-   * `artifact.version`) and replaces the preview panel's content in place.
-   * Used both for the initial "Preview" click (`ArtifactsPanel.onPreview`)
-   * and for every later version switch (bound back to this same function as
-   * `ChatPreviewFile.onVersionChange`) — one code path, so streaming options
-   * (PDF conversion for PPT/DOCX, mime resolution, DOCX blob handling) never
-   * drift between the two entry points.
-   */
-  const loadArtifactPreview = useCallback(
-    async (artifact: ChatArtifact, overrideVersion?: number) => {
-      const version = overrideVersion ?? artifact.version;
-      const recordId = artifact.recordId;
-      const isSwitch = overrideVersion !== undefined;
-      const latestVersion = recordId ? latestArtifactVersions?.get(recordId) : undefined;
-      const effectiveLatest =
-        latestVersion !== undefined && version !== undefined
-          ? Math.max(latestVersion, version)
-          : latestVersion ?? version;
-      const onVersionChange = recordId
-        ? (v: number) => loadArtifactPreview(artifact, v)
-        : undefined;
-
-      if (recordId) {
-        // A version switch (not the initial open) — keep the current
-        // content on screen and only flip the small spinner in the version
-        // pill, so the panel doesn't flash back to the loading skeleton.
-        if (isSwitch) {
-          const current = useChatStore.getState().previewFile;
-          if (current?.id === recordId) setPreviewFile({ ...current, isSwitchingVersion: true });
-        }
-        try {
-          const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
-          const streamAsPdf =
-            isPresentationFile(artifact.mimeType, artifact.fileName) ||
-            isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
-          const blob = await KnowledgeBaseApi.streamRecord(recordId, {
-            ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
-            ...(version !== undefined ? { version } : {}),
-            // The card shows a deleted artifact itself; a version switch has no card to tell.
-            ...(isSwitch ? {} : { suppressErrorToast: isArtifactGone }),
-          });
-          const resolvedType = resolvePreviewMimeAfterStream(
-            artifact.mimeType,
-            artifact.fileName,
-            blob,
-            streamAsPdf,
-          );
-          const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
-          const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
-
-          // Release the previous blob URL now that nothing references it —
-          // otherwise every version switch leaks one object URL.
-          const previous = useChatStore.getState().previewFile;
-          if (previous?.url?.startsWith('blob:')) URL.revokeObjectURL(previous.url);
-
-          setPreviewFile({
-            id: recordId,
-            url: objectUrl,
-            blob: isDocx ? blob : undefined,
-            name: artifact.fileName,
-            type: resolvedType,
-            size: artifact.sizeBytes,
-            hideFileDetails: true,
-            showDownload: true,
-            version,
-            latestVersion: effectiveLatest,
-            onVersionChange,
-            isSwitchingVersion: false,
-          });
-          return;
-        } catch (error) {
-          if (isSwitch) {
-            // Keep showing the last successfully loaded version rather than
-            // falling back to a stale/foreign URL below.
-            const current = useChatStore.getState().previewFile;
-            if (current?.id === recordId) setPreviewFile({ ...current, isSwitchingVersion: false });
-            return;
-          }
-          if (isArtifactGone(error)) throw error;
-          // Initial-open failure — fall through to the URL-classification
-          // fallback below (never trusts an arbitrary marker URL, see
-          // `ArtifactsPanel`'s `handleDownload` docstring for the same rule).
-        }
-      }
-
-      const fallbackUrl = artifact.downloadUrl?.trim();
-      const trusted = !!fallbackUrl && (isTrustedApiUrl(fallbackUrl) || isSignedUrl(fallbackUrl));
-      setPreviewFile({
-        id: artifact.id,
-        url: trusted ? fallbackUrl : '',
-        ...(trusted ? {} : { error: t('artifacts.previewFailed') }),
-        name: artifact.fileName,
-        type: artifact.mimeType,
-        size: artifact.sizeBytes,
-        hideFileDetails: true,
-        showDownload: true,
-        version,
-        latestVersion: effectiveLatest,
-        onVersionChange,
-      });
-    },
-    [latestArtifactVersions, setPreviewFile, t],
-  );
+  const artifactActions = useArtifactActions(latestArtifactVersions);
 
   const pendingAskUserQuestion = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.pendingAskUserQuestion ?? null : null
+    answerSlotId ? s.slots[answerSlotId]?.pendingAskUserQuestion ?? null : null
   );
+  // A card typed past in the chat: its box folds when the reply's run ends, so this row follows the chat's runs.
+  const repliedInChat = Boolean(persistedAskUserQuestion?.repliedInChat);
+  const chatRunning = useChatStore((s) => repliedInChat && Boolean(answerSlotId && s.slots[answerSlotId]?.isStreaming));
 
   const askQuestionMatchesRow = askUserQuestionOwnsRow(
     pendingAskUserQuestion,
@@ -443,20 +385,22 @@ export const ChatResponse = React.memo(function ChatResponse({
 
   // Also ensure we reset if the slot switches to a different conversation
   // (activeExpandedMessageId becomes null on slot evict/init).
-  const activeTab = (activeExpandedMessageId === messageId || !messageId)
-    ? localTab
-    : 'answer';
+  const activeTab = panelTakesTabs
+    ? 'answer'
+    : (activeExpandedMessageId === messageId || !messageId)
+      ? localTab
+      : 'answer';
 
   const setActiveTab = useCallback((tab: ResponseTab) => {
     setLocalTab(tab);
-    if (!activeSlotId) return;
+    if (!answerSlotId) return;
     if (tab === 'answer') {
       // Clear expansion only if we own it
-      updateSlot(activeSlotId, { activeExpandedMessageId: null });
+      updateSlot(answerSlotId, { activeExpandedMessageId: null });
     } else {
-      updateSlot(activeSlotId, { activeExpandedMessageId: messageId ?? null });
+      updateSlot(answerSlotId, { activeExpandedMessageId: messageId ?? null });
     }
-  }, [activeSlotId, messageId, updateSlot]);
+  }, [answerSlotId, messageId, updateSlot]);
 
   const setInlineCitationKey = useInlineCitationPopoverStore((s) => s.setActiveKey);
   const prevLocalTabForCite = useRef<ResponseTab>('answer');
@@ -476,6 +420,15 @@ export const ChatResponse = React.memo(function ChatResponse({
   const effectiveCitationMapsRef = useRef(effectiveCitationMaps);
   effectiveCitationMapsRef.current = effectiveCitationMaps;
 
+  // A row that carries on after its question card holds the text an earlier run saved on it, which is not this
+  // run's answer: while it runs, only what this run streams is shown.
+  const resumesCardRow = isStreaming && Boolean(persistedAskUserQuestion || askQuestionMatchesRow);
+  // Text the run is still writing stays out of the answer while it may be the sentence said before a tool call
+  // (`mayBeNarration`): when the call comes, that sentence is first drawn in the run's box, not here and then moved.
+  const liveAnswer = useMemo(
+    () => (isStreaming && mayBeNarration(streamingContent) ? '' : streamingContent),
+    [isStreaming, streamingContent],
+  );
   // Use streaming content when streaming, otherwise use the final answer.
   // Apply structural repair to in-progress content only — the final message
   // from the server is always complete and must not be patched.
@@ -487,9 +440,13 @@ export const ChatResponse = React.memo(function ChatResponse({
   const processedContent = useMemo(
     () =>
       processMarkdownContent(
-        isStreaming && streamingContent ? repairStreamingMarkdown(streamingContent) : answer,
+        isStreaming && liveAnswer
+          ? repairStreamingMarkdown(liveAnswer)
+          : resumesCardRow
+            ? ''
+            : answer,
       ),
-    [isStreaming, streamingContent, answer],
+    [isStreaming, liveAnswer, resumesCardRow, answer],
   );
   // Markers are always stripped from the markdown; they become cards only in
   // a saved answer (see `MarkerSource`). While streaming, live cards come
@@ -573,7 +530,9 @@ export const ChatResponse = React.memo(function ChatResponse({
     isLastMessage &&
       !isStreaming &&
       messageId &&
-      activeSlotId &&
+      answerSlotId &&
+      ext.allowRegenerate &&
+      canSend &&
       changeablePayload &&
       !changeablePayload.repliedInChat &&
       !isAskUserQuestionExpired(changeablePayload) &&
@@ -626,51 +585,54 @@ export const ChatResponse = React.memo(function ChatResponse({
     () => (isStreaming || !isLastMessage ? [] : mcpSignInServers(effectiveParts)),
     [effectiveParts, isStreaming, isLastMessage],
   );
-  // Drives both the "Answer" separator and the collapsible-summary wrapper
+  // Drives both the activity card and the collapsible-summary wrapper
   // around a completed activity timeline — computed with the exact same
   // filtering the timeline itself applies, so it never disagrees with what
   // actually renders (e.g. a transcript containing only the isFinal part
-  // and nothing else shows no separator).
+  // and nothing else shows no card).
   const visibleActivityParts = useMemo(
     () => (effectiveParts ? getVisibleRootParts(effectiveParts, isStreaming) : []),
     [effectiveParts, isStreaming],
   );
+  // A question waiting on its person names them in the summary row, so the box never reads as done.
+  const waitingOnQuestion =
+    questionPending && pendingAskUserQuestion && !isAskUserQuestionExpired(pendingAskUserQuestion.payload)
+      ? ext.askCardReadOnlyFor
+        ? t('askUserQuestion.waitingFor', { name: ext.askCardReadOnlyFor.name || t('askUserQuestion.unknownPerson') })
+        : t('askUserQuestion.waitingForYou')
+      : undefined;
   // Collapse control is offered once narration/answer has started (or for
   // completed messages). While only thinking/tools are streaming, keep the
   // timeline always-visible with no collapse chrome.
   const canCollapseActivity =
     !isStreaming ||
     !!displayContent ||
+    Boolean(waitingOnQuestion) ||
     visibleActivityParts.some((p) => p.type === 'text' && !!p.settled && !p.isFinal);
 
-  // With a question card on the row, the work done after it was answered renders
-  // under the card instead of above it.
-  const showPersistedCard = Boolean(persistedAskUserQuestion) && !askQuestionMatchesRow;
-  const showPendingCard = askQuestionMatchesRow && Boolean(pendingAskUserQuestion);
-  const questionSplit = useMemo(() => {
-    if (!rerunAnswers && !showPersistedCard && !showPendingCard) return null;
-    const split = splitPartsAtQuestion(effectiveParts);
-    // A re-run with changed answers streams only the reply to them, so all of it comes after the card.
-    if (!split && rerunAnswers && effectiveParts) return { before: [], after: effectiveParts };
-    return split;
-  }, [effectiveParts, rerunAnswers, showPersistedCard, showPendingCard]);
-  const partsAboveCard = questionSplit ? questionSplit.before : effectiveParts;
-  const partsBelowCard = questionSplit?.after ?? [];
-  // Once the card is answered the run carries on below it, so the live status goes there too.
-  const activityContinuesBelowCard = Boolean(questionSplit) && !questionPending;
-  const visiblePartsAboveCard = useMemo(
-    () => (questionSplit ? getVisibleRootParts(questionSplit.before, isStreaming) : visibleActivityParts),
-    [questionSplit, isStreaming, visibleActivityParts],
+  // Every answered question is a row of the box, where it was asked. A card shows outside the box only while it waits
+  // for an answer, or when no row of the box holds it (a reply saved before its steps were).
+  const questionsInBox = useMemo(
+    () =>
+      new Set(
+        visibleActivityParts.flatMap((part) => {
+          const question = shownQuestionOf(part);
+          return question ? normalizeAskUserQuestionPayload(question.payload).questions.map((q) => q.uuid) : [];
+        }),
+      ),
+    [visibleActivityParts],
   );
-  const visiblePartsBelowCard = useMemo(
-    () => (questionSplit ? getVisibleRootParts(questionSplit.after, isStreaming) : []),
-    [questionSplit, isStreaming],
-  );
-  const hasVisibleActivityBelowCard = visiblePartsBelowCard.length > 0;
-  const canCollapseActivityBelowCard =
-    !isStreaming ||
-    !!displayContent ||
-    visiblePartsBelowCard.some((p) => p.type === 'text' && !!p.settled && !p.isFinal);
+  const inBox = (payload: AskUserQuestionPayload) =>
+    normalizeAskUserQuestionPayload(payload).questions.every((q) => questionsInBox.has(q.uuid));
+  const showStoredCard = Boolean(persistedAskUserQuestion) && !askQuestionMatchesRow && !inBox(persistedAskUserQuestion!);
+  // A card the run stops on is drawn with the saved row, never under the streamed one: that trail still ends in a status
+  // line the saved one lacks, so the card would move up as the saved row takes over.
+  const showLiveCard =
+    askQuestionMatchesRow &&
+    Boolean(pendingAskUserQuestion) &&
+    !(isStreaming && pendingAskUserQuestion!.status === 'pending') &&
+    (pendingAskUserQuestion!.status === 'pending' || !inBox(pendingAskUserQuestion!.payload));
+  const shownStepCount = visibleActivityParts.length;
 
   // Wrap citation callbacks so that onPreview always receives this message's
   // citationMaps — the panel needs all citations for the previewed record.
@@ -694,6 +656,15 @@ export const ChatResponse = React.memo(function ChatResponse({
   // Derive counts from citation maps
   const sourcesCount = effectiveCitationMaps.sourcesOrder.length;
   const citationCount = Object.keys(effectiveCitationMaps.citationsOrder).length;
+  const connectors = useMemo(() => sourceConnectors(effectiveCitationMaps), [effectiveCitationMaps]);
+  // The answer's way into the column, on its Sources tab, when the answer drew on something; an extension that sets
+  // its own actions (even none) keeps them.
+  const leadingActions =
+    ext.leadingActions !== undefined
+      ? ext.leadingActions
+      : panelTakesTabs && answerSlotId && rowId && connectors.length > 0
+        ? <SourcesButton slotId={answerSlotId} connectors={connectors} answerKey={rowId} />
+        : undefined;
 
   const renderActivity = (
     parts: MessagePart[],
@@ -710,7 +681,13 @@ export const ChatResponse = React.memo(function ChatResponse({
       />
     );
     return collapsible ? (
-      <CollapsibleActivitySection parts={parts} isStreaming={isStreaming}>
+      <CollapsibleActivitySection
+        parts={parts}
+        isStreaming={isStreaming}
+        waiting={waitingOnQuestion}
+        replied={repliedInChat}
+        chatRunning={chatRunning}
+      >
         {timeline}
       </CollapsibleActivitySection>
     ) : (
@@ -718,83 +695,132 @@ export const ChatResponse = React.memo(function ChatResponse({
     );
   };
 
-  const renderTabContent = () => {
+  // Sending again cannot lift a refusal only an admin can: the card's text says who to ask.
+  const canRetry = isLastMessage && onRetry !== undefined && ext.allowRegenerate && !ranApprovedCall && !cannotRun(streamError);
+  const retry = () => {
+    const slotId = answerSlotIdNow(scopedSlotId);
+    const slot = slotId ? useChatStore.getState().slots[slotId] : undefined;
+    // The failed copy gives way to the question asked again, so it shows once. A busy chat may not take the send, so it stays.
+    const rows = slot && rowId && !slot.isStreaming && !slot.remoteRunInProgress ? withoutFailedTurn(slot.messages, rowId) : null;
+    if (rows && slotId) updateSlot(slotId, { messages: rows });
+    onRetry?.({ question, attachments, collections, appliedFilters });
+  };
+
+  // How sure the model is of its answer, whenever it gave a level, whether or not it read sources. The badge tops the
+  // answer text, under every trail and question card, so a run with no answer text yet shows none. The level comes
+  // with the saved answer: while the answer streams the badge's place is kept, so its appearing moves nothing. Should
+  // the answer end without one (a stop, a model that gave none), the place closes as the trail folds, with the same
+  // motion, and the answer under it is held where the reader has it like the trail's fold.
+  const [keptLevelPlace, setKeptLevelPlace] = useState(false);
+  if (isStreaming && answerShown && !keptLevelPlace) setKeptLevelPlace(true);
+  const levelPlaceCloses = keptLevelPlace && !isStreaming && !confidence && !ext.hideConfidence;
+  const levelBadge = ext.hideConfidence
+    ? null
+    : !isStreaming && confidence
+      ? <ConfidenceIndicator confidence={confidence} marginBottom="0" />
+      : isStreaming || keptLevelPlace
+        ? <ConfidenceIndicator confidence="High" marginBottom="0" placeholder />
+        : null;
+  // One element from the first streamed word to the end, so the badge taking its place is the same node.
+  const confidenceBadge = levelBadge && (
+    <div className="level-slot" data-open={!levelPlaceCloses}>
+      <div>
+        <div style={{ paddingBottom: 'var(--space-2)' }}>{levelBadge}</div>
+      </div>
+    </div>
+  );
+  // Before paint, as the trail's fold does: the scroll box around the answer holds it still while the place closes.
+  useLayoutEffect(() => {
+    if (levelPlaceCloses) shellRef.current?.dispatchEvent(new Event(TRAIL_FOLD_EVENT, { bubbles: true }));
+  }, [levelPlaceCloses]);
+
+  /* Agent activity timeline — thinking / tool calls / sub-agents,
+     streamed live or rendered from the persisted transcript.
+     While streaming, the live status ("Thinking...", "Using
+     Jira Search...") renders as the LAST timeline entry instead
+     of a disconnected element below the answer — see
+     AgentActivityTimeline's `currentStatus` prop. Once narration
+     or the answer starts (or the response is complete), wrap in
+     CollapsibleActivitySection so the user can collapse the
+     trace if they want — never auto-collapsed while live.
+     Gated on visible parts (not raw part count) — a
+     completed simple response's `effectiveParts` is just the one
+     `isFinal` text part, which the timeline itself filters out.
+     `isStreaming && multiStep` is OR'd in so the timeline stays
+     reachable while a multi-step run is active but hasn't
+     produced a visible part yet. One box holds the whole turn:
+     the work of every run and each question answered between
+     them, in the order they happened. */
+  const activity =
+    effectiveParts &&
+    (visibleActivityParts.length > 0 || (isStreaming && multiStep)) &&
+    renderActivity(
+      effectiveParts,
+      canCollapseActivity,
+      // non-multiStep: null prevents duplicate status with StatusMessageComponent below
+      multiStep ? streamingStatusToShow : null,
+    );
+  // A card drawn right above the answer, which then starts 16px under it.
+  const cardAboveAnswer = rerunCard
+    ? !activity
+    : changingAnswers || (askQuestionMatchesRow ? showLiveCard : showStoredCard);
+
+  const renderTabContent = (opts?: { padding?: string; leadTight?: boolean }) => {
+    // 24px under the question or the tabs, as a margin so it merges with the question's own and with the first
+    // block's (a status line, a heading): the first line lands in one place, with a trail or without, live or done.
+    // On a wide row, 16 straight under the question.
+    // No bottom spacing: the last block's own margin and the toolbar's 24px collapse into one gap.
+    const spacing: React.CSSProperties = opts?.padding
+      ? { padding: opts.padding }
+      : { marginTop: wideRow ? 'var(--space-4)' : 'var(--space-5)' };
     switch (activeTab) {
       case 'answer':
-        return (
-          <Box style={{ padding: 'var(--space-4) 0' }}>
-            {/* Show confidence only when not streaming and has answer */}
-            {!isStreaming && confidence && <ConfidenceIndicator confidence={confidence} />}
-
-            {/* Agent activity timeline — thinking / tool calls / sub-agents,
-                streamed live or rendered from the persisted transcript.
-                While streaming, the live status ("Thinking...", "Using
-                Jira Search...") renders as the LAST timeline entry instead
-                of a disconnected element below the answer — see
-                AgentActivityTimeline's `currentStatus` prop. Once narration
-                or the answer starts (or the response is complete), wrap in
-                CollapsibleActivitySection so the user can collapse the
-                trace if they want — never auto-collapsed while live.
-                Gated on visible parts (not raw part count) — a
-                completed simple response's `effectiveParts` is just the one
-                `isFinal` text part, which the timeline itself filters out.
-                `isStreaming && multiStep` is OR'd in so the timeline stays
-                reachable while a multi-step run is active but hasn't
-                produced a visible part yet. Shown on ask_user_question
-                rows too — the card is the question UI, not a reason to
-                hide the tools that ran before it. Only the work up to the
-                question renders here; what ran after it was answered renders
-                under the card. */}
-            {partsAboveCard && (visiblePartsAboveCard.length > 0 || (isStreaming && multiStep && !activityContinuesBelowCard)) &&
-              renderActivity(
-                partsAboveCard,
-                canCollapseActivity || activityContinuesBelowCard,
-                // non-multiStep: null prevents duplicate status with StatusMessageComponent below
-                multiStep && !activityContinuesBelowCard ? streamingStatusToShow : null,
-              )}
-
-            {/* Separator marking the handoff from "here's the work" to
-                "here's the answer" — only when there's activity actually
-                visible above (not just a lone isFinal part that the
-                timeline itself filtered out) and content to show below
-                (answer text or the ask_user_question card). */}
-            {visiblePartsAboveCard.length > 0 && (questionSplit || answerShown || questionPending || persistedAskUserQuestion || toolApproval || approvalReceipts.length > 0) && (
-              <Box
-                className="agent-activity-enter"
-                style={{
-                  borderTop: '1px solid var(--slate-4)',
-                  marginTop: 'var(--space-1)',
-                  marginBottom: 'var(--space-3)',
-                }}
+        if (failed && !isStreaming && !blockedTools) {
+          return (
+            <Box style={spacing}>
+              <AnswerFailed
+                message={answer}
+                onRetry={canRetry ? retry : undefined}
               />
+            </Box>
+          );
+        }
+        return (
+          <Box style={spacing} className={opts?.leadTight ? 'answer-lead-tight' : undefined}>
+            {/* A re-run with changed answers streams only the reply to them: the answers it runs with come first. */}
+            {rerunCard}
+            {activity && (
+              <Box data-testid="chat-activity-card" style={ACTIVITY_CARD_STYLE}>
+                {activity}
+              </Box>
             )}
 
-            {/* Persisted ask_user_question from historical tool_call — read-only display */}
-            {rerunCard ? (
-              rerunCard
-            ) : persistedAskUserQuestion && !askQuestionMatchesRow ? (
-              changingAnswers ? (
-                changeAnswersEditor
-              ) : (
-                <AskUserQuestionCard
-                  payload={persistedAskUserQuestion}
-                  initialAnswers={persistedAskUserQuestionAnswers ?? {}}
-                  status="persisted"
-                />
-              )
+            {/* A saved card no row of the box holds — read-only display */}
+            {rerunCard || askQuestionMatchesRow ? null : changingAnswers ? (
+              changeAnswersEditor
+            ) : showStoredCard ? (
+              <AskUserQuestionCard
+                payload={persistedAskUserQuestion!}
+                initialAnswers={persistedAskUserQuestionAnswers ?? {}}
+                status="persisted"
+              />
             ) : null}
 
-            {/* Active (streaming/pending) ask_user_question card */}
-            {rerunCard ? null : askQuestionMatchesRow && pendingAskUserQuestion && changingAnswers ? (
+            {ext.answerExtras}
+
+            {/* The card waiting for an answer, under the box that led to it */}
+            {rerunCard || !askQuestionMatchesRow || !pendingAskUserQuestion ? null : changingAnswers ? (
               changeAnswersEditor
-            ) : askQuestionMatchesRow && pendingAskUserQuestion ? (
+            ) : showLiveCard ? (
               <AskUserQuestionCard
                 payload={pendingAskUserQuestion.payload}
                 initialAnswers={pendingAskUserQuestion.answers}
                 status={pendingAskUserQuestion.status}
                 sentAnswers={pendingAskUserQuestion.sentAnswers}
+                readOnlyFor={ext.askCardReadOnlyFor}
+                submitHeld={ext.askCardSubmitHeld}
                 onAnswersChange={(nextAnswers) => {
-                  const sid = useChatStore.getState().activeSlotId;
+                  const sid = answerSlotIdNow(scopedSlotId);
                   const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
                   if (!sid || !p) return;
                   useChatStore.getState().updateSlot(sid, {
@@ -802,13 +828,14 @@ export const ChatResponse = React.memo(function ChatResponse({
                   });
                 }}
                 onSubmit={(message, nextAnswers) => {
-                  const sid = useChatStore.getState().activeSlotId;
+                  const sid = answerSlotIdNow(scopedSlotId);
                   const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
                   if (!sid || !p) return;
                   useChatStore.getState().updateSlot(sid, {
                     pendingAskUserQuestion: { ...p, answers: nextAnswers, status: 'submitted' },
                   });
                   const request = buildStreamChatRequestForSlot(sid, message);
+                  if (request) ext.decorateResumeRequest?.(request, p);
                   if (request) {
                     void streamMessageForSlot(sid, message, request, {
                       resumeAskUserQuestion: true,
@@ -818,34 +845,27 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             ) : null}
 
-            {/* Work done after the question was answered — under the card, Claude-style. */}
-            {questionSplit && (hasVisibleActivityBelowCard || (isStreaming && multiStep && activityContinuesBelowCard)) && (
-              <Box data-testid="activity-below-question-card" style={{ marginTop: 'var(--space-4)' }}>
-                {renderActivity(
-                  partsBelowCard,
-                  canCollapseActivityBelowCard && hasVisibleActivityBelowCard,
-                  multiStep ? streamingStatusToShow : null,
-                )}
-              </Box>
-            )}
-            {hasVisibleActivityBelowCard && (answerShown || toolApproval || approvalReceipts.length > 0) && (
-              <Box
-                className="agent-activity-enter"
-                style={{
-                  borderTop: '1px solid var(--slate-4)',
-                  marginTop: 'var(--space-1)',
-                  marginBottom: 'var(--space-3)',
-                }}
+            {/* A reply stopped on tools that aren't connected shows how to connect them instead. */}
+            {blockedTools && (ext.toolsConnectReadOnlyFor ? (
+              <UnavailableToolsNotice
+                items={blockedTools.items}
+                answer=""
+                question={question}
+                readOnlyFor={ext.toolsConnectReadOnlyFor}
               />
-            )}
+            ) : (
+              <ConnectToolsCard
+                items={blockedTools.items}
+                agentId={blockedTools.agentId}
+                serviceAccount={blockedTools.serviceAccount}
+                question={question}
+                blocked
+                testId={blockedTools.items.every((item) => item.kind === 'mcp') ? 'mcp-connect-required' : undefined}
+              />
+            ))}
 
-            {/* A reply that failed because an MCP server isn't set up shows how to set it up instead. */}
-            {mcpConnectDetails && (
-              <McpConnectRequiredCard details={mcpConnectDetails} question={question} />
-            )}
-
-            {/* Continuation / final answer — below the question card so the
-                turn reads tools → question → answer. Hidden while the card
+            {/* Continuation / final answer — after the box, so the turn reads
+                its work and questions, then the answer. Hidden while a card
                 is still waiting for answers. */}
             {approvalReceipts.length > 0 && (
               <Box mb="3">
@@ -853,15 +873,21 @@ export const ChatResponse = React.memo(function ChatResponse({
               </Box>
             )}
 
-            {answerShown && !questionPending && !mcpConnectDetails && (
+            {answerShown && !questionPending && !blockedTools && (
               <Box
                 style={{
-                  marginTop:
-                    (persistedAskUserQuestion || askQuestionMatchesRow) && !hasVisibleActivityBelowCard
+                  // 24px above the badge, as a margin that merges with the box's above it; 16px under a card, and
+                  // on a wide row when the badge is the first thing under the question (globals.css).
+                  marginTop: confidenceBadge && !levelPlaceCloses
+                    ? 'var(--answer-lead-gap, var(--space-5))'
+                    : cardAboveAnswer
                       ? 'var(--space-4)'
-                      : undefined,
+                      : 0,
+                  // The badge's place closing eases this to the answer's own spacing, with the fold.
+                  transition: keptLevelPlace ? 'margin-top calc(var(--motion-page) * 0.9375) var(--motion-ease)' : undefined,
                 }}
               >
+                {confidenceBadge}
                 <AnswerContent
                   content={answerShown}
                   citationMaps={effectiveCitationMaps}
@@ -873,6 +899,16 @@ export const ChatResponse = React.memo(function ChatResponse({
 
             {!isStreaming && searchDegraded && <SearchDegradedNote />}
 
+            {/* The answer went on without tools the asker hasn't connected: offer to connect them once it is done. */}
+            {!isStreaming && !failed && !blockedTools && answerShown && unavailableTools && unavailableTools.length > 0 && (
+              <UnavailableToolsNotice
+                items={unavailableTools}
+                answer={answerShown}
+                question={question}
+                readOnlyFor={ext.toolsConnectReadOnlyFor}
+              />
+            )}
+
             {/* After an answered question the reply carries on in this row and can stop on an
                 approval: its card shows under the question. Only an unanswered question comes first. */}
             {toolApproval && !questionPending && (
@@ -882,6 +918,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                   approval={toolApproval}
                   isLatest={isLastMessage}
                   rowId={rowId}
+                  readOnlyFor={ext.approvalCardReadOnlyFor}
                 />
               </Box>
             )}
@@ -892,10 +929,8 @@ export const ChatResponse = React.memo(function ChatResponse({
               </Box>
             )}
 
-            {/* Subtle marker for a response cut short by Stop. Only shown once
-                settled (never while still streaming/regenerating) — regenerate
-                remains available via MessageActions below, same as any other
-                completed response. */}
+            {/* A response cut short by Stop says so in the answer's place: what is
+                kept, and Try again where a retry is allowed. Only once settled. */}
             {showsStoppedMarker({
               status,
               isStreaming,
@@ -903,17 +938,23 @@ export const ChatResponse = React.memo(function ChatResponse({
               hasAnswerText: visibleAnswer.trim() !== '',
               repliedInChat: Boolean(persistedAskUserQuestion?.repliedInChat),
             }) && (
-              <Flex
-                align="center"
-                gap="1"
-                data-testid="chat-stopped-marker"
-                style={{ marginTop: 'var(--space-2)' }}
-              >
-                <MaterialIcon name="stop_circle" size={14} color="var(--slate-9)" />
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                  {t('chat.stoppedMarker', { defaultValue: 'Stopped' })}
-                </Text>
-              </Flex>
+              <Box style={{ marginTop: answerShown.trim() ? 'var(--space-2)' : 0 }}>
+                <RunErrorCard
+                  tone="neutral"
+                  icon="stop_circle"
+                  testId="chat-stopped-card"
+                  title={ext.stoppedByOther?.title ?? t('chat.runError.stoppedTitle')}
+                  body={
+                    shownStepCount > 0
+                      ? t('chat.runError.stoppedBody')
+                      : answerShown.trim()
+                        ? (ext.stoppedByOther?.partialBody ?? t('chat.runError.stoppedBodyPartial'))
+                        : undefined
+                  }
+                  retryLabel={t('chat.answerFailedRetry')}
+                  onRetry={canRetry ? retry : undefined}
+                />
+              </Box>
             )}
 
             {/* "Currently doing X…" status for SIMPLE (non-multi-step)
@@ -935,32 +976,8 @@ export const ChatResponse = React.memo(function ChatResponse({
               <ArtifactsPanel
                 artifacts={effectiveArtifacts}
                 latestArtifactVersions={latestArtifactVersions}
-                onPreview={loadArtifactPreview}
-                onViewSource={async (codeArtifactId) => {
-                  // The code artifact is registered through the same pipeline as any
-                  // other record, so it streams/previews via the standard KB record
-                  // APIs exactly like the `recordId` path above — no separate endpoint.
-                  try {
-                    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
-                    const [details, blob] = await Promise.all([
-                      KnowledgeBaseApi.getRecordDetails(codeArtifactId, { suppressErrorToast: isArtifactGone }),
-                      KnowledgeBaseApi.streamRecord(codeArtifactId, { suppressErrorToast: isArtifactGone }),
-                    ]);
-                    const objectUrl = URL.createObjectURL(blob);
-                    useChatStore.getState().setPreviewFile({
-                      id: codeArtifactId,
-                      url: objectUrl,
-                      name: details.record.recordName,
-                      type: details.record.mimeType || 'text/plain',
-                      size: details.record.fileRecord?.sizeInBytes ?? blob.size,
-                      hideFileDetails: true,
-                      showDownload: true,
-                    });
-                  } catch (error) {
-                    // The card hides "view source" once the source is gone.
-                    if (isArtifactGone(error)) throw error;
-                  }
-                }}
+                onPreview={artifactActions.onPreview}
+                onViewSource={artifactActions.onViewSource}
               />
             )}
           </Box>
@@ -990,12 +1007,12 @@ export const ChatResponse = React.memo(function ChatResponse({
   // asked again), never while the card is still waiting.
   const rowHasCard = askQuestionMatchesRow || Boolean(persistedAskUserQuestion);
   const cardAnswered = Object.keys(persistedAskUserQuestionAnswers ?? {}).length > 0;
-  // Someone a chat was shared with reads it; the server only lets its owner edit.
+  // Someone a chat was shared with reads it; the server only lets its owner edit, unless the extension decides.
   const isChatOwner = useChatStore((st) =>
-    st.activeSlotId ? st.slots[st.activeSlotId]?.isOwner !== false : true,
+    answerSlotId ? st.slots[answerSlotId]?.isOwner !== false : true,
   );
   const canEditQuestion =
-    isChatOwner &&
+    (ext.allowEditQuery ?? isChatOwner) &&
     isLastMessage &&
     !questionPending &&
     (!rowHasCard || cardAnswered) &&
@@ -1009,8 +1026,9 @@ export const ChatResponse = React.memo(function ChatResponse({
       text: question,
       appliedFilters,
       attachments,
+      ...(scopedSlotId ? { slotId: scopedSlotId } : {}),
     });
-  }, [messageId, question, isStreaming, appliedFilters, attachments]);
+  }, [messageId, question, isStreaming, appliedFilters, attachments, scopedSlotId]);
 
   // While this row's question card waits for an answer, read aloud and copy the
   // question and its options. Once answered, the reply written after it is the content.
@@ -1020,41 +1038,13 @@ export const ChatResponse = React.memo(function ChatResponse({
 
   const appliedNodes = mentionedNodes(appliedFilters);
 
-  const shell = (
-    <Box style={{ width: '100%' }}>
-      <Box
-        style={{
-          marginBottom:
-            (collections && collections.length > 0) ||
-            hasAnyFilter(appliedFilters)
-              ? 'var(--space-3)'
-              : 'var(--space-4)',
-        }}
-      >
-        <ExpandableUserQuery
-          question={question}
-          isMobile={isMobile}
-          messageId={messageId}
-          isStreaming={isStreaming}
-          onEdit={canEditQuestion ? handleEditQuery : undefined}
-          mentions={appliedNodes}
-        />
-        {createdAt && (
-          <Text
-            size="1"
-            style={{
-              color: 'var(--slate-9)',
-              marginTop: 'var(--space-1)',
-              display: 'block',
-            }}
-          >
-            {formatMessageTime(createdAt)}
-          </Text>
-        )}
-      </Box>
-
+  // With the right column beside the chat, its Context tab lists the question's sources, so none sit under it.
+  const filterChips = !panelTakesTabs && hasAnyFilter(appliedFilters);
+  const chipsUnderQuestion = Boolean(appliedFilters && ext.showAppliedFilters !== false && filterChips) || Boolean(attachments?.length);
+  const filtersAndAttachments = (
+    <>
       {/* Applied filter chips — shown when connector/KB filters were scoped on this query */}
-      {appliedFilters && hasAnyFilter(appliedFilters) && (
+      {appliedFilters && ext.showAppliedFilters !== false && filterChips && (
         <Box style={{ marginBottom: 'var(--space-3)' }}>
           <AppliedFilters appliedFilters={appliedFilters} />
         </Box>
@@ -1074,8 +1064,16 @@ export const ChatResponse = React.memo(function ChatResponse({
         >
           {attachments.map((att) => {
             const isPastedText = isPastedTextAttachment(att);
-            const openAttachment = () =>
-              isPastedText ? setTextPreviewAttachment(att) : handleAttachmentPreview(att);
+            if (isPastedText) {
+              return (
+                <SentPasteChip
+                  key={att.virtualRecordId || att.recordId}
+                  kind="text"
+                  onOpen={() => setTextPreviewAttachment(att)}
+                />
+              );
+            }
+            const openAttachment = () => handleAttachmentPreview(att);
             return (
               <Flex
                 key={att.virtualRecordId || att.recordId}
@@ -1083,7 +1081,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                 gap="1"
                 role="button"
                 tabIndex={0}
-                title={isPastedText ? t('chat.attachments.pastedText', { defaultValue: 'Pasted text' }) : att.recordName}
+                title={att.recordName}
                 onClick={openAttachment}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
@@ -1095,46 +1093,36 @@ export const ChatResponse = React.memo(function ChatResponse({
                 style={{
                   flexShrink: 0,
                   padding: 'var(--space-1) var(--space-2)',
-                  backgroundColor: isPastedText ? 'var(--accent-a2)' : 'var(--olive-a2)',
-                  border: isPastedText ? '1px dashed var(--accent-a7)' : '1px solid var(--olive-3)',
+                  backgroundColor: 'var(--gray-a2)',
+                  border: '1px solid var(--border-subtle)',
                   borderRadius: 'var(--radius-1)',
                   maxWidth: '200px',
                   cursor: 'pointer',
                   transition: 'background-color 0.15s',
                 }}
                 onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLElement).style.backgroundColor = isPastedText
-                    ? 'var(--accent-a4)'
-                    : 'var(--olive-a4)';
+                  (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--gray-a4)';
                 }}
                 onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLElement).style.backgroundColor = isPastedText
-                    ? 'var(--accent-a2)'
-                    : 'var(--olive-a2)';
+                  (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--gray-a2)';
                 }}
               >
-                {isPastedText ? (
-                  <MaterialIcon name="content_paste" size={14} color="var(--accent-9)" />
-                ) : (
-                  <FileIcon
-                    extension={getMimeTypeExtension(att.mimeType) || att.extension || undefined}
-                    filename={att.recordName}
-                    size={14}
-                    fallbackIcon="insert_drive_file"
-                  />
-                )}
+                <FileIcon
+                  extension={getMimeTypeExtension(att.mimeType) || att.extension || undefined}
+                  filename={att.recordName}
+                  size={14}
+                  fallbackIcon="insert_drive_file"
+                />
                 <Text
                   size="1"
                   style={{
-                    color: 'var(--slate-11)',
+                    color: 'var(--text-secondary)',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {isPastedText
-                    ? t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })
-                    : att.recordName}
+                  {att.recordName}
                 </Text>
               </Flex>
             );
@@ -1142,12 +1130,122 @@ export const ChatResponse = React.memo(function ChatResponse({
         </Flex>
       )}
 
+    </>
+  );
+
+  const previewDialog = textPreviewAttachment ? (
+    <TextPreviewDialog
+      key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
+      open
+      onOpenChange={(open) => {
+        if (!open) setTextPreviewAttachment(null);
+      }}
+      title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
+      loadText={async () => {
+        const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
+        return blob.text();
+      }}
+    />
+  ) : null;
+
+  const renderActions = (opts?: { compact?: boolean }) => (
+    <MessageActions
+      compact={opts?.compact}
+      allowRegenerate={ext.allowRegenerate && canSend}
+      allowFeedback={ext.allowFeedback}
+      allowFork={ext.allowFork}
+      leadingActions={leadingActions}
+      content={speakContent}
+      citationMaps={effectiveCitationMaps}
+      modelInfo={modelInfo}
+      isStreaming={isStreaming}
+      messageId={messageId}
+      question={question}
+      isLastMessage={isLastMessage && !questionPending}
+      appliedFilters={appliedFilters}
+      feedbackInfo={feedbackInfo}
+      canRegenerate={!ranApprovedCall}
+      parts={effectiveParts}
+    />
+  );
+
+  const withRowKey = (node: React.ReactNode) =>
+    citationMessageRowKey ? (
+      <CitationMessageRowKeyContext.Provider value={citationMessageRowKey}>{node}</CitationMessageRowKeyContext.Provider>
+    ) : (
+      node
+    );
+
+  const parts: ChatResponseParts = {
+    activeTab,
+    setActiveTab,
+    sourcesCount,
+    citationCount,
+    askCardOwnsRow: askQuestionMatchesRow || Boolean(persistedAskUserQuestion),
+    renderTabContent,
+    renderActions,
+    filtersAndAttachments,
+    previewDialog,
+    withRowKey,
+    onEditQuery: handleEditQuery,
+    questionMentions: appliedNodes,
+  };
+  const customRow = ext.renderRow?.(parts);
+  if (customRow) return <>{customRow}</>;
+
+  const shell = (
+    <Box ref={shellRef} style={{ width: '100%' }}>
+      <Box
+        data-chat-question
+        style={{
+          // On a wide row what follows sets its own 16 px down, so with nothing between them this adds none.
+          // A headline is 24 px above what follows: the tabs, or the answer under its own 16 px.
+          marginBottom: wideRow && !chipsUnderQuestion
+            ? 0
+            : ext.headline
+            ? ext.hideTabs
+              ? 'var(--space-2)'
+              : 'var(--space-5)'
+            : (collections && collections.length > 0) || filterChips
+              ? 'var(--space-3)'
+              // The answer's own tabs follow, below 1024px in a chat: 24px down to them, as the design's narrow layout.
+              : panelScope?.column === false && !ext.hideTabs && !unanswered
+                ? 'var(--space-5)'
+                : 'var(--space-4)',
+        }}
+      >
+        <ExpandableUserQuery
+          question={question}
+          isMobile={isMobile}
+          messageId={messageId}
+          isStreaming={isStreaming}
+          onEdit={canEditQuestion ? handleEditQuery : undefined}
+          headline={ext.headline}
+          mentions={appliedNodes}
+        />
+        {/* Under the question, when it was sent; an extension may draw its own line instead (a room's byline has it). */}
+        {ext.questionMeta !== undefined ? (
+          ext.questionMeta
+        ) : createdAt ? (
+          <Text asChild size="1" style={{ color: 'var(--text-tertiary)', marginTop: 'var(--space-1)', display: 'block' }}>
+            <time data-testid="question-time" dateTime={createdAt}>
+              {formatQuestionTime(createdAt)}
+            </time>
+          </Text>
+        ) : null}
+      </Box>
+
+      {filtersAndAttachments}
+
+      {!unanswered && ext.beforeTabs}
+
       {/* Tabs */}
       {/* Tabs — hide Sources/Citations counts when the ask_user_question card
           (streaming or persisted) owns this row; those tabs reflect answer
           chunks that are suppressed. */}
-      {!unanswered && (
+      {!unanswered && !ext.hideTabs && !panelTakesTabs && (
         <ResponseTabs
+          spread={panelScope?.column === false}
           activeTab={activeTab}
           onTabChange={setActiveTab}
           sourcesCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : sourcesCount}
@@ -1156,49 +1254,17 @@ export const ChatResponse = React.memo(function ChatResponse({
       )}
 
       {/* Tab Content */}
-      {!unanswered && renderTabContent()}
+      {!unanswered && renderTabContent(wideRow && !ext.beforeTabs && (ext.hideTabs || panelTakesTabs) ? { leadTight: true } : undefined)}
+
+      {!unanswered && ext.afterContent?.(activeTab)}
 
       {/* Message Actions (feedback, copy, regenerate, model info) */}
-      {!unanswered && activeTab === 'answer' && (
-        <MessageActions
-          content={speakContent}
-          citationMaps={effectiveCitationMaps}
-          modelInfo={modelInfo}
-          isStreaming={isStreaming}
-          messageId={messageId}
-          question={question}
-          isLastMessage={isLastMessage && !questionPending}
-          appliedFilters={appliedFilters}
-          feedbackInfo={feedbackInfo}
-          canRegenerate={!ranApprovedCall}
-          parts={effectiveParts}
-        />
-      )}
+      {/* A stopped reply with no text has nothing to rate, copy or read aloud. */}
+      {!unanswered && activeTab === 'answer' && !(status === 'stopped' && !isStreaming && !visibleAnswer.trim()) && renderActions()}
 
-      {/* Pasted-text attachment preview — read-only (this message already sent) */}
-      {textPreviewAttachment && (
-        <TextPreviewDialog
-          key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
-          open
-          onOpenChange={(open) => {
-            if (!open) setTextPreviewAttachment(null);
-          }}
-          title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
-          loadText={async () => {
-            const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
-            return blob.text();
-          }}
-        />
-      )}
+      {previewDialog}
     </Box>
   );
 
-  if (citationMessageRowKey) {
-    return (
-      <CitationMessageRowKeyContext.Provider value={citationMessageRowKey}>
-        {shell}
-      </CitationMessageRowKeyContext.Provider>
-    );
-  }
-  return shell;
+  return <>{withRowKey(shell)}</>;
 });

@@ -59,33 +59,48 @@ export function isAskUserQuestionTool(toolName: string | undefined): boolean {
   return typeof toolName === 'string' && toolName.includes('ask_user_question');
 }
 
-/**
- * Splits a row's parts at its ask_user_question call so the timeline reads
- * work → question card → work done after the answer. `appendResumeParts` keeps the
- * first ask call and adds every resumed part after it, so the first ask is the boundary.
- * Null when the row has no ask call.
- */
-export function splitPartsAtQuestion(
-  parts: MessagePart[] | undefined,
-): { before: MessagePart[]; after: MessagePart[] } | null {
-  if (!parts) return null;
-  const askIndex = parts.findIndex((p) => p.type === 'tool_call' && isAskUserQuestionTool(p.toolName));
-  if (askIndex < 0) return null;
-  return { before: parts.slice(0, askIndex + 1), after: parts.slice(askIndex + 1) };
+/** The card an ask_user_question call put to the person and how it was answered, when its row draws it. */
+export function shownQuestionOf(part: MessagePart): MessagePart['question'] | null {
+  const question = part.type === 'tool_call' && isAskUserQuestionTool(part.toolName) ? part.question : undefined;
+  if (!question) return null;
+  return Object.keys(question.answers ?? {}).length > 0 || question.payload.repliedInChat ? question : null;
 }
 
 /**
- * A resumed reply's parts, added to the row it carries on.
- * - A call the row already has (the call an approval card stopped on, now settled) replaces it
- *   where it is, inside a sub-agent too, and keeps the card's details.
- * - Resume can re-emit the same ask_user_question call — the first one is kept.
+ * `parts` with `question` on the call that showed its card: the last completed ask_user_question call. A refused or
+ * failed call showed nothing, and a run stops on the card it shows, so the card a run asked is its last completed one.
+ */
+export function withQuestionOnAsk(parts: MessagePart[], question: NonNullable<MessagePart['question']>): MessagePart[] {
+  const asked = (q: NonNullable<MessagePart['question']>) => q.payload.questions.map((item) => item.question).join('\n');
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i];
+    if (part.type === 'tool_call' && isAskUserQuestionTool(part.toolName) && part.status === 'completed') {
+      // The last call already holds another card: this card's own call is not in these parts.
+      if (part.question && asked(part.question) !== asked(question)) return parts;
+      return parts.map((p, j) => (j === i ? { ...p, question } : p));
+    }
+  }
+  return parts;
+}
+
+/**
+ * Steps of runs that have ended, to be drawn under a run in progress: their narration is settled. Only the live run's
+ * last text can still turn out to be the answer, and the saved copy of a step never says it was settled.
+ */
+export function settledSteps(parts: MessagePart[]): MessagePart[] {
+  const unsettled = (p: MessagePart) => p.type === 'text' && !p.settled && !p.isFinal;
+  return parts.some(unsettled) ? parts.map((p) => (unsettled(p) ? { ...p, settled: true } : p)) : parts;
+}
+
+/**
+ * A resumed reply's parts, added to the row it carries on, in the order they ran.
+ * A call the row already has (the call an approval card stopped on, now settled, or an ask call sent again) replaces
+ * it where it is, inside a sub-agent too, and keeps the card's details and the answered question.
  */
 export function appendResumeParts(existing: MessagePart[], incoming: MessagePart[]): MessagePart[] {
-  const hasAsk = existing.some((p) => p.type === 'tool_call' && isAskUserQuestionTool(p.toolName));
   let merged = existing;
   const extra: MessagePart[] = [];
   for (const part of incoming) {
-    if (hasAsk && part.type === 'tool_call' && isAskUserQuestionTool(part.toolName)) continue;
     const replaced = part.type === 'tool_call' && part.toolCallId ? replaceToolCall(merged, part) : null;
     if (replaced) merged = replaced;
     else extra.push(part);
@@ -97,7 +112,11 @@ function replaceToolCall(parts: MessagePart[], next: MessagePart): MessagePart[]
   for (let i = 0; i < parts.length; i += 1) {
     const part = parts[i];
     if (part.type === 'tool_call' && part.toolCallId === next.toolCallId) {
-      const settled = part.approval && !next.approval ? { ...next, approval: part.approval } : next;
+      const settled = {
+        ...next,
+        ...(part.approval && !next.approval ? { approval: part.approval } : {}),
+        ...(part.question && !next.question ? { question: part.question } : {}),
+      };
       return parts.map((p, j) => (j === i ? settled : p));
     }
     if (part.type === 'sub_agent' && part.parts?.length) {

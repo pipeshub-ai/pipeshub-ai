@@ -7,6 +7,7 @@ const openToasts: Array<{ id: string; isExiting: boolean }> = [];
 vi.mock('@/lib/store/toast-store', () => ({
   toast: { error: (...args: unknown[]) => errorToast(...args) },
   useToastStore: { getState: () => ({ toasts: openToasts }) },
+  isToastActive: (id: string) => openToasts.some((t) => t.id === id && !t.isExiting),
 }));
 
 import { showErrorToast } from '../error-toast';
@@ -79,7 +80,7 @@ describe('the toast title', () => {
   it('asks for a retry when the server is busy', () => {
     showErrorToast(serverError({ statusCode: 503 }));
 
-    expect(errorToast.mock.calls[0][0]).toBe('Please try again shortly');
+    expect(errorToast.mock.calls[0][0]).toBe('The server is busy');
   });
 });
 
@@ -124,5 +125,32 @@ describe('an error toast that is already open', () => {
     showErrorToast(smtpFailure('ref-d'));
 
     expect(errorToast).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the toast lifetime and fallback sentence', () => {
+  it('closes on the error default instead of staying until dismissed', () => {
+    showErrorToast(serverError());
+
+    const [, options] = errorToast.mock.calls[0] as [string, { duration?: number | null }];
+    expect(options).not.toHaveProperty('duration');
+  });
+
+  it('says what to do next, from the locale, when the server sent nothing readable', () => {
+    showErrorToast(serverError({ message: '' }));
+
+    const [, options] = errorToast.mock.calls[0] as [string, { description: string }];
+    expect(options.description).toBe(
+      "The server couldn't finish this. Try again in a moment. If it keeps happening, contact your workspace admin.",
+    );
+    expect(options.description).not.toMatch(/please/i);
+  });
+
+  it('a busy server with nothing readable gets its own sentence, not the title again', () => {
+    showErrorToast(serverError({ statusCode: 503, message: '' }));
+
+    const [title, options] = errorToast.mock.calls[0] as [string, { description: string }];
+    expect(title).toBe('The server is busy');
+    expect(options.description).toBe('Wait a moment, then try again.');
   });
 });

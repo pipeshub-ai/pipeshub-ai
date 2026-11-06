@@ -95,31 +95,23 @@ describe('message actions on a shared agent chat (read-only for recipients)', ()
   });
 });
 
-describe('message actions footer names the search the answer used', () => {
+describe('message actions footer names only the model', () => {
   const renderWith = (parts?: { type: 'tool_call'; toolName: string }[]) =>
     render(
       <Theme>
         <MessageActions
           content="Answer"
           messageId="msg-3"
-          modelInfo={{ chatMode: 'agent' } as never}
+          modelInfo={{ chatMode: 'agent', modelName: 'gpt-test' } as never}
           parts={parts as never}
         />
       </Theme>,
     );
 
-  it('shows internal search when the answer searched the knowledge base', () => {
+  it('shows the model and no search or mode label', () => {
     renderWith([{ type: 'tool_call', toolName: 'retrieval.search_internal_knowledge' }]);
-    expect(screen.getByText('chat.answerMode.internalSearch')).toBeTruthy();
-  });
-
-  it('shows web search when the answer only searched the web', () => {
-    renderWith([{ type: 'tool_call', toolName: 'web_search' }]);
-    expect(screen.getByText('chat.answerMode.webSearch')).toBeTruthy();
-  });
-
-  it('keeps Agent when no search tool ran', () => {
-    renderWith([]);
-    expect(screen.getByText('Agent')).toBeTruthy();
+    expect(screen.getByText('gpt-test')).toBeTruthy();
+    expect(screen.queryByText('chat.answerMode.internalSearch')).toBeNull();
+    expect(screen.queryByText('Agent')).toBeNull();
   });
 });

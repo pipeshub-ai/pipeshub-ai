@@ -65,6 +65,8 @@ function toRow(r: Row): NotificationRow {
 
 /** The conditions every read and change shares; `$1` org, `$2` user, `$3` retention cutoff. */
 const LIVE = `n.org_id = $1 AND n.assigned_to = $2 AND NOT n.is_deleted AND n.created_at >= $3`;
+const live = (scope: NotificationScope): string =>
+  scope.hideChatNotices ? `${LIVE} AND n.type NOT LIKE 'chat.%'` : LIVE;
 
 export class PgNotificationRepository
   implements NotificationRepository, Importable
@@ -151,7 +153,7 @@ export class PgNotificationRepository
         extra += ` AND (n.created_at < ${at} OR (n.created_at = ${at} AND n.id < $${values.push(cursorId)}))`;
       }
       const { rows } = await k.query<Row>(
-        `/* pipeshub:platform.notification_list */ SELECT ${COLS} FROM platform.notifications n WHERE ${LIVE}${extra}
+        `/* pipeshub:platform.notification_list */ SELECT ${COLS} FROM platform.notifications n WHERE ${live(scope)}${extra}
            ORDER BY n.created_at DESC, n.id DESC LIMIT $${values.push(query.limit + 1)}`,
         values,
       );
@@ -173,7 +175,7 @@ export class PgNotificationRepository
       }>(
         `/* pipeshub:platform.notification_counts */ SELECT count(*) FILTER (WHERE n.status = 'unread') AS unread,
            count(*) FILTER (WHERE n.status = 'read') AS read, count(*) FILTER (WHERE n.status = 'archived') AS archived
-           FROM platform.notifications n WHERE ${LIVE}`,
+           FROM platform.notifications n WHERE ${live(scope)}`,
         [k.orgId, user, retentionCutoff()],
       );
       const c = rows[0];
@@ -192,7 +194,7 @@ export class PgNotificationRepository
       assertOrg(k, scope.orgId);
       const r = await k.query(
         `/* pipeshub:platform.notification_mark_all_read */ UPDATE platform.notifications n SET status = 'read', updated_at = $4
-           WHERE ${LIVE} AND n.status = 'unread'`,
+           WHERE ${live(scope)} AND n.status = 'unread'`,
         [k.orgId, user, retentionCutoff(), new Date()],
       );
       return r.rowCount ?? 0;
@@ -247,7 +249,7 @@ export class PgNotificationRepository
       ];
       const { rows } = await k.query<Row>(
         `/* pipeshub:platform.notification_change */ UPDATE platform.notifications n SET ${set}, updated_at = date_trunc('milliseconds', now())
-           WHERE ${LIVE} AND n.id = $4 AND ${guard} RETURNING ${COLS}`,
+           WHERE ${live(scope)} AND n.id = $4 AND ${guard} RETURNING ${COLS}`,
         values,
       );
       return rows[0] ? toRow(rows[0]) : null;

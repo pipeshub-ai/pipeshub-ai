@@ -130,6 +130,15 @@ const bulkInviteBody = z.object({
   role: z.enum(['admin', 'member']).optional(),
 });
 
+const bulkInviteCheckValidationSchema = z.object({
+  body: z.object({
+    emails: z.array(z.string().max(320)).max(1000),
+  }),
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
+});
+
 const bulkInviteValidationSchema = z.object({
   body: bulkInviteBody,
   query: z.object({}),
@@ -221,9 +230,13 @@ const getAllUsersQueryParams = z.object({
   limit: z
     .string()
     .optional()
-    .refine((val) => val === undefined || (/^\d+$/.test(val) && parseInt(val, 10) <= 100), {
-      message: 'limit must be a positive integer no greater than 100',
-    }),
+    .refine(
+      (val) =>
+        val === undefined || (/^\d+$/.test(val) && parseInt(val, 10) <= 100),
+      {
+        message: 'limit must be a positive integer no greater than 100',
+      },
+    ),
   search: z.string().optional(),
   hasLoggedIn: z.enum(['true', 'false']).optional(),
   isBlocked: z.enum(['true', 'false']).optional(),
@@ -246,7 +259,10 @@ const getAllUsersQueryParams = z.object({
           .split(',')
           .filter(Boolean)
           .every((id) => /^[a-fA-F0-9]{24}$/.test(id)),
-      { message: 'groupIds must be a comma-separated list of valid MongoDB ObjectIds' },
+      {
+        message:
+          'groupIds must be a comma-separated list of valid MongoDB ObjectIds',
+      },
     ),
 });
 
@@ -267,9 +283,13 @@ const listUsersGraphQueryParams = z.object({
   limit: z
     .string()
     .optional()
-    .refine((val) => val === undefined || (/^\d+$/.test(val) && parseInt(val, 10) <= 100), {
-      message: 'limit must be a positive integer no greater than 100',
-    }),
+    .refine(
+      (val) =>
+        val === undefined || (/^\d+$/.test(val) && parseInt(val, 10) <= 100),
+      {
+        message: 'limit must be a positive integer no greater than 100',
+      },
+    ),
   search: z.string().optional(),
   // The same opt-in as `GET /users`, and the connector service applies the same
   // rule: honoured for an administrator, ignored for anyone else.
@@ -841,6 +861,27 @@ export function createUserRouter(container: Container) {
       try {
         const userController = container.get<UserController>('UserController');
         await userController.addManyUsers(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/bulk/invite/check',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- AuthMiddleware binds authenticate in its constructor
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_INVITE),
+    accountTypeCheck,
+    ValidationMiddleware.validate(bulkInviteCheckValidationSchema),
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.checkInviteStatus(req, res, next);
       } catch (error) {
         next(error);
       }

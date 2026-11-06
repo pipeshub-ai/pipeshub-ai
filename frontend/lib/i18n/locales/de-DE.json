@@ -20,8 +20,24 @@
     "createPageDescription": "Dies ist die Seite zum Erstellen eines Agents. Binden Sie hier Ihr Formular ein oder leiten Sie zu Ihrem Agent-Builder weiter.",
     "pageTitle": "Agenten",
     "comingSoon": "Demnächst verfügbar",
-    "missingAgentKey": "Agentenschlüssel fehlt. Öffnen Sie einen Agenten über die Chat-Seitenleiste oder verwenden Sie einen gültigen Link.",
-    "loading": "Wird geladen…"
+    "missingAgentKey": "Agentenschlüssel fehlt. Öffnen Sie einen Agenten über die Seite „Agenten“ oder verwenden Sie einen gültigen Link.",
+    "loading": "Wird geladen…",
+    "index": {
+      "columnAgent": "Agent",
+      "columnOwner": "Eigentümer",
+      "rowActions": "Aktionen für {{name}}",
+      "loading": "Agenten werden geladen…",
+      "loadFailedTitle": "Agenten konnten nicht geladen werden",
+      "loadFailedDescription": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+      "emptyTitle": "Noch keine Agenten",
+      "emptyDescription": "Agenten, die Sie erstellen oder verwenden können, erscheinen hier.",
+      "emptyDescriptionCanCreate": "Agenten, die Sie erstellen oder verwenden können, erscheinen hier. Um einen zu erstellen, wählen Sie Neuer Agent.",
+      "searchPlaceholder": "Agenten suchen…",
+      "searchLabel": "Agenten suchen",
+      "closeSearch": "Suche schließen",
+      "noSearchMatchesTitle": "Keine Agenten entsprechen Ihrer Suche",
+      "noSearchMatchesDescription": "Versuchen Sie eine andere Suche."
+    }
   },
   "projects": {
     "pageTitle": "Projekte",
@@ -44,7 +60,8 @@
     "noSearchResults": "Keine Projekte passen zu „{{query}}“",
     "noSearchResultsHint": "Versuchen Sie einen anderen Namen oder leeren Sie die Suche.",
     "clearSearch": "Suche leeren",
-    "cardActionsLabel": "Aktionen für {{name}}"
+    "cardActionsLabel": "Aktionen für {{name}}",
+    "loadingList": "Projekte werden geladen…"
   },
   "timeGroup": {
     "today": "Heute",
@@ -61,7 +78,9 @@
     "copiedCode": "Kopiert",
     "remoteImageBlocked": "Externes Bild nicht geladen",
     "remoteImageFrom": "von {{host}}",
-    "remoteImageLoad": "Bild laden"
+    "remoteImageLoad": "Bild laden",
+    "usingTool": "Verwendet ein Tool…",
+    "delegatingTo": "Übergibt an {{name}}…"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload fehlgeschlagen",
@@ -98,6 +117,7 @@
       "sizeLimitDescription": "Limit {{maxMb}} MB pro Datei. Wenden Sie sich an Ihren Administrator, um ein höheres Limit anzufragen.",
       "sizeLimitDescriptionAdmin": "Limit {{maxMb}} MB pro Datei. Sie können es unter „Arbeitsbereich → Labs“ erhöhen.",
       "unsupportedDescription": "Nicht unterstützter Dateityp.",
+      "emptyDescription": "Diese Datei ist leer. Fügen Sie Inhalt hinzu und laden Sie sie erneut hoch.",
       "duplicateDescription": "Eine Datei mit diesem Namen existiert hier bereits.",
       "trackerHint": "Details im Upload-Panel unten.",
       "openLabs": "Labs öffnen"
@@ -107,6 +127,8 @@
       "tooLarge_other": "{{count}} über {{maxMb}} MB",
       "unsupported_one": "{{count}} nicht unterstützter Typ",
       "unsupported_other": "{{count}} nicht unterstützte Typen",
+      "empty_one": "{{count}} leere Datei",
+      "empty_other": "{{count}} leere Dateien",
       "duplicate_one": "{{count}} doppelter Name",
       "duplicate_other": "{{count}} doppelte Namen",
       "other_one": "{{count}} anderer Fehler",
@@ -245,6 +267,12 @@
     "searchChats": "Chats suchen",
     "inbox": "Posteingang",
     "notifications": "Benachrichtigungen",
+    "searchChatsPlaceholder": "Chats suchen…",
+    "searchChatsFailed": "Ihre Chats konnten nicht durchsucht werden. Versuchen Sie es erneut.",
+    "loadChatsFailed": "Ihre Chats konnten nicht geladen werden. Versuchen Sie es erneut.",
+    "loadingChats": "Chats werden geladen…",
+    "inboxUnread": "Posteingang, {{count}} ungelesen",
+    "inboxTooltip": "Posteingang: was passiert ist und was Ihre Aufmerksamkeit braucht",
     "home": "Startseite"
   },
   "artifacts": {
@@ -327,7 +355,11 @@
     },
     "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
     "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
-    "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
+    "removeFailed": "Benachrichtigung konnte nicht entfernt werden",
+    "loadingList": "Benachrichtigungen werden geladen…",
+    "emptyBody": "Freigaben, Erwähnungen und Änderungen an Ihren Chats erscheinen hier.",
+    "showMore": "Mehr anzeigen",
+    "showLess": "Weniger anzeigen"
   },
   "action": {
     "find": "Finden",
@@ -590,7 +622,11 @@
     "expand": "Seitenleiste ausklappen",
     "close": "Seitenleiste schließen",
     "collapse": "Seitenleiste einklappen",
-    "navigation": "Navigation"
+    "navigation": "Navigation",
+    "hide": "Seitenleiste ausblenden",
+    "show": "Seitenleiste einblenden",
+    "hideWithShortcut": "Seitenleiste ausblenden ({{shortcut}})",
+    "showWithShortcut": "Seitenleiste einblenden ({{shortcut}})"
   },
   "menu": {
     "reindex": "Neu indizieren",
@@ -744,6 +780,8 @@
     "heyUser": "Hallo {{name}} 👋",
     "heyUserDefaultName": "und willkommen",
     "askAnything": "Fragen Sie etwas...",
+    "askOrSearchWorkspace": "Fragen oder suchen Sie alles in {{workspace}}...",
+    "askAboutPaste": "Fragen Sie zum eingefügten Inhalt...",
     "quick": "Schnell",
     "listening": "Zuhören...",
     "voiceInputNotSupported": "Spracheingabe wird in diesem Browser nicht unterstützt",
@@ -762,6 +800,7 @@
       "searchCollections": "Sammlungen suchen",
       "searchActions": "Aktionen suchen",
       "actionsTab": "Aktionen",
+      "filterTabsLabel": "Was angezeigt wird",
       "noConnectors": "Für diesen Agenten sind keine Konnektoren konfiguriert.",
       "noCollections": "Für diesen Agenten sind keine Sammlungen konfiguriert.",
       "noCollectionMatches": "Keine Sammlungen entsprechen Ihrer Suche.",
@@ -793,6 +832,12 @@
       "resetDefaults": "Auf Projektstandard zurücksetzen"
     },
     "aiModelsTooltip": "KI-Modelle",
+    "modelChip": {
+      "ariaLabel": "Modell: {{name}}, Denkaufwand {{effort}}. Konfigurierte Modelle öffnen.",
+      "ariaLabelNoEffort": "Modell: {{name}}. Konfigurierte Modelle öffnen.",
+      "tooltip": "{{name}} · von {{provider}} · Aufwand {{effort}}",
+      "tooltipNoEffort": "{{name}} · von {{provider}}"
+    },
     "attachmentTooltip": "Dateien anhängen",
     "micTooltip": "Spracheingabe",
     "uploadYourFile": "Datei hochladen",
@@ -809,6 +854,7 @@
     "yourChats": "Ihre Chats",
     "noChatsFound": "Keine Chats gefunden",
     "noChatsYet": "Noch keine Chats",
+    "yourChatsEmpty": "Hier werden Ihre Chats angezeigt",
     "searchCollections": "Konnektoren und Sammlungen suchen",
     "loadingCollections": "Sammlungen werden geladen…",
     "failedToLoadCollections": "Sammlungen konnten nicht geladen werden",
@@ -839,8 +885,8 @@
     "feedbackCategoryUnclearExplanation": "Unklare Erklärung",
     "feedbackCategoryPoorCitations": "Schlechte Quellenangaben",
     "feedbackCategoryOther": "Sonstiges...",
-    "like": "Hilfreich",
-    "dislike": "Nicht hilfreich",
+    "like": "Gefällt mir",
+    "dislike": "Gefällt mir nicht",
     "copy": "Kopieren",
     "fork": "Chat abzweigen",
     "forkFromHere": "Ab hier abzweigen",
@@ -854,6 +900,7 @@
     "citations": "Zitate",
     "showMoreCitations_one": "{{count}} weiteres Zitat anzeigen",
     "showMoreCitations_other": "{{count}} weitere Zitate anzeigen",
+    "editNotSaved": "Ihre Änderung wurde nicht gespeichert. Versuchen Sie es erneut.",
     "markdownWithCitations": "Markdown mit Zitaten",
     "onlyTextWithoutCitations": "Nur Text ohne Zitate",
     "differentModesOfQuery": "Verschiedene Abfragemodi",
@@ -862,14 +909,10 @@
     "generatingTitle": "Chat wird generiert…",
     "newChat": "Neuer Chat",
     "startChat": "Chat starten",
-    "searchAgents": "Agenten suchen…",
-    "noAgentsFound": "Keine Agenten gefunden",
-    "failedToLoadAgents": "Agenten konnten nicht geladen werden",
-    "backToChatHome": "Alle Chats",
+    "backToAgents": "Alle Agenten",
     "agentSidebarLabel": "Agent",
     "agentNameLoading": "Wird geladen…",
     "sharedAgentChat": "Geteilter Agent-Chat",
-    "myAgents": "Meine Agenten",
     "moreAgents": "Weitere Agenten",
     "agentHeaderMenuAria": "Agentenoptionen",
     "agentMenuNewChat": "Neuer Chat",
@@ -973,7 +1016,7 @@
         "auto": {
           "label": "Auto",
           "short": "Auto",
-          "hint": "Das System wählt pro Schritt den besten Ansatz—ausgewogen zwischen Tempo und Gründlichkeit."
+          "hint": "Das System wählt pro Schritt den besten Ansatz, ausgewogen zwischen Tempo und Gründlichkeit."
         },
         "quick": {
           "label": "Schnell",
@@ -988,7 +1031,7 @@
         "deep": {
           "label": "Tief",
           "short": "Tief",
-          "hint": "Gründlichere Bearbeitung mit längerer Argumentation—wenn Genauigkeit am wichtigsten ist."
+          "hint": "Gründlichere Bearbeitung mit längerer Argumentation, wenn Genauigkeit am wichtigsten ist."
         }
       }
     },
@@ -1070,7 +1113,6 @@
         "Welche Lektionen wurden bisher gelernt"
       ]
     ],
-    "agentListRowMenuAria": "Agent-Optionen",
     "archive": "Archivieren",
     "archiveChatConfirm": "Sind Sie sicher?",
     "archiveChatDescription": "Der Chat mit dem Titel",
@@ -1086,7 +1128,11 @@
     "deleteChat": "Löschen",
     "pin": "Anheften",
     "unpin": "Lösen",
-    "pinned": "Angepinnt",
+    "pinned": "Angepinnte Chats",
+    "pinnedChatsEmpty": "Hier werden Chats angezeigt, die Sie anheften",
+    "pinnedRowSuffix": ", angepinnt",
+    "sidebarRunning": "Wird im Hintergrund verarbeitet",
+    "sidebarRunningOpen": "Wird verarbeitet",
     "pinFailed": "Der Chat konnte nicht angeheftet werden",
     "unpinFailed": "Der Chat konnte nicht gelöst werden",
     "export": {
@@ -1302,6 +1348,7 @@
     },
     "scrollAttachmentsLeft": "Anhänge nach links scrollen",
     "scrollAttachmentsRight": "Anhänge nach rechts scrollen",
+    "attachmentsGroup": "Anhänge",
     "toolValidation": {
       "tooManyTools": "Zu viele Tools ausgewählt. Aus Leistungsgründen sind höchstens 1024 Tools pro Anfrage zulässig.",
       "multipleInstances": "Mehrere Instanzen desselben Aktionstyps ({{types}}) können nicht gemeinsam verwendet werden. Öffnen Sie das Aktionen-Panel und wählen Sie pro Typ nur eine Instanz aus."
@@ -1313,7 +1360,7 @@
       "unsupportedType": "Nicht unterstützter Dateityp: {{names}}. Unterstützte Typen: {{types}}.",
       "fileTooLarge": "Datei zu groß: {{names}}. Die maximale Größe beträgt {{maxMb}} MB pro Datei.",
       "tooManyFiles": "Höchstens {{max}} Anhänge pro Nachricht.",
-      "pasteTruncated": "\n\n[Inhalt gekürzt — der eingefügte Text überschreitet die maximale Anhangsgröße.]",
+      "pasteTruncated": "\n\n[Inhalt gekürzt: der eingefügte Text überschreitet die maximale Anhangsgröße.]",
       "uploading": "Wird hochgeladen…",
       "retry": "Upload erneut versuchen",
       "pastedText": "Eingefügter Text",
@@ -1321,11 +1368,14 @@
       "removePastedText": "Eingefügten Text entfernen",
       "showInTextField": "Im Textfeld anzeigen",
       "previewLoadFailed": "Inhalt konnte nicht geladen werden",
-      "copyText": "Kopieren",
+      "copyText": "In die Zwischenablage kopieren",
+      "copied": "Kopiert",
+      "copyFailed": "Text konnte nicht kopiert werden",
       "closePreview": "Schließen",
       "loadingPreview": "Wird geladen…",
-      "pasteMeta_one": "{{chars}} Zeichen · {{count}} Zeile",
-      "pasteMeta_other": "{{chars}} Zeichen · {{count}} Zeilen"
+      "pasteMeta_one": "{{count}} Zeile · {{chars}} Zeichen",
+      "pasteMeta_other": "{{count}} Zeilen · {{chars}} Zeichen",
+      "pasteChipLabel": "{{label}}, {{meta}}. Zum Lesen öffnen."
     },
     "voiceSttNotConfigured": "Konfigurieren Sie in den KI-Modelleinstellungen ein Speech-to-Text-Modell (STT), um die Spracheingabe zu aktivieren.",
     "voiceSttLoading": "Sprachfunktionen werden geprüft…",
@@ -1348,6 +1398,20 @@
     "models": "Modelle",
     "manage": "Verwalten",
     "configuredModels": "Konfigurierte Modelle",
+    "seeMoreModels": "Weitere Modelle ansehen",
+    "loadingModels": "Modelle werden geladen…",
+    "loadingSources": "Quellen werden geladen…",
+    "modelProviderBy": "von {{provider}}",
+    "modelTags": {
+      "default": "Standard",
+      "reasoning": "Reasoning",
+      "multimodal": "Multimodal"
+    },
+    "noConnectorsYet": "Noch keine Konnektoren. Apps, die Sie unter Konnektoren verbinden, erscheinen hier.",
+    "expandPanel": "Bereich erweitern",
+    "collapsePanel": "Bereich verkleinern",
+    "cancelEditQuery": "Bearbeitung abbrechen",
+    "cancelRegenerate": "Neugenerierung abbrechen",
     "reasoningEffort": {
       "label": "Reasoning-Aufwand",
       "overrideHint": "Klicken Sie erneut, um den Standardwert zu verwenden.",
@@ -1357,7 +1421,11 @@
       "low": "Niedrig",
       "medium": "Mittel",
       "high": "Hoch",
-      "max": "Maximal"
+      "max": "Maximal",
+      "effortLabel": "Aufwand",
+      "faster": "Schneller",
+      "smarter": "Gründlicher",
+      "noLadder": "Dieses Modell antwortet in einem Durchgang, ohne Aufwandseinstellung."
     },
     "universalAgent": {
       "toolsLoadError": "Verfügbare Aktionen konnten nicht geladen werden.",
@@ -1436,7 +1504,8 @@
       "notice": {
         "expired": "{{tool}} auf {{server}} wurde nicht ausgeführt: Die Anfrage ist abgelaufen. Fragen Sie erneut, falls es noch nötig ist.",
         "passed": "{{tool}} auf {{server}} wurde nicht freigegeben und daher nicht ausgeführt.",
-        "waiting": "{{tool}} auf {{server}} wartet auf die Freigabe durch den Besitzer der Unterhaltung."
+        "waiting": "{{tool}} auf {{server}} wartet auf die Freigabe durch den Besitzer der Unterhaltung.",
+        "waitingFor": "{{tool}} auf {{server}} wartet auf die Freigabe durch {{name}}."
       },
       "receipt": {
         "allowed": "Sie haben {{tool}} zugelassen",
@@ -1473,7 +1542,10 @@
       "preview": "Artefakt-Vorschau",
       "loadingPreview": "Vorschau wird geladen",
       "download": "Artefakt herunterladen",
-      "downloading": "Artefakt wird heruntergeladen"
+      "downloading": "Artefakt wird heruntergeladen",
+      "previewButton": "Vorschau",
+      "previewFile": "Vorschau von {{name}}",
+      "downloadFile": "{{name}} herunterladen"
     },
     "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
     "noResultsFor": "Keine Ergebnisse für „{{query}}“",
@@ -1490,6 +1562,138 @@
       "webSearch": "Websuche",
       "internalAndWebSearch": "Interne + Websuche"
     },
+    "stoppedBeforeAnswer": "Gestoppt, bevor eine Antwort begann",
+    "connectTools": {
+      "blockedTitle": "Verbinden Sie diese Tools, um diesen Agenten zu nutzen",
+      "serviceAccountTitle": "Die Tools dieses Agenten sind nicht verbunden",
+      "noticeTitle": "Diese Antwort konnte einige Tools nicht nutzen",
+      "chip": "Einige Tools sind nicht verbunden",
+      "chipAction": "Verbinden",
+      "kindAction": "Aktion",
+      "showMore": "{{count}} weitere anzeigen",
+      "askAdmin": "Bitten Sie einen Admin, es zu verbinden",
+      "serviceAccount": "Dieser Agent nutzt eigene Verbindungen. Bitten Sie einen Admin, {{tools}} im Agent Builder zu verbinden.",
+      "toolsetUnavailable": "Die Anmeldung konnte hier nicht gestartet werden. Verbinden Sie es unter Workspace → Aktionen.",
+      "connectedAskAgain": "Verbunden. Fragen Sie erneut, um es zu nutzen.",
+      "couldNotUse": "{{agent}} konnte {{tools}} nicht nutzen",
+      "defaultAgent": "Der Agent"
+    },
+    "atMenu": {
+      "label": "Vorschläge für Erwähnungen",
+      "sources": "Quellen",
+      "browseSources": "Alle Quellen durchsuchen",
+      "allSources": "Alle Quellen",
+      "showMore": "Mehr anzeigen",
+      "nMore": "{{count}} weitere",
+      "noMatches": "Keine Treffer",
+      "keysHint": "↑ ↓ zum Wechseln · Eingabe zum Auswählen · → öffnet eine Quelle · Esc zum Schließen",
+      "keysHintTick": "↑ ↓ zum Wechseln · Eingabe zum Auswählen · Alt+Eingabe zum Ankreuzen · → öffnet eine Quelle · Esc zum Schließen",
+      "tooManySources": "Eine Nachricht kann bis zu {{max}} Quellen nennen. Entfernen Sie einige und senden Sie erneut."
+    },
+    "answerFailedTitle": "Diese Antwort ist fehlgeschlagen",
+    "answerFailedRetry": "Erneut versuchen",
+    "cannotOpenSource": "Sie können dieses Dokument nicht öffnen. Es wurde möglicherweise entfernt, oder Sie haben keinen Zugriff darauf.",
+    "queue": {
+      "title": "In der Warteschlange · {{count}}",
+      "hint": "Jede wird gesendet, sobald die Antwort davor fertig ist.",
+      "clearAll": "Alle entfernen",
+      "listLabel": "Nachrichten in der Warteschlange",
+      "edit": "Bearbeiten",
+      "editBusy": "Senden oder löschen Sie die Nachricht, die Sie gerade schreiben, um diese zu bearbeiten",
+      "remove": "Aus der Warteschlange entfernen",
+      "retry": "Erneut versuchen",
+      "heldAfterRefusal": "Nicht gesendet: Die Nachricht davor konnte nicht beantwortet werden.",
+      "files_one": "{{count}} Datei",
+      "files_other": "{{count}} Dateien",
+      "full": "Sie können bis zu {{count}} Nachrichten in die Warteschlange stellen. Warten Sie, bis eine gesendet ist, oder entfernen Sie eine.",
+      "collapse": "Warteschlange einklappen",
+      "expand": "Warteschlange ausklappen"
+    },
+    "rowActions": "Aktionen für {{title}}",
+    "archivedDescription": "{{title}} finden Sie unter Arbeitsbereich-Einstellungen, in Archivierte Chats.",
+    "undo": "Rückgängig",
+    "renameFailedTitle": "Chat konnte nicht umbenannt werden",
+    "renameFailedDescription": "Er behält seinen alten Namen. Versuchen Sie es erneut.",
+    "renameFieldLabel": "Neuer Name",
+    "expandSection": "Abschnitt ausklappen",
+    "collapseSection": "Abschnitt einklappen",
+    "addToSection": "Zu {{section}} hinzufügen",
+    "agentNotFound": {
+      "title": "Dieser Agent existiert nicht oder Sie haben keinen Zugriff mehr",
+      "description": "Prüfen Sie den Link oder fragen Sie die Person, die ihn geteilt hat.",
+      "back": "Zurück zu den Chats"
+    },
+    "latestMessages": "Neueste Nachrichten",
+    "questionRail": "Fragen in diesem Chat",
+    "sendFeedback": "Feedback senden",
+    "question": {
+      "copied": "Kopiert",
+      "edit": "Bearbeiten",
+      "pastedCode": "Eingefügter Code"
+    },
+    "confidenceLevel": "Konfidenzniveau",
+    "runError": {
+      "stoppedTitle": "Sie haben diese Antwort gestoppt",
+      "stoppedBody": "Die abgeschlossenen Schritte stehen weiterhin im Verlauf oben.",
+      "stoppedBodyPartial": "Was vor dem Stoppen geschrieben wurde, bleibt oben erhalten."
+    },
+    "answerPanel": {
+      "label": "Zu dieser Antwort",
+      "opener": "Kontext",
+      "openerHint": "Kontext: Quellen, Zitate und Ergebnisse",
+      "close": "Kontext schließen",
+      "resize": "Bereichsgröße ändern",
+      "sources": "Quellen",
+      "citations": "Zitate",
+      "context": "Kontext",
+      "outputs": "Ergebnisse",
+      "pending": "Wird ergänzt, sobald die Antwort da ist.",
+      "noOutputsTitle": "Noch nichts erstellt",
+      "noOutputsBody": "Bitten Sie um ein Dokument, eine Tabelle oder eine Zusammenfassung, und die erstellten Dateien werden hier aufbewahrt.",
+      "anythingYouCanOpen": "Konnte alles nutzen, was Sie öffnen können",
+      "sourcesLabel": "Quellen: {{names}}",
+      "sourcesEmptyTitle": "Noch nichts gelesen",
+      "sourcesEmptyBody": "Stellen Sie eine Frage, für die Ihre verbundenen Apps nötig sind, und die Dokumente hinter der Antwort sammeln sich hier.",
+      "citationsEmptyTitle": "Noch nichts zitiert",
+      "citationsEmptyBody": "Jede Aussage in einer Antwort ist mit der Passage verknüpft, aus der sie stammt. Diese Verknüpfungen landen hier.",
+      "contextCollections": "Sammlungen",
+      "contextConnectors": "Konnektoren",
+      "contextFiles": "Dateien",
+      "contextFolderInCollection": "Ordner in einer Sammlung",
+      "contextEmptyTitle": "Noch nichts angehängt",
+      "contextEmptyBody": "Sammlungen, verbundene Apps und Dateien, auf die Sie diesen Chat richten, werden hier aufgeführt.",
+      "anythingTheyCanOpen": "Konnte alles nutzen, was {{name}} öffnen kann",
+      "anythingOwnerCanOpen": "Konnte alles nutzen, was der Eigentümer des Chats öffnen kann"
+    },
+    "trail": {
+      "reasoning": "Denkt nach",
+      "subAgent": "Unteragent",
+      "usedSkills_one": "{{count}} Skill verwendet",
+      "usedSkills_other": "{{count}} Skills verwendet",
+      "exploredSearches_one": "{{count}} Suche durchgeführt",
+      "exploredSearches_other": "{{count}} Suchen durchgeführt",
+      "ranTools_one": "{{count}} Tool ausgeführt",
+      "ranTools_other": "{{count}} Tools ausgeführt",
+      "thoughtFor": "{{duration}} nachgedacht",
+      "thoughtThrough_one": "{{count}} Schritt durchdacht",
+      "thoughtThrough_other": "{{count}} Schritte durchdacht",
+      "steps_one": "{{count}} Schritt",
+      "steps_other": "{{count}} Schritte",
+      "stoppedAfter": "Nach {{duration}} gestoppt",
+      "stopped": "Gestoppt",
+      "done": "Fertig",
+      "showAllSteps": "Alle Schritte anzeigen",
+      "showFewer": "Weniger anzeigen",
+      "durationSeconds": "{{value}} s",
+      "durationMinutes": "{{minutes}} Min. {{seconds}} s"
+    },
+    "citationPill": {
+      "number": "Quelle {{number}}: {{name}}"
+    },
+    "citationPopover": {
+      "page": "Seite {{page}}",
+      "paragraph": "Absatz {{paragraph}}"
+    },
     "searchDegraded": "Die Ergebnisse sind möglicherweise unvollständig."
   },
   "workspaceMenu": {
@@ -1503,7 +1707,9 @@
     "documentation": "Dokumentation",
     "darkMode": "Dunkelmodus",
     "lightMode": "Hellmodus",
-    "organisations": "Organisationen"
+    "organisations": "Organisationen",
+    "triggerLabel": "Arbeitsbereichs- und Kontomenü von {{name}}",
+    "triggerLabelNoName": "Arbeitsbereichs- und Kontomenü"
   },
   "workspace": {
     "users": {
@@ -1566,7 +1772,12 @@
         "demoteAdminBeforeRemove": "Ändern Sie zunächst die Rolle des Administrators zu „Mitglied“ und entfernen Sie ihn anschließend.",
         "resendInviteSuccess": "Einladung erneut gesendet",
         "resendInviteSuccessDescription": "Die Einladung wurde erneut an {{email}} gesendet",
-        "resendInviteError": "Einladung konnte nicht erneut gesendet werden"
+        "resendInviteError": "Einladung konnte nicht erneut gesendet werden",
+        "changeRoleUndo": "Rückgängig",
+        "changeRoleRestored": "Rolle wiederhergestellt",
+        "changeRoleRestoredDescription": "{{name}} ist wieder {{role}}",
+        "changeRoleUndoError": "Rolle konnte nicht wiederhergestellt werden",
+        "changeRoleUndoErrorDescription": "{{name}} ist weiterhin {{role}}. Ändern Sie die Rolle erneut, um sie zurückzusetzen."
       },
       "profile": {
         "title": "Profil",
@@ -1644,7 +1855,10 @@
         "importTooLongSkipped_one": "{{count}} Eintrag mit mehr als 254 Zeichen wurde ausgelassen.",
         "importTooLongSkipped_other": "{{count}} Einträge mit mehr als 254 Zeichen wurden ausgelassen.",
         "invalidBlocksSend_one": "{{count}} ungültige Adresse ist rot markiert. Korrigieren oder entfernen Sie sie, um Einladungen zu senden.",
-        "invalidBlocksSend_other": "{{count}} ungültige Adressen sind rot markiert. Korrigieren oder entfernen Sie sie, um Einladungen zu senden."
+        "invalidBlocksSend_other": "{{count}} ungültige Adressen sind rot markiert. Korrigieren oder entfernen Sie sie, um Einladungen zu senden.",
+        "warnMember": "{{email}} ist bereits Mitglied, daher wird an diese Adresse keine Einladung gesendet.",
+        "warnInvited": "{{email}} wurde bereits eingeladen. Beim erneuten Senden wird die Einladung noch einmal verschickt.",
+        "warnMany": "Einige Adressen sind bereits Mitglieder oder wurden schon eingeladen. Mitglieder werden übersprungen, ausstehende Einladungen erneut gesendet."
       },
       "bulk": {
         "resendInvite": "Einladung erneut senden",
@@ -2231,7 +2445,12 @@
     "common": {
       "loadingUsers": "Benutzer werden geladen...",
       "noUsersAvailable": "Keine Benutzer verfügbar",
-      "selected": "{{count}} Ausgewählt"
+      "selected": "{{count}} Ausgewählt",
+      "validation": {
+        "nameRequired": "Geben Sie einen Namen ein.",
+        "nameTooLong": "Der Name darf höchstens {{max}} Zeichen lang sein.",
+        "descriptionTooLong": "Die Beschreibung darf höchstens {{max}} Zeichen lang sein."
+      }
     },
     "filters": {
       "role": "Rolle",
@@ -5117,7 +5336,8 @@
       "section": "API-Aktionen",
       "connectTooltip": "Unter Aktionen verbinden",
       "serviceAccountBlocked": "Service-Agenten können nur API-Aktionen mit gemeinsamen Zugangsdaten oder ohne Anmeldung verwenden."
-    }
+    },
+    "nameTooLong": "Der Name darf höchstens {{max}} Zeichen lang sein."
   },
   "recordView": {
     "sections": {
@@ -5440,17 +5660,16 @@
     }
   },
   "askUserQuestion": {
-    "questionsHeadingSingular": "Frage :",
-    "questionsHeadingPlural": "Fragen :",
+    "questionsHeadingSingular": "Frage",
+    "questionsHeadingPlural": "Fragen",
     "answered": "Beantwortet",
     "showLess": "Weniger anzeigen",
     "showMore": "Mehr anzeigen",
     "noPreference": "[Keine Präferenz]",
+    "skipped": "Übersprungen",
     "somethingElse": "Etwas anderes",
-    "questionAskedSingular": "Gestellte Frage:",
-    "questionAskedPlural": "Gestellte Fragen:",
-    "quickQuestionSingular": "Kurze Frage :",
-    "quickQuestionPlural": "Kurze Fragen :",
+    "quickQuestionSingular": "Kurze Frage",
+    "quickQuestionPlural": "Kurze Fragen",
     "stepOf": "Schritt {{step}} von {{total}}",
     "selectedCount": "{{count}} ausgewählt",
     "describeYourAnswer": "Beschreiben Sie Ihre Antwort…",
@@ -5463,7 +5682,10 @@
     "selectMany": "Alle zutreffenden auswählen",
     "skipAll": "Alle überspringen",
     "expired": "Diese Frage ist abgelaufen. Antworten Sie im Chat, um fortzufahren.",
-    "repliedInChat": "Sie haben im Chat geantwortet."
+    "repliedInChat": "Sie haben im Chat geantwortet.",
+    "unknownPerson": "Ehemaliges Mitglied",
+    "waitingFor": "Warten auf die Antwort von {{name}}",
+    "waitingForYou": "Warten auf Ihre Antwort"
   },
   "agentClaim": {
     "title": "Agent verbinden",
@@ -5612,8 +5834,21 @@
     "serverError": "Serverfehler",
     "timedOut": "Zeitüberschreitung der Anfrage",
     "somethingWentWrong": "Etwas ist schiefgelaufen",
-    "tryAgainShortly": "Bitte versuchen Sie es gleich noch einmal",
-    "connectedServiceProblem": "Problem mit einem verbundenen Dienst"
+    "serverBusy": "Der Server ist ausgelastet",
+    "connectedServiceProblem": "Problem mit einem verbundenen Dienst",
+    "accessDeniedDescription": "Sie haben keine Berechtigung dafür. Bitten Sie Ihren Workspace-Admin um Zugriff.",
+    "invalidRequestDescription": "Einige Angaben sind ungültig. Prüfen Sie sie und versuchen Sie es erneut.",
+    "notFoundDescription": "Es wurde möglicherweise verschoben oder gelöscht. Laden Sie die Seite neu und versuchen Sie es erneut.",
+    "actionRequiredDescription": "Seit Sie begonnen haben, hat sich etwas geändert. Prüfen Sie die Angaben und versuchen Sie es erneut.",
+    "connectionErrorDescription": "Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.",
+    "serverErrorDescription": "Der Server konnte dies nicht abschließen. Versuchen Sie es gleich noch einmal. Wenn das weiter passiert, wenden Sie sich an Ihren Workspace-Admin.",
+    "timedOutDescription": "Der Server hat zu lange nicht geantwortet. Versuchen Sie es erneut.",
+    "somethingWentWrongDescription": "Das hat nicht funktioniert. Versuchen Sie es erneut. Wenn das weiter passiert, wenden Sie sich an Ihren Workspace-Admin.",
+    "serverBusyDescription": "Warten Sie einen Moment und versuchen Sie es dann erneut."
+  },
+  "loading": {
+    "default": "Wird geladen…",
+    "items": "Einträge werden geladen…"
   },
   "validation": {
     "password": {
@@ -5683,7 +5918,11 @@
     "alreadyRemoved": "Bereits entfernt",
     "alreadyRemovedDescription": "{{name}} hatte bereits keinen Zugriff mehr",
     "removeConfirmTitle": "Zugriff entfernen?",
-    "removeConfirmDescription": "{{name}} verliert sofort den Zugriff. Sie können später erneut teilen."
+    "removeConfirmDescription": "{{name}} verliert sofort den Zugriff. Sie können später erneut teilen.",
+    "removeSelection": "{{name}} entfernen",
+    "peopleCanSee_one": "{{count}} Person kann diesen Chat sehen",
+    "peopleCanSee_other": "{{count}} Personen können diesen Chat sehen",
+    "loadingPeople": "Personen werden geladen…"
   },
   "demoData": {
     "badge": {

@@ -19,6 +19,8 @@ import Citation from '../../../../src/modules/enterprise_search/schema/citation.
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { chatArchivesScope, withListScope } from '../helpers/list-scope'
 
 /**
  * A shared conversation, archive or saved search shows each viewer only the
@@ -134,6 +136,14 @@ const req = (userId: string, extra: Record<string, unknown> = {}): any => ({
   ...extra,
 })
 
+type Handler = (req: never, res: never, next: never) => Promise<unknown>
+
+// Each handler runs behind the guard its route mounts, which also reads the chat with `ChatSession.findOne`.
+const getChat = () => behindGuard(realGuards(), 'read', getConversationById(appConfig) as Handler, 'chat') as any
+const getAgentChat = () => behindGuard(realGuards(), 'read', getAgentConversationById(appConfig) as Handler, 'agent') as any
+const listArchives = () => withListScope(listAllArchivesConversation(appConfig) as Handler, 'chat', chatArchivesScope) as any
+const searchArchives = () => withListScope(searchArchivedConversations(appConfig) as Handler, 'chat', chatArchivesScope) as any
+
 const res = (): any => {
   const r: any = { status: sinon.stub(), json: sinon.stub() }
   r.status.returns(r)
@@ -163,7 +173,7 @@ const stubConversation = (messages: unknown[]) => {
   sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
   sinon.stub(Users, 'find').returns(chain([]))
   sinon.stub(ChatSession, 'findOne').returns(
-    chain({ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
+    chain({ _id: SESSION, orgId: ORG, userId: OWNER, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
   )
   sinon.stub(ChatSessionMessage, 'countDocuments').resolves(messages.length)
   sinon.stub(ChatSessionMessage, 'find').returns(chain(messages))
@@ -172,7 +182,7 @@ const stubConversation = (messages: unknown[]) => {
 const fetchConversation = async (userId: string) => {
   const r = res()
   const next = sinon.stub()
-  await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, next)
+  await getChat()(req(userId, { params: { conversationId: SESSION } }), r, next)
   sinon.assert.notCalled(next)
   return r.json.firstCall.args[0].conversation.messages[0]
 }
@@ -299,7 +309,7 @@ describe('shared chats: per-viewer citations', () => {
     const asked = stubAccess([])
     stubConversation([answer()])
     ;(ChatSession.findOne as sinon.SinonStub).returns(
-      chain({ _id: SESSION, title: 't', initiator: new Types.ObjectId(OWNER), isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
+      chain({ _id: SESSION, orgId: ORG, userId: new Types.ObjectId(OWNER), title: 't', initiator: new Types.ObjectId(OWNER), isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
     )
     const message = await fetchConversation(OWNER)
     expect(message.citations[1].citationData.content).to.equal(SECRET)
@@ -311,12 +321,12 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
     sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
     sinon.stub(Users, 'find').returns(chain([]))
-    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', initiator: OWNER, isShared: true, sharedWith: [], status: 'complete' }))
+    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, userId: OWNER, agentKey: 'agent-1', title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([richAnswer()]))
     const r = res()
     const next = sinon.stub()
-    await getAgentConversationById(appConfig)(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
+    await getAgentChat()(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
 
     sinon.assert.notCalled(next)
     const message = r.json.firstCall.args[0].conversation.messages[0]
@@ -352,7 +362,7 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...richAnswer(), citations: [], attachments: [] }]))
     const r = res()
-    await listAllArchivesConversation(appConfig)(req(VIEWER), r, sinon.stub())
+    await listArchives()(req(VIEWER), r, sinon.stub())
 
     const message = r.json.firstCall.args[0].conversations[0].messages[0]
     expectRecordsOnlyRedacted(message)
@@ -382,7 +392,7 @@ describe('shared chats: per-viewer citations', () => {
     )
     const r = res()
     const next = sinon.stub()
-    await listAllArchivesConversation(appConfig)(req(VIEWER), r, next)
+    await listArchives()(req(VIEWER), r, next)
 
     sinon.assert.notCalled(next)
     const [citations] = [r.json.firstCall.args[0].conversations[0].messages[0].citations]
@@ -439,7 +449,11 @@ describe('shared chats: per-viewer citations', () => {
   })
 
   it('archive search leaves owner-only fields out for a user the chat is shared with', async () => {
+    // Also answers the deleted-agents lookup the search makes first, so it does not reach a real AI service.
+    stubAccess([])
     const owned = { _id: SESSION, userId: OWNER, initiator: OWNER, title: 't', isShared: true, sharedWith: [{ userId: VIEWER, accessLevel: 'read' }], failReason: SECRET, compactedSummary: SECRET, conversationErrors: [{ message: SECRET }], source: 'assistant' }
+    // The message-content match first narrows to the sessions the caller may read.
+    sinon.stub(ChatSession, 'find').returns(chain([{ _id: SESSION }]))
     sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
     sinon.stub(ChatSession, 'aggregate').resolves([owned] as never)
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
@@ -447,7 +461,7 @@ describe('shared chats: per-viewer citations', () => {
     const run = async (userId: string) => {
       const r = res()
       const next = sinon.stub()
-      await searchArchivedConversations(appConfig)(req(userId, { query: { search: 't' } }), r, next)
+      await searchArchives()(req(userId, { query: { search: 't' } }), r, next)
       sinon.assert.notCalled(next)
       return r.json.firstCall.args[0].conversations[0]
     }
@@ -463,7 +477,7 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(ChatSessionMessage, 'find').returns(chain([]))
     const run = async (userId: string) => {
       const r = res()
-      await listAllArchivesConversation(appConfig)(req(userId), r, sinon.stub())
+      await listArchives()(req(userId), r, sinon.stub())
       return r.json.firstCall.args[0].conversations[0]
     }
     expect(JSON.stringify(await run(VIEWER))).to.not.contain(SECRET)

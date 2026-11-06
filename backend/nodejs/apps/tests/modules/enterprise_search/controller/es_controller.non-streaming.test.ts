@@ -1,3 +1,4 @@
+import { turnDeps } from '../helpers/turn-deps'
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
@@ -9,6 +10,7 @@ import { Logger } from '../../../../src/libs/services/logger.service'
 import { logLevelFor } from '../../../../src/libs/utils/error.middleware.utils'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
+import { AI_BUDGET_EXCEEDED } from '../../../../src/modules/enterprise_search/utils/ai-stream'
 import { CONVERSATION_ID_HEADER } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
@@ -19,6 +21,7 @@ import {
   fakeReplicaSetSession,
   oid,
 } from './chat-test-harness'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
 import { AGENT_KEY, ORG, OWNER, appConfig, seedConversation } from './streaming-flows'
 
 /**
@@ -42,7 +45,7 @@ interface Flow {
 const flows: Flow[] = [
   {
     name: 'createConversation',
-    handler: () => controller.createConversation(appConfig) as Handler,
+    handler: () => controller.createConversation(appConfig, turnDeps()) as Handler,
     agent: false,
     create: true,
     aiPath: '/api/v1/chat',
@@ -50,7 +53,7 @@ const flows: Flow[] = [
   },
   {
     name: 'addMessage',
-    handler: () => controller.addMessage(appConfig) as Handler,
+    handler: () => behindGuard(realGuards(), 'send', controller.addMessage(appConfig, turnDeps()) as Handler),
     agent: false,
     create: false,
     aiPath: '/api/v1/chat',
@@ -61,7 +64,7 @@ const flows: Flow[] = [
   },
   {
     name: 'createAgentConversation',
-    handler: () => controller.createAgentConversation(appConfig) as Handler,
+    handler: () => controller.createAgentConversation(appConfig, turnDeps()) as Handler,
     agent: true,
     create: true,
     aiPath: `/api/v1/agent/${AGENT_KEY}/chat`,
@@ -69,7 +72,7 @@ const flows: Flow[] = [
   },
   {
     name: 'addMessageToAgentConversation',
-    handler: () => controller.addMessageToAgentConversation(appConfig) as Handler,
+    handler: () => behindGuard(realGuards(), 'send', controller.addMessageToAgentConversation(appConfig, turnDeps()) as Handler, 'agent'),
     agent: true,
     create: false,
     aiPath: `/api/v1/agent/${AGENT_KEY}/chat`,
@@ -255,6 +258,28 @@ describe('es_controller non-streaming chat routes', () => {
         expect(warn.calledWith('Non-streaming chat turn failed')).to.equal(true)
       })
 
+      it('passes on the code the AI backend names when it refuses the request as malformed, never its words', async () => {
+        const r = await run(flow, (ai) =>
+          ai.reply(exactPath(flow.aiPath), 400, { detail: { code: 'REQUEST_VERSION_UNSUPPORTED', message: 'Invalid request parameters' } }),
+        )
+
+        expect(r.error()).to.include({ code: 'REQUEST_VERSION_UNSUPPORTED', statusCode: 502, message: CHAT_ERROR_MESSAGES.failed })
+        expect(r.conversation().status).to.equal('Failed')
+        expect(r.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.failed)
+        expect(r.conversation().conversationErrors?.at(-1)?.errorType).to.equal('REQUEST_VERSION_UNSUPPORTED')
+      })
+
+      it('reports a refusal (402) as one, with the words the AI backend chose for the person', async () => {
+        const r = await run(flow, (ai) =>
+          ai.reply(exactPath(flow.aiPath), 402, { detail: { code: 'AI_BUDGET_EXCEEDED', message: 'This request is not allowed right now.' } }),
+        )
+
+        expect(r.error()).to.include({ code: AI_BUDGET_EXCEEDED, statusCode: 402, message: 'This request is not allowed right now.' })
+        expect(r.conversation().status).to.equal('Failed')
+        expect(r.conversation().failReason).to.equal('This request is not allowed right now.')
+        expect(r.conversation().conversationErrors?.at(-1)?.errorType).to.equal(AI_BUDGET_EXCEEDED)
+      })
+
       it('never shows upstream text for a 5xx', async () => {
         const r = await run(flow, (ai) =>
           ai.reply(exactPath(flow.aiPath), 500, { message: 'Traceback: neo4j at 10.0.0.7 refused' }),
@@ -341,15 +366,15 @@ describe('es_controller non-streaming chat routes', () => {
     const chains = [
       {
         name: 'assistant',
-        create: () => controller.createConversation(appConfig) as Handler,
-        followUp: () => controller.addMessage(appConfig) as Handler,
+        create: () => controller.createConversation(appConfig, turnDeps()) as Handler,
+        followUp: () => behindGuard(realGuards(), 'send', controller.addMessage(appConfig, turnDeps()) as Handler),
         params: {} as Record<string, string>,
         aiPath: '/api/v1/chat',
       },
       {
         name: 'agent',
-        create: () => controller.createAgentConversation(appConfig) as Handler,
-        followUp: () => controller.addMessageToAgentConversation(appConfig) as Handler,
+        create: () => controller.createAgentConversation(appConfig, turnDeps()) as Handler,
+        followUp: () => behindGuard(realGuards(), 'send', controller.addMessageToAgentConversation(appConfig, turnDeps()) as Handler, 'agent'),
         params: { agentKey: AGENT_KEY } as Record<string, string>,
         aiPath: `/api/v1/agent/${AGENT_KEY}/chat`,
       },
@@ -490,7 +515,7 @@ describe('es_controller non-streaming chat routes', () => {
       const { session } = seedConversation(store, true)
       const next = sinon.stub()
 
-      await (controller.addMessage(appConfig) as Handler)(
+      await behindGuard(realGuards(), 'send', controller.addMessage(appConfig, turnDeps()) as Handler)(
         {
           headers: {},
           params: { conversationId: String(session._id) },

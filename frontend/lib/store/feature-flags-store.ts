@@ -5,6 +5,7 @@ import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { apiClient } from '@/lib/api/axios-instance';
 import { onSessionEnd } from '@/lib/api/session-cache';
+import { ErrorType, type ProcessedError } from '@/lib/api/api-error';
 
 interface FeatureFlagsState {
   /** null = not yet loaded. Opt-in selectors treat that as off; default-on selectors treat it as on. */
@@ -22,6 +23,26 @@ const EFFECTIVE_FLAGS_URL =
   '/api/v1/configurationManager/platform/feature-flags/effective';
 
 let fetchPromise: Promise<void> | null = null;
+
+/**
+ * Waits before asking again when a read got no answer at all (the connection dropped, the network changed). Until
+ * the last one fails, the flags stay unknown, so what shows them as they were last time (the rail's Projects row)
+ * does not change for a blip. An error the server answered with stands at once.
+ */
+const NO_ANSWER_RETRY_MS = [300, 1000];
+
+async function readFlags() {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await apiClient.get<{ featureFlags?: unknown }>(EFFECTIVE_FLAGS_URL, { suppressErrorToast: true });
+    } catch (error) {
+      const wait = NO_ANSWER_RETRY_MS[attempt];
+      // Network errors only, by design: an aborted or timed-out read falls back at once, as a server error does.
+      if (wait === undefined || (error as ProcessedError | undefined)?.type !== ErrorType.NETWORK_ERROR) throw error;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  }
+}
 
 function parseFeatureFlags(value: unknown): Record<string, boolean> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -52,10 +73,7 @@ export const useFeatureFlagsStore = create<FeatureFlagsStore>()(
             state.loading = true;
           });
           try {
-            const { data } = await apiClient.get<{ featureFlags?: unknown }>(
-              EFFECTIVE_FLAGS_URL,
-              { suppressErrorToast: true },
-            );
+            const { data } = await readFlags();
             set((state) => {
               state.flags = parseFeatureFlags(data?.featureFlags);
               state.loading = false;

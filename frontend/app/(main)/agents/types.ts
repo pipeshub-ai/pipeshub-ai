@@ -41,6 +41,8 @@ export interface AgentListRecord {
   /** Collection-qualified id, e.g. `agentInstances/<uuid>` */
   _id: string;
   name: string;
+  /** The agent's @mention handle, where the edition has handles. */
+  handle?: string;
   description: string;
   models: string[];
   /** True when `models` is empty; the agent uses the organization's default LLM at chat time. */

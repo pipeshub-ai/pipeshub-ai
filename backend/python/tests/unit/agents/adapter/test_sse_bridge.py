@@ -20,6 +20,7 @@ from app.agents.agent_loop.stream_bridge import (
     sse_queue_maxsize,
     _heartbeat
 )
+from app.utils.conversation_tasks import _conversation_tasks, register_task
 
 _RUN_CTX = RunContext(role_name="pipeshub-agent", model="gpt-4")
 
@@ -1205,6 +1206,44 @@ class TestRunAgentLoopStream:
         assert destroy_order[-1] == "sandbox_destroyed"
         assert set(destroy_order[:-1]) == {"detached_cancelled", "pending_cancelled"}
         sandbox_manager.destroy_all.assert_awaited_once()
+
+    async def test_background_tasks_belong_to_the_run_and_are_cancelled_when_left(self) -> None:
+        """Tasks the run's tools start are kept under the run; one it never collects (it
+        stopped, waited or failed) is cancelled, not left for the next run of the chat."""
+        started: list[tuple[asyncio.Task, list[Any]]] = []
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            task = asyncio.create_task(asyncio.sleep(10))
+            register_task(context.conversation_id, task)
+            started.append((task, list(_conversation_tasks)))
+            return _stream_agent(MagicMock(success=True, error=None)), MagicMock(), MagicMock(), []
+
+        async def _fake_finalizer_run(self, **kwargs) -> dict[str, str]:
+            return {"answer": "stopped"}
+
+        kwargs = self._base_kwargs()
+        kwargs["query_info"] = {**kwargs["query_info"], "runId": "run-1"}
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello", "conversation_id": "conv-1"},
+            ),
+            patch(
+                "app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create",
+                new=_fake_create,
+            ),
+            patch(
+                "app.agents.agent_loop.stream_bridge.AnswerFinalizer.run",
+                new=_fake_finalizer_run,
+            ),
+        ):
+            [chunk async for chunk in run_agent_loop_stream(**kwargs)]
+
+        ((task, keys),) = started
+        assert ("conv-1", "run-1") in keys
+        (outcome,) = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
+        assert isinstance(outcome, asyncio.CancelledError)
+        assert ("conv-1", "run-1") not in _conversation_tasks
 
     async def test_no_sandbox_manager_is_a_no_op(self) -> None:
         """When code execution isn't enabled for the request,

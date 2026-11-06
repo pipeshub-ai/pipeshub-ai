@@ -1,5 +1,6 @@
-import type { ChatKnowledgeFilters, CollectionMeta } from '@/chat/types';
-import { bucketFor } from '@/chat/utils/tree-selection';
+import type { AppliedFilterNode, AppliedFilters, ChatKnowledgeFilters, CollectionMeta } from '@/chat/types';
+import { BELOW_APP_KEYS, bucketFor } from '@/chat/utils/tree-selection';
+import { MENTION_QUERY_MAX } from '@/chat/utils/mention-groups';
 
 /** A knowledge-hub node embedded in a composer via `@`. */
 export interface MentionNode {
@@ -36,8 +37,8 @@ function boundaryAfter(text: string, index: number): boolean {
   return index >= text.length || BOUNDARY.test(text[index] ?? '');
 }
 
-// Longer than any name worth searching for; past it, an `@` is just text.
-const MAX_QUERY_LENGTH = 60;
+// An `@` opens the menu after a space or a pad, and after an opening bracket or quote; after a letter it is an email.
+const OPENS_AFTER = /[\s\u2060("]/;
 
 /**
  * The `@query` the caret is inside, if the user is still typing a mention.
@@ -48,9 +49,9 @@ export function activeMentionQuery(text: string, caret: number): ActiveMention |
   const safeCaret = Math.max(0, Math.min(caret, text.length));
   const upto = text.slice(0, safeCaret);
   const at = upto.lastIndexOf('@');
-  if (at < 0 || !boundaryBefore(text, at)) return null;
+  if (at < 0 || !(at === 0 || OPENS_AFTER.test(text[at - 1] ?? ''))) return null;
   const query = upto.slice(at + 1);
-  if (query.length > MAX_QUERY_LENGTH || /^\s|\s\s|[\n\u2060]/.test(query)) return null;
+  if (query.length > MENTION_QUERY_MAX || /^\s|\s\s|[\n\u2060]/.test(query)) return null;
   return { start: at, query };
 }
 
@@ -98,22 +99,37 @@ export function withUniqueLabel(node: MentionNode, mentions: readonly MentionNod
   return clash ? { ...node, label: node.name } : node;
 }
 
+// What may touch a name in a sent message: it starts where an `@` can open, and closing punctuation may follow it, so
+// `(S3`, `S3?` and `"S3"` are names, while `S3.txt` and `S3's` are other words.
+const SENT_NAME_ENDS = /^(?:[\s\u2060]|$|[)\]}"'\u201d\u2019.,;:!?]+(?:[\s\u2060]|$))/;
+
+function sentNameStarts(text: string, index: number): boolean {
+  return index === 0 || OPENS_AFTER.test(text[index - 1] ?? '');
+}
+
+function sentNameEnds(text: string, index: number): boolean {
+  return SENT_NAME_ENDS.test(text.slice(index));
+}
+
 function locate(
   text: string,
   mentions: readonly MentionNode[],
   shown: (node: MentionNode) => string,
+  startsAt: (text: string, index: number) => boolean = boundaryBefore,
+  endsAt: (text: string, index: number) => boolean = boundaryAfter,
 ): MentionSpan[] {
   const kept: MentionSpan[] = [];
   const used = new Set<string>();
   const taken = (start: number, end: number) => kept.some((span) => start < span.end && end > span.start);
-  const byLength = [...mentions].sort((a, b) => shown(b).length - shown(a).length);
+  // A source the reader can't open comes with no name: nothing in the text can be it.
+  const byLength = mentions.filter((node) => shown(node)).sort((a, b) => shown(b).length - shown(a).length);
   for (const padded of [true, false]) {
     for (const node of byLength) {
       const label = shown(node);
       if (!label || used.has(node.id)) continue;
       for (let index = text.indexOf(label); index >= 0; index = text.indexOf(label, index + 1)) {
         const end = index + label.length;
-        if (!boundaryBefore(text, index) || !boundaryAfter(text, end) || taken(index, end)) continue;
+        if (!startsAt(text, index) || !endsAt(text, end) || taken(index, end)) continue;
         if (padded && text.slice(index - MENTION_PAD_OPEN.length, index) !== MENTION_PAD_OPEN) continue;
         kept.push({ node, start: index, end });
         used.add(node.id);
@@ -137,7 +153,19 @@ export function locateMentions(text: string, mentions: readonly MentionNode[]): 
 
 /** The same, for a sent message, which carries each mention's full name. */
 export function locateMentionNames(text: string, mentions: readonly MentionNode[]): MentionSpan[] {
-  return locate(text, mentions, (node) => node.name);
+  return locate(text, mentions, (node) => node.name, sentNameStarts, sentNameEnds);
+}
+
+/**
+ * The nodes a question named with @, to show as chips in it. A message saved
+ * before that was recorded falls back to its folders and records: an app or a
+ * collection is often named like an ordinary word.
+ */
+export function mentionedNodes(applied: AppliedFilters | undefined): AppliedFilterNode[] {
+  if (!applied) return [];
+  const all = [...(applied.apps ?? []), ...(applied.kb ?? []), ...BELOW_APP_KEYS.flatMap((key) => applied[key] ?? [])];
+  if (all.some((node) => typeof node.mentioned === 'boolean')) return all.filter((node) => node.mentioned);
+  return BELOW_APP_KEYS.flatMap((key) => applied[key] ?? []);
 }
 
 export function retainedMentions(text: string, mentions: readonly MentionNode[]): MentionNode[] {
@@ -171,6 +199,19 @@ export function mentionChipBounds(text: string, span: MentionSpan): { start: num
     start: open ? span.start - MENTION_PAD_OPEN.length : span.start,
     end: close ? span.end + MENTION_PAD_CLOSE.length : span.end,
   };
+}
+
+/** A sent question back in the composer (Edit): each source it named, found by its full name, as its chip again. */
+export function withSourceChips(text: string, applied: AppliedFilters | undefined): { text: string; mentions: MentionNode[] } {
+  const named = mentionedNodes(applied).map(({ id, name, nodeType, connector, extension, mimeType }) => ({ id, name, nodeType, connector, extension, mimeType }));
+  const spans = locateMentionNames(text, named.map((node) => withUniqueLabel(node, named)));
+  let out = '';
+  let cursor = 0;
+  for (const span of spans) {
+    out += text.slice(cursor, span.start) + MENTION_PAD_OPEN + mentionLabel(span.node) + MENTION_PAD_CLOSE;
+    cursor = span.end;
+  }
+  return { text: out + text.slice(cursor), mentions: spans.map((span) => span.node) };
 }
 
 // Pads left behind once a mention's name was edited, or its word joiner deleted.
@@ -248,7 +289,7 @@ export function unembedMention(text: string, mentions: readonly MentionNode[], i
   return text.slice(0, chip.start) + span.node.name + text.slice(chip.end);
 }
 
-/** Add mentioned nodes to the chat filters the next message is sent with. */
+/** The chat filters with mentioned nodes added. */
 export function mergeMentionFilters(
   current: ChatKnowledgeFilters,
   nodes: readonly MentionNode[],
@@ -266,6 +307,21 @@ export function mergeMentionFilters(
     if (!list.includes(node.id)) next[bucket] = [...list, node.id];
   }
   return next;
+}
+
+/**
+ * The filters one question goes with: the chat's own selection plus the nodes it names with `@`, each under its
+ * kind's bucket (`nodeTypeOf` says what a node is; an unknown one is a record). The chat's selection is not changed.
+ */
+export function withMentionedIds(
+  current: ChatKnowledgeFilters,
+  ids: readonly string[],
+  nodeTypeOf: (id: string) => string | undefined,
+): ChatKnowledgeFilters {
+  return mergeMentionFilters(
+    current,
+    ids.map((id) => ({ id, name: id, nodeType: nodeTypeOf(id) ?? '', connector: '' })),
+  );
 }
 
 export function mentionMeta(nodes: readonly MentionNode[]): {

@@ -4,12 +4,15 @@ import { i18n } from '@/lib/i18n';
 import { toast } from '@/lib/store/toast-store';
 import { buildChatHref } from '../build-chat-url';
 import { useChatStore } from '../store';
+import { chatExtension } from '@/config';
 
 const TOAST_DURATION_MS = 8000;
 
-/** True when the user can see this slot's thread right now. */
+/** True when the user can see this slot's thread right now: the active one, or one an edition shows beside it. */
 function isSlotInView(slotId: string, activeSlotId: string | null): boolean {
-  if (activeSlotId !== slotId) return false;
+  const slot = useChatStore.getState().slots[slotId];
+  const onScreen = activeSlotId === slotId || (slot !== undefined && chatExtension.slot.isOnScreen(slot, activeSlotId));
+  if (!onScreen) return false;
   // The active slot stays set after leaving the chat area, so the route decides.
   return typeof window === 'undefined' || window.location.pathname.startsWith('/chat');
 }

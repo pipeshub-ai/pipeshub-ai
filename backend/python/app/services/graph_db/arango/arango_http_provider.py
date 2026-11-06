@@ -238,6 +238,7 @@ from app.services.graph_db.entity_index_queries import (
     build_entity_index_source_page_aql,
     entity_index_source,
 )
+from app.services.graph_db.errors import UniqueConstraintViolation, violates_unique_constraint
 from app.services.graph_db.interface.graph_db_provider import (
     ACCESS_WALK_MAX_DEPTH,
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -3640,6 +3641,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result.get("errors", 0) == 0
 
         except Exception as e:
+            if violates_unique_constraint(str(e)):
+                # Whoever writes decides what this means: a taken handle is retried or answered, so it is no fault here.
+                self.logger.info("Batch upsert hit a unique constraint in %s", collection)
+                raise UniqueConstraintViolation(str(e)) from e
             self.logger.error(f"❌ Batch upsert failed: {str(e)}")
             raise
 
@@ -3753,6 +3758,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return result is not None
         except Exception as e:
+            if violates_unique_constraint(str(e)):
+                # Whoever writes decides what this means: a taken handle is retried or answered, so it is no fault here.
+                self.logger.info("Update hit a unique constraint in %s", collection)
+                raise UniqueConstraintViolation(str(e)) from e
             self.logger.error(f"❌ Update node failed: {str(e)}")
             raise
 
@@ -19592,6 +19601,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [
             {
                 **{k: r[k] for k in ("id", "vrid", "connectorId", "indexingStatus", "isInternal")},
+                "name": r.get("name"),
                 "hasIndexedCopy": r.get("hasIndexedCopy") is True,
                 # The query returns this. Dropping it made a stub asked by id
                 # look like a real record, so search could cite it.
@@ -19802,7 +19812,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     : false)
             LET kh_walk = kh_app != null AND NOT kh_is_app AND NOT kh_ok
             FILTER kh_ok OR kh_attachment OR kh_walk
-            RETURN {{id: t._key, vrid: t.virtualRecordId, connectorId: t.connectorId,
+            RETURN {{id: t._key, name: NOT_NULL(t.name, t.recordName, t.groupName),
+                     vrid: t.virtualRecordId, connectorId: t.connectorId,
                      indexingStatus: t.indexingStatus, hasIndexedCopy: t.hasIndexedCopy == true,
                      isInternal: t.isInternal == true,
                      isPlaceholder: t.isPlaceholder == true,

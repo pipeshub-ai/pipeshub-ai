@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { Dialog, Flex, Text, TextField, Button, Box, VisuallyHidden } from '@radix-ui/themes';
+import { useId, useState } from 'react';
+import { Dialog, Flex, Text, TextField, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { matchesConfirmationKeyword } from '@/lib/utils/validators';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -19,6 +19,8 @@ interface DeleteChatDialogProps {
  *
  * Requires typing "DELETE" to confirm. Matches Figma spec (node 2497:31109)
  * and follows the same pattern as knowledge-base DeleteConfirmationDialog.
+ * The visible heading names the dialog and the explanation describes it, so a screen
+ * reader announces what the sighted reader sees.
  */
 export function DeleteChatDialog({
   open,
@@ -31,6 +33,8 @@ export function DeleteChatDialog({
   const [confirmText, setConfirmText] = useState('');
   const deleteKeyword = t('dialog.deleteKeyword', { defaultValue: 'DELETE' });
   const isConfirmed = matchesConfirmationKeyword(confirmText, deleteKeyword);
+  const confirmFieldId = useId();
+  const descriptionId = useId();
 
   const handleConfirm = async () => {
     if (isConfirmed && !isDeleting) {
@@ -47,51 +51,46 @@ export function DeleteChatDialog({
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
-      {open && (
-        <Box
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(28, 32, 36, 0.5)',
-            zIndex: 999,
-            cursor: 'pointer',
-          }}
-          onClick={() => !isDeleting && onOpenChange(false)}
-        />
-      )}
       <Dialog.Content
+        aria-describedby={descriptionId}
+        onInteractOutside={(e) => {
+          if (isDeleting) e.preventDefault();
+        }}
+        onEscapeKeyDown={(e) => {
+          if (isDeleting) e.preventDefault();
+        }}
         style={{
           maxWidth: '37.5rem',
           width: '100%',
           padding: 'var(--space-5)',
-          zIndex: 1000,
         }}
       >
-        <VisuallyHidden>
-          <Dialog.Title>Delete Confirmation</Dialog.Title>
-        </VisuallyHidden>
         <Flex direction="column" gap="4">
           <Flex direction="column" gap="1">
-            <Text size="5" weight="bold">
+            <Dialog.Title size="5" weight="bold" mb="0">
               {t('chat.deleteChatConfirm')}
-            </Text>
-            <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              {t('chat.deleteChatDescription')}{' '}
-              <Text size="2" weight="bold" style={{ color: 'var(--slate-12)' }}>
-                &apos;{chatTitle}&apos;
-              </Text>{' '}
-              {t('chat.deleteChatWarning')}
-            </Text>
-            <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              {t('chat.deleteChatArtifactsNote')}
-            </Text>
+            </Dialog.Title>
+            {/* Both sentences describe the dialog; a Dialog.Description holds only one paragraph. */}
+            <Flex id={descriptionId} direction="column" gap="1">
+              <Text size="2" style={{ color: 'var(--text-secondary)' }}>
+                {t('chat.deleteChatDescription')}{' '}
+                <Text size="2" weight="bold" style={{ color: 'var(--text-primary)' }}>
+                  &apos;{chatTitle}&apos;
+                </Text>{' '}
+                {t('chat.deleteChatWarning')}
+              </Text>
+              <Text size="2" style={{ color: 'var(--text-secondary)' }}>
+                {t('chat.deleteChatArtifactsNote')}
+              </Text>
+            </Flex>
           </Flex>
 
           <Flex direction="column" gap="2">
-            <Text size="2" weight="medium" style={{ color: 'var(--olive-11)' }}>
+            <Text as="label" htmlFor={confirmFieldId} size="2" weight="medium" style={{ color: 'var(--text-secondary)' }}>
               {t('dialog.typeDeleteToConfirm', { keyword: deleteKeyword })}
             </Text>
             <TextField.Root
+              id={confirmFieldId}
               placeholder={deleteKeyword}
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}

@@ -41,6 +41,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db import edge_effects
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.errors import UniqueConstraintViolation
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.services.permissions.mode import scope_fields_enabled
@@ -1564,7 +1565,10 @@ class GraphDataStore(DataStoreProvider):
             # each such cancel leaked one of the pool's 100 connections until
             # every query waited out the 60s acquisition timeout -- which
             # produced more record timeouts, more cancels, more leaks.
-            if isinstance(e, Exception) and self.graph_provider.is_write_conflict(e):
+            if isinstance(e, UniqueConstraintViolation):
+                # Whoever opened this decides what it means: a taken handle is retried or answered.
+                self.logger.info("Transaction hit a unique constraint, rolling back")
+            elif isinstance(e, Exception) and self.graph_provider.is_write_conflict(e):
                 self.logger.warning("Transaction hit a write conflict, rolling back: %s", str(e)[:200])
             elif isinstance(e, Exception):
                 self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")

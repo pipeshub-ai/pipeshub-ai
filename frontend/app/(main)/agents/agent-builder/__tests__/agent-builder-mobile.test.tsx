@@ -24,7 +24,12 @@ vi.mock('next/navigation', () => ({
 }));
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
-vi.mock('@/config', () => ({
+vi.mock('@/config', async () => ({
+  agentBuilderExtension: (
+    await vi.importActual<typeof import('@/app/(main)/agents/agent-builder/agent-builder-extension')>(
+      '@/app/(main)/agents/agent-builder/agent-builder-extension'
+    )
+  ).defaultAgentBuilderExtension,
   useUserPermission: (key: string) => !permissions.denied.has(key),
   PermissionLockIcon: () => <span>Locked</span>,
   InheritedConfigNotice: () => null,

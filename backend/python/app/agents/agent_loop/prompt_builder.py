@@ -51,12 +51,14 @@ from app.agents.agent_loop.hooks.code_graph_unlock import CODE_GRAPH_TOOLSET
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled  # noqa: F401 — re-export for test patching
 from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.modules.agents.capability_summary import build_capability_summary
+from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.agents.context.knowledge_context import _build_knowledge_context
 from app.modules.agents.context.tool_surface import ToolSurfaces
 from app.modules.agents.context.user_context import _format_user_context
 from app.modules.agents.qna.chat_state import is_custom_agent_system_prompt
 from app.modules.retrieval.entity_filters import describe_entity_filter
 from app.modules.retrieval.filter_schema import ENTITY_FILTERS_KEY
+from app.modules.agents.readiness import unavailable_tools_note
 from app.utils.time_conversion import build_llm_time_context
 
 if TYPE_CHECKING:
@@ -990,8 +992,11 @@ class PipesHubPromptBuilder:
         tpl.set("capability_summary", build_capability_summary(state) or None)
 
         # ── User context + skills (Band B) ────────────────────────────────────
-        tpl.set("user_context", _format_user_context(state) or None)
+        user_context = _format_user_context(state) or None
+        for section, text in get_chat_extension().prompt_sections(self._context, user_context).items():
+            tpl.set(section, text)
         tpl.set("skills_overview", render_skills_overview(runtime) or None)
+        tpl.set("unavailable_tools", unavailable_tools_note(self._context.tool_state.get("unavailable_tools")))
         tpl.set(
             "answer_confidence",
             _build_answer_confidence_section() if confidence_enabled() else None,

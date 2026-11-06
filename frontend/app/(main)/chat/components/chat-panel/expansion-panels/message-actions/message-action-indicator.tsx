@@ -95,16 +95,16 @@ export function MessageActionIndicator({
             padding: 'var(--space-1) var(--space-2)', /* was: 4px 10px, delta: 0px/-2px */
             borderRadius: 'var(--radius-2)',
             backgroundColor: chipHovered && action.type === 'editQuery'
-              ? 'var(--olive-4)'
-              : 'var(--olive-3)',
+              ? 'var(--fill-hover)'
+              : 'var(--fill-muted)',
             cursor: action.type === 'editQuery' ? 'pointer' : 'default',
-            transition: 'background-color 0.15s ease',
+            transition: 'background-color var(--motion-micro) var(--motion-ease)',
           }}
         >
           <Text
             size="2"
             weight="medium"
-            style={{ color: 'var(--slate-12)', whiteSpace: 'nowrap' }}
+            style={{ color: 'var(--text-primary)', whiteSpace: 'nowrap' }}
           >
             {label}
           </Text>
@@ -115,12 +115,17 @@ export function MessageActionIndicator({
           color="gray"
           size="1"
           onClick={onDismiss}
+          aria-label={
+            action.type === 'regenerate'
+              ? t('chat.cancelRegenerate', 'Cancel regeneration')
+              : t('chat.cancelEditQuery', 'Cancel editing')
+          }
           style={{ margin: 0, cursor: 'pointer', flexShrink: 0 }}
         >
           <MaterialIcon
             name="close"
             size={ICON_SIZES.SECONDARY}
-            color="var(--slate-11)"
+            color="var(--text-secondary)"
           />
         </IconButton>
       </Flex>
@@ -145,11 +150,11 @@ export function MessageActionIndicator({
             outline: 'none',
             border: 'none',
             fontSize: 'var(--font-size-2)',
-            color: 'var(--slate-11)',
+            color: 'var(--text-secondary)',
             resize: 'none',
             minHeight: '24px',
             maxHeight: '120px',
-            fontFamily: 'Manrope, sans-serif',
+            fontFamily: 'var(--default-font-family)',
             height: 'auto',
             overflow: editText.split('\n').length > 5 ? 'auto' : 'hidden',
           }}

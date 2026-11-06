@@ -313,6 +313,7 @@ export class ChatSessionsMigration {
         };
       });
 
+      // row-writer-exempt: copies rows from before change stamps existed; the detail serves them.
       await ChatSessionMessage.collection.bulkWrite(messageOps, {
         ordered: true,
       });

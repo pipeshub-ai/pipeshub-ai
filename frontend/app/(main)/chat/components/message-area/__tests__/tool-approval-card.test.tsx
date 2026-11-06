@@ -130,6 +130,27 @@ describe('ToolApprovalCard', () => {
     );
   });
 
+  it('is answered by whoever the extension names instead of the owner, and is one line naming them for everyone else', () => {
+    chat.state.slots['slot-1'].isOwner = false;
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest readOnlyFor={null} />);
+    expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
+    cleanup();
+
+    chat.state.slots['slot-1'].isOwner = true;
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest readOnlyFor={{ name: 'Dana' }} />);
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByTestId('tool-approval-card').textContent).toBe("Create an issue on Jira is waiting for Dana's approval.");
+    cleanup();
+
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest readOnlyFor={{ name: null }} />);
+    expect(screen.getByTestId('tool-approval-card').textContent).toBe("Create an issue on Jira is waiting for Former member's approval.");
+    cleanup();
+
+    // An older reply's card was passed over, whoever it was put to.
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest={false} readOnlyFor={{ name: 'Dana' }} />);
+    expect(screen.getByTestId('tool-approval-card').textContent).toBe("Create an issue on Jira wasn't approved, so it didn't run.");
+  });
+
   it('says so once the request has expired', () => {
     vi.useFakeTimers();
     renderInTheme(<ToolApprovalCard approval={approval({ expiresAt: Date.now() + 1_000 })} isLatest />);

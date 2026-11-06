@@ -15,6 +15,7 @@ from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall, UserMessage
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
 from app.agent_loop_lib.core.types import Goal
+from app.agent_loop_lib.events.base import CompositeEmitter
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
@@ -26,6 +27,11 @@ from app.agents.agent_loop.hooks.ask_user_question import (
     asked_to_be_asked,
     asks_user_in_text,
 )
+from app.agents.agent_loop.protocol.agui_emitter import (
+    MESSAGE_DISCARDED_EVENT_NAME,
+    AGUIEventEmitter,
+)
+from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
 from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.agents.adapter.support.hook_helpers import run_post_model
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
@@ -98,21 +104,44 @@ class TestAsksUserInText:
         "Would you like the summary for Q2 or for Q3?",
         "I found two board reports. Would you like the Q2 or the Q3 one?",
         f"{_LONG_ANSWER}\n\nWhich of these should I update?\n- Atlas\n- Beacon",
-        # Seen live for "Can you update it?": input asked for without a question mark.
-        "I don't see an existing artifact in this conversation to update. Please upload the file or tell me "
-        "what “it” refers to and what changes you want.",
+        # Input asked for without a question mark (seen live for "Can you update it?", with an upload
+        # request that now keeps the reply as text).
+        "I don't see an existing artifact in this conversation to update. Please tell me what “it” refers "
+        "to and what changes you want.",
         "Please choose one of these:\n- Q2 2026 board report\n- Q3 2026 board report",
         "Could you tell me which project you mean.",
         "Please let me know which policy you mean.",
-        # Seen live: with 16 documents indexed, a reply that only asked for an upload instead of offering them.
-        "I don't see a document attached or available in the conversation. Please upload the document or "
-        "paste its text, and I'll summarize it.",
-        # Seen live for "Summarize the document." with 16 documents indexed.
-        "Please upload the document or share its link/title, and I'll summarize it.",
         "你指的是哪个项目？",  # Chinese: "Which project do you mean?"
+        "Which team are you on?",
+        # The agent's own step, a choice a card can carry.
+        "Should I attach it to the Jira ticket or to the email?",
+        "Do you want me to upload the report to Drive or to OneDrive?",
+        "Which of the attached files should I summarize?",
+        "Which of the files you uploaded should I use?",
     ])
     def test_a_reply_that_is_a_question_for_the_user(self, text: str) -> None:
         assert asks_user_in_text(text)
+
+    @pytest.mark.parametrize("text", [
+        # Seen live for "summarize all documents" on an empty collection: re-asked as a card that offered
+        # "Upload files", which the card cannot do.
+        "I couldn’t summarize the documents because **Team Notes** returned no browseable files, "
+        "and the knowledge search reported that it could not search that source. Please upload the documents "
+        "here or provide an accessible collection, and I can summarize them individually.\n\n---\nConfidence: Medium",
+        "I don't see a document attached or available in the conversation. Please upload the document or "
+        "paste its text, and I'll summarize it.",
+        "Please upload the document or share its link/title, and I'll summarize it.",
+        "I don't see an existing artifact in this conversation to update. Please upload the file or tell me "
+        "what “it” refers to and what changes you want.",
+        "Could you upload the latest version?",
+        "Can you re-upload the corrected file?",
+        "You can paste the error message here and I'll take a look.",
+        "Please attach the screenshot so I can check the layout.",
+        "Try uploading the file again.",
+        "I'll need you to upload the contract first. Which version is it?",
+    ])
+    def test_a_request_for_a_file_stays_text(self, text: str) -> None:
+        assert not asks_user_in_text(text)
 
     @pytest.mark.parametrize("text", [
         "",
@@ -150,10 +179,20 @@ class TestAskInTextRecoveryMiddleware:
         assert isinstance(first.recovery_message, UserMessage)
         assert first.recovery_message.injected is True
         assert first.recovery_message.content == _ASK_IN_TEXT_NUDGE
+        assert first.discard_text is True
         assert second.recovery_message is None
+        assert second.discard_text is False
 
     async def test_no_nudge_for_an_answer(self) -> None:
         ctx = await run_post_model(_recovery(), AssistantMessage(content="Atlas ships on 15 December."), scope=_scope())
+        assert ctx.recovery_message is None
+        assert ctx.discard_text is False
+
+    async def test_no_nudge_for_a_request_for_a_file(self) -> None:
+        ctx = await run_post_model(
+            _recovery(), AssistantMessage(content="Please upload the documents here, and I can summarize them."),
+            scope=_scope(),
+        )
         assert ctx.recovery_message is None
 
     async def test_no_nudge_when_the_turn_calls_a_tool(self) -> None:
@@ -288,3 +327,103 @@ class TestAskInTextRecoveryInTheLoop:
 
         assert result.output == "Which quarter?"
         assert len(_nudges(transport)) == 1
+
+
+class _Sink:
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    async def write(self, event: dict) -> bool:
+        self.events.append(event)
+        return True
+
+
+async def _stream(
+    transport: ScriptedTransport, recovery: Any, *, max_turns: int = 4,  # noqa: ANN401
+) -> tuple[_Sink, TranscriptCollector]:
+    """Streams a run through the AG-UI emitter and the transcript collector the chat endpoint uses."""
+    transports = TransportRegistry()
+    transports.register("scripted", lambda: transport)
+    sink, transcript = _Sink(), TranscriptCollector()
+    runtime = AgentRuntime(
+        transport_registry=transports, tool_registry=_registry(_ASK_TOOL),
+        event_emitter=CompositeEmitter([AGUIEventEmitter(sink, thread_id="t1"), transcript]),
+    )
+    runtime.hooks.on(HookEvent.POST_MODEL).use(recovery)
+    agent = Agent(AgentSpec(
+        name="assistant", system_prompt="You help.",
+        model=ModelSpec(provider="scripted", model="scripted-model"), loop=ReActLoop(), max_turns=max_turns,
+    ), runtime)
+    _ = [event async for event in agent.stream(Goal(description="Summarize the board report"))]
+    return sink, transcript
+
+
+def _text_left_on_screen(sink: _Sink) -> str:
+    """Streamed text minus every message a `message_discarded` frame took back: what the client shows."""
+    frames = [e["data"] for e in sink.events]
+    taken_back = {
+        f["value"]["messageId"] for f in frames
+        if f.get("type") == "CUSTOM" and f.get("name") == MESSAGE_DISCARDED_EVENT_NAME
+    }
+    return "".join(
+        f["delta"] for f in frames if f.get("type") == "TEXT_MESSAGE_CONTENT" and f["messageId"] not in taken_back
+    )
+
+
+def _saved_text(transcript: TranscriptCollector) -> list[str]:
+    return [p["content"] for p in transcript.parts if p["type"] == "text" and p["content"]]
+
+
+class TestOverruledReplyIsNotShown:
+    """The nudge tells the model its text reply is not shown: the reply it replaces is taken back
+    from the client and left out of the saved transcript, so it never shows as narration."""
+
+    async def test_the_card_replaces_the_text_question(self) -> None:
+        transport = (
+            ScriptedTransport()
+            .add_text_chunks(["Which report ", "do you mean?"])
+            .add_tool_call(ToolCall(id="c1", name=_ASK_TOOL, arguments={"text": "Which report?"}))
+        )
+
+        sink, transcript = await _stream(transport, _recovery())
+
+        assert len(_nudges(transport)) == 1
+        assert "Which report do you mean?" not in _text_left_on_screen(sink)
+        assert "Which report do you mean?" not in _saved_text(transcript)
+        assert [p["toolName"] for p in transcript.parts if p["type"] == "tool_call"] == [_ASK_TOOL]
+
+    async def test_a_reply_sent_again_after_the_nudge_shows_once(self) -> None:
+        transport = (
+            ScriptedTransport()
+            .add_text_chunks(["Which report ", "do you mean?"])
+            .add_text_chunks(["Which report ", "do you mean?"])
+        )
+
+        sink, transcript = await _stream(transport, _recovery())
+
+        assert len(_nudges(transport)) == 1
+        assert _text_left_on_screen(sink) == "Which report do you mean?"
+        assert _saved_text(transcript) == ["Which report do you mean?"]
+
+    async def test_on_the_last_turn_the_reply_stays_as_the_answer(self) -> None:
+        question = "Which report do you mean, the Q2 or the Q3 2026 board report?"
+        transport = ScriptedTransport().add_text_chunks([question])
+
+        sink, transcript = await _stream(transport, _recovery(), max_turns=1)
+
+        assert _text_left_on_screen(sink) == question
+        assert _saved_text(transcript) == [question]
+
+    async def test_a_recovery_that_does_not_discard_keeps_the_reply(self) -> None:
+        """Only a hook that sets `discard_text` takes text back."""
+        async def _retry_once(ctx: Any, next_fn: Any) -> None:  # noqa: ANN401
+            await next_fn()
+            if ctx.turn_index == 0:
+                ctx.recovery_message = UserMessage(content="Try again.", injected=True)
+
+        transport = ScriptedTransport().add_text_chunks(["Draft one."]).add_text_chunks(["Draft two."])
+
+        sink, transcript = await _stream(transport, _retry_once)
+
+        assert _text_left_on_screen(sink) == "Draft one.Draft two."
+        assert _saved_text(transcript) == ["Draft one.", "Draft two."]

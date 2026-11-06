@@ -32,8 +32,9 @@ function toResolvedNodes(data: AppliedFiltersData, aloneLabel: (name: string) =>
   for (const item of data.apps ?? []) {
     nodes.push({ id: item.id, name: item.name, kind: item.nodeType === 'app' ? 'connector' : 'collection', node: item });
   }
+  // `kb` holds collections only: an agent's own may be stored with its record group's type, which draws a folder.
   for (const item of data.kb ?? []) {
-    nodes.push({ id: item.id, name: item.name, kind: 'collection', node: item });
+    nodes.push({ id: item.id, name: item.name, kind: 'collection', node: { ...item, nodeType: 'app', connector: 'KB' } });
   }
   for (const bucket of BELOW_APP_KEYS) {
     for (const item of data[bucket] ?? []) {
@@ -65,8 +66,8 @@ export function AppliedFilters({ appliedFilters }: AppliedFiltersProps) {
           align="center"
           gap="1"
           style={{
-            backgroundColor: 'var(--olive-a2)',
-            border: '1px solid var(--slate-4)',
+            backgroundColor: 'var(--gray-a2)',
+            border: '1px solid var(--border-default)',
             borderRadius: 'var(--radius-full)',
             padding: '2px var(--space-2)',
             maxWidth: '180px',
@@ -85,7 +86,7 @@ export function AppliedFilters({ appliedFilters }: AppliedFiltersProps) {
           <Text
             size="1"
             style={{
-              color: 'var(--slate-11)',
+              color: 'var(--text-secondary)',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',

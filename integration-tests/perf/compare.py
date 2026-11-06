@@ -135,6 +135,10 @@ class Row:
     gates: bool = True
 
 
+# Rows a benchmark registered from another module reports in place of the generic failure row.
+EXTRA_ROWS: dict[str, Callable[[dict[str, Any], dict[str, Any]], list[Row]]] = {}
+
+
 def _read(reader: Callable[[dict[str, Any]], Any], result: dict[str, Any]) -> Any:
     """A comparable field, or a marker when this result does not carry it."""
     try:
@@ -173,7 +177,11 @@ def compare(baseline: dict[str, Any], current: dict[str, Any]) -> tuple[list[Row
         # reports: how often an answer cites a document moves with the model
         # week to week. Whether a search over the seeded corpus finds it does not.
         rows += _rate_rows(baseline["metrics"], current["metrics"], citations_gate=benchmark != "load")
-    rows.append(_failure_row(benchmark, baseline["metrics"], current["metrics"]))
+    extra_rows = EXTRA_ROWS.get(benchmark)
+    if extra_rows:
+        rows += extra_rows(baseline["metrics"], current["metrics"])
+    else:
+        rows.append(_failure_row(benchmark, baseline["metrics"], current["metrics"]))
     return rows, mismatches
 
 

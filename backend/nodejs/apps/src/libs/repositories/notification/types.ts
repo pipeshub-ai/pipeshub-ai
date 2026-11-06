@@ -30,6 +30,8 @@ export interface NotificationRow {
 export interface NotificationScope {
   orgId: string;
   userId: string;
+  /** Leaves chat notices (`chat.*`) out of every read and change: they quote chat titles and messages. */
+  hideChatNotices?: boolean;
 }
 
 /** A notification to store; ids are strings. */

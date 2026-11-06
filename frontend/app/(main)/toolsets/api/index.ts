@@ -317,6 +317,8 @@ export const ToolsetsApi = {
     authStatus?: 'authenticated' | 'not-authenticated';
     /** `org`: the organization's instances only, without the caller's personal ones. */
     scope?: 'org';
+    /** For lookups that only enrich a screen: a failure must not raise the global error toast. */
+    quiet?: boolean;
   }): Promise<{ toolsets: BuilderSidebarToolset[]; filterCounts?: ToolsetsFilterCounts }> {
     const limit = params?.limitPerPage ?? PAGE_SIZE;
     return fetchAllToolsetPages((page) =>
@@ -327,6 +329,7 @@ export const ToolsetsApi = {
         includeRegistry: params?.includeRegistry ?? false,
         authStatus: params?.authStatus,
         scope: params?.scope,
+        quiet: params?.quiet,
       })
     );
   },
@@ -358,6 +361,7 @@ export const ToolsetsApi = {
     toolsetType?: string;
     /** `org`: the organization's instances only, without the caller's personal ones. */
     scope?: 'org';
+    quiet?: boolean;
   }): Promise<ToolsetsPageResponse> {
     const limit = Math.min(params.limit ?? PAGE_SIZE, MAX_TOOLSETS_LIST_LIMIT);
     const { data } = await apiClient.get<{
@@ -381,6 +385,7 @@ export const ToolsetsApi = {
         toolsetType: params.toolsetType?.trim() || undefined,
         scope: params.scope,
       },
+      suppressErrorToast: params.quiet,
     });
     const rows = data?.toolsets ?? [];
     const fc = data?.filterCounts;

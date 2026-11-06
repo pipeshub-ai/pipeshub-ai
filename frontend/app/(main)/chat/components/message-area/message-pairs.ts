@@ -1,7 +1,11 @@
-import type { AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, MessagePart } from '../../types';
+import type { AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ChatCollectionAttachment, MessagePart } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import type { ChatStreamErrorInfo } from '../../stream-error';
+import type { UnavailableTool } from '../../unavailable-tools';
+import { chatExtension } from '@/config';
+import type { PairMessage, RowCustom } from '../../chat-extension';
+import { hasAnyFilter } from '../../utils/tree-selection';
 
 export interface MessagePair {
   key: string;
@@ -31,18 +35,20 @@ export interface MessagePair {
   status?: 'stopped';
   /** The server's error code and details when this reply is a failed run (live turns only). */
   streamError?: ChatStreamErrorInfo;
+  /** Tools the person asking had not connected; the answer went on without them. */
+  unavailableTools?: UnavailableTool[];
+  /** The run failed: `answer` holds the error text, not an answer. */
+  failed?: boolean;
   /** No assistant row follows this question — render the question alone, no answer area. */
   unanswered?: boolean;
+  /**
+   * The answer is running on the server and this page joined it part-way (it was reloaded mid-answer): its trail
+   * shows no elapsed time, since this page did not see the run start.
+   */
+  resumed?: boolean;
 }
 
 type MessageContent = readonly { type: string; text?: string }[];
-
-interface PairMessage {
-  readonly id?: string;
-  readonly role: string;
-  readonly content: unknown;
-  readonly metadata?: { custom?: unknown };
-}
 
 type AssistantCustom = {
   messageId?: string;
@@ -53,10 +59,14 @@ type AssistantCustom = {
   persistedAskUserQuestion?: AskUserQuestionPayload;
   persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
   persistedParts?: MessagePart[];
+  /** Its question card was answered and the server is still running the reply (the page was reloaded meanwhile). */
+  resumesOnServer?: boolean;
   status?: 'stopped';
   streamError?: ChatStreamErrorInfo;
   /** A search behind this answer was answered from a partial search. */
   searchDegraded?: boolean;
+  unavailableTools?: UnavailableTool[];
+  failed?: boolean;
 };
 
 type UserCustom = {
@@ -71,6 +81,11 @@ export interface BuildMessagePairsOptions {
   streamingQuestion: string;
   pendingCollections: Array<{ id: string; name: string }>;
   regenerateMessageId: string | null;
+  /**
+   * The server is still running the newest question's answer, though this tab holds no stream for it (the page was
+   * reloaded mid-answer). That question shows the live "thinking" state, not a bare question.
+   */
+  remoteRunInProgress?: boolean;
   /** Stable empty value, so unchanged rows keep their identity across renders. */
   emptyCitationMaps: CitationMaps;
 }
@@ -85,6 +100,17 @@ export function extractTextContent(content: MessageContent): string {
     .join('');
 }
 
+const isStandalone = (msg: PairMessage | null | undefined): boolean =>
+  msg != null && chatExtension.pairs.isStandalone(msg);
+
+/** The nearest row before/after `index` that is not standalone: such a row between a question and its answer does not break the pair. */
+function neighbour(messages: readonly PairMessage[], index: number, step: 1 | -1): PairMessage | null {
+  for (let j = index + step; j >= 0 && j < messages.length; j += step) {
+    if (!isStandalone(messages[j])) return messages[j];
+  }
+  return null;
+}
+
 /** Build message pairs (user question + assistant answer) in chronological order. */
 export function buildMessagePairs(
   messages: readonly PairMessage[],
@@ -95,6 +121,7 @@ export function buildMessagePairs(
     streamingQuestion,
     pendingCollections,
     regenerateMessageId,
+    remoteRunInProgress = false,
     emptyCitationMaps,
   } = options;
   const pairs: MessagePair[] = [];
@@ -111,7 +138,12 @@ export function buildMessagePairs(
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    if (msg.role === 'user' && messages[i + 1]?.role !== 'assistant') {
+    if (isStandalone(msg)) {
+      const pair = chatExtension.pairs.standalonePair(msg, i, { emptyCitationMaps });
+      if (pair) pairs.push(pair);
+      continue;
+    }
+    if (msg.role === 'user' && neighbour(messages, i, 1)?.role !== 'assistant') {
       // A question with no assistant message after it. A row is otherwise
       // only emitted per assistant message, so this question would not be
       // drawn at all: Stop before the first token drops the empty assistant
@@ -121,18 +153,21 @@ export function buildMessagePairs(
       // are answered in its context -- so it stays, in the place it was
       // asked rather than at the end.
       const userCustom = msg.metadata?.custom as UserCustom | undefined;
-      pairs.push({
+      // The newest question, with its run still going on the server: show the live state at once, as a send does.
+      const runsOnServer = remoteRunInProgress && !isStreaming && neighbour(messages, i, 1) === null;
+      pairs.push(chatExtension.pairs.decorate({
         key: msg.id ?? `user-${i}`,
         question: extractTextContent(msg.content as MessageContent),
         answer: '',
         citationMaps: emptyCitationMaps,
-        isStreaming: false,
+        isStreaming: runsOnServer,
         collections: userCustom?.collections,
         appliedFilters: userCustom?.appliedFilters,
         createdAt: userCustom?.createdAt,
         attachments: userCustom?.attachments,
-        unanswered: true,
-      });
+        unanswered: !runsOnServer,
+        ...(runsOnServer ? { resumed: true } : {}),
+      }, { user: userCustom as RowCustom | undefined, standaloneBefore: 0 }));
       continue;
     }
     if (msg.role === 'assistant') {
@@ -141,10 +176,14 @@ export function buildMessagePairs(
       const metadata = msg.metadata?.custom as AssistantCustom | undefined;
 
       // Find preceding user message
-      const prevMsg = i > 0 ? messages[i - 1] : null;
+      const prevMsg = neighbour(messages, i, -1);
       const question = prevMsg?.role === 'user'
         ? extractTextContent(prevMsg.content as MessageContent)
         : 'Question';
+
+      let standaloneBefore = 0;
+      for (let j = i - 1; j >= 0 && isStandalone(messages[j]); j -= 1) standaloneBefore += 1;
+      if (prevMsg?.role !== 'user') standaloneBefore = 0;
 
       // Check if this message is being regenerated
       const isBeingRegenerated = Boolean(
@@ -156,19 +195,21 @@ export function buildMessagePairs(
       // older card row when a later turn (e.g. "hiii") is now last — then the
       // last pair's question is not `streamingQuestion`.
       const isLastAssistant = i === lastAssistantIndex;
-      const lastQuestion = lastAssistantIndex > 0
-        && messages[lastAssistantIndex - 1]?.role === 'user'
-        ? extractTextContent(messages[lastAssistantIndex - 1].content as MessageContent)
+      const beforeLast = lastAssistantIndex > 0 ? neighbour(messages, lastAssistantIndex, -1) : null;
+      const lastQuestion = beforeLast?.role === 'user'
+        ? extractTextContent(beforeLast.content as MessageContent)
         : '';
       const isCurrentlyStreaming =
         isStreaming &&
         question === streamingQuestion &&
         (isLastAssistant || lastQuestion !== streamingQuestion);
+      // An answered card whose reply the server still runs: shown running with the steps so far, as a send is.
+      const resumesOnServer = remoteRunInProgress && !isStreaming && Boolean(metadata?.resumesOnServer);
 
       // appliedFilters from the preceding user message metadata
       const userMsgCustom = prevMsg?.metadata?.custom as UserCustom | undefined;
 
-      pairs.push({
+      pairs.push(chatExtension.pairs.decorate({
         key: msg.id ?? `asst-${i}`,
         messageId: metadata?.messageId,
         question,
@@ -178,7 +219,8 @@ export function buildMessagePairs(
           : (metadata?.citationMaps || emptyCitationMaps),
         confidence: metadata?.confidence,
         searchDegraded: metadata?.searchDegraded === true,
-        isStreaming: isCurrentlyStreaming || isBeingRegenerated,
+        isStreaming: isCurrentlyStreaming || isBeingRegenerated || resumesOnServer,
+        ...(resumesOnServer ? { resumed: true } : {}),
         modelInfo: metadata?.modelInfo,
         feedbackInfo: metadata?.feedbackInfo,
         collections: isCurrentlyStreaming
@@ -192,9 +234,72 @@ export function buildMessagePairs(
         persistedParts: metadata?.persistedParts,
         status: metadata?.status,
         streamError: metadata?.streamError,
-      });
+        unavailableTools: metadata?.unavailableTools,
+        ...(metadata?.failed ? { failed: true } : {}),
+      }, {
+        user: userMsgCustom as RowCustom | undefined,
+        assistant: metadata as RowCustom | undefined,
+        standaloneBefore,
+      }));
     }
   }
 
   return pairs;
+}
+
+/** Rows equal field by field to the previous build keep their old object, so memoised rows skip re-rendering. */
+export function keepUnchangedPairs(
+  previous: ReadonlyMap<string, MessagePair>,
+  next: MessagePair[]
+): MessagePair[] {
+  return next.map((pair) => {
+    const old = previous.get(pair.key);
+    if (!old) return pair;
+    const keys = Object.keys(pair) as (keyof MessagePair)[];
+    const same =
+      keys.length === Object.keys(old).length && keys.every((k) => Object.is(pair[k], old[k]));
+    return same ? old : pair;
+  });
+}
+
+export type RetryTurn = Pick<MessagePair, 'question' | 'attachments' | 'collections' | 'appliedFilters'>;
+
+/**
+ * The rows without the failed turn whose reply is `key`, when only this tab holds it (its question has no stored id):
+ * Try again asks that question anew, so it shows once. Null when there is nothing to drop.
+ */
+export function withoutFailedTurn<M extends PairMessage>(messages: readonly M[], key: string): M[] | null {
+  const at = messages.findIndex((m) => m.id === key);
+  const reply = messages[at];
+  if (reply?.role !== 'assistant' || (reply.metadata?.custom as AssistantCustom | undefined)?.failed !== true) return null;
+  let asked = at - 1;
+  while (asked >= 0 && isStandalone(messages[asked])) asked -= 1;
+  if (messages[asked]?.role !== 'user' || messages[asked].id !== undefined) return null;
+  return messages.filter((_, i) => i !== asked && i !== at);
+}
+
+/**
+ * The user message that asks a failed turn again, with its attachments and knowledge scope: the scope it was sent with
+ * (`resendFilters`, folders, records and groups included), not what the composer has selected since.
+ */
+export function retryTurnMessage(turn: RetryTurn) {
+  // Reloaded turns carry only `appliedFilters`; the send path reads `collections`.
+  const collections: ChatCollectionAttachment[] = turn.collections?.length
+    ? turn.collections
+    : [
+        ...(turn.appliedFilters?.apps ?? []).map(({ id, name }) => ({ id, name, kind: 'collectionRoot' as const })),
+        ...(turn.appliedFilters?.kb ?? []).map(({ id, name }) => ({ id, name, kind: 'recordGroup' as const })),
+      ];
+  return {
+    role: 'user' as const,
+    content: [{ type: 'text' as const, text: turn.question }],
+    metadata: {
+      custom: {
+        collections: collections.length > 0 ? collections : undefined,
+        attachments: turn.attachments?.length ? turn.attachments : undefined,
+        resendFilters: hasAnyFilter(turn.appliedFilters) ? turn.appliedFilters : undefined,
+      },
+    },
+    startRun: true,
+  };
 }

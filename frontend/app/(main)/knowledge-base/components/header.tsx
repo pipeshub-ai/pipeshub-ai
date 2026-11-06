@@ -3,8 +3,9 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { Flex, Text, Button, IconButton, Box, DropdownMenu, SegmentedControl } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { IconMenuItem } from '@/app/components/ui/icon-menu-item';
 import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
-import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar';
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 import { useKnowledgeBaseStore } from '../store';
 import type { ViewMode, PageViewMode, Breadcrumb, NodeType } from '../types';
 import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
@@ -14,7 +15,6 @@ import { ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { PermissionLockIcon } from '@/config';
 import { HeaderOverflowMenu } from '@/app/(main)/workspace/components/header-overflow-menu';
-import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 
 
 // Radix offsets ghost buttons by their own padding; these set their own, so the
@@ -232,6 +232,7 @@ export function Header({
 }: KBHeaderProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  const isDrawerLayout = useIsBelowDesktop();
   // Tablets fold the secondary actions too, so the collection name keeps room.
   const foldActions = useIsBelowDesktop();
   const { viewMode, setViewMode, tableData } = useKnowledgeBaseStore();
@@ -366,40 +367,40 @@ export function Header({
       gap={isMobile ? '2' : '3'}
       style={{
         height: '40px',
-        // Leave room on the left for the fixed mobile hamburger button so the
-        // breadcrumb does not sit underneath it.
-        padding: isMobile ? `0 var(--space-2) 0 ${MOBILE_HAMBURGER_GUTTER_PX}px` : '0 var(--space-3)',
+        padding: isDrawerLayout ? '0 var(--space-2) 0 var(--space-3)' : '0 var(--space-3)',
         borderBottom: '1px solid var(--olive-3)',
         backdropFilter: 'var(--frost-filter-subtle)',
         backgroundColor: 'var(--effects-translucent)',
         flexShrink: 0,
       }}
     >
-      {/* Left: Breadcrumbs — on mobile, scroll horizontally so every ancestor
-          stays tappable instead of getting clipped by overflow: hidden. */}
-      <Flex
-        align="center"
-        gap="2"
-        wrap="nowrap"
-        className={isMobile ? 'no-scrollbar' : undefined}
-        style={{
-          overflowX: isMobile ? 'auto' : 'hidden',
-          overflowY: 'hidden',
-          minWidth: isMobile ? 0 : 160,
-          flex: 1,
-        }}
-      >
-        {/* Restores a collapsed nav sidebar; without it the app-shell fallback floats over the breadcrumb */}
+      {/* Left: the sidebar toggle leads the row, 8px before the trail and outside its scroll. */}
+      <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
         <SidebarExpandButton placement="inline" />
-        {isSearchActive ? (
-          <Flex align="center" gap="2">
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {t('kb.searchResults')}
-            </Text>
-          </Flex>
-        ) : (
-          renderBreadcrumbs()
-        )}
+        {/* Breadcrumbs — on mobile, scroll horizontally so every ancestor
+            stays tappable instead of getting clipped by overflow: hidden. */}
+        <Flex
+          align="center"
+          gap="2"
+          wrap="nowrap"
+          className={isMobile ? 'no-scrollbar' : undefined}
+          style={{
+            overflowX: isMobile ? 'auto' : 'hidden',
+            overflowY: 'hidden',
+            minWidth: isMobile ? 0 : 160,
+            flex: 1,
+          }}
+        >
+          {isSearchActive ? (
+            <Flex align="center" gap="2">
+              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                {t('kb.searchResults')}
+              </Text>
+            </Flex>
+          ) : (
+            renderBreadcrumbs()
+          )}
+        </Flex>
       </Flex>
 
       {/* Right: Actions */}
@@ -485,34 +486,32 @@ export function Header({
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content align="end">
                   {onCreateFolder && (
-                    <DropdownMenu.Item
+                    <IconMenuItem
+                      icon="create_new_folder"
+                      textValue={t('kb.newFolder')}
                       disabled={folderPermissionDenied}
                       onClick={() => {
                         if (folderPermissionDenied) return;
                         onCreateFolder();
                       }}
                     >
-                      <Flex align="center" gap="2">
-                        <MaterialIcon name="create_new_folder" size={16} color="var(--slate-11)" />
-                        <Text size="2">{t('kb.newFolder')}</Text>
-                        {folderPermissionDenied && <PermissionLockIcon />}
-                      </Flex>
-                    </DropdownMenu.Item>
+                      {t('kb.newFolder')}
+                      {folderPermissionDenied && <PermissionLockIcon />}
+                    </IconMenuItem>
                   )}
                   {onUpload && (
-                    <DropdownMenu.Item
+                    <IconMenuItem
+                      icon="file_upload"
+                      textValue={t('dialog.uploadData')}
                       disabled={uploadPermissionDenied}
                       onClick={() => {
                         if (uploadPermissionDenied) return;
                         onUpload();
                       }}
                     >
-                      <Flex align="center" gap="2">
-                        <MaterialIcon name="file_upload" size={16} color="var(--slate-11)" />
-                        <Text size="2">{t('dialog.uploadData')}</Text>
-                        {uploadPermissionDenied && <PermissionLockIcon />}
-                      </Flex>
-                    </DropdownMenu.Item>
+                      {t('dialog.uploadData')}
+                      {uploadPermissionDenied && <PermissionLockIcon />}
+                    </IconMenuItem>
                   )}
                 </DropdownMenu.Content>
               </DropdownMenu.Root>

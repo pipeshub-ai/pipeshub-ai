@@ -6,6 +6,8 @@ import type { CitationMaps } from '../components/message-area/response-tabs/cita
 import type { ConversationMessage } from '../types';
 import { stripAnswerMarkers } from './parse-download-markers';
 import { saveTextFile } from './save-text-file';
+import { chatExtension } from '@/config';
+import type { RowCustom } from '../chat-extension';
 
 export interface ExportLabels {
   you: string;
@@ -90,7 +92,8 @@ export function buildConversationMarkdown(
   for (const message of messages) {
     if (message.role === 'user') {
       const text = getThreadMessagePlainText(message).trim();
-      if (text) blocks.push(`## ${labels.you}\n\n${text}`);
+      const author = chatExtension.answer.questionAuthorName((message.metadata?.custom ?? {}) as RowCustom);
+      if (text) blocks.push(`## ${author ?? labels.you}\n\n${text}`);
     } else if (message.role === 'assistant') {
       const text = answerText(message);
       if (!text) continue;

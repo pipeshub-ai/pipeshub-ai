@@ -8,11 +8,19 @@ import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-b
 import { toast } from '@/lib/store/toast-store';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { isProcessedError } from '@/lib/api';
+import { fieldErrorsOf, isProcessedError } from '@/lib/api';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { isMcpInstanceReadOnly, McpInheritedCallout } from '@/config';
 import { useWorkspaceDrawerNestedModalHost, WorkspaceRightPanel } from '../../../components/workspace-right-panel';
-import { ConfirmationDialog, FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
+import {
+  ConfirmationDialog,
+  FormField,
+  LabeledTextField,
+  SelectDropdown,
+  TagInput,
+  type TagItem,
+  useFormValidation,
+} from '../../../components';
 import { McpServersApi } from '../../api';
 import { McpDisabledCallout, McpDisconnectDialog, isMcpInstanceDisabled } from '../../components';
 import { useToolRulesEditor } from '../../components/mcp-tool-rules-editor';
@@ -503,6 +511,8 @@ export function McpInstanceConfigPanel({
     void save();
   };
 
+  const formErrors = useFormValidation<'name' | 'url' | 'command'>({});
+
   const save = async () => {
     setIsSaving(true);
     try {
@@ -528,8 +538,13 @@ export function McpInstanceConfigPanel({
       onSaved();
       requestOpenChange(false);
     } catch (error) {
-      const detail = isProcessedError(error) ? error.message : undefined;
-      toast.error(t('workspace.mcpServers.toasts.saveError'), detail ? { description: detail } : undefined);
+      // A reason the server pinned to a field goes on that field; any other
+      // failure is one toast (the requests above opt out of the global one).
+      const onField = formErrors.applyServerErrors(fieldErrorsOf(error), ['name', 'url', 'command']);
+      if (!onField) {
+        const detail = isProcessedError(error) ? error.message : undefined;
+        toast.error(t('workspace.mcpServers.toasts.saveError'), detail ? { description: detail } : undefined);
+      }
     } finally {
       setIsSaving(false);
     }
@@ -687,8 +702,15 @@ export function McpInstanceConfigPanel({
       <McpInheritedCallout instance={editingInstance} />
       <McpDisabledCallout instance={liveInstance} />
 
-      <FormField label={t('workspace.mcpServers.form.name')} required>
-        <TextField.Root size="2" value={name} onChange={(e) => setName(e.target.value)} />
+      <FormField label={t('workspace.mcpServers.form.name')} required error={formErrors.errorFor('name')}>
+        <LabeledTextField
+          size="2"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            formErrors.clearServerError('name');
+          }}
+        />
       </FormField>
 
       <FormField label={t('workspace.mcpServers.form.description')} optional>
@@ -730,11 +752,14 @@ export function McpInstanceConfigPanel({
 
       {!isTemplateBased && transport === 'stdio' && (
         <>
-          <FormField label={t('workspace.mcpServers.form.command')} required>
-            <TextField.Root
+          <FormField label={t('workspace.mcpServers.form.command')} required error={formErrors.errorFor('command')}>
+            <LabeledTextField
               size="2"
               value={command}
-              onChange={(e) => setCommand(e.target.value)}
+              onChange={(e) => {
+                setCommand(e.target.value);
+                formErrors.clearServerError('command');
+              }}
               placeholder="npx"
             />
           </FormField>
@@ -757,11 +782,14 @@ export function McpInstanceConfigPanel({
       )}
 
       {(urlEditable || (!isTemplateBased && transport !== 'stdio')) && (
-        <FormField label={t('workspace.mcpServers.form.url')} required>
-          <TextField.Root
+        <FormField label={t('workspace.mcpServers.form.url')} required error={formErrors.errorFor('url')}>
+          <LabeledTextField
             size="2"
             value={url}
-            onChange={(e) => setUrl(e.target.value)}
+            onChange={(e) => {
+              setUrl(e.target.value);
+              formErrors.clearServerError('url');
+            }}
             placeholder={urlEditable ? 'https://your-company.okta.com/mcp' : 'https://example.com/mcp'}
           />
           {urlEditable && resolvedTemplate?.authHint?.helpText && (

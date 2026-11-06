@@ -3,21 +3,20 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+const router = vi.hoisted(() => ({ push: vi.fn() }));
+const drawer = vi.hoisted(() => ({ close: vi.fn(), open: vi.fn() }));
+vi.mock('next/navigation', () => ({ useRouter: () => router }));
 vi.mock('react-i18next', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-i18next')>()),
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en-US' } }),
 }));
-vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: ({ name }: { name: string }) => <span data-icon={name} /> }));
 vi.mock('@/lib/store/mobile-sidebar-store', () => ({
-  useMobileSidebarStore: (selector: (s: { close: () => void; open: () => void }) => unknown) =>
-    selector({ close: vi.fn(), open: vi.fn() }),
+  useMobileSidebarStore: (selector: (s: { close: () => void; open: () => void }) => unknown) => selector(drawer),
 }));
 vi.mock('@/chat/build-chat-url', () => ({ openFreshAgentChat: vi.fn() }));
 vi.mock('@/chat/store', () => {
   const state = {
-    toggleAgentsSidebar: vi.fn(),
-    closeAgentsSidebar: vi.fn(),
     agentContextAccess: null,
   };
   return { useChatStore: (selector: (s: typeof state) => unknown) => selector(state) };
@@ -43,7 +42,10 @@ function openMenu() {
   fireEvent.keyDown(screen.getByLabelText('chat.agentHeaderMenuAria'), { key: 'Enter' });
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 describe('agent chat header', () => {
   it('shows the agent name with its menu', () => {
@@ -71,16 +73,37 @@ describe('agent chat header', () => {
     expect(screen.getByLabelText('chat.agentHeaderMenuAria')).toBeTruthy();
   });
 
-  it('lists the agent creator in the menu on a phone', () => {
-    renderHeader({ displayName: 'Support Bot', isMobile: true, creatorName: 'Ada' });
+  it.each([[true], [false]])('names no creator in the menu, on a phone or a desktop (isMobile %s)', (isMobile) => {
+    renderHeader({ displayName: 'Support Bot', isMobile, creatorName: 'Ada' } as never);
     openMenu();
-    expect(screen.getByText('agentBuilder.createdBy: Ada')).toBeTruthy();
+    expect(screen.queryByText(/createdBy|Ada/)).toBeNull();
   });
 
-  it('keeps the creator out of the menu on desktop, where the chip shows it', () => {
-    renderHeader({ displayName: 'Support Bot', creatorName: 'Ada' });
+  it('leads New chat, All chats and More agents with their glyphs, as every other item in it', () => {
+    renderHeader({ displayName: 'Support Bot' });
     openMenu();
-    expect(screen.queryByText('agentBuilder.createdBy: Ada')).toBeNull();
+    expect(screen.getAllByRole('menuitem').map((el) => [el.textContent, el.querySelector('[data-icon]')?.getAttribute('data-icon')])).toEqual([
+      ['chat.agentMenuNewChat', 'assistant'],
+      ['chat.agentMenuAllChats', 'forum'],
+      ['chat.moreAgents', 'smart_toy'],
+    ]);
+  });
+
+  it('opens the Agents page from More agents', () => {
+    renderHeader({ displayName: 'Support Bot' });
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'chat.moreAgents' }));
+    expect(router.push).toHaveBeenCalledWith('/agents/');
+    expect(drawer.open).not.toHaveBeenCalled();
+  });
+
+  it('closes the drawer on a phone, and never opens it, on the way to the Agents page', () => {
+    renderHeader({ displayName: 'Support Bot', isMobile: true });
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'chat.moreAgents' }));
+    expect(drawer.close).toHaveBeenCalled();
+    expect(drawer.open).not.toHaveBeenCalled();
+    expect(router.push).toHaveBeenCalledWith('/agents/');
   });
 
   it('stops the mobile title short of the share group', () => {

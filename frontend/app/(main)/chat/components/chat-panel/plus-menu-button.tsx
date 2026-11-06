@@ -1,10 +1,9 @@
 'use client';
 
 import React from 'react';
-import { Box, Flex, IconButton, Popover, Separator, Switch, Text, Tooltip } from '@radix-ui/themes';
+import { Box, DropdownMenu, IconButton, Switch, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { MobileBottomSheet } from '@/app/components/ui/mobile-bottom-sheet';
 import { DEFAULT_AGENT_CAPABILITIES } from '@/chat/types';
 
 export function hasNonDefaultSearchCapabilities(
@@ -21,7 +20,8 @@ export function PlusMenuTriggerIcon({
   color,
   showFilterBadge,
 }: {
-  color: string;
+  /** Omitted, the glyph takes the button's own colour (Radix paints a disabled trigger). */
+  color?: string;
   showFilterBadge: boolean;
 }) {
   return (
@@ -61,134 +61,58 @@ export interface PlusMenuCapabilities {
   agentHasWebSearch?: boolean;
 }
 
-interface PlusMenuContentProps extends PlusMenuCapabilities {
-  onAttachFiles: () => void;
-}
-
-function PlusMenuRow({
-  children,
-  onClick,
-  disabled,
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-}) {
-  const [hovered, setHovered] = React.useState(false);
+/** A 16px leading glyph, hidden from assistive technology so a row is named by its words alone. */
+function RowIcon({ name }: { name: string }) {
   return (
-    <Flex
-      align="center"
-      justify="between"
-      gap="3"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      role={onClick ? 'menuitem' : undefined}
-      tabIndex={onClick && !disabled ? 0 : undefined}
-      aria-disabled={disabled || undefined}
-      onClick={disabled ? undefined : onClick}
-      onKeyDown={
-        disabled || !onClick
-          ? undefined
-          : (e: React.KeyboardEvent) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                onClick();
-              }
-            }
-      }
-      style={{
-        height: 32,
-        padding: '0 var(--space-2)',
-        borderRadius: 'var(--radius-1)',
-        backgroundColor: hovered && !disabled ? 'var(--olive-3)' : undefined,
-        outline: 'none',
-        cursor: disabled ? 'not-allowed' : onClick ? 'pointer' : 'default',
-        opacity: disabled ? 0.5 : 1,
-      }}
-    >
-      {children}
-    </Flex>
+    <span aria-hidden="true" style={{ display: 'inline-flex', flexShrink: 0 }}>
+      <MaterialIcon name={name} size={16} color="var(--text-secondary)" />
+    </span>
   );
 }
 
-function PlusMenuToggleRow({
+function CapabilityItem({
+  icon,
   label,
   checked,
   disabled,
   disabledTooltip,
   onCheckedChange,
 }: {
+  icon: string;
   label: string;
   checked: boolean;
   disabled?: boolean;
   disabledTooltip?: string;
   onCheckedChange: (checked: boolean) => void;
 }) {
-  const row = (
-    <PlusMenuRow
+  const item = (
+    <DropdownMenu.Item
+      // 44px rows on a touch screen.
+      className="touch-size"
       disabled={disabled}
-      onClick={() => onCheckedChange(!checked)}
+      aria-label={label}
+      // These are standing settings, often set together: flipping one keeps the menu open.
+      onSelect={(event) => {
+        event.preventDefault();
+        if (!disabled) onCheckedChange(!checked);
+      }}
     >
-      <Text size="2" style={{ color: 'var(--slate-12)' }}>
-        {label}
-      </Text>
-      <Switch
-        size="1"
-        aria-label={label}
-        checked={checked && !disabled}
-        disabled={disabled}
-        onCheckedChange={onCheckedChange}
-        onClick={(e) => e.stopPropagation()}
-      />
-    </PlusMenuRow>
+      <RowIcon name={icon} />
+      {label}
+      <span style={{ marginLeft: 'auto', paddingLeft: 'var(--space-3)', display: 'flex' }}>
+        <Switch
+          size="1"
+          aria-label={label}
+          checked={checked && !disabled}
+          disabled={disabled}
+          onCheckedChange={onCheckedChange}
+          // The row's own select would toggle a second time and undo this one.
+          onClick={(event) => event.stopPropagation()}
+        />
+      </span>
+    </DropdownMenu.Item>
   );
-  return disabled && disabledTooltip ? <Tooltip content={disabledTooltip}>{row}</Tooltip> : row;
-}
-
-/** Shared menu body — attach files + capability toggles — used by both the desktop popover and mobile sheet. */
-export function PlusMenuContent({
-  onAttachFiles,
-  internalSearch,
-  webSearch,
-  onToggleInternalSearch,
-  onToggleWebSearch,
-  agentHasInternalSearch,
-  agentHasWebSearch,
-}: PlusMenuContentProps) {
-  const { t } = useTranslation();
-  const notConfiguredLabel = t('chat.agentCapabilities.notConfiguredOnAgent', {
-    defaultValue: 'Not configured on this agent',
-  });
-
-  return (
-    <Flex direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
-      <PlusMenuRow onClick={onAttachFiles}>
-        <Flex align="center" gap="2">
-          <MaterialIcon name="attach_file" size={16} color="var(--neutral-11)" />
-          <Text size="2" style={{ color: 'var(--slate-12)' }}>
-            {t('chat.attachmentTooltip', { defaultValue: 'Attach files' })}
-          </Text>
-        </Flex>
-      </PlusMenuRow>
-
-      <Separator size="4" style={{ margin: 'var(--space-1) 0' }} />
-
-      <PlusMenuToggleRow
-        label={t('chat.agentCapabilities.internalSearch', { defaultValue: 'Internal search' })}
-        checked={internalSearch}
-        disabled={agentHasInternalSearch === false}
-        disabledTooltip={notConfiguredLabel}
-        onCheckedChange={onToggleInternalSearch}
-      />
-      <PlusMenuToggleRow
-        label={t('chat.agentCapabilities.webSearch', { defaultValue: 'Web search' })}
-        checked={webSearch}
-        disabled={agentHasWebSearch === false}
-        disabledTooltip={notConfiguredLabel}
-        onCheckedChange={onToggleWebSearch}
-      />
-    </Flex>
-  );
+  return disabled && disabledTooltip ? <Tooltip content={disabledTooltip}>{item}</Tooltip> : item;
 }
 
 export interface PlusMenuButtonProps extends PlusMenuCapabilities {
@@ -197,12 +121,13 @@ export interface PlusMenuButtonProps extends PlusMenuCapabilities {
   disabled?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Extra trigger style from the toolbar (its optical pull, the phone touch size). */
+  triggerStyle?: React.CSSProperties;
 }
 
 /**
- * Desktop "+" trigger that replaces the old Agent / Internal Search / Web
- * Search mode pill. Opens a popover with "Attach files" plus the Internal
- * Search / Web Search capability toggles.
+ * The composer's "+": a menu with "Attach files" and the Internal search / Web search
+ * capability switches. The same menu at every width; its rows grow to 44px on touch screens.
  */
 export function PlusMenuButton({
   onAttachFiles,
@@ -210,6 +135,7 @@ export function PlusMenuButton({
   disabled,
   open,
   onOpenChange,
+  triggerStyle,
   ...capabilities
 }: PlusMenuButtonProps) {
   const { t } = useTranslation();
@@ -217,15 +143,18 @@ export function PlusMenuButton({
     capabilities.internalSearch,
     capabilities.webSearch,
   );
+  const notConfiguredLabel = t('chat.agentCapabilities.notConfiguredOnAgent', {
+    defaultValue: 'Not configured on this agent',
+  });
+  const attachLabel = t('chat.attachmentTooltip', { defaultValue: 'Attach files' });
   return (
-    <Popover.Root open={open} onOpenChange={onOpenChange}>
-      <Popover.Trigger>
+    <DropdownMenu.Root open={open} onOpenChange={onOpenChange}>
+      <DropdownMenu.Trigger disabled={disabled}>
         <IconButton
           variant="ghost"
           color="gray"
           size="2"
           className="touch-size"
-          disabled={disabled}
           aria-label={
             showFilterBadge
               ? t('chat.plusMenu.ariaLabelFiltersApplied', {
@@ -240,26 +169,22 @@ export function PlusMenuButton({
             minWidth: 32,
             padding: 0,
             boxSizing: 'border-box',
-            backgroundColor: open ? 'var(--olive-3)' : undefined,
             borderRadius: 'var(--radius-2)',
             cursor: disabled ? 'default' : 'pointer',
+            ...triggerStyle,
           }}
         >
-          <PlusMenuTriggerIcon
-            color={disabled ? 'var(--slate-5)' : activeIconColor}
-            showFilterBadge={showFilterBadge}
-          />
+          <PlusMenuTriggerIcon color={disabled ? undefined : activeIconColor} showFilterBadge={showFilterBadge} />
         </IconButton>
-      </Popover.Trigger>
-      <Popover.Content
+      </DropdownMenu.Trigger>
+      {/* Opens upward from the bottom-docked composer. A fixed 216px, so toggling a switch never resizes it. */}
+      <DropdownMenu.Content
         data-composer-popover=""
         side="top"
         align="start"
-        // Opening from the mouse should not paint a focus ring on the first row.
-        onOpenAutoFocus={(e) => e.preventDefault()}
         style={{
-          width: 216,
-          padding: 6,
+          width: 'calc(var(--space-9) * 3 + var(--space-5))',
+          paddingBlock: 'calc(var(--space-1) * 1.5)',
           // Same surface as the settings row menus: frosted, one olive-3 border, no ring shadow
           backgroundColor: 'var(--frost-bg-strong)',
           backdropFilter: 'var(--frost-filter)',
@@ -269,45 +194,28 @@ export function PlusMenuButton({
           boxShadow: 'none',
         }}
       >
-        <PlusMenuContent
-          onAttachFiles={() => {
-            onOpenChange(false);
-            onAttachFiles();
-          }}
-          {...capabilities}
+        <DropdownMenu.Item className="touch-size" aria-label={attachLabel} onSelect={onAttachFiles}>
+          <RowIcon name="attach_file" />
+          {attachLabel}
+        </DropdownMenu.Item>
+        <DropdownMenu.Separator />
+        <CapabilityItem
+          icon="manage_search"
+          label={t('chat.agentCapabilities.internalSearch', { defaultValue: 'Internal search' })}
+          checked={capabilities.internalSearch}
+          disabled={capabilities.agentHasInternalSearch === false}
+          disabledTooltip={notConfiguredLabel}
+          onCheckedChange={capabilities.onToggleInternalSearch}
         />
-      </Popover.Content>
-    </Popover.Root>
-  );
-}
-
-export interface PlusMenuSheetProps extends PlusMenuCapabilities {
-  onAttachFiles: () => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}
-
-/** Mobile bottom-sheet variant of the "+" menu. */
-export function PlusMenuSheet({
-  onAttachFiles,
-  open,
-  onOpenChange,
-  ...capabilities
-}: PlusMenuSheetProps) {
-  const { t } = useTranslation();
-  return (
-    <MobileBottomSheet
-      open={open}
-      onOpenChange={onOpenChange}
-      title={t('chat.plusMenu.title', { defaultValue: 'Add & capabilities' })}
-    >
-      <PlusMenuContent
-        onAttachFiles={() => {
-          onOpenChange(false);
-          onAttachFiles();
-        }}
-        {...capabilities}
-      />
-    </MobileBottomSheet>
+        <CapabilityItem
+          icon="travel_explore"
+          label={t('chat.agentCapabilities.webSearch', { defaultValue: 'Web search' })}
+          checked={capabilities.webSearch}
+          disabled={capabilities.agentHasWebSearch === false}
+          disabledTooltip={notConfiguredLabel}
+          onCheckedChange={capabilities.onToggleWebSearch}
+        />
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
   );
 }

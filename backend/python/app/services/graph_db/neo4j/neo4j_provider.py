@@ -198,6 +198,10 @@ from app.services.graph_db.entity_index_queries import (
     build_entity_index_source_page_cypher,
     entity_index_source,
 )
+from app.services.graph_db.errors import (
+    UniqueConstraintViolation,
+    violates_unique_constraint,
+)
 from app.services.graph_db.interface.graph_db_provider import (
     ACCESS_WALK_MAX_DEPTH,
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -2097,6 +2101,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return True
 
         except Exception as e:
+            if violates_unique_constraint(str(e)):
+                # Whoever writes decides what this means: a taken handle is retried or answered, so it is no fault here.
+                self.logger.info("Batch upsert hit a unique constraint in %s", collection)
+                raise UniqueConstraintViolation(str(e)) from e
             self.logger.error(f"❌ Batch upsert nodes failed: {str(e)}")
             raise
 
@@ -2300,6 +2308,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return len(results) > 0
 
         except Exception as e:
+            if violates_unique_constraint(str(e)):
+                # Whoever writes decides what this means: a taken handle is retried or answered, so it is no fault here.
+                self.logger.info("Update hit a unique constraint in %s", collection)
+                raise UniqueConstraintViolation(str(e)) from e
             self.logger.error(f"❌ Update node failed: {str(e)}")
             raise
 
@@ -20805,7 +20817,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN t AS ok
         }}
         // One row: the driver builds a record object per row returned.
-        RETURN collect({{id: ok.id, vrid: ok.virtualRecordId,
+        RETURN collect({{id: ok.id, name: coalesce(ok.name, ok.recordName, ok.groupName),
+                        vrid: ok.virtualRecordId,
                         connectorId: ok.connectorId, indexingStatus: ok.indexingStatus,
                         hasIndexedCopy: coalesce(ok.hasIndexedCopy, false),
                         isInternal: coalesce(ok.isInternal, false),

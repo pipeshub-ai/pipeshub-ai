@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Box, Button, Callout, Flex, HoverCard, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -14,7 +14,7 @@ import {
 } from '../../components';
 import type { SelectOption, CheckboxOption, TagItem } from '../../components';
 import { useUsersStore } from '../store';
-import { UsersApi } from '../api';
+import { UsersApi, type InviteAddressStatus } from '../api';
 import { GroupsApi } from '../../groups/api';
 import { USER_ROLES, INVITE_ROLE_OPTIONS, isMaxOrgAdminsErrorMessage } from '../../constants';
 import { GroupType, type Group } from '../../groups/types';
@@ -151,6 +151,62 @@ export function InviteUsersSidebar({
   }, [groups, isEditMode]);
   // ^ Only re-run when groups load or edit mode changes. Do NOT add inviteGroupIds
   //   to deps or this will undo manual edits the user makes after opening.
+
+  // Addresses that already belong to the workspace, found as they are typed so
+  // the list can warn before anything is sent. A failed check shows no note;
+  // sending still reports who was skipped.
+  const checkedAddressesRef = useRef<Record<string, InviteAddressStatus | 'new'>>({});
+  const [addressStatus, setAddressStatus] = useState<Record<string, InviteAddressStatus>>({});
+  useEffect(() => {
+    if (!isInvitePanelOpen) {
+      checkedAddressesRef.current = {};
+      setAddressStatus({});
+    }
+  }, [isInvitePanelOpen]);
+  useEffect(() => {
+    if (!isInvitePanelOpen || isEditMode) return;
+    const unchecked = Array.from(
+      new Set(
+        inviteEmails
+          .filter((tag) => tag.isValid !== false)
+          .map((tag) => tag.value.toLowerCase()),
+      ),
+    ).filter((email) => !(email in checkedAddressesRef.current));
+    if (unchecked.length === 0) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const found = await UsersApi.checkInviteStatus(unchecked);
+        if (cancelled) return;
+        for (const email of unchecked) {
+          checkedAddressesRef.current[email] = found[email] ?? 'new';
+        }
+        setAddressStatus((prev) => ({ ...prev, ...found }));
+      } catch {
+        // No note for these addresses.
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [inviteEmails, isInvitePanelOpen, isEditMode]);
+  const addressWarnings = useMemo(() => {
+    const notes: Record<string, string> = {};
+    for (const [email, status] of Object.entries(addressStatus)) {
+      notes[email] =
+        status === 'member'
+          ? t('workspace.users.invite.warnMember', {
+              email,
+              defaultValue: `${email} is already a member, so no invite will be sent to this address.`,
+            })
+          : t('workspace.users.invite.warnInvited', {
+              email,
+              defaultValue: `${email} has already been invited. Sending again will resend their invite.`,
+            });
+    }
+    return notes;
+  }, [addressStatus, t]);
 
   // Form validation. Invalid tags block sending rather than being dropped
   // silently, so what is sent is exactly what the list shows.
@@ -685,7 +741,7 @@ export function InviteUsersSidebar({
         }}
       >
         {/* Email input */}
-        <FormField label={t('workspace.users.invite.emailLabel', 'Invite to')}>
+        <FormField label={t('workspace.users.invite.emailLabel', 'Invite to')} required={!isEditMode}>
           <TagInput
             tags={inviteEmails}
             onTagsChange={isEditMode ? undefined : setInviteEmails}
@@ -700,6 +756,11 @@ export function InviteUsersSidebar({
             validate={validateEmail}
             disabled={isEditMode}
             error={isEditMode ? undefined : invalidEmailsHint}
+            warnings={isEditMode ? undefined : addressWarnings}
+            warningsSummary={t(
+              'workspace.users.invite.warnMany',
+              'Some addresses are already members or already invited. Members are skipped and pending invites are sent again.'
+            )}
           />
         </FormField>
 

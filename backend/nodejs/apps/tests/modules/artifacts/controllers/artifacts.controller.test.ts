@@ -13,7 +13,7 @@ import {
 } from '../../../../src/modules/artifacts/controllers/artifacts.controller';
 import { ConversationTitleService } from '../../../../src/modules/artifacts/services/conversation-title.service';
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema';
-import { ProjectService } from '../../../../src/modules/projects/services/project.service';
+import { setConversationContext } from '../../../../src/modules/enterprise_search/services/conversation/http/conversation-context';
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
 import {
@@ -36,10 +36,13 @@ type JsonResponseDouble = {
   json: sinon.SinonStub;
 };
 
+const LIST_FILTER = { $and: [{ orgId: 'org-under-test', $or: [{ userId: 'caller' }] }] };
+
+/** What `guards.listScope('any')` leaves on the request before the handler runs. */
 function createMockRequest(
   overrides: Partial<AuthenticatedUserRequest> = {},
 ): AuthenticatedUserRequest {
-  return {
+  const req = {
     headers: { authorization: 'Bearer test-token' },
     body: {},
     params: {},
@@ -50,6 +53,12 @@ function createMockRequest(
     },
     ...overrides,
   } as AuthenticatedUserRequest;
+  setConversationContext(req, {
+    caller: { userId: 'caller', orgId: 'org-under-test', teamIds: [] },
+    listFilter: LIST_FILTER,
+    extended: false,
+  });
+  return req;
 }
 
 function createMockResponse(): JsonResponseDouble {
@@ -113,7 +122,7 @@ describe('Artifacts Controller', () => {
             pagination: { page: 1, limit: 50, totalCount: 4, totalPages: 1 },
           },
         });
-      sinon
+      const titlesStub = sinon
         .stub(ConversationTitleService, 'batchTitles')
         .resolves(
           new Map([
@@ -150,6 +159,18 @@ describe('Artifacts Controller', () => {
         projectId: 'proj-1',
         conversationArchived: true,
       });
+      expect(titlesStub.firstCall.args).to.deep.equal([
+        [
+          '507f1f77bcf86cd799439013',
+          '507f1f77bcf86cd799439014',
+          '507f1f77bcf86cd799439015',
+        ],
+        {
+          readFilter: LIST_FILTER,
+          userId: '507f1f77bcf86cd799439011',
+          accessibleProjectIds: [],
+        },
+      ]);
     });
 
     it('rejects unauthenticated callers', async () => {
@@ -344,341 +365,116 @@ describe('Artifacts Controller', () => {
   });
 });
 
-const CALLER_ID = '507f1f77bcf86cd799439011';
-const OTHER_USER_ID = '507f1f77bcf86cd799439099';
-const ORG_ID = '507f1f77bcf86cd799439012';
 const CONVERSATION_ID = '507f1f77bcf86cd799439013';
-const PROJECT_ID = '507f1f77bcf86cd799439014';
 
-function sameId(left: unknown, right: unknown): boolean {
-  if (left == null || right == null) return false;
-  return String(left) === String(right);
-}
-
-/** Apply the filter `batchTitles` hands to Mongo against one fixture row. */
-function documentMatches(
-  doc: Record<string, unknown>,
-  clause: Record<string, unknown>,
-): boolean {
-  return Object.entries(clause).every(([key, expected]) => {
-    if (key === '$or' && Array.isArray(expected)) {
-      return expected.some(
-        (branch) =>
-          branch &&
-          typeof branch === 'object' &&
-          documentMatches(doc, branch as Record<string, unknown>),
-      );
-    }
-    if (key === '$and' && Array.isArray(expected)) {
-      return expected.every(
-        (branch) =>
-          branch &&
-          typeof branch === 'object' &&
-          documentMatches(doc, branch as Record<string, unknown>),
-      );
-    }
-    return valueMatches(valueAt(doc, key), expected);
-  });
-}
-
-function valueAt(doc: Record<string, unknown>, path: string): unknown {
-  if (path === 'sharedWith.userId') {
-    const sharedWith = doc.sharedWith;
-    if (!Array.isArray(sharedWith)) return undefined;
-    return sharedWith.map((entry) => entry?.userId);
-  }
-  return doc[path];
-}
-
-function valueMatches(actual: unknown, expected: unknown): boolean {
-  if (
-    expected &&
-    typeof expected === 'object' &&
-    '$in' in (expected as object)
-  ) {
-    const allowed = (expected as { $in: unknown[] }).$in;
-    const values = Array.isArray(actual) ? actual : [actual];
-    return values.some((value) =>
-      allowed.some((candidate) => sameId(value, candidate)),
-    );
-  }
-  if (
-    expected &&
-    typeof expected === 'object' &&
-    '$ne' in (expected as object)
-  ) {
-    const rejected = (expected as { $ne: unknown }).$ne;
-    return !(sameId(actual, rejected) || actual === rejected);
-  }
-  if (Array.isArray(actual)) {
-    return actual.some(
-      (value) => sameId(value, expected) || value === expected,
-    );
-  }
-  return sameId(actual, expected) || actual === expected;
-}
-
-function stubSessions(docs: Record<string, unknown>[]) {
-  return sinon.stub(ChatSession, 'find').callsFake(((
-    filter: Record<string, unknown>,
-  ) => ({
-    lean: () =>
-      Promise.resolve(docs.filter((doc) => documentMatches(doc, filter))),
-  })) as never);
-}
+const CALLER_ID = '507f1f77bcf86cd799439011';
+const PROJECT_ID = '507f1f77bcf86cd799439099';
 
 describe('ConversationTitleService', () => {
   afterEach(() => {
     sinon.restore();
   });
 
-  it('returns an empty map when no valid ids are given', async () => {
-    const titles = await ConversationTitleService.batchTitles(
-      ['not-an-id'],
-      ORG_ID,
-      CALLER_ID,
-    );
-    expect(titles.size).to.equal(0);
+  const scope = (accessibleProjectIds: string[] = []) => ({
+    readFilter: LIST_FILTER,
+    userId: CALLER_ID,
+    accessibleProjectIds,
   });
 
-  it('yields no title when isShared is true but sharedWith is a different user', async () => {
-    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
-    const findStub = stubSessions([
-      {
-        _id: new Types.ObjectId(CONVERSATION_ID),
-        orgId: new Types.ObjectId(ORG_ID),
-        userId: new Types.ObjectId(OTHER_USER_ID),
-        isDeleted: false,
-        isShared: true,
-        sharedWith: [{ userId: new Types.ObjectId(OTHER_USER_ID) }],
-        title: 'Shared with someone else',
-      },
+  const stubSessions = (rows: Array<Record<string, unknown>>): sinon.SinonStub =>
+    sinon.stub(ChatSession, 'find').returns({
+      lean: () => Promise.resolve(rows),
+    } as never);
+
+  it('returns an empty map without a query when no valid ids are given', async () => {
+    const find = sinon.stub(ChatSession, 'find');
+    const titles = await ConversationTitleService.batchTitles(['not-an-id'], scope());
+    expect(titles.size).to.equal(0);
+    expect(find.called).to.equal(false);
+  });
+
+  it('narrows the caller read filter to the ids, never widening it', async () => {
+    const find = stubSessions([
+      { _id: new Types.ObjectId(CONVERSATION_ID), title: 'Mine' },
     ]);
 
     const titles = await ConversationTitleService.batchTitles(
-      [CONVERSATION_ID],
-      ORG_ID,
-      CALLER_ID,
+      [CONVERSATION_ID, CONVERSATION_ID, ''],
+      scope(),
     );
 
-    expect(titles.size).to.equal(0);
-    const filter = findStub.firstCall.args[0] as {
-      $or: Array<Record<string, unknown>>;
-    };
-    expect(filter.$or.some((branch) => branch.isShared === true)).to.equal(
-      false,
-    );
-    expect(filter.$or[1]).to.deep.equal({
-      $and: [
-        { isShared: true },
-        { 'sharedWith.userId': new Types.ObjectId(CALLER_ID) },
-        {
-          $or: [
-            { sessionType: { $ne: 'agent' } },
-            { isArchived: { $ne: true } },
-          ],
-        },
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({ title: 'Mine' });
+    const [filter] = find.firstCall.args as [{ $and: unknown[] }];
+    expect(filter.$and[0]).to.equal(LIST_FILTER);
+    expect(filter.$and[1]).to.deep.equal({
+      _id: { $in: [new Types.ObjectId(CONVERSATION_ID)] },
+    });
+  });
+
+  it('lists an archived chat only for its owner or the people an assistant chat is shared with', async () => {
+    const find = stubSessions([]);
+    await ConversationTitleService.batchTitles([CONVERSATION_ID], scope());
+    const [filter] = find.firstCall.args as [{ $and: unknown[] }];
+    const caller = new Types.ObjectId(CALLER_ID);
+    expect(filter.$and[2]).to.deep.equal({
+      $or: [
+        { isArchived: { $ne: true } },
+        { userId: caller },
+        { sessionType: { $ne: 'agent' }, 'sharedWith.userId': caller },
       ],
     });
   });
 
-  it('returns a title when the caller is on sharedWith', async () => {
-    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+  it('names the project only when the caller can view it', async () => {
     stubSessions([
       {
         _id: new Types.ObjectId(CONVERSATION_ID),
-        orgId: new Types.ObjectId(ORG_ID),
-        userId: new Types.ObjectId(OTHER_USER_ID),
-        isDeleted: false,
-        isShared: true,
-        sharedWith: [{ userId: new Types.ObjectId(CALLER_ID) }],
-        title: 'Shared with me',
-      },
-    ]);
-
-    const titles = await ConversationTitleService.batchTitles(
-      [CONVERSATION_ID],
-      ORG_ID,
-      CALLER_ID,
-    );
-
-    expect(titles.get(CONVERSATION_ID)).to.deep.equal({ title: 'Shared with me' });
-  });
-
-  it('returns a title for a project-visible chat in a project the caller can view', async () => {
-    sinon
-      .stub(ProjectService, 'getAccessibleProjectIds')
-      .resolves([new Types.ObjectId(PROJECT_ID)]);
-    stubSessions([
-      {
-        _id: new Types.ObjectId(CONVERSATION_ID),
-        orgId: new Types.ObjectId(ORG_ID),
-        userId: new Types.ObjectId(OTHER_USER_ID),
-        projectId: new Types.ObjectId(PROJECT_ID),
-        projectVisibility: 'project',
-        isDeleted: false,
-        isShared: false,
-        sharedWith: [],
         title: 'Project chat',
+        projectId: new Types.ObjectId(PROJECT_ID),
       },
     ]);
-
-    const titles = await ConversationTitleService.batchTitles(
+    const visible = await ConversationTitleService.batchTitles(
       [CONVERSATION_ID],
-      ORG_ID,
-      CALLER_ID,
+      scope([PROJECT_ID]),
     );
-
-    expect(titles.get(CONVERSATION_ID)).to.deep.equal({
+    expect(visible.get(CONVERSATION_ID)).to.deep.equal({
       title: 'Project chat',
       projectId: PROJECT_ID,
     });
-  });
 
-  it('leaves out the project of an own chat whose project the caller can no longer view', async () => {
-    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+    sinon.restore();
     stubSessions([
       {
         _id: new Types.ObjectId(CONVERSATION_ID),
-        orgId: new Types.ObjectId(ORG_ID),
-        userId: new Types.ObjectId(CALLER_ID),
+        title: 'Project chat',
         projectId: new Types.ObjectId(PROJECT_ID),
-        isDeleted: false,
-        title: 'Old project chat',
       },
     ]);
-
-    const titles = await ConversationTitleService.batchTitles(
+    const hidden = await ConversationTitleService.batchTitles(
       [CONVERSATION_ID],
-      ORG_ID,
-      CALLER_ID,
+      scope(),
     );
-
-    expect(titles.get(CONVERSATION_ID)).to.deep.equal({ title: 'Old project chat' });
+    expect(hidden.get(CONVERSATION_ID)).to.deep.equal({ title: 'Project chat' });
   });
 
-  const archivedFor = (overrides: Record<string, unknown>) => ({
-    _id: new Types.ObjectId(CONVERSATION_ID),
-    orgId: new Types.ObjectId(ORG_ID),
-    userId: new Types.ObjectId(OTHER_USER_ID),
-    isDeleted: false,
-    isArchived: true,
-    title: 'Archived by its owner',
-    ...overrides,
-  });
-
-  it('keeps an archived assistant chat for a viewer it is shared with', async () => {
-    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
-    stubSessions([
-      archivedFor({
-        isShared: true,
-        sharedWith: [{ userId: new Types.ObjectId(CALLER_ID) }],
-      }),
-    ]);
-
-    const titles = await ConversationTitleService.batchTitles(
-      [CONVERSATION_ID],
-      ORG_ID,
-      CALLER_ID,
-    );
-
-    expect(titles.get(CONVERSATION_ID)).to.deep.equal({
-      title: 'Archived by its owner',
-      conversationArchived: true,
-    });
-  });
-
-  it('drops an archived agent chat for a viewer it is shared with', async () => {
-    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
-    stubSessions([
-      archivedFor({
-        sessionType: 'agent',
-        agentKey: 'agent-7',
-        isShared: true,
-        sharedWith: [{ userId: new Types.ObjectId(CALLER_ID) }],
-      }),
-    ]);
-
-    const titles = await ConversationTitleService.batchTitles(
-      [CONVERSATION_ID],
-      ORG_ID,
-      CALLER_ID,
-    );
-
-    expect(titles.size).to.equal(0);
-  });
-
-  it('drops an archived project chat for other project members', async () => {
-    sinon
-      .stub(ProjectService, 'getAccessibleProjectIds')
-      .resolves([new Types.ObjectId(PROJECT_ID)]);
-    stubSessions([
-      archivedFor({
-        projectId: new Types.ObjectId(PROJECT_ID),
-        projectVisibility: 'project',
-      }),
-    ]);
-
-    const titles = await ConversationTitleService.batchTitles(
-      [CONVERSATION_ID],
-      ORG_ID,
-      CALLER_ID,
-    );
-
-    expect(titles.size).to.equal(0);
-  });
-
-  it('marks an archived chat so the gallery opens it from the archive', async () => {
-    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+  it('returns the agent of an agent chat and marks an archived one', async () => {
     stubSessions([
       {
         _id: new Types.ObjectId(CONVERSATION_ID),
-        orgId: new Types.ObjectId(ORG_ID),
-        userId: new Types.ObjectId(CALLER_ID),
-        isDeleted: false,
-        isArchived: true,
-        sessionType: 'agent',
-        agentKey: 'agent-7',
         title: 'Archived agent chat',
+        sessionType: 'agent',
+        agentKey: 'agent-7',
+        isArchived: true,
       },
     ]);
-
     const titles = await ConversationTitleService.batchTitles(
       [CONVERSATION_ID],
-      ORG_ID,
-      CALLER_ID,
+      scope(),
     );
-
     expect(titles.get(CONVERSATION_ID)).to.deep.equal({
       title: 'Archived agent chat',
       agentKey: 'agent-7',
       conversationArchived: true,
-    });
-  });
-
-  it('returns the agent of an agent chat so the gallery can open it there', async () => {
-    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
-    stubSessions([
-      {
-        _id: new Types.ObjectId(CONVERSATION_ID),
-        orgId: new Types.ObjectId(ORG_ID),
-        userId: new Types.ObjectId(CALLER_ID),
-        isDeleted: false,
-        sessionType: 'agent',
-        agentKey: 'agent-7',
-        title: 'Agent chat',
-      },
-    ]);
-
-    const titles = await ConversationTitleService.batchTitles(
-      [CONVERSATION_ID],
-      ORG_ID,
-      CALLER_ID,
-    );
-
-    expect(titles.get(CONVERSATION_ID)).to.deep.equal({
-      title: 'Agent chat',
-      agentKey: 'agent-7',
     });
   });
 });

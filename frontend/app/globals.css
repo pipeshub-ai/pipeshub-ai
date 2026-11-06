@@ -56,7 +56,6 @@
 
 /* Light Mode */
 :root, .light, .light-theme {
-  --effects-translucent: rgba(255, 255, 255, 0.8);
 
   /* Frosted glass, used by every frosted surface. Change these to retune them all.
      --frost-bg: side panels and drawers. --frost-bg-strong: menus, popovers and floating
@@ -67,14 +66,8 @@
   --frost-bg-strong: rgba(255, 255, 255, 0.7);
   /* Dim behind a frosted side panel: light, so the page still shows through the frost */
   --frost-scrim: rgba(8, 10, 12, 0.3);
-  --neutral-9: #8b8d98;
-  --neutral-11: #60646c;
-  --neutral-12: #1c2024;
-  --neutral-a3: #00104010;
-  --neutral-a5: #00104020;
-  --neutral-a8: #00064046;
-  --neutral-a10: #00071b7f;
-  --segment-on: #ffffff;
+  /* Glass behind floating chrome (Cmd+K, menus, drawers): the theme gray, not a fixed white. */
+  --effects-translucent: color-mix(in oklab, var(--gray-1) 80%, transparent);
   --tokens-colors-surface: rgba(139, 139, 139, 0.084);
   --accent-surface: rgba(18, 249, 157, 0.04);
   --white-to-dark: rgba(0, 0, 0, 0.074);
@@ -106,8 +99,12 @@
   --emerald-a12: rgba(15, 61, 44, 1);
   --emerald-contrast: #ffffff;
   --emerald-surface: rgba(245, 254, 251, 0.8);
-  --emerald-indicator: #047857;
-  --emerald-track: #047857;
+  /* Checkbox, Switch, Radio, Progress and Slider fill: the brand emerald in both modes. */
+  --emerald-indicator: var(--emerald-9);
+  --emerald-track: var(--emerald-9);
+
+  /* The one focus ring. Radix's --focus-8 and any custom focus outline read it. */
+  --focus-ring: var(--emerald-9);
 
   --page-background: #dcdcdc;
   --file-icon-fill: #ffffff;
@@ -120,17 +117,9 @@
 .dark, .dark-theme,
 [data-is-root-theme="true"].dark,
 :root[class~="dark"] {
-  --effects-translucent: rgba(29, 29, 33, 0.70);
   --frost-bg: rgba(29, 29, 33, 0.58);
   --frost-bg-strong: rgba(29, 29, 33, 0.6);
-  --neutral-9: #696e77;
-  --neutral-11: #b0b4ba;
-  --neutral-12: #edeef0;
-  --neutral-a3: #ddeaf814;
-  --neutral-a5: #d9edfe25;
-  --neutral-a8: #d9edff5d;
-  --neutral-a10: #e5edfd7b;
-  --segment-on: #111113;
+  --effects-translucent: color-mix(in oklab, var(--gray-2) 70%, transparent);
   --tokens-colors-surface: rgba(0, 0, 0, 0.25);
   --accent-surface: rgba(18, 249, 157, 0.04);
   --white-to-dark: rgba(0, 0, 0, 0.25);
@@ -143,7 +132,7 @@
   --emerald-7: #1e6d58;
   --emerald-8: #268169;
   --emerald-9: #047857;
-  --emerald-10: #17906c;
+  --emerald-10: #10674C;
   --emerald-11: #3dd9a0;
   --emerald-12: #EEEEEE;
 
@@ -163,8 +152,11 @@
 
   --emerald-contrast: #ffffff;
   --emerald-surface: rgba(12, 49, 38, 0.5);
-  --emerald-indicator: #3dd9a0;
-  --emerald-track: #3dd9a0;
+  /* Was the light #3dd9a0, under which a white check mark read at about 1.8:1. */
+  --emerald-indicator: var(--emerald-9);
+  --emerald-track: var(--emerald-9);
+
+  --focus-ring: var(--emerald-8);
 
   --page-background: #111113;
   --file-icon-fill: #212225;
@@ -172,8 +164,20 @@
   --mcp-logo-plate-on: 1;
 }
 
-/* Map custom emerald to accent variables */
-.radix-themes[data-accent-color="emerald"] {
+/* One green in every layer.
+   The brand green is emerald and it is the only accent. `jade` is the Radix
+   prop passed to <Theme> (Radix has no emerald scale), so every portal Radix
+   opens (menus, dialogs, popovers, tooltips) carries data-accent-color="jade",
+   and so does any control given color="jade". Without the bare attribute
+   selector those layers drew Radix's lighter jade (#29a383, 3.15:1 under white
+   text) and a jade focus ring, while the page drew emerald. The whole ramp is
+   mapped, so soft, outline and focus states follow too. --focus-* is derived
+   by Radix from --accent-*, except step 8, which reads the one focus ring.
+   White on solid / hover: --accent-9 #047857 5.48:1, --accent-10 #10674C 6.85:1,
+   both modes. Asserted in app/__tests__/accent-contrast.test.ts. */
+.radix-themes[data-accent-color="emerald"],
+.radix-themes[data-accent-color="jade"],
+[data-accent-color="jade"] {
   --accent-1: var(--emerald-1);
   --accent-2: var(--emerald-2);
   --accent-3: var(--emerald-3);
@@ -204,6 +208,132 @@
   --accent-surface: var(--emerald-surface);
   --accent-indicator: var(--emerald-indicator);
   --accent-track: var(--emerald-track);
+
+  --focus-8: var(--focus-ring);
+}
+
+/* ========================
+   Theme gray on :root
+   Radix aliases --gray-* to the chosen gray only inside .radix-themes. Surfaces
+   portalled to <body> outside any Theme (and <body> itself) would otherwise
+   paint Radix's pure gray, so the olive alias is repeated here. Keep it in step
+   with grayColor in theme-provider.tsx.
+   ======================== */
+:root, .light, .light-theme, .dark, .dark-theme {
+  --gray-1: var(--olive-1);
+  --gray-2: var(--olive-2);
+  --gray-3: var(--olive-3);
+  --gray-4: var(--olive-4);
+  --gray-5: var(--olive-5);
+  --gray-6: var(--olive-6);
+  --gray-7: var(--olive-7);
+  --gray-8: var(--olive-8);
+  --gray-9: var(--olive-9);
+  --gray-10: var(--olive-10);
+  --gray-11: var(--olive-11);
+  --gray-12: var(--olive-12);
+  --gray-a1: var(--olive-a1);
+  --gray-a2: var(--olive-a2);
+  --gray-a3: var(--olive-a3);
+  --gray-a4: var(--olive-a4);
+  --gray-a5: var(--olive-a5);
+  --gray-a6: var(--olive-a6);
+  --gray-a7: var(--olive-a7);
+  --gray-a8: var(--olive-a8);
+  --gray-a9: var(--olive-a9);
+  --gray-a10: var(--olive-a10);
+  --gray-a11: var(--olive-a11);
+  --gray-a12: var(--olive-a12);
+}
+
+/* ========================
+   Colour roles
+
+   What components paint with. Each role is a job ("secondary text", "a
+   divider") pointing at a step of the theme gray, so a change of gray family
+   or appearance moves every surface that uses it. Components name a role,
+   never a scale step (--olive-3, --slate-11, --neutral-11).
+
+   Declared on :root (for surfaces portalled outside any Theme) and again on
+   .radix-themes, so a nested Theme that changes the appearance re-resolves
+   them. Quiet text that must stay readable is --text-secondary; --text-tertiary
+   is below 4.5:1 and only for decoration-level captions.
+   ======================== */
+:root,
+.radix-themes {
+  /* Text */
+  --text-primary: var(--gray-12);
+  --text-secondary: var(--gray-11);
+  --text-tertiary: var(--gray-a10);
+  --text-placeholder: var(--gray-a9);
+
+  /* Surfaces */
+  --surface-raised: var(--gray-1);
+  --surface-subtle: var(--gray-2);
+  /* The chat's canvas: its gradient from the top colour to the foot's. */
+  --surface-canvas: linear-gradient(to bottom, var(--surface-subtle), var(--surface-raised));
+
+  /* Fills */
+  --fill-muted: var(--gray-3);
+  --fill-hover: var(--gray-4);
+  --fill-active: var(--gray-5);
+  --fill-ghost-hover: var(--gray-a3);
+
+  /* Lines */
+  --border-subtle: var(--gray-3);
+  --border-default: var(--gray-4);
+  --border-strong: var(--gray-5);
+
+  /* Legacy names. --neutral-* used to hold a blue-gray (slate) scale; it now
+     follows the theme gray. New code uses a role above. */
+  --neutral-1: var(--gray-1);
+  --neutral-2: var(--gray-2);
+  --neutral-3: var(--gray-3);
+  --neutral-4: var(--gray-4);
+  --neutral-5: var(--gray-5);
+  --neutral-6: var(--gray-6);
+  --neutral-7: var(--gray-7);
+  --neutral-8: var(--gray-8);
+  --neutral-9: var(--gray-9);
+  --neutral-10: var(--gray-10);
+  --neutral-11: var(--gray-11);
+  --neutral-12: var(--gray-12);
+  --neutral-a1: var(--gray-a1);
+  --neutral-a2: var(--gray-a2);
+  --neutral-a3: var(--gray-a3);
+  --neutral-a4: var(--gray-a4);
+  --neutral-a5: var(--gray-a5);
+  --neutral-a6: var(--gray-a6);
+  --neutral-a7: var(--gray-a7);
+  --neutral-a8: var(--gray-a8);
+  --neutral-a9: var(--gray-a9);
+  --neutral-a10: var(--gray-a10);
+  --neutral-a11: var(--gray-a11);
+  --neutral-a12: var(--gray-a12);
+}
+
+/* ========================
+   Motion roles
+   One duration per kind of movement, one easing. Typed timings move onto these
+   as their surfaces are touched. Under reduced motion every role is 0ms.
+   ======================== */
+:root {
+  --motion-micro: 120ms;   /* hover, press, small state flips */
+  --motion-control: 180ms; /* a control changing state, a cross-fade */
+  --motion-surface: 240ms; /* a panel, toast or menu arriving */
+  --motion-page: 320ms;    /* a whole view changing */
+  --motion-ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+  /* Settle: fast start, long soft landing, for a block that opens to its height */
+  --motion-ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-micro: 0ms;
+    --motion-control: 0ms;
+    --motion-surface: 0ms;
+    --motion-page: 0ms;
+  }
 }
 
 /* ========================
@@ -301,6 +431,18 @@
   --shadow-4: 0 4px 8px 0 rgba(0, 0, 0, 0.1);
   --shadow-5: 0 8px 16px 0 rgba(0, 0, 0, 0.12);
   --shadow-6: 0 0 0 1px rgba(0, 0, 51, 0.06), 0 12px 60px 0 rgba(0, 0, 0, 0.15), 0 16px 64px 0 rgba(0, 0, 85, 0.02), 0 16px 36px -20px rgba(0, 6, 46, 0.2);
+
+  /* Surface shadows, the same in light and dark */
+  /* A popover floating over the answer, such as a citation preview */
+  --shadow-popover: 0 24px 52px 0 rgba(0, 0, 0, 0.12);
+  /* The chat composer while it has focus */
+  --shadow-chat-focused: 0 12px 32px -16px rgba(0, 9, 50, 0.12), 0 12px 60px 0 rgba(0, 0, 0, 0.15);
+  /* A drawer sliding in from the right edge, cast to its left */
+  --shadow-drawer: -12px 0 32px -16px rgba(0, 9, 50, 0.12), -12px 0 60px 0 rgba(0, 0, 0, 0.15);
+  /* A bar or slab floating above a list, such as a selection bar */
+  --shadow-slab: 0 20px 28px 0 rgba(0, 0, 0, 0.15);
+  /* The inbox panel opening from the sidebar, cast to its right */
+  --shadow-inbox: 4px 0 24px 0 rgba(0, 0, 0, 0.08), 0 12px 32px 0 rgba(0, 9, 50, 0.06);
 }
 
 /* ========================
@@ -319,11 +461,11 @@ body {
 
 
 
-/* Override Radix DropdownMenu item hover: the design's soft olive-3 surface, and the text
-   pinned to gray-12 because Radix's solid highlight flips it to the accent contrast. */
+/* Override Radix DropdownMenu item hover: the design's soft muted fill, and the text
+   pinned to primary text because Radix's solid highlight flips it to the accent contrast. */
 .radix-themes [role="menuitem"][data-highlighted] {
-  background-color: var(--olive-3) !important;
-  color: var(--gray-12) !important;
+  background-color: var(--fill-muted) !important;
+  color: var(--text-primary) !important;
 }
 
 /* Red hover for destructive (delete) menu items */
@@ -335,7 +477,7 @@ body {
 /* Row action menus (records table) match the settings tables' row menu: a translucent
    hover that keeps the item's own colours instead of the solid highlight above. */
 .row-action-menu.row-action-menu [role="menuitem"][data-highlighted] {
-  background-color: var(--slate-a3) !important;
+  background-color: var(--fill-ghost-hover) !important;
   color: inherit !important;
 }
 .row-action-menu.row-action-menu [role="menuitem"][data-accent-color="red"][data-highlighted] {
@@ -379,8 +521,8 @@ body {
   transition: background-color 120ms ease, border-color 120ms ease;
 }
 .entity-pager-select:hover {
-  background-color: var(--olive-3) !important;
-  border-color: var(--olive-5) !important;
+  background-color: var(--fill-muted) !important;
+  border-color: var(--border-strong) !important;
 }
 
 /* SegmentedTabs (app/components/ui/segmented-tabs.tsx): soft hover on unselected segments */
@@ -525,15 +667,36 @@ body {
    Custom SegmentedControl Styling
    ======================== */
 
-/* Selected item background using page background color */
+/* The selected segment is Radix's sliding indicator, painted lighter than the
+   track in both modes: the page white with a hairline in light, the muted fill
+   with a strong edge in dark. The selected item itself stays transparent, so
+   the indicator slides between items instead of the item repainting.
+   Height is left to the Radix size prop (24, 32 or 40px). */
 .radix-themes .rt-SegmentedControlRoot {
-  background-color: var(--neutral-a3);
-  height: 24px;
+  background-color: var(--fill-ghost-hover);
 }
-.radix-themes .rt-SegmentedControlItem[data-state="on"] {
-  background-color: var(--segment-on) !important;
-  border-radius: 4px !important;
-  border: 1px solid var(--gray-a4) !important;
+.radix-themes .rt-SegmentedControlIndicator::before {
+  background-color: var(--color-background);
+  border: 1px solid var(--gray-a4);
+  box-shadow: none;
+}
+/* Dark: the track is the ghost tint over a black wash, so the muted-fill
+   indicator reads above it rather than level with it. */
+.dark .rt-SegmentedControlRoot,
+.dark-theme .rt-SegmentedControlRoot {
+  background-color: transparent;
+  background-image: linear-gradient(var(--fill-ghost-hover), var(--fill-ghost-hover)),
+    linear-gradient(var(--black-a5), var(--black-a5));
+}
+.dark .rt-SegmentedControlIndicator::before,
+.dark-theme .rt-SegmentedControlIndicator::before {
+  background-color: var(--fill-muted);
+  border-color: var(--border-strong);
+}
+@media (prefers-reduced-motion: reduce) {
+  .radix-themes .rt-SegmentedControlRoot {
+    --segmented-control-transition-duration: 0ms;
+  }
 }
 
 /* ========================
@@ -547,10 +710,10 @@ body {
 /* ========================
    Custom Dialog Styling
    ======================== */
+/* Every Dialog takes the theme's largest shadow. !important stays: about twenty
+   dialogs set their own inline box-shadow, and this keeps them all on the one value. */
 .radix-themes .rt-DialogContent {
-  box-shadow: 0 16px 36px -20px var(--Colors-Neutral-Neutral-Alpha-7, rgba(217, 237, 255, 0.25)),
-    0 16px 64px 0 var(--Colors-Neutral-Neutral-Alpha-2, rgba(216, 244, 246, 0.04)),
-    0 12px 60px 0 var(--Overlays-Black-Alpha-3, rgba(0, 0, 0, 0.15)) !important;
+  box-shadow: var(--shadow-6) !important;
 }
 
 /* Service account dialog: Radix wraps content in .rt-DialogScroll (overflow auto) — we scroll inside
@@ -606,55 +769,35 @@ summary {
 }
 
 /* ========================
-   Scrollbar Utilities
-   ======================== */
+   Scrollbars
+   No visible scrollbar, on either axis, anywhere, by default. The content is
+   the cue: a row cut at the edge says "more below". This replaces the old
+   opt-in .no-scrollbar class (call sites still carrying it are harmless) and
+   the per-surface themed bars.
 
-/* Hide scrollbar for Chrome, Safari, and Opera */
-.no-scrollbar::-webkit-scrollbar {
+   Escape hatches: .keep-scrollbar, for a surface where position in a long
+   document is itself the information, and the chat answer table scroll area
+   below, whose last columns would otherwise look cut off.
+   ======================== */
+:where(*:not(.keep-scrollbar):not([data-table-scroll-area]))::-webkit-scrollbar {
   display: none;
 }
 
-/* Hide scrollbar for IE, Edge, and Firefox */
-.no-scrollbar {
+:where(*:not(.keep-scrollbar):not([data-table-scroll-area])) {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
 
-/* Always-visible, themed scrollbar used by the upload data dialog so users
-   can clearly see when more files/folders are available below the fold
-   (macOS overlay scrollbars would otherwise stay hidden until the user
-   actively scrolls, making overflow invisible). */
-[data-upload-scroll-area] {
-  scrollbar-width: thin;
-  scrollbar-color: var(--slate-8) var(--olive-3);
-}
-[data-upload-scroll-area]::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-  -webkit-appearance: none;
-}
-[data-upload-scroll-area]::-webkit-scrollbar-track {
-  background: var(--olive-3);
-  border-radius: 8px;
-  margin: 2px 0;
-}
-[data-upload-scroll-area]::-webkit-scrollbar-thumb {
-  background-color: var(--slate-8);
-  border-radius: 8px;
-  border: 2px solid var(--olive-3);
-  background-clip: padding-box;
-  min-height: 32px;
-}
-[data-upload-scroll-area]::-webkit-scrollbar-thumb:hover {
-  background-color: var(--slate-10);
-  background-clip: padding-box;
+/* Radix ScrollArea draws its bar out of elements, so the rule above never reaches it. */
+.rt-ScrollAreaScrollbar:not(.keep-scrollbar .rt-ScrollAreaScrollbar) {
+  display: none !important;
 }
 
 /* Chat answer tables scroll sideways inside the message. Keep that scrollbar
    visible: with overlay scrollbars a wide table's last columns look cut off.
    Chrome ignores webkit scrollbar rules while scrollbar-color is set, and this
-   box inherits one from .chat-message-scroll, so reset it. Firefox has no
-   webkit thumb, so it gets the standard properties instead. */
+   box can inherit one, so reset it. Firefox has no webkit thumb, so it gets the
+   standard properties instead. */
 [data-table-scroll-area] {
   scrollbar-color: auto;
 }
@@ -664,155 +807,31 @@ summary {
   -webkit-appearance: none;
 }
 [data-table-scroll-area]::-webkit-scrollbar-track {
-  background: var(--slate-3);
+  background: var(--fill-muted);
 }
 [data-table-scroll-area]::-webkit-scrollbar-thumb {
-  background-color: var(--slate-8);
+  background-color: var(--gray-8);
   border-radius: 8px;
-  border: 2px solid var(--slate-3);
+  border: 2px solid var(--fill-muted);
   background-clip: padding-box;
 }
 [data-table-scroll-area]::-webkit-scrollbar-thumb:hover {
-  background-color: var(--slate-10);
+  background-color: var(--gray-10);
   background-clip: padding-box;
 }
 [data-table-scroll-area]::-webkit-scrollbar-corner {
-  background: var(--slate-3);
+  background: var(--fill-muted);
 }
 @supports not selector(::-webkit-scrollbar-thumb) {
   [data-table-scroll-area] {
     scrollbar-width: thin;
-    scrollbar-color: var(--slate-8) var(--slate-3);
+    scrollbar-color: var(--gray-8) var(--fill-muted);
   }
 }
 
-/* Workspace-menu sub-panel — compact popup over a translucent backdrop;
-   transparent track keeps the glass effect intact, narrow 5 px thumb. */
-.workspace-menu-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: var(--slate-6) transparent;
-}
-.workspace-menu-scroll::-webkit-scrollbar {
-  width: 5px;
-  -webkit-appearance: none;
-}
-.workspace-menu-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.workspace-menu-scroll::-webkit-scrollbar-thumb {
-  background-color: var(--slate-6);
-  border-radius: var(--radius-full);
-  min-height: 28px;
-}
-.workspace-menu-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: var(--slate-8);
-}
-
-/* Team members list scrollbar (used in team create/edit panels). */
-.team-member-scroll-area {
-  scrollbar-width: thin;
-  scrollbar-color: var(--slate-8) var(--olive-3);
-}
-.team-member-scroll-area::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-  -webkit-appearance: none;
-}
-.team-member-scroll-area::-webkit-scrollbar-track {
-  background: var(--olive-3);
-  border-radius: 8px;
-  margin: 2px 0;
-}
-.team-member-scroll-area::-webkit-scrollbar-thumb {
-  background-color: var(--slate-8);
-  border-radius: 8px;
-  border: 2px solid var(--olive-3);
-  background-clip: padding-box;
-  min-height: 32px;
-}
-.team-member-scroll-area::-webkit-scrollbar-thumb:hover {
-  background-color: var(--slate-10);
-  background-clip: padding-box;
-}
-
-/* Chat message list — full-pane scroll; thin thumb. scrollbar-gutter keeps the
-   content column aligned with the composer (which reserves the same gutter).
-   -webkit-appearance:none so min-height on the thumb is honoured by Blink/WebKit. */
-.chat-message-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: var(--slate-6) transparent;
-  scrollbar-gutter: stable;
-}
+/* The composer row scrolls when its content outgrows it. */
 .chat-composer-row {
-  /* Match .chat-message-scroll so the centered column shares the same axis. */
-  scrollbar-gutter: stable;
   overflow-y: auto;
-}
-.chat-message-scroll::-webkit-scrollbar {
-  width: 8px;
-  -webkit-appearance: none;
-}
-.chat-message-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.chat-message-scroll::-webkit-scrollbar-thumb {
-  background-color: var(--slate-6);
-  border-radius: var(--radius-2);
-  /* Keep the thumb large enough to be grabbed even in very long conversations.
-     70 px is the enforced floor — the browser may render it larger when
-     content is short, but never smaller than this. */
-  min-height: 70px;
-  background-clip: padding-box;
-}
-.chat-message-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: var(--slate-8);
-}
-
-/* Response tabs row — horizontally scrollable on narrow screens, no visible scrollbar. */
-.response-tabs-scroll {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-.response-tabs-scroll::-webkit-scrollbar {
-  display: none;
-}
-
-/* File preview sidebar / fullscreen / mobile, and the PDF.js #viewerContainer
-   (mounted inside react-pdf-highlighter) — always-visible scrollbars so users
-   know when content extends past the pane.
-   min-height / min-width on the thumb require -webkit-appearance:none on the
-   track element to activate the custom rendering path in Blink/WebKit;
-   without it those properties are silently ignored. */
-.file-preview-scroll-area,
-.file-preview-pdf-root #viewerContainer {
-  scrollbar-width: thin;
-  scrollbar-color: var(--slate-8) var(--olive-3);
-}
-.file-preview-scroll-area::-webkit-scrollbar,
-.file-preview-pdf-root #viewerContainer::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-  -webkit-appearance: none;
-}
-.file-preview-scroll-area::-webkit-scrollbar-track,
-.file-preview-pdf-root #viewerContainer::-webkit-scrollbar-track {
-  background: var(--olive-3);
-  border-radius: 8px;
-  margin: 2px 0;
-}
-.file-preview-scroll-area::-webkit-scrollbar-thumb,
-.file-preview-pdf-root #viewerContainer::-webkit-scrollbar-thumb {
-  background-color: var(--slate-8);
-  border-radius: 8px;
-  border: 2px solid var(--olive-3);
-  background-clip: padding-box;
-  min-height: 48px;
-  min-width: 48px;
-}
-.file-preview-scroll-area::-webkit-scrollbar-thumb:hover,
-.file-preview-pdf-root #viewerContainer::-webkit-scrollbar-thumb:hover {
-  background-color: var(--slate-10);
-  background-clip: padding-box;
 }
 
 .kb-search-input::placeholder {
@@ -820,7 +839,7 @@ summary {
 }
 
 .collections-search-input::placeholder {
-  color: var(--slate-a9);
+  color: var(--text-placeholder);
 }
 
 /* ========================
@@ -840,6 +859,17 @@ li > *:last-child {
 /* Ensure blockquotes in lists have proper spacing */
 li > blockquote {
   margin-top: var(--space-2) !important;
+}
+
+/* ========================
+   Chat answer prose (answer-content.tsx)
+
+   The answer's first block starts flush: the space above the answer belongs
+   to the row around it (badge, trail), so an answer that opens with a heading
+   or a list starts where one that opens with a paragraph does.
+   ======================== */
+.answer-prose > :first-child {
+  margin-top: 0 !important;
 }
 
 /* ========================
@@ -919,6 +949,53 @@ li > blockquote {
   pointer-events: none;
 }
 
+/* Skeleton shimmer: a quiet band sweeping right to left across a loading bar's
+   --fill-active surface, so loading reads as "working on it". The band is
+   --gray-a8 (a weaker alpha is invisible on the bar). Every bar on screen runs
+   the same sweep in phase. Static under reduced motion (below). */
+.skeleton-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 30%,
+    var(--gray-a8) 50%,
+    transparent 70%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  background-position: 200% 0;
+  animation: shimmer-sweep 1.5s linear infinite;
+}
+
+/* A toast arriving: slides in from the right edge and fades, on the surface motion role. */
+@keyframes toastSlideIn {
+  from {
+    transform: translateX(var(--space-5));
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* Loops stop under reduced motion. Loading skeletons keep their static fill;
+   the "generating" label shows its plain text. Skeletons written inline (the
+   older shimmer-pulse and pulse recipes) are reached by their style text. */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer,
+  [class*="shimmer"],
+  [style*="shimmer-pulse"],
+  [style*="shimmer-sweep"],
+  [style*="pulse"] {
+    animation: none !important;
+  }
+  .generating-shimmer-overlay {
+    display: none;
+  }
+}
+
 @keyframes msgActionsIn {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -938,13 +1015,41 @@ li > blockquote {
   animation: activity-fade-in 200ms ease-out;
 }
 
+/* A step that joins a trail already on screen while it streams opens to its own height, on the trail body's own
+   motion, so what is under the trail (the text being read) moves down with it instead of a row's height in one
+   frame. It is clipped only while it opens. */
+@keyframes trail-row-opens {
+  from { grid-template-rows: 0fr; clip-path: inset(0); }
+  to   { grid-template-rows: 1fr; clip-path: inset(0); }
+}
+
+.trail-row-opens {
+  display: grid;
+  animation: trail-row-opens calc(var(--motion-page) * 0.9375) var(--motion-ease);
+}
+
+.trail-row-opens > * {
+  min-height: 0;
+}
+
+/* The space under a row, which it gains when a step joins below it, opens on the same motion while that step opens. It
+   changes at once otherwise, as the step itself then comes or goes at once: the view following the answer's end keeps
+   the text in place, and a step that goes (the "Thinking…" line as text starts) takes its room with it. */
+@media (prefers-reduced-motion: no-preference) {
+  .agent-activity-enter:has(+ .trail-row-opens) > .trail-row-body,
+  .trail-row-opens:has(+ .trail-row-opens) > .agent-activity-enter > .trail-row-body {
+    transition: padding-bottom calc(var(--motion-page) * 0.9375) var(--motion-ease);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .typing-cursor {
     animation: none;
     opacity: 1;
   }
 
-  .agent-activity-enter {
+  .agent-activity-enter,
+  .trail-row-opens {
     animation: none;
   }
 
@@ -1029,11 +1134,27 @@ li > blockquote {
   to { opacity: 1; transform: none; }
 }
 
-/* Same box as the old outlined set, with a lighter stroke. */
+/* Material Symbols Outlined, the one icon font. MaterialIcon sets the size and
+   axes per icon (glyph size = box size, weight 400, optical size from the size);
+   these are the defaults for spans that carry the class directly. The ligature
+   properties are the ones the old Material Icons stylesheet supplied, so it no
+   longer needs loading; 24px is that stylesheet's default size. */
 .material-icons-outlined {
-  font-family: 'Material Symbols Outlined' !important;
-  font-weight: 300;
-  font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 40 !important;
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: var(--font-size-6);
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  font-feature-settings: 'liga';
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
 }
 
 /* Icon-only segmented controls: square items instead of 12px side padding around a glyph. */
@@ -1277,8 +1398,8 @@ li > blockquote {
 
 /* Same hover/active treatment as chat `SidebarItem` */
 .agent-builder-draggable-row:not(.agent-builder-draggable-row--disabled):hover {
-  background-color: var(--olive-3);
-  border-color: var(--olive-4);
+  background-color: var(--fill-muted);
+  border-color: var(--border-default);
   box-shadow: none;
 }
 
@@ -1300,16 +1421,16 @@ li > blockquote {
   min-width: 0;
   margin-left: 10px;
   padding-left: 14px;
-  border-left: 1px solid var(--olive-4);
+  border-left: 1px solid var(--border-default);
 }
 
 .agent-builder-toolsets-search.rt-TextFieldRoot.rt-variant-surface {
-  --text-field-focus-color: var(--olive-9);
+  --text-field-focus-color: var(--gray-9);
   width: 100%;
   min-width: 0;
-  background-color: var(--olive-2) !important;
+  background-color: var(--surface-subtle) !important;
   background-clip: border-box;
-  box-shadow: inset 0 0 0 1px var(--olive-4) !important;
+  box-shadow: inset 0 0 0 1px var(--border-default) !important;
   border-radius: var(--radius-2);
   transition:
     box-shadow 0.15s ease,
@@ -1318,12 +1439,12 @@ li > blockquote {
 
 .agent-builder-toolsets-search.rt-TextFieldRoot.rt-variant-surface:focus-within {
   box-shadow:
-    inset 0 0 0 1px var(--olive-6),
-    0 0 0 2px color-mix(in srgb, var(--olive-9) 18%, transparent) !important;
+    inset 0 0 0 1px var(--gray-6),
+    0 0 0 2px color-mix(in srgb, var(--gray-9) 18%, transparent) !important;
 }
 
 .agent-builder-toolsets-search .rt-TextFieldInput::placeholder {
-  color: var(--slate-11);
+  color: var(--text-secondary);
 }
 
 .agent-builder-toolsets-search.rt-TextFieldRoot:has(.rt-TextFieldInput:disabled) {
@@ -1343,8 +1464,8 @@ li > blockquote {
 }
 
 .agent-builder-section-header:hover {
-  background-color: var(--olive-3);
-  border-color: var(--olive-4);
+  background-color: var(--fill-muted);
+  border-color: var(--border-default);
 }
 
 .agent-builder-sidebar-category-row {
@@ -1356,8 +1477,8 @@ li > blockquote {
 }
 
 .agent-builder-sidebar-category-row:hover {
-  background-color: var(--olive-3);
-  border-color: var(--olive-4);
+  background-color: var(--fill-muted);
+  border-color: var(--border-default);
 }
 
 .service-account-confirm-dialog__body {
@@ -1368,7 +1489,6 @@ li > blockquote {
   padding: var(--space-2) 2px var(--space-1) 0;
   margin-top: var(--space-2);
   -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
 }
 
 /*
@@ -1445,7 +1565,7 @@ th code {
   outline: none;
   font-size: 14px;
   line-height: 1.7;
-  color: var(--slate-12);
+  color: var(--text-primary);
 }
 
 .ph-skill-markdown-editor .tiptap p.is-editor-empty:first-child::before {
@@ -1460,7 +1580,7 @@ th code {
 .ph-skill-markdown-editor .tiptap h2,
 .ph-skill-markdown-editor .tiptap h3 {
   font-weight: 600;
-  color: var(--slate-12);
+  color: var(--text-primary);
   margin-top: 1.2em;
   margin-bottom: 0.4em;
   line-height: 1.3;
@@ -1497,7 +1617,7 @@ th code {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.88em;
   background: var(--gray-a2);
-  border: 1px solid var(--olive-3);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-2);
   padding: 12px 14px;
   margin: 0.6em 0;
@@ -1508,11 +1628,11 @@ th code {
 .ph-skill-markdown-editor .tiptap pre code {
   background: none;
   padding: 0;
-  color: var(--slate-12);
+  color: var(--text-primary);
 }
 
 .ph-skill-markdown-editor .tiptap blockquote {
-  border-left: 3px solid var(--olive-6);
+  border-left: 3px solid var(--gray-6);
   margin: 0.6em 0;
   padding-left: 14px;
   color: var(--gray-11);
@@ -1526,7 +1646,7 @@ th code {
 
 .ph-skill-markdown-editor .tiptap hr {
   border: none;
-  border-top: 1px solid var(--olive-4);
+  border-top: 1px solid var(--border-default);
   margin: 1em 0;
 }
 
@@ -1630,11 +1750,11 @@ th code {
   white-space: nowrap;
   background-image: linear-gradient(
     100deg,
-    var(--neutral-a10) 0%,
-    var(--neutral-a10) 38%,
-    var(--neutral-12) 50%,
-    var(--neutral-a10) 62%,
-    var(--neutral-a10) 100%
+    var(--text-tertiary) 0%,
+    var(--text-tertiary) 38%,
+    var(--text-primary) 50%,
+    var(--text-tertiary) 62%,
+    var(--text-tertiary) 100%
   );
   background-size: 220% 100%;
   background-repeat: no-repeat;
@@ -1654,7 +1774,7 @@ th code {
   }
   .chat-placeholder-shimmer {
     animation: none;
-    color: var(--neutral-a10);
+    color: var(--text-tertiary);
     background: none;
   }
 }
@@ -1789,4 +1909,380 @@ th code {
 /* Filter chips keep their width and scroll below desktop instead of shrinking. */
 .kb-filter-bar-mobile > * {
   flex-shrink: 0;
+}
+
+/* ========================
+   Shared building blocks
+   Opt-in classes for later screens. Nothing uses them until a screen adds the
+   class, so none of these change a screen on their own.
+   ======================== */
+
+/* Ghost button box: a ghost button sits in its own box, with no negative
+   margin, so it lines up with the 24/32px controls beside it. */
+.rt-BaseButton.rt-variant-ghost.ghost-box {
+  margin: 0;
+  box-sizing: border-box;
+  height: var(--base-button-height);
+}
+.rt-IconButton.rt-variant-ghost.ghost-box {
+  width: var(--base-button-height);
+  padding: 0;
+}
+
+/* Conversation entrance: a block fades in with a small rise. `.no-rise`
+   keeps the fade and drops the rise, for the large streamed answer. */
+@keyframes conversationIn {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--space-1) * 1.5));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes conversationFadeOnly {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.conversation-fade-in {
+  opacity: 0;
+  animation: conversationIn var(--motion-page) var(--motion-ease) forwards;
+}
+.conversation-fade-in.no-rise {
+  animation-name: conversationFadeOnly;
+}
+@media (prefers-reduced-motion: reduce) {
+  .conversation-fade-in,
+  .conversation-fade-in.no-rise {
+    opacity: 1;
+    animation: none;
+  }
+}
+
+/* On a wide row the first thing under a question stands 16 px from it, where it would keep its 24. */
+.answer-lead-tight > :first-child {
+  --answer-lead-gap: var(--space-4);
+}
+
+/* Expandable trail: the body opens to its own height and fades in; the title
+   bar gains a hairline while open and a tint on hover. */
+.trail-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  /* A gentle start: when the run's end folds it, what sits under it moves with it, a little at first. */
+  transition:
+    grid-template-rows calc(var(--motion-page) * 0.9375) var(--motion-ease),
+    opacity var(--motion-control) var(--motion-ease);
+}
+.trail-body[data-open='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.trail-body > * {
+  min-height: 0;
+  /* While a narration glides in, this stops clipping: without it the text would widen to its longest line, then wrap
+     taller once the glide ends and push down what is under the trail. */
+  min-width: 0;
+  overflow: hidden;
+}
+/* The confidence badge's place, kept while an answer streams. When the run ends without a level it closes as the
+   trail folds, on the same motion, instead of staying empty or snapping shut. */
+.level-slot {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows calc(var(--motion-page) * 0.9375) var(--motion-ease);
+}
+.level-slot[data-open='false'] {
+  grid-template-rows: 0fr;
+}
+.level-slot > * {
+  min-height: 0;
+  overflow: hidden;
+}
+.trail-title-bar {
+  border-bottom: 1px solid transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  transition:
+    border-color var(--motion-control) var(--motion-ease),
+    background-color var(--motion-micro) var(--motion-ease);
+}
+.trail-title-bar[data-open='true'] {
+  border-bottom-color: var(--border-subtle);
+}
+.trail-title-bar:hover {
+  background-color: var(--surface-subtle);
+}
+@media (prefers-reduced-motion: reduce) {
+  .trail-body {
+    transition: none;
+  }
+}
+
+/* Text shimmer: a light band sweeps across "working" text. With reduced
+   motion the text stays still and fully readable. */
+.text-shimmer {
+  display: inline-block;
+  background-image: linear-gradient(
+    100deg,
+    var(--text-tertiary) 0%,
+    var(--text-tertiary) 38%,
+    var(--text-primary) 50%,
+    var(--text-tertiary) 62%,
+    var(--text-tertiary) 100%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: chat-placeholder-sweep 2s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .text-shimmer {
+    animation: none;
+    background-image: none;
+    color: var(--text-primary);
+  }
+}
+
+/* Hoverable sidebar row: a muted tint on hover and keyboard focus. */
+.sidebar-row-hoverable {
+  transition: background-color var(--motion-control) var(--motion-ease);
+}
+.sidebar-row-hoverable:hover,
+.sidebar-row-hoverable:focus-visible {
+  background-color: var(--fill-muted);
+}
+
+/* Inset focus ring for custom rows: drawn inside the row so a parent that
+   clips its overflow cannot cut it off. Keyboard focus only. */
+.focus-ring-inset:focus-visible,
+.sidebar-row-hoverable:focus-visible,
+.trail-title-bar:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Sidebar activity dot: a chat row's sign that an answer is being written.
+   A 6px brand dot that blinks while live (`data-live`), not a spinner, so the
+   row stays quiet. 50%, not --radius-full, which is 0 on a plain element.
+   Under reduced motion it holds still at full strength. */
+.sidebar-activity-dot {
+  display: inline-block;
+  width: calc(var(--space-1) * 1.5);
+  height: calc(var(--space-1) * 1.5);
+  border-radius: 50%;
+  background-color: var(--emerald-9);
+  flex-shrink: 0;
+}
+.sidebar-activity-dot[data-live] {
+  animation: sidebar-activity-blip 1.6s ease-in-out infinite;
+}
+@keyframes sidebar-activity-blip {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-activity-dot[data-live] {
+    animation: none;
+  }
+}
+
+/* Citation pill: quiet at rest, brand tint on hover and while its preview is
+   open. Emerald steps are used directly so a gray-themed subtree keeps the
+   brand colour. The ::before box gives a small pill a 24px hit area. */
+.citation-pill {
+  position: relative;
+  background-color: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  transition:
+    background-color var(--motion-micro) var(--motion-ease),
+    border-color var(--motion-micro) var(--motion-ease);
+}
+.citation-pill:hover {
+  background-color: var(--emerald-a3);
+  border-color: var(--emerald-a6);
+}
+.citation-pill[data-state='open'],
+.citation-pill[aria-expanded='true'] {
+  background-color: var(--emerald-3);
+  border-color: var(--emerald-8);
+}
+.citation-pill:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.citation-pill::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: max(100%, var(--space-5));
+  height: max(100%, var(--space-5));
+  transform: translate(-50%, -50%);
+}
+
+/* Records row entrance: a row rises 8px out of a light blur. */
+@keyframes recordsRowArrive {
+  from {
+    opacity: 0;
+    transform: translateY(var(--space-2));
+    filter: blur(3px);
+  }
+  60% {
+    filter: blur(0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.records-row-in {
+  animation: recordsRowArrive calc(var(--motion-surface) * 1.75) var(--motion-ease) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .records-row-in {
+    animation: none;
+  }
+}
+
+/* Card grid: three columns that drop to two and then one as the pane, not
+   the window, narrows. `.card-grid` must sit inside a `.card-grid-pane`.
+   The pane becomes the containing block for fixed-position children, so put
+   it on a block that has none. */
+.card-grid-pane {
+  container-type: inline-size;
+  container-name: card-grid;
+}
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-4);
+  align-items: stretch;
+}
+@container card-grid (max-width: 900px) {
+  .card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container card-grid (max-width: 560px) {
+  .card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Status ellipsis: three dots pulse in turn after an in-progress label.
+   With reduced motion the dots stay solid. */
+.status-ellipsis span {
+  opacity: 0.25;
+  animation: status-ellipsis-pulse 1.4s ease-in-out infinite;
+}
+.status-ellipsis span:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.status-ellipsis span:nth-child(3) {
+  animation-delay: 0.36s;
+}
+@keyframes status-ellipsis-pulse {
+  0%,
+  70%,
+  100% {
+    opacity: 0.25;
+  }
+  35% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-ellipsis span {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* ========================
+   Chat answer column
+   ======================== */
+
+/* Reasoning trail window: a size container, so its width (the answer column's, capped) decides what its title bar shows. */
+.trail-window {
+  container-type: inline-size;
+  container-name: trail-window;
+}
+/* On a very narrow column the title bar keeps the title and drops the elapsed time or step count. */
+@container trail-window (max-width: 260px) {
+  .trail-window-detail {
+    display: none;
+  }
+}
+/* Constant gutter so the column never touches the pane edge, whatever sits beside it. */
+.chat-column-gutter {
+  padding-inline: var(--space-4);
+}
+
+/* ========================
+   Chat answers: the typing caret and the right column's tabs.
+
+   The typing caret rides the last line of an answer while it streams: a pseudo-element of the element the answer
+   renderer marks [data-caret] (the last paragraph, heading or list item), so it follows the words and any citation
+   chip that ends them, and the text is never split to make room for it. A 1px bar the cap height of the text,
+   blinking in the accent's text step. With reduced motion it holds still and stays shown.
+
+   .answer-panel-tabs is the tab row of the column beside a chat (Sources, Citations, Context, Outputs): the dense
+   trigger padding, triggers that hug their labels and pack left, and that may shrink (never grow) so a long
+   translation ends in an ellipsis inside the column instead of running past it. The trigger keeps the whole label
+   for screen readers.
+   ======================== */
+.answer-prose [data-caret]::after {
+  content: '';
+  display: inline-block;
+  width: 1px;
+  height: 0.9em;
+  margin-left: 1px;
+  vertical-align: -0.15em;
+  background-color: var(--accent-12);
+  animation: typingCaretBlink 900ms steps(1, end) infinite;
+}
+
+@keyframes typingCaretBlink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .answer-prose [data-caret]::after {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+.answer-panel-tabs {
+  --tab-padding-x: var(--space-1);
+}
+.answer-panel-tabs .rt-BaseTabListTrigger {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.answer-panel-tabs .rt-BaseTabListTriggerInner,
+.answer-panel-tabs .rt-BaseTabListTriggerInnerHidden {
+  max-width: 100%;
+  min-width: 0;
+}
+.answer-panel-tabs .answer-panel-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

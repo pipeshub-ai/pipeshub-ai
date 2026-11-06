@@ -2,9 +2,10 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { Box, DropdownMenu, Flex, Text, Tooltip } from '@radix-ui/themes';
+import { Box, DropdownMenu, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { IconMenuItem } from '@/app/components/ui/icon-menu-item';
 import { useChatStore } from '@/chat/store';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { openFreshAgentChat } from '@/chat/build-chat-url';
@@ -17,8 +18,6 @@ interface AgentChatHeaderProps {
   hasExpandButton?: boolean;
   /** A chat someone shared with the user: they cannot start chats on an agent they may not have. */
   readOnly?: boolean;
-  /** Who made the agent; on mobile it is listed in the menu instead of a header chip. */
-  creatorName?: string | null;
   /** Share controls sit top-right; the mobile title stops short of them. */
   hasShareGroup?: boolean;
 }
@@ -34,17 +33,13 @@ export function AgentChatHeader({
   displayName,
   isMobile,
   hasExpandButton,
-  creatorName,
   hasShareGroup,
   readOnly,
 }: AgentChatHeaderProps) {
   const router = useRouter();
   const { t } = useTranslation();
-  const toggleAgentsSidebar = useChatStore((s) => s.toggleAgentsSidebar);
-  const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
   const access = useChatStore((s) => s.agentContextAccess);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
-  const openMobileSidebar = useMobileSidebarStore((s) => s.open);
 
   // The name only loads for someone allowed to open the agent; for a recipient it never will.
   const sharedWithoutAgent = Boolean(readOnly) && !displayName?.trim();
@@ -64,18 +59,16 @@ export function AgentChatHeader({
 
   const handleAllChats = () => {
     if (isMobile) closeMobileSidebar();
-    closeAgentsSidebar();
     router.push('/chat/');
   };
 
   const handleBrowseAgents = () => {
-    toggleAgentsSidebar();
-    if (isMobile) openMobileSidebar();
+    if (isMobile) closeMobileSidebar();
+    router.push('/agents/');
   };
 
   const handleOpenBuilder = () => {
     if (isMobile) closeMobileSidebar();
-    closeAgentsSidebar();
     router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId)}`);
   };
 
@@ -134,39 +127,27 @@ export function AgentChatHeader({
           </button>
         </DropdownMenu.Trigger>
         <DropdownMenu.Content align="start" size="2">
-          {isMobile && creatorName && (
-            <>
-              <DropdownMenu.Label>{`${t('agentBuilder.createdBy')}: ${creatorName}`}</DropdownMenu.Label>
-              <DropdownMenu.Separator />
-            </>
-          )}
-          <DropdownMenu.Item onSelect={handleNewAgentChat}>
+          <IconMenuItem icon="assistant" onSelect={handleNewAgentChat}>
             {t('chat.agentMenuNewChat')}
-          </DropdownMenu.Item>
-          <DropdownMenu.Item onSelect={handleAllChats}>
+          </IconMenuItem>
+          <IconMenuItem icon="forum" onSelect={handleAllChats}>
             {t('chat.agentMenuAllChats')}
-          </DropdownMenu.Item>
-          <DropdownMenu.Item onSelect={handleBrowseAgents}>
+          </IconMenuItem>
+          <IconMenuItem icon="smart_toy" onSelect={handleBrowseAgents}>
             {t('chat.moreAgents')}
-          </DropdownMenu.Item>
+          </IconMenuItem>
           {(canEdit || showViewAgent) && <DropdownMenu.Separator />}
           {canEdit && (
-            <DropdownMenu.Item onSelect={handleOpenBuilder}>
-              <Flex align="center" gap="2">
-                <MaterialIcon name="edit" size={16} color="var(--slate-11)" />
-                <Text size="2">{t('chat.editAgent')}</Text>
-              </Flex>
-            </DropdownMenu.Item>
+            <IconMenuItem icon="edit" onSelect={handleOpenBuilder}>
+              {t('chat.editAgent')}
+            </IconMenuItem>
           )}
           {showViewAgent && (
-            <DropdownMenu.Item onSelect={handleOpenBuilder}>
+            <IconMenuItem icon="visibility" textValue={t('chat.viewAgent')} onSelect={handleOpenBuilder}>
               <Tooltip content={viewTooltip} delayDuration={400}>
-                <Flex align="center" gap="2" style={{ maxWidth: 280 }}>
-                  <MaterialIcon name="visibility" size={16} color="var(--slate-11)" />
-                  <Text size="2">{t('chat.viewAgent')}</Text>
-                </Flex>
+                <span>{t('chat.viewAgent')}</span>
               </Tooltip>
-            </DropdownMenu.Item>
+            </IconMenuItem>
           )}
         </DropdownMenu.Content>
       </DropdownMenu.Root>

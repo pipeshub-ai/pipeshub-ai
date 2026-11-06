@@ -104,8 +104,24 @@
     "createPageDescription": "This is the dedicated create-agent page. Connect your form or redirect to your agent builder here.",
     "pageTitle": "Agents",
     "comingSoon": "Coming soon",
-    "missingAgentKey": "Missing agent key. Open an agent from the chat sidebar or use a valid link.",
-    "loading": "Loading…"
+    "missingAgentKey": "Missing agent key. Open an agent from the Agents page or use a valid link.",
+    "loading": "Loading…",
+    "index": {
+      "columnAgent": "Agent",
+      "columnOwner": "Owner",
+      "rowActions": "Actions for {{name}}",
+      "loading": "Loading agents…",
+      "loadFailedTitle": "Couldn't load agents",
+      "loadFailedDescription": "Check your connection and try again.",
+      "emptyTitle": "No agents yet",
+      "emptyDescription": "Agents you create or can use show up here.",
+      "emptyDescriptionCanCreate": "Agents you create or can use show up here. To create one, select New agent.",
+      "searchPlaceholder": "Search agents…",
+      "searchLabel": "Search agents",
+      "closeSearch": "Close search",
+      "noSearchMatchesTitle": "No agents match your search",
+      "noSearchMatchesDescription": "Try a different search."
+    }
   },
   "projects": {
     "pageTitle": "Projects",
@@ -128,7 +144,8 @@
     "noSearchResults": "No projects match “{{query}}”",
     "noSearchResultsHint": "Try a different name, or clear the search.",
     "clearSearch": "Clear search",
-    "cardActionsLabel": "Actions for {{name}}"
+    "cardActionsLabel": "Actions for {{name}}",
+    "loadingList": "Loading projects…"
   },
   "timeGroup": {
     "today": "Today",
@@ -145,7 +162,9 @@
     "copiedCode": "Copied",
     "remoteImageBlocked": "External image not loaded",
     "remoteImageFrom": "from {{host}}",
-    "remoteImageLoad": "Load image"
+    "remoteImageLoad": "Load image",
+    "usingTool": "Using a tool…",
+    "delegatingTo": "Delegating to {{name}}…"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload failed",
@@ -182,6 +201,7 @@
       "sizeLimitDescription": "Limit is {{maxMb}} MB per file. Contact your administrator to request a higher upload limit.",
       "sizeLimitDescriptionAdmin": "Limit is {{maxMb}} MB per file. You can increase it in Workspace Labs.",
       "unsupportedDescription": "Unsupported file type.",
+      "emptyDescription": "This file is empty. Add some content and upload it again.",
       "duplicateDescription": "A file with this name already exists here.",
       "trackerHint": "Details are in the upload panel below.",
       "openLabs": "Open Labs"
@@ -191,6 +211,8 @@
       "tooLarge_other": "{{count}} over {{maxMb}} MB",
       "unsupported_one": "{{count}} unsupported type",
       "unsupported_other": "{{count}} unsupported types",
+      "empty_one": "{{count}} empty file",
+      "empty_other": "{{count}} empty files",
       "duplicate_one": "{{count}} duplicate name",
       "duplicate_other": "{{count}} duplicate names",
       "other_one": "{{count}} other error",
@@ -329,6 +351,12 @@
     "searchChats": "Search chats",
     "inbox": "Inbox",
     "notifications": "Notifications",
+    "searchChatsPlaceholder": "Search chats…",
+    "searchChatsFailed": "Couldn't search your chats. Try again.",
+    "loadChatsFailed": "Couldn't load your chats. Try again.",
+    "loadingChats": "Loading chats…",
+    "inboxUnread": "Inbox, {{count}} unread",
+    "inboxTooltip": "Inbox: what happened, and what needs you",
     "home": "Home"
   },
   "artifacts": {
@@ -411,7 +439,11 @@
     },
     "loadFailed": "Failed to load notifications",
     "updateFailed": "Could not update notification",
-    "removeFailed": "Could not remove notification"
+    "removeFailed": "Could not remove notification",
+    "loadingList": "Loading notifications…",
+    "emptyBody": "Shares, mentions and changes to your chats show up here.",
+    "showMore": "Show more",
+    "showLess": "Show less"
   },
   "action": {
     "find": "Find",
@@ -674,7 +706,11 @@
     "expand": "Expand sidebar",
     "close": "Close sidebar",
     "collapse": "Collapse sidebar",
-    "navigation": "Navigation"
+    "navigation": "Navigation",
+    "hide": "Hide sidebar",
+    "show": "Show sidebar",
+    "hideWithShortcut": "Hide sidebar ({{shortcut}})",
+    "showWithShortcut": "Show sidebar ({{shortcut}})"
   },
   "menu": {
     "reindex": "Reindex",
@@ -823,7 +859,7 @@
       "preview": "Preview",
       "open": "Open {{source}}",
       "openIn": "Open in {{source}}",
-      "openInCollections": "Open in collections",
+      "openInCollections": "Open in Collections",
       "syncedJustNow": "Synced just now",
       "syncedAgo": "Synced {{age}} ago",
       "relevance": "Relevance: {{percent}}%"
@@ -833,6 +869,8 @@
     "heyUser": "Hey, {{name}} 👋",
     "heyUserDefaultName": "there",
     "askAnything": "Ask anything...",
+    "askOrSearchWorkspace": "Ask or search anything on {{workspace}}...",
+    "askAboutPaste": "Ask about the pasted content...",
     "quick": "Quick",
     "listening": "Listening...",
     "voiceInputNotSupported": "Voice input is not supported in this browser",
@@ -851,6 +889,7 @@
       "searchCollections": "Search collections",
       "searchActions": "Search actions",
       "actionsTab": "Actions",
+      "filterTabsLabel": "What to show",
       "noConnectors": "No connectors configured for this agent.",
       "noCollections": "No collections configured for this agent.",
       "noCollectionMatches": "No collections match your search.",
@@ -882,6 +921,12 @@
       "resetDefaults": "Reset to project defaults"
     },
     "aiModelsTooltip": "AI models",
+    "modelChip": {
+      "ariaLabel": "Model: {{name}}, {{effort}} reasoning effort. Open configured models.",
+      "ariaLabelNoEffort": "Model: {{name}}. Open configured models.",
+      "tooltip": "{{name}} · by {{provider}} · {{effort}} effort",
+      "tooltipNoEffort": "{{name}} · by {{provider}}"
+    },
     "attachmentTooltip": "Attach files",
     "micTooltip": "Voice input",
     "uploadYourFile": "Upload your file",
@@ -898,6 +943,7 @@
     "yourChats": "Your chats",
     "noChatsFound": "No chats found",
     "noChatsYet": "No chats yet",
+    "yourChatsEmpty": "Your chats will appear here",
     "searchCollections": "Search connectors and collections",
     "loadingCollections": "Loading collections…",
     "failedToLoadCollections": "Failed to load collections",
@@ -928,14 +974,14 @@
     "feedbackCategoryUnclearExplanation": "Unclear explanation",
     "feedbackCategoryPoorCitations": "Poor citations",
     "feedbackCategoryOther": "Other...",
-    "like": "Helpful",
-    "dislike": "Not helpful",
+    "like": "Like",
+    "dislike": "Dislike",
     "copy": "Copy",
     "fork": "Fork chat",
     "forkFromHere": "Fork from here",
     "regenerate": "Regenerate",
     "readAloud": "Read aloud",
-    "stopReading": "Stop reading",
+    "stopReading": "Stop speaking",
     "ttsNotSupported": "Text-to-speech is not supported in this browser",
     "ttsFailed": "Failed to read aloud. Please try again.",
     "copiedAsMarkdown": "Copied as Markdown",
@@ -943,6 +989,7 @@
     "citations": "Citations",
     "showMoreCitations_one": "Show {{count}} more citation",
     "showMoreCitations_other": "Show {{count}} more citations",
+    "editNotSaved": "Your edit wasn't saved. Try again.",
     "markdownWithCitations": "Markdown with citations",
     "onlyTextWithoutCitations": "Only text without citations",
     "differentModesOfQuery": "Different modes of query",
@@ -951,14 +998,10 @@
     "generatingTitle": "Generating chat…",
     "newChat": "New chat",
     "startChat": "Start a chat",
-    "searchAgents": "Search agents…",
-    "noAgentsFound": "No agents found",
-    "failedToLoadAgents": "Could not load agents",
-    "backToChatHome": "All chats",
+    "backToAgents": "All agents",
     "agentSidebarLabel": "Agent",
     "agentNameLoading": "Loading…",
     "sharedAgentChat": "Shared agent chat",
-    "myAgents": "My agents",
     "moreAgents": "More agents",
     "agentHeaderMenuAria": "Agent options",
     "agentMenuNewChat": "New chat",
@@ -972,14 +1015,17 @@
     "deleteAgentConfirm": "Delete this agent?",
     "deleteAgentDescription": "The agent named",
     "deleteAgentWarning": "will be permanently removed from Pipeshub. Chats that use it may no longer work as expected.",
-    "agentListRowMenuAria": "Agent options",
     "failedToDeleteAgent": "Could not delete agent",
     "rename": "Rename",
     "archive": "Archive",
     "deleteChat": "Delete",
     "pin": "Pin",
     "unpin": "Unpin",
-    "pinned": "Pinned",
+    "pinned": "Pinned chats",
+    "pinnedChatsEmpty": "Chats you pin will appear here",
+    "pinnedRowSuffix": ", pinned",
+    "sidebarRunning": "Working in the background",
+    "sidebarRunningOpen": "Working",
     "pinFailed": "Could not pin the chat",
     "unpinFailed": "Could not unpin the chat",
     "export": {
@@ -1098,7 +1144,7 @@
         "auto": {
           "label": "Auto",
           "short": "Auto",
-          "hint": "The system picks the best approach per step—balanced speed and thoroughness."
+          "hint": "The system picks the best approach per step, balancing speed and thoroughness."
         },
         "quick": {
           "label": "Quick",
@@ -1113,7 +1159,7 @@
         "deep": {
           "label": "Deep",
           "short": "Deep",
-          "hint": "Explores more thoroughly with longer reasoning—use when accuracy matters most."
+          "hint": "Explores more thoroughly with longer reasoning. Use it when accuracy matters most."
         }
       }
     },
@@ -1430,6 +1476,7 @@
     },
     "scrollAttachmentsLeft": "Scroll attachments left",
     "scrollAttachmentsRight": "Scroll attachments right",
+    "attachmentsGroup": "Attachments",
     "toolValidation": {
       "tooManyTools": "Too many tools selected. Maximum 1024 tools are allowed per request due to performance limits.",
       "multipleInstances": "Multiple instances of the same action type ({{types}}) cannot be used together. Open the Actions panel and select only one instance per type."
@@ -1441,7 +1488,7 @@
       "unsupportedType": "Unsupported file type: {{names}}. Supported types: {{types}}.",
       "fileTooLarge": "File too large: {{names}}. Maximum size is {{maxMb}} MB per file.",
       "tooManyFiles": "Maximum {{max}} attachments per message.",
-      "pasteTruncated": "\n\n[Content truncated — pasted text exceeded the maximum attachment size.]",
+      "pasteTruncated": "\n\n[Content truncated: pasted text exceeded the maximum attachment size.]",
       "uploading": "Uploading…",
       "retry": "Retry upload",
       "pastedText": "Pasted text",
@@ -1449,11 +1496,14 @@
       "removePastedText": "Remove pasted text",
       "showInTextField": "Show in text field",
       "previewLoadFailed": "Failed to load content",
-      "copyText": "Copy",
+      "copyText": "Copy to clipboard",
+      "copied": "Copied",
+      "copyFailed": "Couldn't copy the text",
       "closePreview": "Close",
       "loadingPreview": "Loading…",
-      "pasteMeta_one": "{{chars}} chars · {{count}} line",
-      "pasteMeta_other": "{{chars}} chars · {{count}} lines"
+      "pasteMeta_one": "{{count}} line · {{chars}} chars",
+      "pasteMeta_other": "{{count}} lines · {{chars}} chars",
+      "pasteChipLabel": "{{label}}, {{meta}}. Open to read."
     },
     "voiceSttNotConfigured": "Configure a Speech-to-Text (STT) model in AI models settings to enable voice input.",
     "voiceSttLoading": "Checking speech capabilities…",
@@ -1476,6 +1526,20 @@
     "models": "Models",
     "manage": "Manage",
     "configuredModels": "Configured models",
+    "seeMoreModels": "See more models",
+    "loadingModels": "Loading models…",
+    "loadingSources": "Loading sources…",
+    "modelProviderBy": "by {{provider}}",
+    "modelTags": {
+      "default": "Default",
+      "reasoning": "Reasoning",
+      "multimodal": "Multimodal"
+    },
+    "noConnectorsYet": "No connectors yet. Apps you connect in Connectors appear here.",
+    "expandPanel": "Expand panel",
+    "collapsePanel": "Collapse panel",
+    "cancelEditQuery": "Cancel editing",
+    "cancelRegenerate": "Cancel regeneration",
     "reasoningEffort": {
       "label": "Reasoning effort",
       "overrideHint": "Click again to use the default.",
@@ -1485,7 +1549,11 @@
       "low": "Low",
       "medium": "Medium",
       "high": "High",
-      "max": "Max"
+      "max": "Max",
+      "effortLabel": "Effort",
+      "faster": "Faster",
+      "smarter": "Smarter",
+      "noLadder": "This model answers in one pass, with no effort setting."
     },
     "universalAgent": {
       "toolsLoadError": "Failed to load available actions.",
@@ -1525,7 +1593,8 @@
       "notice": {
         "expired": "{{tool}} on {{server}} didn't run: the request expired. Ask again if it's still needed.",
         "passed": "{{tool}} on {{server}} wasn't approved, so it didn't run.",
-        "waiting": "{{tool}} on {{server}} is waiting for the conversation owner's approval."
+        "waiting": "{{tool}} on {{server}} is waiting for the conversation owner's approval.",
+        "waitingFor": "{{tool}} on {{server}} is waiting for {{name}}'s approval."
       },
       "receipt": {
         "allowed": "You allowed {{tool}}",
@@ -1562,7 +1631,10 @@
       "preview": "Preview artifact",
       "loadingPreview": "Loading preview",
       "download": "Download artifact",
-      "downloading": "Downloading artifact"
+      "downloading": "Downloading artifact",
+      "previewButton": "Preview",
+      "previewFile": "Preview {{name}}",
+      "downloadFile": "Download {{name}}"
     },
     "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
     "noResultsFor": "No results found for “{{query}}”",
@@ -1579,6 +1651,138 @@
       "webSearch": "Web search",
       "internalAndWebSearch": "Internal + web search"
     },
+    "stoppedBeforeAnswer": "Stopped before an answer began",
+    "connectTools": {
+      "blockedTitle": "Connect these tools to use this agent",
+      "serviceAccountTitle": "This agent's tools aren't connected",
+      "noticeTitle": "This answer couldn't use some tools",
+      "chip": "Some tools aren't connected",
+      "chipAction": "Connect",
+      "kindAction": "Action",
+      "showMore": "Show {{count}} more",
+      "askAdmin": "Ask an admin to connect it",
+      "serviceAccount": "This agent uses its own connections. Ask an admin to connect {{tools}} in Agent Builder.",
+      "toolsetUnavailable": "Couldn't start the sign-in here. Connect it in Workspace → Actions.",
+      "connectedAskAgain": "Connected. Ask again to use it.",
+      "couldNotUse": "{{agent}} couldn't use {{tools}}",
+      "defaultAgent": "The agent"
+    },
+    "atMenu": {
+      "label": "Mention suggestions",
+      "sources": "Sources",
+      "browseSources": "Browse all sources",
+      "allSources": "All sources",
+      "showMore": "Show more",
+      "nMore": "{{count}} more",
+      "noMatches": "No matches",
+      "keysHint": "↑ ↓ to move · Enter to pick · → to open a source · Esc to close",
+      "keysHintTick": "↑ ↓ to move · Enter to pick · Alt+Enter to tick · → to open a source · Esc to close",
+      "tooManySources": "A message can name up to {{max}} sources. Remove some and send again."
+    },
+    "answerFailedTitle": "This answer failed",
+    "answerFailedRetry": "Try again",
+    "cannotOpenSource": "You can't open this document. It may have been removed, or you may not have access to it.",
+    "queue": {
+      "title": "Queued · {{count}}",
+      "hint": "Each one is sent when the answer before it is done.",
+      "clearAll": "Clear all",
+      "listLabel": "Queued messages",
+      "edit": "Edit",
+      "editBusy": "Send or clear the message you're typing to edit this one",
+      "remove": "Remove from queue",
+      "retry": "Retry",
+      "heldAfterRefusal": "Not sent: the message before it couldn't be answered.",
+      "files_one": "{{count}} file",
+      "files_other": "{{count}} files",
+      "full": "You can queue up to {{count}} messages. Wait for one to be sent, or remove one.",
+      "collapse": "Hide queued messages",
+      "expand": "Show queued messages"
+    },
+    "rowActions": "Actions for {{title}}",
+    "archivedDescription": "{{title}} is in Workspace settings, under Archived chats.",
+    "undo": "Undo",
+    "renameFailedTitle": "Couldn't rename the chat",
+    "renameFailedDescription": "It keeps its old name. Try again.",
+    "renameFieldLabel": "New name",
+    "expandSection": "Expand section",
+    "collapseSection": "Collapse section",
+    "addToSection": "Add to {{section}}",
+    "agentNotFound": {
+      "title": "This agent doesn't exist or you no longer have access",
+      "description": "Check the link, or ask the person who shared it with you.",
+      "back": "Back to chats"
+    },
+    "latestMessages": "Latest messages",
+    "questionRail": "Questions in this chat",
+    "sendFeedback": "Send feedback",
+    "question": {
+      "copied": "Copied",
+      "edit": "Edit",
+      "pastedCode": "Pasted code"
+    },
+    "confidenceLevel": "Confidence level",
+    "runError": {
+      "stoppedTitle": "You stopped this response",
+      "stoppedBody": "The steps that finished are still in the trail above.",
+      "stoppedBodyPartial": "What was written before you stopped is kept above."
+    },
+    "answerPanel": {
+      "label": "About this answer",
+      "opener": "Context",
+      "openerHint": "Context: sources, citations and outputs",
+      "close": "Close context",
+      "resize": "Resize panel",
+      "sources": "Sources",
+      "citations": "Citations",
+      "context": "Context",
+      "outputs": "Outputs",
+      "pending": "Filled in once the answer lands.",
+      "noOutputsTitle": "Nothing made yet",
+      "noOutputsBody": "Ask for a doc, a sheet or a summary and the files it makes are kept here.",
+      "anythingYouCanOpen": "Could use anything you can open",
+      "sourcesLabel": "Sources: {{names}}",
+      "sourcesEmptyTitle": "Nothing read yet",
+      "sourcesEmptyBody": "Ask something that needs your connected apps and the documents behind the answer collect here.",
+      "citationsEmptyTitle": "Nothing cited yet",
+      "citationsEmptyBody": "Every claim in an answer is linked to the passage it came from. Those links land here.",
+      "contextCollections": "Collections",
+      "contextConnectors": "Connectors",
+      "contextFiles": "Files",
+      "contextFolderInCollection": "Folder in a collection",
+      "contextEmptyTitle": "Nothing attached yet",
+      "contextEmptyBody": "Collections, connected apps and files you point this chat at are listed here.",
+      "anythingTheyCanOpen": "Could use anything {{name}} can open",
+      "anythingOwnerCanOpen": "Could use anything the chat's owner can open"
+    },
+    "trail": {
+      "reasoning": "Thinking",
+      "subAgent": "Sub-agent",
+      "usedSkills_one": "Used {{count}} skill",
+      "usedSkills_other": "Used {{count}} skills",
+      "exploredSearches_one": "Explored {{count}} search",
+      "exploredSearches_other": "Explored {{count}} searches",
+      "ranTools_one": "Ran {{count}} tool",
+      "ranTools_other": "Ran {{count}} tools",
+      "thoughtFor": "Thought for {{duration}}",
+      "thoughtThrough_one": "Thought through {{count}} step",
+      "thoughtThrough_other": "Thought through {{count}} steps",
+      "steps_one": "{{count}} step",
+      "steps_other": "{{count}} steps",
+      "stoppedAfter": "Stopped after {{duration}}",
+      "stopped": "Stopped",
+      "done": "Done",
+      "showAllSteps": "Show all steps",
+      "showFewer": "Show fewer",
+      "durationSeconds": "{{value}}s",
+      "durationMinutes": "{{minutes}}m {{seconds}}s"
+    },
+    "citationPill": {
+      "number": "Citation {{number}}: {{name}}"
+    },
+    "citationPopover": {
+      "page": "Page {{page}}",
+      "paragraph": "Paragraph {{paragraph}}"
+    },
     "searchDegraded": "Results may be incomplete."
   },
   "workspaceMenu": {
@@ -1592,7 +1796,9 @@
     "documentation": "Documentation",
     "darkMode": "Dark mode",
     "lightMode": "Light mode",
-    "organisations": "Organisations"
+    "organisations": "Organisations",
+    "triggerLabel": "{{name}} workspace and account menu",
+    "triggerLabelNoName": "Workspace and account menu"
   },
   "workspace": {
     "users": {
@@ -1655,7 +1861,12 @@
         "edit": "Edit",
         "resendInviteSuccess": "Invite resent",
         "resendInviteSuccessDescription": "Invite has been resent to {{email}}",
-        "resendInviteError": "Failed to resend invite"
+        "resendInviteError": "Failed to resend invite",
+        "changeRoleUndo": "Undo",
+        "changeRoleRestored": "Role restored",
+        "changeRoleRestoredDescription": "{{name}} is {{role}} again",
+        "changeRoleUndoError": "Could not restore the role",
+        "changeRoleUndoErrorDescription": "{{name}} is still {{role}}. Change the role again to put it back."
       },
       "profile": {
         "title": "Profile",
@@ -1733,7 +1944,10 @@
         "importTooLongSkipped_one": "{{count}} entry longer than 254 characters was left out.",
         "importTooLongSkipped_other": "{{count}} entries longer than 254 characters were left out.",
         "invalidBlocksSend_one": "{{count}} invalid address is marked in red. Fix or remove it to send invites.",
-        "invalidBlocksSend_other": "{{count}} invalid addresses are marked in red. Fix or remove them to send invites."
+        "invalidBlocksSend_other": "{{count}} invalid addresses are marked in red. Fix or remove them to send invites.",
+        "warnMember": "{{email}} is already a member, so no invite will be sent to this address.",
+        "warnInvited": "{{email}} has already been invited. Sending again will resend their invite.",
+        "warnMany": "Some addresses are already members or already invited. Members are skipped and pending invites are sent again."
       },
       "bulk": {
         "resendInvite": "Resend invite",
@@ -2391,7 +2605,12 @@
     "common": {
       "loadingUsers": "Loading users...",
       "noUsersAvailable": "No users available",
-      "selected": "{{count}} selected"
+      "selected": "{{count}} selected",
+      "validation": {
+        "nameRequired": "Enter a name.",
+        "nameTooLong": "Name must be at most {{max}} characters.",
+        "descriptionTooLong": "Description must be at most {{max}} characters."
+      }
     },
     "filters": {
       "role": "Role",
@@ -5206,7 +5425,8 @@
       "section": "API actions",
       "connectTooltip": "Connect it under Actions",
       "serviceAccountBlocked": "Service-account agents can only use API actions with a shared credential or no sign-in."
-    }
+    },
+    "nameTooLong": "Name must be at most {{max}} characters."
   },
   "recordView": {
     "sections": {
@@ -5578,17 +5798,16 @@
     }
   },
   "askUserQuestion": {
-    "questionsHeadingSingular": "Question :",
-    "questionsHeadingPlural": "Questions :",
+    "questionsHeadingSingular": "Question",
+    "questionsHeadingPlural": "Questions",
     "answered": "Answered",
     "showLess": "Show less",
     "showMore": "Show more",
     "noPreference": "[No preference]",
+    "skipped": "Skipped",
     "somethingElse": "Something else",
-    "questionAskedSingular": "Question asked:",
-    "questionAskedPlural": "Questions asked:",
-    "quickQuestionSingular": "Quick question :",
-    "quickQuestionPlural": "Quick questions :",
+    "quickQuestionSingular": "Quick question",
+    "quickQuestionPlural": "Quick questions",
     "stepOf": "Step {{step}} of {{total}}",
     "selectedCount": "{{count}} selected",
     "describeYourAnswer": "Describe your answer…",
@@ -5601,7 +5820,10 @@
     "selectMany": "Select all that apply",
     "skipAll": "Skip all",
     "expired": "This question has expired. Reply in the chat to continue.",
-    "repliedInChat": "You replied in the chat."
+    "repliedInChat": "You replied in the chat.",
+    "unknownPerson": "Former member",
+    "waitingFor": "Waiting for {{name}} to answer",
+    "waitingForYou": "Waiting for your answer"
   },
   "errorToast": {
     "accessDenied": "Access denied",
@@ -5612,8 +5834,21 @@
     "serverError": "Server error",
     "timedOut": "Request timed out",
     "somethingWentWrong": "Something went wrong",
-    "tryAgainShortly": "Please try again shortly",
-    "connectedServiceProblem": "Problem with a connected service"
+    "serverBusy": "The server is busy",
+    "connectedServiceProblem": "Problem with a connected service",
+    "accessDeniedDescription": "You don't have permission to do this. Ask your workspace admin for access.",
+    "invalidRequestDescription": "Some of the details aren't valid. Check them and try again.",
+    "notFoundDescription": "It may have been moved or deleted. Refresh the page and try again.",
+    "actionRequiredDescription": "Something changed since you started. Check the details and try again.",
+    "connectionErrorDescription": "Check your internet connection and try again.",
+    "serverErrorDescription": "The server couldn't finish this. Try again in a moment. If it keeps happening, contact your workspace admin.",
+    "timedOutDescription": "The server took too long to respond. Try again.",
+    "somethingWentWrongDescription": "That didn't work. Try again. If it keeps happening, contact your workspace admin.",
+    "serverBusyDescription": "Wait a moment, then try again."
+  },
+  "loading": {
+    "default": "Loading…",
+    "items": "Loading items…"
   },
   "validation": {
     "password": {
@@ -5683,7 +5918,11 @@
     "alreadyRemoved": "Already removed",
     "alreadyRemovedDescription": "{{name}} had already lost access",
     "removeConfirmTitle": "Remove access?",
-    "removeConfirmDescription": "{{name}} will lose access straight away. You can share with them again later."
+    "removeConfirmDescription": "{{name}} will lose access straight away. You can share with them again later.",
+    "removeSelection": "Remove {{name}}",
+    "peopleCanSee_one": "{{count}} person can see this chat",
+    "peopleCanSee_other": "{{count}} people can see this chat",
+    "loadingPeople": "Loading people…"
   },
   "demoData": {
     "badge": {

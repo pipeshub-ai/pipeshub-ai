@@ -298,3 +298,17 @@ async def test_the_search_verifier_knows_no_stranger(access_graph, provider) -> 
     assert (await provider.check_access(
         "no-such-user", ORG, virtual_record_ids=["vr-shared"], indexed_only=True,
     )).records_by_vrid == {}
+
+
+async def test_one_batch_names_exactly_what_the_hub_opens_one_by_one(access_graph, provider) -> None:
+    """A shared chat names its sources from one ``check_access``. For every node of the graph (every route the
+    fixture holds, denials included) it must answer what the hub's own open of that node answers, name and all."""
+    ids = _node_ids(access_graph)
+    batch = (await provider.check_access(USER_U, ORG, node_ids=ids)).names
+    one_by_one: dict[str, str] = {}
+    for node_id in ids:
+        opened = await provider.get_knowledge_hub_node_access(node_id, USER_U, ORG, [])
+        if opened is not None:
+            one_by_one[node_id] = opened["name"] or ""
+    assert one_by_one and set(ids) - set(one_by_one)
+    assert batch == one_by_one

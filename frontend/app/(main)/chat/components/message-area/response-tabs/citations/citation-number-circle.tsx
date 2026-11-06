@@ -1,55 +1,62 @@
 'use client';
 
 import React, { useRef, useState, useCallback, useLayoutEffect } from 'react';
-import { Flex, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import type { CitationData, CitationCallbacks } from './types';
 import {
   useCitationMessageRowKeyForInline,
   buildInlineCitationInstanceKey,
 } from './citation-popover-control';
 import { useInlineCitationPopoverStore } from './citation-popover-store';
-import { getCitationCopyHref } from './utils';
-import { useOrgHref } from '@/lib/navigation';
 
-interface CitationNumberCircleProps {
-  /** The `[N]` number from the markdown text (used as the circle label) */
-  chunkIndex: number;
-  /**
-   * Stable id for this marker instance in the message (e.g. parser `${indexInText}-${chunkIndex}`).
-   * Required for correct popover state when the same number appears more than once.
-   */
-  occurrenceKey?: string;
-  /** Full citation data — required to open the popover */
-  citation: CitationData;
-  /** Interaction callbacks (forwarded to popover) */
-  callbacks?: CitationCallbacks;
-}
+/** The citation pill's type: 12/16 medium, in the brand's text green. */
+export const CITATION_CHIP_TEXT: React.CSSProperties = {
+  fontSize: 'var(--font-size-1)',
+  lineHeight: 'var(--line-height-1)',
+  fontWeight: 500,
+  color: 'var(--accent-11)',
+};
+
+/** A number chip: the marker's number, small and bold, in a round light brand chip with a hairline edge (16px tall). */
+export const CITATION_NUMBER_CHIP: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  boxSizing: 'border-box',
+  minWidth: 'var(--space-4)',
+  height: 'var(--space-4)',
+  paddingInline: 'var(--space-1)',
+  borderRadius: 'var(--radius-thumb)',
+  border: '1px solid var(--accent-a6)',
+  background: 'var(--accent-3)',
+  color: 'var(--accent-11)',
+  fontSize: 'calc(var(--font-size-1) * 5 / 6)',
+  fontWeight: 'var(--font-weight-bold)',
+  lineHeight: 1,
+  flexShrink: 0,
+};
+
+/** Chips in a group are at least 20 wide with a 4px gap, so their 24px hit areas never overlap. */
+export const GROUP_CHIP_MIN_WIDTH = 'calc(var(--space-5) - var(--space-1))';
 
 /**
- * Compact circular numbered citation badge used inside an `InlineCitationBadge`
- * or an `InlineCitationGroup`.
- *
- * The circle is a `<button>` or, when `webUrl` is available, an `<a href>`
- * so the browser can offer **Copy link** on the context menu. A plain click
- * still toggles the single
- * `InlineCitationPopoverHost` (mounted once per `MessageList`), which anchors
- * to this circle via a Zustand store. Rendering the popover outside the
- * inline markdown tree guarantees at most one popover is ever visible, even
- * when multiple citation circles are on the page (this used to produce two
- * overlapping cards because each circle rendered its own `Popover.Root` and
- * Radix's `modal={false}` dismiss-layer treated other Radix triggers as safe
- * targets, leaving the previous popover briefly open).
+ * Opens the one citation popover (`InlineCitationPopoverHost`, mounted once per
+ * `MessageList`) anchored to this trigger. Rendering the popover outside the
+ * inline markdown tree guarantees at most one is ever visible.
  */
-function CitationNumberCircleImpl({
+export function useCitationPopoverTrigger({
   chunkIndex,
   occurrenceKey,
   citation,
   callbacks,
-}: CitationNumberCircleProps) {
-  const [isHovered, setIsHovered] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | HTMLAnchorElement | null>(null);
-
-  const assignTriggerRef = useCallback((el: HTMLButtonElement | HTMLAnchorElement | null) => {
+}: {
+  chunkIndex: number;
+  occurrenceKey?: string;
+  citation: CitationData;
+  callbacks?: CitationCallbacks;
+}) {
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const assignTriggerRef = useCallback((el: HTMLButtonElement | null) => {
     triggerRef.current = el;
   }, []);
 
@@ -63,8 +70,7 @@ function CitationNumberCircleImpl({
 
   const messageRowKey = useCitationMessageRowKeyForInline();
   // Always produce a stable instance key so read-only / archived views still
-  // toggle the popover. The store's single-active-key invariant is what
-  // prevents duplicate cards — not the row scoping itself.
+  // toggle the popover.
   const instanceKey = buildInlineCitationInstanceKey(
     messageRowKey && messageRowKey.length > 0 ? messageRowKey : 'orphan',
     chunkIndex,
@@ -75,15 +81,11 @@ function CitationNumberCircleImpl({
   const openPopover = useInlineCitationPopoverStore((s) => s.open);
   const closePopover = useInlineCitationPopoverStore((s) => s.close);
 
-  const copyHref = useOrgHref(getCitationCopyHref(citation));
-
-  // When this badge (re)mounts — e.g. because react-markdown recreated its
+  // When this trigger (re)mounts — e.g. because react-markdown recreated its
   // component tree after streamingCitationMaps updated — and it is still the
   // active popover target, update the store anchor to the fresh DOM element.
-  // Without this, Floating UI positions against the old detached button whose
-  // getBoundingClientRect() returns all zeros, placing the popover at (0,0).
-  // copyHref is included because a change in its value swaps <button> for <a>
-  // (or vice versa), replacing the DOM element triggerRef points at.
+  // Without this, Floating UI positions against a detached element and places
+  // the popover at (0,0).
   useLayoutEffect(() => {
     const el = triggerRef.current;
     if (!el) return;
@@ -96,130 +98,80 @@ function CitationNumberCircleImpl({
         callbacks: callbacksRef.current,
       });
     }
-  }, [instanceKey, copyHref]);
+  }, [instanceKey]);
 
-  const handleClick = useCallback(
-    (e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>) => {
-      // Modifier / non-primary clicks: keep native navigation for real links
-      if (
-        copyHref &&
-        (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-      ) {
-        return;
-      }
-      // Prevent bubbling so we don't accidentally trigger the host's
-      // outside-click handler in the same tick.
+  const onClick = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      // Keep the host's outside-click handler from closing it in the same tick.
       e.preventDefault();
       e.stopPropagation();
-
       if (!triggerRef.current) return;
       const state = useInlineCitationPopoverStore.getState();
       if (state.activeKey === instanceKey) {
         closePopover(instanceKey);
       } else {
-        openPopover({
-          key: instanceKey,
-          anchor: triggerRef.current,
-          citation,
-          callbacks,
-        });
+        openPopover({ key: instanceKey, anchor: triggerRef.current, citation, callbacks });
       }
     },
-    [instanceKey, citation, callbacks, openPopover, closePopover, copyHref],
+    [instanceKey, citation, callbacks, openPopover, closePopover],
   );
 
-  const circle = (
-    <Flex
-      as="span"
-      className="citation-number-circle"
-      align="center"
-      justify="center"
-      style={{
-        display: 'inline-flex',
-        minWidth: '16px',
-        height: '16px',
-        padding: '0 4px',
-        borderRadius: '999px',
-        background: isHovered || isOpen ? 'var(--accent-9)' : 'var(--accent-3)',
-        border: `1px solid ${isHovered || isOpen ? 'var(--accent-9)' : 'var(--accent-a6)'}`,
-        color: isHovered || isOpen ? 'white' : 'var(--accent-11)',
-        cursor: 'pointer',
-        verticalAlign: 'middle',
-        transition:
-          'background 0.08s ease, border-color 0.08s ease, color 0.08s ease, box-shadow 0.08s ease, transform 0.08s ease',
-        transform: isHovered ? 'translateY(-1px)' : 'translateY(0)',
-        boxShadow: isHovered ? '0 2px 6px rgba(0, 0, 0, 0.12)' : 'none',
-        lineHeight: 1,
-        flexShrink: 0,
-      }}
-    >
-      <Text
-        size="1"
-        weight="bold"
-        style={{
-          color: 'inherit',
-          fontSize: '10px',
-          lineHeight: 1,
-        }}
-      >
-        {chunkIndex}
-      </Text>
-    </Flex>
-  );
+  return { ref: assignTriggerRef, isOpen, onClick };
+}
 
-  const triggerStyle: React.CSSProperties = {
-    border: 'none',
-    background: 'none',
-    padding: 0,
-    margin: 0,
-    cursor: 'pointer',
-    font: 'inherit',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    lineHeight: 0,
-    verticalAlign: 'middle',
-    textDecoration: 'none',
-    color: 'inherit',
-  };
+interface CitationNumberCircleProps {
+  /** The `[N]` number from the markdown text (the chip's label). */
+  chunkIndex: number;
+  /**
+   * Stable id for this marker instance in the message (e.g. parser `${indexInText}-${chunkIndex}`).
+   * Required for correct popover state when the same number appears more than once.
+   */
+  occurrenceKey?: string;
+  /** Full citation data — required to open the popover */
+  citation: CitationData;
+  /** Interaction callbacks (forwarded to popover) */
+  callbacks?: CitationCallbacks;
+}
 
-  if (copyHref) {
-    return (
-      <a
-        ref={assignTriggerRef}
-        href={copyHref}
-        rel="noopener noreferrer"
-        onClick={handleClick}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-        aria-haspopup="dialog"
-        aria-expanded={isOpen}
-        style={triggerStyle}
-      >
-        {circle}
-      </a>
-    );
-  }
-
+/**
+ * One number in a group of citations to the same record: its own button,
+ * named for the citation, opening that citation's preview.
+ */
+function CitationNumberCircleImpl({ chunkIndex, occurrenceKey, citation, callbacks }: CitationNumberCircleProps) {
+  const { t } = useTranslation();
+  const [hovered, setHovered] = useState(false);
+  const { ref, isOpen, onClick } = useCitationPopoverTrigger({ chunkIndex, occurrenceKey, citation, callbacks });
+  const name = citation.recordName ? citation.recordName.replace(/\.[^/.]+$/, '') : '';
   return (
     <button
-      ref={assignTriggerRef}
+      ref={ref}
       type="button"
-      onClick={handleClick}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      // `citation-pill` for its 24px hit area and focus ring; the chip paints itself.
+      className="citation-pill citation-number-circle"
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       aria-haspopup="dialog"
       aria-expanded={isOpen}
-      style={triggerStyle}
+      aria-label={t('chat.citationPill.number', { number: chunkIndex, name })}
+      style={{
+        ...CITATION_NUMBER_CHIP,
+        minWidth: GROUP_CHIP_MIN_WIDTH,
+        margin: 0,
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+        background: isOpen || hovered ? 'var(--accent-4)' : CITATION_NUMBER_CHIP.background,
+        // The open chip's edge, drawn inside it so the chip keeps its size.
+        boxShadow: isOpen ? 'inset 0 0 0 1px var(--accent-8)' : 'none',
+      }}
     >
-      {circle}
+      {chunkIndex}
     </button>
   );
 }
 
-/** See `inlineCitationBadgePropsEqual` in `inline-citation-badge.tsx` for the
- * rationale — identity fields, not object identity, since the SSE pipeline
- * can hand back a differently-referenced but logically identical
+/** Compares a citation's identity fields rather than object identity: the SSE
+ * pipeline can hand back a differently-referenced but logically identical
  * `CitationData` across flushes. */
 function citationNumberCirclePropsEqual(
   prev: CitationNumberCircleProps,

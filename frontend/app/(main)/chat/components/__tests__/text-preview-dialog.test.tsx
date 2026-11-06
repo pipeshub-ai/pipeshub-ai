@@ -51,7 +51,6 @@ describe('TextPreviewDialog', () => {
   it('renders the title and loaded content', async () => {
     renderDialog();
     await waitFor(() => expect(screen.getByText('line one', { exact: false })).toBeTruthy());
-    // Title appears twice (visually-hidden Dialog.Title + visible header label).
     expect(screen.getAllByText('pasted-text-2026-01-01-00-00-00.txt').length).toBeGreaterThan(0);
   });
 
@@ -88,7 +87,7 @@ describe('TextPreviewDialog', () => {
     });
     renderDialog();
     await waitFor(() => expect(screen.getByText('line one', { exact: false })).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /^copy$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }));
     expect(writeText).toHaveBeenCalledWith('line one\nline two\nline three');
   });
 
@@ -101,7 +100,7 @@ describe('TextPreviewDialog', () => {
 
     renderDialog();
     await waitFor(() => expect(screen.getByText('line one', { exact: false })).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /^copy$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }));
     expect(feedbackTimers()).toBe(0);
 
     settle();
@@ -113,7 +112,7 @@ describe('TextPreviewDialog', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
     renderDialog();
     await waitFor(() => expect(screen.getByText('line one', { exact: false })).toBeTruthy());
-    const copy = screen.getByRole('button', { name: /^copy$/i });
+    const copy = screen.getByRole('button', { name: 'Copy to clipboard' });
     expect(() => fireEvent.click(copy)).not.toThrow();
     await waitFor(() => expect(copy.textContent).toContain('close'));
   });
@@ -125,6 +124,40 @@ describe('TextPreviewDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /show in text field/i }));
     expect(onShowInTextField).toHaveBeenCalledWith('line one\nline two\nline three');
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('names itself by its title and describes itself by the paste size', async () => {
+    renderDialog();
+    await waitFor(() => expect(screen.getByText('line one', { exact: false })).toBeTruthy());
+    const dialog = screen.getByRole('dialog', { name: 'pasted-text-2026-01-01-00-00-00.txt' });
+    expect((screen.getByRole('heading', { name: 'pasted-text-2026-01-01-00-00-00.txt' }) as HTMLElement).style.lineHeight).toBe('var(--line-height-3)');
+    const describedBy = dialog.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy as string)?.textContent).toBe('{{count}} lines · {{chars}} chars');
+    // Wrapped, with no line-number gutter.
+    expect(dialog.querySelectorAll('pre').length).toBe(1);
+    expect((dialog.querySelector('pre') as HTMLElement).style.whiteSpace).toBe('pre-wrap');
+  });
+
+  it('says Copied after a copy', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
+    renderDialog();
+    await waitFor(() => expect(screen.getByText('line one', { exact: false })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy());
+  });
+
+  it('hands focus back to what opened it when it closes', async () => {
+    const opener = document.createElement('button');
+    opener.textContent = 'Pasted text chip';
+    document.body.appendChild(opener);
+    opener.focus();
+    const props = { open: true, onOpenChange: vi.fn(), title: 'Pasted text', loadText: vi.fn().mockResolvedValue('x') };
+    const { rerender } = render(h(Theme, null, h(TextPreviewDialog, props)));
+    await waitFor(() => expect(screen.getByText('x')).toBeTruthy());
+    rerender(h(Theme, null, h(TextPreviewDialog, { ...props, open: false })));
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+    opener.remove();
   });
 
   it('does not render the "Show in text field" action when the handler is omitted', async () => {

@@ -36,9 +36,10 @@ import { buildChatHref } from '@/chat/build-chat-url';
 import { invalidateModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getAgentBuilderPermissions } from './agent-builder-permissions';
-import { useUserPermission } from '@/config';
+import { useUserPermission, agentBuilderExtension } from '@/config';
 import { toast } from '@/lib/store/toast-store';
-import { getUserFacingErrorMessage } from '@/lib/api/api-error';
+import { fieldErrorsOf, getUserFacingErrorMessage } from '@/lib/api/api-error';
+import { AGENT_NAME_MAX_LENGTH } from '@/app/(main)/agents/agent-name-rules';
 import {
   collectActiveToolsetTypeKeysFromNodes,
   type ToolsetTypeKeyFlowNode,
@@ -208,6 +209,11 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const canAccessServiceAgent = useUserPermission('accessServiceAgent');
   const canDeleteAgentPermission = useUserPermission('deleteAgent');
   const canShareAgent = useUserPermission('shareAgent');
+  const nameField = agentBuilderExtension.useNameField({
+    loadedAgent,
+    agentName,
+    canEdit: canPersist && !isAgentStructureLocked,
+  });
 
   const paletteDragBlockedMessage = useMemo(() => {
     if (!isAgentStructureLocked) return '';
@@ -562,9 +568,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       serializeEdges(edges) !== cleanSnapshot.edgesJson ||
       agentName.trim() !== cleanSnapshot.agentName ||
       shareWithOrg !== cleanSnapshot.shareWithOrg ||
-      serviceAccountUserId !== cleanSnapshot.serviceAccountUserId
+      serviceAccountUserId !== cleanSnapshot.serviceAccountUserId ||
+      nameField.dirty
     );
-  }, [nodes, edges, agentName, shareWithOrg, serviceAccountUserId, cleanSnapshot]);
+  }, [nodes, edges, agentName, shareWithOrg, serviceAccountUserId, cleanSnapshot, nameField.dirty]);
 
   // beforeunload guard: browser tab close / refresh / address-bar navigation.
   useEffect(() => {
@@ -692,6 +699,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       setBanner(null);
       return;
     }
+    if (agentName.trim().length > AGENT_NAME_MAX_LENGTH) {
+      setAgentNameError(t('agentBuilder.nameTooLong', { max: AGENT_NAME_MAX_LENGTH }));
+      focusAgentNameInput();
+      setBanner(null);
+      return;
+    }
     saveRef.current = true;
     setSaving(true);
     setError(null);
@@ -707,10 +720,11 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           isServiceAccount,
           bindingToSend(loadedAgent)
         ),
+        ...nameField.payloadFields(),
       };
 
       if (loadedAgent) {
-        const updated = await AgentsApi.updateAgent(loadedAgent._key, payload);
+        const updated = await AgentsApi.updateAgent(loadedAgent._key, payload, { ...nameField.requestOptions(), suppressErrorToast: true });
         // Agent's model list may have changed — drop the chat-side cache so
         // the next chat view for this agent refetches fresh models.
         invalidateModelsForContext(loadedAgent._key);
@@ -724,7 +738,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         });
         setShowPostUpdateDialog(true);
       } else {
-        const created = await AgentsApi.createAgent(payload);
+        const created = await AgentsApi.createAgent(payload, { ...nameField.requestOptions(), suppressErrorToast: true });
         invalidateModelsForContext(created._key);
         setCleanSnapshot({
           nodesJson: serializeNodes(nodes),
@@ -737,7 +751,15 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
       }
     } catch (e: unknown) {
-      setError(getUserFacingErrorMessage(e, t('agentBuilder.saveFailed')));
+      // The sentence for the name goes on the name; any other failure is the
+      // banner. Neither is also a toast: the requests above suppress it.
+      const nameReason = fieldErrorsOf(e).name;
+      if (nameReason) {
+        setAgentNameError(nameReason);
+        focusAgentNameInput();
+      } else if (!nameField.handleSaveError(e)) {
+        setError(getUserFacingErrorMessage(e, t('agentBuilder.saveFailed')));
+      }
     } finally {
       setSaving(false);
       saveRef.current = false;
@@ -761,6 +783,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     setSaving,
     setSuccess,
     shareWithOrg,
+    nameField,
     t,
   ]);
 
@@ -795,10 +818,11 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           true,
           bindingToSend(currentAgent)
         ),
+        ...nameField.payloadFields(),
       };
 
       if (currentAgent) {
-        const updated = await AgentsApi.updateAgent(currentAgent._key, agentConfig);
+        const updated = await AgentsApi.updateAgent(currentAgent._key, agentConfig, { ...nameField.requestOptions(), suppressErrorToast: true });
         invalidateModelsForContext(currentAgent._key);
         setServiceAccountConfirmOpen(false);
         await refreshAgent(currentAgent._key, { knownAgent: updated });
@@ -811,7 +835,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         });
         setSuccess(t('agentBuilder.serviceAgentConverted'));
       } else {
-        const created = await AgentsApi.createAgent(agentConfig);
+        const created = await AgentsApi.createAgent(agentConfig, { ...nameField.requestOptions(), suppressErrorToast: true });
         invalidateModelsForContext(created._key);
         setServiceAccountConfirmOpen(false);
         setCleanSnapshot({
@@ -824,6 +848,17 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
       }
     } catch (e: unknown) {
+      const nameReason = fieldErrorsOf(e).name;
+      if (nameReason) {
+        setServiceAccountConfirmOpen(false);
+        setAgentNameError(nameReason);
+        focusAgentNameInput();
+        return;
+      }
+      if (nameField.handleSaveError(e)) {
+        setServiceAccountConfirmOpen(false);
+        return;
+      }
       setServiceAccountError(getUserFacingErrorMessage(e, t('agentBuilder.svcAcctEnableFailed')));
     } finally {
       setServiceAccountCreating(false);
@@ -843,6 +878,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     setCleanSnapshot,
     setSuccess,
     showInlineAgentNameRequired,
+    nameField,
     t,
   ]);
 
@@ -870,7 +906,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     try {
       await AgentsApi.deleteAgent(loadedAgent._key);
       setAgentDeleteDialogOpen(false);
-      router.replace('/chat/');
+      router.replace('/agents/');
     } catch (e: unknown) {
       setError(getUserFacingErrorMessage(e, t('agentBuilder.deleteAgentFailed')));
     } finally {
@@ -900,7 +936,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       const confirmed = window.confirm(t('agentBuilder.unsavedChangesConfirm'));
       if (!confirmed) return;
     }
-    router.push('/chat');
+    router.push('/agents/');
   }, [isDirty, router, t]);
 
   const palette = (
@@ -995,6 +1031,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           deletePermissionDenied={!canDeleteAgentPermission}
           sharePermissionDenied={!canShareAgent}
           createdBy={loadedAgent?.createdBy ?? null}
+          nameFieldExtra={nameField.nameFieldExtra}
         />
 
         {((loadedAgent && !canPersist) || error || banner || success || showDeprecatedBanner || saveBlockedByEmptyMcpServers) && (

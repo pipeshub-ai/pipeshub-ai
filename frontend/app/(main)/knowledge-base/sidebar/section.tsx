@@ -339,11 +339,7 @@ export function AppSection({
               <MoreButton onClick={onMore} />
             )}
           </>
-        ) : (
-          <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
-            No items
-          </Text>
-        )}
+        ) : null /* The rail lists sub-folders only. An app with none still has records in the table, so it must not say it is empty. */}
         {showChildLoadInline && onLoadMoreAppChildren ? (
           <SidebarLoadMoreButton
             onClick={onLoadMoreAppChildren}

@@ -17,6 +17,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.entities import Record, RecordType
+from app.modules.authz.chat_content_access import NoChatContentAccess
 from app.services.record_content.authorizer import TieredRecordAuthorizer
 from app.services.record_content.models import (
     RecordAccessDeniedError,
@@ -153,6 +154,32 @@ async def test_service_account_denied_by_tier3(graph):
             await authorizer.authorize(actor, record)
 
 
+def _chat_graph() -> AsyncMock:
+    g = AsyncMock()
+    g.get_edge = AsyncMock(return_value=None)
+    g.check_record_access_with_details = AsyncMock(return_value=None)
+    g.get_document = AsyncMock(side_effect=lambda key, coll, *a, **k: {
+        ("rec1", "records"): {"_key": "rec1", "orgId": "org1", "connectorName": "ATTACHMENTS", "recordType": "FILE"},
+        ("ukey-b", "users"): {"_key": "ukey-b", "userId": "user-b"},
+    }.get((key, coll)))
+    g.get_edges_to_node = AsyncMock(return_value=[
+        {"from_id": "ukey-b", "from_collection": "users", "to_id": "rec1", "type": "USER", "role": "OWNER"},
+    ])
+    return g
+
+
+def _attachment_record() -> object:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id="rec1", org_id="org1", connector_name="ATTACHMENTS", record_type="FILE")
+
+
+@pytest.mark.asyncio
+async def test_tier4_denies_chat_content_by_default() -> None:
+    with pytest.raises(RecordAccessDeniedError):
+        await TieredRecordAuthorizer(_chat_graph()).authorize(_make_actor(), _attachment_record())
+
+
 # ---------------------------------------------------------------------------
 # Tier 0: a record in the trash
 # ---------------------------------------------------------------------------
@@ -216,3 +243,76 @@ async def test_a_live_record_the_model_denies_is_denied_not_missing(graph) -> No
         await authorizer.authorize(_make_actor(), _stored_record(is_deleted=False))
 
     graph.check_record_access_with_details.assert_awaited_once_with("user1", "org1", "rec1")
+
+
+# ---------------------------------------------------------------------------
+# Graph grants on chat content, per the installed ChatContentAccess
+# ---------------------------------------------------------------------------
+
+
+class _EdgesGrantNoChatContent:
+    """An access under which graph grants on chat content count for nobody: it decides, uploader included."""
+
+    graph_grants_chat_content = False
+
+    def __init__(self, allow: bool) -> None:
+        self.allow = allow
+        self.asked = 0
+
+    async def can_read_chat_content(self, graph, **kwargs) -> bool:
+        self.asked += 1
+        return self.allow
+
+
+def _acl_graph(acl_record: dict) -> AsyncMock:
+    """A permission model that grants the record, as it does through any edge on it."""
+    g = AsyncMock()
+    g.get_edge = AsyncMock(return_value={"_id": "edges/e1", "role": "READER"})
+    g.check_record_access_with_details = AsyncMock(return_value={"record": acl_record})
+    return g
+
+
+_ATTACHMENT_DOC = {"_key": "rec1", "connectorName": "ATTACHMENTS"}
+
+
+async def _authorize(graph: AsyncMock, access: object, record: object) -> None:
+    await TieredRecordAuthorizer(graph, access).authorize(_make_actor(), record)
+
+
+@pytest.mark.asyncio
+async def test_with_the_default_access_a_grant_on_an_attachment_grants() -> None:
+    access = NoChatContentAccess()
+    await _authorize(_acl_graph(_ATTACHMENT_DOC), access, _attachment_record())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow", [False, True])
+async def test_otherwise_a_grant_on_chat_content_is_left_to_the_access(allow: bool) -> None:
+    graph = _acl_graph(_ATTACHMENT_DOC)
+    access = _EdgesGrantNoChatContent(allow)
+    if allow:
+        await _authorize(graph, access, _attachment_record())
+    else:
+        with pytest.raises(RecordAccessDeniedError):
+            await _authorize(graph, access, _attachment_record())
+    assert access.asked == 1
+
+
+@pytest.mark.asyncio
+async def test_otherwise_the_uploader_is_decided_by_the_access_not_by_an_edge() -> None:
+    """No direct edge is read, not even the uploader's OWNER edge: the access
+    must allow its uploader itself."""
+    graph = _acl_graph(_ATTACHMENT_DOC)
+    graph.get_edge.return_value = {"_id": "edges/e1", "role": "OWNER"}
+    access = _EdgesGrantNoChatContent(True)
+    await _authorize(graph, access, _attachment_record())
+    assert access.asked == 1
+    graph.get_edge.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_otherwise_a_grant_on_another_record_still_grants() -> None:
+    graph = _acl_graph({"_key": "rec1", "connectorName": "KB", "recordType": "FILE"})
+    access = _EdgesGrantNoChatContent(False)
+    await _authorize(graph, access, _stored_record(is_deleted=False))
+    assert access.asked == 0

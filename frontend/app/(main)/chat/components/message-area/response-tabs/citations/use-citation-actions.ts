@@ -2,8 +2,10 @@
 
 import { useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
 import { useChatStore } from '@/chat/store';
 import { KnowledgeBaseApi } from '@/knowledge-base/api';
+import { isGoneError, isProcessedError } from '@/lib/api/api-error';
 import type { CitationData, CitationCallbacks, CitationOrigin, CitationMaps } from './types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
 import {
@@ -21,6 +23,7 @@ import {
  */
 export function useCitationActions(): CitationCallbacks {
   const router = useRouter();
+  const { t } = useTranslation();
   const setPreviewFile = useChatStore((s) => s.setPreviewFile);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
 
@@ -120,8 +123,9 @@ export function useCitationActions(): CitationCallbacks {
         });
         setPreviewMode('sidebar');
 
-        // 2. Fetch details first so non-previewable records skip the stream.
-        const recordDetails = await KnowledgeBaseApi.getRecordDetails(citation.recordId);
+        // 2. Fetch details first so non-previewable records skip the stream. A 403 or 404 is said in the preview
+        // itself (below), not by the app-wide "not found" toast: a source someone else's answer cites may not be yours.
+        const recordDetails = await KnowledgeBaseApi.getRecordDetails(citation.recordId, { suppressErrorToast: isGoneError });
         const record = recordDetails?.record;
         if (!record) {
           throw new Error('Record details unavailable');
@@ -153,7 +157,7 @@ export function useCitationActions(): CitationCallbacks {
           isPresentationFile(previewMime, previewName) ||
           isLegacyWordDocFile(previewMime, previewName);
         const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const blob = await KnowledgeBaseApi.streamRecord(citation.recordId, streamOptions);
+        const blob = await KnowledgeBaseApi.streamRecord(citation.recordId, { ...streamOptions, suppressErrorToast: isGoneError });
 
         // 3. Build the preview-state payload.
         // For DOCX we pass the Blob straight through to `DocxRenderer`
@@ -204,12 +208,18 @@ export function useCitationActions(): CitationCallbacks {
           name: citation.recordName,
           url: '',
           type: citation.mimeType || '',
-          error: error instanceof Error ? error.message : 'Failed to load file',
+          // A 404 or 403: the record is gone, or not the viewer's to open.
+          error:
+            isProcessedError(error) && isGoneError(error)
+              ? t('chat.cannotOpenSource')
+              : error instanceof Error
+                ? error.message
+                : 'Failed to load file',
           isLoading: false,
         });
       }
     },
-    [setPreviewFile, setPreviewMode],
+    [setPreviewFile, setPreviewMode, t],
   );
 
   return useMemo(

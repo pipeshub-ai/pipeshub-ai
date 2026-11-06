@@ -7,15 +7,19 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/config';
 import { useUserStore } from '@/lib/store/user-store';
 import { useToastStore } from '@/lib/store/toast-store';
-import { getUserFacingErrorMessage } from '@/lib/api/api-error';
+import { fieldErrorsOf, getUserFacingErrorMessage } from '@/lib/api/api-error';
 import {
   WorkspaceRightPanel,
   FormField,
+  LabeledTextArea,
+  LabeledTextField,
   SearchableCheckboxDropdown,
   AvatarCell,
   PaginatedMembersList,
   ConfirmationDialog,
+  useFormValidation,
 } from '../../components';
+import { workspaceDescriptionProblem, workspaceNameProblem } from '../../name-rules';
 import { useWorkspaceDrawerNestedModalHost } from '../../components/workspace-right-panel';
 import type { CheckboxOption, PaginatedMembersListHandle } from '../../components';
 import { useTeamsStore } from '../store';
@@ -61,6 +65,16 @@ export function TeamDetailSidebar({
     setIsSavingEdit,
     openDetailPanel,
   } = useTeamsStore();
+
+  const validation = useFormValidation<'name' | 'description'>({
+    name: workspaceNameProblem(editTeamName, t),
+    description: workspaceDescriptionProblem(editTeamDescription, t),
+  });
+  const resetValidation = validation.reset;
+  // Each edit session starts clean: nothing marked, no server answer carried over.
+  useEffect(() => {
+    resetValidation();
+  }, [isEditMode, detailTeam?.id, resetValidation]);
 
   const [isDeleting, setIsDeleting] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
@@ -398,6 +412,11 @@ export function TeamDetailSidebar({
   // Handle saving edits
   const handleSaveEdits = useCallback(async () => {
     if (!detailTeam) return;
+    // Save is disabled while a rule fails; this also guards Enter and a stale click.
+    if (!validation.isValid) {
+      validation.touchAll(['name', 'description']);
+      return;
+    }
 
     setIsSavingEdit(true);
     try {
@@ -419,7 +438,7 @@ export function TeamDetailSidebar({
       });
 
       await TeamsApi.updateTeam(detailTeam.id, {
-        name: editTeamName.trim() || undefined,
+        name: editTeamName.trim(),
         description: editTeamDescription.trim() || undefined,
         addUserRoles: addUserRoles.length > 0 ? addUserRoles : undefined,
         removeUserIds: removeUserIds.length > 0 ? removeUserIds : undefined,
@@ -445,21 +464,26 @@ export function TeamDetailSidebar({
       });
       onUpdateSuccess?.();
     } catch (error) {
-      const message = getUserFacingErrorMessage(
-        error,
-        t('workspace.teams.edit.saveErrorDescription', 'Could not update team. Please try again.')
-      );
-      addToast({
-        variant: 'error',
-        title: t('workspace.teams.edit.saveError', 'Failed to update team'),
-        description: message,
-        duration: 5000,
-      });
+      // A reason the server pinned to a field shows on that field, not as a toast.
+      const onField = validation.applyServerErrors(fieldErrorsOf(error), ['name', 'description']);
+      if (!onField) {
+        const message = getUserFacingErrorMessage(
+          error,
+          t('workspace.teams.edit.saveErrorDescription', 'Could not update team. Please try again.')
+        );
+        addToast({
+          variant: 'error',
+          title: t('workspace.teams.edit.saveError', 'Failed to update team'),
+          description: message,
+          duration: 5000,
+        });
+      }
     } finally {
       setIsSavingEdit(false);
     }
   }, [
     detailTeam,
+    validation,
     editTeamName,
     editTeamDescription,
     editAddUserIds,
@@ -516,7 +540,7 @@ export function TeamDetailSidebar({
           : t('workspace.teams.edit.edit', 'Edit Team')
       }
       secondaryLabel={t('workspace.teams.edit.cancel', 'Cancel')}
-      primaryDisabled={isEditMode && isSavingEdit}
+      primaryDisabled={isEditMode && (isSavingEdit || !validation.isValid)}
       primaryLoading={isSavingEdit}
       onPrimaryClick={handlePrimaryClick}
       onSecondaryClick={handleSecondaryClick}
@@ -537,39 +561,18 @@ export function TeamDetailSidebar({
         {/* Team Name */}
         <FormField
           label={t('workspace.teams.detail.nameLabel', 'Team Name')}
+          required={isEditMode}
+          error={isEditMode ? validation.errorFor('name') : undefined}
         >
-          <input
-            type="text"
+          <LabeledTextField
             value={isEditMode ? editTeamName : detailTeam?.name ?? ''}
             onChange={(e) => {
-              if (isEditMode) setEditTeamName(e.target.value);
+              if (!isEditMode) return;
+              setEditTeamName(e.target.value);
+              validation.clearServerError('name');
             }}
+            onBlur={() => validation.touch('name')}
             readOnly={!isEditMode}
-            style={{
-              width: '100%',
-              height: 44, // the touch-target minimum; also ~12px around the 20px line
-              padding: '0 12px',
-              backgroundColor: 'var(--color-surface)',
-              border: '1px solid var(--slate-a5)',
-              borderRadius: 'var(--radius-2)',
-              fontSize: 14,
-              lineHeight: '20px',
-              fontFamily: 'var(--default-font-family)',
-              color: 'var(--slate-12)',
-              outline: 'none',
-              boxSizing: 'border-box',
-              cursor: isEditMode ? 'text' : 'default',
-            }}
-            onFocus={(e) => {
-              if (isEditMode) {
-                e.currentTarget.style.border = '2px solid var(--accent-8)';
-                e.currentTarget.style.padding = '0 11px';
-              }
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = '0 12px';
-            }}
           />
         </FormField>
 
@@ -579,16 +582,20 @@ export function TeamDetailSidebar({
             'workspace.teams.detail.descriptionLabel',
             'Team Description'
           )}
+          error={isEditMode ? validation.errorFor('description') : undefined}
         >
-          <textarea
+          <LabeledTextArea
             value={
               isEditMode
                 ? editTeamDescription
                 : detailTeam?.description ?? ''
             }
             onChange={(e) => {
-              if (isEditMode) setEditTeamDescription(e.target.value);
+              if (!isEditMode) return;
+              setEditTeamDescription(e.target.value);
+              validation.clearServerError('description');
             }}
+            onBlur={() => validation.touch('description')}
             readOnly={!isEditMode}
             placeholder={
               isEditMode
@@ -599,32 +606,7 @@ export function TeamDetailSidebar({
                 : ''
             }
             rows={4}
-            style={{
-              width: '100%',
-              minHeight: 88,
-              padding: '10px 12px',
-              backgroundColor: 'var(--color-surface)',
-              border: '1px solid var(--slate-a5)',
-              borderRadius: 'var(--radius-2)',
-              fontSize: 14,
-              lineHeight: '20px',
-              fontFamily: 'var(--default-font-family)',
-              color: 'var(--slate-12)',
-              outline: 'none',
-              boxSizing: 'border-box',
-              resize: 'vertical',
-              cursor: isEditMode ? 'text' : 'default',
-            }}
-            onFocus={(e) => {
-              if (isEditMode) {
-                e.currentTarget.style.border = '2px solid var(--accent-8)';
-                e.currentTarget.style.padding = '9px 11px';
-              }
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = '10px 12px';
-            }}
+            style={{ minHeight: 88 }}
           />
         </FormField>
 

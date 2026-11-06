@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { useBrand } from '@/lib/branding';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
@@ -100,6 +100,7 @@ export function ProviderGrid({
 }: ProviderGridProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  const isDrawerLayout = useIsBelowDesktop();
   const brand = useBrand();
   const docsOverviewUrl =
     brand.docsHref('ai-models/overview') ?? `${EXTERNAL_LINKS.documentation}ai-models/overview`;
@@ -197,7 +198,7 @@ export function ProviderGrid({
             paddingRight: 0,
           }
           : {
-            paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
+            paddingTop: isDrawerLayout ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
             paddingBottom: pagePaddingY,
             paddingLeft: pagePaddingX,
             paddingRight: pagePaddingX,

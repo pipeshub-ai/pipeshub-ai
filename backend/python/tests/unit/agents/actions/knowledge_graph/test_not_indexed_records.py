@@ -38,6 +38,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.api import router as connector_router
 from app.models.entities import PullRequestRecord, RecordType
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.fetch_full_record import (
     NOT_INDEXED_YET,
     UNAVAILABLE,
@@ -94,7 +95,7 @@ def _graph(*, access: bool = True, status: str = OFF, typed: Any = None) -> Magi
     graph.config_service = None
     graph.check_record_access_with_details = AsyncMock(return_value={"_key": PR_ID} if access else None)
     graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-1"})
-    graph.check_access = AsyncMock(return_value=SimpleNamespace(node_ids={PR_ID} if access else set(), placeholder_ids=frozenset()))
+    graph.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({PR_ID} if access else ())))
     graph.get_document = AsyncMock(return_value=_doc(status))
     graph.get_record_by_id = AsyncMock(return_value=typed)
     return graph
@@ -243,7 +244,7 @@ class TestHttpRecordContent:
         with pytest.raises(HTTPException) as err:
             await self._content(graph)
 
-        assert err.value.status_code == 403
+        assert err.value.status_code == 404
         graph.get_record_by_id.assert_not_awaited()
 
     async def test_a_record_that_does_not_exist_is_still_refused(self) -> None:
@@ -255,7 +256,7 @@ class TestHttpRecordContent:
         with pytest.raises(HTTPException) as err:
             await self._content(graph)
 
-        assert err.value.status_code == 403
+        assert err.value.status_code == 404
         graph.get_record_by_id.assert_not_awaited()
 
     async def test_an_indexed_record_whose_content_will_not_load_is_not_found(self) -> None:

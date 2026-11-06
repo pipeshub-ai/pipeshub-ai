@@ -217,8 +217,8 @@ export function getKbItemMenuActions(item: TableItem, t: TFunction, h: KbItemMen
   );
   return [
     { icon: 'folder_open', label: t('kb.rowActions.open'), onClick: h.onOpen },
-    !isFolder && h.onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: t('action.download'), onClick: () => h.onDownload!(item) },
-    h.onRename && canEditItem && { icon: 'edit', label: t('menu.rename'), onClick: h.onStartRename },
+    !isFolder && h.onDownload && shouldShowDownloadForTableItem(item) && { icon: 'download', label: t('action.download'), onClick: () => h.onDownload!(item) },
+    h.onRename && canEditItem && { icon: 'drive_file_rename_outline', label: t('menu.rename'), onClick: h.onStartRename },
     ...(showReindexMenu
       ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) => h.onReindex!(item, statusFilters))
       : []),

@@ -1,6 +1,7 @@
 import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import eslintPluginPrettier from 'eslint-plugin-prettier/recommended';
+import { domainBoundaryConfig } from './eslint.boundaries.mjs';
 
 export default tseslint.config(
   // Base recommended rules
@@ -164,6 +165,9 @@ export default tseslint.config(
       '@typescript-eslint/no-dynamic-delete': 'off',
     },
   },
+
+  // Domain folders must not import the HTTP layer, schemas or controllers
+  domainBoundaryConfig,
 
   // Ignore patterns
   {

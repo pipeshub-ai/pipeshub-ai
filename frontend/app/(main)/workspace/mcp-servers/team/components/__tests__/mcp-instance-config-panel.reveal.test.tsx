@@ -15,7 +15,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/lib/store/toast-store', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
-vi.mock('@/lib/api', () => ({ apiClient: { get: vi.fn(), post: vi.fn() }, isProcessedError: () => false }));
+vi.mock('@/lib/api', () => ({ apiClient: { get: vi.fn(), post: vi.fn() }, isProcessedError: () => false, fieldErrorsOf: () => ({}) }));
 vi.mock('@/lib/hooks/use-secret-reveal-available', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/hooks/use-secret-reveal-available')>()),
   useSecretRevealAvailable: () => true,
@@ -43,7 +43,10 @@ vi.mock('../../../../components/workspace-right-panel', () => ({
       </div>
     ) : null,
 }));
-vi.mock('../../../../components', () => ({
+vi.mock('../../../../components', async () => ({
+  // The real hook and input: they only read the FormField context this mock leaves empty.
+  useFormValidation: (await import('../../../../components/use-form-validation')).useFormValidation,
+  LabeledTextField: (await import('../../../../components/form-field')).LabeledTextField,
   FormField: ({ label, children }: { label: string; children: React.ReactNode }) => (
     <div role="group" aria-label={label}>
       {children}

@@ -14,6 +14,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import secrets
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -62,7 +63,8 @@ Flavor = Literal["cloud", "data_center"]
 
 CONFLUENCE_INLINE_NOTE = "Images are shown in the page; other files are linked."
 
-# Alternative names tried when the page already has a file of the same name.
+# Names tried when the page already has a file of the same name: its own, `name (2)`, then a
+# random one (see `_alternative_name`).
 _MAX_NAME_ATTEMPTS = 3
 
 _UPLOAD_ERRORS = {
@@ -83,9 +85,15 @@ _UPLOAD_ERRORS = {
 }
 
 
-def _numbered(filename: str, n: int) -> str:
+def _numbered(filename: str, label: str) -> str:
     path = PurePosixPath(filename)
-    return f"{path.stem} ({n}){path.suffix}" if path.suffix else f"{filename} ({n})"
+    return f"{path.stem} ({label}){path.suffix}" if path.suffix else f"{filename} ({label})"
+
+
+def _alternative_name(filename: str, attempt: int) -> str:
+    # Pasted screenshots are all `image.png`, so a page soon holds `image.png` and `image (2).png`;
+    # counting on would refuse the next one, so the last try is a name the page can't have yet.
+    return _numbered(filename, "2" if attempt == 2 else secrets.token_hex(4))
 
 
 def _is_duplicate_name(response: HTTPResponse) -> bool:
@@ -137,7 +145,7 @@ class ConfluenceAttachmentUploader:
                 ))
                 if not _is_duplicate_name(response) or attempt == _MAX_NAME_ATTEMPTS:
                     break
-                name = _numbered(attachment.filename, attempt + 1)
+                name = _alternative_name(attachment.filename, attempt + 1)
         except httpx.TimeoutException:
             failed.error = "Confluence did not answer in time; check the page before attaching the file again."
             return failed

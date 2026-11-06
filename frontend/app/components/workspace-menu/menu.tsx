@@ -1,8 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { Theme, Box } from '@radix-ui/themes';
+import { Flex, Popover } from '@radix-ui/themes';
 import { logoutFromWorkspaceMenu, SettingsSection } from '@/config';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { OrgInfo } from './types';
@@ -13,12 +12,13 @@ import { ExternalLinksSection } from './external-links-section';
 import { LanguagePanel } from './language-panel';
 import { AppearancePanel } from './appearance-panel';
 
-/** Matches the .workspace-menu-card.is-closing animation in globals.css */
-const MENU_EXIT_MS = 120;
-
 // ============================================
 // Types
 // ============================================
+
+/** What counts as a control the user deliberately clicked into (not a container). */
+const INTERACTIVE_SELECTOR =
+  'button, a[href], input, select, textarea, [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
 
 /** Which sub-panel is currently open (at most one) */
 type ActiveSubPanel = null | 'appearance' | 'language';
@@ -28,9 +28,16 @@ interface WorkspaceMenuProps {
   isOpen: boolean;
   /** Called when the popup should close */
   onClose: () => void;
+  /** Called when the trigger asks to open the popup */
+  onOpen?: () => void;
   /** Organisation details fetched at the page level */
   org: OrgInfo | null;
-  /** Ref to the trigger element so click-outside ignores it */
+  /**
+   * The trigger button. It becomes the popover's trigger, so the menu anchors to
+   * it and focus returns to it on close.
+   */
+  trigger?: React.ReactElement;
+  /** A trigger rendered elsewhere (no `trigger`): outside clicks on it are ignored. */
   triggerRef?: React.RefObject<HTMLElement | null>;
 }
 
@@ -39,70 +46,52 @@ interface WorkspaceMenuProps {
 // ============================================
 
 /**
- * Floating popup triggered from the sidebar footer button.
+ * The workspace and account menu, opened from the sidebar footer button.
  *
- * Composed of discrete sections (settings, external links). The
- * organisation is already shown on the trigger, so it is not repeated here.
+ * A Radix Popover above the trigger: Radix owns placement, Escape, outside
+ * click, moving focus in on open and back to the trigger on close. Composed of
+ * discrete sections (settings, external links). The organisation is already
+ * shown on the trigger, so it is not repeated here.
  */
-export function WorkspaceMenu({ isOpen, onClose, triggerRef }: WorkspaceMenuProps) {
-  const menuRef = useRef<HTMLDivElement>(null);
+export function WorkspaceMenu({ isOpen, onClose, onOpen, trigger, triggerRef }: WorkspaceMenuProps) {
   const isMobile = useIsMobile();
+  /** The trigger element, so focus can return to it and its own drawer is not mistaken for a dialog. */
+  const triggerElRef = useRef<HTMLButtonElement>(null);
   const [activePanel, setActivePanel] = useState<ActiveSubPanel>(null);
-  // Stays mounted for the exit animation after isOpen turns false
-  const [isMounted, setIsMounted] = useState(isOpen);
-
-  useEffect(() => {
-    if (isOpen) {
-      setIsMounted(true);
-      return;
-    }
-    const timer = setTimeout(() => setIsMounted(false), MENU_EXIT_MS);
-    return () => clearTimeout(timer);
-  }, [isOpen]);
-
-  // ── Close on click outside ──
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        menuRef.current &&
-        !menuRef.current.contains(e.target as Node) &&
-        // The mobile sub-panel sheet is portaled outside the menu
-        !(e.target as Element).closest?.('[role="dialog"]') &&
-        !triggerRef?.current?.contains(e.target as Node)
-      ) {
-        onClose();
-      }
-    };
-    // Delay so the opening click doesn't immediately close
-    const timer = setTimeout(() => {
-      document.addEventListener('mousedown', handleClickOutside);
-    }, 0);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isOpen, onClose]);
-
-  // ── Close on Escape ──
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [isOpen, onClose]);
+  // On phones a sub-panel is a bottom sheet portaled into the root theme,
+  // which paints below this portal, so the menu card steps aside.
+  const sheetOnly = isMobile && activePanel !== null;
 
   // ── Reset sub-panels when menu closes ──
   useEffect(() => {
     if (!isOpen) setActivePanel(null);
   }, [isOpen]);
 
-  if (!isMounted) return null;
-
   const togglePanel = (panel: 'appearance' | 'language') => {
     setActivePanel((prev) => (prev === panel ? null : panel));
+  };
+
+  /**
+   * Interactions the popover must not treat as "outside": a phone sub-panel sheet
+   * (portalled elsewhere, with its own backdrop and dismissal), a dialog opened
+   * from the menu, and a trigger rendered outside the popover.
+   */
+  const keepOpenOnOutside = (event: { target: EventTarget | null; preventDefault: () => void }) => {
+    const target = event.target;
+    if (sheetOnly) {
+      event.preventDefault();
+      return;
+    }
+    // A dialog opened from the menu (portalled, so it does not hold the trigger) keeps it
+    // open. The navigation drawer the trigger sits in is the menu's own surroundings: a tap
+    // there is an ordinary outside tap and closes the menu.
+    const dialog = target instanceof Element ? target.closest('[role="dialog"], [role="alertdialog"]') : null;
+    const triggerEl = triggerElRef.current ?? triggerRef?.current ?? null;
+    if (dialog && !(triggerEl && dialog.contains(triggerEl))) {
+      event.preventDefault();
+      return;
+    }
+    if (target instanceof Node && triggerRef?.current?.contains(target)) event.preventDefault();
   };
 
   const subPanels = (
@@ -112,58 +101,102 @@ export function WorkspaceMenu({ isOpen, onClose, triggerRef }: WorkspaceMenuProp
     </>
   );
 
-  return createPortal(
-    <Theme>
-      {/* On phones a sub-panel is a bottom sheet portaled into the root theme,
-          which paints below this portal, so the menu card steps aside. */}
-      {isMobile && activePanel ? subPanels : (
-      <Box
-        ref={menuRef}
-        className={isOpen ? 'workspace-menu-card' : 'workspace-menu-card is-closing'}
-        style={{
-          position: 'absolute',
-          bottom: 58, // 8px above the 42px footer button (8px footer inset)
-          left: 8,
-          width: overlayWidth(POPUP_WIDTH),
-          borderRadius: 'var(--radius-1)',
-          border: '1px solid var(--olive-3)',
-          backgroundColor: 'var(--frost-bg-strong)',
-          backdropFilter: 'var(--frost-filter)',
-          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.15)',
-          padding: 8,
-          // The portal is a sibling of the root theme's stacking context
-          // (z-index: 0), so any positive value paints above the app.
-          zIndex: 50,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 8,
-          fontFamily: 'Manrope, sans-serif',
-          pointerEvents: isOpen ? undefined : 'none',
-        }}
-      >
-        {/* ── Section 1: Settings ── */}
-        <SettingsSection
-          onWorkspaceSettings={onClose}
-          onAppearanceToggle={() => togglePanel('appearance')}
-          isAppearanceActive={activePanel === 'appearance'}
-          onLanguageToggle={() => togglePanel('language')}
-          isLanguageActive={activePanel === 'language'}
-          onLogout={() => {
-            onClose();
-            logoutFromWorkspaceMenu();
-          }}
-        />
-
-        <Divider />
-
-        {/* ── Section 2: External Links ── */}
-        <ExternalLinksSection />
-
-        {/* ── Sub-panels — float to the right, top-aligned ── */}
-        {subPanels}
-      </Box>
+  return (
+    <Popover.Root open={isOpen} onOpenChange={(next) => (next ? onOpen?.() : onClose())}>
+      {trigger ? (
+        <Popover.Trigger ref={triggerElRef}>{trigger}</Popover.Trigger>
+      ) : (
+        <Popover.Anchor>
+          <span aria-hidden style={{ position: 'absolute', inset: 'var(--space-2)', pointerEvents: 'none' }} />
+        </Popover.Anchor>
       )}
-    </Theme>,
-    document.body
+      <Popover.Content
+        side="top"
+        align="start"
+        sideOffset={4}
+        collisionPadding={8}
+        onInteractOutside={keepOpenOnOutside}
+        onEscapeKeyDown={(e) => {
+          // The phone sheet handles Escape itself (back to the menu).
+          if (sheetOnly) e.preventDefault();
+        }}
+        onCloseAutoFocus={(e) => {
+          const returnTo = triggerElRef.current ?? triggerRef?.current ?? null;
+          // No trigger of our own: hand focus back to the one rendered elsewhere.
+          if (!trigger && returnTo) {
+            e.preventDefault();
+            returnTo.focus();
+            return;
+          }
+          // After an outside click Radix leaves focus where the click landed. If that was
+          // nothing focusable (focus fell to the body), the trigger takes it back.
+          // A container (the drawer, a panel) is not a place the user chose either.
+          // No trigger left on the page (the menu went with it): nothing to give focus back to.
+          if (!returnTo?.isConnected) return;
+          window.setTimeout(() => {
+            // The trigger can still go before this tick, and the page with it.
+            if (!returnTo?.isConnected) return;
+            const active = document.activeElement;
+            const landedNowhere =
+              !active || active === document.body || !active.matches(INTERACTIVE_SELECTOR);
+            if (landedNowhere) returnTo.focus();
+          }, 0);
+        }}
+        style={
+          sheetOnly
+            ? {
+                // Steps aside while the phone sheet is up; the popover stays open under it.
+                width: 0,
+                minWidth: 0,
+                height: 0,
+                padding: 0,
+                border: 'none',
+                boxShadow: 'none',
+                background: 'none',
+                overflow: 'visible',
+              }
+            : {
+                width: overlayWidth(POPUP_WIDTH),
+                maxWidth: 'none',
+                minWidth: 0,
+                padding: 'var(--space-4) var(--space-2)',
+                borderRadius: 'var(--radius-1)',
+                border: '1px solid var(--border-subtle)',
+                backgroundColor: 'var(--frost-bg-strong)',
+                backdropFilter: 'var(--frost-filter)',
+                WebkitBackdropFilter: 'var(--frost-filter)',
+                // The side sub-panels hang outside the box; Radix's popover scrolls by default.
+                overflow: 'visible',
+              }
+        }
+      >
+        {sheetOnly ? (
+          subPanels
+        ) : (
+          <Flex direction="column" gap="4">
+            {/* ── Section 1: Settings ── */}
+            <SettingsSection
+              onWorkspaceSettings={onClose}
+              onAppearanceToggle={() => togglePanel('appearance')}
+              isAppearanceActive={activePanel === 'appearance'}
+              onLanguageToggle={() => togglePanel('language')}
+              isLanguageActive={activePanel === 'language'}
+              onLogout={() => {
+                onClose();
+                logoutFromWorkspaceMenu();
+              }}
+            />
+
+            <Divider />
+
+            {/* ── Section 2: External Links ── */}
+            <ExternalLinksSection />
+
+            {/* ── Sub-panels — float to the right, top-aligned ── */}
+            {subPanels}
+          </Flex>
+        )}
+      </Popover.Content>
+    </Popover.Root>
   );
 }

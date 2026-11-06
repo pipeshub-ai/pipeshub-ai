@@ -34,7 +34,11 @@ export function startRemoteRunPoll(target: RemoteRunPollTarget): () => void {
   let stopped = false;
 
   const finish = (): void => {
-    useChatStore.getState().updateSlot(target.slotId, { remoteRunInProgress: false });
+    useChatStore.getState().updateSlot(target.slotId, {
+      remoteRunInProgress: false,
+      remoteRunId: null,
+      remoteStopRequested: false,
+    });
   };
 
   const tick = async (): Promise<void> => {

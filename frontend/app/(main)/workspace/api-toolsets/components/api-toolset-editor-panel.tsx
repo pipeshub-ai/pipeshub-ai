@@ -7,7 +7,13 @@ import { toast } from '@/lib/store/toast-store';
 import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { FormField, SelectDropdown, WorkspaceRightPanel } from '../../components';
+import {
+  FormField,
+  LabeledTextArea,
+  LabeledTextField,
+  SelectDropdown,
+  WorkspaceRightPanel,
+} from '../../components';
 import { ApiToolsetsApi } from '../api';
 import {
   NO_AUTH_SCHEME,
@@ -31,7 +37,6 @@ import {
 } from '../toolset-form';
 import type { ApiCompiledSpec, ApiToolsetConfig } from '../types';
 import { ApiOperationsChecklist } from './api-operations-checklist';
-import { LabeledTextArea, LabeledTextField } from './labeled-controls';
 import { PanelSection } from './panel-section';
 
 const SPEC_FILE_TYPES = '.json,.yaml,.yml,application/json,application/yaml,text/yaml';

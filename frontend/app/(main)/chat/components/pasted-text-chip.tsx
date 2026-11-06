@@ -1,167 +1,159 @@
 'use client';
 
 import React from 'react';
-import { Box, Flex, IconButton, Text, Tooltip } from '@radix-ui/themes';
+import { Box, Card, Flex, IconButton, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
-import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { formatPasteCount } from '../utils/paste-attachment';
 import type { UploadedFile } from '../types';
-
-const BUTTON_RESET = {
-  appearance: 'none',
-  background: 'none',
-  border: 0,
-  padding: 0,
-  margin: 0,
-  font: 'inherit',
-  color: 'inherit',
-  textAlign: 'left',
-  width: '100%',
-} as const;
+import {
+  ATTACHMENT_CHIP_HEIGHT,
+  ATTACHMENT_CHIP_MAX_WIDTH,
+  AttachmentRemoveButton,
+  useRevealOnHoverOrFocus,
+} from './selected-collections';
 
 interface PastedTextChipProps {
   file: UploadedFile;
   onPreview: () => void;
-  onShowInTextField: () => void;
   onRemove: () => void;
   onRetry: () => void;
 }
 
 /**
- * Composer chip for a large clipboard paste auto-converted to a text
- * attachment (`file.source === 'paste-text'`) — visually distinct from a
- * regular file chip (dashed accent border, text-excerpt label, paste icon)
- * and exposes "Show in text field" alongside the usual preview/remove/retry.
+ * Composer chip for a large clipboard paste turned into a text attachment (`file.source === 'paste-text'`):
+ * the same 28px chip as a selected source, with the paste's size, opening the reader on click.
  */
-export function PastedTextChip({ file, onPreview, onShowInTextField, onRemove, onRetry }: PastedTextChipProps) {
+export function PastedTextChip({ file, onPreview, onRemove, onRetry }: PastedTextChipProps) {
   const { t } = useTranslation();
+  const { hovered, revealed, handlers } = useRevealOnHoverOrFocus();
+  const label = t('chat.attachments.pastedText', { defaultValue: 'Pasted text' });
   const metaLabel =
     file.pasteCharCount !== undefined && file.pasteLineCount !== undefined
       ? t('chat.attachments.pasteMeta', {
-          defaultValue: '{{chars}} chars · {{count}} lines',
-          defaultValue_one: '{{chars}} chars · {{count}} line',
+          defaultValue: '{{count}} lines · {{chars}} chars',
+          defaultValue_one: '{{count}} line · {{chars}} chars',
           chars: formatPasteCount(file.pasteCharCount),
           count: file.pasteLineCount,
         })
       : undefined;
+  const isError = file.status === 'error';
+  const meta = isError
+    ? file.errorMessage || t('chat.attachments.uploadFailed', { defaultValue: 'Upload failed' })
+    : metaLabel;
+  const accessibleName = meta
+    ? t('chat.attachments.pasteChipLabel', { defaultValue: '{{label}}, {{meta}}. Open to read.', label, meta })
+    : label;
 
   return (
     <Box
-      style={{
-        flexShrink: 0,
-        width: '196px',
-        padding: 'var(--space-2)',
-        backgroundColor: 'var(--accent-a2)',
-        border:
-          file.status === 'error' ? '1px solid var(--red-7)' : '1px dashed var(--accent-a7)',
-        borderRadius: 'var(--radius-1)',
-      }}
+      {...handlers}
+      style={{ position: 'relative', flexShrink: 0, maxWidth: ATTACHMENT_CHIP_MAX_WIDTH }}
     >
-      <Flex direction="column" gap="2">
-        <Flex align="center" justify="between">
-          <Flex align="center" gap="1" style={{ overflow: 'hidden' }}>
-            <MaterialIcon name="content_paste" size={16} color="var(--accent-9)" />
-            <Text
-              size="1"
-              style={{ color: 'var(--accent-11)', textTransform: 'uppercase', letterSpacing: '0.02em' }}
-            >
-              {t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
-            </Text>
-          </Flex>
-          {file.status === 'uploading' ? (
-            <Tooltip content={t('chat.attachments.uploading', { defaultValue: 'Uploading…' })} side="top">
-              <Box
-                aria-label={t('chat.attachments.uploadingNamed', { defaultValue: 'Uploading pasted text' })}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, flexShrink: 0 }}
-              >
-                <Spinner size={14} thickness={1.5} color="var(--slate-11)" />
-              </Box>
-            </Tooltip>
-          ) : (
-            <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
-              {file.status === 'error' && (
-                <Tooltip content={t('chat.attachments.retry', { defaultValue: 'Retry upload' })} side="top">
-                  <IconButton
-                    variant="ghost"
-                    size="1"
-                    onClick={onRetry}
-                    style={{ margin: 0, flexShrink: 0 }}
-                    aria-label={t('chat.attachments.retry', { defaultValue: 'Retry upload' })}
-                  >
-                    <MaterialIcon name="refresh" size={ICON_SIZES.SECONDARY} color="var(--red-11)" />
-                  </IconButton>
-                </Tooltip>
-              )}
-              <IconButton
-                variant="ghost"
-                size="1"
-                onClick={onRemove}
-                style={{ margin: 0, flexShrink: 0 }}
-                aria-label={t('chat.attachments.removePastedText', { defaultValue: 'Remove pasted text' })}
-              >
-                <MaterialIcon name="close" size={ICON_SIZES.SECONDARY} color="var(--slate-11)" />
-              </IconButton>
-            </Flex>
-          )}
-        </Flex>
-
-        <Flex direction="column" gap="1" asChild>
+      <Flex align="center" gap="1">
+        <Card asChild variant="ghost">
           <button
             type="button"
+            aria-label={accessibleName}
             onClick={onPreview}
-            disabled={file.status === 'error'}
+            disabled={isError}
             style={{
-              ...BUTTON_RESET,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-2)',
+              boxSizing: 'border-box',
+              height: ATTACHMENT_CHIP_HEIGHT,
+              maxWidth: '100%',
               minWidth: 0,
-              cursor: file.status === 'error' ? 'default' : 'pointer',
+              margin: 0,
+              paddingBlock: 0,
+              paddingLeft: 'calc(var(--space-1) * 1.5)',
+              paddingRight: 'calc(var(--space-2) + var(--space-1) / 2)',
+              cursor: isError ? 'default' : 'pointer',
+              borderRadius: 'var(--radius-4)',
+              border: `1px solid ${isError ? 'var(--red-7)' : hovered ? 'var(--accent-a7)' : 'var(--border-strong)'}`,
+              background: 'var(--surface-raised)',
+              boxShadow: hovered && !isError ? 'var(--shadow-2)' : 'none',
+              transition:
+                'border-color var(--motion-micro) var(--motion-ease), box-shadow var(--motion-micro) var(--motion-ease)',
             }}
           >
+            <Flex
+              align="center"
+              justify="center"
+              aria-hidden
+              style={{
+                width: 'calc(var(--space-4) + var(--space-1) / 2)',
+                height: 'calc(var(--space-4) + var(--space-1) / 2)',
+                borderRadius: 'var(--radius-2)',
+                background: 'var(--fill-muted)',
+                flexShrink: 0,
+              }}
+            >
+              <MaterialIcon name="content_paste" size={12} color="var(--text-secondary)" />
+            </Flex>
             <Text
               size="1"
               weight="medium"
-              style={{
-                color: 'var(--slate-12)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
+              style={{ color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
             >
-              {file.pastePreview || file.name}
+              {label}
             </Text>
-            <Text
-              size="1"
-              style={{
-                color: file.status === 'error' ? 'var(--red-11)' : 'var(--slate-10)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {file.status === 'error'
-                ? file.errorMessage || t('chat.attachments.uploadFailed', { defaultValue: 'Upload failed' })
-                : metaLabel}
-            </Text>
-          </button>
-        </Flex>
-
-        {file.status === 'uploaded' && (
-          <Flex align="center" gap="1" asChild>
-            <button
-              type="button"
-              onClick={onShowInTextField}
-              style={{ ...BUTTON_RESET, cursor: 'pointer' }}
-              aria-label={t('chat.attachments.showInTextField', { defaultValue: 'Show in text field' })}
-            >
-              <MaterialIcon name="text_fields" size={12} color="var(--accent-10)" />
-              <Text size="1" style={{ color: 'var(--accent-10)' }}>
-                {t('chat.attachments.showInTextField', { defaultValue: 'Show in text field' })}
+            {meta && (
+              <Text
+                size="1"
+                style={{
+                  color: isError ? 'var(--red-11)' : 'var(--text-secondary)',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  minWidth: 0,
+                }}
+              >
+                {meta}
               </Text>
-            </button>
-          </Flex>
+            )}
+            {file.status === 'uploading' && (
+              <Spinner
+                size={14}
+                thickness={1.5}
+                color="var(--text-secondary)"
+                ariaLabel={t('chat.attachments.uploadingNamed', { defaultValue: 'Uploading pasted text' })}
+              />
+            )}
+          </button>
+        </Card>
+        {isError && (
+          <Tooltip content={t('chat.attachments.retry', { defaultValue: 'Retry upload' })} side="top">
+            <IconButton
+              variant="ghost"
+              color="red"
+              size="1"
+              className="touch-hit"
+              onClick={onRetry}
+              // A 24px box (44px on touch screens via touch-hit), not Radix's trimmed ghost size.
+              style={{
+                margin: 0,
+                flexShrink: 0,
+                width: 'var(--space-5)',
+                height: 'var(--space-5)',
+                minWidth: 'var(--space-5)',
+                boxSizing: 'border-box',
+                padding: 0,
+              }}
+              aria-label={t('chat.attachments.retry', { defaultValue: 'Retry upload' })}
+            >
+              <MaterialIcon name="refresh" size={14} color="var(--red-11)" />
+            </IconButton>
+          </Tooltip>
         )}
       </Flex>
+      <AttachmentRemoveButton
+        label={t('chat.attachments.removePastedText', { defaultValue: 'Remove pasted text' })}
+        onRemove={onRemove}
+        visible={revealed}
+      />
     </Box>
   );
 }

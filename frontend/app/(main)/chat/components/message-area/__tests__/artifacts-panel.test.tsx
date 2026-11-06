@@ -71,7 +71,7 @@ describe('ArtifactsPanel for a deleted artifact', () => {
       'rec-1',
       expect.objectContaining({ version: 1, suppressErrorToast: isArtifactGone }),
     );
-    expect(screen.queryByRole('button', { name: 'Download artifact' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Download / })).toBeNull();
   });
 
   it('marks the card unavailable on a gone download and never opens the fallback URL', async () => {
@@ -79,7 +79,7 @@ describe('ArtifactsPanel for a deleted artifact', () => {
     kb.streamDownloadRecord.mockRejectedValue(gone());
 
     renderPanel([artifact({ mimeType: 'text/csv', fileName: 'data.csv' })]);
-    fireEvent.click(screen.getByRole('button', { name: 'Download artifact' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Download / }));
 
     expect(await screen.findByText('No longer available')).toBeTruthy();
     expect(kb.streamDownloadRecord).toHaveBeenCalledWith(
@@ -95,7 +95,7 @@ describe('ArtifactsPanel for a deleted artifact', () => {
     const onPreview = vi.fn().mockRejectedValue(gone());
 
     renderPanel([artifact({ mimeType: 'text/csv', fileName: 'data.csv' })], { onPreview });
-    fireEvent.click(screen.getByRole('button', { name: 'Preview artifact' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Preview / }));
 
     expect(await screen.findByText('No longer available')).toBeTruthy();
   });
@@ -104,10 +104,10 @@ describe('ArtifactsPanel for a deleted artifact', () => {
     const onPreview = vi.fn().mockRejectedValue(gone(500));
 
     renderPanel([artifact({ mimeType: 'text/csv', fileName: 'data.csv' })], { onPreview });
-    fireEvent.click(screen.getByRole('button', { name: 'Preview artifact' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Preview / }));
 
     await waitFor(() => expect(onPreview).toHaveBeenCalled());
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Preview artifact' })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Preview / })).toBeTruthy());
     expect(screen.queryByText('No longer available')).toBeNull();
   });
 });
@@ -119,6 +119,42 @@ describe('ArtifactsPanel card', () => {
 
     expect(screen.getByText(/Data file/)).toBeTruthy();
     expect(screen.queryByText(/DATA_FILE/)).toBeNull();
+  });
+
+  it('names Preview and Download for the file, in one non-shrinking row beside a truncating name', () => {
+    const longName = `${'quarterly-ticket-prioritization-'.repeat(6)}.md`;
+    renderPanel([artifact({ mimeType: 'text/markdown', fileName: longName, derivedFromCodeArtifactId: 'code-1' })], {
+      onPreview: vi.fn(),
+      onViewSource: vi.fn(),
+    });
+
+    const preview = screen.getByRole('button', { name: `Preview ${longName}` });
+    expect(preview.textContent).toBe('Preview');
+    expect(preview.className).toContain('rt-variant-solid');
+    const download = screen.getByRole('button', { name: `Download ${longName}` });
+    expect(download.className).toContain('rt-variant-soft');
+    const row = preview.parentElement as HTMLElement;
+    expect(download.parentElement === row || download.parentElement?.parentElement === row).toBe(true);
+    expect(row.style.flexShrink).toBe('0');
+
+    const name = screen.getByText(longName);
+    expect(name.style.whiteSpace).toBe('nowrap');
+    expect(name.style.textOverflow).toBe('ellipsis');
+    expect(name.style.overflow).toBe('hidden');
+  });
+
+  it('shows the Radix loading state on Preview while it is busy', async () => {
+    let resolve: () => void = () => {};
+    const onPreview = vi.fn(() => new Promise<void>((r) => { resolve = r; }));
+    renderPanel([artifact({ mimeType: 'text/markdown', fileName: 'notes.md' })], { onPreview });
+
+    const preview = screen.getByRole('button', { name: 'Preview notes.md' });
+    fireEvent.click(preview);
+    await waitFor(() => expect((preview as HTMLButtonElement).disabled).toBe(true));
+    // Radix's own loading state: its spinner, not a swapped-in one.
+    expect(preview.querySelector('.rt-Spinner')).not.toBeNull();
+    resolve();
+    await waitFor(() => expect((preview as HTMLButtonElement).disabled).toBe(false));
   });
 });
 
@@ -132,7 +168,7 @@ describe('ArtifactsPanel header', () => {
     fireEvent.click(header);
 
     expect(header.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByRole('button', { name: 'Download artifact' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Download / })).toBeNull();
   });
 
   it('uses the singular for one artifact', () => {

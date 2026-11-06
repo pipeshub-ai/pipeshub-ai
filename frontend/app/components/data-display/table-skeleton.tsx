@@ -1,16 +1,10 @@
 'use client';
 
 import React from 'react';
-import { Box, Flex } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
+import { ListSkeleton, type ListSkeletonColumn } from '@/app/components/ui/list-skeleton';
 
-export interface TableSkeletonColumnShape {
-  /** Fixed width (e.g. "80px" or "20%"). Omit for flex: 1 */
-  width?: string;
-  /** Minimum width */
-  minWidth?: string;
-  /** Relative width of the placeholder bar as 0-1. Default: 0.6 */
-  barWidth?: number;
-}
+export type TableSkeletonColumnShape = ListSkeletonColumn;
 
 export interface TableSkeletonProps {
   /** Number of placeholder rows. Default: 6 */
@@ -27,92 +21,42 @@ export interface TableSkeletonProps {
   checkboxWidth?: number;
   /** Row height in px. Default: 60 (matches EntityDataTable) */
   rowHeight?: number;
-  /** Horizontal padding of each data cell. Default: '0 8px' */
+  /** Horizontal padding of each data cell, to line up with the table's own cells. Default: '0 var(--space-2)' */
   cellPadding?: string;
+  /** What is loading, for screen readers. Default: "Loading items…". */
+  statusLabel?: string;
 }
 
 /**
- * TableSkeleton — N shimmering placeholder rows for tables that haven't
- * finished their initial load yet. Matches the layout conventions of
- * `EntityDataTable` (60px rows, 38px checkbox column, 80px actions column,
- * 8px horizontal padding between cells).
- *
- * Uses the global `@keyframes shimmer-pulse` defined in `app/globals.css`.
+ * TableSkeleton — placeholder rows for a table that has not finished its first
+ * load. The shared list skeleton's table-row variant, with the layout
+ * conventions of `EntityDataTable` (60px rows, 38px checkbox column, 80px
+ * actions column, a bar per column).
  */
 export function TableSkeleton({
   rows = 6,
-  columns = [{ width: '20%', minWidth: '160px' }, { barWidth: 0.8 }, { width: '120px' }, { width: '140px' }],
+  columns,
   hasRowActions = true,
   hasCheckbox = true,
   checkboxWidth = 38,
   rowHeight = 60,
   actionsWidth = 80,
-  cellPadding = '0 8px',
+  cellPadding,
+  statusLabel,
 }: TableSkeletonProps) {
+  const { t } = useTranslation();
   return (
-    <Box aria-busy="true" aria-live="polite" style={{ width: '100%' }}>
-      {Array.from({ length: rows }).map((_, rowIndex) => (
-        <Flex
-          key={rowIndex}
-          align="center"
-          style={{
-            height: rowHeight,
-            borderBottom: '1px solid var(--olive-3)',
-            backgroundColor: 'var(--olive-1)',
-          }}
-        >
-          {hasCheckbox && (
-            <Flex
-              align="center"
-              justify="center"
-              style={{ width: checkboxWidth, flexShrink: 0, padding: '0 8px', boxSizing: 'border-box' }}
-            >
-              <Box
-                style={{
-                  width: 16,
-                  height: 16,
-                  borderRadius: 3,
-                  backgroundColor: 'var(--olive-4)',
-                  animation: 'shimmer-pulse 1.4s ease-in-out infinite',
-                  animationDelay: `${rowIndex * 80}ms`,
-                }}
-              />
-            </Flex>
-          )}
-
-          {columns.map((col, i) => {
-            const barWidth = col.barWidth ?? 0.6;
-            return (
-              <Flex
-                key={i}
-                align="center"
-                style={{
-                  width: col.width,
-                  minWidth: col.minWidth,
-                  flex: col.width ? undefined : 1,
-                  padding: cellPadding,
-                }}
-              >
-                <Box
-                  style={{
-                    height: 12,
-                    width: `${Math.round(barWidth * 100)}%`,
-                    maxWidth: '100%',
-                    borderRadius: 4,
-                    backgroundColor: 'var(--olive-4)',
-                    animation: 'shimmer-pulse 1.4s ease-in-out infinite',
-                    animationDelay: `${(rowIndex * 4 + i) * 60}ms`,
-                  }}
-                />
-              </Flex>
-            );
-          })}
-
-          {hasRowActions && (
-            <Box style={{ width: actionsWidth, flexShrink: 0 }} />
-          )}
-        </Flex>
-      ))}
-    </Box>
+    <ListSkeleton
+      variant="table-row"
+      count={rows}
+      columns={columns}
+      hasRowActions={hasRowActions}
+      hasCheckbox={hasCheckbox}
+      checkboxWidth={checkboxWidth}
+      rowHeight={rowHeight}
+      actionsWidth={actionsWidth}
+      cellPadding={cellPadding}
+      statusLabel={statusLabel ?? t('loading.items')}
+    />
   );
 }

@@ -98,6 +98,8 @@ class AccessCheck:
     #: Asked nodes that are placeholder stubs. They are in ``node_ids`` so a
     #: browse can open them, and never in ``records_by_vrid``.
     placeholder_ids: frozenset[str] = frozenset()
+    #: Each accessible asked node's current name, read by the same query.
+    names: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -7603,6 +7605,7 @@ class IGraphDBProvider(ABC):
             placeholder_ids=frozenset(
                 row["id"] for row in accessible_nodes if row.get("isPlaceholder")
             ),
+            names={row["id"]: row.get("name") or "" for row in accessible_nodes},
         )
 
     async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
@@ -7705,7 +7708,7 @@ class IGraphDBProvider(ABC):
     ) -> list[dict[str, Any]]:
         """The rows ``check_access`` decides from: one per accessible node among
         the asked ids and the records carrying the asked virtual record ids, as
-        ``{id, vrid, connectorId, indexingStatus, isInternal, isPlaceholder, groupIds}``
+        ``{id, name, vrid, connectorId, indexingStatus, isInternal, isPlaceholder, groupIds}``
         (``groupIds``: the record groups a record belongs to). ``isPlaceholder``
         is true only for a stub the walk admitted because its id was asked."""
         raise NotImplementedError

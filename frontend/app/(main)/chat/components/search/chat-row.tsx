@@ -1,10 +1,12 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Flex, Text } from '@radix-ui/themes';
+import React from 'react';
+import { Card, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { formatConversationDateForSearch } from '@/lib/utils/formatters';
 import type { Conversation } from '@/chat/types';
+import { chatExtension } from '@/config';
+import { CMDK_ROW_CLASS, cmdkRowStyle, cmdkRowTitleStyle, cmdkRowSubtitleStyle } from './row-styles';
 
 interface ChatRowProps {
   conversation: Conversation;
@@ -12,9 +14,9 @@ interface ChatRowProps {
   showDate?: boolean;
 }
 
+/** One chat in the search dialog's browse list: a real button, title on one line. */
 export function ChatRow({ conversation, onClick, showDate }: ChatRowProps) {
   const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
   const dateLabel = formatConversationDateForSearch(conversation.createdAt, conversation.updatedAt);
   const sharedByName = conversation.sharedBy?.name?.trim();
   const sharedByLabel =
@@ -23,57 +25,22 @@ export function ChatRow({ conversation, onClick, showDate }: ChatRowProps) {
       : undefined;
 
   return (
-    <Flex
-      direction="column"
-      gap="1"
-      onClick={onClick}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        padding: '6px var(--space-2)',
-        borderRadius: 'var(--radius-1)',
-        cursor: 'pointer',
-        backgroundColor: isHovered ? 'var(--slate-a3)' : 'transparent',
-        transition: 'background-color 120ms ease',
-      }}
-    >
-      <Text
-        size="2"
-        style={{
-          color: 'var(--slate-12)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {conversation.title}
-      </Text>
-      {sharedByLabel && (
-      <Text
-        size="1"
-        style={{
-          color: 'var(--slate-a9)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {sharedByLabel}
-      </Text>
-      )}
-      {showDate && (
-      <Text
-        size="1"
-        style={{
-          color: 'var(--slate-a9)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {dateLabel}
-      </Text>
-      )}
-    </Flex>
+    <Card asChild variant="ghost">
+      <button type="button" className={CMDK_ROW_CLASS} onClick={onClick} style={cmdkRowStyle}>
+        <Text as="div" size="2" weight="medium" style={cmdkRowTitleStyle}>
+          {chatExtension.formatConversationTitle(conversation.title)}
+        </Text>
+        {sharedByLabel && (
+          <Text as="div" size="1" weight="medium" style={cmdkRowSubtitleStyle}>
+            {sharedByLabel}
+          </Text>
+        )}
+        {showDate && (
+          <Text as="div" size="1" weight="medium" style={cmdkRowSubtitleStyle}>
+            {dateLabel}
+          </Text>
+        )}
+      </button>
+    </Card>
   );
 }

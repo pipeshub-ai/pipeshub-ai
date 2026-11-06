@@ -13,14 +13,21 @@ import { ChatSidebarHeader } from '@/chat/sidebar/header';
 import { ChatSidebarFooter } from '@/config';
 import { ChatSectionHeader } from '@/chat/sidebar/chat-section-header';
 import { SidebarItem } from '@/chat/sidebar/sidebar-item';
-import { ChatItemSkeleton } from '@/chat/sidebar/chat-section-element';
+import { ListSkeleton } from '@/app/components/ui/list-skeleton';
+import { useDeferredLoading } from '@/app/components/ui/use-deferred-loading';
 import { CreateProjectDialog } from '@/chat/sidebar/dialogs';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
+import { SIDEBAR_LISTS_STALE_MS } from '@/chat/constants';
+import { getCurrentUserId } from '@/chat/utils/current-user-id';
+import { watchSidebarSession } from '@/chat/sidebar/use-sidebar-conversations';
 
-const PROJECTS_SKELETON_COUNT = 4;
+const PROJECTS_SKELETON_COUNT = 3;
 const SIDEBAR_PROJECTS_FETCH_LIMIT = 50;
+
+/** The `projectsVersion` this rail last loaded the projects at: a bump since means the list is behind. */
+let loadedProjectsVersion = -1;
 
 /**
  * Sidebar for the dedicated `/projects` route — full list of the user's
@@ -32,7 +39,8 @@ export function ProjectsSidebar() {
   const searchParams = useSearchParams();
   const currentProjectId = searchParams.get('projectId');
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
+  // Below desktop the sidebar is the navigation drawer.
+  const isMobile = useIsBelowDesktop();
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
   const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
@@ -58,26 +66,46 @@ export function ProjectsSidebar() {
   const searchRequestIdRef = useRef(0);
 
   const load = useCallback(async () => {
-    setIsProjectsLoading(true);
+    // Only a rail that has not loaded yet waits on a skeleton; a reload swaps the rows in place.
+    const first = useChatStore.getState().projectsLoadedAt === null;
+    const version = useChatStore.getState().projectsVersion;
+    const userId = getCurrentUserId();
+    if (first) setIsProjectsLoading(true);
     setProjectsError(null);
     try {
-      const { projects: rows } = await ProjectApi.list({
-        scope: 'all',
-        limit: SIDEBAR_PROJECTS_FETCH_LIMIT,
-        includeArchived: false,
-      });
+      const { projects: rows } = await ProjectApi.list(
+        { scope: 'all', limit: SIDEBAR_PROJECTS_FETCH_LIMIT, includeArchived: false },
+        // A reload behind a list on screen fails quietly: the list stays, so there is nothing to say.
+        { suppressErrorToast: !first },
+      );
+      // Signed out, or someone else signed in, while this was out: these are not their projects.
+      if (getCurrentUserId() !== userId) return;
       setProjects(rows);
+      useChatStore.setState({ projectsLoadedAt: Date.now() });
+      loadedProjectsVersion = version;
     } catch {
-      setProjectsError(t('chat.projects.failedToLoad'));
-      setProjects([]);
+      // A reload that fails keeps the list on screen.
+      if (first && getCurrentUserId() === userId) {
+        setProjectsError(t('chat.projects.failedToLoad'));
+        setProjects([]);
+      }
     } finally {
-      setIsProjectsLoading(false);
+      // Only this person's load ends their skeleton: the last person's, landing late, leaves the next person's on. A
+      // sign-out already turned it off.
+      if (first && getCurrentUserId() === userId) setIsProjectsLoading(false);
     }
   }, [setProjects, setIsProjectsLoading, setProjectsError, t]);
 
+  // Sign-out clears the projects kept in the store, even in a session that never opened a chat list.
+  useEffect(() => watchSidebarSession(), []);
+
   useEffect(() => {
     if (!projectsEnabled) return;
-    load();
+    // Loaded under 30 s ago and not behind a bump: shown as it is, an empty list too. Sign-out clears projectsLoadedAt.
+    const loadedAt = useChatStore.getState().projectsLoadedAt;
+    const fresh =
+      loadedAt !== null && loadedProjectsVersion === projectsVersion && Date.now() - loadedAt < SIDEBAR_LISTS_STALE_MS;
+    if (!fresh) load();
   }, [load, projectsVersion, projectsEnabled]);
 
   // The cached `projects` list is capped at SIDEBAR_PROJECTS_FETCH_LIMIT, so
@@ -121,6 +149,8 @@ export function ProjectsSidebar() {
 
   const isSearchActive = search.trim().length > 0;
   const isListLoading = isSearchActive ? isSearching : isProjectsLoading;
+  const listSkeleton = useDeferredLoading(isListLoading);
+  const showSkeleton = isListLoading || listSkeleton.visible;
 
   const filtered = useMemo(() => {
     const rows = isSearchActive ? (searchResults ?? []) : projects;
@@ -195,19 +225,21 @@ export function ProjectsSidebar() {
           />
 
           {isSearchActive && searchError ? (
-            <Text size="1" style={{ padding: 'var(--space-2) var(--space-3)', color: '#ef4444' }}>
+            <Text size="1" style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--red-11)' }}>
               {t('chat.projects.failedToLoad')}
             </Text>
           ) : !isSearchActive && projectsError ? (
-            <Text size="1" style={{ padding: 'var(--space-2) var(--space-3)', color: '#ef4444' }}>
+            <Text size="1" style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--red-11)' }}>
               {projectsError}
             </Text>
-          ) : isListLoading ? (
-            <Flex direction="column" gap="1">
-              {Array.from({ length: PROJECTS_SKELETON_COUNT }, (_, i) => (
-                <ChatItemSkeleton key={i} />
-              ))}
-            </Flex>
+          ) : showSkeleton ? (
+            <ListSkeleton
+              variant="sidebar-row"
+              count={PROJECTS_SKELETON_COUNT}
+              glyphSize={16}
+              statusLabel={t('projects.loadingList')}
+              exiting={listSkeleton.exiting}
+            />
           ) : filtered.length === 0 ? (
             <Text size="1" style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-10)' }}>
               {t('projects.emptyState')}

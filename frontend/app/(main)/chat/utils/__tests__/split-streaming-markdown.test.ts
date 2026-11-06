@@ -126,3 +126,63 @@ describe('splitMarkdownBlocks', () => {
     expect(blocksGrown.slice(0, blocksBase.length - 1)).toEqual(blocksBase.slice(0, -1));
   });
 });
+
+describe('splitMarkdownBlocks — safe for the finished answer too', () => {
+  it('keeps a list item\'s own paragraph, indented under it, with the list', () => {
+    const content = ['1. Item one', '', '   More about item one.', '', '2. Item two'].join('\n');
+    expect(splitMarkdownBlocks(content)).toEqual([content]);
+  });
+
+  it('never splits inside an HTML element that runs over blank lines', () => {
+    const content = ['<details>', '<summary>More</summary>', '', 'Hidden text.', '', 'Still hidden.', '</details>', '', 'After.'].join('\n');
+    const blocks = splitMarkdownBlocks(content);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toContain('Still hidden.');
+    expect(blocks[1].trim()).toBe('After.');
+  });
+
+  it('is not held open by generics in code, an autolink or a void tag', () => {
+    const content = ['Use `List<String>` here, see <https://example.com>.<br>', '', 'Next.'].join('\n');
+    expect(splitMarkdownBlocks(content)).toHaveLength(2);
+  });
+
+  it('never splits inside a $$ maths block', () => {
+    const content = ['$$', 'a = b', '', 'c = d', '$$', '', 'After.'].join('\n');
+    expect(splitMarkdownBlocks(content)).toHaveLength(2);
+  });
+
+  it('keeps one block when the answer defines a link reference or a footnote, which any block may use', () => {
+    const content = ['See [the guide][g].', '', 'More.', '', '[g]: https://example.com'].join('\n');
+    expect(splitMarkdownBlocks(content)).toEqual([content]);
+    const footnote = ['A claim.[^1]', '', '[^1]: The source.'].join('\n');
+    expect(splitMarkdownBlocks(footnote)).toEqual([footnote]);
+  });
+
+  it('keeps the blocks before the first one that defines or uses a label on their own, and the rest as one to the end', () => {
+    const content = [
+      '## Title', '', 'Intro.', '', '| a | b |', '|---|---|', '| 1 | 2 |', '',
+      'A claim.[^1]', '', 'More text.', '', '[^1]: The source.', '', 'After.',
+    ].join('\n');
+    const blocks = splitMarkdownBlocks(content);
+    expect(blocks).toEqual([
+      '## Title\n',
+      // A table row continues what is above it (see the rule above).
+      'Intro.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n',
+      'A claim.[^1]\n\nMore text.\n\n[^1]: The source.\n\nAfter.',
+    ]);
+    expect(blocks.join('\n')).toBe(content);
+  });
+
+  it('a definition nothing uses starts the one block where it is (the answer before it stays split)', () => {
+    const content = ['Intro.', '', '```py', 'x = [1]', '```', '', '[^1]: A note.', '', '### Next', '', 'End.'].join('\n');
+    expect(splitMarkdownBlocks(content)).toEqual(['Intro.\n', '```py\nx = [1]\n```\n', '[^1]: A note.\n\n### Next\n\nEnd.']);
+  });
+
+  it('finds a use of a link label in any case and spacing, as markdown matches labels', () => {
+    const content = ['Intro.', '', 'See [the  Guide][My Label].', '', '[my label]: https://example.com'].join('\n');
+    expect(splitMarkdownBlocks(content)).toEqual(['Intro.\n', 'See [the  Guide][My Label].\n\n[my label]: https://example.com']);
+    const spaced = ['Intro.', '', 'See [x][my   label].', '', '[my label]: https://example.com'].join('\n');
+    expect(splitMarkdownBlocks(spaced)[0]).toBe('Intro.\n');
+    expect(splitMarkdownBlocks(spaced)).toHaveLength(2);
+  });
+});

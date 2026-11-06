@@ -68,17 +68,14 @@ vi.mock('@/app/(main)/workspace/connectors/demo-data/components', () => ({
   DemoDataRemovalNotice: () => <div>Demo removal notice</div>,
 }));
 
-vi.mock('@/config', async () => ({
+vi.mock('@/config', async (importOriginal) => ({
   chatModelOptions: (await import('@/app/(main)/chat/utils/chat-model-options')).chatModelOptions,
+  chatExtension: (await importOriginal<typeof import('@/config')>()).chatExtension,
+  chatSlots: (await importOriginal<typeof import('@/config')>()).chatSlots,
   AgentChatHeader: ({ displayName, readOnly }: { displayName: string | null; readOnly?: boolean }) => (
     <header aria-label="Agent header" data-read-only={String(Boolean(readOnly))}>{displayName ?? 'Agent'}</header>
   ),
-  ConversationHeaderOverlay: (props: { agentChip: React.ReactNode; shareGroup: React.ReactNode }) => (
-    <>
-      {props.agentChip}
-      {props.shareGroup}
-    </>
-  ),
+  ConversationHeaderOverlay: (props: { shareGroup: React.ReactNode }) => <>{props.shareGroup}</>,
 }));
 
 const fetchConversations = vi.fn();
@@ -121,12 +118,19 @@ vi.mock('@/app/components/file-preview', () => ({
 }));
 
 const getSharedMembers = vi.fn();
+const createChatShareAdapter = vi.fn();
 vi.mock('../share-adapter', () => ({
-  createChatShareAdapter: () => ({ getSharedMembers: () => getSharedMembers() }),
+  createChatShareAdapter: (...args: unknown[]) => {
+    createChatShareAdapter(...args);
+    return { getSharedMembers: () => getSharedMembers() };
+  },
   toChatSharedMembers: (sharedWith: unknown) => getSharedMembers(sharedWith),
 }));
 vi.mock('@/app/components/share', () => ({
-  ShareSidebar: ({ open }: { open: boolean }) => (open ? <div role="dialog" aria-label="Share conversation" /> : null),
+  ShareSidebar: ({ open, initialSearch }: { open: boolean; initialSearch?: string }) =>
+    open ? (
+      <div role="dialog" aria-label="Share conversation" data-initial-search={initialSearch ?? ''} />
+    ) : null,
   ShareHeaderGroup: ({ members, onShareClick }: { members: { name: string }[]; onShareClick: () => void }) => (
     <div>
       {members.map((m) => <span key={m.name}>{m.name}</span>)}
@@ -176,6 +180,7 @@ vi.mock('@/lib/store/toast-store', () => ({
 }));
 
 import ChatPage from '../page';
+import { chatExtension } from '@/config';
 import { AxiosError, AxiosHeaders } from 'axios';
 import { processError } from '@/lib/api/api-error';
 import { showErrorToast } from '@/lib/api/error-toast';
@@ -211,11 +216,33 @@ function apiMessage(overrides: Partial<ConversationMessage>): ConversationMessag
   } as ConversationMessage;
 }
 
+/** A full server `access` view for the given role. */
+function accessView(role: 'owner' | 'write' | 'read', overrides: Record<string, unknown> = {}) {
+  return {
+    role,
+    isOwner: role === 'owner',
+    accessLevel: role,
+    canSend: role !== 'read',
+    canManage: role === 'owner',
+    canInvite: role === 'owner',
+    ...overrides,
+  };
+}
+
+/** `isOwner` gives the short `access` pair; pass `access` for a full view. */
 function conversationDetail({
   isOwner = true,
   messages,
   sharedWith = [],
-}: { isOwner?: boolean; messages?: ConversationMessage[]; sharedWith?: { userId: string; accessLevel: string; _id: string }[] } = {}) {
+  access,
+  status = 'complete',
+}: {
+  isOwner?: boolean;
+  messages?: ConversationMessage[];
+  sharedWith?: { userId: string; accessLevel: string; _id: string }[];
+  access?: Record<string, unknown>;
+  status?: string;
+} = {}) {
   const msgs = messages ?? [
     apiMessage({ _id: 'u1', messageType: 'user_query', content: 'How many vacation days do I get?' }),
     apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'You get 25 days a year.' }),
@@ -226,11 +253,11 @@ function conversationDetail({
       title: 'Vacation',
       initiator: 'u',
       messages: msgs,
-      status: 'complete',
+      status,
       modelInfo: undefined,
       isShared: sharedWith.length > 0,
       sharedWith,
-      access: { isOwner, accessLevel: isOwner ? 'owner' : 'read' },
+      access: access ?? { isOwner, accessLevel: isOwner ? 'owner' : 'read' },
     },
     messages: msgs,
     pagination: PAGINATION,
@@ -375,6 +402,43 @@ describe('Chat page — new chat', () => {
     expect(usePendingChatStore.getState().pending).toBeNull();
   });
 
+  it('sends a handed-over question with the row fields the extension makes of what its send carried', async () => {
+    const extra = { mentions: [{ type: 'agent', id: 'ag-1' }] };
+    const handoff = vi.spyOn(chatExtension.send, 'handoffCustom').mockReturnValue({ mentions: extra.mentions });
+    usePendingChatStore.getState().setPending({
+      message: '<@agent:ag-1> what changed?',
+      extra,
+      pageContext: {},
+      referrerPage: '/projects',
+    });
+
+    renderPage('projectId=p1');
+
+    await waitFor(() => expect(append).toHaveBeenCalledTimes(1));
+    expect(handoff).toHaveBeenCalledWith(extra);
+    expect(append.mock.calls[0][0]).toMatchObject({
+      content: [{ type: 'text', text: '<@agent:ag-1> what changed?' }],
+      metadata: { custom: { mentions: extra.mentions } },
+    });
+    handoff.mockRestore();
+  });
+
+  it('sends a handed-over question with the sources it names, so its bubble shows them as chips', async () => {
+    const report = { id: 'q3', name: 'Q3 Report', nodeType: 'record', connector: 'KB' };
+    usePendingChatStore.getState().setPending({
+      message: 'what changed in Q3 Report',
+      mentions: [report],
+      pageContext: {},
+      referrerPage: '/projects',
+    });
+
+    renderPage('projectId=p1');
+
+    await waitFor(() => expect(append).toHaveBeenCalledTimes(1));
+    expect(append.mock.calls[0][0]).toMatchObject({ metadata: { custom: { mentionIds: ['q3'] } } });
+    expect(useChatStore.getState().collectionMetaCache.q3).toMatchObject({ name: 'Q3 Report', nodeType: 'record' });
+  });
+
   it('opens scoped to the rows handed over from All Records, replacing the selection and sending nothing', async () => {
     useChatStore.getState().setFilters({ apps: ['jira-1'], kb: [] });
     usePendingChatStore.getState().setPending({
@@ -414,7 +478,7 @@ describe('Chat page — opening a conversation', () => {
     renderPage('conversationId=conv-1');
 
     expect(screen.getByRole('status').textContent).toBe('Loading');
-    await waitFor(() => expect(fetchConversation).toHaveBeenCalledWith('conv-1'));
+    await waitFor(() => expect(fetchConversation).toHaveBeenCalledWith('conv-1', undefined, undefined, expect.anything()));
 
     await act(async () => resolve(conversationDetail()));
 
@@ -422,6 +486,62 @@ describe('Chat page — opening a conversation', () => {
     expect(screen.getByText('You get 25 days a year.')).toBeTruthy();
     expect(screen.queryByRole('status')).toBeNull();
     expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+  });
+
+  describe('a run that is still going on the server', () => {
+    const running = (extra: Parameters<typeof conversationDetail>[0] = {}) =>
+      conversationDetail({
+        status: 'Inprogress',
+        messages: [apiMessage({ _id: 'u1', messageType: 'user_query', content: 'Write the long essay', runId: 'live-run' } as never)],
+        ...extra,
+      });
+    const openSlot = () => {
+      const { slots, activeSlotId } = useChatStore.getState();
+      return slots[activeSlotId as string];
+    };
+
+    it("keeps the id to cancel from the question it has not answered", async () => {
+      fetchConversation.mockResolvedValueOnce(running());
+      renderPage('conversationId=conv-1');
+      expect(await screen.findByText('Write the long essay')).toBeTruthy();
+
+      expect(openSlot().remoteRunInProgress).toBe(true);
+      expect(openSlot().remoteRunId).toBe('live-run');
+      expect(openSlot().remoteStopRequested).toBe(false);
+    });
+
+    it('offers no id to someone who does not own the chat', async () => {
+      fetchConversation.mockResolvedValueOnce(running({ isOwner: false }));
+      renderPage('conversationId=conv-1');
+      expect(await screen.findByText('Write the long essay')).toBeTruthy();
+
+      expect(openSlot().remoteRunInProgress).toBe(true);
+      expect(openSlot().remoteRunId).toBeNull();
+    });
+
+    it('keeps a pending Stop pending when the chat loads again before the run ends', async () => {
+      fetchConversation.mockResolvedValueOnce(running());
+      renderPage('conversationId=conv-1');
+      expect(await screen.findByText('Write the long essay')).toBeTruthy();
+      act(() => useChatStore.getState().updateSlot(useChatStore.getState().activeSlotId as string, { remoteStopRequested: true }));
+
+      fetchConversation.mockResolvedValueOnce(
+        running({ messages: [apiMessage({ _id: 'u1', messageType: 'user_query', content: 'Write the long essay again', runId: 'live-run' } as never)] }),
+      );
+      await act(async () => useChatStore.getState().invalidateConversation('conv-1'));
+      expect(await screen.findByText('Write the long essay again')).toBeTruthy();
+
+      expect(openSlot().remoteRunId).toBe('live-run');
+      expect(openSlot().remoteStopRequested).toBe(true);
+    });
+
+    it('offers no id once the chat has settled', async () => {
+      fetchConversation.mockResolvedValueOnce(conversationDetail());
+      renderPage('conversationId=conv-1');
+      expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+
+      expect(openSlot().remoteRunId).toBeNull();
+    });
   });
 
   it('loads the open conversation again when it is invalidated, as a notification about it does', async () => {
@@ -565,6 +685,43 @@ describe('Chat page — opening a conversation', () => {
     expect(collectionNamesCache).not.toHaveProperty('knowledgeBase_org-1');
   });
 
+  it('restores the filters of the latest question the extension allows, on a load and on coming back', async () => {
+    const scope = (id: string, name: string) => ({ apps: [{ id, name, nodeType: 'app', connector: 'DRIVE' }], kb: [] });
+    // The extension allows every question but the one scoped to `drive-2`.
+    const allows = vi
+      .spyOn(chatExtension.history, 'restoresFiltersOf')
+      .mockImplementation((question) => (question as { appliedFilters?: { apps: { id: string }[] } }).appliedFilters?.apps[0]?.id !== 'drive-2');
+    try {
+      fetchConversation.mockResolvedValue(
+        conversationDetail({
+          messages: [
+            apiMessage({ _id: 'u1', content: 'What changed?', appliedFilters: scope('drive-1', 'Drive') }),
+            apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'One policy.' }),
+            apiMessage({ _id: 'u2', content: 'And since?', appliedFilters: scope('drive-2', 'Other drive') }),
+            apiMessage({ _id: 'b2', messageType: 'bot_response', content: 'Two policies.' }),
+          ],
+        }),
+      );
+      const view = renderPage('conversationId=conv-1');
+      await screen.findByText('Two policies.');
+      expect(useChatStore.getState().settings.filters).toEqual({ apps: ['drive-1'], kb: [], recordGroups: [], records: [] });
+      expect(useChatStore.getState().collectionNamesCache['drive-2']).toBeUndefined();
+      // The page tells the extension whether the viewer owns the conversation: here they do.
+      expect(allows).toHaveBeenCalledWith(expect.objectContaining({ _id: 'u1' }), { isOwner: true });
+
+      searchParams = new URLSearchParams('');
+      view.rerender(<Theme><ChatPage /></Theme>);
+      expect(await screen.findByText('What do you want to explore today?')).toBeTruthy();
+      act(() => useChatStore.getState().setFilters({ apps: ['elsewhere'], kb: [] }));
+      searchParams = new URLSearchParams('conversationId=conv-1');
+      view.rerender(<Theme><ChatPage /></Theme>);
+      await screen.findByText('Two policies.');
+      expect(useChatStore.getState().settings.filters).toEqual({ apps: ['drive-1'], kb: [], recordGroups: [], records: [] });
+    } finally {
+      allows.mockRestore();
+    }
+  });
+
   it("hides the composer on a conversation someone shared with the user", async () => {
     fetchConversation.mockResolvedValue(conversationDetail({ isOwner: false }));
     renderPage('conversationId=conv-1');
@@ -597,6 +754,53 @@ describe('Chat page — opening a conversation', () => {
 
     await act(async () => finishLoading(conversationDetail({ isOwner: true })));
     expect(await screen.findByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+  });
+
+  describe('access views from the server', () => {
+    it('a write-role access view still gets no composer when the user is not the owner', async () => {
+      fetchConversation.mockResolvedValue(
+        conversationDetail({ access: accessView('write', { isOwner: false }) }),
+      );
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+      expect(screen.queryByTestId('read-only-banner')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+    });
+
+    it('the owner gets Share and no other access control', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ access: accessView('owner') }));
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Who can access this chat' })).toBeNull();
+    });
+
+    it('the owner keeps the composer and Share', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ access: accessView('owner') }));
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy();
+      expect(createChatShareAdapter).toHaveBeenCalledWith('conv-1', undefined);
+    });
+
+    it('slot state the default access check ignores does not hide the composer', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ isOwner: true }));
+      renderPage('conversationId=conv-1');
+      await screen.findByText('You get 25 days a year.');
+
+      act(() => {
+        const { activeSlotId } = useChatStore.getState();
+        useChatStore.getState().updateSlot(activeSlotId as string, { accessLost: true });
+      });
+
+      expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+      expect(screen.queryByTestId('read-only-banner')).toBeNull();
+    });
   });
 
   it('lets the owner see who it is shared with and open sharing', async () => {
@@ -811,7 +1015,7 @@ describe('Chat page — keyboard shortcuts and the address bar', () => {
 describe('Chat page — agent chats', () => {
   const CREATOR_ID = '507f1f77bcf86cd799439011';
 
-  it("shows the agent's name and who built it, and warns about tools that no longer exist", async () => {
+  it("shows the agent's name, never who built it, and warns about tools that no longer exist", async () => {
     getAgent.mockResolvedValue({
       agent: {
         _key: 'agent-7',
@@ -826,8 +1030,10 @@ describe('Chat page — agent chats', () => {
     renderPage('agentId=agent-7');
 
     expect(await screen.findByText('Support Bot')).toBeTruthy();
-    expect(await screen.findByText('Priya Shah')).toBeTruthy();
-    expect(getUsersByIds).toHaveBeenCalledWith([CREATOR_ID], { suppressErrorToast: true });
+    // Who built an agent is on its own pages: nothing in its chats says so, and nothing looks it up.
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(screen.queryByText('Priya Shah')).toBeNull();
+    expect(getUsersByIds).not.toHaveBeenCalled();
     expect(toastError).toHaveBeenCalledWith(
       'This agent has tools that are no longer available. Open the Agent Builder to remove them.',
       expect.objectContaining({ action: expect.objectContaining({ label: 'Open Agent Builder' }) }),
@@ -917,7 +1123,6 @@ describe('Chat page — agent chats', () => {
     expect(state.agentKnowledgeScope).toBeNull();
     expect(state.agentDeprecatedToolNames).toEqual([]);
     expect(state.agentContextDisplayName).toBeNull();
-    expect(state.agentContextCreatedBy).toBeNull();
     expect(state.agentContextAccess).toBeNull();
   });
 
@@ -1054,7 +1259,7 @@ describe('Chat page — agent chats', () => {
     renderPage('agentId=agent-7&conversationId=conv-1');
 
     expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
-    expect(fetchAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1');
+    expect(fetchAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1', expect.anything());
     expect(fetchConversation).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Share' })).toBeTruthy();
   });
@@ -1066,7 +1271,7 @@ describe('Chat page — agent chats', () => {
     renderPage('agentId=agent-7&conversationId=conv-1');
 
     expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
-    expect(fetchAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1');
+    expect(fetchAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1', expect.anything());
     expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
     expect(getSharedMembers).not.toHaveBeenCalled();
@@ -1086,7 +1291,8 @@ describe('Chat page — agent chats', () => {
 
   it('still lets a new agent chat report an agent that cannot be loaded, once', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    getAgent.mockRejectedValue(httpFailure(404));
+    // A failure other than "gone": a gone agent shows its own not-found state instead.
+    getAgent.mockRejectedValue(httpFailure(500));
 
     renderPage('agentId=agent-7');
 
@@ -1095,6 +1301,28 @@ describe('Chat page — agent chats', () => {
     act(() => useChatStore.getState().setAgentSidebarAgentId('agent-7'));
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect(toastError).toHaveBeenCalledTimes(1);
+  });
+
+  it('a link to an agent that is gone shows a not-found state with a way back, not "Loading"', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    getAgent.mockRejectedValue({ type: 'NOT_FOUND', message: 'Agent not found', statusCode: 404 });
+
+    renderPage('agentId=agent-gone');
+
+    expect(await screen.findByText("This agent doesn't exist or you no longer have access")).toBeTruthy();
+    expect(screen.queryByText('Loading…')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to chats' }));
+    expect(routerReplace).toHaveBeenLastCalledWith('/chat/');
+  });
+
+  it('a server error is not reported as a missing agent', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    getAgent.mockRejectedValue({ type: 'SERVER_ERROR', message: 'Boom', statusCode: 500 });
+
+    renderPage('agentId=agent-7');
+
+    await waitFor(() => expect(getAgent).toHaveBeenCalled());
+    expect(screen.queryByText("This agent doesn't exist or you no longer have access")).toBeNull();
   });
 
   it('marks the agent header read-only on a chat someone shared with the user', async () => {

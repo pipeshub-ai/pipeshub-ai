@@ -3,12 +3,25 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import * as controllerModule from '../../../../src/modules/enterprise_search/controller/es_controller'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
-import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
+import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
+import { conversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { turnDeps } from '../helpers/turn-deps'
 import { settle } from './chat-test-harness'
-import { ORG, OWNER, RUN, appConfig, delta, finalAnswer, startStream, type Flow, type StreamHandler } from './streaming-flows'
+import { ORG, OWNER, RUN, appConfig, delta, finalAnswer, startStream as startFlow, type Flow, type StreamHandler } from './streaming-flows'
 
 const FIRST_QUESTION = 'What changed in the release?'
+
+/** Replaced rows are retired, not deleted: they stay stored, emptied and stamped `removedAt`, and reads skip them. */
+const isRetired = (m: Record<string, unknown>): boolean => m.removedAt != null
+
+/** `startStream`, with `messages()` showing the rows a reader of the chat would see. */
+const startStream: typeof startFlow = async (...args) => {
+  const run = await startFlow(...args)
+  const stored = run.messages
+  return { ...run, messages: () => stored().filter((m) => !isRetired(m)) }
+}
 
 /** A regenerate of the last answer, with the edit the user typed and the state the chat was in. */
 const CARD_ANSWERS = 'User selections:\n1. "What do you enjoy?" → Pop'
@@ -23,6 +36,13 @@ function editFlow(options: {
   edit?: string
   title?: string
   earlierTurn?: boolean
+  /** A system line stored first: a notice about the chat, not a question or an answer. */
+  systemLineBefore?: boolean
+  /**
+   * A note stored before the last question, in its words: a message to people that asks the AI nothing. It is the
+   * chat's first message, so the question after it is not.
+   */
+  noteBefore?: boolean
   turn?: Turn
   /** What the last question says; defaults to FIRST_QUESTION. */
   question?: string
@@ -39,7 +59,8 @@ function editFlow(options: {
 }): Flow {
   return {
     name: 'regenerateAnswers (edited question)',
-    handler: (c) => c.regenerateAnswers(appConfig) as StreamHandler,
+    handler: (c) =>
+      behindGuard(realGuards(), 'regenerate', c.regenerateAnswers(appConfig, turnDeps()) as StreamHandler) as StreamHandler,
     prepare: (store) => {
       const session = store.addSession({
         orgId: ORG,
@@ -48,6 +69,12 @@ function editFlow(options: {
         title: options.title ?? FIRST_QUESTION,
         sessionType: 'chat',
       })
+      if (options.systemLineBefore) {
+        store.addMessage(session, { messageType: 'system', content: '' })
+      }
+      if (options.noteBefore) {
+        store.addMessage(session, { messageType: 'note', content: options.question ?? FIRST_QUESTION })
+      }
       if (options.earlierTurn) {
         store.addMessage(session, { messageType: 'user_query', content: 'An earlier question' })
         store.addMessage(session, { messageType: 'bot_response', content: 'An earlier answer.' })
@@ -63,14 +90,6 @@ function editFlow(options: {
         store.addMessage(session, { messageType: 'user_query', content: CARD_ANSWERS })
         store.addMessage(session, { messageType: 'bot_response', content: 'An earlier answer.' })
       }
-      // The harness keeps messages in memory but does not model deletes.
-      sinon.stub(ChatSessionMessage, 'deleteMany').callsFake(((filter: { _id: { $in: unknown[] } }) => {
-        const doomed = new Set(filter._id.$in.map(String))
-        for (let i = store.messages.length - 1; i >= 0; i -= 1) {
-          if (doomed.has(String(store.messages[i]._id))) store.messages.splice(i, 1)
-        }
-        return Promise.resolve({ deletedCount: doomed.size })
-      }) as never)
       const turn = options.turn ?? 'plain'
       if (turn !== 'card-without-question') {
         store.addMessage(session, { messageType: 'user_query', content: options.question ?? FIRST_QUESTION, attachments: options.storedFiles ?? [] } as never)
@@ -137,6 +156,13 @@ const lastQuestionFiles = (run: Awaited<ReturnType<typeof startStream>>) =>
 const sentFiles = (run: Awaited<ReturnType<typeof startStream>>) =>
   filesOf(run.ai.streamCalls[0]?.body as Record<string, unknown>)
 
+/** The titles the chat's own writes stored. The handler holds the store's document itself, so its title alone proves no write. */
+const writtenTitles = (): unknown[] =>
+  (ChatSession.updateOne as unknown as sinon.SinonStub)
+    .getCalls()
+    .map((call) => (call.args[1] as { $set?: { title?: unknown } } | undefined)?.$set?.title)
+    .filter((title) => title !== undefined)
+
 describe('es_controller editing the last question', () => {
   afterEach(() => {
     sinon.restore()
@@ -181,7 +207,44 @@ describe('es_controller editing the last question', () => {
     await settle()
 
     expect(run.conversation().title).to.equal('What changed in v2?')
+    expect(writtenTitles()).to.deep.equal(['What changed in v2?'])
   })
+
+  it('moves the chat title when only a system line comes before the first question', async () => {
+    const run = await startStream(editFlow({ edit: 'What changed in v2?', systemLineBefore: true }), controllerModule, undefined, { wait: false })
+    await settle()
+
+    run.ai.send('RUN_FINISHED', finalAnswer('Two things.'))
+    run.ai.finish()
+    await run.res.ended
+    await run.done
+    await settle()
+
+    expect(run.messages()[0]?.messageType).to.equal('system')
+    expect(run.conversation().title).to.equal('What changed in v2?')
+    expect(writtenTitles()).to.deep.equal(['What changed in v2?'])
+  })
+
+  for (const [label, edit] of [
+    ['a regenerate', undefined],
+    ['an edit that changes nothing', FIRST_QUESTION],
+  ] as const) {
+    it(`${label} of the first question asks for no title and writes none`, async () => {
+      const rule = sinon.spy(conversationExtensions().turns, 'titleRule')
+      const run = await startStream(editFlow({ edit }), controllerModule, undefined, { wait: false })
+      await settle()
+
+      run.ai.send('RUN_FINISHED', finalAnswer('Two things.'))
+      run.ai.finish()
+      await run.res.ended
+      await run.done
+      await settle()
+
+      expect(rule.callCount).to.equal(0)
+      expect(run.conversation().title).to.equal(FIRST_QUESTION)
+      expect(writtenTitles()).to.deep.equal([])
+    })
+  }
 
   it('keeps a title the user renamed', async () => {
     const run = await startStream(editFlow({ edit: 'What changed in v2?', title: 'Release notes' }), controllerModule, undefined, { wait: false })
@@ -194,6 +257,7 @@ describe('es_controller editing the last question', () => {
     await settle()
 
     expect(run.conversation().title).to.equal('Release notes')
+    expect(writtenTitles()).to.deep.equal([])
     expect(lastQuestion(run)).to.equal('What changed in v2?')
   })
 
@@ -208,6 +272,46 @@ describe('es_controller editing the last question', () => {
     await settle()
 
     expect(run.conversation().title).to.equal(FIRST_QUESTION)
+    expect(writtenTitles()).to.deep.equal([])
+  })
+
+  it('keeps the title when a later question is edited, with a system line before the first', async () => {
+    const run = await startStream(
+      editFlow({ edit: 'What changed in v2?', systemLineBefore: true, earlierTurn: true }),
+      controllerModule,
+      undefined,
+      { wait: false },
+    )
+    await settle()
+
+    run.ai.send('RUN_FINISHED', finalAnswer('Two things.'))
+    run.ai.finish()
+    await run.res.ended
+    await run.done
+    await settle()
+
+    // The system line comes first, so only the earlier question shows this one is not the chat's first.
+    expect(run.messages().slice(0, 3).map((m) => m.messageType)).to.deep.equal(['system', 'user_query', 'bot_response'])
+    expect(lastQuestion(run)).to.equal('What changed in v2?')
+    expect(run.conversation().title).to.equal(FIRST_QUESTION)
+    expect(writtenTitles()).to.deep.equal([])
+  })
+
+  it('keeps the title when a note came before the question', async () => {
+    const run = await startStream(editFlow({ edit: 'What changed in v2?', noteBefore: true }), controllerModule, undefined, { wait: false })
+    await settle()
+
+    run.ai.send('RUN_FINISHED', finalAnswer('Two things.'))
+    run.ai.finish()
+    await run.res.ended
+    await run.done
+    await settle()
+
+    // The note says the question's words, so the title still matches the question: only the note being first keeps it.
+    expect(run.messages()[0]).to.include({ messageType: 'note', content: FIRST_QUESTION })
+    expect(lastQuestion(run)).to.equal('What changed in v2?')
+    expect(run.conversation().title).to.equal(FIRST_QUESTION)
+    expect(writtenTitles()).to.deep.equal([])
   })
 
   it('keeps the original question and title when the run fails', async () => {
@@ -222,6 +326,23 @@ describe('es_controller editing the last question', () => {
 
     expect(lastQuestion(run)).to.equal(FIRST_QUESTION)
     expect(run.conversation().title).to.equal(FIRST_QUESTION)
+    expect(writtenTitles()).to.deep.equal([])
+  })
+
+  it('keeps the question, its answer and the title when the AI service refuses the run before it starts', async () => {
+    const run = await startStream(editFlow({ edit: 'What changed in v2?' }), controllerModule, (ai) => {
+      ai.refuseStream(402, { detail: { code: 'AI_BUDGET_EXCEEDED', message: 'This request was refused.' } })
+    })
+    await run.res.ended
+    await settle()
+
+    const stored = run.messages().filter((m) => m.messageType === 'bot_response' || m.messageType === 'error')
+    expect(stored.map((m) => m.messageType)).to.deep.equal(['bot_response'])
+    expect(stored[0]?.content).to.not.equal('This request was refused.')
+    expect(lastQuestion(run)).to.equal(FIRST_QUESTION)
+    expect(run.conversation().title).to.equal(FIRST_QUESTION)
+    expect(run.conversation().status).to.not.equal('Failed')
+    expect(run.res.eventsOf('RUN_ERROR').map((e) => e.data.message)).to.deep.equal(['This request was refused.'])
   })
 
   it('stores the edited question with the partial answer when the user leaves mid-answer', async () => {
@@ -240,6 +361,25 @@ describe('es_controller editing the last question', () => {
     expect(run.answer()?.status).to.equal('stopped')
     expect(lastQuestion(run)).to.equal('What changed in v2?')
     expect(run.conversation().title).to.equal('What changed in v2?')
+    expect(writtenTitles()).to.deep.equal(['What changed in v2?'])
+  })
+
+  it('puts the original question back when the partial answer of a stopped edit cannot be saved', async () => {
+    const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const run = await startStream(editFlow({ edit: 'What changed in v2?' }), controllerModule, undefined, { wait: false })
+    await settle()
+    sinon.stub(searchUtils, 'savePartialConversation').rejects(new Error('database down'))
+
+    run.ai.send('TEXT_MESSAGE_CONTENT', delta('Two '))
+    await settle()
+    run.res.disconnect()
+    await settle(10)
+    clock.tick(DETACHED_RUN_MAX_MS + 1)
+    await settle(20)
+
+    expect(lastQuestion(run)).to.equal(FIRST_QUESTION)
+    expect(run.conversation().title).to.equal(FIRST_QUESTION)
+    expect(writtenTitles()).to.deep.equal([])
   })
 
   it('keeps the original question when the user leaves before any answer text', async () => {
@@ -254,6 +394,7 @@ describe('es_controller editing the last question', () => {
 
     expect(lastQuestion(run)).to.equal(FIRST_QUESTION)
     expect(run.conversation().title).to.equal(FIRST_QUESTION)
+    expect(writtenTitles()).to.deep.equal([])
   })
 
   describe('a turn that went through a question card', () => {
@@ -288,6 +429,11 @@ describe('es_controller editing the last question', () => {
 
       expect(rowsOf(run)).to.deep.equal(['user_query: What changed in v2?', 'bot_response: Two things.'])
       expect(run.conversation().title).to.equal('What changed in v2?')
+      expect(writtenTitles()).to.deep.equal(['What changed in v2?'])
+      const retired = run.store.messagesOf(run.conversation()._id).filter(isRetired)
+      expect(retired.map((m) => m.messageType), 'the card, its answers and the old reply are kept as retired rows')
+        .to.have.members(['bot_response', 'tool_call', 'user_query'])
+      for (const row of retired) expect(row.content, 'a retired row is emptied').to.equal('')
     })
 
     it('leaves earlier turns alone', async () => {
@@ -373,7 +519,7 @@ describe('es_controller editing the last question', () => {
 
         expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
           .to.deep.equal([FIRST_QUESTION])
-        // A regenerated answer carries its card itself; the old card's row is gone.
+        // A regenerated answer carries its card itself; the old card's row is retired.
         expect(run.messages().filter((m) => m.messageType === 'tool_call')).to.deep.equal([])
         expect(JSON.stringify(run.answer()?.tools)).to.contain('Which quarter?')
       })
@@ -832,6 +978,7 @@ describe('es_controller editing the last question', () => {
       expect(lastQuestion(run)).to.equal(FIRST_QUESTION)
       expect(lastQuestionFiles(run)).to.deep.equal(['rec-a'])
       expect(run.conversation().title).to.equal(FIRST_QUESTION)
+      expect(writtenTitles()).to.deep.equal([])
       expect(run.answer()?.messageType).to.equal('error')
     })
 
@@ -889,6 +1036,8 @@ describe('es_controller editing the last question', () => {
       expect(lastQuestion(run)).to.equal(FIRST_QUESTION)
       expect(lastQuestionFiles(run)).to.deep.equal(['rec-a'])
       expect(run.conversation().title).to.equal(FIRST_QUESTION)
+      // The error saved after it must not carry the edited title either.
+      expect(writtenTitles()).to.deep.equal([])
     })
 
     it('puts the question back and keeps the card rows when the new answer of a card turn cannot be saved', async () => {

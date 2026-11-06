@@ -7,6 +7,8 @@ import * as conversationArtifacts from '../../../../src/modules/artifacts/servic
 import { getConversationRepository } from '../../../../src/libs/repositories/conversation'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
+import * as chatUtils from '../../../../src/modules/enterprise_search/utils/utils'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
 import { FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 
 /**
@@ -66,7 +68,7 @@ describe('fork route: the artifacts of a forked chat', () => {
       user: { userId: OWNER, orgId: ORG, email: 'owner@example.com' },
       context: { requestId: 'req-fork-artifacts' },
     } as never
-    await (controller.forkConversation(appConfig) as (req: never, res: never, next: never) => Promise<unknown>)(
+    await behindGuard(realGuards(), 'fork', controller.forkConversation(appConfig) as (req: never, res: never, next: never) => Promise<unknown>)(
       req,
       res as never,
       next as never,

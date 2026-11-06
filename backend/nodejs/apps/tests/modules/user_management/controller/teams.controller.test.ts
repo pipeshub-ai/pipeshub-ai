@@ -3,7 +3,20 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { TeamsController } from '../../../../src/modules/user_management/controller/teams.controller';
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command';
+import { conversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions';
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
+
+
+let teamDeleted: sinon.SinonStub;
+
+/** What happens to a deleted team's references elsewhere is the lifecycle extension's job; the test watches the call. */
+function stubTeamDeleted(): sinon.SinonStub {
+  const stub = sinon.stub().resolves();
+  sinon
+    .stub(conversationExtensions(), 'lifecycle')
+    .value({ teamDeleted: stub, userDeleted: async () => ({}) });
+  return stub;
+}
 
 describe('TeamsController', () => {
   let controller: TeamsController;
@@ -48,6 +61,8 @@ describe('TeamsController', () => {
     };
 
     next = sinon.stub();
+
+    teamDeleted = stubTeamDeleted();
   });
 
   afterEach(() => {
@@ -275,6 +290,37 @@ describe('TeamsController', () => {
       await controller.deleteTeam(req, res, next);
 
       expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('runs the team cleanup after a 2xx from connectors', async () => {
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} });
+      req.params.teamId = 'team1';
+
+      await controller.deleteTeam(req, res, next);
+
+      expect(teamDeleted.calledOnceWith('507f1f77bcf86cd799439012', 'team1')).to.be.true;
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('does not run the team cleanup when connectors refuse the delete', async () => {
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 500, data: { detail: 'boom' } });
+      req.params.teamId = 'team1';
+
+      await controller.deleteTeam(req, res, next);
+
+      expect(teamDeleted.called).to.be.false;
+    });
+
+    it('still answers 200 and logs when the cleanup fails after the team is gone upstream', async () => {
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} });
+      teamDeleted.rejects(new Error('mongo down'));
+      req.params.teamId = 'team1';
+
+      await controller.deleteTeam(req, res, next);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(next.called).to.be.false;
+      expect(mockLogger.error.called).to.be.true;
     });
 
     it('should call next with error when orgId is missing', async () => {
@@ -1099,3 +1145,4 @@ describe('TeamsController', () => {
     });
   });
 });
+

@@ -23,6 +23,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
 )
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.errors import UniqueConstraintViolation
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
@@ -1781,6 +1782,49 @@ class TestTransactionRollsBackOnCancellation:
             await task
 
         mock_graph_provider.rollback_transaction.assert_awaited_once()
+
+
+class TestAUniqueConstraintHitIsNoError:
+    """The transaction rolls back as ever, and whoever opened it decides what the hit means."""
+
+    @staticmethod
+    def _store() -> tuple[GraphDataStore, MagicMock, MagicMock]:
+        provider = MagicMock()
+        provider.begin_transaction = AsyncMock(return_value="txn-1")
+        provider.commit_transaction = AsyncMock()
+        provider.rollback_transaction = AsyncMock()
+        provider.is_write_conflict = MagicMock(return_value=False)
+        provider.is_transient_error = MagicMock(return_value=False)
+        logger = MagicMock()
+        return GraphDataStore(logger, provider), provider, logger
+
+    @pytest.mark.asyncio
+    async def test_it_rolls_back_and_logs_no_error(self) -> None:
+        store, provider, logger = self._store()
+
+        async def taken(tx_store) -> None:
+            raise UniqueConstraintViolation("already exists with label `AgentInstances`: 'taken-handle'")
+
+        with pytest.raises(UniqueConstraintViolation):
+            await store.execute_in_transaction(taken)
+
+        provider.rollback_transaction.assert_awaited_once()
+        provider.commit_transaction.assert_not_awaited()
+        logger.error.assert_not_called()
+        assert "taken-handle" not in str(logger.mock_calls)
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_is_still_an_error(self) -> None:
+        store, provider, logger = self._store()
+
+        async def broken(tx_store) -> None:
+            raise RuntimeError("connection reset")
+
+        with pytest.raises(RuntimeError):
+            await store.execute_in_transaction(broken)
+
+        provider.rollback_transaction.assert_awaited_once()
+        logger.error.assert_called_once()
 
 
 class TestExecuteInTransactionRetriesTransientFailures:

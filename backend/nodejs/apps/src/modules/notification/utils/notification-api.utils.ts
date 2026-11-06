@@ -1,3 +1,4 @@
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { isValidId } from '../../../libs/repositories/ids';
 
 export const NOTIFICATION_RETENTION_DAYS = 30;
@@ -31,6 +32,8 @@ export function retentionCutoff(now: Date = new Date()): Date {
 export interface NotificationAuthContext {
   userId: string;
   orgId: string;
+  /** An OAuth token without `conversation:read` never sees or changes a chat notice. */
+  hideChatNotices?: boolean;
 }
 
 // Narrows the untyped (Record<string, any>) req.user into validated ids so
@@ -42,6 +45,11 @@ export function resolveNotificationAuthContext(
   const orgId = toIdString(user?.orgId);
   if (!userId || !orgId) {
     return null;
+  }
+  // Chat notices quote chat titles and messages. Browser sessions carry no scopes and see every notice.
+  if (user?.isOAuth === true) {
+    const scopes = Array.isArray(user.oauthScopes) ? user.oauthScopes : [];
+    if (!scopes.includes(OAuthScopeNames.CONVERSATION_READ)) return { userId, orgId, hideChatNotices: true };
   }
   return { userId, orgId };
 }

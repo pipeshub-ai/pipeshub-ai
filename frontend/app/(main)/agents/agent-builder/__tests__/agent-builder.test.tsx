@@ -31,11 +31,13 @@ vi.mock('next/navigation', () => ({
 }));
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
-vi.mock('@/config', () => ({
+vi.mock('@/config', async () => ({
   useUserPermission: (key: string) => !permissions.denied.has(key),
   PermissionLockIcon: () => <span>Locked</span>,
   InheritedConfigNotice: () => null,
   McpAgentApprovalsNotice: () => null,
+  agentBuilderExtension: (await vi.importActual<typeof import('../agent-builder-extension')>('../agent-builder-extension'))
+    .defaultAgentBuilderExtension,
 }));
 
 // Nothing here may reach the network: every API module below is faked, and
@@ -99,7 +101,8 @@ import { AgentBuilder } from '../agent-builder';
 function lastSavedPayload(fn: ReturnType<typeof vi.fn>): AgentFormPayload {
   const call = fn.mock.calls[fn.mock.calls.length - 1];
   if (!call) throw new Error('Nothing was saved');
-  return call[call.length - 1] as AgentFormPayload;
+  // createAgent(payload, options?) and updateAgent(key, payload, options?)
+  return (typeof call[0] === 'string' ? call[1] : call[0]) as AgentFormPayload;
 }
 
 async function renderNewAgent() {
@@ -526,7 +529,7 @@ describe('editing an agent', () => {
 
     confirmSpy.mockReturnValueOnce(true);
     fireEvent.click(screen.getByRole('button', { name: 'Go back' }));
-    expect(router.push).toHaveBeenCalledWith('/chat');
+    expect(router.push).toHaveBeenCalledWith('/agents/');
     confirmSpy.mockRestore();
   });
 
@@ -662,7 +665,7 @@ describe('deleting an agent', () => {
     return screen.findByRole('dialog', { name: 'Delete this agent?' });
   }
 
-  it('deletes only after the person types DELETE, then leaves the builder', async () => {
+  it('deletes only after the person types DELETE, then leaves the builder for the Agents page', async () => {
     await renderExistingAgent();
 
     const dialog = await openDeleteDialog();
@@ -675,7 +678,7 @@ describe('deleting an agent', () => {
     fireEvent.click(confirm);
 
     await waitFor(() => expect(agentsApi.deleteAgent).toHaveBeenCalledWith('agent-1'));
-    expect(router.replace).toHaveBeenCalledWith('/chat/');
+    expect(router.replace).toHaveBeenCalledWith('/agents/');
   });
 
 

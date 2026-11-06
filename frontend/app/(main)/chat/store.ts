@@ -9,6 +9,7 @@ import { getCurrentUserId } from './utils/current-user-id';
 import { orderPinnedFirst, withPinned } from './utils/pinned-conversations';
 import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { onSessionEnd } from '@/lib/api/session-cache';
+import { getConversationLastActivityMs } from '@/lib/utils/conversation-activity';
 import {
   ChatKnowledgeFilters,
   CollectionMeta,
@@ -32,6 +33,7 @@ import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
 import type { AgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import type { ProjectSummary } from './project-types';
+import { chatExtension } from '@/config';
 
 // ── localStorage helpers for agent capabilities ──────────────────────
 
@@ -320,6 +322,8 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     refreshGeneration: 0,
     hasLoaded: false,
     remoteRunInProgress: false,
+    remoteRunId: null,
+    remoteStopRequested: false,
     messages: [],
     isStreaming: false,
     streamingContent: '',
@@ -344,6 +348,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     lastAccessedAt: Date.now(),
     isOwner: isNew ? true : null,
     sharedWith: isNew ? [] : null,
+    ...chatExtension.slot.defaults(isNew),
   };
 }
 
@@ -388,6 +393,11 @@ interface ChatState {
   sharedConversations: Conversation[];
   isConversationsLoading: boolean;
   conversationsError: string | null;
+  /**
+   * When the rail's lists last arrived; null until the first load of this session. Only a rail with nothing
+   * loaded yet shows a skeleton: later loads swap the rows in place.
+   */
+  conversationsLoadedAt: number | null;
   pagination: ConversationsListResponse['pagination'] | null;
   sharedPagination: ConversationsListResponse['pagination'] | null;
   /** Which Recents filter the lists above were fetched with; null until the first load. */
@@ -401,11 +411,14 @@ interface ChatState {
    */
   unreadConversationIds: Set<string>;
   isMoreChatsPanelOpen: boolean;
-  moreChatsSectionType: 'shared' | 'your' | null;
-  /** Agents browser panel (same shell as More Chats) */
-  isAgentsSidebarOpen: boolean;
-  /** Pagination state for the More Chats infinite scroll panel */
-  moreChatsPagination: { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null;
+  moreChatsSectionType: MoreChatsSection | null;
+  /**
+   * The rows of the open More chats panel. Kept here, not in the panel, so a delete, archive, rename or
+   * pin made from any row (the rail's or the panel's) changes the panel too.
+   */
+  moreChats: MoreChatsList;
+  /** What the More chats panel's search box holds, so the panel shown again (the drawer reopened) keeps it. */
+  moreChatsSearch: string;
   /** Bumped after a mutation (rename/delete/archive) to trigger sidebar refetch */
   conversationsVersion: number;
 
@@ -415,12 +428,21 @@ interface ChatState {
   projectsError: string | null;
   /** Bumped after create/update/delete/archive to trigger a sidebar refetch. */
   projectsVersion: number;
+  /** When the Projects page's rail last loaded the list; null until then, and again after a sign-out. */
+  projectsLoadedAt: number | null;
   /** `projectId` currently open in the workspace (`/chat?projectId=…`), or null. */
   activeProjectId: string | null;
 
   /** When set, agent sidebar lists + streaming prepends apply to this agent */
   agentSidebarAgentId: string | null;
   agentConversations: Conversation[];
+  /** The agent's chats other people shared with the user, its rail's Shared chats. */
+  agentSharedConversations: Conversation[];
+  /**
+   * Whose chats `agentConversations` and `agentSharedConversations` are. They outlive the agent's rail, so coming
+   * back to the same agent shows them at once; another agent starts empty.
+   */
+  agentConversationsAgentId: string | null;
   agentConversationsPagination: ConversationsListResponse['pagination'] | null;
   isAgentConversationsLoading: boolean;
   agentConversationsError: string | null;
@@ -470,8 +492,8 @@ interface ChatState {
   agentContextDisplayName: string | null;
   /** Whether the current scoped agent was configured with a web search provider. */
   agentHasWebSearch: boolean;
-  /** MongoDB user ID of the agent creator from GET agent `createdBy` */
-  agentContextCreatedBy: string | null;
+  /** The current scoped agent runs with its own credentials: the person has nothing of theirs to connect for it. */
+  agentIsServiceAccount: boolean;
   /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
   agentContextAccess: AgentSidebarRowMenuAccess | null;
   /** Tool display names marked deprecated on the last GET /agents/:id for the URL agent context. */
@@ -602,14 +624,30 @@ interface ChatState {
   setSidebarLists: (lists: SidebarConversationLists) => void;
   setIsConversationsLoading: (loading: boolean) => void;
   setConversationsError: (error: string | null) => void;
-  toggleMoreChatsPanel: (sectionType: 'shared' | 'your') => void;
+  toggleMoreChatsPanel: (sectionType: MoreChatsSection) => void;
   closeMoreChatsPanel: () => void;
-  toggleAgentsSidebar: () => void;
-  closeAgentsSidebar: () => void;
-  setMoreChatsPagination: (p: { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null) => void;
+  setMoreChatsSearch: (search: string) => void;
+  /** Start the More chats list over (new open, section or search); returns the new list's key. */
+  startMoreChatsList: () => number;
+  /** A page of the More chats list arrived: page 1 replaces the rows, a later page appends new ids. */
+  setMoreChatsPage: (key: number, rows: Conversation[], page: number, hasNextPage: boolean) => void;
+  setMoreChatsLoadingMore: (key: number, loading: boolean) => void;
+  /** A More chats load failed: the rows stay as they are. */
+  endMoreChatsLoad: (key: number) => void;
+  /** Where a row sits in the More chats list, taken before it is archived so Undo can put it back. */
+  snapshotMoreChatsRow: (conversationId: string) => MoreChatsRowSnapshot | null;
+  /** Put a row back at its former place in the More chats list, once, if that list is still showing. */
+  restoreMoreChatsRow: (snapshot: MoreChatsRowSnapshot) => void;
   appendConversations: (convs: Conversation[]) => void;
   appendSharedConversations: (convs: Conversation[]) => void;
-  moveConversationToTop: (conversationId: string) => void;
+  /**
+   * Puts the chat first in every rail list it is in. For a new message in it, pass `activity`: the chat then also takes
+   * the message's time, in those lists and in an open More list, so Pinned (ordered by time) puts it first too. That
+   * time is `activity.lastActivityAt`, the server's; when the server sent none, now or 1 ms past every other row's,
+   * whichever is later. Without `activity` (opening a chat) the row only moves, and an open More list only takes a newer
+   * time the rail already has.
+   */
+  moveConversationToTop: (conversationId: string, activity?: { lastActivityAt?: number }) => void;
   /**
    * After a follow-up stream completes, merge the latest `modelInfo` into
    * sidebar list rows. `moveConversationToTop` only reorders and would leave
@@ -619,7 +657,14 @@ interface ChatState {
     conversationId: string,
     modelInfo: ModelInfo | undefined
   ) => void;
-  removeConversation: (conversationId: string) => void;
+  /** Takes the row out of every list; `keepUnread` for a chat that still exists elsewhere (moved into a project). */
+  removeConversation: (conversationId: string, options?: { keepUnread?: boolean }) => void;
+  /** Where a row sits in each rail list, taken before it goes (an archive) so Undo can put it back without a reload. */
+  snapshotRailRows: (conversationId: string) => RailRowsSnapshot;
+  /** Puts a row back at its former place in each list it was in, once; the agent's lists only for the same agent. */
+  restoreRailRows: (snapshot: RailRowsSnapshot) => void;
+  /** Lists a row the rail does not have yet (a fork, a chat back from a project) where the server would: pinned first, then newest activity first. */
+  insertConversationRow: (conversation: Conversation, list: 'conversations' | 'agentConversations') => void;
   markConversationUnread: (conversationId: string) => void;
   markConversationRead: (conversationId: string) => void;
   /** Bring back this user's unread chats from before a reload. */
@@ -627,6 +672,8 @@ interface ChatState {
   renameConversation: (conversationId: string, newTitle: string) => void;
   /** Bump the version counter to trigger a sidebar refetch */
   bumpConversationsVersion: () => void;
+  /** Forget every list the rails show (sign-out, another person signing in), so nobody sees someone else's chats. */
+  clearSidebarLists: () => void;
 
   // ── Project actions ──
   setProjects: (projects: ProjectSummary[]) => void;
@@ -645,14 +692,17 @@ interface ChatState {
    */
   moveConversationToProject: (conversationId: string, projectId: string | null) => void;
   /**
-   * Reflects a pin/unpin in the owner's own list straight away, pinned chats
-   * first. Only `conversations`: a pin is the owner's, so it never shows on
-   * shared or agent rows.
+   * Reflects the viewer's own pin/unpin straight away, pinned chats first, in
+   * Your chats, Shared chats and an open More list; never on agent rows. An
+   * unpinned chat goes back where its last activity puts it.
+   * Returns the undo for a pin the server refused: the rows go back where they
+   * were, not only unpinned.
    */
-  setConversationPinned: (conversationId: string, pinned: boolean) => void;
+  setConversationPinned: (conversationId: string, pinned: boolean) => () => void;
 
   setAgentSidebarAgentId: (id: string | null) => void;
   setAgentConversations: (conversations: Conversation[]) => void;
+  setAgentSharedConversations: (conversations: Conversation[]) => void;
   setAgentConversationsPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
   setIsAgentConversationsLoading: (loading: boolean) => void;
   setAgentConversationsError: (error: string | null) => void;
@@ -689,6 +739,8 @@ interface ChatState {
     deprecatedToolNames: string[];
     /** Whether the agent was built with a web search provider. */
     hasWebSearch?: boolean;
+    /** The agent runs with its own credentials. */
+    isServiceAccount?: boolean;
   } | null) => void;
   setAgentKnowledgeScope: (scope: ChatKnowledgeFilters | null) => void;
   /**
@@ -701,7 +753,6 @@ interface ChatState {
   restoreProjectKnowledgeScope: (projectId: string, scope: ChatKnowledgeFilters) => void;
   setProjectStreamTools: (tools: string[] | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
-  setAgentContextCreatedBy: (mongoUserId: string | null) => void;
   setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
 
   setRegenTargetMessageId: (messageId: string | null) => void;
@@ -806,6 +857,99 @@ interface ChatState {
 
 // ── Initial state ───────────────────────────────────────────────────
 
+/** The rail section a More chats panel lists: every pinned chat, or the rest of Shared chats or Your chats. */
+export type MoreChatsSection = 'pinned' | 'shared' | 'your';
+
+/** The rows of the More chats panel and where its paging stands. */
+export interface MoreChatsList {
+  /**
+   * Changes whenever the list starts over (another open, section or search), so a page or an Undo
+   * meant for an earlier list is dropped.
+   */
+  key: number;
+  rows: Conversation[];
+  /** The last page loaded; 0 before the first. */
+  page: number;
+  hasNextPage: boolean;
+  /** The first page is loading. */
+  isLoading: boolean;
+  /** A later page is loading. */
+  isLoadingMore: boolean;
+  /** When page 1 last arrived; 0 before it has. */
+  loadedAt: number;
+}
+
+/** The rail lists a row can be in. */
+type RailList = 'conversations' | 'sharedConversations' | 'agentConversations' | 'agentSharedConversations';
+const RAIL_LISTS: RailList[] = ['conversations', 'sharedConversations', 'agentConversations', 'agentSharedConversations'];
+
+/** A row and its place in each rail list, so Undo after an archive puts it back without a reload. */
+export interface RailRowsSnapshot {
+  conversationId: string;
+  places: Array<{ list: RailList; index: number; row: Conversation }>;
+  /** Whose the agent's lists were when the row left them. */
+  agentId: string | null;
+}
+
+/** A More chats row and its place, so Undo after an archive can put it back where it was. */
+export interface MoreChatsRowSnapshot {
+  key: number;
+  row: Conversation;
+  index: number;
+}
+
+const EMPTY_MORE_CHATS: MoreChatsList = {
+  key: 0,
+  rows: [],
+  page: 0,
+  hasNextPage: false,
+  isLoading: false,
+  isLoadingMore: false,
+  loadedAt: 0,
+};
+
+/** The list once its panel closes: no rows, and a new key so nothing late lands in it. */
+function closedMoreChats(current: MoreChatsList): MoreChatsList {
+  return { ...EMPTY_MORE_CHATS, key: current.key + 1 };
+}
+
+/** Apply `change` to the More chats rows; the same object back when nothing changed. */
+function patchMoreChatsRows(
+  current: MoreChatsList,
+  change: (rows: Conversation[]) => Conversation[],
+): MoreChatsList {
+  if (current.rows.length === 0) return current;
+  const rows = change(current.rows);
+  if (rows.length === current.rows.length && rows.every((row, i) => row === current.rows[i])) return current;
+  return { ...current, rows };
+}
+
+/**
+ * The order the server lists your chats in: pinned first, then newest activity first. The More chats list takes it
+ * after a pin or an unpin, so an unpinned chat goes back to its place, as the rail's list does once it reloads.
+ * The sort is stable, so rows the server tied keep the order it sent them in.
+ */
+/**
+ * A row of the open More list that neither rail list holds (past the rail's first page), and the rail list it belongs
+ * to: Your chats for the viewer's own chats, Shared chats for the others.
+ */
+function moreRowMissingFromRail(
+  state: Pick<ChatState, 'conversations' | 'sharedConversations' | 'moreChats' | 'moreChatsSectionType'>,
+  conversationId: string,
+): { list: 'conversations' | 'sharedConversations'; row: Conversation } | null {
+  const listed = (rows: Conversation[]) => rows.some((c) => c.id === conversationId);
+  if (listed(state.conversations) || listed(state.sharedConversations)) return null;
+  const row = state.moreChats.rows.find((c) => c.id === conversationId);
+  if (!row) return null;
+  const shared = state.moreChatsSectionType === 'shared' || (state.moreChatsSectionType !== 'your' && row.isOwner === false);
+  return { list: shared ? 'sharedConversations' : 'conversations', row };
+}
+
+function inServerOrder(rows: Conversation[]): Conversation[] {
+  const rank = (c: Conversation) => (c.isPinned === true ? 0 : 1);
+  return [...rows].sort((a, b) => rank(a) - rank(b) || getConversationLastActivityMs(b) - getConversationLastActivityMs(a));
+}
+
 const initialState = {
   slots: {} as Record<string, ChatSlot>,
   activeSlotId: null as string | null,
@@ -815,6 +959,8 @@ const initialState = {
   sharedConversations: [] as Conversation[],
   isConversationsLoading: false,
   conversationsError: null as string | null,
+  conversationsLoadedAt: null as number | null,
+  moreChatsSearch: '',
   pagination: null as ConversationsListResponse['pagination'] | null,
   sharedPagination: null as ConversationsListResponse['pagination'] | null,
   sidebarListsExcludeProjectChats: null as boolean | null,
@@ -822,19 +968,21 @@ const initialState = {
   newlyResolvedIds: new Set<string>(),
   unreadConversationIds: new Set<string>(),
   isMoreChatsPanelOpen: false,
-  moreChatsSectionType: null as 'shared' | 'your' | null,
-  isAgentsSidebarOpen: false,
-  moreChatsPagination: null as { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null,
+  moreChatsSectionType: null as MoreChatsSection | null,
+  moreChats: EMPTY_MORE_CHATS,
   conversationsVersion: 0,
 
   projects: [] as ProjectSummary[],
   isProjectsLoading: false,
   projectsError: null as string | null,
   projectsVersion: 0,
+  projectsLoadedAt: null as number | null,
   activeProjectId: null as string | null,
 
   agentSidebarAgentId: null as string | null,
   agentConversations: [] as Conversation[],
+  agentSharedConversations: [] as Conversation[],
+  agentConversationsAgentId: null as string | null,
   agentConversationsPagination: null as ConversationsListResponse['pagination'] | null,
   isAgentConversationsLoading: false,
   agentConversationsError: null as string | null,
@@ -865,7 +1013,7 @@ const initialState = {
   agentKnowledgeScope: null as ChatKnowledgeFilters | null,
   agentContextDisplayName: null as string | null,
   agentHasWebSearch: false,
-  agentContextCreatedBy: null as string | null,
+  agentIsServiceAccount: false,
   agentContextAccess: null as AgentSidebarRowMenuAccess | null,
   agentDeprecatedToolNames: [] as string[],
 
@@ -953,7 +1101,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const evictOne = (): boolean => {
         const ids = Object.keys(newSlots);
         if (ids.length <= MAX_SLOTS) return false;
-        const pool = ids.filter((id) => id !== slotId && id !== state.activeSlotId);
+        const pool = ids.filter(
+          (id) =>
+            id !== slotId &&
+            id !== state.activeSlotId &&
+            !chatExtension.slot.isOnScreen(newSlots[id], state.activeSlotId),
+        );
         if (pool.length === 0) return false;
         const idleFirst = pool.filter((id) => !newSlots[id].isStreaming);
         const candidates = idleFirst.length > 0 ? idleFirst : pool;
@@ -1077,6 +1230,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { slots } = get();
     for (const [slotId, slot] of Object.entries(slots)) {
       if (slot.convId !== convId) continue;
+      if (chatExtension.slot.isRetired(slot)) continue;
       if (opts === undefined) {
         return { slotId, slot };
       }
@@ -1101,6 +1255,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pagination: owned.pagination,
       sharedPagination: shared.pagination,
       sidebarListsExcludeProjectChats: excludeProjectChats,
+      conversationsLoadedAt: Date.now(),
     }),
 
   setIsConversationsLoading: (loading) => set({ isConversationsLoading: loading }),
@@ -1110,58 +1265,66 @@ export const useChatStore = create<ChatState>((set, get) => ({
   toggleMoreChatsPanel: (sectionType) =>
     set((state) => {
       if (state.isMoreChatsPanelOpen && state.moreChatsSectionType === sectionType) {
-        return { isMoreChatsPanelOpen: false, moreChatsSectionType: null };
+        return {
+          isMoreChatsPanelOpen: false,
+          moreChatsSectionType: null,
+          moreChats: closedMoreChats(state.moreChats),
+          moreChatsSearch: '',
+        };
       }
-      // Reset pagination each time the panel opens so it starts fresh
+      // The list starts fresh each time the panel opens, loading until its first page arrives, with an empty search
       return {
         isMoreChatsPanelOpen: true,
         moreChatsSectionType: sectionType,
-        moreChatsPagination: null,
-        isAgentsSidebarOpen: false,
+        moreChats: { ...EMPTY_MORE_CHATS, key: state.moreChats.key + 1, isLoading: true },
+        moreChatsSearch: '',
         isAgentMoreChatsPanelOpen: false,
         agentMoreChatsPagination: null,
       };
     }),
 
   closeMoreChatsPanel: () =>
-    set({ isMoreChatsPanelOpen: false, moreChatsSectionType: null }),
+    set((state) => ({
+      isMoreChatsPanelOpen: false,
+      moreChatsSectionType: null,
+      moreChats: closedMoreChats(state.moreChats),
+      moreChatsSearch: '',
+    })),
 
-  toggleAgentsSidebar: () =>
-    set((state) => {
-      if (state.isAgentsSidebarOpen) {
-        return { isAgentsSidebarOpen: false };
-      }
-      return {
-        isAgentsSidebarOpen: true,
-        isMoreChatsPanelOpen: false,
-        moreChatsSectionType: null,
-        moreChatsPagination: null,
-        isAgentMoreChatsPanelOpen: false,
-        agentMoreChatsPagination: null,
-      };
-    }),
-
-  closeAgentsSidebar: () => set({ isAgentsSidebarOpen: false }),
+  setMoreChatsSearch: (search) => set({ moreChatsSearch: search }),
 
   // Resets only the sidebar's own state. The agent's tools, knowledge, name and access belong to
   // the chat page, which sets and clears them from the agent detail as the URL's agent changes.
   setAgentSidebarAgentId: (id) =>
     set((state) => {
-      if (id !== null && state.agentSidebarAgentId === id) {
-        return state.isAgentsSidebarOpen ? { isAgentsSidebarOpen: false } : state;
-      }
-      return {
-        agentSidebarAgentId: id,
-        agentConversations: [],
-        agentConversationsPagination: null,
-        agentConversationsError: null,
+      // Resets only the rail's own state; its lists stay (`agentConversationsAgentId` says whose they are). The
+      // agent's tools, knowledge, name and access belong to the chat page, which sets and clears them from the agent
+      // detail as the URL's agent changes.
+      const context = {
         isAgentMoreChatsPanelOpen: false,
         agentMoreChatsPagination: null,
-        isAgentsSidebarOpen: false,
       };
+      if (id === null) {
+        return { agentSidebarAgentId: null, agentConversationsError: null, ...context };
+      }
+      if (state.agentSidebarAgentId === id) {
+        return state;
+      }
+      const lists =
+        state.agentConversationsAgentId === id
+          ? {}
+          : {
+              agentConversations: [],
+              agentSharedConversations: [],
+              agentConversationsAgentId: null,
+              agentConversationsPagination: null,
+            };
+      return { agentSidebarAgentId: id, agentConversationsError: null, ...lists, ...context };
     }),
 
   setAgentConversations: (conversations) => set({ agentConversations: conversations }),
+
+  setAgentSharedConversations: (conversations) => set({ agentSharedConversations: conversations }),
 
   setAgentConversationsPagination: (pagination) => set({ agentConversationsPagination: pagination }),
 
@@ -1179,8 +1342,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentMoreChatsPagination: null,
         isMoreChatsPanelOpen: false,
         moreChatsSectionType: null,
-        moreChatsPagination: null,
-        isAgentsSidebarOpen: false,
+        moreChats: closedMoreChats(state.moreChats),
       };
     }),
 
@@ -1189,7 +1351,60 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setAgentMoreChatsPagination: (p) => set({ agentMoreChatsPagination: p }),
 
-  setMoreChatsPagination: (p) => set({ moreChatsPagination: p }),
+  startMoreChatsList: () => {
+    const key = get().moreChats.key + 1;
+    set({ moreChats: { ...EMPTY_MORE_CHATS, key, isLoading: true } });
+    return key;
+  },
+
+  setMoreChatsPage: (key, rows, page, hasNextPage) =>
+    set((state) => {
+      const current = state.moreChats;
+      if (current.key !== key) return state;
+      let nextRows = rows;
+      if (page > 1) {
+        const seen = new Set(current.rows.map((c) => c.id));
+        nextRows = [...current.rows, ...rows.filter((c) => !seen.has(c.id))];
+      }
+      return {
+        moreChats: {
+          ...current,
+          rows: nextRows,
+          page,
+          hasNextPage,
+          isLoading: false,
+          isLoadingMore: false,
+          loadedAt: page === 1 ? Date.now() : current.loadedAt,
+        },
+      };
+    }),
+
+  setMoreChatsLoadingMore: (key, loading) =>
+    set((state) =>
+      state.moreChats.key !== key || state.moreChats.isLoadingMore === loading
+        ? state
+        : { moreChats: { ...state.moreChats, isLoadingMore: loading } },
+    ),
+
+  endMoreChatsLoad: (key) =>
+    set((state) =>
+      state.moreChats.key !== key ? state : { moreChats: { ...state.moreChats, isLoading: false, isLoadingMore: false } },
+    ),
+
+  snapshotMoreChatsRow: (conversationId) => {
+    const { moreChats } = get();
+    const index = moreChats.rows.findIndex((c) => c.id === conversationId);
+    return index < 0 ? null : { key: moreChats.key, row: moreChats.rows[index], index };
+  },
+
+  restoreMoreChatsRow: ({ key, row, index }) =>
+    set((state) => {
+      const current = state.moreChats;
+      if (current.key !== key || current.rows.some((c) => c.id === row.id)) return state;
+      const rows = [...current.rows];
+      rows.splice(Math.min(index, rows.length), 0, row);
+      return { moreChats: { ...current, rows } };
+    }),
 
   appendConversations: (convs) =>
     set((state) => {
@@ -1227,6 +1442,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             agentKnowledgeDefaults: payload.knowledgeDefaults,
             agentDeprecatedToolNames: payload.deprecatedToolNames,
             agentHasWebSearch: payload.hasWebSearch ?? false,
+            agentIsServiceAccount: payload.isServiceAccount ?? false,
             agentKnowledgeScope: null,
             agentStreamTools: null,
             collectionNamesCache: (() => {
@@ -1257,6 +1473,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             agentKnowledgeDefaults: { apps: [], kb: [] },
             agentDeprecatedToolNames: [],
             agentHasWebSearch: false,
+            agentIsServiceAccount: false,
             agentKnowledgeScope: null,
             agentStreamTools: null,
           }
@@ -1339,8 +1556,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setAgentContextDisplayName: (name) => set({ agentContextDisplayName: name }),
 
-  setAgentContextCreatedBy: (mongoUserId) => set({ agentContextCreatedBy: mongoUserId }),
-
   setAgentContextAccess: (access) => set({ agentContextAccess: access }),
 
   setRegenTargetMessageId: (messageId) => set({ regenTargetMessageId: messageId }),
@@ -1391,22 +1606,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setUniversalAgentMcpError: (error) => set({ universalAgentMcpError: error }),
 
-  moveConversationToTop: (conversationId) =>
+  moveConversationToTop: (conversationId, activity) =>
     set((state) => {
-      let next = state.conversations;
-      const idx = state.conversations.findIndex((c) => c.id === conversationId);
-      if (idx > 0) {
-        const conv = state.conversations[idx];
-        next = [conv, ...state.conversations.slice(0, idx), ...state.conversations.slice(idx + 1)];
+      const time = getConversationLastActivityMs;
+      const listed = [...state.conversations, ...state.sharedConversations, ...state.agentConversations];
+      const [own] = listed.filter((c) => c.id === conversationId).sort((a, b) => time(b) - time(a));
+      if (!own) return state;
+      let at = own.lastActivityAt;
+      if (activity) {
+        // The server's time keeps Pinned in the server's order whatever this tab's clock says. Copied raw: a
+        // `lastActivityAt` under 1e12 is read as seconds.
+        const sent = activity.lastActivityAt;
+        const others = [...listed, ...state.moreChats.rows].filter((c) => c.id !== conversationId);
+        at = typeof sent === 'number' && sent > 0 ? sent : Math.max(Date.now(), Math.max(0, ...others.map(time)) + 1);
       }
-      let nextAgent = state.agentConversations;
-      const aidx = state.agentConversations.findIndex((c) => c.id === conversationId);
-      if (aidx > 0) {
-        const conv = state.agentConversations[aidx];
-        nextAgent = [conv, ...state.agentConversations.slice(0, aidx), ...state.agentConversations.slice(aidx + 1)];
+      // Rail rows change time only for a new message. An open More list's rows also take a newer time the rail has (a
+      // new message seen live sets the rail's first).
+      const touch = (c: Conversation) =>
+        c.id !== conversationId || c.lastActivityAt === at || (!activity && time(c) >= time(own))
+          ? c
+          : { ...c, lastActivityAt: at };
+      const toTop = (list: Conversation[]) => {
+        const idx = list.findIndex((c) => c.id === conversationId);
+        if (idx < 0) return list;
+        const row = activity ? touch(list[idx]) : list[idx];
+        return idx === 0 && row === list[0] ? list : [row, ...list.slice(0, idx), ...list.slice(idx + 1)];
+      };
+      const next = {
+        conversations: toTop(state.conversations),
+        sharedConversations: toTop(state.sharedConversations),
+        agentConversations: toTop(state.agentConversations),
+        moreChats: patchMoreChatsRows(state.moreChats, (rows) => rows.map(touch)),
+      };
+      if (
+        next.conversations === state.conversations &&
+        next.sharedConversations === state.sharedConversations &&
+        next.agentConversations === state.agentConversations &&
+        next.moreChats === state.moreChats
+      ) {
+        return state;
       }
-      if (next === state.conversations && nextAgent === state.agentConversations) return state;
-      return { conversations: next, agentConversations: nextAgent };
+      return next;
     }),
 
   updateConversationModelInfoInLists: (conversationId, modelInfo) => {
@@ -1436,16 +1676,54 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  removeConversation: (conversationId) => {
-    const wasUnread = get().unreadConversationIds.has(conversationId);
+  removeConversation: (conversationId, options) => {
+    const forgetUnread = !options?.keepUnread && get().unreadConversationIds.has(conversationId);
     set((state) => ({
       conversations: state.conversations.filter((c) => c.id !== conversationId),
       sharedConversations: state.sharedConversations.filter((c) => c.id !== conversationId),
       agentConversations: state.agentConversations.filter((c) => c.id !== conversationId),
-      unreadConversationIds: withoutId(state.unreadConversationIds, conversationId),
+      agentSharedConversations: state.agentSharedConversations.filter((c) => c.id !== conversationId),
+      moreChats: patchMoreChatsRows(state.moreChats, (rows) => rows.filter((c) => c.id !== conversationId)),
+      ...(forgetUnread ? { unreadConversationIds: withoutId(state.unreadConversationIds, conversationId) } : {}),
     }));
-    if (wasUnread) forgetUnreadConversation(getCurrentUserId(), conversationId);
+    if (forgetUnread) forgetUnreadConversation(getCurrentUserId(), conversationId);
   },
+
+  snapshotRailRows: (conversationId) => {
+    const state = get();
+    const places = RAIL_LISTS.flatMap((list) => {
+      const index = state[list].findIndex((c) => c.id === conversationId);
+      return index < 0 ? [] : [{ list, index, row: state[list][index] }];
+    });
+    return { conversationId, places, agentId: state.agentConversationsAgentId };
+  },
+
+  restoreRailRows: ({ conversationId, places, agentId }) =>
+    set((state) => {
+      const patch: Partial<Record<RailList, Conversation[]>> = {};
+      for (const { list, index, row } of places) {
+        const agentList = list === 'agentConversations' || list === 'agentSharedConversations';
+        if ((agentList && state.agentConversationsAgentId !== agentId) || state[list].some((c) => c.id === conversationId)) {
+          continue;
+        }
+        const rows = [...state[list]];
+        rows.splice(Math.min(index, rows.length), 0, row);
+        patch[list] = rows;
+      }
+      return patch;
+    }),
+
+  insertConversationRow: (conversation, list) =>
+    set((state) => {
+      const rows = state[list].filter((c) => c.id !== conversation.id);
+      const rank = (c: Conversation) => (c.isPinned === true ? 0 : 1);
+      const activity = getConversationLastActivityMs(conversation);
+      const at = rows.findIndex(
+        (c) => rank(c) > rank(conversation) || (rank(c) === rank(conversation) && getConversationLastActivityMs(c) <= activity),
+      );
+      rows.splice(at < 0 ? rows.length : at, 0, conversation);
+      return { [list]: rows };
+    }),
 
   markConversationUnread: (conversationId) => {
     if (!get().unreadConversationIds.has(conversationId)) {
@@ -1491,12 +1769,45 @@ export const useChatStore = create<ChatState>((set, get) => ({
       agentConversations: state.agentConversations.map((c) =>
         c.id === conversationId ? { ...c, title: newTitle } : c
       ),
+      agentSharedConversations: state.agentSharedConversations.map((c) =>
+        c.id === conversationId ? { ...c, title: newTitle } : c
+      ),
+      moreChats: patchMoreChatsRows(state.moreChats, (rows) =>
+        rows.map((c) => (c.id === conversationId ? { ...c, title: newTitle } : c))
+      ),
     })),
 
   bumpConversationsVersion: () => {
     set((state) => ({ conversationsVersion: state.conversationsVersion + 1 }));
     revalidateSwrNamespace(SWR_NS.conversationLists);
   },
+
+  clearSidebarLists: () =>
+    set((state) => ({
+      conversations: [],
+      sharedConversations: [],
+      pagination: null,
+      sharedPagination: null,
+      isConversationsLoading: false,
+      conversationsError: null,
+      conversationsLoadedAt: null,
+      isMoreChatsPanelOpen: false,
+      moreChatsSectionType: null,
+      moreChats: closedMoreChats(state.moreChats),
+      moreChatsSearch: '',
+      agentConversations: [],
+      agentSharedConversations: [],
+      agentConversationsAgentId: null,
+      agentConversationsPagination: null,
+      agentConversationsError: null,
+      isAgentConversationsLoading: false,
+      isAgentMoreChatsPanelOpen: false,
+      agentMoreChatsPagination: null,
+      projects: [],
+      projectsError: null,
+      isProjectsLoading: false,
+      projectsLoadedAt: null,
+    })),
 
   // ── Project actions ──────────────────────────────────────────────
 
@@ -1534,11 +1845,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     }),
 
-  setConversationPinned: (conversationId, pinned) =>
+  setConversationPinned: (conversationId, pinned) => {
+    const before = get();
+    const unpinnedId = pinned ? undefined : conversationId;
     set((state) => {
-      const updated = withPinned(state.conversations, conversationId, pinned);
-      return updated === state.conversations ? state : { conversations: orderPinnedFirst(updated) };
-    }),
+      // A chat pinned from More that the rail's page does not list joins the rail's list it belongs to, so Pinned
+      // shows it now, as the server's next read would.
+      const fromMore = pinned ? moreRowMissingFromRail(state, conversationId) : null;
+      const updated = withPinned(
+        fromMore?.list === 'conversations' ? [...state.conversations, fromMore.row] : state.conversations,
+        conversationId,
+        pinned,
+      );
+      const shared = withPinned(
+        fromMore?.list === 'sharedConversations' ? [...state.sharedConversations, fromMore.row] : state.sharedConversations,
+        conversationId,
+        pinned,
+      );
+      const moreChats = patchMoreChatsRows(state.moreChats, (rows) => {
+        const next = withPinned(rows, conversationId, pinned);
+        return next === rows ? rows : inServerOrder(next);
+      });
+      if (updated === state.conversations && shared === state.sharedConversations && moreChats === state.moreChats) {
+        return state;
+      }
+      return {
+        conversations: updated === state.conversations ? state.conversations : orderPinnedFirst(updated, unpinnedId),
+        sharedConversations: shared === state.sharedConversations ? state.sharedConversations : orderPinnedFirst(shared, unpinnedId),
+        moreChats,
+      };
+    });
+    const after = get();
+    return () => {
+      const now = get();
+      // Lists that changed meanwhile (a refetch, another row's pin) keep their order; only this row's pin is put back.
+      if (now.conversations !== after.conversations || now.sharedConversations !== after.sharedConversations || now.moreChats !== after.moreChats) {
+        now.setConversationPinned(conversationId, !pinned);
+        return;
+      }
+      set({ conversations: before.conversations, sharedConversations: before.sharedConversations, moreChats: before.moreChats });
+    };
+  },
 
   addPendingConversation: (slotId) =>
     set((state) => ({
@@ -1898,7 +2245,7 @@ if (typeof window !== 'undefined') {
   const trackedFields = [
     'slots', 'activeSlotId', 'conversations', 'sharedConversations',
     'isConversationsLoading', 'conversationsError', 'pagination',
-    'pendingConversations', 'isMoreChatsPanelOpen', 'moreChatsSectionType', 'isAgentsSidebarOpen', 'moreChatsPagination',
+    'pendingConversations', 'isMoreChatsPanelOpen', 'moreChatsSectionType', 'moreChats',
     'agentSidebarAgentId', 'agentConversations', 'agentConversationsPagination',
     'isAgentConversationsLoading', 'agentConversationsError', 'isAgentMoreChatsPanelOpen', 'agentMoreChatsPagination',
     'agentStreamTools',
@@ -1911,7 +2258,6 @@ if (typeof window !== 'undefined') {
     'agentKnowledgeDefaults',
     'agentKnowledgeScope',
     'agentContextDisplayName',
-    'agentContextCreatedBy',
     'agentContextAccess',
     'projectScope',
     'projectKnowledgeScope',

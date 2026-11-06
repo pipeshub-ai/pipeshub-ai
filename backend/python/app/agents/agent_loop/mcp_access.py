@@ -15,6 +15,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.modules.agents.chat_extension import get_chat_extension
+
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
 
@@ -44,10 +46,12 @@ class ResolvedMCPServer:
 
 
 class MCPAccessResolver:
-    """Joins `context.mcp_servers` with `context.mcp_server_configs`."""
+    """Joins `context.mcp_servers` with `context.mcp_server_configs`, keeping the servers
+    `ChatExtension.mcp_server_allowed` lets this run use."""
 
     @staticmethod
     def resolve(context: "AgentContext") -> list[ResolvedMCPServer]:
+        extension = get_chat_extension()
         resolved: list[ResolvedMCPServer] = []
         for mcp_server in context.mcp_servers:
             instance_id = mcp_server.get("instanceId")
@@ -65,6 +69,9 @@ class MCPAccessResolver:
                 logger.debug(
                     "MCPAccessResolver: no resolved config for instance %s, skipping", instance_id,
                 )
+                continue
+            if not extension.mcp_server_allowed(context, config["instance"]):
+                logger.debug("MCPAccessResolver: instance %s is not allowed in this run, skipping", instance_id)
                 continue
 
             resolved.append(ResolvedMCPServer(

@@ -7,7 +7,7 @@ import { toast } from '@/lib/store/toast-store';
 import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { FormField, WorkspaceRightPanel } from '../../components';
+import { FormField, LabeledTextField, WorkspaceRightPanel } from '../../components';
 import { mcpOAuthFailureMessage, useMcpOAuthPopup } from '../../mcp-servers/hooks/use-mcp-oauth-popup';
 import { ApiToolsetsApi } from '../api';
 import {
@@ -21,7 +21,6 @@ import {
 } from '../toolset-form';
 import type { ApiToolset, ApiToolsetTestResult } from '../types';
 import { ApiOperationsChecklist } from './api-operations-checklist';
-import { LabeledTextField } from './labeled-controls';
 import { PanelSection } from './panel-section';
 
 interface ApiActionConnectionPanelProps {

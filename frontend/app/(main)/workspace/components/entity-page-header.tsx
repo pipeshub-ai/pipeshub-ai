@@ -4,8 +4,7 @@ import React from 'react';
 import { Box, Flex, Heading, Text, Button, TextField, Tooltip } from '@radix-ui/themes';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from './settings-page-container';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { PAGE_PADDING_TOP, usePagePaddingTop } from './settings-page-container';
 
 export interface EntityPageHeaderProps {
   /** Page title (e.g. "Users") */
@@ -30,7 +29,7 @@ export interface EntityPageHeaderProps {
   ctaDisabled?: boolean;
   /** Tooltip shown on hover — most useful to explain why the CTA is disabled */
   ctaTooltip?: string;
-  /** Space above the title (default 64px). Pass a smaller value when a back link already sits above the header. */
+  /** Space above the title (default 64px; below 1024px the shared narrow padding). Pass a smaller value when a back link already sits above the header. */
   paddingTop?: React.CSSProperties['paddingTop'];
 }
 
@@ -52,11 +51,9 @@ export function EntityPageHeader({
   additionalActions,
   ctaDisabled = false,
   ctaTooltip,
-  paddingTop: paddingTopProp,
+  paddingTop,
 }: EntityPageHeaderProps) {
-  // Phones clear the fixed menu button, like every other settings page
-  const isMobile = useIsMobile();
-  const paddingTop = paddingTopProp ?? (isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP);
+  const pagePaddingTop = usePagePaddingTop(PAGE_PADDING_TOP);
   const canHover = useCanHover();
   const ctaButton = (
     <Button
@@ -78,7 +75,7 @@ export function EntityPageHeader({
       align={{ initial: 'start', md: 'end' }}
       gap="3"
       style={{
-        paddingTop,
+        paddingTop: paddingTop ?? pagePaddingTop,
         paddingBottom: 'var(--space-4)',
       }}
     >

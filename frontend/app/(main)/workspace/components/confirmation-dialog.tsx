@@ -2,8 +2,10 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertDialog, Box, Button, Flex } from '@radix-ui/themes';
+import { AlertDialog, Box, Button, Flex, Text } from '@radix-ui/themes';
+import { AlertDialog as AlertDialogPrimitive } from 'radix-ui';
 import { LoadingButton } from '@/app/components/ui/loading-button';
+import { useFocusReturn } from '@/lib/hooks/use-focus-return';
 
 // ========================================
 // Types
@@ -47,7 +49,25 @@ export interface ConfirmationDialogProps {
    * {@link WorkspaceRightPanel} (z-index ~9201); otherwise omit for default body portal.
    */
   container?: HTMLElement | null;
+
+  /**
+   * `compact` is the short "are you sure?" confirm: 380px wide, a 16px title
+   * and one line or two of consequence. `default` keeps the wider dialog.
+   */
+  size?: 'default' | 'compact';
+
+  /**
+   * When true, closing returns focus to the element that opened the dialog,
+   * or to its menu's trigger when it was opened from a menu item.
+   */
+  returnFocus?: boolean;
+
+  /** With `returnFocus`: where focus goes when the opener is gone. */
+  returnFocusFallback?: () => HTMLElement | null;
 }
+
+// 380px: the width of the short confirm.
+const COMPACT_MAX_WIDTH = 'calc(var(--space-9) * 6 - var(--space-1))';
 
 // ========================================
 // Component
@@ -73,33 +93,44 @@ export function ConfirmationDialog({
   hideConfirm = false,
   onConfirm,
   container,
+  size = 'default',
+  returnFocus = false,
+  returnFocusFallback,
 }: ConfirmationDialogProps) {
   const { t } = useTranslation();
   const resolvedCancelLabel = cancelLabel ?? t('common.cancel');
   const resolvedConfirmLoadingLabel = confirmLoadingLabel ?? t('common.confirm');
+  const focusReturn = useFocusReturn({ fallback: returnFocusFallback });
+  const compact = size === 'compact';
   return (
     <AlertDialog.Root open={open} onOpenChange={(v) => !isLoading && onOpenChange(v)}>
       <AlertDialog.Content
         container={container ?? undefined}
+        {...(returnFocus ? focusReturn : {})}
         style={{
-          maxWidth: '37.5rem',
+          maxWidth: compact ? COMPACT_MAX_WIDTH : '37.5rem',
           padding: 'var(--space-5)',
           borderRadius: 'var(--radius-5)',
-          border: '1px solid var(--olive-a3)',
-          boxShadow:
-            '0 16px 36px -20px rgba(0, 6, 46, 0.2), 0 16px 64px rgba(0, 0, 85, 0.02), 0 12px 60px rgba(0, 0, 0, 0.15)',
+          border: '1px solid var(--border-subtle)',
+          boxShadow: 'var(--shadow-6)',
         }}
       >
-        <AlertDialog.Title style={{ color: 'var(--slate-12)' }}>{title}</AlertDialog.Title>
-        {typeof message === 'string' ? (
-          <AlertDialog.Description
-            size="2"
-            style={{ color: 'var(--slate-12)', lineHeight: '20px', marginTop: 8 }}
-          >
-            {message}
-          </AlertDialog.Description>
+        {compact ? (
+          <CompactHeader title={title} message={message} />
         ) : (
-          <Box style={{ marginTop: 8, color: 'var(--slate-12)', lineHeight: '20px' }}>{message}</Box>
+          <>
+            <AlertDialog.Title style={{ color: 'var(--text-primary)' }}>{title}</AlertDialog.Title>
+            {typeof message === 'string' ? (
+              <AlertDialog.Description
+                size="2"
+                style={{ color: 'var(--text-secondary)', lineHeight: 'var(--line-height-2)', marginTop: 'var(--space-2)' }}
+              >
+                {message}
+              </AlertDialog.Description>
+            ) : (
+              <Box style={{ marginTop: 'var(--space-2)', color: 'var(--text-secondary)', lineHeight: 'var(--line-height-2)' }}>{message}</Box>
+            )}
+          </>
         )}
         <Flex justify="end" gap="2" mt="4">
           <AlertDialog.Cancel>
@@ -118,13 +149,9 @@ export function ConfirmationDialog({
             <LoadingButton
               type="button"
               variant="solid"
-              color={
-                confirmVariant === 'danger'
-                  ? 'red'
-                  : confirmVariant === 'success'
-                    ? 'green'
-                    : undefined
-              }
+              // 'success' keeps its name for callers but draws the brand accent:
+              // one green for every confirm.
+              color={confirmVariant === 'danger' ? 'red' : undefined}
               size="2"
               onClick={(e) => {
                 e.preventDefault();
@@ -139,5 +166,34 @@ export function ConfirmationDialog({
         </Flex>
       </AlertDialog.Content>
     </AlertDialog.Root>
+  );
+}
+
+/**
+ * The compact title and message: a 16px medium title with the message right
+ * under it. The message is always the dialog's description, so screen
+ * readers read it with the title, whether it is plain text or markup.
+ */
+function CompactHeader({ title, message }: { title: string; message: React.ReactNode }) {
+  const messageStyle: React.CSSProperties = {
+    marginTop: 0,
+    color: 'var(--text-secondary)',
+    lineHeight: 'var(--line-height-2)',
+  };
+  return (
+    <>
+      <AlertDialog.Title>
+        <Text size="3" weight="medium" style={{ color: 'var(--text-primary)' }}>
+          {title}
+        </Text>
+      </AlertDialog.Title>
+      {/* The primitive's Description, so markup can sit in a div (a paragraph
+          cannot hold block content) and still describe the dialog. */}
+      <AlertDialogPrimitive.Description asChild>
+        <Text as={typeof message === 'string' ? 'p' : 'div'} size="2" style={messageStyle}>
+          {message}
+        </Text>
+      </AlertDialogPrimitive.Description>
+    </>
   );
 }

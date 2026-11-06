@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildMessagePairs } from '../message-pairs';
+import { buildMessagePairs, keepUnchangedPairs, retryTurnMessage } from '../message-pairs';
 import type { CitationMaps } from '../response-tabs/citations';
 
 const EMPTY_CITATION_MAPS = {
@@ -28,6 +28,48 @@ const assistant = (id: string, text: string) => ({
   role: 'assistant',
   content: [{ type: 'text', text }],
   metadata: { custom: { messageId: id } },
+});
+
+describe('buildMessagePairs: an answer still running on the server after a reload (DF-146)', () => {
+  const reloaded = [user('u1', 'First question'), assistant('a1', 'First answer.'), user('u2', 'Asked just before the reload')];
+
+  it('shows the newest question as a live answer, not a bare question', () => {
+    const pairs = buildMessagePairs(reloaded, { ...OPTIONS, remoteRunInProgress: true });
+
+    expect(pairs).toHaveLength(2);
+    expect(pairs[1].question).toBe('Asked just before the reload');
+    expect(pairs[1].isStreaming).toBe(true);
+    expect(pairs[1].unanswered).toBe(false);
+    expect(pairs[0].isStreaming).toBe(false);
+    // Joined part-way: its trail shows no elapsed time this page did not see.
+    expect(pairs[1].resumed).toBe(true);
+    expect(pairs[0].resumed).toBeUndefined();
+  });
+
+  it('leaves a settled thread as it was', () => {
+    const pairs = buildMessagePairs(reloaded, { ...OPTIONS, remoteRunInProgress: false });
+
+    expect(pairs[1].isStreaming).toBe(false);
+    expect(pairs[1].unanswered).toBe(true);
+    expect(pairs[1].resumed).toBeUndefined();
+  });
+
+  it('does not mark an older question that has no answer', () => {
+    const pairs = buildMessagePairs(
+      [user('u1', 'Old and unanswered'), user('u2', 'Newest')],
+      { ...OPTIONS, remoteRunInProgress: true },
+    );
+
+    expect(pairs[0].isStreaming).toBe(false);
+    expect(pairs[0].unanswered).toBe(true);
+    expect(pairs[1].isStreaming).toBe(true);
+  });
+
+  it('keeps a stream this tab holds in charge of the live state', () => {
+    const pairs = buildMessagePairs(reloaded, { ...OPTIONS, isStreaming: true, remoteRunInProgress: true });
+
+    expect(pairs[1].unanswered).toBe(true);
+  });
 });
 
 describe('buildMessagePairs', () => {
@@ -136,5 +178,62 @@ describe('buildMessagePairs', () => {
     );
 
     expect(pairs.map((p) => p.searchDegraded)).toEqual([true, false]);
+  });
+});
+
+describe('keepUnchangedPairs', () => {
+  it('keeps the previous object for a row whose fields did not change', () => {
+    const messages = [user('u1', 'Q1'), assistant('a1', 'A1'), user('u2', 'Q2'), assistant('a2', 'A2')];
+    const first = buildMessagePairs(messages, OPTIONS);
+    const previous = new Map(first.map((p) => [p.key, p]));
+
+    const next = keepUnchangedPairs(
+      previous,
+      buildMessagePairs([...messages.slice(0, 3), assistant('a2', 'A2, edited')], OPTIONS),
+    );
+
+    expect(next[0]).toBe(first[0]);
+    expect(next[1]).not.toBe(first[1]);
+    expect(next[1].answer).toBe('A2, edited');
+  });
+});
+
+describe('retryTurnMessage', () => {
+  const attachment = {
+    recordId: 'r1',
+    recordName: 'plan.pdf',
+    mimeType: 'application/pdf',
+    extension: 'pdf',
+    virtualRecordId: 'v1',
+  };
+
+  it('resends the text with its attachments and collections', () => {
+    const collections = [{ id: 'kb-1', name: 'Policies', kind: 'recordGroup' as const }];
+    expect(retryTurnMessage({ question: 'Summarise', attachments: [attachment], collections })).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: 'Summarise' }],
+      metadata: { custom: { collections, attachments: [attachment] } },
+      startRun: true,
+    });
+  });
+
+  it('keeps an attachment-only turn sendable', () => {
+    const message = retryTurnMessage({ question: '', attachments: [attachment] });
+    expect(message.metadata.custom.attachments).toEqual([attachment]);
+    expect(message.metadata.custom.collections).toBeUndefined();
+  });
+
+  it('rebuilds collections from the filters a reloaded turn was answered with', () => {
+    const message = retryTurnMessage({
+      question: 'Q',
+      appliedFilters: {
+        apps: [{ id: 'app-1', name: 'Drive', nodeType: 'app', connector: 'DRIVE' }],
+        kb: [{ id: 'kb-1', name: 'Policies', nodeType: 'kb', connector: 'KB' }],
+      },
+    });
+    expect(message.metadata.custom.collections).toEqual([
+      { id: 'app-1', name: 'Drive', kind: 'collectionRoot' },
+      { id: 'kb-1', name: 'Policies', kind: 'recordGroup' },
+    ]);
   });
 });

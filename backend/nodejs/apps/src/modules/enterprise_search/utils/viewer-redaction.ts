@@ -32,14 +32,23 @@ export const viewerOf = (userId: unknown, orgId: unknown): Viewer => ({
 export interface Readable {
   ids: Set<string>;
   urls: Set<string>;
+  /** Each readable id's current name. */
+  names: Map<string, string>;
 }
 
 const isStringList = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((v) => typeof v === 'string');
 
+const isNameMap = (value: unknown): value is Record<string, string> =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.values(value).every((v) => typeof v === 'string');
+
 /**
- * Record ids and record addresses the viewer may read,
- * from the query service's `check_access`. Fails closed: an error means none.
+ * Which of these nodes (records, folders, record groups, apps) and record addresses the viewer may open, each readable
+ * id with its current name, from the query service's `check_access`: one query per 500 ids. Fails closed: an error
+ * means none.
  */
 export const readableRecordIds = async (
   appConfig: AppConfig,
@@ -49,7 +58,11 @@ export const readableRecordIds = async (
 ): Promise<Readable> => {
   const ids = [...new Set(recordIds.filter(Boolean))];
   const urls = [...new Set(webUrls.filter(Boolean))];
-  const readable: Readable = { ids: new Set(), urls: new Set() };
+  const readable: Readable = {
+    ids: new Set(),
+    urls: new Set(),
+    names: new Map(),
+  };
   if (ids.length === 0 && urls.length === 0) return readable;
   try {
     const token = new AuthTokenService(
@@ -71,6 +84,7 @@ export const readableRecordIds = async (
       const response = await new AIServiceCommand<{
         accessible?: string[];
         accessibleUrls?: string[];
+        names?: Record<string, string>;
       }>({
         uri: `${appConfig.aiBackend}/api/v1/chat/records/access`,
         method: HttpMethod.POST,
@@ -91,11 +105,22 @@ export const readableRecordIds = async (
       }
       const accessible: unknown = response.data?.accessible ?? [];
       const accessibleUrls: unknown = response.data?.accessibleUrls ?? [];
+      const names: unknown = response.data?.names ?? {};
       // Only lists of strings: a string is read per character, String(['id']) is 'id'.
-      if (!isStringList(accessible) || !isStringList(accessibleUrls)) {
+      if (
+        !isStringList(accessible) ||
+        !isStringList(accessibleUrls) ||
+        !isNameMap(names)
+      ) {
         throw new Error('record access returned a malformed body');
       }
-      for (const id of accessible) readable.ids.add(id);
+      for (const id of accessible) {
+        readable.ids.add(id);
+        const name = Object.prototype.hasOwnProperty.call(names, id)
+          ? names[id]
+          : undefined;
+        if (name !== undefined) readable.names.set(id, name);
+      }
       for (const u of accessibleUrls) readable.urls.add(u);
     }
     return readable;
@@ -103,7 +128,7 @@ export const readableRecordIds = async (
     logger.error('Viewer access check failed; redacting every source', {
       error: error instanceof Error ? error.message : String(error),
     });
-    return { ids: new Set(), urls: new Set() };
+    return { ids: new Set(), urls: new Set(), names: new Map() };
   }
 };
 

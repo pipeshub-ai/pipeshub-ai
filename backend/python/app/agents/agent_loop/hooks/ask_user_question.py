@@ -71,7 +71,10 @@ def _limit_reason(context: AgentContext, tool_input: dict[str, Any]) -> str | No
     # its card belongs to.
     if not context.tool_state.get("ask_user_question_resume"):
         return None
-    history = context.previous_conversations
+    from app.modules.agents.chat_extension import get_chat_extension
+
+    # In a shared chat only the cards put to the sender belong to their request.
+    history = get_chat_extension().sender_history(context)
     shown = cards_in_request(history)
     if shown >= MAX_CARDS_PER_REQUEST:
         return _LIMIT_REASON.format(count=shown)
@@ -175,14 +178,23 @@ _OPEN_HELP = re.compile(
     re.IGNORECASE,
 )
 # A closing sentence that asks the user for input without a question mark: "Please tell me which
-# file", "share its title", "upload or paste it". The nudge lets the model keep a text reply when a
-# card cannot help, as for a file only the user has.
+# file", "share its title".
 _INPUT_REQUEST = re.compile(
     r"\b(?:tell me|let me know) (?:which|what|who|where|when|whether)\b"
-    r"|\b(?:please|kindly|could you|can you|would you)\b[^.!?]*\b(?:specify|clarify|confirm|choose|pick|select|upload|paste|attach)\b"
+    r"|\b(?:please|kindly|could you|can you|would you)\b[^.!?]*\b(?:specify|clarify|confirm|choose|pick|select)\b"
     r"|\b(?:share|provide|give|send)\b[^.!?]*\b(?:title|name|link)s?\b",
     re.IGNORECASE,
 )
+# A card cannot take a file, so a reply that asks the user to upload, attach or paste one stays text.
+_FILE_REQUEST = re.compile(r"\b(?:re-?)?(?:upload(?:ing)?|attach(?:ing)?|past(?:e|ing))\b", re.IGNORECASE)
+# The agent's own step is a choice a card can carry: "Should I attach it to the ticket or the email?"
+_AGENT_STEP = re.compile(r"\b(?:i|me|we|us)(?:['’]\w+)?(?:\s+(?!you\b)[\w'’-]+){0,2}\s+$", re.IGNORECASE)
+
+
+def _asks_for_a_file(text: str) -> bool:
+    """Whether `text` asks the user to upload, attach or paste something, which a card cannot take."""
+    return any(not _AGENT_STEP.search(text[: match.start()]) for match in _FILE_REQUEST.finditer(text))
+
 # A follow-up offer after a finished answer: like a chat app, it stays in the text.
 _OFFER = re.compile(
     r"^(?:would you like|do you want|want me to|shall i|should i|can i|may i|if you(?:'d| would)? like"
@@ -200,11 +212,15 @@ def asks_user_in_text(text: str) -> bool:
     """Whether a final reply, in the end, asks the user for input that a card should carry: it
     closes on a question (perhaps followed by the choices it offers), or a short reply closes on a
     request such as "Please tell me which file", and that is the point of the reply, not an
-    optional offer after a finished answer.
+    optional offer after a finished answer. A reply that asks the user for a file anywhere is left
+    as text, even beside a question a card could carry: the card would drop the file request.
     shortcut: a long answer that closes on a question it needs answered (no choice list) is not
-    caught; the tool description covers that case. The offer and open-help phrases are English, so
-    in other languages a short greeting that ends on a question costs one extra turn."""
+    caught; the tool description covers that case. The offer, open-help and file phrases are
+    English, so in other languages a short greeting that ends on a question costs one extra turn,
+    and a question asking for an upload still becomes a card."""
     answer, _confidence = parse_confidence_from_answer(text or "")
+    if _asks_for_a_file(answer):
+        return False
     lines = [line.strip() for line in answer.strip().splitlines() if line.strip()]
     end = len(lines) - 1
     while end >= 0 and _LIST_ITEM.match(lines[end]) and not _QUESTION_END.search(lines[end]):
@@ -242,7 +258,8 @@ def _can_show_card(context: AgentContext, run: "RunScope") -> bool:
 def ask_in_text_recovery(context: AgentContext) -> "Middleware[ModelResponseContext]":
     """POST_MODEL: a reply that asks the user in its text while it could show a card is re-prompted
     once to ask with the tool, or to answer without the question. Same `recovery_message` veto
-    `refusal_recovery` uses: the next turn's text, or its card, replaces the reply."""
+    `refusal_recovery` uses: the next turn's text, or its card, replaces the reply, so the reply's
+    streamed text is taken back (`discard_text`) instead of staying on screen as narration."""
 
     async def _middleware(ctx: "ModelResponseContext", next_fn: "Next") -> None:
         await next_fn()
@@ -266,6 +283,7 @@ def ask_in_text_recovery(context: AgentContext) -> "Middleware[ModelResponseCont
             ctx.turn_index,
         )
         ctx.recovery_message = UserMessage(content=_ASK_IN_TEXT_NUDGE, injected=True)
+        ctx.discard_text = True
 
     return _middleware
 

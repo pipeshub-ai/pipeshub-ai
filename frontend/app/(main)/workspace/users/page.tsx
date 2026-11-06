@@ -27,11 +27,10 @@ import type { BulkAction } from '../components';
 import type { ColumnConfig } from '../components';
 import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
-import { isProcessedError } from '@/lib/api';
-import { USER_ROLES, INVITE_ROLE_OPTIONS, isMaxOrgAdminsErrorMessage, userRoleLabel } from '../constants';
+import { USER_ROLES, INVITE_ROLE_OPTIONS, userRoleLabel } from '../constants';
 import { useUsersStore } from './store';
 import { UsersApi } from './api';
-import { ProfileApi } from '../profile/api';
+import { useChangeRole } from './use-change-role';
 import { SmtpApi } from '../mail/api';
 import type { User } from './types';
 import { dateFilterToRange } from './date-filter';
@@ -741,64 +740,7 @@ function UsersPageContent() {
     unblockTarget?.name?.trim() || unblockTarget?.email || '';
 
   // ── Change Role handler ──
-  const handleChangeRole = useCallback(
-    async (user: User, newRole: string) => {
-      const currentRole = user.role || 'Member';
-      if (newRole === currentRole) return;
-
-      try {
-        await ProfileApi.updateUser(
-          user.userId,
-          {
-            role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
-          },
-          { suppressErrorToast: true },
-        );
-
-        addToast({
-          variant: 'success',
-          title: t('workspace.users.actions.changeRoleSuccess', 'Role updated'),
-          description: t(
-            'workspace.users.actions.changeRoleSuccessDescription',
-            {
-              name: user.name || user.email,
-              role: newRole,
-              defaultValue: `${user.name || user.email} is now ${newRole}`,
-            }
-          ),
-          duration: 3000,
-        });
-
-        // Refresh users list to reflect the change
-        fetchUsers();
-      } catch (err: unknown) {
-        const apiMessage = isProcessedError(err) ? err.message : undefined;
-        if (isMaxOrgAdminsErrorMessage(apiMessage)) {
-          addToast({
-            variant: 'error',
-            title: t(
-              'workspace.users.actions.maxAdminsReachedTitle',
-              'Cannot add another admin'
-            ),
-            description: t(
-              'workspace.users.actions.maxAdminsReached',
-              'An organization can have at most 5 admins.'
-            ),
-            duration: 5000,
-          });
-        } else {
-          addToast({
-            variant: 'error',
-            title: t('workspace.users.actions.changeRoleError', 'Failed to change role'),
-            ...(apiMessage ? { description: apiMessage } : {}),
-            duration: 5000,
-          });
-        }
-        throw err;
-      }
-    },
-    [addToast, t, fetchUsers]
-  );
+  const handleChangeRole = useChangeRole({ addToast, t, onChanged: fetchUsers });
 
   const requestChangeRole = useCallback((user: User, newRole: string) => {
     const currentRole = user.role || 'Member';

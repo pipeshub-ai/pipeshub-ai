@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.context import CancellationToken
 from app.agents.actions.knowledge_graph.ops.scope import ATTACHMENT_RECORD_IDS_KEY
+from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.answer_rules import (
     READ_RECORDS_IN_FULL_STATE_KEY,
     answer_composition_rules_enabled,
@@ -97,7 +98,12 @@ from app.modules.retrieval.selection_scope import (
 )
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
-from app.utils.conversation_tasks import begin_run, discard_tasks
+from app.utils.conversation_tasks import (
+    begin_run,
+    cancel_run_tasks,
+    discard_tasks,
+    set_task_run,
+)
 from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
@@ -445,6 +451,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     user_id=user_info.get("userId") or "",
                     graph_provider=graph_provider,
                     is_service_account=bool(user_info.get("isServiceAccount")),
+                    conversation_id=query_info.get("conversationId"),
+                    acl_version=query_info.get("aclVersion"),
                 ),
                 # Pre-fetch user-visible connectors so the catalog
                 # (ConnectorCatalog.build) and capability_summary can use them
@@ -537,11 +545,13 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
+    chat_state["run_id"] = run_id
     context = AgentContext.from_chat_state(
         chat_state, event_sink=event_sink, protocol=protocol,
         llm_provider=llm_provider, context_length=context_length,
         configured_context_window=configured_context_window,
         run_id=run_id, cancellation_token=cancellation_token,
+        invocation="assistant",
     )
 
     async def _produce() -> None:
@@ -550,6 +560,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
         begin_run()
+        # Background tasks the run's tools start reach only this run's answer.
+        set_task_run(run_id)
         agent: Any = None
         try:
             factory = PipesHubAgentFactory()
@@ -727,6 +739,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 async for event in agent.stream(goal):
                     await streamer.on_event(event)
                 result = agent.last_stream_result
+                # A run that stopped for the person keeps its turn for the answer to carry on from.
+                if result.needs_input:
+                    await parked_turn.keep_question(context, agent)
 
                 await emit_run_usage(context, agent, result, model=model_name or None)
 
@@ -742,6 +757,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     # rather than live-checking `cancellation_token.
                     # is_cancelled` here.
                     agent_cancelled=result.cancelled,
+                    # A question card is the turn's output: it is waiting, not empty.
+                    agent_needs_input=result.needs_input,
                 )
         except Exception as exc:
             log.error("run_chat_stream: run failed: %s", exc, exc_info=True)
@@ -758,6 +775,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
+            if context.conversation_id:
+                cancel_run_tasks(context.conversation_id)
             if context.sandbox_manager is not None:
                 try:
                     await context.sandbox_manager.destroy_all()

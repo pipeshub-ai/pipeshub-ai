@@ -147,6 +147,8 @@ async def resolve_attachments_for_goal(
             is_service_account=context.is_service_account,
             render_budget=RenderBudget(max_chars=max(max_chars, 0)),
             outcomes=outcomes,
+            conversation_id=context.conversation_id,
+            acl_version=context.acl_version,
         )
     except Exception as exc:
         log.warning("Failed to resolve attachments: %s", exc)
@@ -333,6 +335,8 @@ async def _rehydrate_citation_maps(
             virtual_record_id=vrid,
             logger=logger,
             is_service_account=context.is_service_account,
+            conversation_id=context.conversation_id,
+            acl_version=context.acl_version,
         ):
             continue
         try:
@@ -430,6 +434,8 @@ async def resolve_history_attachments(
     is_service_account: bool = False,
     render_budget: "RenderBudget | None" = None,
     outcomes: "list[RecordRenderOutcome] | None" = None,
+    conversation_id: str | None = None,
+    acl_version: int | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Resolve document and image attachments from blob for a historical turn.
 
@@ -505,6 +511,8 @@ async def resolve_history_attachments(
             virtual_record_id=vrid,
             logger=logger,
             is_service_account=is_service_account,
+            conversation_id=conversation_id,
+            acl_version=acl_version,
         ):
             continue
 

@@ -5,7 +5,8 @@ import { Theme } from '@radix-ui/themes';
 
 const h = vi.hoisted(() => ({
   push: vi.fn(),
-  bump: vi.fn(),
+  insert: vi.fn(),
+  bumpProjects: vi.fn(),
   forkConversation: vi.fn(),
   forkAgentConversation: vi.fn(),
   toastSuccess: vi.fn(),
@@ -32,7 +33,9 @@ vi.mock('../../../store', () => {
   const state = () => ({
     activeSlotId: 's1',
     slots: { s1: h.slot },
-    bumpConversationsVersion: h.bump,
+    agentConversationsAgentId: 'agent-7',
+    insertConversationRow: h.insert,
+    bumpProjectsVersion: h.bumpProjects,
   });
   const useChatStore = Object.assign((selector: (s: ReturnType<typeof state>) => unknown) => selector(state()), {
     getState: state,
@@ -97,7 +100,8 @@ describe('fork button on a message', () => {
 
     await waitFor(() => expect(h.push).toHaveBeenCalledWith('/chat/?conversationId=fork-9'));
     expect(h.forkConversation).toHaveBeenCalledWith('conv-1', 'msg-2');
-    expect(h.bump).toHaveBeenCalled();
+    // The new chat is listed in Your chats at once, with no reload of the rail.
+    expect(h.insert).toHaveBeenCalledWith(expect.objectContaining({ id: 'fork-9', title: 'Fork of A', isOwner: true }), 'conversations');
     expect(h.toastSuccess).toHaveBeenCalledWith('chat.toasts.forkSuccess');
   });
 
@@ -111,6 +115,8 @@ describe('fork button on a message', () => {
     await waitFor(() => expect(h.push).toHaveBeenCalledWith('/chat/?agentId=agent-7&conversationId=fork-3'));
     expect(h.forkAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1', 'msg-4');
     expect(h.forkConversation).not.toHaveBeenCalled();
+    // Listed with that agent's chats, not in Your chats.
+    expect(h.insert).toHaveBeenCalledWith(expect.objectContaining({ id: 'fork-3' }), 'agentConversations');
   });
 
   it('opens the fork inside the project the server kept it in', async () => {
@@ -121,6 +127,8 @@ describe('fork button on a message', () => {
     fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
 
     await waitFor(() => expect(h.push).toHaveBeenCalledWith('/chat/?projectId=proj-1&conversationId=fork-5'));
+    // Its project's own rail lists it.
+    expect(h.bumpProjects).toHaveBeenCalled();
   });
 
   it('does not bring back a project the server dropped from the fork', async () => {
@@ -142,6 +150,6 @@ describe('fork button on a message', () => {
 
     await waitFor(() => expect(h.toastError).toHaveBeenCalledWith('chat.toasts.forkError'));
     expect(h.push).not.toHaveBeenCalled();
-    expect(h.bump).not.toHaveBeenCalled();
+    expect(h.insert).not.toHaveBeenCalled();
   });
 });

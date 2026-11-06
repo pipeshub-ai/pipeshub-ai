@@ -4,6 +4,9 @@ import sinon from 'sinon'
 import { Container } from 'inversify'
 import { createConversationalRouter, createSemanticSearchRouter, createAgentConversationalRouter } from '../../../../src/modules/enterprise_search/routes/es.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
+import { turnDeps } from '../helpers/turn-deps'
+import { markingGuards } from '../helpers/guarded-chat'
+import { CONVERSATION_TYPES } from '../../../../src/modules/enterprise_search/services/conversation/conversation.types'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { Logger } from '../../../../src/libs/services/logger.service'
 
@@ -32,10 +35,20 @@ describe('Enterprise Search Routes', () => {
 
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
+    container.bind(CONVERSATION_TYPES.ConversationGuards).toConstantValue(markingGuards())
+    container.bind(CONVERSATION_TYPES.ConversationTurnDeps).toConstantValue(turnDeps())
   })
 
   afterEach(() => {
     sinon.restore()
+  })
+
+  it('both conversation routers refuse to build without the guards binding', () => {
+    const bare = new Container()
+    bare.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
+    bare.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
+    expect(() => createConversationalRouter(bare)).to.throw()
+    expect(() => createAgentConversationalRouter(bare)).to.throw()
   })
 
   it('should return a valid Express router', () => {
@@ -292,9 +305,9 @@ describe('Enterprise Search Routes', () => {
       expect(route, 'route is registered').to.exist
       expect(route.methods.get, 'not readable').to.equal(undefined)
       expect(route.methods.post, 'not a POST').to.equal(undefined)
-      // authenticate + scope check + param validation + handler: dropping one must fail here.
+      // authenticate + scope check + param validation + guard + handler: dropping one must fail here.
       expect(route.stack.length).to.equal(archive.stack.length)
-      expect(route.stack.length).to.equal(4)
+      expect(route.stack.length).to.equal(5)
     })
   }
 
@@ -413,7 +426,8 @@ describe('Enterprise Search Routes', () => {
     )
 
     expect(layer).to.exist
-    expect(layer.route.stack.length).to.equal(4)
+    // authenticate, requireScopes, validate, guard, handler
+    expect(layer.route.stack.length).to.equal(5)
   })
 
   it('should register internal agent stream route', () => {
@@ -728,11 +742,12 @@ describe('Enterprise Search Routes', () => {
         .filter((layer: any) => layer.route)
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods, stack: layer.route.stack }))
 
-      // authenticate, requireScopes, [create: rejectClientConversationHistory], validate, handler
-      for (const [path, layers] of [['/:agentKey/conversations', 5], ['/:agentKey/conversations/:conversationId/messages', 4]] as const) {
+      // authenticate, requireScopes, validate, guard, handler; a create also runs rejectClientConversationHistory
+      // before its validator, and a follow-up runs runLease() after its guard
+      for (const [path, length] of [['/:agentKey/conversations', 6], ['/:agentKey/conversations/:conversationId/messages', 6]] as const) {
         const nonStreaming = routes.find((r: any) => r.path === path && r.methods.post)
         const streaming = routes.find((r: any) => r.path === `${path}/stream` && r.methods.post)
-        expect(nonStreaming?.stack.length, path).to.equal(layers)
+        expect(nonStreaming?.stack.length, path).to.equal(length)
         expect(nonStreaming?.stack.length).to.equal(streaming?.stack.length)
       }
     })
@@ -802,6 +817,8 @@ describe('Enterprise Search Routes - handler coverage', () => {
 
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
+    container.bind(CONVERSATION_TYPES.ConversationGuards).toConstantValue(markingGuards())
+    container.bind(CONVERSATION_TYPES.ConversationTurnDeps).toConstantValue(turnDeps())
   })
 
   afterEach(() => {

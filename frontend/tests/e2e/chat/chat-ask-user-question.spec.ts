@@ -21,12 +21,13 @@
  *       a second stream fires to the existing agent conversation endpoint
  *       with the formatted answer as the query (agent context) but no new
  *       user bubble — the follow-up answer streams on the same assistant row
- *  6. Card collapses into the 'submitted' read-only view ("Question :", "Show more")
+ *  6. Card collapses into the 'submitted' read-only view ("Question", "Show more"); a reply whose
+ *     steps carry the question call draws it as a row of the trail instead
  *
  * ── i18n key → English string map (from en-US.json) ─────────────────────
  *   askUserQuestion.quickQuestionSingular  → "Quick question :"
  *   askUserQuestion.quickQuestionPlural    → "Quick questions :"
- *   askUserQuestion.questionsHeadingSingular → "Question :"
+ *   askUserQuestion.questionsHeadingSingular → "Question"
  *   askUserQuestion.submit                 → "Submit"
  *   askUserQuestion.skip                   → "Skip"
  *   askUserQuestion.next                   → "Next"
@@ -441,7 +442,7 @@ test.describe('Ask User Question — single-select card', () => {
     // The submitted card renders synchronously when Submit is clicked
     // (before the delayed follow-up stream resolves).
     await expect(
-      page.getByText(/Question\s*:/).first(),
+      page.getByText('Question', { exact: true }).first(),
     ).toBeVisible({ timeout: 4_000 });
 
     // Clean up in-flight routes before the test tears down.
@@ -469,7 +470,7 @@ test.describe('Ask User Question — single-select card', () => {
     await page.locator('button').filter({ hasText: /^Submit$/ }).first().click();
 
     // Wait for the submitted card heading — real regex literal, no string escaping.
-    await page.getByText(/Question\s*:/).first().waitFor({ timeout: 4_000 });
+    await page.getByText('Question', { exact: true }).first().waitFor({ timeout: 4_000 });
 
     // Click "Show more" to expand the answers summary
     const showMoreBtn = page.locator('button').filter({ hasText: /show more/i }).first();

@@ -88,5 +88,8 @@ export const DELEGATION_AVAILABLE = false;
 export { OAuthAppsContainer } from './modules/oauth_apps/container/oauth_apps.container';
 export { createOAuthAppsRouter } from './modules/oauth_apps/routes/oauth_apps.routes';
 
+// --- Conversation edition (guards, turn extensions and extra routes) ---
+export { defaultConversationEdition as conversationEdition } from './modules/enterprise_search/services/conversation/conversation-edition';
+
 // --- Edition boot hooks ---
 export { noopEditionBoot as editionBoot } from './libs/edition/edition-boot';

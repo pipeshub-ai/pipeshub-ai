@@ -7,9 +7,12 @@ completion_data shape and the empty-answer / agent-failure fallback paths."""
 
 from __future__ import annotations
 
+import asyncio
+
 from app.agents.agent_loop.error_classification import _USER_MESSAGES
 from app.agents.agent_loop.hooks.citations import CitationCollector
 from app.agents.agent_loop.respond import AnswerFinalizer
+from app.utils.conversation_tasks import pop_tasks, register_task
 from tests.unit.agents.adapter.conftest import make_context
 
 
@@ -34,7 +37,7 @@ class TestErrorPath:
         assert result["answerMatchType"] == "Error"
         assert result["errorCode"] == "unknown"
         event_types = [e["event"] for e in sink.events]
-        assert event_types == ["answer_chunk", "complete"]
+        assert event_types == ["complete"]
         assert context.tool_state["response"] == result["answer"]
 
     async def test_agent_failure_with_no_error_message_uses_generic_text(self) -> None:
@@ -101,7 +104,7 @@ class TestModelCallFailure:
         assert result["errorCode"] == "unknown"
         assert result["answer"] != _USER_MESSAGES["unknown"]
         assert "AI model" in result["answer"]
-        assert [e["event"] for e in sink.events] == ["answer_chunk", "complete"]
+        assert [e["event"] for e in sink.events] == ["complete"]
         context.logger.error.assert_called_once()
         logged = context.logger.error.call_args.args
         assert "unknown" in logged
@@ -262,6 +265,25 @@ class TestSuccessPath:
         assert result["status"] == "waiting_input"
         assert "I wasn't able" not in (result.get("answer") or "")
         assert all(e["event"] != "answer_chunk" or not (e.get("data") or {}).get("accumulated") for e in sink.events)
+
+    async def test_needs_input_delivers_the_files_the_run_made(self) -> None:
+        """Left behind, they would land in the next answer in this chat."""
+        async def _file() -> dict:
+            return {"type": "artifacts", "artifacts": [{"fileName": "report.csv", "mimeType": "text/csv", "recordId": "rec-1"}]}
+
+        context = make_context(conversation_id="conv-1")
+        register_task("conv-1", asyncio.create_task(_file()))
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+
+        result = await finalizer.run(
+            agent_success=True, agent_error=None, agent_output="", event_sink=_RecordingSink(),
+            agent_needs_input="Waiting for user answers",
+        )
+
+        assert result["status"] == "waiting_input"
+        assert "::artifact[report.csv](record:rec-1)" in result["answer"]
+        assert context.tool_state["response"] == result["answer"]
+        assert pop_tasks("conv-1") == []
 
     async def test_empty_output_keeps_streamed_follow_up(self) -> None:
         context = make_context()
@@ -479,6 +501,26 @@ class TestAskUserQuestionFallback:
         assert not [e for e in sink.events if e["event"] == "ask_user_question"]
         assert result["answer"] == "Atlas ships on 15 December 2026."
         assert not context.tool_state.get("ask_user_question_emitted")
+
+
+class TestFailureAnswerIsNotStreamed:
+    """A failure's text is written for the person who asked (A2-22). Streamed as answer text it would reach the chat's
+    other readers, who get every frame of the transcript live, before the saved row is projected for them."""
+
+    async def test_a_refusal_mid_run_comes_whole_in_the_final_frame_and_never_as_text(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False, agent_error="Something failed inside the model call", agent_output=None,
+            event_sink=sink, streamed_answer="",
+        )
+
+        assert result["answerMatchType"] == "Error"
+        assert result["answer"]
+        assert [e["event"] for e in sink.events] == ["complete"]
+        assert sink.events[0]["data"]["answer"] == result["answer"]
 
 
 class TestCancelledPath:

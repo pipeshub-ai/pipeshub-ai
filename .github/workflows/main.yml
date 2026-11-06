@@ -60,6 +60,9 @@ jobs:
 
       # Fails only on ESLint errors this pull request adds; the ruff-lint-pr job explains why.
       - name: Lint backend (changed files)
+        # Type-aware ESLint on a few hundred files peaks near 3.6 GB, past Node's default heap.
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
         run: |
           MERGE_BASE=$(git merge-base origin/main HEAD)
           mapfile -d '' -t CHANGED_FILES < <(git diff --diff-filter=d --name-only -z "$MERGE_BASE" -- ':(glob)backend/nodejs/apps/src/**/*.ts' ':(glob)backend/nodejs/apps/tests/**/*.ts' || true)

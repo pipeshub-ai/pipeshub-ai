@@ -4,8 +4,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Dialog, Flex, IconButton, Spinner, Text, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { formatPasteCount } from '../utils/paste-attachment';
 
 const COPY_FEEDBACK_MS = 2000;
 
@@ -20,9 +20,9 @@ interface TextPreviewDialogProps {
 }
 
 /**
- * Read-only monospace viewer for a pasted-text (or uploaded .txt) attachment.
- * Used both pre-send (composer chip preview, with `onShowInTextField`) and
- * post-send (sent-message attachment chip, read-only).
+ * Read-only reader for a pasted-text (or uploaded .txt) attachment: the whole text, wrapped and monospaced,
+ * with copy and close. Used both pre-send (composer chip, with `onShowInTextField`) and post-send
+ * (sent-message attachment chip, read-only). Closing hands focus back to whatever opened it.
  */
 export function TextPreviewDialog({
   open,
@@ -38,6 +38,12 @@ export function TextPreviewDialog({
   const [loading, setLoading] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<boolean | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The element that had focus when the reader opened (its chip): focus goes back there on close.
+  const openerRef = useRef<HTMLElement | null>(null);
+  if (open && openerRef.current === null && typeof document !== 'undefined') {
+    const active = document.activeElement;
+    openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+  }
 
   useEffect(() => {
     // Closing while a load is in flight cancels it, so `loading` has to be
@@ -108,119 +114,149 @@ export function TextPreviewDialog({
     onOpenChange(false);
   }, [text, onShowInTextField, onOpenChange]);
 
-  const lines = text !== null ? text.split('\n') : [];
-  // frontend/CLAUDE.md: touch targets are at least 44px on mobile. Radix
-  // `size="1"` renders ~24px, which is fine for a pointer but not a finger.
+  const meta =
+    text !== null
+      ? t('chat.attachments.pasteMeta', {
+          defaultValue: '{{count}} lines · {{chars}} chars',
+          defaultValue_one: '{{count}} line · {{chars}} chars',
+          count: text.split('\n').length,
+          chars: formatPasteCount(text.length),
+        })
+      : '';
+  const copyLabel =
+    copyFeedback === true
+      ? t('chat.attachments.copied', { defaultValue: 'Copied' })
+      : t('chat.attachments.copyText', { defaultValue: 'Copy to clipboard' });
+  // frontend/CLAUDE.md: touch targets are at least 44px on mobile.
   const touchTarget = isMobile ? { minWidth: 44, minHeight: 44 } : null;
+  const headerButtonStyle = { margin: 0, ...touchTarget };
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      {open && (
-        <Box
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(28, 32, 36, 0.5)',
-            zIndex: 999,
-            cursor: 'pointer',
-          }}
-          onClick={() => onOpenChange(false)}
-        />
-      )}
-
       <Dialog.Content
-        aria-describedby={undefined}
+        onCloseAutoFocus={(event) => {
+          const opener = openerRef.current;
+          openerRef.current = null;
+          if (opener?.isConnected) {
+            event.preventDefault();
+            opener.focus();
+          }
+        }}
         style={{
-          maxWidth: '760px',
-          width: '92vw',
-          maxHeight: '80vh',
+          maxWidth: 'calc(var(--space-9) * 11 + var(--space-4))',
           padding: 0,
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
-          zIndex: 1000,
+          backgroundColor: 'var(--surface-raised)',
         }}
       >
-        <VisuallyHidden>
-          <Dialog.Title>{title}</Dialog.Title>
-        </VisuallyHidden>
-
-        {/* Header */}
+        {/* Header: the paste's name and size, then its actions. */}
         <Flex
           align="center"
           justify="between"
+          gap="2"
           style={{
-            padding: 'var(--space-3) var(--space-4)',
-            borderBottom: '1px solid var(--slate-6)',
+            padding: 'calc(var(--space-3) + var(--space-1) / 2) calc(var(--space-4) + var(--space-1) / 2)',
+            borderBottom: '1px solid var(--border-subtle)',
             flexShrink: 0,
           }}
         >
-          <Flex align="center" gap="2" style={{ overflow: 'hidden' }}>
-            <MaterialIcon name="content_paste" size={ICON_SIZES.PRIMARY} color="var(--slate-9)" />
-            <Text
-              size="2"
-              weight="medium"
+          <Flex direction="column" style={{ minWidth: 0 }}>
+            <Dialog.Title
+              size="3"
+              weight="bold"
+              mb="0"
+              // 16/24: the body line height, not the tighter heading one.
               style={{
-                color: 'var(--slate-11)',
+                color: 'var(--text-primary)',
+                lineHeight: 'var(--line-height-3)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
               }}
             >
               {title}
-            </Text>
+            </Dialog.Title>
+            <Dialog.Description size="1" style={{ color: 'var(--text-secondary)' }}>
+              {meta}
+            </Dialog.Description>
           </Flex>
 
-          <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+          <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
             {onShowInTextField && (
               <IconButton
-                size="1"
+                size="2"
                 variant="ghost"
                 color="gray"
-                title={t('chat.attachments.showInTextField', { defaultValue: 'Show in text field' })}
                 aria-label={t('chat.attachments.showInTextField', { defaultValue: 'Show in text field' })}
                 disabled={text === null}
-                style={{ cursor: text === null ? 'default' : 'pointer', ...touchTarget }}
+                style={headerButtonStyle}
                 onClick={handleShowInTextField}
               >
-                <MaterialIcon name="text_fields" size={ICON_SIZES.SECONDARY} />
+                <MaterialIcon name="text_fields" size={16} color={text === null ? undefined : 'var(--text-secondary)'} />
               </IconButton>
             )}
             <IconButton
-              size="1"
+              size="2"
               variant="ghost"
-              color={copyFeedback === true ? 'green' : copyFeedback === false ? 'red' : 'gray'}
-              title={t('chat.attachments.copyText', { defaultValue: 'Copy' })}
-              aria-label={t('chat.attachments.copyText', { defaultValue: 'Copy' })}
+              color="gray"
+              aria-label={copyLabel}
               disabled={text === null}
-              style={{ cursor: text === null ? 'default' : 'pointer', ...touchTarget }}
+              style={headerButtonStyle}
               onClick={handleCopy}
             >
               <MaterialIcon
                 name={copyFeedback === true ? 'check' : copyFeedback === false ? 'close' : 'content_copy'}
-                size={ICON_SIZES.SECONDARY}
+                size={16}
+                color={
+                  copyFeedback === true
+                    ? 'var(--emerald-a11)'
+                    : copyFeedback === false
+                      ? 'var(--red-11)'
+                      : text === null
+                        ? undefined
+                        : 'var(--text-secondary)'
+                }
               />
             </IconButton>
             <Dialog.Close>
               <IconButton
-                size="1"
+                size="2"
                 variant="ghost"
                 color="gray"
                 aria-label={t('chat.attachments.closePreview', { defaultValue: 'Close' })}
-                style={{ cursor: 'pointer', ...touchTarget }}
+                style={headerButtonStyle}
               >
-                <MaterialIcon name="close" size={ICON_SIZES.SECONDARY} />
+                <MaterialIcon name="close" size={18} color="var(--text-secondary)" />
               </IconButton>
             </Dialog.Close>
           </Flex>
         </Flex>
+        {/* Announces the copy result once, politely. */}
+        <VisuallyHidden>
+          <span aria-live="polite">
+            {copyFeedback === true
+              ? t('chat.attachments.copied', { defaultValue: 'Copied' })
+              : copyFeedback === false
+                ? t('chat.attachments.copyFailed', { defaultValue: "Couldn't copy the text" })
+                : ''}
+          </span>
+        </VisuallyHidden>
 
         {/* Body */}
-        <Box style={{ flex: 1, minHeight: 0, overflow: 'auto', backgroundColor: 'var(--slate-2)' }}>
+        <Box
+          style={{
+            maxHeight: '62vh',
+            minHeight: 0,
+            overflowY: 'auto',
+            padding: 'var(--space-4) calc(var(--space-4) + var(--space-1) / 2) calc(var(--space-5) - var(--space-1))',
+          }}
+        >
           {loading && (
             <Flex align="center" justify="center" gap="2" style={{ padding: 'var(--space-7)' }}>
               <Spinner size="2" />
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--text-secondary)' }}>
                 {t('chat.attachments.loadingPreview', { defaultValue: 'Loading…' })}
               </Text>
             </Flex>
@@ -235,35 +271,19 @@ export function TextPreviewDialog({
           )}
 
           {!loading && !error && text !== null && (
-            <Flex style={{ fontFamily: 'var(--code-font-family, monospace)', fontSize: 'var(--font-size-1)' }}>
-              <pre
-                aria-hidden="true"
-                style={{
-                  margin: 0,
-                  padding: 'var(--space-3) var(--space-2)',
-                  color: 'var(--slate-8)',
-                  textAlign: 'right',
-                  userSelect: 'none',
-                  borderRight: '1px solid var(--slate-5)',
-                  lineHeight: 1.6,
-                }}
-              >
-                {lines.map((_, i) => i + 1).join('\n')}
-              </pre>
-              <pre
-                style={{
-                  margin: 0,
-                  padding: 'var(--space-3) var(--space-3)',
-                  color: 'var(--slate-12)',
-                  overflowX: 'auto',
-                  flex: 1,
-                  lineHeight: 1.6,
-                  whiteSpace: 'pre',
-                }}
-              >
-                {text}
-              </pre>
-            </Flex>
+            <pre
+              style={{
+                margin: 0,
+                fontFamily: 'var(--code-font-family, monospace)',
+                fontSize: 'calc(var(--font-size-1) + var(--space-1) / 4)',
+                lineHeight: 'var(--line-height-2)',
+                color: 'var(--text-primary)',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              {text}
+            </pre>
           )}
         </Box>
       </Dialog.Content>

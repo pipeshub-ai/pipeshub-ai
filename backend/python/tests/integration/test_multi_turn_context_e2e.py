@@ -53,7 +53,7 @@ _TINY_WINDOW = 4_000
 _SUMMARY_REQUEST = "Summarize the conversation history below"
 # Loop-written summaries reach the provider as user turns, wrapped as context notes (CE-05, P1).
 _CONTEXT_NOTE = '<context_note source="agent">\n'
-_LOOP_NOTE_PREFIXES = ("[Loop compaction", "[Auto-compacted summary")
+_LOOP_NOTE_PREFIXES = ("[Loop compaction", "[Earlier conversation, summarised")
 # What artifact compaction sends in place of a fetched page.
 _ARTIFACT_REFERENCE = "[artifact:"
 _IMAGE_URL = (

@@ -320,6 +320,13 @@ _FALLBACK_INTERNAL_KEYS = frozenset({
 _FALLBACK_INTERNAL_PREFIXES = frozenset({"artifacts"})
 
 
+def fallback_internal_keys() -> frozenset[str]:
+    """`_FALLBACK_INTERNAL_KEYS` plus the internal toolsets the edition adds to discovery."""
+    from app.modules.agents.chat_extension import get_chat_extension
+
+    return _FALLBACK_INTERNAL_KEYS | get_chat_extension().internal_toolset_keys()
+
+
 def _prefix_key(name: str) -> str:
     """Compare a tool-name prefix the way the registry keys its toolsets.
 
@@ -364,7 +371,7 @@ def _internal_toolset_keys() -> frozenset[str]:
     except Exception:  # pragma: no cover - registry unavailable in some tests
         registry = {}
     if not registry:
-        return _NON_CONNECTOR_PREFIXES | _FALLBACK_INTERNAL_KEYS | _FALLBACK_INTERNAL_PREFIXES
+        return _NON_CONNECTOR_PREFIXES | fallback_internal_keys() | _FALLBACK_INTERNAL_PREFIXES
     keys: set[str] = set()
     for name, meta in registry.items():
         if meta.get("isInternal"):

@@ -64,6 +64,14 @@ export type UpdateProjectInput = Partial<CreateProjectInput> & {
   chatSharing?: ProjectDto['chatSharing'];
 };
 
+/** Settings of an update that the shared fields do not cover. */
+export interface ProjectUpdateExtension {
+  /** The update changes settings only the owner may change. */
+  ownerOnly: boolean;
+  /** Runs after the shared fields are saved; returns the project the caller gets back. */
+  afterSave(saved: ProjectDto): Promise<ProjectDto>;
+}
+
 export interface ListProjectsOptions {
   page: number;
   limit: number;
@@ -267,6 +275,7 @@ export class ProjectService {
     projectId: string,
     patch: UpdateProjectInput,
     callerTeamIds: string[] = [],
+    extension?: ProjectUpdateExtension,
   ): Promise<ProjectDto> {
     const { role, project } = await this.assertAccess(
       orgId,
@@ -279,7 +288,9 @@ export class ProjectService {
     this.assertNotArchived(project);
 
     if (
-      (patch.visibility !== undefined || patch.chatSharing !== undefined) &&
+      (patch.visibility !== undefined ||
+        patch.chatSharing !== undefined ||
+        extension?.ownerOnly === true) &&
       role !== 'owner'
     ) {
       throw new ForbiddenError(
@@ -309,7 +320,8 @@ export class ProjectService {
     if (patch.chatSharing !== undefined)
       changes.chatSharing = patch.chatSharing;
 
-    return this.write(projectId, changes);
+    const saved = await this.write(projectId, changes);
+    return extension ? extension.afterSave(saved) : saved;
   }
 
   /** Applies the change to the live project; a project removed since the access check answers NotFoundError. */

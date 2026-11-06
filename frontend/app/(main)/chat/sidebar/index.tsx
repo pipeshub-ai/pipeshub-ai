@@ -1,88 +1,35 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { Flex } from '@radix-ui/themes';
 import { SidebarBase } from '@/app/components/sidebar';
 import { useChatStore } from '@/chat/store';
 import { debugLog } from '@/chat/debug-logger';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { isCommandKey } from '@/lib/utils/platform';
-import { ChatSidebarFooter } from '@/config';
+import { ChatSidebarFooter, chatSlots } from '@/config';
 import { ChatSidebarHeader } from './header';
 import { StaticNavSection } from './static-nav-section';
-import { MyAgentsSection } from './my-agents-section';
 import { ChatSections } from './chat-sections';
 import { MoreChatsSidebar } from './more-chats-sidebar';
-import { AgentsSidebar } from './agents-sidebar';
 import { AgentScopedChatSidebar } from './agent-scoped-chat-sidebar';
-import { ProjectConversationsSidebar } from './project-conversations-sidebar';
+import { AgentMoreChatsSidebar } from './agent-more-chats-sidebar';
+import { ProjectConversationsRail } from './project-conversations-sidebar';
 import { useSidebarConversations } from './use-sidebar-conversations';
 
 /**
- * Chat sidebar — uses SidebarBase shell with header, footer, and custom content.
- * When "More Chats" is opened, the secondary panel appears to the right
- * of the main sidebar via the `secondaryPanel` prop on SidebarBase.
+ * The chat rail: one for every page that shows it (the app's layout keeps it, see `chat-rail-routes.ts`). Its header,
+ * footer and scroll area stay; only the middle swaps with the URL: the main chats, an agent's (`agentId`) or a
+ * project's (`projectId`). "More" opens a secondary panel to the right of it, through `secondaryPanel`.
  *
- * Wrapped in React.memo to prevent parent-cascade re-renders from
- * Next.js parallel-route page re-rendering during navigation.
- */
-function ChatSidebarInner() {
-  debugLog.tick('[sidebar] [ChatSidebar]');
-
-  const isMoreChatsPanelOpen = useChatStore((s) => s.isMoreChatsPanelOpen);
-  const moreChatsSectionType = useChatStore((s) => s.moreChatsSectionType);
-  const isAgentsSidebarOpen = useChatStore((s) => s.isAgentsSidebarOpen);
-  const toggleMoreChatsPanel = useChatStore((s) => s.toggleMoreChatsPanel);
-  const closeMoreChatsPanel = useChatStore((s) => s.closeMoreChatsPanel);
-  const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
-
-  const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
-  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
-  const isMobile = useIsMobile();
-
-  const secondaryPanel = isAgentsSidebarOpen ? (
-    <AgentsSidebar onBack={closeAgentsSidebar} />
-  ) : isMoreChatsPanelOpen && moreChatsSectionType ? (
-    <MoreChatsSidebar
-      sectionType={moreChatsSectionType}
-      onBack={closeMoreChatsPanel}
-    />
-  ) : undefined;
-
-  return (
-    <SidebarBase
-      header={<ChatSidebarHeader />}
-      footer={<ChatSidebarFooter />}
-      secondaryPanel={secondaryPanel}
-      onDismissSecondaryPanel={
-        isAgentsSidebarOpen
-          ? closeAgentsSidebar
-          : isMoreChatsPanelOpen
-            ? closeMoreChatsPanel
-            : undefined
-      }
-      isMobile={isMobile}
-      mobileOpen={isMobileOpen}
-      onMobileClose={closeMobileSidebar}
-    >
-      <Flex direction="column" gap="3">
-        <StaticNavSection />
-        <MyAgentsSection />
-        <ChatSections onOpenMoreChats={toggleMoreChatsPanel} />
-      </Flex>
-    </SidebarBase>
-  );
-}
-
-/**
- * Chooses the main chat sidebar vs agent-scoped conversation list from URL.
+ * Wrapped in React.memo to prevent parent-cascade re-renders from the layout re-rendering during navigation.
  */
 function ChatSidebarRoot() {
-  useSidebarConversations();
+  debugLog.tick('[sidebar] [ChatSidebar]');
+
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -91,24 +38,31 @@ function ChatSidebarRoot() {
   // A thread can't be scoped to both an agent and a project — agentId wins.
   const rawProjectId = searchParams.get('projectId');
   // `/chat/?projectId=…` is both the new-chat resting state and the
-  // in-conversation state. Show the project sidebar in either case.
+  // in-conversation state. Show the project's chats in either case.
   const projectId =
     !agentId && projectsEnabled && rawProjectId?.trim()
       ? rawProjectId
       : null;
-  const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
-  const prevAgentIdRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    if (agentId) {
-      closeAgentsSidebar();
-    }
-    const prev = prevAgentIdRef.current;
-    if (prev && !agentId) {
-      closeAgentsSidebar();
-    }
-    prevAgentIdRef.current = agentId;
-  }, [agentId, closeAgentsSidebar]);
+  // The main lists load where they show: not for an agent's or a project's chats.
+  useSidebarConversations(!agentId && !projectId);
+  // `chatSlots` never changes while the app runs, so this hook runs on every render or on none.
+  chatSlots.useRailEffects?.();
+
+  const isMoreChatsPanelOpen = useChatStore((s) => s.isMoreChatsPanelOpen);
+  const moreChatsSectionType = useChatStore((s) => s.moreChatsSectionType);
+  const toggleMoreChatsPanel = useChatStore((s) => s.toggleMoreChatsPanel);
+  const closeMoreChatsPanel = useChatStore((s) => s.closeMoreChatsPanel);
+  const isAgentMoreChatsPanelOpen = useChatStore((s) => s.isAgentMoreChatsPanelOpen);
+  const closeAgentMoreChatsPanel = useChatStore((s) => s.closeAgentMoreChatsPanel);
+
+  const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
+  // Below desktop the sidebar is the navigation drawer.
+  const isMobile = useIsBelowDesktop();
+
+  // More stays open from page to page here; pages with a rail of their own never show it, so it closes with this one.
+  useEffect(() => () => useChatStore.getState().closeMoreChatsPanel(), []);
 
   useEffect(() => {
     if (pathname === '/chat' || pathname === '/chat/' || pathname.startsWith('/chat/')) {
@@ -137,13 +91,42 @@ function ChatSidebarRoot() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [pathname, router]);
 
+  let secondaryPanel: React.ReactNode;
+  let onDismissSecondaryPanel: (() => void) | undefined;
   if (agentId) {
-    return <AgentScopedChatSidebar agentId={agentId} />;
+    if (isAgentMoreChatsPanelOpen) {
+      secondaryPanel = <AgentMoreChatsSidebar agentId={agentId} onBack={closeAgentMoreChatsPanel} />;
+      onDismissSecondaryPanel = closeAgentMoreChatsPanel;
+    }
+  } else if (!projectId && isMoreChatsPanelOpen && moreChatsSectionType) {
+    secondaryPanel = <MoreChatsSidebar sectionType={moreChatsSectionType} onBack={closeMoreChatsPanel} />;
+    onDismissSecondaryPanel = closeMoreChatsPanel;
   }
-  if (projectId) {
-    return <ProjectConversationsSidebar projectId={projectId} />;
-  }
-  return <ChatSidebarInner />;
+
+  const isMain = !agentId && !projectId;
+  return (
+    <SidebarBase
+      header={<ChatSidebarHeader />}
+      // The navigation rows stay put; only the lists below them scroll.
+      pinned={isMain ? <StaticNavSection /> : undefined}
+      footer={<ChatSidebarFooter />}
+      contentKey={agentId ? `agent:${agentId}` : projectId ? `project:${projectId}` : 'main'}
+      scrollEdgeDivider={isMain}
+      secondaryPanel={secondaryPanel}
+      onDismissSecondaryPanel={onDismissSecondaryPanel}
+      isMobile={isMobile}
+      mobileOpen={isMobileOpen}
+      onMobileClose={closeMobileSidebar}
+    >
+      {agentId ? (
+        <AgentScopedChatSidebar agentId={agentId} />
+      ) : projectId ? (
+        <ProjectConversationsRail projectId={projectId} />
+      ) : (
+        <ChatSections onOpenMoreChats={toggleMoreChatsPanel} />
+      )}
+    </SidebarBase>
+  );
 }
 
 export default React.memo(ChatSidebarRoot);

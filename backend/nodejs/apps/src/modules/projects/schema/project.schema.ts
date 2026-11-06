@@ -11,6 +11,7 @@ import {
   DEFAULT_PROJECT_CHAT_SHARING,
   DEFAULT_PROJECT_VISIBILITY,
 } from '../constants/constants';
+import { schemaExtensions } from '../../../edition-schemas';
 
 /** The stored shape: the same fields as `IProject`, with ids as driver ids. */
 export interface IProjectDocument
@@ -137,6 +138,8 @@ projectSchema.index({
 projectSchema.index({ orgId: 1, 'members.principalId': 1, isDeleted: 1 });
 projectSchema.index({ orgId: 1, visibility: 1, isDeleted: 1 });
 projectSchema.index({ orgId: 1, userId: 1, name: 1 });
+
+schemaExtensions.project(projectSchema);
 
 export const Project: Model<IProjectDocument> =
   mongoose.model<IProjectDocument>('Project', projectSchema);

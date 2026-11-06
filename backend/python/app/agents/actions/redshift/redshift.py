@@ -676,6 +676,7 @@ class Redshift:
                     rows=raw_rows,
                     file_name=f"query_result_{int(time.time())}{f'_first_{SQL_MAX_ROWS}_rows' if rows_cut else ''}.csv",
                     source_tool="redshift.execute_query",
+                    run_id=self.chat_state.get("run_id"),
                 ))
                 register_task(conversation_id, task)
 

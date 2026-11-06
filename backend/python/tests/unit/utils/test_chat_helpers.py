@@ -7664,6 +7664,21 @@ class TestAccessibleNodeIds:
         assert graph.check_access.await_args.args[:2] == ("uk1", "o1")
 
     @pytest.mark.asyncio
+    async def test_names_come_from_the_one_check(self) -> None:
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+        from app.utils.chat_helpers import accessible_node_names
+
+        async def lookup(_user_id, *, raise_on_error=False) -> dict:
+            return {"_key": "uk1"}
+
+        graph = self._graph(lookup)
+        graph.check_access = AsyncMock(
+            return_value=AccessCheck(node_ids=frozenset({"f1", "a1"}), names={"f1": "Plans", "a1": "Drive"}),
+        )
+        assert await accessible_node_names(graph, {"f1", "a1", "hidden"}, "u1", "o1") == {"f1": "Plans", "a1": "Drive"}
+        graph.check_access.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_enrichment_names_no_neighbour_when_the_lookup_failed(self) -> None:
         from app.utils.chat_helpers import accessible_node_ids_for_enrichment
 

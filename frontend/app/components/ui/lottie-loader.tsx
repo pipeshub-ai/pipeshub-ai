@@ -2,6 +2,7 @@
 
 import React from 'react';
 import dynamic from 'next/dynamic';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { BrandMark } from '@/config';
 
@@ -55,7 +56,17 @@ interface LottieLoaderProps {
   autoplay?: boolean;
   style?: React.CSSProperties;
   showLabel?: boolean;
+  /** What is loading, announced to screen readers; visible with `showLabel`. Defaults to "Loading…". */
   label?: string;
+  /**
+   * Announce the load to screen readers as a polite status named by `label`
+   * ("Loading…" by default). Off unless asked for: many loaders are art (the
+   * chat home's brand mark) or sit beside words that already say what is
+   * happening. Passing `label` or `showLabel` asks for it too.
+   */
+  announce?: boolean;
+  /** Never announce, whatever else is passed (a toast's glyph tile). */
+  decorative?: boolean;
 }
 
 const LOTTIE_MAP: Record<LottieVariant, string> = {
@@ -86,6 +97,24 @@ function loadLottieData(src: string): Promise<ArrayBuffer | null> {
   return pending;
 }
 
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+
+/** Whether the reader asked for less motion; follows the setting while mounted. */
+function usePrefersReducedMotion(): boolean {
+  const supported = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function';
+  // Read at once, so a reader who asked for less motion never fetches the moving file.
+  const [reduced, setReduced] = React.useState(() => supported() && window.matchMedia(REDUCED_MOTION_QUERY).matches);
+  React.useEffect(() => {
+    if (!supported()) return;
+    const mql = window.matchMedia(REDUCED_MOTION_QUERY);
+    setReduced(mql.matches);
+    const onChange = (e: MediaQueryListEvent) => setReduced(e.matches);
+    mql.addEventListener?.('change', onChange);
+    return () => mql.removeEventListener?.('change', onChange);
+  }, []);
+  return reduced;
+}
+
 function useLottieData(src: string): ArrayBuffer | null | undefined {
   const [data, setData] = React.useState<ArrayBuffer | null | undefined>(undefined);
   React.useEffect(() => {
@@ -108,17 +137,25 @@ export function LottieLoader({
   autoplay = true,
   style,
   showLabel = false,
-  label = 'Loading...',
+  label,
+  announce,
+  decorative = false,
 }: LottieLoaderProps) {
-  const data = useLottieData(LOTTIE_MAP[variant]);
+  const { t } = useTranslation();
+  const resolvedLabel = label ?? t('loading.default');
+  // Under reduced motion every variant shows the still frame, not playing.
+  const reducedMotion = usePrefersReducedMotion();
+  const shownVariant: LottieVariant = reducedMotion ? 'still' : variant;
+  const playing = !reducedMotion;
+  const data = useLottieData(LOTTIE_MAP[shownVariant]);
   const lottie = !data ? (
     <LogoFallback style={{ width: size, height: size, ...style }} />
   ) : (
     <LottieErrorBoundary fallbackSize={size}>
       <DotLottieReact
         data={data}
-        loop={loop}
-        autoplay={autoplay}
+        loop={playing && loop}
+        autoplay={playing && autoplay}
         style={{
           width: size,
           height: size,
@@ -128,13 +165,32 @@ export function LottieLoader({
     </LottieErrorBoundary>
   );
 
-  if (!showLabel) return lottie;
+  // Announces only when the caller asks. The listening and thinking marks sit
+  // beside their own words, so a label alone does not make them a live region.
+  const asked = announce ?? (label !== undefined || showLabel);
+  const announces = asked && !decorative && (variant === 'loader' || announce === true);
+
+  if (!showLabel) {
+    return (
+      <span
+        {...(announces ? { role: 'status', 'aria-label': resolvedLabel } : { 'aria-hidden': true })}
+        style={{ display: 'contents' }}
+      >
+        {lottie}
+      </span>
+    );
+  }
 
   return (
-    <Flex direction="column" align="center" gap="2">
+    <Flex
+      direction="column"
+      align="center"
+      gap="2"
+      {...(announces ? { role: 'status', 'aria-label': resolvedLabel } : {})}
+    >
       {lottie}
-      <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
-        {label}
+      <Text size="2" weight="medium" style={{ color: 'var(--text-secondary)' }}>
+        {resolvedLabel}
       </Text>
     </Flex>
   );

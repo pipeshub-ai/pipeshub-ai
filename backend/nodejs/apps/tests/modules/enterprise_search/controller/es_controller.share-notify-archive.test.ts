@@ -7,6 +7,9 @@ import * as conversationArtifacts from '../../../../src/modules/artifacts/servic
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { agentListScope, withListScope } from '../helpers/list-scope'
+import { ConversationOperation } from '../../../../src/modules/enterprise_search/services/conversation/domain/types'
 
 /**
  * Two things a person sharing a chat relies on, for plain chats and agent chats alike:
@@ -97,10 +100,13 @@ function setup(): Setup {
   return { store, agentChatId: String(agentChat._id), plainChatId: String(plainChat._id) }
 }
 
-const sharePlain = () => controller.shareConversationById(appConfig) as Handler
-const shareAgent = () => controller.shareAgentConversation(appConfig) as Handler
-const getPlain = () => controller.getConversationById(appConfig) as Handler
-const getAgent = () => controller.getAgentConversationById(appConfig) as Handler
+// Each handler runs behind the guard its route mounts.
+const guarded = (op: ConversationOperation, handler: Handler, kind: 'chat' | 'agent'): Handler =>
+  behindGuard(realGuards(), op, handler, kind) as Handler
+const sharePlain = () => guarded('manageSharing', controller.shareConversationById(appConfig) as Handler, 'chat')
+const shareAgent = () => guarded('manageSharing', controller.shareAgentConversation(appConfig) as Handler, 'agent')
+const getPlain = () => guarded('read', controller.getConversationById(appConfig) as Handler, 'chat')
+const getAgent = () => guarded('read', controller.getAgentConversationById(appConfig) as Handler, 'agent')
 const agentParams = (s: Setup) => ({ conversationId: s.agentChatId, agentKey: AGENT_KEY })
 const plainParams = (s: Setup) => ({ conversationId: s.plainChatId })
 
@@ -211,9 +217,9 @@ describe('es_controller: telling people a chat was shared with them, and archivi
 
   describe('archived by the owner', () => {
     const archiveAgent = (s: Setup) =>
-      call(controller.archiveAgentConversation as unknown as Handler, request(OWNER, agentParams(s)))
+      call(guarded('archiveSelf', controller.archiveAgentConversation as unknown as Handler, 'agent'), request(OWNER, agentParams(s)))
     const archivePlain = (s: Setup) =>
-      call(controller.archiveConversation as unknown as Handler, request(OWNER, plainParams(s)))
+      call(guarded('archiveSelf', controller.archiveConversation as unknown as Handler, 'chat'), request(OWNER, plainParams(s)))
 
     it('an agent chat: once the owner archives it, the recipient gets "not found", as for any chat they cannot open', async () => {
       const s = setup()
@@ -261,7 +267,7 @@ describe('es_controller: telling people a chat was shared with them, and archivi
       await call(shareAgent(), request(OWNER, agentParams(s), { userIds: [String(RECIPIENT)] }))
       await archiveAgent(s)
 
-      const list = await call(controller.getAllAgentConversations as unknown as Handler, request(RECIPIENT, { agentKey: AGENT_KEY }))
+      const list = await call(withListScope(controller.getAllAgentConversations as unknown as Handler, 'agent', agentListScope), request(RECIPIENT, { agentKey: AGENT_KEY }))
 
       expect(list.body?.sharedWithMeConversations).to.deep.equal([])
     })

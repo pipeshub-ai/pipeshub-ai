@@ -38,7 +38,7 @@ class TestStripAndAppendTaskMarkers:
                     "artifacts": [
                         {
                             "fileName": "f",
-                            "signedUrl": "http://ok.com/a",
+                            "recordId": "rec-1",
                             "mimeType": "text/plain",
                         }
                     ],
@@ -46,8 +46,7 @@ class TestStripAndAppendTaskMarkers:
             ],
         )
         assert "evil.com" not in out
-        assert "http://ok.com/a" in out
-        assert "::artifact[f]" in out
+        assert "::artifact[f](record:rec-1)" in out
 
     def test_artifacts_skip_entry_without_url(self):
         from app.utils.streaming import _append_task_markers

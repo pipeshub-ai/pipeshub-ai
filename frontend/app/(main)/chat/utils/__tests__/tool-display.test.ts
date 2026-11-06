@@ -10,7 +10,20 @@
  *  - NEW chats: a backend-provided `displayName` always wins outright.
  */
 import { describe, it, expect } from 'vitest';
-import { extractSqlQuery, extractToolsetLabel, isSkillTool, isWebTool, toolActivityLabel, toolStatusLabel, humanizeToolName } from '../tool-display';
+import {
+  appendResumeParts,
+  extractSqlQuery,
+  extractToolsetLabel,
+  isSkillTool,
+  isWebTool,
+  settledSteps,
+  shownQuestionOf,
+  toolActivityLabel,
+  toolStatusLabel,
+  humanizeToolName,
+  withQuestionOnAsk,
+} from '../tool-display';
+import type { MessagePart } from '../../types';
 
 describe('isSkillTool', () => {
   it('is true for exactly the five built-in skill tools', () => {
@@ -158,5 +171,62 @@ describe('extractSqlQuery', () => {
       text: 'SELECT id -- note',
       cutOff: true,
     });
+  });
+});
+
+describe('the asks of a turn that went through question cards', () => {
+  const ask = (id: string, status: MessagePart['status'] = 'completed'): MessagePart => ({
+    type: 'tool_call', toolCallId: id, toolName: 'internaltools__ask_user_question', status,
+  });
+  const tool = (id: string): MessagePart => ({ type: 'tool_call', toolCallId: id, toolName: 'jira_search', status: 'completed' });
+  const card = (question: string) => ({ name: 'ask_user_question' as const, questions: [{ uuid: question, question, options: [] }] });
+  const answered = (question: string) => ({
+    payload: card(question),
+    answers: { [question]: { questionUuid: question, selectedOptionIds: ['a'], userInputs: {} } },
+  });
+
+  it('keeps a later run\'s question in the turn, after the work before it', () => {
+    const first = [tool('t1'), ask('ask-1')];
+    const resumed = [ask('ask-refused', 'blocked'), tool('t2'), ask('ask-2')];
+
+    expect(appendResumeParts(first, resumed).map((p) => p.toolCallId)).toEqual(['t1', 'ask-1', 'ask-refused', 't2', 'ask-2']);
+  });
+
+  it('keeps the answered question on a call the resume sends again', () => {
+    const stamped = withQuestionOnAsk([ask('ask-1')], answered('Which region?'));
+
+    expect(appendResumeParts(stamped, [ask('ask-1')])[0].question?.payload.questions[0].question).toBe('Which region?');
+  });
+
+  it('puts a card on the call that showed it: the last completed ask, never a refused or failed one', () => {
+    const parts = withQuestionOnAsk(
+      [ask('ask-1'), ask('ask-refused', 'blocked'), tool('t2'), ask('ask-2'), ask('ask-failed', 'failed')],
+      answered('Which release?'),
+    );
+
+    expect(parts.filter((p) => p.question).map((p) => p.toolCallId)).toEqual(['ask-2']);
+  });
+
+  it('never moves an answered card onto another card\'s call', () => {
+    const first = withQuestionOnAsk([ask('ask-1')], answered('Which region?'));
+
+    expect(withQuestionOnAsk(first, answered('Which release?'))).toBe(first);
+  });
+
+  it('settles the narration of runs that ended, so it shows under the run that carries on', () => {
+    const narration: MessagePart = { type: 'text', content: 'Checking the handbook.' };
+    const answer: MessagePart = { type: 'text', content: 'Done.', isFinal: true };
+    const steps = [narration, tool('t1'), answer];
+
+    expect(settledSteps(steps)).toEqual([{ ...narration, settled: true }, steps[1], answer]);
+    expect(settledSteps([tool('t1')])).toEqual([tool('t1')]);
+  });
+
+  it('draws a question once it is answered or replied to in the chat, not while it waits', () => {
+    expect(shownQuestionOf({ ...ask('a'), question: answered('Which region?') })).not.toBeNull();
+    expect(shownQuestionOf({ ...ask('a'), question: { payload: { ...card('Which region?'), repliedInChat: true } } })).not.toBeNull();
+    expect(shownQuestionOf({ ...ask('a'), question: { payload: card('Which region?') } })).toBeNull();
+    expect(shownQuestionOf(ask('a'))).toBeNull();
+    expect(shownQuestionOf({ ...tool('t'), question: answered('Which region?') })).toBeNull();
   });
 });

@@ -2,9 +2,9 @@
 
 import { useTranslation } from 'react-i18next';
 
-import React, { useEffect, useRef, useCallback, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { Flex, Box, Text, IconButton } from '@radix-ui/themes';
+import React, { useLayoutEffect, useRef } from 'react';
+import { Dialog as DialogPrimitive } from 'radix-ui';
+import { Flex, Box, Text, IconButton, Theme } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
 interface MobileBottomSheetProps {
@@ -15,12 +15,18 @@ interface MobileBottomSheetProps {
   /** Optional back button — rendered to the left of the title when navigating sub-panels */
   onBack?: () => void;
   children: React.ReactNode;
+  /**
+   * Where focus goes when the sheet closes. Defaults to the control that had focus when it
+   * opened; pass this when that control re-renders while the sheet is up (the workspace menu).
+   */
+  returnFocusTo?: () => HTMLElement | null;
 }
 
 /**
- * Custom bottom-sheet drawer for mobile.
- * Renders via portal to document.body. No third-party animation library.
- * Uses CSS keyframe animations (defined in globals.css) for entrance.
+ * Bottom-sheet drawer for mobile, on a Radix Dialog: it takes focus when it opens,
+ * keeps Tab inside, hides the page behind from assistive technology, closes on
+ * Escape and on the backdrop, and hands focus back to the control that opened it.
+ * The look is drawn here; entrance uses CSS keyframes (defined in globals.css).
  *
  * Layout:
  *   Root panel:    [Title (left-aligned) ···  ×]
@@ -32,95 +38,67 @@ export function MobileBottomSheet({
   title,
   onBack,
   children,
+  returnFocusTo,
 }: MobileBottomSheetProps) {
   const { t } = useTranslation();
-  const sheetRef = useRef<HTMLDivElement>(null);
-  const [portalTarget, setPortalTarget] = useState<Element | null>(null);
+  /** The control that had focus when the sheet opened. */
+  const openerRef = useRef<HTMLElement | null>(null);
 
-  // Resolve portal target: the .radix-themes wrapper so CSS variables + theme work
-  useEffect(() => {
-    setPortalTarget(
-      document.querySelector('.radix-themes') ?? document.body
-    );
-  }, []);
-
-  // Lock body scroll while open
-  useEffect(() => {
+  // Read before Radix moves focus into the sheet (layout effects run first).
+  useLayoutEffect(() => {
     if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prev;
-    };
+    const active = document.activeElement;
+    openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
   }, [open]);
 
-  // Close on Escape key
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onOpenChange(false);
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [open, onOpenChange]);
-
-  // Auto-focus the first focusable element inside the sheet
-  useEffect(() => {
-    if (!open || !sheetRef.current) return;
-    const el = sheetRef.current.querySelector<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-    );
-    el?.focus();
-  }, [open]);
-
-  const handleBackdropClick = useCallback(() => {
-    onOpenChange(false);
-  }, [onOpenChange]);
-
-  if (!open || !portalTarget) return null;
-
-  return createPortal(
-    <>
-      {/* Backdrop */}
-      <div
-        onClick={handleBackdropClick}
-        style={{
-          position: 'fixed',
-          inset: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.6)',
-          zIndex: 9990,
-          animation: 'mobileSheetBackdropIn 0.2s ease-out',
-        }}
-      />
-
-      {/* Sheet */}
-      <div
-        ref={sheetRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        style={{
-          position: 'fixed',
-          bottom: 0,
-          left: '4px',
-          right: '4px',
-          zIndex: 9991,
-          display: 'flex',
-          flexDirection: 'column',
-          // A sheet is a panel: same frost as the side panels
-          backdropFilter: 'var(--frost-filter)',
-          WebkitBackdropFilter: 'var(--frost-filter)',
-          backgroundColor: 'var(--frost-bg)',
-          border: '1px solid var(--olive-3)',
-          borderBottom: 'none',
-          borderTopLeftRadius: 'var(--radius-1)',
-          borderTopRightRadius: 'var(--radius-1)',
-          maxHeight: '60dvh',
-          overflow: 'hidden',
-          outline: 'none',
-          animation: 'mobileSheetSlideUp 0.25s ease-out',
-        }}
-      >
+  return (
+    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+      <DialogPrimitive.Portal>
+        {/* Theme wrappers give the portalled parts the app's theme variables, as Radix
+            Themes' own Dialog does. */}
+        <Theme asChild>
+          <DialogPrimitive.Overlay
+            style={{
+              position: 'fixed',
+              inset: 0,
+              backgroundColor: 'var(--black-a8)',
+              zIndex: 9990,
+              animation: 'mobileSheetBackdropIn 0.2s ease-out',
+            }}
+          />
+        </Theme>
+        <Theme asChild>
+          <DialogPrimitive.Content
+            aria-modal="true"
+            aria-describedby={undefined}
+            onCloseAutoFocus={(e) => {
+              e.preventDefault();
+              const target = returnFocusTo?.() ?? openerRef.current;
+              openerRef.current = null;
+              if (target?.isConnected) target.focus();
+            }}
+            style={{
+              position: 'fixed',
+              bottom: 0,
+              left: '4px',
+              right: '4px',
+              zIndex: 9991,
+              display: 'flex',
+              flexDirection: 'column',
+              // A sheet is a panel: same frost as the side panels
+              backdropFilter: 'var(--frost-filter)',
+              WebkitBackdropFilter: 'var(--frost-filter)',
+              backgroundColor: 'var(--frost-bg)',
+              border: '1px solid var(--border-subtle)',
+              borderBottom: 'none',
+              borderTopLeftRadius: 'var(--radius-1)',
+              borderTopRightRadius: 'var(--radius-1)',
+              maxHeight: '60dvh',
+              overflow: 'hidden',
+              outline: 'none',
+              animation: 'mobileSheetSlideUp 0.25s ease-out',
+            }}
+          >
         {/* Header: [← title]  [×] */}
         <Flex
           align="center"
@@ -133,6 +111,7 @@ export function MobileBottomSheet({
           <Flex align="center" gap="1" style={{ flex: 1, minWidth: 0 }}>
             {onBack && (
               <IconButton
+                className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="2"
@@ -143,6 +122,7 @@ export function MobileBottomSheet({
                 <MaterialIcon name="chevron_left" size={20} color="var(--gray-11)" />
               </IconButton>
             )}
+            <DialogPrimitive.Title asChild>
             <Text
               size="3"
               weight="medium"
@@ -155,9 +135,11 @@ export function MobileBottomSheet({
             >
               {title}
             </Text>
+            </DialogPrimitive.Title>
           </Flex>
 
           <IconButton
+            className="touch-hit"
             variant="ghost"
             color="gray"
             size="2"
@@ -169,7 +151,6 @@ export function MobileBottomSheet({
           </IconButton>
         </Flex>
 
-        {/* Scrollable content */}
         <Box
           className="no-scrollbar"
           style={{
@@ -180,8 +161,9 @@ export function MobileBottomSheet({
         >
           {children}
         </Box>
-      </div>
-    </>,
-    portalTarget,
+          </DialogPrimitive.Content>
+        </Theme>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }

@@ -37,4 +37,11 @@ describe('SidebarBase', () => {
     rerender(sidebar(false, false));
     expect(screen.getByText('Nav items')).toBeTruthy();
   });
+
+  it('puts the one sidebar focus ring rule on the page: 2px of --focus-ring, inset 1px', () => {
+    render(sidebar(false, false));
+    const rule = Array.from(document.querySelectorAll('style')).map((el) => el.textContent ?? '').find((css) => css.includes('.sidebar-focus-ring:focus-visible'));
+    expect(rule).toContain('outline: 2px solid var(--focus-ring)');
+    expect(rule).toContain('outline-offset: -1px');
+  });
 });
