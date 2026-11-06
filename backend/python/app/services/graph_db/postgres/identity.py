@@ -950,7 +950,7 @@ class IdentityMixin(PgBase):
 
 
     # ---- agents: the document with what hangs off it, and the agents that use a model or a web search provider ---------------------------------------
-    async def _agent_targets(self, agent_ids: list[str], edge: str, node_coll: str) -> dict[str, list[dict]]:
+    async def _agent_targets(self, agent_ids: list[str], edge: str, node_coll: str, transaction: str | None) -> dict[str, list[dict]]:
         """The documents ``agent_ids`` point at over ``edge``, per agent, by id: edges by their source, nodes by key."""
         if not agent_ids:
             return {}
@@ -958,20 +958,20 @@ class IdentityMixin(PgBase):
         rows = await self._id_rows("""/* pipeshub:graph.agent_targets */ SELECT e.from_id AS agent, t.doc FROM graph.edges e
             JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id
             WHERE e.org_id = $1 AND e.coll = $2 AND e.from_coll = 'agentInstances' AND e.from_id = ANY($3::text[]) AND e.to_coll = $4 ORDER BY t.id""",
-                                   [org, edge, agent_ids, node_coll], None)
+                                   [org, edge, agent_ids, node_coll], transaction)
         out: dict[str, list[dict]] = {}
         for r in rows:
             out.setdefault(r["agent"], []).append(_doc(r["doc"]))
         return out
 
-    async def _tools_of(self, owners: list[dict], edge: str, fields: tuple[str, ...]) -> dict[str, list[dict]]:
+    async def _tools_of(self, owners: list[dict], edge: str, fields: tuple[str, ...], transaction: str | None) -> dict[str, list[dict]]:
         """The tools of each toolset or MCP server document in ``owners``, as ``{_key, <fields>}``."""
         if not owners:
             return {}
         rows = await self._id_rows("""/* pipeshub:graph.agent_tools */ SELECT e.from_id AS owner, t.doc FROM graph.edges e
             JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = 'agentTools' AND t.id = e.to_id
             WHERE e.org_id = $1 AND e.coll = $2 AND e.from_id = ANY($3::text[]) AND e.to_coll = 'agentTools' ORDER BY t.id""",
-                                   [current_org_id(), edge, [o["id"] for o in owners]], None)
+                                   [current_org_id(), edge, [o["id"] for o in owners]], transaction)
         out: dict[str, list[dict]] = {}
         for r in rows:
             d = _doc(r["doc"])
@@ -981,15 +981,15 @@ class IdentityMixin(PgBase):
     async def _project_agents_toolsets_and_knowledge(self, agent_ids: list[str], transaction: str | None = None) -> dict[str, dict[str, list[dict]]]:
         """For each agent its toolsets with their tools and its knowledge (a connector, with its filters read and the app's name); every id asked is present."""
         out: dict[str, dict[str, list[dict]]] = {i: {"toolsets": [], "knowledge": []} for i in agent_ids}
-        sets = await self._agent_targets(agent_ids, "agentHasToolset", "agentToolsets")
-        tools = await self._tools_of([t for ts in sets.values() for t in ts], "toolsetHasTool", ("name", "fullName", "toolsetName", "description"))
+        sets = await self._agent_targets(agent_ids, "agentHasToolset", "agentToolsets", transaction)
+        tools = await self._tools_of([t for ts in sets.values() for t in ts], "toolsetHasTool", ("name", "fullName", "toolsetName", "description"), transaction)
         for aid, docs in sets.items():
             out[aid]["toolsets"] = [{"_key": t["id"], **{f: t.get(f) for f in ("name", "displayName", "type", "instanceId", "instanceName", "selectedTools")}, "tools": tools.get(t["id"], [])}
                                     for t in docs]
-        know = await self._agent_targets(agent_ids, "agentHasKnowledge", "agentKnowledge")
+        know = await self._agent_targets(agent_ids, "agentHasKnowledge", "agentKnowledge", transaction)
         ids = sorted({k.get("connectorId") for ks in know.values() for k in ks if k.get("connectorId")})
         apps = {r["id"]: _doc(r["doc"]) for r in await self._id_rows(
-            "/* pipeshub:graph.agent_knowledge_apps */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])", [current_org_id(), ids], None)} if ids else {}
+            "/* pipeshub:graph.agent_knowledge_apps */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])", [current_org_id(), ids], transaction)} if ids else {}
         for aid, ks in know.items():
             for k in ks:
                 raw, cid = k.get("filters"), k.get("connectorId")
@@ -1006,8 +1006,8 @@ class IdentityMixin(PgBase):
 
     async def _project_agents_mcp_servers(self, agent_ids: list[str], transaction: str | None = None) -> dict[str, list[dict]]:
         out: dict[str, list[dict]] = {i: [] for i in agent_ids}
-        servers = await self._agent_targets(agent_ids, "agentHasMcpServer", "agentMcpServers")
-        tools = await self._tools_of([s for ss in servers.values() for s in ss], "mcpServerHasTool", ("name", "fullName", "description"))
+        servers = await self._agent_targets(agent_ids, "agentHasMcpServer", "agentMcpServers", transaction)
+        tools = await self._tools_of([s for ss in servers.values() for s in ss], "mcpServerHasTool", ("name", "fullName", "description"), transaction)
         for aid, docs in servers.items():
             out[aid] = [{"_key": s["id"], **{f: s.get(f) for f in ("name", "displayName", "typeId", "instanceId")}, "allTools": s.get("allTools") or False, "tools": tools.get(s["id"], [])}
                         for s in docs]
@@ -1015,7 +1015,7 @@ class IdentityMixin(PgBase):
 
     async def _project_agent_skills(self, agent_id: str, transaction: str | None = None) -> list[dict]:
         fields = ("name", "description", "category", "subcategory", "version", "status", "deprecatedReason", "replacedBy")
-        return [{f: d.get(f) for f in fields} for d in (await self._agent_targets([agent_id], "agentHasSkill", "agentSkills")).get(agent_id, [])]
+        return [{f: d.get(f) for f in fields} for d in (await self._agent_targets([agent_id], "agentHasSkill", "agentSkills", transaction)).get(agent_id, [])]
 
     async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
         """The live agent with its toolsets, knowledge, skills, MCP servers and ``shareWithOrg``; None when it is not there. No permission is checked: callers
