@@ -2050,6 +2050,13 @@ def _consume_outcome(task: asyncio.Task) -> None:
         task.exception()
 
 
+def release_task(task: asyncio.Task | None) -> None:
+    """Cancel ``task`` without waiting for it to stop; its outcome is read when it ends."""
+    if task is not None and not task.done():
+        task.cancel()
+        task.add_done_callback(_consume_outcome)
+
+
 async def cancel_task_if_running(task: asyncio.Task | None) -> None:
     """Cancel an asyncio task if it hasn't finished yet and suppress its
     errors. A cancellation of the caller while it waits is passed on."""

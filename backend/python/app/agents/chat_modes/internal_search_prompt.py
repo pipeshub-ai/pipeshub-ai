@@ -102,6 +102,13 @@ _SEEK_OTHER_VERSIONS = (
     "the same subject before answering, and report each version with its source."
 )
 
+_SEEK_OTHER_VERSIONS_COVERAGE = (
+    _SEEK_OTHER_VERSIONS[:-1]
+    + "; a record is another version only if it gives a value for the same item in the same "
+    "scope (the same customer, product, version line or document series), not a lookalike about "
+    "another one."
+)
+
 _REPORT_VERSIONS = (
     "When the question asks about a discrepancy, a change over time, or what different "
     "people, teams or sources said, report each version with its source."
@@ -120,6 +127,22 @@ _RESOLVE_CONFLICTS = (
     "said, where, and why it was not used."
 )
 
+# Under COVERAGE_LOOP_PROMPT: the kind of document the question names comes
+# before majority and recency, and those decide only between records of one
+# scope. Among near-duplicates of different scopes they picked the wrong record.
+_RESOLVE_CONFLICTS_COVERAGE = _RESOLVE_CONFLICTS.replace(
+    "standard); the value most independent sources state; the most recent, by a date the "
+    "record states or its source system gives it (an upload time is neither). Title or "
+    "formality never decides.",
+    "standard); the record of the kind the question names (\"the runbook\", \"the signed "
+    "contract\", \"in the standup\"); then, only between records giving a value for the same "
+    "item in the same scope (customer, product, version line or document series), the value "
+    "most independent sources state, then the most recent, by a date the record states or its "
+    "source system gives it (an upload time is neither). A record about another item, scope or "
+    "version line is not a rival version: leave it out rather than weigh it. Title or "
+    "formality never decides.",
+)
+
 # A looser mention in the same record (a weekday beside a dated deadline) was
 # being reported as a rival value, which reads as an unresolved contradiction;
 # a different person's value in the same thread or meeting is still a version.
@@ -133,12 +156,18 @@ _SECOND_VALUE = (
 )
 
 
-def internal_search_instructions(*, composition: bool, thorough: bool, entity_tools: bool) -> str:
+def internal_search_instructions(
+    *, composition: bool, thorough: bool, entity_tools: bool, coverage_rules: bool = False,
+) -> str:
     """The `internal_search` addendum for these switches.
 
     `entity_tools` is whether `knowledgegraph__search_entities` is granted to
-    this chat; it only matters under `thorough`.
+    this chat; it only matters under `thorough`. `coverage_rules`
+    (COVERAGE_LOOP_PROMPT) swaps in the variants that weigh only records of
+    the same scope as versions.
     """
+    seek_versions = _SEEK_OTHER_VERSIONS_COVERAGE if coverage_rules else _SEEK_OTHER_VERSIONS
+    resolve = _RESOLVE_CONFLICTS_COVERAGE if coverage_rules else _RESOLVE_CONFLICTS
     paragraphs = [_GROUNDING, _READ_IN_FULL if thorough else _FETCH_WHEN_NEEDED]
     if thorough:
         or_entity = " or entity" if entity_tools else ""
@@ -148,9 +177,9 @@ def internal_search_instructions(*, composition: bool, thorough: bool, entity_to
             + _LIST_THE_SET.format(or_entity=or_entity)
         )
     if composition:
-        versions = _SEEK_OTHER_VERSIONS if thorough else _REPORT_VERSIONS
-        paragraphs.append(f"{_COMPOSE} {versions} {_RESOLVE_CONFLICTS}")
+        versions = seek_versions if thorough else _REPORT_VERSIONS
+        paragraphs.append(f"{_COMPOSE} {versions} {resolve}")
         paragraphs.append(_SECOND_VALUE)
     elif thorough:
-        paragraphs.append(_SEEK_OTHER_VERSIONS)
+        paragraphs.append(seek_versions)
     return "\n\n".join(paragraphs)

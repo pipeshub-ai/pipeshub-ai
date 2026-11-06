@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -1191,6 +1192,60 @@ class TestKeywordSearchBudget:
         assert waited.await_args.kwargs["wait_budget"] == expected
         # What grep finds lands in the dict the wait keeps on a cut-off.
         assert waited.await_args.kwargs["found_so_far"] is grep.call_args.kwargs["found"]
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("requested", "high_accuracy", "expected"), [
+        (None, None, 4.0), ("short", None, 4.0), (None, "true", 4.0), ("short", "true", 4.0),
+    ])
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_caller_with_its_own_timeout_caps_the_wait(
+        self, mock_parse, monkeypatch, requested, high_accuracy, expected,
+    ) -> None:
+        if high_accuracy is None:
+            monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+        else:
+            monkeypatch.setenv("HIGH_ACCURACY_MODE", high_accuracy)
+        state = _entity_search_state(_empty_retrieval(), keyword_search_budget=requested)
+        waited = AsyncMock(return_value=[])
+
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[])), \
+                patch(f"{search_mod}.await_pattern_match", waited):
+            await execute_search(state, "roadmap", keyword_wait_s=4.0)
+
+        assert waited.await_args.kwargs["wait_budget"] == expected
+
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_cut_off_keyword_search_is_not_waited_for_again(self, mock_parse, monkeypatch) -> None:
+        """Once the capped wait gave up and the task's short cleanup grace ran
+        out, the search returns without waiting on that cleanup a second time,
+        however long the cleanup takes."""
+        monkeypatch.setattr("app.utils.pattern_match.KEYWORD_SEARCH_CLEANUP_GRACE_SECS", 0.05)
+        cleanup_may_finish = asyncio.Event()
+
+        async def _slow_to_stop(**_kwargs: object) -> list[dict]:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                # A cleanup that outlasts every further cancel.
+                while not cleanup_may_finish.is_set():
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await cleanup_may_finish.wait()
+                raise
+            return []
+
+        state = _entity_search_state(_empty_retrieval())
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", new=_slow_to_stop):
+            search = asyncio.ensure_future(execute_search(state, "roadmap", keyword_wait_s=0.05))
+            # Not `wait_for`: cancelling a search stuck on that cleanup would hang the test too.
+            done, _ = await asyncio.wait({search}, timeout=3)
+            cleanup_may_finish.set()
+            await search
+        assert search in done
 
 
 class TestUnknownEntityIds:

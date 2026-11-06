@@ -641,6 +641,33 @@ def _extract_record_id_from_url(url: str) -> str | None:
     return None
 
 
+_CITED_REF_RE = re.compile(r'\b(ref\d+)\b')
+
+
+def cited_blocks(text: str, ref_to_url: Mapping[str, str] | None) -> dict[str, list[int]]:
+    """Block indices an answer cites per record id through its `refN` markers,
+    records in first-cited order; a record cited only at its landing page maps
+    to no indices."""
+    if not text or not ref_to_url:
+        return {}
+    blocks: dict[str, list[int]] = {}
+    for ref in _CITED_REF_RE.findall(text):
+        url = ref_to_url.get(ref)
+        record_id = _extract_record_id_from_url(url) if url else None
+        if not url or not record_id:
+            continue
+        indices = blocks.setdefault(record_id, [])
+        index = _extract_block_index_from_url(url)
+        if index is not None and index not in indices:
+            indices.append(index)
+    return blocks
+
+
+def cited_record_ids(text: str, ref_to_url: Mapping[str, str] | None) -> list[str]:
+    """Record ids an answer cites through its `refN` markers, first cited first."""
+    return list(cited_blocks(text, ref_to_url))
+
+
 def _find_record_by_id(
     record_id: str,
     records: list[dict[str, Any]],

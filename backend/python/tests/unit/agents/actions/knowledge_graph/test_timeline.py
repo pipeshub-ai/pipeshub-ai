@@ -745,6 +745,18 @@ class TestTheSearchToolOverAWideSpan:
         assert result == "ranked"
 
     @pytest.mark.asyncio
+    async def test_a_search_sized_by_its_caller_stays_ranked(self) -> None:
+        """A timeline is sized to the request's cap, not to the caller's."""
+        corpus = _Corpus(_THREE_MONTHS)
+
+        result, ranked = await _run_search(
+            corpus, created_after="2026-03-01", created_before="2026-05-31", max_result_chars=16_000,
+        )
+
+        assert result == "ranked"
+        assert ranked.await_args.kwargs["max_result_chars"] == 16_000
+
+    @pytest.mark.asyncio
     async def test_switched_off_it_stays_ranked(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "false")
         corpus = _Corpus(_THREE_MONTHS)

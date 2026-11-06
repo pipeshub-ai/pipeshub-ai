@@ -83,7 +83,8 @@ def _state(**extra: Any) -> dict[str, Any]:  # noqa: ANN401
 
 
 async def _search(
-    state: dict[str, Any], records: dict[str, Any], units: list[dict[str, Any]], **patches: Any,  # noqa: ANN401
+    state: dict[str, Any], records: dict[str, Any], units: list[dict[str, Any]],
+    *, max_result_chars: int | None = None, **patches: Any,  # noqa: ANN401
 ) -> str | list[Any]:
     async def flatten(_results, _blob, _org, _mm, vr_map, *_a, **_kw) -> list[dict[str, Any]]:
         vr_map.update(records)
@@ -94,8 +95,8 @@ async def _search(
             patch(f"{_SEARCH}.BlobStorage"):
         if "cap" in patches:
             with patch(f"{_SEARCH}.DEFAULT_MAX_RESULT_CHARS", patches["cap"]):
-                return await execute_search(state, "annual fee")
-        return await execute_search(state, "annual fee")
+                return await execute_search(state, "annual fee", max_result_chars=max_result_chars)
+        return await execute_search(state, "annual fee", max_result_chars=max_result_chars)
 
 
 def _five_records() -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -117,6 +118,20 @@ class TestFitsTheToolResultCap:
         assert "lower-ranked records left out to fit the result size" in result
         assert "v0 xxx" in result
         assert "v4 xxx" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("cap", "size"), [(32_000, 3_000), (3_000, 32_000)])
+    async def test_a_caller_may_size_the_result_below_the_cap_but_not_above(self, cap: int, size: int) -> None:
+        """A search run in code beside others asks for less; more than the
+        request's cap would only be cut mid-record."""
+        records, units = _five_records()
+
+        result = await _search(_state(), records, units, cap=cap, max_result_chars=size)
+
+        assert isinstance(result, str)
+        assert len(result) <= 3_000
+        assert "lower-ranked records left out to fit the result size" in result
+        assert "v0 xxx" in result
 
     @pytest.mark.asyncio
     async def test_state_and_trace_hold_exactly_what_was_shown(self) -> None:
@@ -418,7 +433,9 @@ class TestManyGrepOnlyRecords:
     passages the search exists to show."""
 
     @staticmethod
-    async def _search_with_grep_only(state: dict[str, Any], count: int) -> str | list[Any]:
+    async def _search_with_grep_only(
+        state: dict[str, Any], count: int, max_result_chars: int | None = None,
+    ) -> str | list[Any]:
         records = {f"v{i:02d}": _record(f"v{i:02d}") for i in range(16)}
         units = [_unit(vrid, 1, f"{vrid} " + "x" * 2_000, 0.9 - i / 100) for i, vrid in enumerate(records)]
 
@@ -430,7 +447,7 @@ class TestManyGrepOnlyRecords:
         grep = [{"virtual_record_id": f"g{i:02d}"} for i in range(count)]
         with patch(f"{_SEARCH}.run_pattern_match_with_llm_grep", AsyncMock(return_value=grep)), \
                 patch(f"{_SEARCH}.merge_pattern_match_results", side_effect=merge):
-            return await _search(state, records, units, cap=32_000)
+            return await _search(state, records, units, cap=32_000, max_result_chars=max_result_chars)
 
     @staticmethod
     def _shown(result: str) -> int:
@@ -479,6 +496,19 @@ class TestManyGrepOnlyRecords:
             assert f"rec-g{i:02d}" not in state["known_record_ids"]
         if unlisted:
             assert f"{len(unlisted)} more keyword-matched record" in result
+
+    @pytest.mark.asyncio
+    async def test_a_callers_smaller_size_sizes_the_share(self) -> None:
+        """A share of the request's cap could take half of a smaller result."""
+        from app.agents.actions.knowledge_graph.ops.search import _GREP_ONLY_HINT_SHARE
+
+        result = await self._search_with_grep_only(_state(config_service=MagicMock()), 45, max_result_chars=16_000)
+
+        assert isinstance(result, str)
+        assert len(result) <= 16_000
+        hint = result[result.index("Additional records found via pattern matching"):]
+        assert len(hint) <= 16_000 // _GREP_ONLY_HINT_SHARE + 600
+        assert self._shown(result) > 0
 
     @pytest.mark.asyncio
     async def test_a_few_grep_only_records_render_as_before(self) -> None:

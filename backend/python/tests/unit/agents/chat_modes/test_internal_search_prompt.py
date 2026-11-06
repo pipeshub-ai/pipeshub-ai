@@ -174,3 +174,52 @@ class TestEveryCombination:
     ) -> None:
         first = _text(composition=composition, thorough=thorough, entity_tools=entity_tools)
         assert first == _text(composition=composition, thorough=thorough, entity_tools=entity_tools)
+
+
+class TestCoverageRules:
+    """COVERAGE_LOOP_PROMPT: majority and recency only between records of one
+    scope, after the kind of document the question names."""
+
+    _MAJORITY_TAIL = "the value most independent sources state; the most recent,"
+
+    def test_off_is_the_text_as_before(self) -> None:
+        for composition, thorough, entity_tools in itertools.product((False, True), repeat=3):
+            kwargs = {"composition": composition, "thorough": thorough, "entity_tools": entity_tools}
+            assert internal_search_instructions(**kwargs, coverage_rules=False) == internal_search_instructions(**kwargs)
+
+    def test_majority_and_recency_only_within_one_scope_after_the_named_kind(self) -> None:
+        before = internal_search_instructions(composition=True, thorough=True, entity_tools=False)
+        after = internal_search_instructions(composition=True, thorough=True, entity_tools=False, coverage_rules=True)
+        assert self._MAJORITY_TAIL in before
+        assert self._MAJORITY_TAIL not in after
+        named = after.index("the record of the kind the question names")
+        assert named < after.index("only between records giving a value for the same item in the same scope")
+        assert "is not a rival version: leave it out" in after
+        assert "(an upload time is neither)" in after
+        assert "a record is another version only if it gives a value for the same item in the same scope" in after
+
+    def test_without_composition_only_the_versions_rule_changes(self) -> None:
+        before = internal_search_instructions(composition=False, thorough=True, entity_tools=False)
+        after = internal_search_instructions(composition=False, thorough=True, entity_tools=False, coverage_rules=True)
+        assert after.startswith(before[:-1])
+        assert after.endswith("not a lookalike about another one.")
+
+    def test_the_bridge_follows_the_coverage_prompt_switch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agents.chat_modes.bridge import _apply_mode_instructions
+        from app.agents.chat_modes.policy import INTERNAL_SEARCH_POLICY
+
+        monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
+        monkeypatch.delenv("COVERAGE_LOOP", raising=False)
+        state: dict = {}
+        _apply_mode_instructions(state, INTERNAL_SEARCH_POLICY)
+        assert self._MAJORITY_TAIL in state["instructions"]
+
+        monkeypatch.setenv("COVERAGE_LOOP", "true")
+        state = {}
+        _apply_mode_instructions(state, INTERNAL_SEARCH_POLICY)
+        assert self._MAJORITY_TAIL not in state["instructions"]
+
+        monkeypatch.setenv("COVERAGE_LOOP_PROMPT", "false")
+        state = {}
+        _apply_mode_instructions(state, INTERNAL_SEARCH_POLICY)
+        assert self._MAJORITY_TAIL in state["instructions"]

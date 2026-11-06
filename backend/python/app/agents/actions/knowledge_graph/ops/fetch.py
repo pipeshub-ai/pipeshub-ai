@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
 from app.modules.retrieval.selection_scope import connection_sources_of
+from app.utils.coverage_switches import coverage_gate_enabled
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import ToolOutput
@@ -33,6 +34,9 @@ DEFAULT_FETCH_REASON = "Fetching full record content for comprehensive answer"
 # one of them is the model following the "read it in order" hint; on any other
 # record it is the default some models send on every call.
 FETCH_SELECTED_RECORDS_KEY = "fetch_selected_records"
+
+# Per record id, what each fetch of it rendered (`shownBlocks`, `complete`, ...).
+FETCH_RENDER_OUTCOMES_KEY = "fetch_render_outcomes"
 
 _CITATION_RULE = (
     "\n\nCite facts from the above using each block's `[refN]` id "
@@ -558,11 +562,11 @@ async def execute_fetch_record(
             if complete:
                 context.full_records_fetched.add(rid)
                 context.tool_state.setdefault("full_records_fetched", set()).add(rid)
-            if getattr(context, "include_retrieval_context", False):
+            if getattr(context, "include_retrieval_context", False) or coverage_gate_enabled():
                 # The record lands in `virtual_record_id_to_result` whole, but
-                # only the budgeted blocks reach the model; the ledger reports
-                # that difference, which nothing else records.
-                context.tool_state.setdefault("fetch_render_outcomes", {}).setdefault(
+                # only the budgeted blocks reach the model; the ledger and the
+                # coverage gate read that difference, which nothing else records.
+                context.tool_state.setdefault(FETCH_RENDER_OUTCOMES_KEY, {}).setdefault(
                     str(rid), [],
                 ).append({
                     "virtualRecordId": record.get("virtual_record_id"),
