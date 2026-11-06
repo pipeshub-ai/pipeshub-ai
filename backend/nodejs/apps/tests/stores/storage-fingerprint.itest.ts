@@ -805,6 +805,7 @@ suite('document fingerprint', function () {
         expect(all.length).to.equal(REPLAY_COUNTS[set]);
         const schedules = limit > 0 ? all.slice(0, limit) : all;
         const failures: string[] = [];
+        const tooSlow: string[] = [];
         for (const sch of schedules) {
           // the port of the model must agree with the model's own expectation, or the replay proves nothing
           for (const em of ['strong', 'coarse'] as const) {
@@ -820,11 +821,15 @@ suite('document fingerprint', function () {
             r.failures.length > 0 && r.timingViolated && !r.failures.some((f) => f.includes('different contents'));
           let result = await replay(sch);
           for (let attempt = 1; attempt < 3 && inconclusive(result); attempt++) result = await replay(sch);
-          if (inconclusive(result))
-            result.failures.push(`${sch.id}: HARNESS_TIMING: inconclusive on all 3 attempts, the machine is too slow to judge this schedule`);
+          if (inconclusive(result)) {
+            tooSlow.push(sch.id);
+            result.failures.unshift(`${sch.id}: HARNESS_TIMING: inconclusive on all 3 attempts, the machine is too slow to judge this schedule`);
+          }
           failures.push(...result.failures);
         }
-        expect(failures.slice(0, 10), `${failures.length} mismatches`).to.deep.equal([]);
+        // named apart from the first ten, so a timing diagnosis is never hidden behind other mismatches
+        const timing = tooSlow.length ? `; HARNESS_TIMING on ${tooSlow.length}: ${tooSlow.slice(0, 10).join(', ')}` : '';
+        expect(failures.slice(0, 10), `${failures.length} mismatches${timing}`).to.deep.equal([]);
       });
     }
   });
