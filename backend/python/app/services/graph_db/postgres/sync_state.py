@@ -20,7 +20,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
     promoted_duplicate_extraction_status,
 )
-from app.services.graph_db.postgres.base import PgBase, _arango, _doc, _j
+from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.records import _vis
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -51,13 +51,15 @@ class SyncStateMixin(PgBase):
 
     async def update_user_sync_state(self, user_email: str, state: str, service_type: str, transaction: str | None = None) -> dict | None:
         org = current_org_id()
+        change = {"syncState": state, "lastSyncUpdate": get_epoch_timestamp_in_ms()}
+        _VALIDATOR.validate_edge_update(CollectionNames.USER_APP_RELATION.value, change)
         try:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.update_user_sync_state */ UPDATE graph.edges e SET doc = e.doc || $4::jsonb FROM graph.nodes u, graph.nodes a
                 WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.to_coll = 'apps'
                   AND u.org_id = e.org_id AND u.coll = 'users' AND u.id = e.from_id AND u.doc->>'email' = $2
                   AND a.org_id = e.org_id AND a.coll = 'apps' AND a.id = e.to_id AND a.doc->>'name' = $3
                 RETURNING e.doc, e.from_id, e.to_id""",
-                                                     org, user_email, service_type, _j({"syncState": state, "lastSyncUpdate": get_epoch_timestamp_in_ms()})), transaction, write=True)
+                                                     org, user_email, service_type, _j(change)), transaction, write=True)
         except Exception as e:
             self.logger.error(f"❌ Update user sync state failed: {e}")
             return None
@@ -146,6 +148,7 @@ class SyncStateMixin(PgBase):
         included = [s for s in (only_statuses or []) if isinstance(s, str) and s]
         if only_statuses is not None and not included:
             return
+        _VALIDATOR.validate_node_update(CollectionNames.RECORDS.value, {"indexingStatus": status, **({"reason": reason} if reason is not None else {})})
         try:
             await self._q(lambda tx: tx.execute("""/* pipeshub:graph.reset_indexing_status_for_connector */ UPDATE graph.nodes n
                 SET doc = n.doc || jsonb_build_object('indexingStatus', $3::text) || CASE WHEN $7::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('reason', $7::text) END
