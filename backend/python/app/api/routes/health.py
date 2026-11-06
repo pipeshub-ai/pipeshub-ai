@@ -1681,8 +1681,8 @@ async def _probe_image_embedding(
 
     if multimodal_provider is None or not multimodal_provider.supports_multimodal():
         return (
-            f"Provider '{provider}' has no image-embedding support in PipesHub, "
-            "so images would never be indexed for this model."
+            f"Provider '{provider}' has no image-embedding support in PipesHub for this "
+            "model, so its images would only be indexed by their descriptions."
         )
 
     try:
