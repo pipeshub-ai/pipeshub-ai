@@ -595,6 +595,19 @@ class TestConcreteMethodCalls:
     """Verify that async abstract methods on a concrete subclass can be awaited."""
 
     @pytest.mark.asyncio
+    async def test_replace_edges_to_default_deletes_then_creates(self) -> None:
+        """The default (ArangoDB) path is not the diffed Neo4j statement: delete all, then create."""
+        instance = _make_concrete_class()()
+        calls: list[str] = []
+        instance.delete_edges_to = AsyncMock(side_effect=lambda *a, **k: calls.append("delete"))
+        instance.batch_create_edges = AsyncMock(side_effect=lambda *a, **k: calls.append("create"))
+        await instance.replace_edges_to("g1", "groups", [{"x": 1}], "permission")
+        assert calls == ["delete", "create"]
+        calls.clear()
+        await instance.replace_edges_to("g1", "groups", [], "permission")
+        assert calls == ["delete"]
+
+    @pytest.mark.asyncio
     async def test_connect_can_be_awaited(self):
         ConcreteProvider = _make_concrete_class()
         instance = ConcreteProvider()
