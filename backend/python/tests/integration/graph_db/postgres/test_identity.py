@@ -260,6 +260,7 @@ CALLS = [
     ("add_user_to_all_team", ("o", "u")), ("ensure_all_team_with_users", ("o",)), ("check_api_toolset_in_use", ("i",)), ("check_mcp_instance_in_use", ("i",)),
     ("check_toolset_instance_in_use", ("i",)), ("check_connector_name_uniqueness", ("n", "team", "o", "u", "apps")),
     ("count_connector_instances_by_scope", ("apps", "team")),
+    ("get_agent", ("a",)), ("get_agents_by_model_key", ("o", "m")), ("get_agents_by_web_search_provider", ("o", "p")),
 ]
 
 
