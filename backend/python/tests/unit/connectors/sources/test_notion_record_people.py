@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.connectors.sources.notion.connector import NotionConnector
+from app.connectors.sources.notion.connector import NotionConnector, notion_person
 from app.models.entities import SourcePerson
 
 ANN = "6794760a-1f15-45cd-9c65-0dfe42f5135a"
@@ -83,3 +83,18 @@ async def test_page_without_people_names_no_one(connector) -> None:
 
     assert record.authored_by is None
     assert record.last_modified_by is None
+
+
+def test_a_partial_user_without_its_type_is_a_bot_when_the_user_sync_listed_it() -> None:
+    """Notion's partial users often omit ``type``; a bot among them must not become a person node."""
+    untyped = {"object": "user", "id": "bot-1"}
+    assert notion_person(untyped, {"bot-1"}) == SourcePerson(source_id="bot-1", is_service_account=True)
+    assert notion_person(untyped, {"other-bot"}).is_service_account is False
+    assert notion_person({"object": "user", "id": "bot-2", "type": "bot"}).is_service_account is True
+
+
+def test_a_page_created_by_a_known_bot_records_it_as_a_service_account(connector: NotionConnector) -> None:
+    connector._bot_user_ids = {"bot-1"}
+    person = notion_person({"object": "user", "id": "bot-1"}, connector._bot_user_ids)
+    assert person is not None and person.is_service_account is True
+

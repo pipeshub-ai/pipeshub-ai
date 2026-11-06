@@ -184,7 +184,10 @@ class NotionPersonalConnector(NotionConnector):
                 self.logger.error(f"❌ Failed to retrieve bot user: {error_msg}")
                 raise Exception(f"Notion API error while retrieving bot user: {error_msg}")
 
-            bot_data = (response.data.json() if response.data else {}).get("bot", {})
+            bot_user = response.data.json() if response.data else {}
+            if bot_user.get("id"):
+                self._bot_user_ids.add(bot_user["id"])
+            bot_data = bot_user.get("bot", {})
             workspace_id = bot_data.get("workspace_id")
 
             if not workspace_id:

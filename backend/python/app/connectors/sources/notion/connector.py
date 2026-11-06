@@ -13,7 +13,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, NoReturn, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Awaitable, Callable, Collection, Dict, List, NoReturn, Optional, Tuple, Union
 from http import HTTPStatus
 from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
@@ -195,11 +195,12 @@ def _indexing_status_outdated(record: Record, *, enabled: bool) -> bool:
     return status in _WAITING_FOR_INDEXING
 
 
-def notion_person(user: dict[str, Any] | None) -> SourcePerson | None:
-    """A Notion partial user ({object, id}, ``type`` only sometimes) as a SourcePerson."""
+def notion_person(user: dict[str, Any] | None, bot_ids: Collection[str] = ()) -> SourcePerson | None:
+    """A Notion partial user ({object, id}, ``type`` only sometimes) as a SourcePerson. A partial user
+    without its type is a bot when the user sync listed its id as one."""
     if not isinstance(user, dict) or not user.get("id"):
         return None
-    return SourcePerson(source_id=user["id"], is_service_account=user.get("type") == "bot")
+    return SourcePerson(source_id=user["id"], is_service_account=user.get("type") == "bot" or user["id"] in bot_ids)
 
 
 def _edit_part(revision: str | None) -> str | None:
@@ -458,6 +459,7 @@ class NotionConnector(BaseConnector):
         # Tracking state for deduplication
         # Workspace information from bot owner
         self.workspace_id: Optional[str] = None
+        self._bot_user_ids: set[str] = set()  # from the user sync; marks a page's untyped partial users
         self.workspace_name: Optional[str] = None
         # Set during a sync when part of the source was not read (a walk cut short, a page
         # whose attachments or comments failed, a user read that stopped early). Read by
@@ -2125,6 +2127,8 @@ class NotionConnector(BaseConnector):
                     if user_type == "person" and user.get("id"):
                         person_user_ids.append(user.get("id"))
                     elif user_type == "bot":
+                        if user.get("id"):
+                            self._bot_user_ids.add(user["id"])
                         # Bot users contain workspace information
                         bot_data = user.get("bot", {})
                         workspace_id = bot_data.get("workspace_id")
@@ -4978,8 +4982,8 @@ class NotionConnector(BaseConnector):
                 weburl=obj_data.get("url"),
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
-                authored_by=notion_person(obj_data.get("created_by")),
-                last_modified_by=notion_person(obj_data.get("last_edited_by")),
+                authored_by=notion_person(obj_data.get("created_by"), self._bot_user_ids),
+                last_modified_by=notion_person(obj_data.get("last_edited_by"), self._bot_user_ids),
             )
 
         except _DatabaseUnavailable:

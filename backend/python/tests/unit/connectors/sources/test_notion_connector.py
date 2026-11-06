@@ -968,6 +968,7 @@ class TestNotionSyncUsersWorkspace:
         # Verify workspace was extracted from bot user
         assert connector.workspace_id == "ws-1"
         assert connector.workspace_name == "My Workspace"
+        assert connector._bot_user_ids == {"bot-1"}  # so a page's untyped partial bot user is no person
         connector._create_workspace_record_group.assert_awaited_once()
         connector.data_entities_processor.on_new_app_users.assert_awaited()
         connector._add_users_to_workspace_permissions.assert_awaited_once_with(
