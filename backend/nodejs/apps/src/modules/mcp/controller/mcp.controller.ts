@@ -7,8 +7,6 @@
 
 import { createHash } from 'crypto';
 import { KeyObject } from 'node:crypto';
-import { getCurrentOrgId } from '../../../libs/context/orgContext';
-import { getRequestContext } from '../../../libs/context/request-context';
 import { Response, NextFunction } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
@@ -19,8 +17,6 @@ import {
   relayKey,
   signMcpRelay,
 } from '../../../libs/middlewares/mcp-relay';
-import { sendMcpError } from '../middlewares/mcp-guard.middleware';
-import { insufficientScopeChallenge, missingToolScopes } from '../step-up';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import {
   clientTags,
@@ -48,8 +44,6 @@ const logger = Logger.getInstance({
 const mcpServerModule = import('@pipeshub-ai/mcp/esm/mcp-server/server.js');
 const coreModule = import('@pipeshub-ai/mcp/esm/core.js');
 const httpModule = import('@pipeshub-ai/mcp/esm/lib/http.js');
-const oauthScopesModule =
-  import('@pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js');
 
 /**
  * Activation signals for the MCP path. The transport is stateless, so every
@@ -173,44 +167,6 @@ export function mcpToolScopes(
     : ['read', 'write'];
 }
 
-/** The scopes an OAuth token or PAT holds; undefined for a caller that is not scope-limited. */
-function heldOAuthScopes(
-  user: Record<string, unknown> | undefined,
-): string[] | undefined {
-  if (user?.isOAuth !== true) return undefined;
-  const scopes: unknown = user.oauthScopes;
-  return Array.isArray(scopes)
-    ? scopes.filter((s): s is string => typeof s === 'string')
-    : [];
-}
-
-/**
- * The audit trail of tool calls: who called which tool through which app, for how long and
- * whether it failed. Argument names only, never their values or what the tool returned.
- */
-function auditToolCall(
-  req: AuthenticatedUserRequest,
-  call: {
-    tool: string;
-    durationMs: number;
-    isError: boolean;
-    argumentNames: string[];
-  },
-): void {
-  const user: Record<string, unknown> | undefined = req.user;
-  logger.info('MCP tool call', {
-    audit: 'mcp_tool_call',
-    orgId: getCurrentOrgId(),
-    userId: user?.userId,
-    clientId: user?.oauthClientId,
-    tool: call.tool,
-    durationMs: call.durationMs,
-    isError: call.isError,
-    argumentNames: call.argumentNames,
-    requestId: req.context?.requestId,
-  });
-}
-
 /** The Grafana counter for the same step: org and domain only. */
 function recordActivityFromProps(
   activityName: string,
@@ -243,28 +199,6 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       const { createMCPServer } = await mcpServerModule;
       const { PipeshubCore } = await coreModule;
       const { HTTPClient } = await httpModule;
-      const { requiredOAuthScopes } = await oauthScopesModule;
-
-      const held = heldOAuthScopes(req.user);
-      if (held) {
-        const missing = missingToolScopes(req.body, held, requiredOAuthScopes);
-        if (missing.length > 0) {
-          res.set(
-            'WWW-Authenticate',
-            insufficientScopeChallenge(
-              held,
-              missing,
-              `${appConfig.oauthIssuer}/.well-known/oauth-protected-resource/mcp`,
-            ),
-          );
-          sendMcpError(
-            res,
-            403,
-            `This needs the ${missing.join(', ')} permission, which this connection was not given. Connect again and allow it.`,
-          );
-          return;
-        }
-      }
 
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
@@ -272,8 +206,6 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       // The tools call the REST API over loopback; the header tells it those calls belong to this one.
       relaySigningKey ??= relayKey(appConfig.scopedJwtSecret);
       const relay = signMcpRelay(relaySigningKey, token);
-      const requestContext = getRequestContext();
-      if (requestContext) requestContext.mcpRelay = relay;
       const httpClient = new HTTPClient().addHook(
         'beforeRequest',
         (request) => {
@@ -292,14 +224,6 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
         },
         dynamic: false,
         scopes: mcpToolScopes(req.user),
-        // Tools are listed only when the token holds every scope they need.
-        grantedOAuthScopes: held,
-        // Chat runs the person's connected actions only for a token allowed to run agents.
-        allowChatActions:
-          held === undefined || held.includes(OAuthScopeNames.AGENT_EXECUTE),
-        onToolCall: (call) => {
-          auditToolCall(req, call);
-        },
         serverURL,
         getSDK: () =>
           new PipeshubCore({
