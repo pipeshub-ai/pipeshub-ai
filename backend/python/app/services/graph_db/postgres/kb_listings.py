@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 _KB = Connectors.KNOWLEDGE_BASE.value
 _TEMPLATES = CollectionNames.AGENT_TEMPLATES.value
 _ORG_FIELD = "orgId"  # the org property of a stored record, returned as a field; the org of a call is the ambient one
+# a grant with any other role (an unknown or stale one) opens nothing: fail closed, unlike the other stores, which show the template
+_TEMPLATE_ROLES = ["OWNER", "ORGANIZER", "WRITER", "READER"]
 _SORT_KEYS = {"name": 1, "created_at": 2, "updated_at": 3, "size": 4}
 
 
@@ -87,7 +89,7 @@ class KbListingsMixin(PgBase):
                                         FROM graph.edges ce JOIN graph.nodes c ON c.org_id = ce.org_id AND c.coll = 'records' AND c.id = ce.to_id
                                         WHERE ce.org_id = r.org_id AND ce.coll = 'nodeRelations' AND ce.doc->>'relationshipType' = 'PARENT_CHILD' AND ce.from_coll = 'records'
                                           AND ce.from_id = r.id AND ce.to_coll = 'records') cnt ON true
-                          WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND r.doc->>'mimeType' = ANY($3::text[])
+                          WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND r.doc->>'mimeType' = ANY($3::text[]) AND r.doc->>'orgId' = $1
                             AND EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $7
                                         WHERE b.org_id = r.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = r.id AND b.to_coll = 'apps' AND b.to_id = $2)
                             AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = r.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
@@ -134,6 +136,7 @@ class KbListingsMixin(PgBase):
                 recs = await tx.fetch("""/* pipeshub:graph.children_records */ WITH recs AS (
                       SELECT r.id, r.doc FROM graph.nodes r
                       WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false
+                        AND ($3::text IS NOT NULL OR r.doc->>'orgId' = $1)
                         AND CASE WHEN $3::text IS NULL
                           THEN NOT (r.doc->>'mimeType' = ANY($4::text[]))
                             AND EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $14
@@ -227,13 +230,14 @@ class KbListingsMixin(PgBase):
                     (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'string' AND $17::boolean THEN x.doc->>$14::text END) COLLATE "C" ASC,
                     (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'string' AND NOT $17::boolean THEN x.doc->>$14::text END) COLLATE "C" DESC,
                     (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'number' AND $17::boolean THEN (x.doc->>$14::text)::numeric END) ASC,
-                    (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'number' AND NOT $17::boolean THEN (x.doc->>$14::text)::numeric END) DESC, x.id) AS rn FROM kept x)
+                    (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'number' AND NOT $17::boolean THEN (x.doc->>$14::text)::numeric END) DESC, x.id, x.fid) AS rn FROM kept x)
                 SELECT s.total, s.live_n, s.facets, s.folders, p.doc, p.fdoc, p.fid, p.fname, p.rn FROM
-                  (SELECT (SELECT count(*) FROM ranked) AS total, (SELECT count(*) FROM live) AS live_n,
-                          (SELECT coalesce(jsonb_agg(jsonb_build_object('rt', g.rt, 'o', g.o, 'cn', g.cn, 'st', g.st)), '[]'::jsonb)
-                           FROM (SELECT doc->>'recordType' AS rt, doc->>'origin' AS o, doc->>'connectorName' AS cn, doc->>'indexingStatus' AS st FROM live GROUP BY 1, 2, 3, 4) g) AS facets,
-                          (SELECT coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.doc->'recordName') ORDER BY t.id), '[]'::jsonb) FROM folders t
-                           WHERE coalesce((t.doc->>'isDeleted')::boolean, false) = false) AS folders) s
+                  (SELECT (SELECT count(*) FROM ranked) AS total,
+                          CASE WHEN $5::text IS NULL THEN (SELECT count(*) FROM live) END AS live_n,
+                          CASE WHEN $5::text IS NULL THEN (SELECT coalesce(jsonb_agg(jsonb_build_object('rt', g.rt, 'o', g.o, 'cn', g.cn, 'st', g.st)), '[]'::jsonb)
+                           FROM (SELECT doc->>'recordType' AS rt, doc->>'origin' AS o, doc->>'connectorName' AS cn, doc->>'indexingStatus' AS st FROM live GROUP BY 1, 2, 3, 4) g) END AS facets,
+                          CASE WHEN $5::text IS NULL THEN (SELECT coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.doc->'recordName') ORDER BY t.id), '[]'::jsonb) FROM folders t
+                           WHERE coalesce((t.doc->>'isDeleted')::boolean, false) = false) END AS folders) s
                   LEFT JOIN LATERAL (SELECT q.doc, q.fid, q.fname, q.rn, (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = $1 AND ff.coll = 'files' AND ff.id = te.to_id
                         WHERE te.org_id = $1 AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = q.id ORDER BY ff.id LIMIT 1) AS fdoc
                      FROM (SELECT * FROM ranked WHERE rn > $15::bigint AND rn <= $15::bigint + $16::bigint) q) p ON true ORDER BY p.rn""",
@@ -357,7 +361,7 @@ class KbListingsMixin(PgBase):
             r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.get_template */ SELECT t.doc, a.access, a.role, a.pid, a.created, a.updated FROM graph.nodes t,
                 LATERAL (SELECT 'INDIVIDUAL' AS access, p.doc->>'role' AS role, p.doc->>'id' AS pid, p.doc->'createdAtTimestamp' AS created, p.doc->'updatedAtTimestamp' AS updated, 0 AS ord, 0 AS rk
                            FROM graph.nodes u JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id
-                             AND p.to_coll = 'agentTemplates' AND p.to_id = t.id AND p.doc->>'type' = 'USER'
+                             AND p.to_coll = 'agentTemplates' AND p.to_id = t.id AND p.doc->>'type' = 'USER' AND p.doc->>'role' = ANY($4::text[])
                            WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2
                          UNION ALL
                          SELECT 'TEAM', g.doc->>'role', g.doc->>'id', g.doc->'createdAtTimestamp', g.doc->'updatedAtTimestamp', 1,
@@ -366,11 +370,11 @@ class KbListingsMixin(PgBase):
                              AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER'
                              JOIN graph.nodes tm ON tm.org_id = u.org_id AND tm.coll = 'teams' AND tm.id = m.to_id
                              JOIN graph.edges g ON g.org_id = u.org_id AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = tm.id
-                             AND g.to_coll = 'agentTemplates' AND g.to_id = t.id AND g.doc->>'type' = 'TEAM'
+                             AND g.to_coll = 'agentTemplates' AND g.to_id = t.id AND g.doc->>'type' = 'TEAM' AND g.doc->>'role' = ANY($4::text[])
                            WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2
                          ORDER BY ord, rk DESC, pid LIMIT 1) a
                 WHERE t.org_id = $1 AND t.coll = 'agentTemplates' AND t.id = $3 AND coalesce((t.doc->>'isDeleted')::boolean, false) = false""",
-                                                      org, user_id, template_id), transaction)
+                                                      org, user_id, template_id, _TEMPLATE_ROLES), transaction)
         except Exception as e:
             self.logger.error("❌ Failed to get template access: %s", e)
             return None
