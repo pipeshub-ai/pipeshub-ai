@@ -686,7 +686,7 @@ class HubMixin(PgBase):
             if not user:
                 return []
             u = _doc(user["doc"])
-            kept = [a for a in map(lambda r: _doc(r["doc"]), apps) if (a.get("type") == "KB" or not a.get("hideConnector")) and a["id"] not in exclude_app_ids]
+            kept = [a for a in (_doc(r["doc"]) for r in apps) if (a.get("type") == "KB" or not a.get("hideConnector")) and a["id"] not in exclude_app_ids]
             kbs = [a["id"] for a in kept if a.get("type") == "KB"]
             filled = {r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.hub_root_kb_children */ SELECT DISTINCT e.to_id FROM graph.edges e
                 JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records'

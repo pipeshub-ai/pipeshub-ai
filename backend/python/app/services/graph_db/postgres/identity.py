@@ -76,6 +76,11 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
 
 
 
+def _far(coll: str, incoming: bool, e: dict) -> tuple:  # noqa: FBT001
+    """The identity of an edge of a user: the node at its other end and its key."""
+    return (e["from_collection"], e["from_id"], _ekey(coll, e)) if incoming else (e["to_collection"], e["to_id"], _ekey(coll, e))
+
+
 class IdentityMixin(PgBase):
     # ---- helpers -------------------------------------------------------------------------------------------------
     @contextlib.asynccontextmanager
@@ -796,12 +801,9 @@ class IdentityMixin(PgBase):
             for incoming in (False, True):
                 read = self.get_edges_to_node if incoming else self.get_edges_from_node
 
-                def ident(e: dict, incoming: bool = incoming, coll: str = coll) -> tuple:
-                    far = (e["from_collection"], e["from_id"]) if incoming else (e["to_collection"], e["to_id"])
-                    return (*far, _ekey(coll, e))
-                held = {ident(e): e for e in await read(f"users/{keep_key}", coll, tid, raise_on_error=True)}
+                held = {_far(coll, incoming, e): e for e in await read(f"users/{keep_key}", coll, tid, raise_on_error=True)}
                 for e in await read(f"users/{stub_key}", coll, tid, raise_on_error=True):
-                    k = ident(e)
+                    k = _far(coll, incoming, e)
                     have = held.get(k)
                     if k[1] in (stub_key, keep_key) or (have is not None and not (coll == "permission" and rank(e) > rank(have))):
                         continue
