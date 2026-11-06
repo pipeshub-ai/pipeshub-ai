@@ -5,7 +5,11 @@ from app.agents.actions.code_graph import neighbours as nb
 from app.agents.actions.code_graph import ops, query
 from app.agents.actions.code_graph import path as path_mod
 from app.agents.actions.code_graph.neighbours import get_neighbour_impl
-from app.agents.actions.code_graph.ops import RecordAccess, _degrees, _readable_neighbour_rows
+from app.agents.actions.code_graph.ops import (
+    RecordAccess,
+    _degrees,
+    _readable_neighbour_rows,
+)
 from app.agents.actions.code_graph.path import find_symbol_path_impl
 from app.agents.actions.code_graph.results import without_marker
 

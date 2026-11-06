@@ -280,7 +280,7 @@ async def _bfs_edges(
         phases_by_key: dict[str, list[int]] = {}
         for key, phase in frontier:
             phases_by_key.setdefault(key, []).append(phase)
-        def steppable(row: dict[str, Any]) -> bool:
+        def steppable(row: dict[str, Any], phases_by_key: dict[str, list[int]] = phases_by_key) -> bool:
             return bool(
                 row.get("collection") == _BLOCKS and row.get("key") and row.get("anchorKey")
                 and any(
