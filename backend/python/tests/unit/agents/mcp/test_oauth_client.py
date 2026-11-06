@@ -389,8 +389,9 @@ class TestErrorsInTheResponseBody:
         _json_response(400, {"error": "invalid_request"}),
     ])
     async def test_a_rejection_a_retry_cannot_fix_is_permanent(self, resp: MagicMock) -> None:
-        with pytest.raises(MCPRefreshTokenInvalidError):
+        with pytest.raises(MCPRefreshTokenInvalidError) as exc_info:
             await self._refresh(resp)
+        assert exc_info.value.status == resp.status_code
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("resp", [
@@ -404,6 +405,7 @@ class TestErrorsInTheResponseBody:
         with pytest.raises(MCPOAuthError) as exc_info:
             await self._refresh(resp)
         assert not isinstance(exc_info.value, MCPRefreshTokenInvalidError)
+        assert exc_info.value.status == resp.status_code
 
     @pytest.mark.asyncio
     async def test_the_message_names_the_error_not_the_raw_body(self) -> None:

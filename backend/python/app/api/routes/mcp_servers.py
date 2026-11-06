@@ -1845,6 +1845,9 @@ async def update_oauth_config(
 
 
 _REAUTH_REQUIRED = "Authentication with this MCP server has expired. Reconnect it to continue."
+_SIGN_IN_RENEWAL_UNAVAILABLE = (
+    "The sign-in couldn't be renewed because this server's sign-in provider is down or busy. Try again in a few minutes."
+)
 # No token can fix this one: only whoever can edit the instance (an administrator, or a personal
 # server's owner) choosing the auth mode the server needs.
 _SIGN_IN_WITHOUT_AUTH = "This server asks for a sign-in, but it's set to No authentication."
@@ -1947,8 +1950,9 @@ async def _discover_listing_tools(
             )
         except (mcp_token_refresh.MCPTokenRefreshError, oauth_client_module.MCPOAuthError) as e:
             logger.warning(f"MCP token refresh during discovery failed for instance {instance['_id']}: {e}")
-            entry["toolsErrorCode"] = "auth_expired"
-            entry["toolsError"] = _REAUTH_REQUIRED
+            reason = classify_mcp_failure(e)
+            entry["toolsErrorCode"] = reason.value
+            entry["toolsError"] = _REAUTH_REQUIRED if reason in SIGN_IN_FAILURES else _SIGN_IN_RENEWAL_UNAVAILABLE
         except Exception as e:
             logger.warning(f"Unexpected error discovering tools for MCP instance {instance['_id']}: {e}")
             entry["toolsErrorCode"] = "error"
@@ -2077,7 +2081,11 @@ async def get_instance_tools(request: Request, instance_id: str, *, cached: bool
         ) from e
     except (mcp_token_refresh.MCPTokenRefreshError, oauth_client_module.MCPOAuthError) as e:
         logger.warning(f"MCP token refresh during discovery failed for instance {instance_id}: {e}")
-        raise HTTPException(status_code=HttpStatusCode.CONFLICT.value, detail=_REAUTH_REQUIRED) from e
+        if classify_mcp_failure(e) in SIGN_IN_FAILURES:
+            raise HTTPException(status_code=HttpStatusCode.CONFLICT.value, detail=_REAUTH_REQUIRED) from e
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_GATEWAY.value, detail=action_failed("load this MCP server's tools"),
+        ) from e
 
     return {"tools": [t.model_dump(by_alias=True) for t in tools], "syncedAt": get_epoch_timestamp_in_ms()}
 

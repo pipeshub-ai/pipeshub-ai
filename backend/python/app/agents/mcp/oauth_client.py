@@ -34,11 +34,12 @@ _MAX_ERROR_TEXT_CHARS = 500
 
 class MCPOAuthError(Exception):
     """Raised when a token exchange/refresh request fails. `error_code` is the RFC 6749 `error`
-    the provider sent, when it sent one."""
+    the provider sent, when it sent one; `status` is the token endpoint's HTTP status, when it answered."""
 
-    def __init__(self, message: str = "", *, error_code: Optional[str] = None) -> None:
+    def __init__(self, message: str = "", *, error_code: Optional[str] = None, status: Optional[int] = None) -> None:
         super().__init__(message)
         self.error_code = error_code
+        self.status = status
 
     @property
     def rejected_client(self) -> bool:
@@ -130,8 +131,11 @@ async def _post_token_request(
             if is_permanent_grant_rejection(text, error_code, _PERMANENT_ERROR_CODES, status=resp.status_code):
                 raise MCPRefreshTokenInvalidError(
                     f"OAuth token request rejected ({resp.status_code}): {detail}", error_code=error_code,
+                    status=resp.status_code,
                 )
-            raise MCPOAuthError(f"OAuth token request failed ({resp.status_code}): {detail}", error_code=error_code)
+            raise MCPOAuthError(
+                f"OAuth token request failed ({resp.status_code}): {detail}", error_code=error_code, status=resp.status_code,
+            )
         return body
 
 
