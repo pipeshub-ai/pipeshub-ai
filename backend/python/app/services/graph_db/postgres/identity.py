@@ -755,7 +755,7 @@ class IdentityMixin(PgBase):
         connector that knows only an email would blank). Two creators of one email are serialised by a lock on it. A person of another org is refused."""
         org = current_org_id()
         node = person.to_arango_person()
-        self._require_org(node.get("orgId"))
+        self._require_org(person.org_id)
         async with self._atomic(transaction) as tid:
             await self._id_rows("/* pipeshub:graph.upsert_person_lock */ SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [f"person:{org}:{node['email']}"], tid, write=True)
             rows = await self._id_rows("/* pipeshub:graph.upsert_person_find */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'person' AND doc->>'email' = $2 ORDER BY id LIMIT 1",
