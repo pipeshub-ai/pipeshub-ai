@@ -345,7 +345,7 @@ async def test_folder_checks_know_membership_trash_names_depth_and_height(w: Wor
     assert await v("kb1", "gone", visibility=RecordVisibility.ALL) and await v("kb1", "gone", visibility=RecordVisibility.DELETED)
     assert not await v("kb1", "top", visibility=RecordVisibility.DELETED)
     assert await w.p.validate_folder_exists_in_kb("kb1", "gone") and not await w.p.validate_folder_exists_in_kb("kb2", "gone")
-    assert not await v("kb1", "top") or True
+    assert await v("kb1", "top")                                    # the anchor of the other-org check below
     with other_org():
         assert not await v("kb1", "top")
 
