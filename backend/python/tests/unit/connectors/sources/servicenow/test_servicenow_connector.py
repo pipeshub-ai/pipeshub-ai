@@ -2849,6 +2849,47 @@ class TestRecordRevision:
         # sys_updated_on moves with no change to the bytes, which never change
         assert record.external_revision_id == "1024:2026-08-01 10:00:00"
 
+    @pytest.mark.asyncio
+    async def test_a_changed_body_publishes_a_content_update(self, servicenow_connector):
+        stored = servicenow_connector._transform_to_article_webpage_record(
+            KBKnowledge(sys_id="art1", number="KB-art1", short_description="Title",
+                        text="<p>a</p>", kb_category="cat1", sys_updated_on="2026-08-26 09:15:00")
+        )
+        stored.version = 2
+        incoming = servicenow_connector._transform_to_article_webpage_record(
+            KBKnowledge(sys_id="art1", number="KB-art1", short_description="Title",
+                        text="<p>b</p>", kb_category="cat1", sys_updated_on="2026-08-26 09:15:00")
+        )
+        incoming.rewrite_permissions = True
+        grant = object()
+        servicenow_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        await servicenow_connector._save_article_records([(incoming, [grant])])
+
+        servicenow_connector.data_entities_processor.on_record_content_update.assert_awaited_once_with(
+            incoming, [grant],
+        )
+        servicenow_connector.data_entities_processor.on_new_records.assert_not_awaited()
+        assert incoming.version == 3
+
+    @pytest.mark.asyncio
+    async def test_a_touch_that_does_not_change_the_body_stays_an_upsert(self, servicenow_connector):
+        stored = servicenow_connector._transform_to_article_webpage_record(
+            KBKnowledge(sys_id="art1", number="KB-art1", short_description="Title",
+                        text="<p>a</p>", kb_category="cat1", sys_updated_on="2026-08-26 09:15:00")
+        )
+        stored.version = 2
+        incoming = servicenow_connector._transform_to_article_webpage_record(
+            KBKnowledge(sys_id="art1", number="KB-art1", short_description="Title",
+                        text="<p>a</p>", kb_category="cat1", sys_updated_on="2026-08-26 11:42:00")
+        )
+        servicenow_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        await servicenow_connector._save_article_records([(incoming, [])])
+
+        servicenow_connector.data_entities_processor.on_new_records.assert_awaited_once_with([(incoming, [])])
+        servicenow_connector.data_entities_processor.on_record_content_update.assert_not_awaited()
+
 
 class TestArticleReadCriteriaResolution:
     """The property decides who reaches an article, so a read that fails must

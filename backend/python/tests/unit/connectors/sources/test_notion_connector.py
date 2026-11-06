@@ -56,6 +56,7 @@ def _make_connector():
     data_entities_processor.org_id = "org-1"
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
+    data_entities_processor.on_record_content_update = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
@@ -2428,6 +2429,7 @@ def _make_connector_fullcov():
     dep.org_id = "org-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_records = AsyncMock()
+    dep.on_record_content_update = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
@@ -2993,16 +2995,40 @@ class TestReindexRecords:
         )
 
     @pytest.mark.asyncio
-    async def test_updated_record_goes_through_on_new_records(self):
+    async def test_updated_record_publishes_a_content_update(self):
         conn = _make_connector_fullcov()
         record = _make_webpage_record(external_revision_id="old")
         updated = _make_webpage_record(external_revision_id="new")
         conn._check_and_fetch_updated_record = AsyncMock(return_value=(updated, []))
         await conn.reindex_records([record])
-        conn.data_entities_processor.on_new_records.assert_awaited_once_with(
-            [(updated, [])]
-        )
+        conn.data_entities_processor.on_record_content_update.assert_awaited_once_with(updated)
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
         conn.data_entities_processor.reindex_existing_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_changed_page_publishes_a_content_update(self):
+        conn = _make_connector_fullcov()
+        stored = _make_webpage_record(external_revision_id="old", version=2)
+        incoming = _make_webpage_record(external_revision_id="new", version=0)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        await conn._save_content_records([(incoming, [])])
+
+        conn.data_entities_processor.on_record_content_update.assert_awaited_once_with(incoming)
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
+        assert incoming.version == 3
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_page_stays_an_upsert(self):
+        conn = _make_connector_fullcov()
+        stored = _make_webpage_record(external_revision_id="same", version=2)
+        incoming = _make_webpage_record(external_revision_id="same", version=0)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        await conn._save_content_records([(incoming, [])])
+
+        conn.data_entities_processor.on_new_records.assert_awaited_once_with([(incoming, [])])
+        conn.data_entities_processor.on_record_content_update.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_is_raised(self):
@@ -6816,8 +6842,10 @@ class TestReindexSuppressesGoneRecords:
 
         await conn.reindex_records([gone, stale, same])
 
-        conn.data_entities_processor.on_new_records.assert_awaited_once_with([(updated, [])])
+        conn.data_entities_processor.on_record_content_update.assert_awaited_once_with(updated)
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
         conn.data_entities_processor.reindex_existing_records.assert_awaited_once_with([same])
+        assert updated.version == 2
 
 
 class TestCheckAndFetchGoneVerdict:

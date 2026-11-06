@@ -202,6 +202,7 @@ class FakeRecordStore:
 
     def attach(self, processor: object) -> FakeRecordStore:
         processor.on_new_records = AsyncMock(side_effect=self.on_new_records)
+        processor.on_record_content_update = AsyncMock(side_effect=self.on_record_content_update)
         processor.get_record_by_external_id = AsyncMock(side_effect=self.get_record_by_external_id)
         processor.delete_record_by_external_id = AsyncMock(side_effect=self.delete_record_by_external_id)
         processor.on_record_deleted = AsyncMock(side_effect=self.on_record_deleted)
@@ -212,6 +213,9 @@ class FakeRecordStore:
 
     def keys(self, record_type: str | None = None) -> list[str]:
         return sorted(k for k, r in self.records.items() if record_type is None or r.record_type == record_type)
+
+    async def on_record_content_update(self, record: Any, permissions: list | None = None) -> None:
+        await self.on_new_records([(record, [] if permissions is None else permissions)])
 
     async def on_new_records(self, pairs: list[tuple[Any, list]]) -> None:
         for record, permissions in pairs:
@@ -296,7 +300,15 @@ def wire_listing(sc, fake: FakeServiceNow, checkpoint: str | None = None) -> Non
 
 
 def written_ids(sc) -> list[str]:
-    return [r.external_record_id for c in sc.data_entities_processor.on_new_records.await_args_list for r, _ in c.args[0]]
+    """External ids written this run, whether as a new record or a content update."""
+    saved = [
+        r.external_record_id
+        for c in sc.data_entities_processor.on_new_records.await_args_list for r, _ in c.args[0]
+    ]
+    updates = getattr(sc.data_entities_processor, "on_record_content_update", None)
+    if updates is not None:
+        saved.extend(c.args[0].external_record_id for c in updates.await_args_list)
+    return saved
 
 
 KB1 = "KB0000001"
