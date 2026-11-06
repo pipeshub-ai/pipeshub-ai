@@ -494,6 +494,15 @@ async def test_a_worker_cannot_give_back_a_claim_another_worker_holds(pg_db) -> 
     assert await restamp.release(pg_db, org, job, "w1") is True and await restamp.release(pg_db, org, job, "w1") is False
 
 
+async def test_a_worker_whose_stale_claim_was_taken_over_cannot_give_the_new_claim_back(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await one_job_hidden(p, pg_db, org)
+    old = await restamp.claim(pg_db, org, "w1")
+    assert await restamp.claim(pg_db, org, "w2", stale_ms=0) is not None                       # w1 went quiet: w2 takes the job over
+    assert await restamp.release(pg_db, org, old, "w1") is False                              # w1 stops late and gives back nothing
+    assert [r["claimed_by"] for r in await claimed_by(pg_db, org)] == ["w2"]
+
+
 async def test_a_claim_that_was_not_given_back_is_still_taken_only_once_it_is_stale(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await one_job_hidden(p, pg_db, org)

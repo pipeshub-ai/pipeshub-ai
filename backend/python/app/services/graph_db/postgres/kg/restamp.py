@@ -199,7 +199,7 @@ async def release(db: KernelDB, org: str, job: Job, worker: str) -> bool:
         with bind(_ctx(org)):
             return await db.run(go, write=True)
     except Exception:
-        logger.exception("kg restamp job %s: the claim could not be given back; it is claimed again after %s ms", job.id, STALE_MS)
+        logger.exception("kg restamp job %s: the claim could not be given back; it is claimed again once it is stale", job.id)
         return False
 
 
