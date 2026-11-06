@@ -262,3 +262,44 @@ async def test_degrees_log_a_failed_fetch_but_raise_a_failed_access_check() -> N
     g = AccessFails()
     with pytest.raises(RuntimeError, match="access check down"):
         await _degrees(g, blocks(g), ["CALLS"], ORG, RecordAccess(g, ORG, USER))
+
+
+class StoreOrdered(FakeGraphProvider):
+    """Returns a fixed stream in pages, with cursors that sort the opposite way to the stream (as a collation can)."""
+    stream = ("k_caller", "k_target", "k_panel", "k_client", "k_class")      # k_target and k_class are test files
+
+    def __init__(self) -> None:
+        super().__init__(file_roles={"rec-b": "test"})
+        self.rows = [{"anchorKey": "k_caller", "collection": BLOCKS, "key": k, "direction": "outbound",
+                      "relationshipType": "CALLS", "cursor": chr(ord("z") - i)} for i, k in enumerate(self.stream)]
+
+    async def get_neighbors_for_nodes_by_relationship_types(self, *, limit, after, **kw) -> list[dict]:
+        start = 0 if after == "" else next(i for i, r in enumerate(self.rows) if r["cursor"] == after) + 1
+        return self.rows[start:start + limit]
+
+
+async def stream_rows(want: int) -> tuple[list[dict], bool]:
+    g = StoreOrdered()
+    rows, over, _ = await _readable_neighbour_rows(g, ORG, RecordAccess(g, ORG, USER), ["k_caller"], ["CALLS"],
+                                                   "outbound", page=3, budget=100, want=want, include_tests=False)
+    return rows, over
+
+
+async def test_test_rows_are_kept_by_stream_position_not_by_cursor_text() -> None:
+    rows, over = await stream_rows(2)
+    assert over and [r["key"] for r in rows] == ["k_caller", "k_panel", "k_target"]     # k_class sits after the cut
+
+
+async def test_a_zero_want_keeps_no_test_rows() -> None:
+    assert await stream_rows(0) == ([], True)
+
+
+async def test_a_hub_of_readable_record_rows_does_not_push_out_the_block_rows_asked_for() -> None:
+    g = hub(0)
+    for i in range(HUB):
+        g.records[f"a{i:03d}"] = {"_key": f"a{i:03d}", "orgId": ORG, "connectorId": CONN, "virtualRecordId": f"v{i}"}
+        g.edges.append({"_from": f"{BLOCKS}/k_caller", "_to": f"records/a{i:03d}", "relationshipType": "IMPORTS_FROM"})
+    for key in ("k_target", "k_method", "k_client", "k_panel", "k_class"):
+        call(g, "k_caller", key)
+    out = await walk(g)
+    assert len(out["neighbors"]) == 5 and not out["truncated"] and not out.get("fanout_capped")

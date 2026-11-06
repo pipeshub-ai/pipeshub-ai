@@ -572,7 +572,8 @@ async def _readable_neighbour_rows(
     was passed. ``access=None`` skips the readability check.
     """
     counted: list[dict[str, Any]] = []
-    tests: list[dict[str, Any]] = []
+    tests: list[tuple[int, dict[str, Any]]] = []
+    counted_at: list[int] = []     # stream position of each counted row, in the store's own order
     scanned, after = 0, ""
     while True:
         try:
@@ -583,31 +584,38 @@ async def _readable_neighbour_rows(
         except Exception as exc:
             logger.exception("Neighbour walk failed")
             raise _WalkFailed("Failed to walk the code graph") from exc
+        first = scanned
         scanned += len(raw)
-        raw_kept = [r for r in raw if r.get("collection") in (_BLOCKS, _RECORDS) and (accept is None or accept(r))]
-        block_keys = [r.get("key") for r in raw_kept if r.get("collection") == _BLOCKS]
+        raw_kept = [(first + i, r) for i, r in enumerate(raw)
+                    if r.get("collection") in (_BLOCKS, _RECORDS) and (accept is None or accept(r))]
+        block_keys = [r.get("key") for _, r in raw_kept if r.get("collection") == _BLOCKS]
         if access is None:
             ok_blocks, ok_records = dict.fromkeys(k for k in block_keys if k), None
         else:
             ok_blocks = await _readable_block_records(graph_provider, org_id, access, block_keys, connector_id)
-            ok_records = await access.readable(r.get("key") for r in raw_kept if r.get("collection") == _RECORDS)
+            ok_records = await access.readable(r.get("key") for _, r in raw_kept if r.get("collection") == _RECORDS)
         roles = {} if include_tests else await get_record_roles(graph_provider, org_id, set(ok_blocks.values()))
-        for r in raw_kept:
+        for pos, r in raw_kept:
             if r.get("collection") == _BLOCKS:
                 if r.get("key") not in ok_blocks:
                     continue
-                (tests if roles.get(ok_blocks[r["key"]]) == TEST_ROLE else counted).append(r)
-            elif ok_records is None or r.get("key") in ok_records:
-                counted.append(r)
+                if roles.get(ok_blocks[r["key"]]) == TEST_ROLE:
+                    tests.append((pos, r))
+                    continue
+            elif ok_records is not None and r.get("key") not in ok_records:
+                continue
+            counted.append(r)
+            counted_at.append(pos)
         if want is not None and len(counted) > want:
             # Test rows past the last kept row would depend on where hidden rows put the page breaks.
-            last = counted[want - 1].get("cursor") or ""
-            return counted[:want] + [t for t in tests if (t.get("cursor") or "") <= last], True, False
+            # Compared by stream position, not by cursor text: the store's collation is not ours.
+            cut = counted_at[want - 1] if want > 0 else -1
+            return counted[:want] + [t for pos, t in tests if pos < cut], True, False
         if len(raw) < page:
-            return counted + tests, False, False
+            return counted + [t for _, t in tests], False, False
         if scanned >= budget:
             # shortcut: the scan stops after `budget` raw rows; filter readability in the store query if hubs routinely exceed it.
-            return counted + tests, False, True
+            return counted + [t for _, t in tests], False, True
         # A provider that ignores `after` would repeat a page for ever (equality only: the store's collation is not ours).
         if not (nxt := raw[-1].get("cursor")) or nxt == after:
             logger.error("Neighbour query did not advance its cursor")
