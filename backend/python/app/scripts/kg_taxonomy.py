@@ -10,6 +10,8 @@ every write can be undone (``unmerge``, ``unmigrate-legacy``).
     python -m app.scripts.kg_taxonomy migrate-legacy --org ORG [--collection topics] [--apply]
     python -m app.scripts.kg_taxonomy unmigrate-legacy --org ORG --collection topics \\
         --legacy L --target T [--apply]
+    python -m app.scripts.kg_taxonomy strays --org ORG [--collection topics]
+    python -m app.scripts.kg_taxonomy sweep-strays --org ORG [--collection topics] [--apply]
 
 Without ``--collection``, the listing and bulk commands cover every taxonomy
 collection. Output is one JSON object per line.
@@ -63,6 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     undo = command("unmigrate-legacy", needs_collection=True, writes=True)
     undo.add_argument("--legacy", required=True)
     undo.add_argument("--target", required=True)
+    command("strays")
+    command("sweep-strays", writes=True)
     return parser
 
 
@@ -157,6 +161,21 @@ async def run(args: argparse.Namespace, consolidator: TaxonomyConsolidator, out:
         )
         report("unmigrate-legacy", restored, edges=restored.edges_moved, dry_run=restored.dry_run,
                index_refreshed=restored.index_refreshed, **where)
+    elif args.command in ("strays", "sweep-strays"):
+        # Records linked to a node after it was merged; a sweep re-runs that
+        # merge, so the moved edges stay undoable.
+        for collection in collections:
+            strays = await step("strays", consolidator.stray_nodes(collection, org), collection=collection)
+            for stray in strays or []:
+                if args.command == "strays":
+                    emit(collection=collection, node=stray.key, name=stray.name,
+                         merged_into=stray.merged_into, records=stray.records)
+                    continue
+                where = {"collection": collection, "node": stray.key}
+                result = await step("sweep", consolidator.sweep(collection, org, stray.key, dry_run=dry_run), **where)
+                if result is not None:
+                    report("sweep", result, edges=result.edges_moved, dry_run=result.dry_run,
+                           index_refreshed=result.index_refreshed, **where)
     else:
         raise ValueError(f"unknown command {args.command!r}")
     return EXIT_PARTIAL if failures else 0
