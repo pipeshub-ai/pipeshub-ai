@@ -6,7 +6,7 @@ from app.agents.actions.code_graph import ops
 from app.agents.actions.code_graph.neighbours import get_neighbour_impl
 from app.agents.actions.code_graph.ops import RecordAccess, _degrees
 
-from .conftest import BLOCKS, CONN, ORG, USER, FakeGraphProvider, _block
+from .conftest import BLOCKS, CONN, ORG, RECORDS, USER, FakeGraphProvider, _block
 
 LIMIT = 5      # edge rows a hop may keep, patched over _ROWS_PER_ANCHOR
 BUDGET = 40    # raw rows a hop may scan, patched over _HOP_SCAN_LIMIT
@@ -119,3 +119,16 @@ async def test_a_provider_pages_in_cursor_order() -> None:
         seen += [r["key"] for r in page]
         after = page[-1]["cursor"]
     assert seen == sorted(seen) and len(seen) == 7
+
+
+@pytest.mark.parametrize("edge_types", [None, ["CALLS", "CONTAINS"]])
+async def test_a_hub_with_exactly_the_limit_of_callers_and_its_files_contains_edge_is_not_capped(edge_types) -> None:
+    # The file's CONTAINS edge comes from a record row, which the walk never shows, so it must not count toward the limit.
+    g = world(LIMIT, 0)
+    for key in [f"v{i:03d}" for i in range(LIMIT)]:
+        g.edges.append({"_from": f"{BLOCKS}/{key}", "_to": f"{BLOCKS}/k_caller", "relationshipType": "CALLS"})
+    g.edges.append({"_from": f"{RECORDS}/rec-b", "_to": f"{BLOCKS}/k_caller", "relationshipType": "CONTAINS"})
+    out = await get_neighbour_impl(graph_provider=g, connector_id=CONN, org_id=ORG, user_id=USER, file_path="src/a.py",
+                                   qualified_name="function:caller", direction="inbound", edge_types=edge_types)
+    assert len(out["neighbors"]) == LIMIT and out["total"] == LIMIT
+    assert not out.get("fanout_capped") and not out["truncated"]
