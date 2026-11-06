@@ -86,6 +86,7 @@ CODE_RELATIONS = [*STRUCTURAL_RELATIONS, *CROSS_FILE_RELATIONS]
 # count ranks the wrong symbol first, which is worse than no ranking at all.
 _DEGREE_CANDIDATES = 400
 _DEGREE_ROW_LIMIT = 50000
+_DEGREE_PAGE = 5000
 
 _BLOCKS = CollectionNames.BLOCKS.value
 _RECORDS = CollectionNames.RECORDS.value
@@ -540,6 +541,45 @@ def _key_of(block: dict) -> str:
     return block.get("_key") or block.get("id") or ""
 
 
+async def _readable_neighbour_rows(
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: list[str],
+    relations: list[str], direction: str, *, page: int, budget: int, want: int | None = None,
+) -> tuple[list[dict[str, Any]], bool, bool]:
+    """Edge rows from ``keys`` whose far end the caller can read: ``(rows, over, incomplete)``.
+
+    Pages the store in a fixed order and filters each page, so rows the caller
+    cannot read neither fill ``want`` nor move ``over``. ``over`` is true when
+    more than ``want`` readable rows exist (the first ``want`` are returned).
+    ``incomplete`` is true when ``budget`` raw rows were scanned before the
+    store ran out or ``want`` was passed.
+    """
+    out: list[dict[str, Any]] = []
+    scanned, after = 0, ""
+    while True:
+        try:
+            raw = list(await graph_provider.get_neighbors_for_nodes_by_relationship_types(
+                node_keys=keys, node_collection=_BLOCKS, relationship_types=relations,
+                direction=direction, limit=page, after=after, raise_on_error=True,
+            ) or [])
+        except Exception as exc:
+            logger.exception("Neighbour walk failed")
+            raise RuntimeError("Failed to walk the code graph") from exc
+        scanned += len(raw)
+        ok_blocks = await _readable_keys(
+            graph_provider, org_id, access, (r.get("key") for r in raw if r.get("collection") == _BLOCKS))
+        ok_records = await access.readable(r.get("key") for r in raw if r.get("collection") == _RECORDS)
+        out += [r for r in raw if r.get("key") in (ok_blocks if r.get("collection") == _BLOCKS else ok_records)
+                and r.get("collection") in (_BLOCKS, _RECORDS)]
+        if want is not None and len(out) > want:
+            return out[:want], True, False
+        if len(raw) < page:
+            return out, False, False
+        if scanned >= budget:
+            # shortcut: a spent budget reveals only that the node has more than `budget` edges in total.
+            return out, False, True
+        after = raw[-1]["cursor"]
+
+
 async def _degrees(
     graph_provider: IGraphDBProvider, blocks: list[dict], relations: list[str],
     org_id: str, access: RecordAccess,
@@ -561,33 +601,16 @@ async def _degrees(
     if len(keys) < 2:
         return {}, False
     try:
-        rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
-            node_keys=keys,
-            node_collection=_BLOCKS,
-            relationship_types=relations,
-            direction="any",
-            limit=_DEGREE_ROW_LIMIT,
+        rows, _, incomplete = await _readable_neighbour_rows(
+            graph_provider, org_id, access, keys, relations, "any",
+            page=_DEGREE_PAGE, budget=_DEGREE_ROW_LIMIT,
         )
     except Exception as exc:
         logger.warning("Degree lookup failed: %s", exc)
         return {}, False
-    rows = list(rows or [])
-    # Only edges to what the caller can read: a count over hidden files says
-    # how much is hidden there (S-7).
-    readable_blocks = await _readable_keys(
-        graph_provider, org_id, access,
-        (r.get("key") for r in rows if r.get("collection") == _BLOCKS),
-    )
-    readable_records = await access.readable(
-        r.get("key") for r in rows if r.get("collection") == _RECORDS
-    )
-    counts: Counter = Counter()
-    for row in rows:
-        anchor = row.get("anchorKey")
-        key = row.get("key")
-        if anchor and (key in readable_blocks or key in readable_records):
-            counts[anchor] += 1
-    capped = len(rows) >= _DEGREE_ROW_LIMIT or len(blocks) > _DEGREE_CANDIDATES
+    counts: Counter = Counter(r["anchorKey"] for r in rows if r.get("anchorKey"))
+    # Capped only when the scan budget ran out: hidden edges below it change nothing.
+    capped = incomplete or len(blocks) > _DEGREE_CANDIDATES
     return dict(counts), capped
 
 

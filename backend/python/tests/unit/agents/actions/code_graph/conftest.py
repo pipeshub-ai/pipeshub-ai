@@ -184,7 +184,7 @@ class FakeGraphProvider:
 
     async def get_neighbors_for_nodes_by_relationship_types(self, node_keys, node_collection,
                                                             relationship_types, direction,
-                                                            limit=5000, transaction=None, raise_on_error=False) -> list[dict]:
+                                                            limit=5000, transaction=None, raise_on_error=False, after=None) -> list[dict]:
         anchors = {f"{node_collection}/{k}" for k in node_keys}
         out = []
         for edge in self.edges:
@@ -200,7 +200,12 @@ class FakeGraphProvider:
                 _, _, anchor_key = edge[anchor_f].partition("/")
                 out.append({"anchorKey": anchor_key, "collection": collection, "key": key,
                             "direction": label, "relationshipType": edge["relationshipType"]})
-        return out[:limit]
+        if after is None:
+            return out[:limit]
+        # The real stores' paging contract: ascending cursor, strictly after `after`.
+        for row in out:
+            row["cursor"] = "\x01".join((row["anchorKey"], row["direction"], row["collection"], row["key"], row["relationshipType"]))
+        return sorted((r for r in out if r["cursor"] > after), key=lambda r: r["cursor"])[:limit]
 
 
 class FakeBlobStore:

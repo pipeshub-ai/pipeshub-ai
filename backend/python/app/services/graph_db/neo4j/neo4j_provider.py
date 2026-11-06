@@ -4168,6 +4168,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after: str | None = None,
     ) -> list[dict[str, Any]]:
         """Walk one hop from many nodes at once.
 
@@ -4190,11 +4191,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "inbound": f"(n:{anchor_label})<-[rel:{rel_type}]-(m)",
                 "any": f"(n:{anchor_label})-[rel:{rel_type}]-(m)",
             }[direction]
+            paged = after is not None
+            # cursor = the row's sort key; ORDER BY before LIMIT makes a page the
+            # next slice of the whole ordered edge set.
+            page = (
+                "WITH n, m, rel, labels(m)[0] AS label, "
+                "CASE WHEN startNode(rel).id = n.id THEN 'outbound' ELSE 'inbound' END AS dir "
+                "WITH n, m, rel, dir, n.id + '\\u0001' + dir + '\\u0001' + coalesce(label, '') + '\\u0001' "
+                "+ coalesce(m.id, '') + '\\u0001' + coalesce(rel.relationshipType, '') AS cursor "
+                "WHERE cursor > $after"
+            ) if paged else ""
             query = f"""
             MATCH {pattern}
             WHERE n.id IN $node_keys
               AND rel.relationshipType IN $relationship_types
-            RETURN n.id AS anchorKey,
+            {page}
+            RETURN {"cursor, " if paged else ""}n.id AS anchorKey,
                    labels(m) AS labels,
                    m.id AS key,
                    CASE WHEN startNode(rel).id = n.id
@@ -4205,6 +4217,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                    rel.provenance AS provenance,
                    rel.line AS line,
                    rel.confidence AS confidence
+            {"ORDER BY cursor" if paged else ""}
             LIMIT $limit
             """
             results = await self.client.execute_query(
@@ -4213,6 +4226,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "node_keys": node_keys,
                     "relationship_types": relationship_types,
                     "limit": limit,
+                    **({"after": after} if paged else {}),
                 },
                 txn_id=transaction
             )
@@ -4220,6 +4234,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for row in results or []:
                 labels = row.get("labels") or []
                 neighbours.append({
+                    **({"cursor": row.get("cursor")} if paged else {}),
                     "anchorKey": row.get("anchorKey"),
                     "collection": label_to_collection(labels[0]) if labels else "",
                     "key": row.get("key"),
