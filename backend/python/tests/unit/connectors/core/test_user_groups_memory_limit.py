@@ -22,8 +22,9 @@ from app.models.entities import AppUserGroup
 class _Store:
     """Transactions that keep what was written only when they exit without an error."""
 
-    def __init__(self, refused: set[str]) -> None:
+    def __init__(self, refused: set[str], broken: frozenset[str] = frozenset()) -> None:
         self.refused = refused
+        self.broken = broken
         self.committed: list[str] = []
         self.transactions = 0
         self.replaces = 0
@@ -67,6 +68,8 @@ def _processor(store: _Store) -> DataSourceEntitiesProcessor:
         name = tx_store.current
         if name in store.refused:
             raise GraphMemoryLimitError(f"{name} too large", operation="group replace", size=9)
+        if name in store.broken:
+            raise RuntimeError(f"{name} broke")
         tx_store.written.append(name)
 
     proc._write_permission_edges = write_edges
@@ -106,6 +109,20 @@ class TestIsolation:
         # nothing in the aggregated error looks transient to a retry loop
         assert raised.value.__cause__ is None and raised.value.__context__ is None
         assert not is_attempt_lost(raised.value)
+
+    @pytest.mark.asyncio
+    async def test_another_error_in_the_fallback_still_drops_access_for_the_groups_written(self) -> None:
+        """A committed group's members changed, so the cached access lists must drop even when a
+        later group fails with an error that is not the memory pool's."""
+        store = _Store({"B"}, broken=frozenset({"C"}))
+        proc = _processor(store)
+        _wire(proc)
+
+        with pytest.raises(RuntimeError, match="C broke"):
+            await proc.on_new_user_groups([(_group("A"), []), (_group("B"), []), (_group("C"), [])])
+
+        assert store.committed == ["A"]
+        proc._access_changed.assert_awaited_once_with({"conn-1"})
 
     @pytest.mark.asyncio
     async def test_without_an_error_the_call_is_one_transaction(self) -> None:

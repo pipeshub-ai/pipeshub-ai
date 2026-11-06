@@ -314,3 +314,9 @@ class TestWhichStatementsAreBulk:
 
         assert writer.calls == 3
         assert server.commits == 1
+
+
+def test_the_bulk_boundary_is_ten_thousand_rows() -> None:
+    """Below this a bulk edge write keeps its bounded retry; the tests above import the constant,
+    so pin its value here."""
+    assert BULK_EDGE_ROWS == 10_000

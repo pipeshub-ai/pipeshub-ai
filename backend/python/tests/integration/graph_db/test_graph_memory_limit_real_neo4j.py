@@ -98,7 +98,7 @@ async def refused(pair: Pair, group: str, start: int, stop: int, before: tuple[i
 
 
 class TestRefusedBulkWrites:
-    """IT-6 rows d, e, g."""
+    """A refused statement fails once, is not retried, and leaves other work intact."""
 
     async def test_d_full_swap_of_160k_fails_once_and_leaves_the_group(self, pair: Pair) -> None:
         group = await pair.group("d", 0, 160_000)
@@ -123,7 +123,7 @@ class TestRefusedBulkWrites:
 
 class TestSharedPool:
     async def test_f_pair_that_fits_commits_both_through_the_production_path(self, pair: Pair) -> None:
-        """Measured, commit-time (slice file, D6.4): two full swaps of 60k over disjoint members."""
+        """Two concurrent full swaps of 60k over disjoint members fit the pool at the small preset (measured)."""
         n = PAIR_THAT_FITS
         groups = [await pair.group("p1", 0, n), await pair.group("p2", 2 * n, 3 * n)]
         await pair.ensure_users(4 * n)
@@ -155,7 +155,7 @@ class TestSharedPool:
                 assert await pair.source_range(group) == after
 
     async def test_h_one_edge_victim_retries_and_succeeds_while_the_pool_is_overloaded(self, pair: Pair) -> None:
-        """R5-3: a 1-edge batch_create_edges is not marked bulk, so it keeps the bounded retry and gets through."""
+        """A 1-edge batch_create_edges is not marked bulk, so it keeps the bounded retry and gets through."""
         n = 100_000
         groups = [await pair.group("v1", 0, n), await pair.group("v2", 2 * n, 3 * n)]
         victim_group = await pair.group("victim", 0, 1)

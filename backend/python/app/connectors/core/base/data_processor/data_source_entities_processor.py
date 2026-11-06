@@ -5597,9 +5597,14 @@ class DataSourceEntitiesProcessor:
                 # upsert and its replace still in one transaction of their own. Done after the handler
                 # has ended, so the aggregated error below carries no earlier error as its context.
                 rewritten = set()
-                skipped = await self._write_user_groups_apart(user_groups, rewritten, replace_members=replace_members)
-
-            await self._access_changed(rewritten)
+                try:
+                    skipped = await self._write_user_groups_apart(user_groups, rewritten, replace_members=replace_members)
+                finally:
+                    # The groups written before another error stay committed, so their access
+                    # lists must drop whatever happens to the rest.
+                    await self._access_changed(rewritten)
+            else:
+                await self._access_changed(rewritten)
             if skipped:
                 raise GraphMemoryLimitError(
                     f"{len(skipped)} of {len(user_groups)} user groups were not written because the graph "
