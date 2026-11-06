@@ -1573,7 +1573,7 @@ class TestTimingSummary:
         assert [s["outcome"] for s in summaries] == ["stopped"]
 
     @pytest.mark.asyncio
-    async def test_losing_the_record_lease_to_a_duplicate_reads_contended(
+    async def test_losing_the_record_lease_reads_requeued(
         self, consumer, summaries
     ) -> None:
         async def try_acquire(pool, _owner, _limit, _lease_seconds) -> bool:
@@ -1593,7 +1593,7 @@ class TestTimingSummary:
             result = await consumer._IndexingKafkaConsumer__process_message_wrapper(self._message())
 
         assert result is False
-        assert [s["outcome"] for s in summaries] == ["contended"]
+        assert [s["outcome"] for s in summaries] == ["requeued"]
 
     @pytest.mark.asyncio
     async def test_a_record_handed_back_for_want_of_a_parse_slot_reads_requeued(

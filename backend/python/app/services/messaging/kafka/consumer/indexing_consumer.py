@@ -1003,14 +1003,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         record runs beside it.
 
         This replaces -- rather than merely relaxes -- the per-partition
-        rule. ``record_lease_wait_seconds`` documents that the cluster-wide
-        ``record:`` lease is "only contended by duplicate in-flight
-        deliveries of the same record", and the loser of that contention is
-        dropped as already-handled. That assumption holds today *because* a
-        partition only ever has one message in flight. Letting a partition
-        run several at once without this check would put two genuinely
-        different events for one record (a create and its update) into that
-        contention, and silently discard one.
+        rule. Letting a partition run several at once without this check would
+        put two different events for one record (a create and its update) into
+        contention for the cluster-wide ``record:`` lease, and the loser would
+        spend an index slot waiting before it is handed back.
         """
         with self._partition_lock:
             if record_key in self._in_flight_records:
@@ -2706,21 +2702,17 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         leases=distributed_leases,
                     )
                 if not record_lease_held:
-                    outcome = "contended" if self.running else "stopped"
-                    if self.running:
-                        self.logger.debug(
-                            f"Record lease contended for {message_id}; another "
-                            "in-flight duplicate delivery already owns it, so "
-                            "this delivery is finished with"
-                        )
-                    # Resolved as done, not redelivered: the duplicate holding
-                    # the lease is processing this record, and if it fails it
-                    # re-queues under the same tracking id. Leaving it
-                    # unresolved would pin the commit watermark for the whole
-                    # partition -- the pre-watermark code relied on a later
-                    # message's offset+1 commit covering this one.
-                    await self.__resolve_offset(in_flight, done=True)
-                    return False
+                    if not self.running:
+                        outcome = "stopped"
+                        await self.__resolve_offset(in_flight, done=False)
+                        return False
+                    # Re-published, not left unresolved: redelivery by offset
+                    # would pin the commit watermark for the whole partition.
+                    raise concurrency.RecordLeaseHeld(
+                        f"{record_pool} not free within "
+                        f"{messaging_env.record_lease_wait_seconds:.0f}s",
+                        delay_s=messaging_env.record_lease_wait_seconds,
+                    )
 
             parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
 

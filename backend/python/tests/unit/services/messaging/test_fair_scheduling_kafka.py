@@ -396,12 +396,9 @@ class TestParallelPartitionDispatch:
     ):
         """The invariant that replaces per-partition serialisation.
 
-        ``record_lease_wait_seconds`` documents the cluster-wide ``record:``
-        lease as "only contended by duplicate in-flight deliveries of the
-        same record", and the loser of that contention is dropped as
-        already-handled. Dispatching a create and its update together would
-        put two genuinely different events into that contention and silently
-        discard one.
+        Dispatching a create and its update together would put two different
+        events into contention for the cluster-wide ``record:`` lease, and the
+        loser would spend an index slot waiting before it is handed back.
         """
         consumer = self._consumer(logger, plain_config, parallel=True)
         tp = TopicPartition("record-events", 0)
@@ -962,11 +959,11 @@ class TestWatermarkClaimIsAlwaysSettled:
         consumer.main_loop = None
         return consumer
 
-    async def test_contended_record_lease_resolves_as_done(
+    async def test_done_offsets_release_the_watermark(
         self, logger, plain_config
     ):
-        """A contended lease means a duplicate delivery owns the record, so
-        this delivery is finished with. Leaving it unresolved was the bug."""
+        """A handed-back delivery resolves as done once it is re-published;
+        leaving it unresolved would pin the watermark."""
         consumer = self._consumer(logger, plain_config)
         tp = TopicPartition("record-events", 0)
         tracker = consumer._offset_tracker
