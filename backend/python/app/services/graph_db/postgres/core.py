@@ -41,16 +41,10 @@ _HOT_SQL = {
 _HOT_PAGE = 1000
 
 
-async def _hot_rows(tx: Tx, hot: tuple[str, tuple[str, ...]], keys: list[str], vals: list[str], after: str, limit: int | None, *, null_absent: bool) -> list:
-    """The documents the vetted read returns, ascending by id after ``after``: ``limit`` of them, or all of them when None (page by page, in this unit)."""
+async def _hot_rows(tx: Tx, hot: tuple[str, tuple[str, ...]], keys: list[str], vals: list[str], after: str, limit: int, *, null_absent: bool) -> list:
+    """One page of the vetted read: ``limit`` documents (at most ``_HOT_PAGE``) ascending by id after ``after``."""
     fn, lead = hot
-    rows: list = []
-    while True:
-        page = await tx.fetch(_HOT_SQL[fn], *lead, keys, vals, null_absent, after, _HOT_PAGE if limit is None else limit)
-        rows += page
-        if limit is not None or len(page) < _HOT_PAGE:
-            return rows
-        after = page[-1]["node_id"]
+    return await tx.fetch(_HOT_SQL[fn], *lead, keys, vals, null_absent, after, limit)
 
 
 class CoreMixin(PgBase):
@@ -89,7 +83,7 @@ class CoreMixin(PgBase):
         org = current_org_id()          # before the unit opens: a system scope reads no other collection
         keys, vals = [_field(k) for k in (filters or {})], [_j(v) for v in (filters or {}).values()]
         hot = _hot(collection, filters)
-        if key_sort and hot and 0 < skip + limit <= _HOT_PAGE:      # served by the vetted read; the skipped rows are dropped here
+        if key_sort and hot and 0 < skip + limit <= _HOT_PAGE and len(after_key or "") <= 200:      # served by the vetted read; the skipped rows are dropped here
             rows = (await self._q(lambda tx: _hot_rows(tx, hot, keys, vals, after_key or "", skip + limit, null_absent=False), transaction))[skip:]
         elif key_sort:      # the primary-key order: the limit stops the scan
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_documents_paginated */ SELECT n.doc FROM graph.nodes n
@@ -219,13 +213,16 @@ class CoreMixin(PgBase):
         hot = _hot(collection, filters)
         fields = [_field(k) for k in keys]
         try:
-            if hot:
-                rows = await self._q(lambda tx: _hot_rows(tx, hot, fields, vals, "", None, null_absent=True), transaction)
-            else:
-                rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_nodes_by_filters */ SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
+            async def read(tx: Tx) -> list:
+                # a full page may be only the first: the plain statement then reads every match in the one statement (one snapshot)
+                rows = await _hot_rows(tx, hot, fields, vals, "", _HOT_PAGE, null_absent=True) if hot else []
+                if hot and len(rows) < _HOT_PAGE:
+                    return rows
+                return await tx.fetch("""/* pipeshub:graph.get_nodes_by_filters */ SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
                     AND NOT EXISTS (SELECT 1 FROM unnest($3::text[], $4::text[]) f(k, v)
                         WHERE CASE WHEN f.v = 'null' THEN coalesce(n.doc->f.k, 'null'::jsonb) <> 'null'::jsonb ELSE n.doc->f.k IS DISTINCT FROM f.v::jsonb END)""",
-                                                      org, collection, fields, vals), transaction)
+                                      org, collection, fields, vals)
+            rows = await self._q(read, transaction)
         except Exception:
             if raise_on_error:
                 raise

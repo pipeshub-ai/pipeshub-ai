@@ -126,3 +126,25 @@ async def test_a_hot_lookup_is_sent_to_its_vetted_read(world, monkeypatch) -> No
     await a.get_nodes_by_filters("blocks", {"orgId": a.org, "qualifiedName": "m::f3"})
     assert [next((n for n in ("code_files_by_path", "blocks_by_record", "blocks_by_name") if n in s), "plain") for s in sent if "graph." in s] == [
         "code_files_by_path", "blocks_by_record", "blocks_by_name", "plain"]
+
+
+async def test_a_long_after_key_and_a_full_page_are_read_by_the_plain_statement(world, pg_db, monkeypatch) -> None:
+    """An ``after_key`` over the function's bound would be refused (and ``get_nodes_by_filters`` would answer nothing); more matches than one page
+    are read in one statement, so one snapshot."""
+    a, _ = world
+    f = {"orgId": a.org, "recordId": "r1"}
+    expected = await old(pg_db, a.org, OLD_PAGE, "blocks", "a" * 300, 0, 5, list(f), [json.dumps(v) for v in f.values()])
+    got = await a.get_documents_paginated("blocks", limit=5, filters=f, sort_field="_key", after_key="a" * 300, raise_on_error=True)
+    assert [d["_key"] for d in got] == row_ids(expected) and len(got) == 5
+    sent: list[str] = []
+    real = Tx.fetch
+
+    async def spy(self, sql, *args) -> list:
+        sent.append(sql)
+        return await real(self, sql, *args)
+    monkeypatch.setattr(Tx, "fetch", spy)
+    assert len(await a.get_nodes_by_filters("blocks", f, raise_on_error=True)) == 1502
+    assert [next(n for n in ("blocks_by_record", "get_nodes_by_filters") if n in s) for s in sent if "graph." in s] == ["blocks_by_record", "get_nodes_by_filters"]
+    sent.clear()
+    assert len(await a.get_nodes_by_filters("blocks", {**f, "qualifiedName": "m::f3"}, raise_on_error=True)) == 1       # fewer than a page: the vetted read alone
+    assert [("blocks_by_record" in s) for s in sent if "graph." in s] == [True]

@@ -26,6 +26,7 @@ BEGIN
   IF p_limit IS NULL THEN RAISE EXCEPTION 'code_files_by_path: p_limit is required' USING ERRCODE = '22023'; END IF;
   IF p_limit NOT BETWEEN 1 AND 1000 THEN RAISE EXCEPTION 'code_files_by_path: p_limit must be 1..1000' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN; END IF;       -- no org (or someone else's): no rows, the same answer
+  IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
   RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
     WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND n.doc->>'filePath' = p_path AND n.id > p_after
       AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)

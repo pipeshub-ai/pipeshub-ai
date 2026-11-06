@@ -277,7 +277,7 @@ def test_a_hot_lookup_answers_nothing_without_an_org_and_pages_after_an_id(rdb):
 BAD_HOT = [
     (None, [], [], True, "", 10), ("", [], [], True, "", 10), ("x" * 201, [], [], True, "", 10), ("r", None, [], True, "", 10), ("r", [None], ["1"], True, "", 10),
     ("r", [""], ["1"], True, "", 10), ("r", ["k"] * 33, ["1"] * 33, True, "", 10), ("r", [], [], None, "", 10), ("r", [], [], True, None, 10),
-    ("r", [], [], True, "x" * 201, 10), ("r", [], [], True, "", 0), ("r", [], [], True, "", 1001), ("r", [], [], True, "", None),
+    ("r", [], [], True, "x" * 201, 10), ("r", ["a"], ["1", "2"], True, "", 10), ("r", ["a", "b"], ["1"], True, "", 10), ("r", [], [], True, "", 0), ("r", [], [], True, "", 1001), ("r", [], [], True, "", None),
 ]
 
 
