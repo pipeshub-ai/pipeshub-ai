@@ -11,8 +11,9 @@ passing ``search_document`` directly.
 Batch image embedding via ``inputs`` is an embed-v4.0 feature (up to 96
 inputs); Cohere states embed-v3.0 does not support it at all — that
 generation needs the separate ``images`` parameter, one image per call.
-This provider therefore targets v4 and warns when configured with an
-older model rather than silently sending a request the docs do not cover.
+This provider therefore targets v4 and reports an older model as having no
+image support, so its images are indexed by their descriptions rather than
+through a request the docs do not cover.
 """
 
 import asyncio
@@ -56,8 +57,11 @@ class CohereMultimodalProvider(IMultimodalEmbeddingProvider):
             logger.warning(
                 "Cohere model %r predates embed-v4.0; Cohere does not support image "
                 "embedding through the `inputs` parameter for that generation, so "
-                "these requests may be rejected.", model_name,
+                "images are indexed by their descriptions.", model_name,
             )
+
+    def supports_multimodal(self) -> bool:
+        return supports_inputs_image_batch(self.model_name)
 
     @property
     def provider_name(self) -> str:
