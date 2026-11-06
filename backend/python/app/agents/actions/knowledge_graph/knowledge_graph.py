@@ -779,7 +779,11 @@ class KnowledgeGraph:
             "  • Returns a RANKED SAMPLE, not a complete list. Other records may match.\n"
             "  • Returns a few blocks per record, not all blocks. Full content requires "
             "fetch_record.\n"
-            "  • Does not return every record that has the words — it is top-k by relevance.\n\n"
+            "  • Does not return every record that has the words — it is top-k by relevance.\n"
+            "  • A record whose content is not indexed yet has no text to search. When its name "
+            "matches the query it is listed after the content blocks, in a block of its own, "
+            "labelled 'content not indexed yet': use its name and link, and say its content "
+            "could not be read.\n\n"
             "When to combine with other tools:\n"
             "  - Call navigate() on any returned Record ID to see its children, siblings, "
             "or linked records that search structurally cannot surface.\n"
@@ -944,26 +948,31 @@ class KnowledgeGraph:
 
     @tool(
         path="/tools/knowledgegraph/search_entities",
-        short_description="Find departments, categories, topics, languages, record groups and record titles the user can access",
+        short_description="Find departments, categories, topics, languages, record groups, people, organizations and record titles the user can access",
         description=(
             "Semantic lookup of knowledge-graph entities by name or description: departments, "
             "categories, subcategories, topics, languages, record groups (a project, space, "
-            "folder, channel, ...) and record titles. Only entities backed by records you can "
-            "access are returned.\n\n"
+            "folder, channel, ...), people (members of the organization named on records as "
+            "author, sender, recipient, assignee, reporter, reviewer or owner), organizations "
+            "(customer and prospect companies, from CRM accounts) and record titles. Only "
+            "entities backed by records you can access are returned.\n\n"
             "Call it when the question names one of these — a team, a topic, a category, a "
-            "project or space, a document title — to find the matching entity, alongside or "
-            "before a content search.\n\n"
+            "project or space, a colleague, a customer, a document title — to find the "
+            "matching entity, alongside or before a content search.\n\n"
             "Results are best match first. Each has entityId, entityType, name and the apps it "
             "appears in. The "
-            "top few department/category/topic/language/record_group results also include a "
+            "top few department/category/topic/language/record_group/person/organization results "
+            "also include a "
             "short preview of records (newest first) with moreRecords when there are more.\n\n"
             "Next steps:\n"
             "  - knowledgegraph__find_records_by_entity(entity_id=...) lists the records "
             "connected to one entity, newest first, with paging.\n"
             "  - search(query=..., entity_ids=[...]) searches content inside a "
-            "department/category/subcategory/topic/language or record_group entity.\n"
+            "department/category/subcategory/topic/language, record_group, person or "
+            "organization entity.\n"
             "  - A 'record' result's entityId is a Record ID: pass it straight to "
-            "fetch_record or navigate."
+            "fetch_record or navigate. A record result with a 'note' exists but its content is "
+            "not indexed yet: it cannot be read."
         ),
         parameters=[
             ToolParameter(
@@ -977,7 +986,8 @@ class KnowledgeGraph:
                 type=ParameterType.ARRAY,
                 description=(
                     "Optional filter on entity type: 'department', 'category', 'subcategory', "
-                    "'topic', 'language', 'record_group', 'record'. Omit to search all types."
+                    "'topic', 'language', 'record_group', 'person', 'organization', 'record'. "
+                    "Omit to search all types."
                 ),
                 required=False,
                 items={"type": "string"},
@@ -1059,13 +1069,16 @@ class KnowledgeGraph:
         description=(
             "Given an entityId from search_entities, list the records connected to it that you "
             "can access, newest first: every record tagged with a department, category, "
-            "subcategory, topic or language, every record directly inside a record_group, or "
-            "the record itself for a 'record' entity.\n\n"
+            "subcategory, topic or language, every record directly inside a record_group, every "
+            "record naming a person, every record of an organization's account, or the record "
+            "itself for a 'record' entity.\n\n"
             "Use it when the question is about an entity's records as a whole ('what's tagged "
             "Q3 Roadmap', 'what's in this Drive folder', 'Legal's documents'). For content "
             "inside an entity, use search(entity_ids=[...]) instead.\n\n"
             "Pages with cursor: when more records may exist the output ends with the exact "
-            "call for the next page. There are no totals. 'No accessible records found' is the "
+            "call for the next page. The first page's header states how many readable records "
+            "the entity has in all ('N shown of T'), 'at least T' when counting stopped early, or "
+            "that the total is not available: answer 'how many' from it instead of counting pages. 'No accessible records found' is the "
             "same response whether the entity has no records or none you can access; paging "
             "past the last page says so separately."
         ),
@@ -1081,7 +1094,8 @@ class KnowledgeGraph:
                 type=ParameterType.STRING,
                 description=(
                     "The entity's type: 'department', 'category', 'subcategory', 'topic', "
-                    "'language', 'record_group' or 'record'. Optional when the entityId came "
+                    "'language', 'record_group', 'person', 'organization' or 'record'. Optional when the "
+                    "entityId came "
                     "from search_entities in this turn."
                 ),
                 required=False,
@@ -1285,10 +1299,11 @@ class KnowledgeGraph:
 
     @tool(
         path="/tools/knowledgegraph/find_records_by_person",
-        short_description="List the records a person is assigned, reported, created, leads or is mentioned in",
+        short_description="List the records a person is assigned, reported, created, wrote, received, reviews, owns, leads or is mentioned in",
         description=(
             "List the records the connectors link to a person by role (assignee, reporter, "
-            "creator, lead, mentioned, involved) that you can read, newest first. Use it for "
+            "creator, author, owner, reviewer, recipient, lead, mentioned, involved) that you "
+            "can read, newest first. Use it for "
             "\"tickets assigned to Priya\", \"what did Darshan report\", \"issues created by "
             "dev@acme.com\", \"projects Sam leads\", \"my tickets\" (person=\"me\"). It uses "
             "the links the connectors write (mentioned/involved come from indexing): for any "
@@ -1307,11 +1322,18 @@ class KnowledgeGraph:
             ToolParameter(
                 name="roles",
                 type=ParameterType.ARRAY,
-                description="Optional roles: assignee, reporter, creator, lead, mentioned, involved. Omit for all.",
+                description=(
+                    "Optional roles: assignee, reporter, creator, author (a mail's sender, a comment's "
+                    "writer), owner, reviewer, recipient (to/cc of a mail), lead, mentioned, involved. "
+                    "Omit for all."
+                ),
                 required=False,
                 items={
                     "type": "string",
-                    "enum": ["assignee", "reporter", "creator", "lead", "mentioned", "involved"],
+                    "enum": [
+                        "assignee", "reporter", "creator", "author", "owner", "reviewer", "recipient",
+                        "lead", "mentioned", "involved",
+                    ],
                 },
             ),
             ToolParameter(

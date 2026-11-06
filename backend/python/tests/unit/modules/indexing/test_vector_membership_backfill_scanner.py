@@ -82,10 +82,10 @@ async def test_full_page_persists_cursor_then_short_page_completes():
     graph.page_records_for_vector_membership_backfill = AsyncMock(
         side_effect=[
             [
-                {"_key": "r1", "virtualRecordId": "v1"},
-                {"_key": "r2", "virtualRecordId": "v2"},
+                {"_key": "r1", "virtualRecordId": "v1", "orgId": "o1"},
+                {"_key": "r2", "virtualRecordId": "v2", "orgId": "o1"},
             ],
-            [{"_key": "r3", "virtualRecordId": "v3"}],
+            [{"_key": "r3", "virtualRecordId": "v3", "orgId": "o1"}],
         ]
     )
     graph.update_node = AsyncMock()
@@ -173,8 +173,8 @@ async def test_failed_vrid_continues_page():
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
         return_value=[
-            {"_key": "r1", "virtualRecordId": "bad"},
-            {"_key": "r2", "virtualRecordId": "good"},
+            {"_key": "r1", "virtualRecordId": "bad", "orgId": "o1"},
+            {"_key": "r2", "virtualRecordId": "good", "orgId": "o1"},
         ]
     )
     graph.update_node = AsyncMock()
@@ -211,7 +211,7 @@ async def test_repeated_failures_eventually_stop_retrying():
         }
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
-        return_value=[{"_key": "r1", "virtualRecordId": "bad"}]
+        return_value=[{"_key": "r1", "virtualRecordId": "bad", "orgId": "o1"}]
     )
     graph.update_node = AsyncMock()
     pipeline = AsyncMock()
@@ -239,8 +239,8 @@ async def test_lost_leadership_stops_the_page():
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
         return_value=[
-            {"_key": "r1", "virtualRecordId": "v1"},
-            {"_key": "r2", "virtualRecordId": "v2"},
+            {"_key": "r1", "virtualRecordId": "v1", "orgId": "o1"},
+            {"_key": "r2", "virtualRecordId": "v2", "orgId": "o1"},
         ]
     )
     graph.update_node = AsyncMock()
@@ -277,11 +277,11 @@ async def test_lost_leadership_stops_the_page():
 def test_distinct_non_empty_vrids_skips_blanks_and_dupes():
     assert distinct_non_empty_vrids(
         [
-            {"_key": "a", "virtualRecordId": "v1"},
+            {"_key": "a", "virtualRecordId": "v1", "orgId": "o1"},
             {"_key": "b", "virtualRecordId": ""},
             {"_key": "c", "virtualRecordId": None},
-            {"_key": "d", "virtualRecordId": "v1"},
-            {"_key": "e", "virtualRecordId": "v2"},
+            {"_key": "d", "virtualRecordId": "v1", "orgId": "o1"},
+            {"_key": "e", "virtualRecordId": "v2", "orgId": "o1"},
         ]
     ) == ["v1", "v2"]
 
@@ -414,7 +414,7 @@ async def test_lease_renewal_is_batched_not_per_vrid():
         return_value={"_key": "app-1"}
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
-        return_value=[{"_key": f"r{i}", "virtualRecordId": f"v{i}"} for i in range(50)]
+        return_value=[{"_key": f"r{i}", "virtualRecordId": f"v{i}", "orgId": "o1"} for i in range(50)]
     )
     graph.update_node = AsyncMock()
 
@@ -463,7 +463,7 @@ async def test_exhausted_pass_is_not_recorded_as_success():
         }
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
-        return_value=[{"_key": "r1", "virtualRecordId": "vr-1"}]
+        return_value=[{"_key": "r1", "virtualRecordId": "vr-1", "orgId": "o1"}]
     )
     graph.update_node = AsyncMock()
 
@@ -498,7 +498,7 @@ async def test_rewound_pass_does_not_inherit_the_previous_vrid_count():
         }
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
-        return_value=[{"_key": "r1", "virtualRecordId": "vr-1"}]
+        return_value=[{"_key": "r1", "virtualRecordId": "vr-1", "orgId": "o1"}]
     )
     graph.update_node = AsyncMock()
 
@@ -516,3 +516,84 @@ async def test_rewound_pass_does_not_inherit_the_previous_vrid_count():
 
     _key, _collection, fields = graph.update_node.await_args.args
     assert fields[ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_VRIDS] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_vrid_whose_records_name_no_org_is_skipped_and_does_not_block_the_connector() -> None:
+    """Retrying cannot name an org; counting it as a failure would hold the connector's backfill open for ever."""
+    graph = AsyncMock()
+    graph.get_app_needing_vector_membership_backfill = AsyncMock(return_value={"_key": "app-1"})
+    graph.page_records_for_vector_membership_backfill = AsyncMock(
+        return_value=[
+            {"_key": "r1", "virtualRecordId": "no-org", "orgId": None},
+            {"_key": "r2", "virtualRecordId": "good", "orgId": "o1"},
+        ]
+    )
+    graph.update_node = AsyncMock()
+    pipeline = AsyncMock()
+    pipeline.orgs_holding_points = AsyncMock(return_value=set())     # and no point holds it: no stamp can exist
+    logger = _logger()
+
+    await run_vector_membership_backfill_tick(
+        logger=logger, graph_provider=graph, pipeline=pipeline, lock=_Lock(), page_size=50, vrid_pause_ms=0,
+    )
+
+    assert [c.args for c in pipeline.sync_vector_membership.await_args_list] == [("good",)]
+    update = graph.update_node.await_args.args[2]
+    assert update[ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILLED] is True
+    assert ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_ATTEMPTS not in update or update[ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_ATTEMPTS] == 0
+
+
+@pytest.mark.asyncio
+async def test_each_sync_runs_in_the_organisation_of_the_app_being_backfilled() -> None:
+    from app.core.org_context import MissingOrgContext, current_org_id
+
+    graph = AsyncMock()
+    graph.get_app_needing_vector_membership_backfill = AsyncMock(return_value={"_key": "app-1", "orgId": "org-7"})
+    graph.page_records_for_vector_membership_backfill = AsyncMock(return_value=[{"_key": "r1", "virtualRecordId": "v1"}])
+    graph.update_node = AsyncMock()
+    seen: list[object] = []
+
+    async def sync(vrid: str) -> None:
+        try:
+            seen.append(current_org_id())
+        except MissingOrgContext:
+            seen.append(None)
+
+    pipeline = AsyncMock()
+    pipeline.sync_vector_membership = sync
+    await run_vector_membership_backfill_tick(
+        logger=_logger(), graph_provider=graph, pipeline=pipeline, lock=_Lock(), page_size=50, vrid_pause_ms=0
+    )
+    assert seen == ["org-7"]
+
+
+@pytest.mark.asyncio
+async def test_a_vrid_with_no_org_on_either_side_is_synced_under_each_org_that_holds_its_points() -> None:
+    """The org-less case must still re-stamp or invalidate the points' scope fields: the owners are read from the points."""
+    from app.core.org_context import MissingOrgContext, current_org_id
+
+    graph = AsyncMock()
+    graph.get_app_needing_vector_membership_backfill = AsyncMock(return_value={"_key": "app-1"})     # no org on the app
+    graph.page_records_for_vector_membership_backfill = AsyncMock(
+        return_value=[{"_key": "r1", "virtualRecordId": "v1", "orgId": None}]                       # none on the record
+    )
+    graph.update_node = AsyncMock()
+    seen: list[object] = []
+
+    async def sync(vrid: str) -> None:
+        try:
+            seen.append((vrid, current_org_id()))
+        except MissingOrgContext:
+            seen.append((vrid, None))
+
+    pipeline = AsyncMock()
+    pipeline.orgs_holding_points = AsyncMock(return_value={"org-b", "org-a"})
+    pipeline.sync_vector_membership = sync
+    await run_vector_membership_backfill_tick(
+        logger=_logger(), graph_provider=graph, pipeline=pipeline, lock=_Lock(), page_size=50, vrid_pause_ms=0
+    )
+
+    assert seen == [("v1", "org-a"), ("v1", "org-b")]
+    update = graph.update_node.await_args.args[2]
+    assert update[ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILLED] is True

@@ -27,8 +27,10 @@
 #   fetch-crawl4ai — Crawl4AI page reader for JavaScript-heavy sites (then add Crawl4AI at
 #                    http://crawl4ai:11235 with CRAWL4AI_API_TOKEN as its token)
 #
-# Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=etcd, MESSAGE_BROKER=kafka and
-# COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka,sandbox
+# Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=redis, MESSAGE_BROKER=redis (Redis
+# Streams) and COMPOSE_PROFILES=graph-neo4j,sandbox (optionally search-searxng,
+# fetch-crawl4ai). kv-etcd and broker-kafka are optional, for installs that
+# already use etcd or Kafka.
 #
 # Always-on: pipeshub-ai, redis, mongodb, qdrant.
 # Eval omits the sandbox profile (run_code is unavailable).
@@ -261,9 +263,11 @@ services:
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
       - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
-      # RFC 7591 DCR is off unless "true". RFC 8628 device grant is on unless "false".
+      # RFC 7591 DCR is off unless "true". RFC 8628 device grant and client ID metadata documents are on unless "false".
       - PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}
+      - PIPESHUB_ENABLE_CIMD=${PIPESHUB_ENABLE_CIMD:-}
       - PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}
+      - MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS:-}
 
       # ML threading
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
@@ -287,6 +291,8 @@ services:
       - INDEXING_SPLIT_LEASE_POOLS=${INDEXING_SPLIT_LEASE_POOLS:-}
       - GOVERNOR_LIGHT_PARSE_MAX=${GOVERNOR_LIGHT_PARSE_MAX:-}
       - PARSE_MAX_ORG_SHARE=${PARSE_MAX_ORG_SHARE:-}
+      - PRIORITY_LANE_HEAVY_LIMIT=${PRIORITY_LANE_HEAVY_LIMIT:-}
+      - PRIORITY_LANE_LIGHT_LIMIT=${PRIORITY_LANE_LIGHT_LIMIT:-}
       - GOVERNOR_INDEX_HEADROOM=${GOVERNOR_INDEX_HEADROOM:-}
       - GOVERNOR_INDEX_MAX=${GOVERNOR_INDEX_MAX:-}
       - GOVERNOR_INDEX_HEAVY_WORKING_SET_GB=${GOVERNOR_INDEX_HEAVY_WORKING_SET_GB:-}
@@ -583,7 +589,7 @@ services:
         limits:
           memory: ${MONGO_MEMORY_LIMIT:-2G}
         reservations:
-          memory: 512M
+          memory: ${MONGO_MEMORY_RESERVATION:-512M}
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 5s
@@ -770,7 +776,7 @@ services:
           memory: ${QDRANT_MEMORY_LIMIT:-6G}
         reservations:
           cpus: '2'
-          memory: 2G
+          memory: ${QDRANT_MEMORY_RESERVATION:-2G}
     ulimits:
       nofile:
         soft: 50000
@@ -877,9 +883,9 @@ services:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-}
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
-      - NEO4J_dbms_memory_heap_initial__size=1G
-      - NEO4J_dbms_memory_heap_max__size=2G
-      - NEO4J_dbms_memory_pagecache_size=1G
+      - NEO4J_dbms_memory_heap_initial__size=${NEO4J_HEAP_INITIAL:-1G}
+      - NEO4J_dbms_memory_heap_max__size=${NEO4J_HEAP_MAX:-2G}
+      - NEO4J_dbms_memory_pagecache_size=${NEO4J_PAGECACHE:-1G}
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -889,10 +895,10 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 3G
+          memory: ${NEO4J_MEMORY_LIMIT:-3G}
         reservations:
           cpus: '2'
-          memory: 2G
+          memory: ${NEO4J_MEMORY_RESERVATION:-2G}
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 10s

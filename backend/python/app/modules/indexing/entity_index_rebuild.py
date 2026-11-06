@@ -5,16 +5,19 @@ indexing, so an upgraded deployment starts with an empty or partial index,
 and a changed embedding model leaves vectors from the old one. This loop
 projects what the graph already holds, with no extraction or LLM call:
 
-- per connector (app document): its record groups, then its indexed records;
-- per org (org document): its canonical taxonomy nodes and departments, with
-  membership read from the graph, deleting points no record reaches;
+- per connector (app document): its record groups, then its records, indexed or not,
+  removing the points of trashed ones;
+- per org (org document): its canonical taxonomy nodes, departments and
+  people, with membership read from the graph, deleting points no record
+  reaches;
 - per org, every ``SWEEP_INTERVAL_MS``: a sweep deleting points whose node is
-  gone or belongs to another org (deleted record groups, rejected stale
-  winners).
+  gone or belongs to another org (deleted record groups and users, rejected
+  stale winners).
 
 A document is done when its ``entityIndexState`` equals the current marker,
-``v<ENTITY_INDEX_VERSION>:<embedding fingerprint>``, so a model change re-runs
-every pass, and each point records the model that embedded it, so a point
+``v<version>:<embedding fingerprint>`` (``ENTITY_INDEX_VERSION`` for
+connectors, ``ORG_PASS_VERSION`` for orgs), so a model change re-runs every
+pass, and each point records the model that embedded it, so a point
 from another model is re-embedded whenever it is next written. The marker
 also carries the collection's stamp (``EntityVectorStore.collection_stamp``),
 so a collection dropped, recreated or emptied from outside is refilled the
@@ -32,7 +35,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames
 from app.connectors.services.entity_cleanup_intents import (
     clear_pending_entity_cleanup,
     list_pending_entity_cleanups,
@@ -46,8 +49,8 @@ from app.modules.indexing.vector_membership_backfill import (
     LeaderLock,
     VectorMembershipBackfillLeaderLock,
 )
-from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
+from app.services.messaging.record_titles import clean_record_title
 from app.services.messaging.utils import MessagingUtils
 from app.utils.loop_share import LoopShare
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -63,8 +66,13 @@ if TYPE_CHECKING:
     )
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-# Bump when what a pass writes changes, so every document is re-projected.
-ENTITY_INDEX_VERSION = 1
+# Bump when what a pass writes changes, so its documents are re-projected;
+# separate, so a change to one pass does not re-scan every connector.
+# 2: records that are not indexed yet get a point too, and trashed ones lose theirs.
+ENTITY_INDEX_VERSION = 2
+# Orgs carried ENTITY_INDEX_VERSION's marker before the passes split, so 2 is
+# taken. 3: people, 4: CRM accounts as organisations.
+ORG_PASS_VERSION = 4
 
 LEADER_KEY = "entity_index_rebuild:leader"
 PAGE_SIZE = 200
@@ -110,6 +118,7 @@ _ORGS = CollectionNames.ORGS.value
 _RECORDS = CollectionNames.RECORDS.value
 _RECORD_GROUPS = CollectionNames.RECORD_GROUPS.value
 _DEPARTMENTS = CollectionNames.DEPARTMENTS.value
+_USERS = CollectionNames.USERS.value
 
 CONNECTOR_SOURCES: tuple[str, ...] = (_RECORD_GROUPS, _RECORDS)
 ENTITY_INDEX_TAXONOMY_SOURCES: tuple[str, ...] = (
@@ -120,6 +129,8 @@ ENTITY_INDEX_TAXONOMY_SOURCES: tuple[str, ...] = (
     CollectionNames.SUBCATEGORIES2.value,
     CollectionNames.SUBCATEGORIES3.value,
     CollectionNames.TOPICS.value,
+    _USERS,
+    _ORGS,
 )
 
 _SWEPT_TYPES: tuple[str, ...] = (
@@ -129,6 +140,8 @@ _SWEPT_TYPES: tuple[str, ...] = (
     EntityType.LANGUAGE.value,
     EntityType.DEPARTMENT.value,
     EntityType.RECORD_GROUP.value,
+    EntityType.PERSON.value,
+    EntityType.ORGANIZATION.value,
 )
 # Node collection of a swept point; subcategories are resolved by level.
 _SWEPT_COLLECTIONS: dict[str, str] = {
@@ -137,7 +150,11 @@ _SWEPT_COLLECTIONS: dict[str, str] = {
     EntityType.LANGUAGE.value: CollectionNames.LANGUAGES.value,
     EntityType.DEPARTMENT.value: _DEPARTMENTS,
     EntityType.RECORD_GROUP.value: _RECORD_GROUPS,
+    EntityType.PERSON.value: _USERS,
+    EntityType.ORGANIZATION.value: _ORGS,
 }
+# The field naming a swept node's org, where it is not orgId.
+_SWEPT_OWNER_FIELDS: dict[str, str] = {_ORGS: "parentOrgId"}
 _SUBCATEGORY_COLLECTIONS: dict[str, str] = {
     kind.level: collection for collection, kind in KINDS_BY_COLLECTION.items() if kind.level
 }
@@ -161,10 +178,12 @@ class EntityIndexState:
     SWEEP_FAILURES = "entityIndexSweepFailures"
 
 
-def entity_index_marker(fingerprint: str, stamp: str = "") -> str:
+def entity_index_marker(
+    fingerprint: str, stamp: str = "", *, version: int = ENTITY_INDEX_VERSION,
+) -> str:
     """``stamp`` is ``EntityVectorStore.collection_stamp``: a document done
     under another stamp was projected into a collection that is gone."""
-    return f"v{ENTITY_INDEX_VERSION}{'@' + stamp if stamp else ''}:{fingerprint}"
+    return f"v{version}{'@' + stamp if stamp else ''}:{fingerprint}"
 
 
 _MARKER = re.compile(r"v\d+(?:@[0-9a-z]+)?:(.+)", re.DOTALL)
@@ -275,13 +294,15 @@ class EntityIndexRebuilder:
         # Read every tick, after the line above may have recreated the
         # collection: a collection without its stamp gets a new one, which no
         # document has reached, so every pass runs again.
-        marker = entity_index_marker(fingerprint, await self.store.collection_stamp())
+        stamp = await self.store.collection_stamp()
+        marker = entity_index_marker(fingerprint, stamp)
 
         app = await self.graph.get_entity_index_candidate(_APPS, marker)
         if app and (key := _key_of(app)):
             await self._run_page(_Pass(_APPS, key, app, CONNECTOR_SOURCES, marker))
             return "connector"
 
+        marker = entity_index_marker(fingerprint, stamp, version=ORG_PASS_VERSION)
         sweep_before = self.now_ms() - SWEEP_INTERVAL_MS
         org = await self.graph.get_entity_index_candidate(
             _ORGS, marker, sweep_before=sweep_before,
@@ -574,23 +595,47 @@ class EntityIndexRebuilder:
 
     async def _project_connector_rows(self, run: _Pass, phase: str, rows: list[dict]) -> int:
         entities = []
+        trashed: dict[str, list[str]] = {}
         for row in rows:
             key, name, org_id = _key_of(row), _name(row.get("name")), _text(row.get("orgId"))
-            if not key or not name or not org_id:
+            if not key or not org_id:
+                continue
+            if phase == _RECORDS and row.get("isDeleted"):
+                # Its point, written while it was live, would keep it findable by name.
+                trashed.setdefault(org_id, []).append(key)
+                continue
+            if phase == _RECORDS:
+                # Same cut as the live title path, so both write identical text.
+                name = clean_record_title(row.get("name")) or ""
+            if not name:
+                continue
+            # The live path gives these no point.
+            if phase == _RECORDS and (
+                row.get("isInternal") or row.get("isPlaceholder") or row.get("mimeType") in FOLDER_MIME_TYPES
+            ):
                 continue
             if phase == _RECORD_GROUPS:
                 entities.append(EntityRecord.for_record_group(key, name, org_id, run.key))
                 continue
-            if not is_searchable_record(row) or row.get("isDeleted"):
-                continue
+            # Every live record, indexed or not: a record is findable by name before its content is indexed.
             entities.append(EntityRecord.for_record(
                 key, name, org_id, run.key, _text(row.get("recordGroupId")) or None,
             ))
+        failed = 0
+        for org_id, ids in trashed.items():
+            try:
+                await self.store.delete_entities(org_id, EntityType.RECORD.value, ids)
+            except Exception:
+                self.logger.warning(
+                    "entity_index_rebuild: could not remove the points of %d trashed record(s) | connector=%s",
+                    len(ids), run.key, exc_info=True,
+                )
+                failed += len(ids)
         if not entities:
-            return 0
+            return failed
         # Replace mode: a record's and a group's membership is exactly their
         # own connector and group, as on the index path.
-        return (await self.store.upsert_entities_batch(entities, merge_membership=False)).failed
+        return failed + (await self.store.upsert_entities_batch(entities, merge_membership=False)).failed
 
     async def _project_taxonomy_rows(self, run: _Pass, phase: str, rows: list[dict]) -> int:
         async def _still_leader() -> None:
@@ -702,12 +747,13 @@ class EntityIndexRebuilder:
         for collection, group in by_collection.items():
             for start in range(0, len(group), _SWEEP_LOOKUP_BATCH):
                 batch = group[start:start + _SWEEP_LOOKUP_BATCH]
+                owner_field = _SWEPT_OWNER_FIELDS.get(collection, "orgId")
                 rows = await self.graph.get_nodes_by_field_in(
                     collection, "id", sorted({r.entity_id for r in batch}),
-                    return_fields=["id", "orgId", "mergedInto"], raise_on_error=True,
+                    return_fields=["id", owner_field, "mergedInto"], raise_on_error=True,
                 )
                 owner = {
-                    _key_of(row): row.get("orgId") for row in rows or [] if not row.get("mergedInto")
+                    _key_of(row): row.get(owner_field) for row in rows or [] if not row.get("mergedInto")
                 }
                 for ref in batch:
                     if ref.entity_id not in owner or owner[ref.entity_id] not in (None, org_id):
@@ -820,6 +866,7 @@ async def run_entity_index_rebuild_loop(
 __all__ = [
     "ENTITY_INDEX_TAXONOMY_SOURCES",
     "ENTITY_INDEX_VERSION",
+    "ORG_PASS_VERSION",
     "EntityIndexRebuilder",
     "EntityIndexState",
     "entity_index_marker",

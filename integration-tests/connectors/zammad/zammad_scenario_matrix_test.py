@@ -8,7 +8,9 @@ search returns it before a sync is asked to see it.
 
 Sharing: a Zammad ticket's access is its group; there is no per-ticket share.
 The permission item sits alone in its own group, and the second person is a
-Zammad agent with the PipesHub second user's email, given or denied that group.
+Zammad agent with the PipesHub second user's email. Sharing gives the agent
+``read`` on that group; unsharing lowers them to ``change``, ``create`` and
+``overview``, which in Zammad do not let an agent read the group's tickets.
 """
 
 from __future__ import annotations
@@ -77,7 +79,12 @@ class ZammadAdapter(ScenarioAdapter):
         )
 
     async def change_permission(self, item: SourceItem, sharee: SecondUser, *, grant: bool) -> None:
-        self.zammad.set_user_groups(self.sharee_id, [self.groups["shared"]] if grant else [])
+        # Revoking lowers the agent to the levels that let them work in the group
+        # but not read it, rather than removing the row: whoever holds a row of any
+        # level is in the group's user_ids, so this is what tells a connector that
+        # counts membership from one that follows Zammad's read rule.
+        access = ("read",) if grant else ("change", "create", "overview")
+        self.zammad.set_user_groups(self.sharee_id, [self.groups["shared"]], access=access)
 
     async def delete_item(self, item: SourceItem) -> None:
         self.zammad.delete_ticket(int(item.key))

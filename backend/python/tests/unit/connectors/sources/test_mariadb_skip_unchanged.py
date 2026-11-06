@@ -173,6 +173,8 @@ class Harness:
             return True
 
         async def _send_messages(topic: str, messages: list) -> list[bool]:
+            if topic == "record-title-events":
+                return [True] * len(messages)
             for _key, message in messages:
                 self._publish(message)
             return [True] * len(messages)

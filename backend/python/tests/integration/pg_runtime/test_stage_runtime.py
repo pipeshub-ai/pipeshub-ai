@@ -226,19 +226,33 @@ async def test_a_record_waiting_for_a_stage_does_not_hold_an_indexing_slot(stage
         return True
 
     async with leases.hold(held[0], owner="s", wait_s=1.0, still_current=current), leases.hold(held[1], owner="s", wait_s=1.0, still_current=current):
+        slots: list[str] = []
+        real_try_acquire = stage.leases.try_acquire
+
+        async def recording_try_acquire(pool: str, *args: object, **kwargs: object) -> bool:
+            got = await real_try_acquire(pool, *args, **kwargs)
+            if got and not pool.startswith("record:"):
+                slots.append(pool)      # an indexing slot was taken
+            return got
+
+        monkeypatch.setattr(stage.leases, "try_acquire", recording_try_acquire)
         await stage.consumer(handler)
         for r in held:
             await stage.producer.send_event(stage.topic, "record", {"recordId": r})
         free = [f"free{i}-{stage.uid}" for i in range(6)]
         for r in free:
             await stage.producer.send_event(stage.topic, "record", {"recordId": r})
-        await until(lambda: len([r for r in ran if r in free]) == 6, timeout=3.0)      # not after a 10 s lease wait
+        await until(lambda: len([r for r in ran if r in free]) == 6, timeout=20.0)     # a held record parked in a slot would stall them for its whole wait; load only stretches seconds
         assert not [r for r in ran if r in held]
+        assert len(slots) == len(free)  # one slot for each unrelated record, none for a held one
     await until(lambda: set(held) <= set(ran), timeout=15.0)
 
 
 async def test_a_paused_stage_stops_claiming_until_the_pause_ends(stage, monkeypatch) -> None:
-    """a stage that hands a job back with a delay is not claimed from until then (no claim-and-hand-back churn), and then resumes."""
+    """a stage that hands a job back with a delay is not claimed from until then (no claim-and-hand-back churn), and then resumes.
+
+    The hand-back delay is far longer than the test, so the pause cannot end by itself on a slow host; the test ends it:
+    the jobs are made visible again and the consumer's pause is cleared."""
     monkeypatch.setenv("PG_QUEUE_HANDBACK_BASE_S", "0.01")
     calls: list[str] = []
     paused = True
@@ -246,18 +260,40 @@ async def test_a_paused_stage_stops_claiming_until_the_pause_ends(stage, monkeyp
     async def handler(m: StreamMessage) -> AsyncIterator[PipelineEvent]:
         calls.append(m.payload["jobId"])
         if paused:
-            raise RequeueWithoutAttempt("dependency paused", delay_s=1.5)
+            raise RequeueWithoutAttempt("dependency paused", delay_s=3600)
         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
 
-    await stage.consumer(handler, admission=StageAdmission(stage=f"classify{stage.uid}", limit=2))
+    # Claims are counted when they start and while they run, so that "nothing is in flight" is known, not waited for.
+    claims_started, claims_running = 0, 0
+    real_claim = stage.q.claim
+
+    async def counting_claim(*args: object, **kwargs: object) -> list:
+        nonlocal claims_started, claims_running
+        claims_started += 1
+        claims_running += 1
+        try:
+            return await real_claim(*args, **kwargs)
+        finally:
+            claims_running -= 1     # the consumer adds the handlers of the batch without awaiting again
+
+    monkeypatch.setattr(stage.q, "claim", counting_claim)
+    cons = await stage.consumer(handler, admission=StageAdmission(stage=f"classify{stage.uid}", limit=2))
     for i in range(20):
         await stage.producer.send_event(stage.topic, "stage", {"jobId": f"j{i}-{stage.uid}"})
-    await asyncio.sleep(1.2)
-    first = len(calls)
+    # the pause is set, no claim is running and no handler is: a paused consumer starts no claim, so nothing can still arrive
+    await until(lambda: calls and cons._paused_until > 0 and not cons._tasks and claims_running == 0, timeout=10.0)
+    first, first_claims = len(calls), claims_started
     assert 1 <= first <= 10         # one batch found the stage paused; the other 15+ were never claimed
-    await asyncio.sleep(0.2)
+    await asyncio.sleep(1.0)        # an observation only: the pause cannot end before the test ends it
     assert len(calls) == first      # nothing is claimed while the pause lasts
+    assert claims_started == first_claims
     paused = False
+    async with (await stage.runtime.db()).runtime_uow(write=True) as tx:
+        await tx.execute(
+            "/* pipeshub:test.unpause */ UPDATE platform.queue_deliveries SET visible_at = now() WHERE topic = $1", stage.topic
+        )
+    cons._paused_until = 0.0
+    cons._wake.set()
     await until(lambda: set(calls) >= {f"j{i}-{stage.uid}" for i in range(20)}, timeout=20.0)
     for _ in range(200):
         if not await stage.q.backlog("stage_g", [stage.topic]):

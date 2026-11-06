@@ -60,6 +60,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.collection_registry import CollectionRegistry  # noqa: TC001
+from app.services.vector_db.filters import org_for_filter
 from app.services.vector_db.strategy import QueryContext
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.image_utils import get_extension_from_mimetype
@@ -1914,10 +1915,17 @@ async def accessible_node_ids(
     node_ids: set[str],
     user_id: str,
     org_id: str,
+    *,
+    with_placeholders: bool = False,
 ) -> set[str]:
     """The subset of ``node_ids`` (records, record groups, apps) the user may
     access. No identity means nothing is accessible; a user lookup that fails
-    raises PermissionVerificationUnavailableError, as the check itself does."""
+    raises PermissionVerificationUnavailableError, as the check itself does.
+
+    A placeholder record is left out: it is shown in listings, but it is not a
+    record to read, so a caller that serves a record's content or metadata gets
+    the same answer as for one the user cannot read. ``with_placeholders`` keeps
+    placeholders in, for a caller that only names related records."""
     if not node_ids or not user_id or not org_id:
         return set()
     try:
@@ -1927,9 +1935,8 @@ async def accessible_node_ids(
     user_key = (user or {}).get("id") or (user or {}).get("_key")
     if not user_key:
         return set()
-    return set((await graph_provider.check_access(
-        user_key, org_id, node_ids=node_ids,
-    )).node_ids)
+    result = await graph_provider.check_access(user_key, org_id, node_ids=node_ids)
+    return set(result.node_ids if with_placeholders else result.node_ids - result.placeholder_ids)
 
 
 async def accessible_node_ids_for_enrichment(
@@ -1941,7 +1948,7 @@ async def accessible_node_ids_for_enrichment(
     """``accessible_node_ids`` for context enrichment, which is optional: when the
     check cannot answer, no neighbour is named and the turn goes on."""
     try:
-        return await accessible_node_ids(graph_provider, node_ids, user_id, org_id)
+        return await accessible_node_ids(graph_provider, node_ids, user_id, org_id, with_placeholders=True)
     except PermissionVerificationUnavailableError as exc:
         logger.warning("Enrichment access check unavailable; naming no neighbours: %s", exc)
         return set()
@@ -2863,10 +2870,16 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             # The related tables are extra context: name none, and the turn goes on.
             logger.warning("FK enrichment: limit check unavailable, naming no related table: %s", exc)
             allowed = set()
-    related_record_ids &= allowed
     for relations in record_id_to_fk_relations.values():
         for key in ("children", "parents"):
             relations[key] = [rel for rel in relations[key] if rel.get("record_id") in allowed]
+    # A placeholder table is named in the relation lists above, but it is not a record to read: its blob, metadata, DDL and
+    # sample rows are not added to the context. A check that cannot answer adds no related content.
+    try:
+        related_record_ids &= await accessible_node_ids(graph_provider, allowed, user_id, org_id)
+    except PermissionVerificationUnavailableError:
+        logger.warning("FK enrichment: the content access check is unavailable, adding no related table content", exc_info=True)
+        related_record_ids = set()
 
     logger.debug("FK enrichment: total %d related records to fetch", len(related_record_ids))
 
@@ -4193,6 +4206,7 @@ async def create_record_from_vector_metadata(
 
         # Create filter
         payload_filter = await vector_db_service.filter_collection(must={
+            "orgId": org_for_filter(org_id),
             "virtualRecordId": virtual_record_id,
         })
 

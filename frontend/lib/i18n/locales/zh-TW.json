@@ -1562,6 +1562,8 @@
     },
     "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。",
     "noResultsFor": "找不到「{{query}}」的結果",
+    "matchedByName": "依名稱符合",
+    "contentNotIndexedYet": "內容尚未索引",
     "removeSelectedSource": "移除 {{name}}",
     "diagramSourceCopied": "已複製圖表原始碼",
     "diagramImageCopied": "已複製圖表圖片",
@@ -2127,6 +2129,16 @@
         "copyErrorTitle": "無法複製"
       },
       "scopeCount_other": "{{count}} 個權限範圍"
+    },
+    "agentSignIns": {
+      "title": "代理登入",
+      "subtitle": "您已核准代表您操作的代理。撤銷後，該代理將無法取得新的存取權限。",
+      "columnApproved": "核准時間",
+      "revoke": "撤銷",
+      "revokeAria": "撤銷代理登入 {{id}}",
+      "revokedTitle": "代理登入已撤銷",
+      "errorTitle": "無法撤銷代理登入",
+      "loadError": "無法載入代理登入"
     },
     "aiModels": {
       "title": "AI 模型",
@@ -3502,6 +3514,7 @@
         "disconnected": "已成功中斷連線",
         "disconnectError": "無法中斷連線",
         "credentialsSaveError": "伺服器已儲存，但憑證無法儲存。您可以稍後從「管理」中新增。",
+        "logoSaveError": "伺服器已儲存，但其標誌未能儲存。您可以在「管理」中重試。",
         "credentialsSaved": "憑證已儲存",
         "credentialsReset": "MCP 伺服器已更新。由於連線已變更，已儲存的憑證已被移除；請重新連線後再使用。",
         "oauthTimedOut": "登入時間過長，已停止。請再試一次。",
@@ -3516,6 +3529,16 @@
       "form": {
         "name": "名稱",
         "description": "描述",
+        "logo": "標誌",
+        "logoHint": "PNG、JPEG、WebP、GIF 或 SVG，最大 2 MB。正方形圖片效果最佳。",
+        "logoUpload": "上傳標誌",
+        "logoChange": "更換標誌",
+        "logoRemove": "移除",
+        "logoErrors": {
+          "type": "請使用 PNG、JPEG、WebP、GIF 或 SVG 圖片。",
+          "size": "請使用不超過 2 MB 的圖片。",
+          "unreadable": "無法讀取此圖片，請嘗試其他檔案。"
+        },
         "transport": "傳輸方式",
         "command": "命令",
         "args": "引數",
@@ -5287,6 +5310,8 @@
     "notGrantedOwnerHint": "建立此應用程式的人可以在 工作區設定 → 開發人員設定 → OAuth 2.0 應用程式 中新增這些權限。",
     "notGrantedOfflineAccess": "此應用程式不會保持登入狀態。工作階段結束後，你需要重新登入。",
     "unreviewedApp": "此應用程式是自行註冊的，沒有管理員審核過。",
+    "clientIdHost": "由 {{host}} 識別",
+    "redirectTo": "將您送回 {{uri}}",
     "legalNotice": "按一下「允許」即表示您授權 {{appName}} 依上述說明存取您的資料。",
     "privacyPolicy": "隱私權政策",
     "deny": "拒絕",
@@ -5498,6 +5523,19 @@
     "skipAll": "全部略過",
     "expired": "此問題已過期。請在聊天中回覆以繼續。",
     "repliedInChat": "你已在聊天中回覆。"
+  },
+  "agentClaim": {
+    "title": "連接代理",
+    "intro": "一個代理表示它為您工作。僅在是您要求它這麼做，且代碼與它顯示給您的相符時，才核准。",
+    "scopesHeading": "此代理將可以：",
+    "codeLabel": "輸入代理顯示的 6 位數代碼",
+    "approve": "核准",
+    "loading": "正在檢查此請求…",
+    "missingLink": "此連結缺少認領權杖。請向代理重新取得。",
+    "doneTitle": "代理已連接",
+    "doneLine": "代理現在可以繼續。可以關閉此視窗。",
+    "deniedTitle": "請求已拒絕",
+    "deniedLine": "代理未獲得存取權限。"
   },
   "oauthDevice": {
     "title": "連接裝置",

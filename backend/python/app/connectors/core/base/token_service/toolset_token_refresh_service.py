@@ -1291,31 +1291,23 @@ class ToolsetTokenRefreshService:
                     )
                     del self._refresh_tasks[config_path]
 
-            # Prevent immediate re-refresh if we just completed one
-            current_time = time.time()
-            last_refresh = self._last_refresh_time.get(config_path, 0)
-            time_since_last_refresh = current_time - last_refresh
-
-            if time_since_last_refresh < REFRESH_COOLDOWN:
-                self.logger.info(
-                    f"⏭️ Skipping schedule request for {config_path} - "
-                    f"refresh completed {time_since_last_refresh:.1f}s ago (cooldown: {REFRESH_COOLDOWN}s)"
-                )
-                return
-
             self.logger.info(f"🔄 Scheduling token refresh for toolset {config_path} (type: {toolset_type})")
 
             # Calculate refresh delay
-            delay, refresh_time = self._calculate_refresh_delay(token)
+            delay, _ = self._calculate_refresh_delay(token)
+            since_last_refresh = max(0.0, time.time() - self._last_refresh_time.get(config_path, 0))
+            cooldown_left = REFRESH_COOLDOWN - since_last_refresh
 
-            # If token is at/past threshold, schedule immediate re-check.
-            if delay <= 0:
-                delay = MIN_IMMEDIATE_RECHECK_DELAY
-                refresh_time = datetime.now() + timedelta(seconds=delay)
+            is_due = delay <= 0
+            # At most one refresh per cooldown, and never dropped: an earlier delay, due or not, waits
+            # out the cooldown, so a slow save cannot leave a due token to the 5-minute scan.
+            delay = max(delay, MIN_IMMEDIATE_RECHECK_DELAY, cooldown_left)
+            if is_due:
                 self.logger.info(
-                    f"⏱️ Token for toolset {config_path} reached refresh threshold. "
-                    f"Scheduling immediate re-check in {delay:.0f}s."
+                    f"Token for toolset {config_path} reached refresh threshold; "
+                    f"re-checking in {delay:.1f}s (cooldown {REFRESH_COOLDOWN}s)"
                 )
+            refresh_time = datetime.now() + timedelta(seconds=delay)
 
             # Create new refresh task atomically while schedule lock is held
             self._create_refresh_task(config_path, toolset_type, delay, refresh_time)

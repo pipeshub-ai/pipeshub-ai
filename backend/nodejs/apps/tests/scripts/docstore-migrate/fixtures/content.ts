@@ -272,6 +272,14 @@ export const contentDocs = (): Record<string, unknown[]> => ({
     // long gone: not loaded, and not expected
     { _id: oid(), deviceCodeHash: 'dev-hash-3', userCode: 'STUV-WXYZ', clientId: 'client-aaa', scopes: ['org:read'], status: 'denied', interval: 5, expiresAt: at('2026-01-01T00:00:00.000Z'), createdAt: at('2025-12-31T00:00:00.000Z'), updatedAt: at('2025-12-31T00:00:00.000Z'), __v: 0 },
   ],
+  oauthAgentRegistrations: [
+    // claimed, then consumed: the assertion it backs lives for weeks
+    { _id: oid(), claimEmail: 'a@example.test', claimTokenHash: 'agent-claim-1', attemptTokenHash: 'agent-attempt-1', userCodeHash: 'agent-code-1', attemptExpiresAt: at('2026-10-21T10:10:00.000Z'), expiresAt: at('2026-10-22T10:00:00.000Z'), purgeAt: new Date(Date.now() + 40 * 86_400_000), status: 'consumed', failedAttempts: 1, lastPolledAt: at('2026-10-21T10:06:00.000Z'), claimedUserId: USER_1, claimedOrgId: ORG_A, approvedScopes: ['org:read', 'kb:read'], createdAt: at('2026-10-21T10:00:00.000Z'), updatedAt: at('2026-10-21T10:07:00.000Z'), __v: 0 },
+    // still waiting for a person
+    { _id: oid(), claimEmail: 'b@example.test', claimTokenHash: 'agent-claim-2', attemptTokenHash: 'agent-attempt-2', userCodeHash: 'agent-code-2', attemptExpiresAt: new Date(Date.now() + 600_000), expiresAt: new Date(Date.now() + 3_600_000), purgeAt: new Date(Date.now() + 3_600_000), createdAt: at('2026-10-21T11:00:00.000Z'), updatedAt: at('2026-10-21T11:00:00.000Z') },
+    // long past its retention: not loaded, and not expected
+    { _id: oid(), claimEmail: 'c@example.test', claimTokenHash: 'agent-claim-3', attemptTokenHash: 'agent-attempt-3', userCodeHash: 'agent-code-3', attemptExpiresAt: at('2026-01-01T00:10:00.000Z'), expiresAt: at('2026-01-02T00:00:00.000Z'), purgeAt: at('2026-01-02T00:00:00.000Z'), status: 'expired', createdAt: at('2026-01-01T00:00:00.000Z'), updatedAt: at('2026-01-01T00:00:00.000Z'), __v: 0 },
+  ],
   slack_conversations: [
     { _id: oid(), threadId: '1700000000.000100', botId: 'B1', email: 'a@example.test', conversationId: SESSION_1, createdAt: at('2026-07-01T10:00:00.000Z'), updatedAt: at('2026-07-02T10:00:00.000Z'), __v: 0 },
     { _id: oid(), threadId: '1700000000.000200', botId: 'B1', email: 'b@example.test', conversationId: SESSION_2, createdAt: at('2026-07-03T10:00:00.000Z'), updatedAt: at('2026-07-03T10:00:00.000Z') },

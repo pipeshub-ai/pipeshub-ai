@@ -938,6 +938,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
 
+    from app.services.permissions.wiring import register_viewer_scope_version
+
+    await register_viewer_scope_version(app_container.config_service(), logger)
+    from app.services.permissions.wiring import register_scope_generation
+
+    await register_scope_generation(app_container.config_service(), logger)
+
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
@@ -1298,7 +1305,6 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     try:
         logger.debug(f"Applying authentication for path: {request_path}")
         authenticated_request = await authMiddleware(request)
-        return await call_next(authenticated_request)
 
     except HTTPException as exc:
         # Handle authentication errors
@@ -1307,6 +1313,16 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     except Exception as e:
         # Handle unexpected errors
         logger.error(f"Unexpected error during authentication for {request_path}: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error"},
+        )
+
+    try:
+        return await call_next(authenticated_request)
+    except Exception:
+        # call_next re-raises the route's exception; log it once here, inside the request context.
+        logger.exception("Unhandled exception while processing %s %s", request.method, request_path)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": "Internal server error"},
@@ -1357,6 +1373,9 @@ async def health_check() -> JSONResponse:
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
+
+
+PG_PROBE_TIMEOUT_SEC = 3.0
 
 
 @app.get("/health/graph-db")
@@ -1495,6 +1514,29 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                     "error": "Neo4j health check failed",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
+            )
+
+    # ── PostgreSQL ────────────────────────────────────────────────────────────
+    if data_store == "postgres":
+        try:
+            # Under Node's 5s graph timeout (also the Helm probe budget): a saturated pool must answer 503, not hang the probe.
+            # Not wait_for: that also waits for the cancelled ping to finish, and a stalled unit can take seconds to roll back.
+            ping = spawn_detached(request.app.state.graph_provider.ping(), name="pg_graph_health_ping")
+            try:
+                done, _ = await asyncio.wait({ping}, timeout=PG_PROBE_TIMEOUT_SEC)
+            finally:  # a timeout or the handler's own cancellation: do not leave the ping holding a pooled connection
+                if not ping.done():
+                    ping.cancel()
+                    ping.add_done_callback(lambda t: t.cancelled() or t.exception())  # retrieved, so nothing logs "never retrieved"
+            if not done:
+                raise TimeoutError("PostgreSQL graph ping timed out")
+            ping.result()
+            return JSONResponse(status_code=200, content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()})
+        except Exception:
+            request.app.container.logger().error("PostgreSQL graph health check failed", exc_info=True)
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unhealthy", "error": "PostgreSQL graph health check failed", "timestamp": get_epoch_timestamp_in_ms()},
             )
 
     # Unknown DATA_STORE value — treat as healthy so we don't block deployments.

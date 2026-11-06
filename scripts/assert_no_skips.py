@@ -24,6 +24,17 @@ def skipped(paths: list[str]) -> tuple[int, list[str]]:
     return total, skips
 
 
+def failed(paths: list[str]) -> list[str]:
+    """One line per failed or errored case: the xunit reporter writes only to its file, so the log would not name it otherwise."""
+    out = []
+    for path in paths:
+        for case in ET.parse(path).getroot().iter("testcase"):
+            for bad in case.findall("failure") + case.findall("error"):
+                msg = ((bad.get("message") or bad.text or "").strip().splitlines() or [""])[0]
+                out.append(f"FAILED {case.get('classname', '')} :: {case.get('name', '')}: {msg}")
+    return out
+
+
 def suite_counts(paths: list[str], prefix: str) -> tuple[int, int]:
     """(cases whose classname starts with `prefix`, how many of those failed or errored)."""
     n = bad = 0
@@ -50,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         # A count of 0 would pass a suite that never ran; N must be at least 1.
         if not title or not want.isdigit() or int(want) < 1 or n != int(want) or bad:
             suite_failed = True
+    fails = failed(args.reports)
+    print("\n".join(fails))
     total, skips = skipped(args.reports)
     bad = [s for s in skips if not any(a in s for a in args.allow)]
     print(f"{total} tests, {len(skips)} skipped, {len(skips) - len(bad)} allow-listed")
@@ -58,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     if total < args.min_tests:
         print(f"only {total} tests ran, expected at least {args.min_tests}")
         return 1
-    return 1 if bad or suite_failed else 0
+    return 1 if bad or suite_failed or fails else 0
 
 
 if __name__ == "__main__":

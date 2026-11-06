@@ -1566,6 +1566,8 @@
     },
     "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
     "noResultsFor": "No results found for “{{query}}”",
+    "matchedByName": "Matched by name",
+    "contentNotIndexedYet": "Content not indexed yet",
     "removeSelectedSource": "Remove {{name}}",
     "diagramSourceCopied": "Diagram source copied",
     "diagramImageCopied": "Diagram image copied",
@@ -2144,6 +2146,16 @@
       },
       "scopeCount_one": "{{count}} scope",
       "scopeCount_other": "{{count}} scopes"
+    },
+    "agentSignIns": {
+      "title": "Agent sign-ins",
+      "subtitle": "Agents you approved to act as you. Revoke one to stop it getting new access.",
+      "columnApproved": "Approved",
+      "revoke": "Revoke",
+      "revokeAria": "Revoke agent sign-in {{id}}",
+      "revokedTitle": "Agent sign-in revoked",
+      "errorTitle": "Could not revoke the agent sign-in",
+      "loadError": "Could not load your agent sign-ins"
     },
     "aiModels": {
       "title": "AI models",
@@ -3521,6 +3533,7 @@
         "disconnected": "Disconnected successfully",
         "disconnectError": "Failed to disconnect",
         "credentialsSaveError": "Server saved, but credentials could not be saved. You can add them later from Manage.",
+        "logoSaveError": "Server saved, but its logo could not be saved. You can try again from Manage.",
         "credentialsSaved": "Credentials saved",
         "credentialsReset": "MCP server updated. Saved credentials were removed because the connection changed; connect again to use it.",
         "oauthTimedOut": "Sign-in took too long and was stopped. Try again.",
@@ -3535,6 +3548,16 @@
       "form": {
         "name": "Name",
         "description": "Description",
+        "logo": "Logo",
+        "logoHint": "PNG, JPEG, WebP, GIF or SVG, up to 2 MB. A square image looks best.",
+        "logoUpload": "Upload logo",
+        "logoChange": "Change logo",
+        "logoRemove": "Remove",
+        "logoErrors": {
+          "type": "Use a PNG, JPEG, WebP, GIF or SVG image.",
+          "size": "Use an image of 2 MB or less.",
+          "unreadable": "This image couldn't be read. Try another file."
+        },
         "transport": "Transport",
         "command": "Command",
         "args": "Arguments",
@@ -5314,6 +5337,8 @@
     "signedInAs": "Signed in as {{display}}",
     "requestHeading": "This application is requesting access to:",
     "unreviewedApp": "This application registered itself. No administrator reviewed it.",
+    "clientIdHost": "Identified by {{host}}",
+    "redirectTo": "Sends you back to {{uri}}",
     "notGrantedHeading": "This application also asked for these permissions. Its settings do not allow them, so it will not get them:",
     "notGrantedOwnerHint": "The person who created this application can add them in Workspace Settings → Developer Settings → OAuth 2.0 Apps.",
     "notGrantedOfflineAccess": "The application will not stay signed in. You will need to sign in again when the session ends.",
@@ -5348,6 +5373,19 @@
       "invalid_client": "The client_id does not match any registered OAuth application. Verify the client ID in your application’s configuration.",
       "server_error": "An unexpected error occurred on the server. Please try again later."
     }
+  },
+  "agentClaim": {
+    "title": "Connect an agent",
+    "intro": "An agent says it works for you. Approve it only if you asked it to, and the code below matches the one it showed you.",
+    "scopesHeading": "This agent will be able to:",
+    "codeLabel": "Enter the 6-digit code the agent showed",
+    "approve": "Approve",
+    "loading": "Checking this request…",
+    "missingLink": "This link is missing its claim token. Ask the agent for a new one.",
+    "doneTitle": "Agent connected",
+    "doneLine": "The agent can now continue. This window can be closed.",
+    "deniedTitle": "Request denied",
+    "deniedLine": "The agent was not given access."
   },
   "oauthDevice": {
     "title": "Connect a device",

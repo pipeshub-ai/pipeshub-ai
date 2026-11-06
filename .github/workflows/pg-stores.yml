@@ -66,10 +66,10 @@ jobs:
       - name: Install PostgreSQL ${{ matrix.pg }}, PgBouncer and the migration tool
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          sudo curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update -qq
-          sudo apt-get install -y -qq "postgresql-${{ matrix.pg }}" pgbouncer
+          sudo apt-get install -y -qq "postgresql-${{ matrix.pg }}" "postgresql-${{ matrix.pg }}-pgvector" pgbouncer
           sudo systemctl stop postgresql || true
           python -m venv "$RUNNER_TEMP/migrate-venv"
           "$RUNNER_TEMP/migrate-venv/bin/pip" install -r backend/db/requirements.txt
@@ -90,6 +90,7 @@ jobs:
         run: npm run test:pg-stores -- --reporter xunit --reporter-option output="$RUNNER_TEMP/pg-stores-junit.xml"
 
       - name: Count the fingerprint tests defined for the PostgreSQL leg
+        if: ${{ always() }}
         working-directory: backend/nodejs/apps
         env:
           PG_TEST_BINS: /usr/lib/postgresql/${{ matrix.pg }}/bin
