@@ -45,6 +45,7 @@ from tests.unit.lane_gauge import (
 )
 
 if TYPE_CHECKING:
+    import subprocess
     from collections.abc import Callable
 
 GIB = 2**30
@@ -403,6 +404,46 @@ class TestAcrossProcesses:
 # ---------------------------------------------------------------------------
 # A stopped ledger-lock holder must not stall lease callers
 # ---------------------------------------------------------------------------
+
+
+class TestStartTogether:
+    """The barrier helper itself: a failed start must not leave children behind."""
+
+    def test_a_child_that_dies_before_ready_takes_its_siblings_with_it(
+        self, lane_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tests.unit.lane_gauge as gauge_module
+
+        started: list = []
+        real = gauge_module.start_role
+
+        def recording(*a: object, **k: object) -> subprocess.Popen:
+            proc = real(*a, **k)
+            started.append(proc)
+            return proc
+
+        monkeypatch.setattr(gauge_module, "start_role", recording)
+        args = {"dir": str(lane_dir), "lanes": 4, "mem_limit": 10 * GIB, "mem_raw": GIB, "stop_after": 0.1}
+        try:
+            # The blip has no "dir", so it dies before it reports ready.
+            with pytest.raises(json.JSONDecodeError):
+                start_together("admit", args, 2, blip={"seconds": 0.1})
+            assert len(started) == 3
+            assert all(proc.poll() is not None for proc in started)
+        finally:
+            reap(*started)
+
+    def test_a_child_gives_up_when_the_go_file_never_comes(self, lane_dir: Path, tmp_path: Path) -> None:
+        args = {
+            "dir": str(lane_dir), "lanes": 4, "mem_limit": 10 * GIB, "mem_raw": GIB, "stop_after": 0.1,
+            "go": str(tmp_path / "never.go"), "go_timeout": 0.5,
+        }
+        proc = start_role("admit", args)
+        try:
+            assert first_line(proc) == {"ready": True}
+            assert proc.wait(timeout=15) != 0
+        finally:
+            reap(proc)
 
 
 class TestStoppedHolder:

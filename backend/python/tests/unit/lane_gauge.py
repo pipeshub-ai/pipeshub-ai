@@ -118,11 +118,17 @@ def start_together(
     shared = {**args, "go": go}
     procs = [start_role(role, shared) for _ in range(count)]
     side = None
-    if blip is not None:
-        side = start_role("lock_blip", {**blip, "go": go})
-        first_line(side)
-    for proc in procs:
-        first_line(proc)
+    try:
+        if blip is not None:
+            side = start_role("lock_blip", {**blip, "go": go})
+            first_line(side)
+        for proc in procs:
+            first_line(proc)
+    except BaseException:
+        # The caller gets no handles back, so children already waiting on the go
+        # file would spin forever on a shared host.
+        reap(*procs, *([side] if side is not None else []))
+        raise
     tmp = f"{go}.tmp"
     with open(tmp, "w") as handle:
         handle.write(repr(now() + lead))
@@ -133,7 +139,11 @@ def start_together(
 def barrier(args: dict) -> float:
     """The start time for a child, once the parent says go (see ``start_together``)."""
     print(json.dumps({"ready": True}), flush=True)
+    # A parent that died or gave up never writes the go file.
+    deadline = now() + args.get("go_timeout", 120.0)
     while not os.path.exists(args["go"]):
+        if now() > deadline:
+            sys.exit("no go file before the deadline")
         time.sleep(0.005)
     with open(args["go"]) as handle:
         return float(handle.read()) - args.get("before", 0.0)
