@@ -826,18 +826,18 @@ class LookupsMixin(PgBase):
 
     async def find_next_queued_duplicate(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> dict | None:
         """A queued, live record with the same md5 (and the same size when the reference has one) in the reference record's own org; none when the
-        reference has no md5 or no org. Reads the md5 by document field, which no index covers: a scan of the org's records."""
+        reference has no md5 or no org (the comparison is then null and matches nothing). Reads the md5 by document field, which no index covers: a scan of the org's records."""
         org = current_org_id()
         try:
             ref = await self._one("/* pipeshub:graph.find_next_queued_duplicate_ref */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2",
                                   org, record_id, transaction=transaction)
-            if not ref or not ref.get("md5Checksum") or not ref.get("orgId"):
+            if not ref:
                 return None
             size = ref.get("sizeInBytes")
             d = await self._one("""/* pipeshub:graph.find_next_queued_duplicate */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
                 AND n.doc->>'md5Checksum' = $2 AND n.id <> $3 AND n.doc->>'indexingStatus' = 'QUEUED' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false
                 AND ($4::text IS NULL OR n.doc->>'sizeInBytes' = $4) AND n.doc->>'orgId' = $5 ORDER BY n.id LIMIT 1""",
-                                 org, ref["md5Checksum"], record_id, None if size is None else str(size), ref["orgId"], transaction=transaction)
+                                 org, ref.get("md5Checksum"), record_id, None if size is None else str(size), ref.get("orgId"), transaction=transaction)
             return _arango(d, "records") if d else None
         except Exception as e:
             self.logger.error(f"❌ Failed to find next queued duplicate: {e}")

@@ -37,7 +37,8 @@ async def connector(w: World, c: str, *, kind: str = "DRIVE", vrid: str = "v") -
     await w.nodes("recordGroups", {"_key": f"{c}-rg", "connectorId": c, "name": "rg"})
     await w.nodes("records", {"_key": f"{c}-r1", "connectorId": c, "recordType": "FILE", "virtualRecordId": f"{vrid}1", "contentRev": "1"},
                   {"_key": f"{c}-r2", "connectorId": c, "recordType": "FILE", "virtualRecordId": f"{vrid}2", "contentRev": "1"})
-    await w.nodes("files", {"_key": f"{c}-r1", "name": "f"})
+    await w.nodes("files", {"_key": f"{c}-r1", "name": "f"}, {"_key": f"{c}-fx", "name": "x"})
+    await w.nodes("mails", {"_key": f"{c}-r2", "name": "m"})           # a type document under its record's own key, with no edge
     await w.nodes("blocks", {"_key": f"{c}-b1", "recordId": f"{c}-r1"})
     await w.nodes("topics", {"_key": f"{c}-t"})
     await w.nodes("roles", {"_key": f"{c}-role", "connectorId": c})
@@ -49,6 +50,7 @@ async def connector(w: World, c: str, *, kind: str = "DRIVE", vrid: str = "v") -
     for r in ("r1", "r2"):
         await w.edge("belongsTo", ("records", f"{c}-{r}"), ("recordGroups", f"{c}-rg"))
     await w.edge("isOfType", ("records", f"{c}-r1"), ("files", f"{c}-r1"))
+    await w.edge("isOfType", ("records", f"{c}-r2"), ("files", f"{c}-fx"))
     await w.edge("belongsToTopic", ("records", f"{c}-r1"), ("topics", f"{c}-t"))
     await w.edge("permission", ("users", "u"), ("recordGroups", f"{c}-rg"), type="USER", role="READER")
     await w.edge("permission", ("users", "u"), ("roles", f"{c}-role"), type="USER", role="READER")
@@ -66,20 +68,32 @@ async def test_a_deleted_instance_takes_all_of_it_and_nothing_of_another_connect
     await w.edge("belongsToTopic", ("records", "c1-r2"), ("topics", "shared-topic"))
     got = await w.p.delete_connector_instance("c1", w.org)
     assert got["success"] is True and got["deleted_records_count"] == 2 and got["deleted_record_groups_count"] == 1 and got["deleted_roles_count"] == 1
-    assert got["deleted_groups_count"] == 1 and got["deleted_blocks_count"] == 1 and got["deleted_isoftype_targets_count"] == 1
+    assert got["deleted_groups_count"] == 1 and got["deleted_blocks_count"] == 1 and got["deleted_isoftype_targets_count"] == 3
     assert got["record_group_ids"] == ["c1-rg"] and got["connector_id"] == "c1" and got["connector_name"] == "DRIVE"
     assert got["vector_membership_backfilled"] is True and got["vector_membership_backfill_exhausted"] is False and got["virtual_record_ids"] == []
     nodes, edges = await snapshot(w)
     assert not {n for n in nodes if n[1].startswith("c1-") and n != ("topics", "c1-t")} and ("apps", "c1") not in nodes and ("stageStates", "v1:1:entities") not in nodes
     assert ("topics", "c1-t") in nodes                                  # a record of another connector still links it
     assert ("topics", "shared-topic") not in nodes and got["deleted_orphan_taxonomy_count"] == 1      # only c1 linked it
+    assert not {n for n in nodes if n[0] in ("files", "mails") and n[1].startswith("c1-")}
     assert not [e for e in edges if ("c1-" in e[2] + e[4] or e[4] == "c1") and e[4] != "c1-t"]
     n2 = {x for x in nodes if x[1].startswith("c2")}
-    assert {("apps", "c2"), ("recordGroups", "c2-rg"), ("records", "c2-r1"), ("records", "c2-r2"), ("files", "c2-r1"), ("blocks", "c2-b1"), ("roles", "c2-role"),
+    assert {("apps", "c2"), ("recordGroups", "c2-rg"), ("records", "c2-r1"), ("records", "c2-r2"), ("files", "c2-r1"), ("files", "c2-fx"), ("mails", "c2-r2"), ("blocks", "c2-b1"), ("roles", "c2-role"),
             ("groups", "c2-grp"), ("syncPoints", "c2-sp"), ("agentKnowledge", "c2-ak")} <= n2
     assert any(e[0] == "authenticatedAs" and e[4] == "c2" for e in edges)
     assert any(e[0] == "isOfType" and e[2] == "c2-r1" for e in edges) and any(e[0] == "belongsToTopic" and e[2] == "c2-r1" for e in edges)
     assert await w.p.delete_connector_instance("c1", w.org) == {"success": False, "error": "Connector instance c1 not found"}
+
+
+async def test_the_scopes_of_a_deleted_connector_are_dropped_and_those_of_a_failed_delete_are_kept(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await connector(w, "c1")
+    forgotten: list[str] = []
+
+    async def forget(connector_id: str) -> None:
+        forgotten.append(connector_id)
+    monkeypatch.setattr(w.p, "kh_scope_forget", forget)
+    assert (await w.p.delete_connector_instance("zzz", w.org))["success"] is False and forgotten == []
+    assert (await w.p.delete_connector_instance("c1", w.org))["success"] is True and forgotten == ["c1"]
 
 
 async def test_the_virtual_record_ids_are_named_only_when_the_app_cannot_be_cleaned_by_membership(w: World) -> None:
@@ -180,7 +194,8 @@ async def test_the_instances_list_is_scoped_filtered_literal_and_newest_first(w:
     assert (await ids(user_id="boss", search="ALPHA"))[0] == ["a"] and (await ids(user_id="boss", search="slack"))[0] == ["b"] and (await ids(user_id="boss", search="chat"))[0] == ["b"]
     assert (await ids(user_id="ann", search="100%"))[0] == ["c"] and (await ids(user_id="ann", search="%"))[0] == ["c"]       # a percent sign is a character
     assert (await ids(user_id="boss", is_admin=True, search="a_o"))[0] == ["a"] and await ids(user_id="boss", is_admin=True, search="a.o") == ([], 0)
-    assert await ids(user_id="boss", is_admin=True, search="\\") == ([], 0)
+    assert await ids(user_id="boss", is_admin=True, search="alp_a") == ([], 0)            # an underscore is a character, not any one
+    assert await ids(user_id="ann", search="0\\%") == ([], 0) and await ids(user_id="boss", is_admin=True, search="\\a") == ([], 0)                                # nor is a backslash an escape
     assert await ids(user_id="boss", is_admin=True, page=2, limit=2) == (["d"], 3) and await ids(user_id="boss", is_admin=True, page=5, limit=2) == ([], 3)
     assert await ids(user_id="boss", is_admin=True, limit=1) == (["b"], 3)
     with in_org(_org()):
@@ -211,6 +226,7 @@ async def test_the_stats_count_the_live_records_of_the_connector_once(w: World) 
         await w.edge("belongsTo", ("records", r), ("recordGroups", g))
     got = await w.p.get_connector_stats(w.org, APP)
     assert got["success"] is True and got["data"]["origin"] == "CONNECTOR" and got["data"]["stats"]["total"] == 3          # ok, twice, deep
+    assert got["data"]["stats"]["entitiesStatus"]["COMPLETED"] == 1                                    # only ok has a stage state on its revision
     assert (await w.p.get_connector_stats(_org(), APP))["data"]["stats"]["total"] == 0                           # another org's id sees nothing
     await w.nodes("apps", {"_key": "kb", "type": Connectors.KNOWLEDGE_BASE.value})
     await w.nodes("records", {"_key": "k1", **base}, {"_key": "k2", **base, "isDeleted": True})
