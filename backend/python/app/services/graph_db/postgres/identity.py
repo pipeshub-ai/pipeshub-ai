@@ -22,8 +22,10 @@ from app.core.org_context import (
     current_org_id,
 )
 from app.models.entities import AppRole, AppUser, AppUserGroup, Person, User
+from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.common.utils import dedupe_agents_by_id
 from app.services.graph_db.postgres.base import (
+    _VALIDATOR,
     NotImplementedInPostgres,
     PgBase,
     _arango,
@@ -56,6 +58,16 @@ def _js(v: Any) -> Any:  # noqa: ANN401
 _SERVICE_SUFFIX = f"@{SERVICE_ACCOUNT_EMAIL_DOMAIN}"
 
 
+def _stub_app(connector_id: str, app_type: Any = None) -> dict:  # noqa: ANN401
+    """The app node made when a link needs one that is not there yet: every field the apps schema requires, with the connector id as its name
+    (and as its type when the caller does not know it); the connector's own registration fills in the rest."""
+    kind = getattr(app_type, "value", app_type) or connector_id
+    now = get_epoch_timestamp_in_ms()
+    # An app the caller could not name is as bare as Neo4j's ``MERGE (a:App {id})``: not active, so ``get_org_apps(active_only=True)`` skips it.
+    return {"id": connector_id, "name": connector_id, "type": kind, "appGroup": kind, "scope": "team", "isActive": bool(app_type),
+            "createdAtTimestamp": now, "updatedAtTimestamp": now}
+
+
 def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
     """Neo4j swallows a failed read of these methods and answers a default (``flag``: unless ``raise_on_error``). A missing org never is."""
     def deco(fn: Any) -> Any:  # noqa: ANN401
@@ -63,7 +75,7 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
         async def wrapper(self: Any, *a: Any, **k: Any) -> Any:  # noqa: ANN401
             try:
                 return await fn(self, *a, **k)
-            except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+            except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch, SchemaValidationError):    # a rejected payload is never a default
                 raise
             except Exception as e:
                 self.logger.error("%s failed: %s", fn.__name__, e)
@@ -319,15 +331,25 @@ class IdentityMixin(PgBase):
         if not users:
             return
         org = current_org_id()
+        connector_id = users[0].connector_id
+        now = get_epoch_timestamp_in_ms()
+        stub = _stub_app(connector_id, users[0].app_name)
+        # The whole batch is checked before the first statement, whether or not the caller's transaction is open: a user that already exists is not
+        # written, but one that is not is checked as a create (the org is the ambient one, which is the org node).
+        _VALIDATOR.validate_node(CollectionNames.APPS.value, stub)
+        for u in users:
+            _VALIDATOR.validate_node(CollectionNames.USERS.value, {**u.to_arango_base_user(), "id": u.id, "orgId": org, "isActive": False})
+            if not u.is_guest:
+                _VALIDATOR.validate_edge(CollectionNames.BELONGS_TO.value, {"createdAtTimestamp": u.created_at, "updatedAtTimestamp": u.updated_at, "entityType": "ORGANIZATION"})
+            _VALIDATOR.validate_edge(CollectionNames.USER_APP_RELATION.value, {"sourceUserId": u.source_user_id, "isExternalUser": False, "syncState": "NOT_STARTED",
+                                                                                "lastSyncUpdate": now, "createdAtTimestamp": now, "updatedAtTimestamp": now})
         orgs = await self.get_all_orgs(transaction=transaction)
         if not orgs:
             raise Exception("No organizations found in the database")
         org_node = orgs[0].get("id") or orgs[0].get("_key")
-        connector_id = users[0].connector_id
-        now = get_epoch_timestamp_in_ms()
         async with self._atomic(transaction) as tx:
             await self._q(lambda t: t.execute("""/* pipeshub:graph.ensure_minimal_app */ INSERT INTO graph.nodes (org_id, coll, id, doc)
-                VALUES ($1, 'apps', $2, $3::jsonb) ON CONFLICT DO NOTHING""", org, connector_id, _j({"id": connector_id, "name": connector_id, "isActive": True})), tx, write=True)
+                VALUES ($1, 'apps', $2, $3::jsonb) ON CONFLICT DO NOTHING""", org, connector_id, _j(stub)), tx, write=True)
             # the database lowers an address, as it lowers the stored ones: Python's lower() may disagree on non-ASCII letters
             low = {r["raw"]: r["low"] for r in await self._id_rows("/* pipeshub:graph.lower_emails */ SELECT e AS raw, lower(e) AS low FROM unnest($1::text[]) e",
                                                                    [list({u.email for u in users})], tx)}
@@ -441,6 +463,7 @@ class IdentityMixin(PgBase):
         if source_user_id is not None:
             props["sourceUserId"] = source_user_id
         org = current_org_id()
+        _VALIDATOR.validate_edge(CollectionNames.USER_APP_RELATION.value, props)
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.ensure_app_membership */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
             SELECT $1, 'userAppRelation', $2, p.id, 'apps', a.id, '', $5::jsonb FROM graph.nodes p, graph.nodes a
             WHERE p.org_id = $1 AND p.coll = $2 AND p.id = $3 AND a.org_id = $1 AND a.coll = 'apps' AND a.id = $4
@@ -452,12 +475,15 @@ class IdentityMixin(PgBase):
             return
         org, team, ts = current_org_id(), f"all_{org_id}", get_epoch_timestamp_in_ms()
         props = {"sourceUserId": team, "syncState": "NOT_STARTED", "lastSyncUpdate": ts, "createdAtTimestamp": ts, "updatedAtTimestamp": ts}
+        stub = _stub_app(connector_id)
+        _VALIDATOR.validate_edge(CollectionNames.USER_APP_RELATION.value, props)
+        _VALIDATOR.validate_node(CollectionNames.APPS.value, stub)
 
         async def go(tx: Any) -> None:  # noqa: ANN401
             if not await tx.fetchval("/* pipeshub:graph.team_exists */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'teams' AND id = $2", org, team):
                 return
             await tx.execute("/* pipeshub:graph.ensure_bare_app */ INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'apps', $2, $3::jsonb) ON CONFLICT DO NOTHING",
-                             org, connector_id, _j({"id": connector_id}))
+                             org, connector_id, _j(stub))
             await tx.execute("""/* pipeshub:graph.ensure_team_app_edge */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
                 VALUES ($1, 'userAppRelation', 'teams', $2, 'apps', $3, '', $4::jsonb) ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO NOTHING""", org, team, connector_id, _j(props))
         await self._q(go, transaction, write=True)
@@ -466,6 +492,8 @@ class IdentityMixin(PgBase):
         """One link per connector: a stale one (other ends) is dropped, the right one is created or touched."""
         self._require_org(org_id)
         org, ts = current_org_id(), get_epoch_timestamp_in_ms()
+        link = {"connectorId": connector_id, "orgId": org, "createdAtTimestamp": ts, "updatedAtTimestamp": ts}
+        _VALIDATOR.validate_edge(CollectionNames.AUTHENTICATED_AS.value, link)
 
         async def go(tx: Any) -> None:  # noqa: ANN401
             if await tx.fetchval("""/* pipeshub:graph.authenticated_as_ends */ SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id IN ($2, $3)""",
@@ -477,7 +505,7 @@ class IdentityMixin(PgBase):
                 VALUES ($1, 'authenticatedAs', 'users', $2, 'users', $3, $6, $4::jsonb)
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc || jsonb_build_object('orgId', $1::text, 'updatedAtTimestamp', $5::bigint)""",
                              org, creator_key, source_user_key,
-                             _j({"connectorId": connector_id, "orgId": org, "createdAtTimestamp": ts, "updatedAtTimestamp": ts}), ts, connector_id)
+                             _j(link), ts, connector_id)
         await self._q(go, transaction, write=True)
 
     async def remove_authenticated_as(self, connector_id: str, transaction: str | None = None) -> bool:
@@ -575,6 +603,7 @@ class IdentityMixin(PgBase):
         org = current_org_id()
         if not connector_keys:
             return 0
+        _VALIDATOR.validate_node_update(collection, {"isActive": is_active, "isAgentActive": is_agent_active})
         return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.batch_update_connector_status */ WITH u AS (UPDATE graph.nodes SET doc = doc || jsonb_build_object('isActive', $4::boolean, 'isAgentActive', $5::boolean)
             WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) RETURNING 1) SELECT count(*) FROM u""", org, collection, list(connector_keys), is_active, is_agent_active),
                              transaction, write=True)
@@ -713,10 +742,12 @@ class IdentityMixin(PgBase):
                 "userRole": role, "status": d.get("status"), "folders": _js(rows[0]["folders"])}
 
     async def update_knowledge_base(self, kb_id: str, updates: dict, transaction: str | None = None) -> dict | None:
+        org = current_org_id()
         clean = {k: v for k, v in updates.items() if k not in ("id", "_key")}
+        _VALIDATOR.validate_node_update(CollectionNames.APPS.value, clean)
         rows = await self._id_rows("""/* pipeshub:graph.update_knowledge_base */ UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(doc || $3::jsonb) AS _nv
                 WHERE _nv.value <> 'null'::jsonb)
-            WHERE org_id = $1 AND coll = 'apps' AND id = $2 AND doc->>'type' = $4 RETURNING doc""", [current_org_id(), kb_id, _j(clean), _KB], transaction, write=True)
+            WHERE org_id = $1 AND coll = 'apps' AND id = $2 AND doc->>'type' = $4 RETURNING doc""", [org, kb_id, _j(clean), _KB], transaction, write=True)
         return _arango(_doc(rows[0]["doc"]), "apps") if rows else None
 
     async def _get_kb_context_for_record(self, record_id: str, transaction: str | None = None) -> dict | None:

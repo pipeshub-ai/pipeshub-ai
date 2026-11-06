@@ -1636,9 +1636,10 @@ class ConnectorRegistry:
                 'updatedAtTimestamp': get_epoch_timestamp_in_ms()
             }
 
-            # Execute update via update_node (only the changed fields)
+            # Execute update via update_node (only the changed fields: replaying the whole stored
+            # document would send legacy keys the schema no longer accepts)
             node_updates = {
-                k: v for k, v in updated_document.items()
+                k: v for k, v in {**updates, 'updatedAtTimestamp': updated_document['updatedAtTimestamp']}.items()
                 if k not in ('_key', '_id', '_rev', 'id')
             }
 
