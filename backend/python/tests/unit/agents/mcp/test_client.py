@@ -7,6 +7,7 @@ do for real requests, so the error mapping is tested on what the client actually
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -43,6 +44,7 @@ from app.agents.mcp.errors import (
     is_http_unauthorized,
 )
 from app.agents.mcp.models import MCPAuthMode, MCPServerConfig, MCPTransport
+from app.utils.logger import log_record_fields
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -786,6 +788,87 @@ class TestTheHandshakeIsRemembered:
         with pytest.raises(MCPConnectionError):
             await MCPClientManager(_http_config()).open()
         assert len(sdk.clients) == 2
+
+
+class TestTheConnectRecord:
+    """`mcp.connect.end`: what one connect did, as a record (INFO on failure, DEBUG on success);
+    the layer that retries or gives up says how bad it was."""
+
+    @staticmethod
+    def _ends(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.getMessage() == "mcp.connect.end"]
+
+    async def _fail_with(self, sdk: _Script, caplog: pytest.LogCaptureFixture, fail: Callable[[], Awaitable[None]]) -> dict[str, object]:
+        async def _enter(_client: _FakeClient) -> None:
+            await fail()
+
+        sdk.enter = _enter
+        with caplog.at_level(logging.DEBUG), pytest.raises(MCPConnectionError):
+            await MCPClientManager(_http_config()).open()
+        (record,) = self._ends(caplog)
+        assert record.levelno == logging.INFO
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+        fields = log_record_fields(record)
+        assert isinstance(fields.pop("duration_ms"), int)
+        return fields
+
+    async def test_a_refused_sign_in_is_an_info_record_and_no_error(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        async def _refused() -> None:
+            await _answered(401)
+            await _answered(401)
+            raise MCPError(INTERNAL_ERROR, "Server returned an error response sentinel-s")
+
+        fields = await self._fail_with(sdk, caplog, _refused)
+
+        assert fields == {
+            "mcp_server_id": "inst-1", "transport": "streamable_http", "mode": "auto", "outcome": "failure",
+            "error_class": "auth_expired", "mcp_reason": "unauthorized", "status": 401,
+            "error_type": "MCPHttpStatusError", "cause_type": "MCPError",
+        }
+        assert "sentinel-s" not in caplog.text
+
+    async def test_a_refused_connection_names_the_kind_of_failure(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        async def _refused() -> None:
+            raise ExceptionGroup("tg", [httpx2.ConnectError("All connection attempts failed")])
+
+        fields = await self._fail_with(sdk, caplog, _refused)
+
+        assert (fields["error_class"], fields["mcp_reason"], fields["cause_type"]) == ("unavailable", "unreachable", "ConnectError")
+        assert "status" not in fields
+
+    async def test_a_connect_timeout_is_classed_by_its_cause(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        async def _slow() -> None:
+            raise TimeoutError("slow")
+
+        fields = await self._fail_with(sdk, caplog, _slow)
+
+        assert (fields["error_class"], fields["cause_type"]) == ("timeout", "TimeoutError")
+
+    async def test_a_connect_is_a_debug_record_with_the_protocol_version(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.DEBUG):
+            await MCPClientManager(_http_config()).open()
+
+        (record,) = self._ends(caplog)
+        assert record.levelno == logging.DEBUG
+        fields = log_record_fields(record)
+        assert (fields["outcome"], fields["protocol_version"], fields["mode"]) == ("success", "2025-11-25", "auto")
+        assert not [r for r in caplog.records if r.levelno >= logging.INFO and r.name == "app.agents.mcp.client"]
+
+    async def test_probing_a_remembered_server_again_is_an_info_retry(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        await MCPClientManager(_http_config()).open()
+
+        async def _refuse_initialize(client: _FakeClient) -> None:
+            if client.kwargs["mode"] == "legacy":
+                raise MCPError(-32022, "Unsupported protocol version")
+
+        sdk.enter = _refuse_initialize
+        with caplog.at_level(logging.DEBUG):
+            await MCPClientManager(_http_config()).open()
+
+        (retry,) = [r for r in caplog.records if r.getMessage() == "mcp.retry"]
+        assert retry.levelno == logging.INFO
+        assert log_record_fields(retry) == {"mcp_server_id": "inst-1", "op": "connect", "reason": "renegotiate"}
+        assert [log_record_fields(r)["outcome"] for r in self._ends(caplog)] == ["failure", "success"]
 
 
 async def _open(sdk: _Script, config: MCPServerConfig | None = None) -> MCPClientManager:

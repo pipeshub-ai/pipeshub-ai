@@ -42,6 +42,7 @@ from app.agents.mcp.errors import (
     first_leaf,
     is_http_unauthorized,
 )
+from app.agents.mcp.failure import classify_mcp_failure, mcp_error_class
 from app.agents.mcp.models import MCPServerConfig, MCPTransport
 from app.agents.mcp.stdio_policy import (
     StdioPolicyError,
@@ -55,6 +56,7 @@ from app.agents.mcp.url_guard import (
     private_network_allowed,
 )
 from app.utils.env_utils import env_int
+from app.utils.logging_fields import log_event
 from app.utils.url_redaction import redact_url, redact_urls_in_text
 from mcp import Client
 from mcp.client.sse import sse_client
@@ -288,6 +290,19 @@ def _describe_error(exc: BaseException) -> str:
         response = exc.response
         return f"HTTP {response.status_code} {response.reason_phrase} from {redact_url(str(exc.request.url))}"
     return redact_urls_in_text(str(exc)) or type(exc).__name__
+
+
+def _innermost_type(exc: BaseException) -> str:
+    """The type name of the deepest cause (ConnectError, gaierror, SSLError): what kind of failure, without its text."""
+    seen: set[int] = set()
+    current = first_leaf(exc)
+    while id(current) not in seen:
+        seen.add(id(current))
+        deeper = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+        if deeper is None:
+            break
+        current = first_leaf(deeper)
+    return type(current).__name__
 
 
 def _keep_results_that_miss_their_schema(client: Client) -> None:
@@ -624,10 +639,11 @@ class MCPClientManager:
             if mode == "auto" or not _remembered_initialize_only(self.config) or not _worth_renegotiating(e):
                 raise
             _forget_handshake(self.config)
-            logger.info(f"MCP server {self.config.id} refused the remembered handshake; probing its version again")
+            log_event(logger, "mcp.retry", mcp_server_id=self.config.id, op="connect", reason="renegotiate")
             return await self._start_session_in("auto")
 
     async def _start_session_in(self, mode: str) -> _Session:
+        started = time.perf_counter()
         stderr_path = _new_stderr_capture_path(self.config)
         transport: Optional[_Transport] = None
         try:
@@ -655,12 +671,26 @@ class MCPClientManager:
             await runner.stop()
             _cleanup_stderr_capture_path(stderr_path)
             error = self._connect_error(e, runner.connect_record, stderr_tail)
-            logger.error(f"Failed to connect to MCP server {self.config.id} ({self.config.name}): {error.detail}")
-            # A connection error raised inside the SDK keeps its own cause.
-            raise error from (error.__cause__ if error is first_leaf(e) else e)
+            # A connection error raised inside the SDK keeps its own cause. Set before the line,
+            # which classifies the whole chain; the raise sets the same.
+            error.__cause__ = error.__cause__ if error is first_leaf(e) else e
+            # A record, not the verdict: the layer that retries or gives up logs the severity.
+            self._log_connect_end(
+                mode, started, outcome="failure", error_class=mcp_error_class(error),
+                mcp_reason=classify_mcp_failure(error).value, status=getattr(error, "status_code", None),
+                error_type=type(error).__name__, cause_type=_innermost_type(error),
+            )
+            raise error from error.__cause__
         _remember_handshake(self.config, client, mode)
         _keep_results_that_miss_their_schema(client)
+        self._log_connect_end(mode, started, level=logging.DEBUG, outcome="success", protocol_version=client.protocol_version)
         return _Session(runner, stderr_path)
+
+    def _log_connect_end(self, mode: str, started: float, *, level: int = logging.INFO, **fields: object) -> None:
+        log_event(
+            logger, "mcp.connect.end", level=level, mcp_server_id=self.config.id, transport=self.config.transport.value,
+            mode=mode, duration_ms=round((time.perf_counter() - started) * 1000), **fields,
+        )
 
     def _connect_error(self, e: BaseException, record: wire.WireRecord, stderr_tail: str) -> MCPConnectionError:
         leaf = first_leaf(e)

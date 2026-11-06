@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import copy
 import json
-import logging
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import Tool, ToolOutput
@@ -17,17 +16,17 @@ from app.agents.agent_loop.tool_adapter import (
     _params_from_schema,
     resolve_json_schema_refs,
 )
+from app.agents.mcp.errors import MCPUrlBlockedError
 from app.agents.openapi.auth import ApiToolsetAuthError
 from app.agents.openapi.executor import ApiCallError
 from app.agents.openapi.request_builder import RequestBuildError
+from app.utils import error_class
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import ToolResult
     from app.agent_loop_lib.tools.base import ToolParameter
     from app.agents.openapi.executor import ApiResponse, OpenAPIHttpExecutor
     from app.agents.openapi.models import ApiToolsetInstance, CompiledOperation
-
-logger = logging.getLogger(__name__)
 
 __all__ = ["OpenAPIToolAdapter"]
 
@@ -63,6 +62,14 @@ class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def log_kind(self) -> str:
+        return "openapi"
+
+    @property
+    def log_ids(self) -> dict[str, str]:
+        return {"toolset_id": self._instance.id}
 
     @property
     def instance(self) -> ApiToolsetInstance:
@@ -114,17 +121,26 @@ class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
         return f"{prefix}{text[:_MAX_SUMMARY_CHARS]}" if text else None
 
     async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
+        # The executor logs each failure once from `cause` and `end_fields`.
         try:
             response = await self._executor.call(self._operation, kwargs)
-        except (RequestBuildError, ApiCallError) as e:
-            return ToolOutput(success=False, error=str(e))
+        except RequestBuildError as e:
+            return ToolOutput(success=False, error=str(e), cause=e, end_fields={"reason": "bad_args", "error_class": "bad_request"})
+        except ApiCallError as e:
+            # Our URL guard's refusal; otherwise the cause says it (a timeout, an unreachable host).
+            blocked = isinstance(e.__cause__, MCPUrlBlockedError)
+            return ToolOutput(success=False, error=str(e), cause=e, end_fields={"error_class": "forbidden"} if blocked else {})
         except ApiToolsetAuthError as e:
             hint = connect_hint(self._instance)
             # Not `.capitalize()`: it lowercases the rest, and the menu names must match the UI.
-            return ToolOutput(success=False, error=f"{e} {hint[0].upper()}{hint[1:]}.")
+            # A chained OAuth error classifies itself (expired grant or rejected client).
+            end_fields = {} if e.__cause__ is not None else {"error_class": "auth_expired"}
+            return ToolOutput(success=False, error=f"{e} {hint[0].upper()}{hint[1:]}.", cause=e, end_fields=end_fields)
         except Exception as e:
-            logger.warning("API toolset call %s failed: %s", self.name, type(e).__name__, exc_info=True)
-            return ToolOutput(success=False, error=f"The call to {self._instance.name} failed ({type(e).__name__}).")
+            return ToolOutput(
+                success=False, error=f"The call to {self._instance.name} failed ({type(e).__name__}).",
+                cause=e, end_fields={"reason": "exception"},
+            )
         return self._to_output(response)
 
     def _to_output(self, response: ApiResponse) -> ToolOutput:
@@ -140,4 +156,8 @@ class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
             error += " (a redirect, which PipesHub doesn't follow)"
         if response.status == 401:
             error += ". The stored credential was refused; it may need updating under Workspace → Your actions"
-        return ToolOutput(success=False, error=f"{error}: {text[:_MAX_ERROR_BODY_CHARS]}" if text else f"{error}.")
+        # A redirect is no error class: the API answered, PipesHub doesn't follow it.
+        end_fields = {"status": response.status, "error_class": error_class.classify_error(response.status) if response.status >= 400 else None}
+        return ToolOutput(
+            success=False, error=f"{error}: {text[:_MAX_ERROR_BODY_CHARS]}" if text else f"{error}.", end_fields=end_fields,
+        )

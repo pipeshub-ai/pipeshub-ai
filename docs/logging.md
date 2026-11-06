@@ -212,6 +212,34 @@ One chat turn is reconstructable from these lines; each carries the bound `org_i
 - A provider 401/403 on a model call is `misconfigured` (the deployment's key was refused), not `auth_expired`.
 - `duration_ms` on a bridge's `agent_turn.end` counts from the bridge start; on a route exit (agent route) it counts from the request.
 
+## Tool calls and MCP (Python)
+
+`ToolExecutor.call_tool` binds `tool`, `tool_call_id` and the tool's `log_ids` (`mcp_server_id` or `toolset_id`) for the whole
+call, so every line logged while a tool runs (approval gate, action, MCP client, sub-agent) carries them.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `tool_call.end` | success and skipped INFO; failure at `level_for(error_class)`, WARNING when unclassified; parked for approval DEBUG | `kind` (builtin, mcp, openapi, sub_agent), `outcome`, `reason` (exception, tool_error, bad_args, malformed_args, unknown_tool, denied, declined, expired, unavailable, duplicate, awaiting_approval, blocked, server_error, stopped), `error_class`, `error_type`, `status`, `mcp_reason`, `duration_ms` (the run, without an approval wait) |
+| `tool.blocked` | WARNING, once per streak | `tool_path`, `consecutive_failures` |
+| `mcp.connect.end` | success DEBUG, failure INFO | `mcp_server_id`, `transport`, `mode`, `protocol_version`, `outcome`, `error_class`, `mcp_reason`, `status`, `error_type`, `cause_type` (the innermost cause's type), `duration_ms` |
+| `mcp.retry` | WARNING; `reason=renegotiate` INFO | `mcp_server_id`, `op` (connect, list, call), `reason` (token_refresh, resend, relist, renegotiate), `error_type` |
+| `mcp.discover.end` | a failure at its class's level; `reason=no_attached_tools` WARNING | `mcp_server_id`, `outcome`, `error_class`, `mcp_reason`, `error_type`, `source`, `duration_ms` |
+| `mcp.load.end` | INFO, once per turn | `servers`, `servers_loaded`, `tools_listed`, `failed` |
+| `openapi.retry` | WARNING | `status`, `reason` |
+| `tool_approval.run_failed` | DEBUG in practice: the executor already logged it | `error_class`, `error_type` |
+
+- Every tool call has exactly one `tool_call.end` at INFO or above, whatever the exit: run, raised, denied, blocked, malformed,
+  duplicate, or a parked call once its card is settled. A card never answered leaves only the DEBUG line. The success line at
+  INFO is an agreed exception to "no more INFO": it is the one line per unit of work that says which tool ran, for whom, how long.
+- A tool hands a failure to the executor as `ToolOutput(cause=exc, end_fields={...})` or raises; it never logs and returns.
+  The executor logs it once (`log_failure`, so the stack prints only for `internal` and `misconfigured`).
+- Tool, MCP, OpenAPI and OAuth failures never log the error's text (`include_error_text=False`): a server's answer can quote the
+  arguments. What the model sees (`ToolOutput.error`, an `isError` result, an HTTP body) is never a field.
+- `mcp.connect.end` (like `llm_call.end`) is an operation record: it stays at INFO when it failed, and the layer that retries or
+  gives up (`mcp.retry`, `mcp.discover.end`, `tool_call.end`) logs the severity.
+- `app.agents.mcp.failure.mcp_error_class` maps an MCP failure: `classify_error` first, then what its `MCPFailureReason` means; a
+  server's JSON-RPC error is `bad_request` (invalid request, params or method) or `upstream_5xx`.
+
 ## Redaction
 
 Both formats redact: the whole text line (message, fields, traceback), and in JSON every string value. Credentials (bearer and
