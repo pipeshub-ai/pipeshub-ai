@@ -3,7 +3,7 @@
 The search tool, first-turn prefetch and the legacy retrieval tool all go
 through ``KnowledgeContextBuilder.build``, so they cannot drift apart:
 
-    hits -> units -> rank, keep the best -> neighbours -> FK tables -> graph context
+    hits -> units -> rank, keep the best -> neighbours (and small gaps) -> FK tables -> graph context
 """
 
 from __future__ import annotations
@@ -11,8 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from app.modules.retrieval.context.neighbours import expand_neighbours
+from app.modules.retrieval.context.neighbours import expand_neighbours, fill_small_gaps
 from app.modules.retrieval.context.ranking import rank_units
+from app.modules.retrieval.record_cut import spread_by_record
+from app.modules.retrieval.switches import (
+    context_gap_fill_enabled,
+    context_record_spread_enabled,
+)
 from app.utils.chat_helpers import (
     enrich_records_with_address_links,
     enrich_records_with_graph_context,
@@ -68,7 +73,10 @@ class KnowledgeContextBuilder:
         include_fk_children: bool = False,
     ) -> KnowledgeContext:
         """``max_units`` caps the units shown. Hits take it first; neighbours
-        get only the slots the hits left, as they always did.
+        get only the slots the hits left, as they always did. With
+        CONTEXT_RECORD_SPREAD the hits are cut by record, as a search's hits
+        are. CONTEXT_GAP_FILL's fills are not counted: at most four per record,
+        each dropped by a size budget together with the passage it belongs to.
 
         ``include_fk_children`` adds the DDL of tables related by foreign key
         to any SQL table that was kept.
@@ -84,9 +92,11 @@ class KnowledgeContextBuilder:
             graph_provider=self._graph_provider,
         )
         units = [unit for unit in units if records.get(unit.get("virtual_record_id")) is not None]
-        ranked = rank_units(units, max_units)
+        ranked = _keep_best(rank_units(units), max_units)
         spare = None if max_units is None else max(max_units - len(ranked), 0)
         ranked = expand_neighbours(ranked, records, limit=spare)
+        if context_gap_fill_enabled():
+            ranked = fill_small_gaps(ranked, records)
 
         kept = {unit.get("virtual_record_id") for unit in ranked}
         records = {vrid: record for vrid, record in records.items() if vrid in kept}
@@ -115,3 +125,15 @@ class KnowledgeContextBuilder:
             records.values(), self._graph_provider, self._user_id, self._org_id, self._connection_sources,
         )
         return KnowledgeContext(ranked=ranked, virtual_record_id_to_result=records)
+
+
+def _keep_best(ranked: list[Unit], max_units: int | None) -> list[Unit]:
+    """The best ``max_units`` of ``ranked``. Spread across records, they are cut
+    as a search's hits are (``spread_by_record``): the head caps each record and
+    the reserved share goes to records not yet in it, so a long record that
+    matches everywhere cannot take every slot."""
+    if max_units is None:
+        return ranked
+    if max_units < 1 or not context_record_spread_enabled():
+        return ranked[: max(max_units, 0)]
+    return spread_by_record(ranked, max_units, lambda unit: unit.get("virtual_record_id"))

@@ -10,9 +10,11 @@ import pytest
 from PIL import Image
 
 from app.models.blocks import BlockType
+from app.modules.retrieval import record_cut
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.neighbours import expand_neighbours
 from app.modules.retrieval.context.renderer import RenderedKnowledge, render_knowledge
+from app.modules.retrieval.record_cut import RecordCut
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, RecordIdShortener
 from app.utils.image_admission import ImageAdmission
 from app.utils.image_policy import permissive_policy
@@ -402,6 +404,43 @@ class TestKnowledgeContextBuilder:
         mock_links.assert_awaited_once()
         assert mock_links.await_args.args[2] == "o1"
         assert mock_links.await_args.kwargs["user_id"] == "u1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spread", [False, True])
+    async def test_with_record_spread_one_record_cannot_fill_the_cut_alone(
+        self, monkeypatch: pytest.MonkeyPatch, spread: bool,
+    ) -> None:
+        monkeypatch.setenv("CONTEXT_RECORD_SPREAD", str(spread).lower())
+        # The record cut's knobs are read at import; pin the shipped defaults.
+        monkeypatch.setattr(record_cut, "_SETTINGS", RecordCut())
+        records = {"a": _record("a", "A", blocks=0), "b": _record("b", "B", blocks=0)}
+        units = [_unit("a", i, f"a{i}", 0.9 - i / 100) for i in range(6)] + [_unit("b", 0, "b0", 0.1)]
+        flatten, graph, fk = self._patches(units, records)
+        with flatten, graph, fk:
+            knowledge = await self._builder().build([], {}, is_multimodal_llm=False, max_units=5)
+
+        keys = [(u["virtual_record_id"], u["block_index"]) for u in knowledge.ranked]
+        if spread:
+            # Four per record at this limit, then the most relevant of the rest.
+            assert keys == [("a", 0), ("a", 1), ("a", 2), ("a", 3), ("b", 0)]
+        else:
+            assert keys == [("a", i) for i in range(5)]
+
+    @pytest.mark.asyncio
+    async def test_with_record_spread_a_small_limit_still_reaches_a_second_record(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The per-record floor alone (four) would let one record take both
+        slots; the reserved share goes to a record not yet shown."""
+        monkeypatch.setenv("CONTEXT_RECORD_SPREAD", "true")
+        monkeypatch.setattr(record_cut, "_SETTINGS", RecordCut())
+        records = {"a": _record("a", "A", blocks=0), "b": _record("b", "B", blocks=0)}
+        units = [_unit("a", 0, "a0", 0.9), _unit("a", 1, "a1", 0.8), _unit("b", 0, "b0", 0.7)]
+        flatten, graph, fk = self._patches(units, records)
+        with flatten, graph, fk:
+            knowledge = await self._builder().build([], {}, is_multimodal_llm=False, max_units=2)
+
+        assert [(u["virtual_record_id"], u["block_index"]) for u in knowledge.ranked] == [("a", 0), ("b", 0)]
 
     @pytest.mark.asyncio
     async def test_neighbours_take_only_the_slots_the_hits_left(self, records) -> None:

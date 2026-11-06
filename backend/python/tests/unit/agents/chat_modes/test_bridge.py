@@ -36,6 +36,12 @@ from app.agents.chat_modes.policy import (
 )
 from app.agents.chat_modes.prefetch import PrefetchResult
 from app.config.constants.arangodb import Connectors
+from app.modules.retrieval.context.manifest import (
+    BlockKey,
+    ContentManifest,
+    ManifestSource,
+    manifest_registry,
+)
 from app.utils.chat_helpers import CitationRefMapper
 from tests.unit.agents.chat_modes.test_internal_search_prompt import (
     _BEFORE_THE_SWITCHES,
@@ -714,6 +720,9 @@ class TestRunChatStream:
             tool_records=[{"recordId": "r1"}],
             citation_ref_mapper=CitationRefMapper(),
             is_empty=False,
+            manifest=ContentManifest(
+                ManifestSource.PREFETCH, (), (), shown_blocks=frozenset({BlockKey("vr1", 0)}),
+            ),
         )
         captured: dict[str, Any] = {}
 
@@ -753,6 +762,8 @@ class TestRunChatStream:
         assert any(
             "Refunds are processed" in str(c) for c in captured["goal"].constraints
         )
+        # So later results can drop their copies of the prefetched blocks.
+        assert manifest_registry(captured["context"].tool_state).prefetch == [prefetch_result.manifest]
 
     async def _prefetch_ran_for(self, query: str) -> bool:
         prefetch = AsyncMock(return_value=PrefetchResult(

@@ -52,6 +52,7 @@ from app.modules.agents.qna.chat_state import (
     remember_shown_results,
 )
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.manifest import ManifestSource, manifest_registry
 from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
 from app.modules.retrieval.context.targeted import (
@@ -78,6 +79,7 @@ from app.modules.retrieval.result_merging import (
     search_hit_identity,
 )
 from app.modules.retrieval.selection_scope import connection_sources_of
+from app.modules.retrieval.switches import duplicate_block_elision_enabled
 from app.modules.retrieval.title_hits import (
     UnindexedMatch,
     find_unindexed_matches,
@@ -1293,6 +1295,7 @@ async def _execute_search(
             record_id_shortener=record_id_shortener,
             image_budget=image_budget,
             image_admission=image_admission,
+            manifest_source=ManifestSource.SEARCH if duplicate_block_elision_enabled() else None,
         )
 
         def frame(selection: Selection) -> _ResultFrame:
@@ -1380,7 +1383,10 @@ async def _execute_search(
             if shown_by_name:
                 text += block
                 _remember_by_name(shown_by_name)
-        return tool_output(text + outside_dates_text, rendered.images, state)
+        text += outside_dates_text
+        if rendered.manifest is not None:
+            manifest_registry(state).register(text, rendered.manifest.shifted(len(result_frame.summary)))
+        return tool_output(text, rendered.images, state)
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.modules.retrieval.context.manifest import build_manifest
 from app.modules.retrieval.context.ordering import order_for_reading
 from app.modules.retrieval.context.ranking import rank_units
 from app.modules.retrieval.context.units import (
@@ -14,6 +15,7 @@ from app.modules.retrieval.context.units import (
 from app.utils.chat_helpers import admission_for, build_message_content_array
 
 if TYPE_CHECKING:
+    from app.modules.retrieval.context.manifest import ContentManifest, ManifestSource
     from app.modules.retrieval.context.units import Unit
     from app.utils.chat_helpers import CitationRefMapper, ImageBudget, RecordIdShortener
     from app.utils.image_admission import ImageAdmission
@@ -31,6 +33,9 @@ class RenderedKnowledge:
     """Images collected for multimodal delivery alongside the text."""
     omitted_records: int = 0
     """Records left out entirely to stay within ``max_chars``."""
+    manifest: ContentManifest | None = None
+    """Which characters of ``text`` show which blocks, when the renderer was
+    given a ``manifest_source``."""
 
     @property
     def records(self) -> list[str]:
@@ -90,8 +95,10 @@ class KnowledgeRenderer:
         record_id_shortener: RecordIdShortener | None = None,
         image_budget: ImageBudget | None = None,
         image_admission: ImageAdmission | None = None,
+        manifest_source: ManifestSource | None = None,
     ) -> None:
         self._records = virtual_record_id_to_result
+        self._manifest_source = manifest_source
         self._state = _RenderState(
             ref_mapper=ref_mapper,
             record_id_shortener=record_id_shortener,
@@ -123,13 +130,18 @@ class KnowledgeRenderer:
     def render(self, selection: Selection) -> RenderedKnowledge:
         units = order_for_reading(selection.ranked, by_relevance=self._by_relevance)
         images: list[dict[str, Any]] = []
-        parts = self._renderer.render(units, self._state, images)
+        item_units: dict[int, tuple[int, int]] | None = None if self._manifest_source is None else {}
+        parts = self._renderer.render(units, self._state, images, item_units)
         return RenderedKnowledge(
             units=units,
             ranked=selection.ranked,
             parts=parts,
             images=images,
             omitted_records=selection.omitted_records,
+            manifest=(
+                build_manifest(self._manifest_source, parts, units, item_units, self._records)
+                if self._manifest_source is not None and item_units is not None else None
+            ),
         )
 
 
@@ -144,6 +156,7 @@ def render_knowledge(
     image_budget: ImageBudget | None = None,
     image_admission: ImageAdmission | None = None,
     max_chars: int | None = None,
+    manifest_source: ManifestSource | None = None,
 ) -> RenderedKnowledge:
     """Select within ``max_chars`` and render, in one step (see ``KnowledgeRenderer``)."""
     renderer = KnowledgeRenderer(
@@ -154,6 +167,7 @@ def render_knowledge(
         record_id_shortener=record_id_shortener,
         image_budget=image_budget,
         image_admission=image_admission,
+        manifest_source=manifest_source,
     )
     return renderer.render(renderer.select(ranked, max_chars))
 
@@ -171,7 +185,11 @@ class _Renderer:
         self._by_relevance = by_relevance
 
     def render(
-        self, units: list[Unit], state: _RenderState, images: list[dict[str, Any]],
+        self,
+        units: list[Unit],
+        state: _RenderState,
+        images: list[dict[str, Any]],
+        item_units: dict[int, tuple[int, int]] | None = None,
     ) -> list[list[dict[str, Any]]]:
         content_array, _ = build_message_content_array(
             units,
@@ -183,6 +201,7 @@ class _Renderer:
             collected_images=images,
             image_budget=state.image_admission.budget,
             image_admission=state.image_admission,
+            item_units=item_units,
         )
         return content_array
 

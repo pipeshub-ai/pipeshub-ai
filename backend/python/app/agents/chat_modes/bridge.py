@@ -87,6 +87,7 @@ from app.modules.demo_data.chat import (
     note_org_real_data,
 )
 from app.modules.retrieval import degraded_notice
+from app.modules.retrieval.context.manifest import manifest_registry
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.modules.retrieval.selection_scope import (
     SelectionNotReadyError,
@@ -616,6 +617,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     for vrid, record in prefetch_result.virtual_record_id_to_result.items()
                     if isinstance(record, dict)
                 ])
+                if prefetch_result.manifest is not None:
+                    manifest_registry(context.tool_state).register_prefetch(prefetch_result.manifest)
                 # No `citation_ref_mapper` reassignment here: `prefetch_result.
                 # citation_ref_mapper` IS `ref_mapper` (passed in above), the
                 # same instance `context.tool_state["citation_ref_mapper"]`

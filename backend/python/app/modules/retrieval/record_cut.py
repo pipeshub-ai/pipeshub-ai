@@ -180,6 +180,14 @@ def active_record_cut() -> RecordCut | None:
     return _SETTINGS if enabled else None
 
 
+def spread_by_record(
+    results: Sequence[Any], limit: int, record_of: Callable[[Any], Hashable | None],
+) -> list:
+    """``results`` (best first) cut to ``limit`` the way a search's hits are
+    cut by record, with the same knobs, whether or not FUSION_RECORD_CUT is on."""
+    return _SETTINGS.cut(results, limit, record_of)
+
+
 def passages_per_record(limit: int) -> int:
     """Passages one record may keep in a knowledge-search response for ``limit``.
 

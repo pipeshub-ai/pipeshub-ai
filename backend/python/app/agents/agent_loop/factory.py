@@ -136,6 +136,7 @@ from app.agents.agent_loop.hooks import (
     sync_visible_tools_for_prompt,
 )
 from app.agents.agent_loop.hooks.attachment_resolver import default_message_budget
+from app.agents.agent_loop.hooks.duplicate_blocks import shape_duplicate_block_elision
 from app.agents.agent_loop.hooks.progressive_tools import (
     ENTITY_TOOL_NAMES,
     PROGRESSIVE_TOOL_NAMES,
@@ -204,6 +205,7 @@ from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
+from app.modules.retrieval.switches import duplicate_block_elision_enabled
 from app.services.featureflag.platform_settings import (
     is_named_entity_extraction_enabled,
     is_skills_enabled,
@@ -374,6 +376,9 @@ def _chat_context_profile(
             if transport_registry is not None else None
         ),
         image_injectors=(shape_image_injection(context),),
+        view_shapers=(
+            (shape_duplicate_block_elision(context),) if duplicate_block_elision_enabled() else ()
+        ),
         tool_caps={FETCH_RECORD_TOOL_NAME: fetch_cap} if fetch_cap else {},
         artifact_keep_last_n_turns=2,
         auto_compact_tail_ratios=_AUTO_COMPACT_TAIL_RATIOS,

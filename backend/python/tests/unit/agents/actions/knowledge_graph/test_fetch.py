@@ -13,6 +13,11 @@ from app.agents.actions.knowledge_graph.ops.fetch import (
     execute_fetch_record,
     resolve_block_cap,
 )
+from app.modules.retrieval.context.manifest import (
+    BlockKey,
+    ManifestSource,
+    manifest_registry,
+)
 from app.utils.render_budget import MAX_RENDER_CHARS
 
 
@@ -539,3 +544,58 @@ class TestFetchTraceForTheOptInFrame:
         ctx = await self._fetch()
 
         assert "fetch_render_outcomes" not in ctx.tool_state
+
+
+async def _fetch_one_block(block_chars: int) -> tuple[SimpleNamespace, str]:
+    record = {
+        "id": "rec-1",
+        "virtual_record_id": "vr-1",
+        "frontend_url": "",
+        "context_metadata": "Record ID: rec-1",
+        "block_containers": {
+            "blocks": [{"index": 0, "type": "text", "parent_index": None,
+                        "parent_block_index": None, "data": "x" * block_chars}],
+            "block_groups": [],
+        },
+    }
+    context = _make_context(needs_whole_document=True, tool_state={"needs_whole_document": True})
+    with patch(
+        "app.utils.fetch_full_record.create_fetch_full_record_tool",
+        return_value=_fake_tool_returning([record]),
+    ):
+        output, _ = await execute_fetch_record(
+            context=context, virtual_records={}, citation_ref_mapper=None,
+            record_ids=["rec-1"],
+        )
+    return context, output.data
+
+
+class TestShownBlockRegistration:
+    @pytest.fixture(autouse=True)
+    def _elision_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DUPLICATE_BLOCK_ELISION", "true")
+
+    @pytest.mark.asyncio
+    async def test_a_fetch_registers_the_blocks_it_showed(self) -> None:
+        """So a later search can drop its copies of exactly those blocks."""
+        context, text = await _fetch_one_block(1_000)
+
+        manifest = manifest_registry(context.tool_state).lookup(text)
+
+        assert manifest is not None and manifest.source is ManifestSource.FETCH
+        assert manifest.blocks == {BlockKey("vr-1", 0)}
+
+    @pytest.mark.asyncio
+    async def test_a_clipped_block_is_not_registered_as_shown(self) -> None:
+        context, text = await _fetch_one_block(10 * MAX_RENDER_CHARS)
+
+        manifest = manifest_registry(context.tool_state).lookup(text)
+
+        assert manifest is not None and manifest.blocks == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_registered_with_the_switch_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DUPLICATE_BLOCK_ELISION", "false")
+        context, _text = await _fetch_one_block(1_000)
+
+        assert "content_manifests" not in context.tool_state
