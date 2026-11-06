@@ -219,6 +219,9 @@ def _format(entry: str, path: list[str]) -> str:
     return f"{entry} reaches {path[-1]} at import time:\n  " + "\n  -> ".join(path)
 
 
+# The first entry parses most of app/ (about 25 s on an idle 4-CPU host); the rest reuse the
+# parse cache. The suite-wide 30 s limit failed it whenever the host was busy.
+@pytest.mark.timeout(180)
 @pytest.mark.parametrize("entry", sorted(BOUNDARIES))
 def test_static_entry_module_keeps_heavy_imports_out(entry: str) -> None:
     libs, modules = BOUNDARIES[entry]
