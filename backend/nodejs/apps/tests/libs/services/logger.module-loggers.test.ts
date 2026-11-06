@@ -159,36 +159,48 @@ describe('Logger: per-module service, error fields and log context', () => {
       expect(text({ level: 'info', message: 'm', service: 'S', org_id: null, user_id: undefined })).to.not.contain(' | ')
     })
 
-    // Shared with the Python side (docs/logging.md, P1a `_text_value`): input -> text.
-    const VECTORS: Array<[string | number | boolean, string]> = [
-      ['kb-1', 'kb-1'],
-      [ORG, ORG],
-      ['a.b_c:d@e/f-g', 'a.b_c:d@e/f-g'],
-      ['rate_limited', 'rate_limited'],
-      ['web_search', 'web_search'],
-      ['_private', '_private'],
-      ['', '""'],
-      ['a b', '"a b"'],
-      ['a"b', '"a\\"b"'],
-      ['a=b', '"a=b"'],
-      ['a|b', '"a|b"'],
-      ['a\\b', '"a\\\\b"'],
-      ['a\nb', '"a\\nb"'],
-      ['a\tb', '"a\\tb"'],
-      ['a,b', '"a,b"'],
-      ['a+b', '"a+b"'],
-      ["it's", '"it\'s"'],
-      ['ü', '"ü"'],
-      ['x#1', '"x#1"'],
-      ['(1)', '"(1)"'],
-      [42, '42'],
-      [-1.5, '-1.5'],
-      [true, 'true'],
-      [false, 'false'],
+    // The shared table from docs/logging.md ("Field values in text"), identical in both runtimes: input -> text,
+    // null meaning the field is left out of the line.
+    const VECTORS: Array<[string | number | boolean | null, string | null]> = [
+      ["c1", "c1"],
+      ["65f0a1b2c3d4e5f6a7b8c9d0", "65f0a1b2c3d4e5f6a7b8c9d0"],
+      ["sync_run.end", "sync_run.end"],
+      ["rate_limited", "rate_limited"],
+      ["web_search", "web_search"],
+      ["job:kh_restamp", "job:kh_restamp"],
+      ["_", "_"],
+      ["a/b:c@d-e_f", "a/b:c@d-e_f"],
+      ["ok two", "\"ok two\""],
+      ["", "\"\""],
+      ["a,b", "\"a,b\""],
+      ["a+b", "\"a+b\""],
+      ["it's", "\"it's\""],
+      ["ü", "\"ü\""],
+      ["x#1", "\"x#1\""],
+      ["(1)", "\"(1)\""],
+      ["a\"b", "\"a\\\"b\""],
+      ["a=b", "\"a=b\""],
+      ["a|b", "\"a|b\""],
+      ["a\\b", "\"a\\\\b\""],
+      ["line1\nline2", "\"line1\\nline2\""],
+      ["tab\there", "\"tab\\there\""],
+      ["\u0001", "\"\\u0001\""],
+      [12, "12"],
+      [-3, "-3"],
+      [0, "0"],
+      [true, "true"],
+      [false, "false"],
+      [null, null],
     ]
     for (const [input, output] of VECTORS) {
-      it(`formats ${JSON.stringify(input)} as ${output}`, () => {
-        expect(formatTextValue(input)).to.equal(output)
+      it(`renders ${JSON.stringify(input)} as ${output ?? 'nothing'}`, () => {
+        const line = text({ level: 'info', message: 'm', service: 'S', kb_id: input })
+        if (output === null) {
+          expect(line).to.not.contain(' | ')
+        } else {
+          expect(formatTextValue(input as string | number | boolean)).to.equal(output)
+          expect(line.endsWith(` - m | kb_id=${output}`)).to.equal(true)
+        }
       })
     }
   })
