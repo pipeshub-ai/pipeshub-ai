@@ -18,7 +18,7 @@ BEGIN
   IF v_org IS NULL THEN RETURN; END IF;       -- no org (or someone else's): no rows, the same answer
   RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
     WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalRecordId' = p_external_id
-    ORDER BY n.id LIMIT 100;
+    LIMIT 100;
 END $fn$;
 REVOKE ALL ON FUNCTION graph.record_by_external(text, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION graph.record_by_external(text, text) TO pipeshub_connectors;

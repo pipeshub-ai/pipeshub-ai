@@ -145,7 +145,7 @@ functions:
 # The same reason as the code graph's reads above: a plain statement under the service role reaches an expression index on the document
 # only through org_id. Each function answers one lookup the services make on every request or sync step, from the org of app.org_id.
 
-  # The records of one connector with one external id (index nodes_record_external); the caller picks the live or deleted one.
+  # The records of one connector with one external id (index nodes_record_external); the caller picks the live or deleted one. No ORDER BY: an ordered scan of the primary key can look cheaper to a plan than the index of the key.
   - name: graph.record_by_external
     class: read
     scope: org
@@ -160,7 +160,7 @@ functions:
     body: |
       RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
         WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalRecordId' = p_external_id
-        ORDER BY n.id LIMIT 100;
+        LIMIT 100;
 
   # The user with one userId (index nodes_user_userid).
   - name: graph.user_by_user_id
@@ -176,7 +176,7 @@ functions:
     body: |
       RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
         WHERE n.org_id = v_org AND n.coll = 'users' AND n.doc->>'userId' = p_user_id
-        ORDER BY n.id LIMIT 1;
+        LIMIT 1;
 
   # The records of the org that hold any of the given virtual record ids (index nodes_record_vrid), whose own orgId is the org; up to 5000.
   - name: graph.records_by_virtual_id
@@ -192,4 +192,4 @@ functions:
     body: |
       RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
         WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'virtualRecordId' = ANY(p_vrids) AND n.doc->>'orgId' = v_org
-        ORDER BY n.id LIMIT 5000;
+        LIMIT 5000;

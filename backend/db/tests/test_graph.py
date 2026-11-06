@@ -429,7 +429,7 @@ def test_the_lookups_of_graph_0004_use_their_index_where_the_plain_statement_can
         as_role(c, "pipeshub_connectors", A)
         c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'connectorId', 'app1', 'externalRecordId', 'e' || i, 'virtualRecordId', 'v' || i) "
                   "FROM generate_series(1, 4000) i", (A, A))
-        c.execute("INSERT INTO graph.nodes SELECT %s, 'users', 'u' || i, jsonb_build_object('userId', 'x' || i) FROM generate_series(1, 4000) i", (A,))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'users', 'u' || i, jsonb_build_object('userId', 'x' || i) FROM generate_series(1, 20000) i", (A,))
         c.execute("RESET ROLE")
         c.execute("ANALYZE graph.nodes")
         cases = [

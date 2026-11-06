@@ -18,7 +18,7 @@ BEGIN
   IF v_org IS NULL THEN RETURN; END IF;       -- no org (or someone else's): no rows, the same answer
   RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
     WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'virtualRecordId' = ANY(p_vrids) AND n.doc->>'orgId' = v_org
-    ORDER BY n.id LIMIT 5000;
+    LIMIT 5000;
 END $fn$;
 REVOKE ALL ON FUNCTION graph.records_by_virtual_id(text[]) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION graph.records_by_virtual_id(text[]) TO pipeshub_connectors;
