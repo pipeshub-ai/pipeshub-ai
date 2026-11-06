@@ -23,7 +23,7 @@ vi.mock('@/lib/api', () => ({
   apiClient: { get: vi.fn(), post: vi.fn(async () => ({ data: [] })) },
   isProcessedError: () => false,
 }));
-vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null }));
+vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null, McpManageAccess: () => null }));
 vi.mock('../../../api', () => ({ McpServersApi: api }));
 // jsdom has no canvas; the drawing is covered by its own tests.
 vi.mock('../../../logo-file', async (importOriginal) => ({

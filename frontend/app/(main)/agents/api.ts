@@ -140,7 +140,7 @@ export function extractAgentToolFullNames(agent: AgentDetail | null | undefined)
   }
   if (agent?.mcpServers?.length) {
     for (const server of agent.mcpServers) {
-      if (!server?.tools?.length) continue;
+      if (!server?.tools?.length || server.usableByViewer === false) continue;
       for (const t of server.tools) {
         if (typeof t.fullName === 'string') {
           names.push(t.fullName);
@@ -237,6 +237,7 @@ export function buildAgentChatMcpGroups(agent: AgentDetail | null | undefined): 
   if (!agent?.mcpServers?.length) return groups;
 
   for (const server of agent.mcpServers) {
+    if (server.usableByViewer === false) continue;
     const fullNames = (server.tools || [])
       .map((t) => (typeof t.fullName === 'string' ? t.fullName.trim() : ''))
       .filter(Boolean);

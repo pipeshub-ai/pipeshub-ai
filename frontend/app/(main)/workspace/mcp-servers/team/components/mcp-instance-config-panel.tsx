@@ -10,7 +10,7 @@ import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { isProcessedError } from '@/lib/api';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
-import { isMcpInstanceReadOnly, McpInheritedCallout } from '@/config';
+import { isMcpInstanceReadOnly, McpInheritedCallout, McpManageAccess } from '@/config';
 import { useWorkspaceDrawerNestedModalHost, WorkspaceRightPanel } from '../../../components/workspace-right-panel';
 import { ConfirmationDialog, FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
 import { McpServersApi } from '../../api';
@@ -145,6 +145,8 @@ export function McpInstanceConfigPanel({
 
   const isTemplateBased = Boolean(resolvedTemplate);
   const isReadOnly = isMcpInstanceReadOnly(editingInstance);
+  // Set by the Manage Access section when this edition saves who may use an organization server.
+  const manageAccessSave = useRef<((serverId: string) => Promise<void>) | null>(null);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -524,6 +526,7 @@ export function McpInstanceConfigPanel({
 
       await saveCredentialsIfProvided(instanceId);
       await saveLogoIfChanged(instanceId);
+      if (!isPersonal) await manageAccessSave.current?.(instanceId);
 
       onSaved();
       requestOpenChange(false);
@@ -998,6 +1001,10 @@ export function McpInstanceConfigPanel({
           </FormField>
         </Grid>
       </Flex>
+
+      {!isPersonal && (
+        <McpManageAccess serverId={editingInstance?._id ?? null} disabled={isReadOnly} saveRef={manageAccessSave} />
+      )}
 
       {mode === 'create' && authMode !== 'none' && !useAdminAuth && (
         <Text size="1" style={{ color: 'var(--gray-10)' }}>

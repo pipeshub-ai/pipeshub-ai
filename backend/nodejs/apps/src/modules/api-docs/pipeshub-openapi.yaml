@@ -13766,6 +13766,14 @@ components:
         instanceId:
           type: string
           description: Admin-created MCP server instance id.
+        usableByViewer:
+          type: boolean
+          enum:
+            - false
+          description: |
+            Only on `GET /agents/{agentKey}`, and only `false`: the caller may not use
+            this server, so chat leaves it out and the agent runs without it. The
+            agent builder still shows it.
         tools:
           type: array
           items:

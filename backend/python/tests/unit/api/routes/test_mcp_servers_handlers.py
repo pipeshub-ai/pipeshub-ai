@@ -952,6 +952,41 @@ class TestAgentMcpRoutes:
         assert len(result["instances"]) == 1
 
     @pytest.mark.asyncio
+    async def test_get_agent_mcp_servers_lists_the_org_servers_as_the_caller_sees_them(self) -> None:
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value=None)
+        request = _admin_request(config_service=config_service)
+        toolsets_stub = types.ModuleType("app.api.routes.toolsets")
+        toolsets_stub._resolve_agent_with_permission = AsyncMock(return_value={})
+        listed = AsyncMock(return_value=[
+            _api_token_instance(authMode=MCPAuthMode.NONE.value),
+            _api_token_instance(_id="mine", scope="personal", authMode=MCPAuthMode.NONE.value),
+        ])
+
+        with (
+            patch.dict(sys.modules, {"app.api.routes.toolsets": toolsets_stub}),
+            patch("app.api.routes.mcp_servers.resolve_mcp_instances_with_inheritance", new=listed),
+        ):
+            result = await get_agent_mcp_servers(request, "agent-1", include_tools=False)
+
+        assert listed.await_args.args[1:] == ("org-1", "admin-1")
+        assert [entry["_id"] for entry in result["instances"]] == ["inst-1"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("found", [None, _api_token_instance(scope="personal", requiredEnv=[])])
+    async def test_agent_credentials_need_an_org_server_the_editor_can_see(self, found) -> None:
+        request = _admin_request()
+        lookup = AsyncMock(return_value=found)
+        with (
+            patch("app.api.routes.mcp_servers._require_mcp_agent_edit_access", new=AsyncMock(return_value={})),
+            patch("app.api.routes.mcp_servers._get_org_instance", new=lookup),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await authenticate_agent_instance(request, "agent-1", "inst-1", AuthenticateRequest(apiToken="t"))
+        assert exc.value.status_code == 404
+        assert lookup.await_args.args[2:] == ("org-1", "admin-1")
+
+    @pytest.mark.asyncio
     async def test_authenticate_agent_instance(self) -> None:
         config_service = MagicMock()
         config_service.set_config = AsyncMock(return_value=True)

@@ -1597,6 +1597,43 @@ async def _assert_mcp_servers_exist(
     return {instance_id: instance for instance_id, instance in zip(instance_ids, instances) if instance}
 
 
+async def _resolve_mcp_attachments(
+    mcp_servers_with_tools: dict[str, dict[str, Any]],
+    agent: dict[str, Any],
+    config_service: ConfigurationService,
+    org_id: str,
+    user_id: str,
+    *,
+    read_personal: bool,
+) -> dict[str, dict[str, Any]]:
+    """The stored servers behind an edit's attachments. Every one must be a server the editor can
+    see, unless the edition keeps the servers already on the agent (`keeps_attached_mcp_servers_on_edit`):
+    then one stays whoever saves, since a co-editor may not see every server the agent uses and
+    each person who runs the agent is checked then. `read_personal`: the agent is or becomes
+    shared, so the kept servers are read as the org sees them, for the rule that no personal
+    server goes on such an agent."""
+    from app.edition_config import keeps_attached_mcp_servers_on_edit
+
+    on_agent = (agent.get("mcpServers") or []) if keeps_attached_mcp_servers_on_edit() else []
+    existing = {s["instanceId"]: s for s in on_agent if s.get("instanceId")}
+    added = {i: a for i, a in mcp_servers_with_tools.items() if i not in existing}
+    kept = set(mcp_servers_with_tools) - set(added)
+    resolved = await _assert_mcp_servers_exist(added, config_service, org_id, user_id) if added else {}
+    personal: dict[str, dict[str, Any]] = {}
+    if kept and read_personal:
+        try:
+            personal = await _attached_personal_instances(kept, config_service, org_id)
+        except Exception as e:
+            _log.error(f"Could not check the MCP servers of agent {agent.get('_key')} before saving it: {e}")
+            raise _mcp_attachments_unreadable() from e
+    for instance_id in kept:
+        stored = existing[instance_id]
+        resolved[instance_id] = personal.get(instance_id) or {
+            "name": stored.get("name") or stored.get("displayName"), "typeId": stored.get("typeId"),
+        }
+    return resolved
+
+
 def _bind_mcp_attachments_to_instances(
     mcp_servers_with_tools: dict[str, dict[str, Any]], instances: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
@@ -3266,6 +3303,16 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
 
         agent.update(perm)
 
+        from app.edition_config import unusable_agent_mcp_server_ids
+
+        # The builder still shows such a server; chat leaves it out, as the run does.
+        unusable_mcp_server_ids = await unusable_agent_mcp_server_ids(
+            agent.get("mcpServers") or [], services["config_service"], org_key, user_context["userId"],
+        )
+        for server in agent.get("mcpServers") or []:
+            if server.get("instanceId") in unusable_mcp_server_ids:
+                server["usableByViewer"] = False
+
         _mark_deprecated_tools(agent, services["logger"])
 
         # Enrich models with configurations
@@ -3430,16 +3477,6 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             )
 
         # Rejecting this after update_agent below would leave the rest of the edit saved.
-        mcp_servers_with_tools = (
-            _parse_mcp_servers(body.get("mcpServers", [])) if "mcpServers" in body else {}
-        )
-        attached_mcp_instances = (
-            await _assert_mcp_servers_exist(
-                mcp_servers_with_tools, services["config_service"], org_key, user_context["userId"],
-            )
-            if mcp_servers_with_tools else {}
-        )
-        mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
         toolsets_in_body = _parse_toolsets(body.get("toolsets", [])) if "toolsets" in body else {}
         attached_toolsets = (
             await _assert_toolsets_visible(toolsets_in_body, services["config_service"], org_key, user_context["userId"])
@@ -3508,6 +3545,20 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         sharing_turned_on = (final_shared and not agent.get("shareWithOrg")) or (
             final_service_account and not agent.get("isServiceAccount")
         )
+
+        # Rejecting this after update_agent below would leave the rest of the edit saved.
+        mcp_servers_with_tools = (
+            _parse_mcp_servers(body.get("mcpServers", [])) if "mcpServers" in body else {}
+        )
+        attached_mcp_instances = (
+            await _resolve_mcp_attachments(
+                mcp_servers_with_tools, agent, services["config_service"], org_key, user_context["userId"],
+                read_personal=final_shared or final_service_account,
+            )
+            if mcp_servers_with_tools else {}
+        )
+        mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
+
         if sharing_turned_on and "mcpServers" not in body:
             # An empty list here may only mean the read failed; it would let any server through.
             if agent.get("mcpServersUnavailable"):
@@ -4445,8 +4496,21 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     from app.agents.mcp.service import is_mcp_enabled
 
                     mcp_enabled = await is_mcp_enabled(config_service)
+                attached_mcp_servers = agent.get("mcpServers") or []
+                # The assistant's list already holds only servers this person may use.
+                if mcp_enabled and attached_mcp_servers and agent_id != "agentIdPlaceholder":
+                    from app.edition_config import unusable_agent_mcp_server_ids
+
+                    # The person chatting, also for a service account agent running on its own credentials.
+                    unusable_mcp_server_ids = await unusable_agent_mcp_server_ids(
+                        attached_mcp_servers, config_service, org_key, user_context["userId"],
+                    )
+                    attached_mcp_servers = [
+                        server for server in attached_mcp_servers
+                        if server.get("instanceId") not in unusable_mcp_server_ids
+                    ]
                 agent_mcp_servers = _mcp_servers_for_chat(
-                    agent.get("mcpServers") or [],
+                    attached_mcp_servers,
                     set(chat_query.tools) if chat_query.tools is not None else None,
                 ) if mcp_enabled else []
 
