@@ -48,7 +48,8 @@ def test_one_distribution_owns_litellm() -> None:
     owners = litellm_owners()
     assert len(owners) <= 1, (
         f"{sorted(owners)} all install files into litellm/; keep one (uninstall the others, "
-        "then reinstall litellm: uv pip install --reinstall-package litellm litellm)"
+        f"then reinstall the same litellm: uv pip install --reinstall-package litellm "
+        f"litellm=={importlib.metadata.version('litellm')})"
     )
     if owners:
         assert next(iter(owners)) == "litellm"

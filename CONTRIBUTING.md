@@ -194,7 +194,14 @@ python -m app.query_main
 python -m app.docling_main
 ```
 
-`pyproject.toml` tells uv to skip `unclecode-litellm`, a fork that crawl4ai pins and that writes into the same `litellm/` directory as the real `litellm`. Run the install with `uv` from `backend/python`; plain `pip install -e .` ignores that setting. If you installed that way, run `pip uninstall -y unclecode-litellm && pip install --force-reinstall --no-deps litellm` (keep the version pinned in `pyproject.toml`). `tests/unit/test_single_litellm_owner.py` fails while two packages own `litellm/`.
+`pyproject.toml` tells uv to skip `unclecode-litellm`, a fork that crawl4ai pins and that writes into the same `litellm/` directory as the real `litellm`. Run the install with `uv` from `backend/python`; plain `pip install -e .` ignores that setting. If you installed that way, reinstall the litellm version the resolver already chose, after removing the fork (its removal deletes files litellm owns too):
+
+```bash
+v=$(python -c "import importlib.metadata as m; print(m.version('litellm'))")
+pip uninstall -y unclecode-litellm && pip install --force-reinstall --no-deps "litellm==$v"
+```
+
+`tests/unit/test_single_litellm_owner.py` fails while two packages own `litellm/`.
 
 Parsing (`app.parsing_main`, 8092) and extraction (`app.extraction_main`, 8093) only when `USE_PARSING_SERVICE=true`. That variable is not in `backend/env.template`; set it in `backend/python/.env`.
 
