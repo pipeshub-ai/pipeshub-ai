@@ -237,9 +237,12 @@ async def load_instances_for_mutation(
     org_id: str,
     config_service: ConfigurationService,
 ) -> list[dict[str, Any]]:
-    """Load instances for create/update/delete."""
+    """Load instances for create/update/delete.
+
+    The whole list is written back, so a store that can't be read must fail the
+    mutation rather than read as no instances and be overwritten."""
     try:
-        instances_data = await config_service.get_config(DEFAULT_TOOLSET_INSTANCES_PATH, default=[])
+        instances_data = await config_service.get_config(DEFAULT_TOOLSET_INSTANCES_PATH, default=[], raise_on_error=True)
         if not isinstance(instances_data, list):
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,

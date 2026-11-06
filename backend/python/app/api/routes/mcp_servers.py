@@ -1218,13 +1218,22 @@ async def _resolve_oauth_client(
                 record[mcp_token_refresh.PREVIOUS_CLIENT_FIELD] = {
                     key: value for key, value in shared_dcr.items() if key != mcp_token_refresh.PREVIOUS_CLIENT_FIELD
                 }
-            await config_service.set_config(shared_path, record)
-        elif not await config_service.create_config_if_absent(shared_path, record):
-            # Someone registered at the same moment: use theirs, so there's still one client.
-            winner = await config_service.get_config(shared_path, default=None, use_cache=False)
-            if isinstance(winner, dict) and winner.get("clientId"):
-                return _SignInClient(winner["clientId"], winner.get("clientSecret"), True, _registered_auth_method(winner))
-            await config_service.set_config(shared_path, record)
+            saved = await config_service.set_config(shared_path, record)
+        else:
+            saved = await config_service.create_config_if_absent(shared_path, record)
+            if not saved:
+                # Someone registered at the same moment: use theirs, so there's still one client.
+                # An unreadable winner must not be overwritten.
+                winner = await config_service.get_config(shared_path, default=None, use_cache=False, raise_on_error=True)
+                if isinstance(winner, dict) and winner.get("clientId"):
+                    return _SignInClient(winner["clientId"], winner.get("clientSecret"), True, _registered_auth_method(winner))
+                saved = await config_service.set_config(shared_path, record)
+        if not saved:
+            # The callback reads the secret from here; without it the sign-in can't finish.
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to save the OAuth client registration. Please try again.",
+            )
         return _SignInClient(dcr_client.client_id, dcr_client.client_secret, True, _registered_auth_method(record))
 
     raise HTTPException(
@@ -1706,7 +1715,12 @@ async def handle_oauth_callback(
         "updatedAt": now_ms,
         "connectedAt": now_ms,
     }
-    await config_service.set_config(get_mcp_credentials_path(instance_id, user_id), record)
+    if not await config_service.set_config(get_mcp_credentials_path(instance_id, user_id), record):
+        return {
+            "success": False,
+            "error": "credentials_not_saved",
+            "errorMessage": "Your sign-in couldn't be saved. Please try connecting again.",
+        }
     await step_up.clear_step_up_scopes(config_service, instance_id, user_id)
 
     from app.connectors.core.base.token_service.startup_service import startup_service
