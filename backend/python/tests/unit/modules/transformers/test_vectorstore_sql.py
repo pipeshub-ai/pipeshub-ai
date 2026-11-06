@@ -246,7 +246,7 @@ class TestReconciliationProcessing:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=True)  # multimodal
         vs._process_document_chunks = AsyncMock()
-        vs._process_image_embeddings = AsyncMock(return_value=[{"fake": "point"}])
+        vs._process_image_embeddings = AsyncMock(return_value=([{"fake": "point"}], []))
         vs._store_image_points = AsyncMock()
 
         text_block = Block(index=0, type=BlockType.TEXT, format="txt", data="text")

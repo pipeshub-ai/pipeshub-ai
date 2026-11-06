@@ -78,6 +78,7 @@ _PROVIDER_BUILDERS: dict[str, Callable[[MultimodalProviderConfig], IMultimodalEm
         model_name=config.model_name,
         normalize_fn=config.normalize_fn,
         logger=config.logger,
+        embedding_size=config.embedding_size,
     ),
     EmbeddingProvider.OLLAMA.value: lambda config: OllamaMultimodalProvider(
         base_url=config.base_url,
