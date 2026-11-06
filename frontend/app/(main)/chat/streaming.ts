@@ -64,6 +64,7 @@ import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
 import { StreamError } from '@/lib/api/stream-errors';
+import { discardCompare, onPrimaryTurnStarted } from './compare/compare-controller';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -1295,6 +1296,10 @@ export async function streamMessageForSlot(
         }
       },
 
+      onTurnStarted: (data) => {
+        if (request.compareTurn && slotIsOnRun(slotId, streamRunId)) onPrimaryTurnStarted(slotId, data);
+      },
+
       onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
         if (!slotIsOnRun(slotId, streamRunId) || !isShowableAskUserQuestion(data)) return;
         // Stop accumulating answer_chunks so no partial answer is shown
@@ -1766,6 +1771,8 @@ export async function streamRegenerateForSlot(
   if (!slot || !slot.convId) return;
   if (slot.remoteRunInProgress) return;
 
+  // Rebuilding the primary answer leaves nothing to compare against.
+  discardCompare(slotId);
   const editConvId = slot.convId;
   const preEditMessages = slot.messages;
   const preEditPending = slot.pendingAskUserQuestion;
