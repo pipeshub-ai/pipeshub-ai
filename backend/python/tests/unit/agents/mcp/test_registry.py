@@ -92,6 +92,7 @@ class TestMCPRegistry:
         assert "okta" in type_ids
         assert "zoom" in type_ids
         assert "trello" in type_ids
+        assert "supabase" in type_ids
 
     def test_airtable_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -114,6 +115,30 @@ class TestMCPRegistry:
         assert airtable.documentation_url == (
             "https://airtable.com/developers/agents/mcp/getting-started"
         )
+
+    def test_supabase_catalog_entry(self) -> None:
+        """Supabase's official hosted server signs in with DCR, so nobody creates an OAuth app."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        supabase = registry.get_template("supabase")
+
+        assert supabase is not None
+        assert supabase.display_name == "Supabase"
+        assert supabase.transport == MCPTransport.STREAMABLE_HTTP
+        assert supabase.default_url == "https://mcp.supabase.com/mcp"
+        assert supabase.default_auth_mode == MCPAuthMode.OAUTH
+        assert supabase.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert supabase.supports_dcr is True
+        assert supabase.require_oauth_client is False
+        assert supabase.url_editable is False
+        assert supabase.authorization_url == "https://api.supabase.com/v1/oauth/authorize"
+        assert supabase.token_url == "https://api.supabase.com/v1/oauth/token"
+        assert supabase.default_scopes == []
+        assert supabase.icon == "/icons/connectors/supabase.svg"
+        assert supabase.documentation_url == (
+            "https://supabase.com/docs/guides/getting-started/mcp"
+        )
+        assert "production" in supabase.description
 
     def test_okta_and_docusign_catalog_entries(self) -> None:
         """Okta's address is per org, so it has no fixed URL and always asks for an OAuth app.

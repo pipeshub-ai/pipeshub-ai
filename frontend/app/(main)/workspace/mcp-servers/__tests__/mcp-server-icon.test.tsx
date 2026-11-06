@@ -101,4 +101,15 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="trello" name="Trello" />)).toBe('trello icon');
     expect(logo(<McpServerIcon typeId={null} name="Trello" />)).toBe('trello icon');
   });
+
+  it("shows Supabase's catalog logo, also for a custom server named after it", () => {
+    const { container } = render(<McpServerIcon typeId="supabase" name="Supabase" />);
+
+    const image = container.querySelector('img');
+    expect(image?.getAttribute('alt')).toBe('supabase icon');
+    const sourcePath = new URL(image?.src ?? '', window.location.href).pathname;
+    expect(sourcePath).toBe('/icons/connectors/supabase.svg');
+    cleanup();
+    expect(logo(<McpServerIcon typeId={null} name="Supabase" />)).toBe('supabase icon');
+  });
 });
