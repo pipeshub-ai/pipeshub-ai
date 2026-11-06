@@ -2349,6 +2349,16 @@ class LinearConnector(BaseConnector):
         }
         return list(grants.values())
 
+    def _project_grants_stamp(self, project_data: dict[str, Any], scope: set[str]) -> str:
+        """A fingerprint of what the project's synced teams grant in this run, kept in its
+        revision so a team made private, or taken out of the sync, refreshes the project."""
+        keys = sorted({
+            f"{p.entity_type}:{p.external_id}:{p.email}:{p.type}"
+            for team_id in self._project_teams(project_data, scope)
+            for p in self._team_permissions.get(team_id, [])
+        })
+        return hashlib.sha256("|".join(keys).encode()).hexdigest()[:16]
+
     async def _fetch_full_project(self, project_id: str) -> dict[str, Any] | None:
         """A project with every nested list read to its end. None when Linear no longer
         has it (or no longer shows it to this account)."""
@@ -2470,6 +2480,8 @@ class LinearConnector(BaseConnector):
             # A rewrite, so a team taken off the project takes its readers' grants with it.
             project_record.rewrite_permissions = True
             grants = self._project_extra_permissions(full_project_data, scope, team_id)
+            if project_record.external_revision_id:
+                project_record.external_revision_id += f":{self._project_grants_stamp(full_project_data, scope)}"
         else:
             # Without this run's teams a rewrite would wipe the grants; keep the stored ones.
             self.logger.warning(f"Team permissions not read in this run; project {project_id} keeps its stored grants")
@@ -4179,10 +4191,11 @@ class LinearConnector(BaseConnector):
                 self.logger.info(f"✅ Removed {removed} projects that are gone from Linear")
             changed = []
             for project_id, record in stored.items():
-                stamp = self._project_children_stamp(listed.get(project_id) or {})
+                project = listed.get(project_id) or {}
+                stamp = self._project_children_stamp(project)
                 # No stamp (a list longer than the listing's page): refresh, so a team change is never missed.
-                if project_id not in self._refreshed_project_ids and (
-                        stamp is None or not (record.external_revision_id or "").endswith(f":{stamp}")):
+                if project_id not in self._refreshed_project_ids and (stamp is None or not (
+                        record.external_revision_id or "").endswith(f":{stamp}:{self._project_grants_stamp(project, team_ids)}")):
                     changed.append(project_id)
             await self._refresh_projects(sorted(changed), team_ids)
         except Exception as e:

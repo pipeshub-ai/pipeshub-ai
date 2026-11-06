@@ -723,6 +723,28 @@ async def test_a_team_taken_off_a_project_loses_it_even_when_the_project_is_not_
     await env.assert_matches_linear()
 
 
+
+async def test_a_project_follows_what_its_other_team_grants_without_being_edited(env: _Env) -> None:
+    """The other team made private, then taken out of the sync: neither touches the project,
+    and the next incremental sync still withdraws what that team gave."""
+    p = await _people(env, "alice", "bob", "carol")
+    ws = env.ws
+    sec = ws.team("SEC", visibility="private", members=[p["sync"], p["alice"]])
+    eng = ws.team("ENG", members=[p["sync"], p["bob"]])
+    ws.project("Audit", [sec, eng], lead=sec, documents=[Document("Audit doc", "text")],
+               links=[Link("Audit deck", "https://deck.example/a")])
+    await env.sync()
+    await env.assert_matches_linear()
+
+    eng.visibility = "private"
+    await env.sync()
+    await env.assert_matches_linear()
+
+    env.select_teams(sec)
+    await env.sync()
+    await env.assert_matches_linear()
+
+
 # ---------------------------------------------------------------------- moves and deletes
 
 async def test_an_issue_moved_into_a_private_team_takes_everything_with_it(env: _Env) -> None:
