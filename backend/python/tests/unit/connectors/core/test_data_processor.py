@@ -628,9 +628,32 @@ class TestUnchangedRecordsAreNotRepublished:
         assert record.indexing_status != ProgressStatus.PASSWORD_PROTECTED.value
 
     @pytest.mark.asyncio
-    async def test_an_unchanged_failed_record_is_still_queued_again(self) -> None:
+    @pytest.mark.parametrize(
+        "status",
+        [
+            ProgressStatus.FAILED.value,
+            ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+            ProgressStatus.EMPTY.value,
+            ProgressStatus.QUEUED.value,
+            ProgressStatus.IN_PROGRESS.value,
+        ],
+    )
+    async def test_an_unchanged_record_keeps_its_status_and_publishes_nothing(self, status: str) -> None:
+        """A sync is not a retry: an outcome stays until the content changes or someone
+        reindexes, and queued or running work already has its event."""
+        proc, _ = self._proc_with_existing(self._existing("rev-1", status))
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == status
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_record_whose_event_was_never_acknowledged_is_published(self) -> None:
         proc, _ = self._proc_with_existing(
-            self._existing("rev-1", ProgressStatus.FAILED.value)
+            self._existing("rev-1", ProgressStatus.NOT_STARTED.value)
         )
         record = _make_record()
         record.external_revision_id = "rev-1"
@@ -638,6 +661,26 @@ class TestUnchangedRecordsAreNotRepublished:
         await proc.on_new_records([(record, [])])
 
         proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_a_changed_record_is_stored_not_started_until_its_event_is_acknowledged(self) -> None:
+        """QUEUED is written only by the compare-and-set after the publish, so a lost
+        publish leaves a NOT_STARTED row the stranded-record sweep sends again."""
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value)
+        )
+        proc.messaging_producer.send_messages = AsyncMock(return_value=[True])
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+        proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
+            [record.id], ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value,
+        )
 
     @pytest.mark.asyncio
     async def test_changed_completed_record_is_requeued_and_published(self):

@@ -29,8 +29,9 @@ ENTITY_INDEX_CANDIDATE_COLLECTIONS = frozenset({_APPS, _ORGS})
 class EntityIndexSource:
     """How one projected source is read.
 
-    ``scope_field`` is ``connectorId`` for connector-owned sources and
-    ``orgId`` for taxonomy and people. ``canonical_only`` keeps legacy taxonomy nodes
+    ``scope_field`` is ``connectorId`` for connector-owned sources,
+    ``orgId`` for taxonomy and people, and ``parentOrgId`` for external
+    organisations. ``canonical_only`` keeps legacy taxonomy nodes
     (no ``normalizedName``) and merged-away ones (``mergedInto``) out; ``include_global`` admits nodes without an
     org (departments are seeded globally)."""
 
@@ -46,6 +47,9 @@ class EntityIndexSource:
     list_fields: tuple[str, ...] = ()
     canonical_only: bool = False
     include_global: bool = False
+    # Boolean fields a node must have set to true (``isExternal``: a CRM
+    # account, never the org itself).
+    required_true: tuple[str, ...] = ()
 
 
 def _taxonomy(collection: str) -> EntityIndexSource:
@@ -70,9 +74,12 @@ ENTITY_INDEX_SOURCES: dict[str, EntityIndexSource] = {
         EntityIndexSource(
             CollectionNames.DEPARTMENTS.value, "orgId", "departmentName", include_global=True,
         ),
-        # Named as on the index path (SinkOrchestrator._sync_record_people_entities).
+        # Named as on the index path (SinkOrchestrator._sync_record_linked_entities).
         EntityIndexSource(
             CollectionNames.USERS.value, "orgId", "fullName", name_fallback="email", blank_name_falls_back=True,
+        ),
+        EntityIndexSource(
+            CollectionNames.ORGS.value, "parentOrgId", "name", required_true=("isExternal",),
         ),
         *(
             _taxonomy(c.value)
@@ -103,14 +110,17 @@ def _check_candidate_collection(collection: str) -> None:
 
 def build_entity_index_candidate_aql(collection: str, *, with_sweep: bool) -> str:
     _check_candidate_collection(collection)
-    deleting = f'FILTER doc.status != "{APP_STATUS_DELETING}"' if collection == _APPS else ""
+    # A CRM account lives among the orgs (isExternal) but is a document of its org, not an org to index.
+    excluded = (
+        f'FILTER doc.status != "{APP_STATUS_DELETING}"' if collection == _APPS else "FILTER doc.isExternal != true"
+    )
     due = f"doc.{ENTITY_INDEX_STATE_FIELD} != @marker"
     if with_sweep:
         swept = f"doc.{ENTITY_INDEX_SWEPT_AT_FIELD}"
         due = f"{due} OR {swept} == null OR {swept} < @sweep_before"
     return f"""
     FOR doc IN {collection}
-        {deleting}
+        {excluded}
         FILTER {due}
         LIMIT 1
         RETURN doc
@@ -120,8 +130,9 @@ def build_entity_index_candidate_aql(collection: str, *, with_sweep: bool) -> st
 def build_entity_index_candidate_cypher(collection: str, *, with_sweep: bool) -> str:
     _check_candidate_collection(collection)
     label = collection_to_label(collection)
-    deleting = (
-        f"AND coalesce(n.status, '') <> '{APP_STATUS_DELETING}'" if collection == _APPS else ""
+    excluded = (
+        f"AND coalesce(n.status, '') <> '{APP_STATUS_DELETING}'" if collection == _APPS
+        else "AND coalesce(n.isExternal, false) <> true"
     )
     due = f"coalesce(n.{ENTITY_INDEX_STATE_FIELD}, '') <> $marker"
     if with_sweep:
@@ -130,7 +141,7 @@ def build_entity_index_candidate_cypher(collection: str, *, with_sweep: bool) ->
     return f"""
     MATCH (n:{label})
     WHERE ({due})
-      {deleting}
+      {excluded}
     RETURN n
     LIMIT 1
     """
@@ -153,6 +164,7 @@ def build_entity_index_source_page_aql(source: str, *, has_after_key: bool) -> s
     filters = [f"FILTER {scope}"]
     if spec.canonical_only:
         filters.append("FILTER n.normalizedName != null AND n.mergedInto == null")
+    filters.extend(f"FILTER n.{f} == true" for f in spec.required_true)
     if has_after_key:
         filters.append("FILTER n._key > @after_key")
     projection = ", ".join(
@@ -191,6 +203,7 @@ def build_entity_index_source_page_cypher(source: str, *, has_after_key: bool) -
     predicates = [scope]
     if spec.canonical_only:
         predicates.append("n.normalizedName IS NOT NULL AND n.mergedInto IS NULL")
+    predicates.extend(f"n.{f} = true" for f in spec.required_true)
     if has_after_key:
         predicates.append("n.id > $after_key")
     projection = ", ".join(
