@@ -135,7 +135,7 @@ async def test_one_tick_of_the_job_pages_syncs_and_advances_in_each_apps_own_org
     """The real context binding: the loop has no org of its own, two orgs hold a connector of the same id (one a legacy instance whose document
     names no org), and every tick must move the cursor."""
     tag, orgs = uuid.uuid4().hex[:8], [_org(), _org()]
-    cid = f"tick-{tag}"
+    cid = f"0000-tick-{tag}"      # sorts before the apps other tests leave behind, which the job walks lowest id first
     for o in orgs:
         with org_ctx(o):
             await pg_provider.batch_upsert_nodes([{"_key": cid, "type": "DRIVE", **({"orgId": o} if o == orgs[0] else {})}], "apps")
@@ -150,7 +150,7 @@ async def test_one_tick_of_the_job_pages_syncs_and_advances_in_each_apps_own_org
     pipeline = SimpleNamespace(sync_vector_membership=sync, orgs_holding_points=lambda _v: [])
     token = org_context.push(None)
     try:
-        for _ in range(500):      # apps other tests left behind are walked first
+        for _ in range(50):
             await run_vector_membership_backfill_tick(logger=logging.getLogger("t"), graph_provider=pg_provider, pipeline=pipeline, lock=_Lock(), page_size=2, vrid_pause_ms=0)
             if len(synced) == 6:
                 break
