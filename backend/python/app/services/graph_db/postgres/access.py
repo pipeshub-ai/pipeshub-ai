@@ -210,6 +210,11 @@ def _is_seed(doc: dict, coll: str, app_id: str, granted: set[str], node_id: str)
             and (rule is None or rule == "OPEN") and node_id in granted)
 
 
+def _text(v: object) -> str | None:
+    """``doc->>key`` for a stored value: its text, None for JSON null or absent."""
+    return v if v is None or isinstance(v, str) else json.dumps(v)
+
+
 async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str], access: dict[str, Any]) -> list[dict[str, Any]]:
     if access.get("probe"):      # a browse that tests grants from the node: its grants are not in ``by_connector``, so it is not answered by guessing
         raise NotImplementedInPostgres("an access check with a grant probe is not implemented")
@@ -233,7 +238,7 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
                 for r in raw:
                     d = json.loads(r["doc"]) if isinstance(r["doc"], str) else r["doc"]
                     if not _pgbool(d.get("isDeleted")) and (not _pgbool(d.get("isPlaceholder")) or r["node_id"] in asked):
-                        found.append({"coll": "records", "id": r["node_id"], "doc": r["doc"], "app_id": d.get("connectorId")})
+                        found.append({"coll": "records", "id": r["node_id"], "doc": r["doc"], "app_id": _text(d.get("connectorId"))})
         if found is None:
             found = await tx.fetch("""/* pipeshub:graph.access_targets_vrid */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
             FROM graph.nodes t

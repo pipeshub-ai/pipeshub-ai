@@ -337,16 +337,13 @@ def test_a_hot_lookup_uses_its_index_where_the_plain_statement_cannot(rdb, fn, p
 LOOKUPS = {
     "record_by_external": ("records", "n.doc->>'connectorId' = %s AND n.doc->>'externalRecordId' = %s", ("app1", "e1"), "externalRecordId"),
     "user_by_user_id": ("users", "n.doc->>'userId' = %s", ("x",), "userId"),
-    "user_group_by_external": ("groups", "n.doc->>'connectorId' = %s AND n.doc->>'externalGroupId' = %s", ("app1", "e1"), "externalGroupId"),
-    "record_group_by_external": ("recordGroups", "n.doc->>'connectorId' = %s AND n.doc->>'externalGroupId' = %s", ("app1", "e1"), "externalGroupId"),
-    "app_role_by_external": ("roles", "n.doc->>'connectorId' = %s AND n.doc->>'externalRoleId' = %s", ("app1", "e1"), "externalRoleId"),
 }
 
 
 def _seed_lookups(c):
     for org in (A, B):
         as_role(c, "pipeshub_connectors", org)
-        for coll, key in (("records", "externalRecordId"), ("groups", "externalGroupId"), ("recordGroups", "externalGroupId"), ("roles", "externalRoleId")):
+        for coll, key in (("records", "externalRecordId"),):
             for i, (conn, ext) in enumerate((("app1", "e1"), ("app1", "e2"), ("app2", "e1"))):
                 c.execute(NODE, (org, coll, f"{coll[0]}{i}", json.dumps({"connectorId": conn, key: ext, "orgId": org})))
         c.execute(NODE, (org, "records", "rdel", json.dumps({"connectorId": "app1", "externalRecordId": "e1", "isDeleted": True, "orgId": org})))     # the same pair, deleted
@@ -406,7 +403,6 @@ def test_the_virtual_record_lookup_returns_the_records_of_the_org_that_hold_a_vi
 
 BAD_LOOKUP = [("record_by_external", "(%s, %s)", a) for a in ((None, "e"), ("", "e"), ("c" * 201, "e"), ("c", None), ("c", ""), ("c", "e" * 2001))] + [
     ("user_by_user_id", "(%s)", a) for a in ((None,), ("",), ("u" * 201,))] + [
-    (f, "(%s, %s)", a) for f in ("user_group_by_external", "record_group_by_external", "app_role_by_external") for a in ((None, "e"), ("", "e"), ("c", None), ("c", "e" * 2001))] + [
     ("records_by_virtual_id", "(%s::text[])", a) for a in ((None,), ([None],), ([""],), (["v" * 201],), (["v"] * 1001,))]
 
 
@@ -434,16 +430,11 @@ def test_the_lookups_of_graph_0004_use_their_index_where_the_plain_statement_can
         c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'connectorId', 'app1', 'externalRecordId', 'e' || i, 'virtualRecordId', 'v' || i) "
                   "FROM generate_series(1, 4000) i", (A, A))
         c.execute("INSERT INTO graph.nodes SELECT %s, 'users', 'u' || i, jsonb_build_object('userId', 'x' || i) FROM generate_series(1, 4000) i", (A,))
-        for coll, key in (("groups", "externalGroupId"), ("recordGroups", "externalGroupId"), ("roles", "externalRoleId")):
-            c.execute(f"INSERT INTO graph.nodes SELECT %s, '{coll}', 'g' || i, jsonb_build_object('connectorId', 'app1', '{key}', 'e' || i) FROM generate_series(1, 4000) i", (A,))
         c.execute("RESET ROLE")
         c.execute("ANALYZE graph.nodes")
         cases = [
             ("record_by_external", "graph.record_by_external(%s, %s)", ("app1", "e777"), "externalRecordId"),
             ("user_by_user_id", "graph.user_by_user_id(%s)", ("x777",), "userId"),
-            ("user_group_by_external", "graph.user_group_by_external(%s, %s)", ("app1", "e777"), "externalGroupId"),
-            ("record_group_by_external", "graph.record_group_by_external(%s, %s)", ("app1", "e777"), "externalGroupId"),
-            ("app_role_by_external", "graph.app_role_by_external(%s, %s)", ("app1", "e777"), "externalRoleId"),
             ("records_by_virtual_id", "graph.records_by_virtual_id(%s::text[])", (["v1", "v777", "v3000"],), "virtualRecordId"),
         ]
         for fn, call, params, key in cases:

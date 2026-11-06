@@ -255,18 +255,22 @@ class PgBase:
 
 
 _PG_TRUE = frozenset({"t", "tr", "tru", "true", "y", "ye", "yes", "on", "1"})
+_PG_FALSE = frozenset({"f", "fa", "fal", "fals", "false", "n", "no", "of", "off", "0"})
 
 
 def _pgbool(v: object) -> bool:
-    """``coalesce((doc->>key)::boolean, false)`` for a stored value: JSON null or absent is false, a boolean is itself, any other value reads as PostgreSQL reads its text."""
+    """``coalesce((doc->>key)::boolean, false)`` for a stored value, including its refusal: JSON null or absent is false, a boolean is itself, a string or an
+    integer reads as PostgreSQL reads its text (case-insensitive, prefixes of true/false/yes/no/on/off, 1 and 0, trimmed of ASCII blanks only), and anything
+    else (another text, a float, an array, an object) raises as the cast does, so an unreadable flag never reads as "live"."""
     if v is None or isinstance(v, bool):
         return bool(v)
-    return str(v).strip().lower() in _PG_TRUE
-
-
-def _external_ok(connector_id: object, external_id: object) -> bool:
-    """A (connector, external id) pair the vetted reads of graph_0004 accept; any other pair is read by the plain statement."""
-    return isinstance(connector_id, str) and isinstance(external_id, str) and 0 < len(connector_id) <= 200 and 0 < len(external_id) <= 2000
+    if isinstance(v, (str, int)):
+        t = str(v).strip(" \t\n\r\v\f").lower()
+        if t in _PG_TRUE:
+            return True
+        if t in _PG_FALSE:
+            return False
+    raise ValueError("a document flag is not a boolean")
 
 
 def _field(name: str) -> str:

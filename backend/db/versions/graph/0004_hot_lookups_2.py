@@ -1,4 +1,4 @@
-"""graph: vetted reads of the lookups the services make on every request or sync step (record by external id, user by userId, groups and roles by external id, records by virtual record id)"""
+"""graph: vetted reads of the lookups the services make on every request or sync step (record by external id, user by userId, records by virtual record id)"""
 from alembic import op
 from db.lib.vetted import run_vetted
 
@@ -9,8 +9,7 @@ depends_on = None
 older_code_compatible = "adds functions only; older code does not call them and reads the same rows"
 
 FUNCTIONS = {
-    "record_by_external": "text, text", "user_by_user_id": "text", "user_group_by_external": "text, text", "record_group_by_external": "text, text",
-    "app_role_by_external": "text, text", "records_by_virtual_id": "text[]",
+    "record_by_external": "text, text", "user_by_user_id": "text", "records_by_virtual_id": "text[]",
 }
 
 

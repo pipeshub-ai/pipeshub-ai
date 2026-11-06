@@ -158,6 +158,22 @@ async def test_the_virtual_record_lookup_admits_what_the_plain_statement_admitte
     assert set(new[0].records_by_vrid) == {"v3"} and new[0].records_by_vrid["v3"] in {"real", "twin"}      # only a live, readable record is cited by its virtual record id
 
 
+async def test_a_flag_the_database_cannot_read_fails_the_check_as_the_cast_did(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A virtual record whose ``isDeleted`` is no boolean must not read as live: both the vetted read and the statement refuse, alike."""
+    await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
+    await w.nodes("records", rec("odd", virtualRecordId="v1", isDeleted="garbage"), rec("fine", virtualRecordId="v2"))
+    await w.child(("apps", APP), ("recordGroups", "g"))
+    for k in ("odd", "fine"):
+        await w.child(("recordGroups", "g"), ("records", k))
+    errors = []
+    for page in (5000, 0):                                   # the vetted read, then the plain statement
+        monkeypatch.setattr("app.services.graph_db.postgres.access._VRID_PAGE", page)
+        with pytest.raises(Exception) as e:  # noqa: PT011
+            await w.p.filter_accessible_virtual_record_ids(["v1"], "u", w.org)
+        errors.append(type(e.value))
+    assert errors[0] is errors[1] is PermissionVerificationUnavailableError
+
+
 async def test_a_record_of_a_knowledge_base_opens_by_membership_of_its_own_app_only(w: World) -> None:
     await w.nodes("apps", {"_key": "kb1", "type": "KB"}, {"_key": "kb2", "type": "KB"})
     await w.edge("permission", ("users", "u"), ("apps", "kb1"), type="USER", role="READER")

@@ -178,57 +178,6 @@ functions:
         WHERE n.org_id = v_org AND n.coll = 'users' AND n.doc->>'userId' = p_user_id
         ORDER BY n.id LIMIT 1;
 
-  # The group of one connector with one external group id (index nodes_group_by_external).
-  - name: graph.user_group_by_external
-    class: read
-    scope: org
-    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
-    args:
-      - {name: p_connector_id, type: text, length: [1, 200]}
-      - {name: p_external_id, type: text, length: [1, 2000]}
-    returns: "TABLE (node_id text, doc jsonb)"
-    reads: [graph.nodes]
-    content_ok: true
-    custom_plan: true
-    body: |
-      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'groups' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalGroupId' = p_external_id
-        ORDER BY n.id LIMIT 1;
-
-  # The record group of one connector with one external group id (index nodes_group_external).
-  - name: graph.record_group_by_external
-    class: read
-    scope: org
-    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
-    args:
-      - {name: p_connector_id, type: text, length: [1, 200]}
-      - {name: p_external_id, type: text, length: [1, 2000]}
-    returns: "TABLE (node_id text, doc jsonb)"
-    reads: [graph.nodes]
-    content_ok: true
-    custom_plan: true
-    body: |
-      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'recordGroups' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalGroupId' = p_external_id
-        ORDER BY n.id LIMIT 1;
-
-  # The role of one connector with one external role id (index nodes_role_by_external).
-  - name: graph.app_role_by_external
-    class: read
-    scope: org
-    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
-    args:
-      - {name: p_connector_id, type: text, length: [1, 200]}
-      - {name: p_external_id, type: text, length: [1, 2000]}
-    returns: "TABLE (node_id text, doc jsonb)"
-    reads: [graph.nodes]
-    content_ok: true
-    custom_plan: true
-    body: |
-      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'roles' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalRoleId' = p_external_id
-        ORDER BY n.id LIMIT 1;
-
   # The records of the org that hold any of the given virtual record ids (index nodes_record_vrid), whose own orgId is the org; up to 5000.
   - name: graph.records_by_virtual_id
     class: read
