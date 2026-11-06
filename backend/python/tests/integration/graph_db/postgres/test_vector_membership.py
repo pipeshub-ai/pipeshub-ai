@@ -26,12 +26,13 @@ pytestmark = pytest.mark.integration
 async def walk(w: World, connector: str, size: int) -> list[list[str]]:
     """The pages a backfill reads: from no cursor, each continuing after the last key, until a short page."""
     pages, after = [], None
-    while True:
+    while len(pages) < 50:
         page = await w.p.page_records_for_vector_membership_backfill(connector, after, size)
         pages.append([r["_key"] for r in page])
         if len(page) < size:
             return pages
         after = page[-1]["_key"]
+    raise AssertionError("the walk does not end")
 
 
 async def test_the_next_app_is_the_first_that_is_neither_done_nor_being_deleted(w: World) -> None:
@@ -108,6 +109,20 @@ async def test_a_system_scope_pages_the_records_of_the_org_that_holds_the_connec
             await pg_provider._db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", org), write=True)
 
 
+async def test_a_system_scope_skips_the_apps_that_are_done_or_being_deleted(pg_provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    apps = [{"_key": "a", "vectorMembershipBackfilled": True}, {"_key": "b", "status": "DELETING"}, {"_key": "c", "vectorMembershipBackfilled": False, "status": "ACTIVE"}, {"_key": "d"}]
+
+    async def listed(*a: object, **k: object) -> list[dict]:
+        return apps
+    monkeypatch.setattr(pg_provider, "_system_apps_page", listed)
+    with org_context.system("test.vector-membership"):
+        assert (await pg_provider.get_app_needing_vector_membership_backfill())["_key"] == "c"
+        apps[2]["vectorMembershipBackfilled"] = True
+        assert (await pg_provider.get_app_needing_vector_membership_backfill())["_key"] == "d"
+        apps.pop()
+        assert await pg_provider.get_app_needing_vector_membership_backfill() is None
+
+
 async def tree(w: World) -> None:
     folder = FOLDER_MIME_TYPES[0]
     await w.nodes("apps", {"_key": "kb", "type": "KB"}, {"_key": "kb2", "type": "KB"}, {"_key": "drive", "type": "DRIVE"})
@@ -118,15 +133,15 @@ async def tree(w: World) -> None:
                   {"_key": "kb2file", "recordName": "Other.txt", "mimeType": "text/plain"}, {"_key": "drivefile", "recordName": "Drive.txt", "mimeType": "text/plain"},
                   {"_key": "c1", "recordName": "Child1", "mimeType": "text/csv"}, {"_key": "c2", "recordName": "Child2"}, {"_key": "c_nofile", "recordName": "Nofile", "mimeType": "text/csv"},
                   {"_key": "c_notfile", "recordName": "Notfile", "mimeType": "text/csv"}, {"_key": "c_gone", "recordName": "Cgone", "mimeType": "text/csv", "isDeleted": True},
-                  {"_key": "c_attach", "recordName": "Attach", "mimeType": "text/csv"})
+                  {"_key": "c_attach", "recordName": "Attach", "mimeType": "text/csv"}, {"_key": "root_notfile", "recordName": "Notfile2"})
     await w.nodes("files", {"_key": "root1", "isFile": True}, {"_key": "root2", "isFile": True, "mimeType": "image/png"}, {"_key": "nested", "isFile": True},
                   {"_key": "c1", "isFile": True}, {"_key": "c2", "isFile": True, "mimeType": "application/pdf"}, {"_key": "c_notfile", "isFile": False},
-                  {"_key": "c_gone", "isFile": True}, {"_key": "c_attach", "isFile": True}, {"_key": "fold", "isFile": False})
-    for r in ("root1", "root2", "root_gone", "root_nomime", "root_noname", "nested", "fold"):
+                  {"_key": "c_gone", "isFile": True}, {"_key": "c_attach", "isFile": True}, {"_key": "fold", "isFile": False}, {"_key": "root_notfile", "isFile": False, "mimeType": "text/plain"})
+    for r in ("root1", "root2", "root_gone", "root_nomime", "root_noname", "nested", "fold", "root_notfile"):
         await w.edge("belongsTo", ("records", r), ("apps", "kb"))
     await w.edge("belongsTo", ("records", "kb2file"), ("apps", "kb2"))
     await w.edge("belongsTo", ("records", "drivefile"), ("apps", "drive"))
-    for r in ("root1", "root2", "nested", "c1", "c2", "c_notfile", "c_gone", "c_attach", "fold"):
+    for r in ("root1", "root2", "nested", "c1", "c2", "c_notfile", "c_gone", "c_attach", "fold", "root_notfile"):
         await w.edge("isOfType", ("records", r), ("files", r))
     await w.edge("nodeRelations", ("records", "fold"), ("records", "nested"), relationshipType="PARENT_CHILD")
     for c in ("c1", "c2", "c_nofile", "c_notfile", "c_gone"):

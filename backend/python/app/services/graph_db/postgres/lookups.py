@@ -942,7 +942,7 @@ class LookupsMixin(PgBase):
                         AND f.coll = 'files' AND f.id = t.to_id AND f.doc->>'isFile' = 'true' WHERE t.org_id = b.org_id AND t.coll = 'isOfType' AND t.from_coll = 'records'
                         AND t.from_id = r.id AND t.to_coll = 'files' ORDER BY f.id LIMIT 1)) AS mime) m
                     WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2
-                      AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND m.mime IS NOT NULL AND NOT m.mime = ANY($3::text[])
+                      AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND NOT m.mime = ANY($3::text[])
                       AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = b.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
                         AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)""", org, kb_id, FOLDER_MIME_TYPES, transaction=transaction)
             else:
