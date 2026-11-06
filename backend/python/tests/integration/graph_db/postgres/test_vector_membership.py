@@ -190,8 +190,9 @@ async def test_a_system_scope_skips_the_apps_that_are_done_or_being_deleted(pg_p
 
 
 async def test_a_system_scope_picks_the_lowest_id_in_byte_order(pg_provider, monkeypatch: pytest.MonkeyPatch) -> None:
-    """As under an org context (ORDER BY id COLLATE "C"): the database collation's order of the cross-org read does not decide the walk."""
-    apps = [{"_key": "a", "orgId": "o2"}, {"_key": "b", "orgId": "o1"}, {"_key": "B", "orgId": "o3"}, {"_key": "B", "orgId": "o0"}]
+    """As under an org context (ORDER BY id COLLATE "C"): the database collation's order of the cross-org read does not decide the walk. Apps
+    sharing an id keep the read's org order."""
+    apps = [{"_key": "a", "orgId": "o2"}, {"_key": "b", "orgId": "o1"}, {"_key": "B", "orgId": "o0"}, {"_key": "B", "orgId": "o3"}]
 
     async def listed(*a: object, **k: object) -> list[dict]:
         return apps
