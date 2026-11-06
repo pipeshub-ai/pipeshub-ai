@@ -664,7 +664,8 @@ class HubMixin(PgBase):
                                               indexing_status: list[str] | None = None, created_at: dict[str, int | None] | None = None,
                                               updated_at: dict[str, int | None] | None = None, size: dict[str, int | None] | None = None,
                                               connector_ids: list[str] | None = None, direction: str = "next", include_ids: bool = False,
-                                              transaction: str | None = None, names_only: bool = False) -> dict[str, Any]:
+                                              transaction: str | None = None, names_only: bool = False,
+                                              exclude_app_ids: frozenset[str] = frozenset()) -> dict[str, Any]:
         """The root listing: the apps among ``user_app_ids`` (a hidden connector left out), filtered, sorted and paged by keyset, in the partitioned shape.
         A read that fails raises: an empty listing would read as "you may see nothing". The apps of one user are few, so the page is cut here, not in SQL."""
         org = current_org_id()
@@ -685,7 +686,7 @@ class HubMixin(PgBase):
             if not user:
                 return []
             u = _doc(user["doc"])
-            kept = [a for a in map(lambda r: _doc(r["doc"]), apps) if a.get("type") == "KB" or not a.get("hideConnector")]
+            kept = [a for a in map(lambda r: _doc(r["doc"]), apps) if (a.get("type") == "KB" or not a.get("hideConnector")) and a["id"] not in exclude_app_ids]
             kbs = [a["id"] for a in kept if a.get("type") == "KB"]
             filled = {r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.hub_root_kb_children */ SELECT DISTINCT e.to_id FROM graph.edges e
                 JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records'
