@@ -578,6 +578,7 @@ async def test_a_take_back_leaves_the_rows_of_a_connector_whose_first_backfill_b
         await batch
         assert rows > 0                                            # the lock of app1 was held: the rows were left for the sweep
         assert (await state(pg_db, org, "app1"))[0] == "2:x"       # the batch committed its cursor
+        await flush.settle_sweeps()                               # the batch's commit started a sweep of its own: a sweep that finds another one holding the lock leaves the rows to it
         await flush._sweep(pg_db, org)
         left = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
         assert left == 0 and (await state(pg_db, org, "app1"))[:2] == (None, "legacy")       # the sweep took them and sent the connector back to the walk
