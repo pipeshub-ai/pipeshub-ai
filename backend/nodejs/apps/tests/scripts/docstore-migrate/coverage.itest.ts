@@ -16,6 +16,7 @@ import path from 'node:path';
 
 /** Tables no collection maps to: written by functions, derived, or not data to move. */
 export const UNMAPPED_TABLES: Record<string, string> = {
+  'oauth.agent_call_events': 'agent activity log (30 days); a store move starts a new one',
   'platform.kv_entries': 'key-value store runtime state, rebuilt by use',
   'platform.queue_deliveries': 'message queue runtime state, rebuilt by use',
   'platform.queue_groups': 'message queue runtime state, rebuilt by use',

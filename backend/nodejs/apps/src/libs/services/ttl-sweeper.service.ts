@@ -2,6 +2,7 @@ import { Logger } from './logger.service';
 import { spawnDetached, system } from '../context/orgContext';
 import { Tx, withJobsUow } from '../db';
 import { docstoreMetrics } from '../repositories/metrics';
+import { AGENT_CALL_EVENT_RETENTION_DAYS } from '../repositories/agent-call-event/types';
 import { retentionCutoff } from '../../modules/notification/utils/notification-api.utils';
 
 const DEFAULT_INTERVAL_MS = 60_000;
@@ -9,6 +10,8 @@ const BATCH = 5000;
 const HOUR_MS = 3600_000;
 const PUBLISHED_OUTBOX_KEEP_MS = 7 * 24 * HOUR_MS;
 const DELEGATION_EVENTS_KEEP_MS = 400 * 24 * HOUR_MS;
+const AGENT_CALL_EVENTS_KEEP_MS =
+  AGENT_CALL_EVENT_RETENTION_DAYS * 24 * HOUR_MS;
 
 // a row stays an hour past its expiry so that a caller can still say "expired" rather than "unknown"
 const expiredAnHourAgo = (now: Date): Date => new Date(now.getTime() - HOUR_MS);
@@ -69,6 +72,12 @@ const TARGETS: Target[] = [
     sql: `/* pipeshub:oauth.ttl_sweep_delegation_events */ DELETE FROM oauth.delegation_events
             WHERE ctid IN (SELECT ctid FROM oauth.delegation_events WHERE created_at < $1 LIMIT $2)`,
     cutoff: (now) => new Date(now.getTime() - DELEGATION_EVENTS_KEEP_MS),
+  },
+  {
+    name: 'agent_call_events',
+    sql: `/* pipeshub:oauth.ttl_sweep_agent_call_events */ DELETE FROM oauth.agent_call_events
+            WHERE ctid IN (SELECT ctid FROM oauth.agent_call_events WHERE created_at < $1 LIMIT $2)`,
+    cutoff: (now) => new Date(now.getTime() - AGENT_CALL_EVENTS_KEEP_MS),
   },
 ];
 

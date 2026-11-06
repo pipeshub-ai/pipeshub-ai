@@ -61,6 +61,7 @@ import * as agentRegistrationRoutes from '../src/modules/oauth_provider/routes/a
 import * as oauthClientsRoutes from '../src/modules/oauth_provider/routes/oauth.clients.routes';
 import * as patRoutes from '../src/modules/oauth_provider/routes/pat.routes';
 import * as mcpRoutes from '../src/modules/mcp/routes/mcp.routes';
+import * as agentActivityRoutes from '../src/modules/agent_activity/agent-activity.routes';
 import {
   MCP_BODY_TOO_LARGE_MESSAGE,
   MCP_JSON_BODY_LIMIT_BYTES,
@@ -194,6 +195,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(oauthClientsRoutes, 'createOAuthClientsRouter').returns(dummyRouter);
   sandbox.stub(patRoutes, 'createPatRouter').returns(dummyRouter);
   sandbox.stub(mcpRoutes, 'createMCPRouter').returns(dummyRouter);
+  sandbox.stub(agentActivityRoutes, 'createAgentActivityRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createOIDCDiscoveryRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createAuthMdRouter').returns(dummyRouter);
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);

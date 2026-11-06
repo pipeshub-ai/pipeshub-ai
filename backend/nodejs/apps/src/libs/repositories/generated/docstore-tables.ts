@@ -362,6 +362,27 @@ export interface OauthAccessTokens {
   updated_at: Date;
 }
 
+export interface OauthAgentCallEvents {
+  org_id: string;
+  id: string;
+  user_id: string;
+  token_id: string;
+  token_kind: string;
+  oauth_client_id: string | null;
+  user_agent: string | null;
+  channel: string | null;
+  method: string;
+  route: string;
+  mcp_tool: string | null;
+  status_code: number;
+  duration_ms: number;
+  scope_denied: Generated<boolean>;
+  request_id: string | null;
+  count: Generated<number>;
+  bucket: Date | null;
+  created_at: Date;
+}
+
 export interface OauthAgentRegistrations {
   org_id: string;
   id: string;
@@ -607,6 +628,7 @@ export interface DB {
   'identity.users': IdentityUsers;
   'integrations.slack_threads': IntegrationsSlackThreads;
   'oauth.access_tokens': OauthAccessTokens;
+  'oauth.agent_call_events': OauthAgentCallEvents;
   'oauth.agent_registrations': OauthAgentRegistrations;
   'oauth.apps': OauthApps;
   'oauth.authorization_codes': OauthAuthorizationCodes;

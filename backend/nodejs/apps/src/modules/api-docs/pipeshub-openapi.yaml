@@ -2836,6 +2836,53 @@ components:
         createdAt:
           type: string
           format: date-time
+    AgentCallEvent:
+      type: object
+      description: One call made with an access token, or the calls of one minute rolled up.
+      required: [id, userId, tokenId, tokenKind, method, route, statusCode, durationMs, scopeDenied, count, createdAt]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        tokenId:
+          type: string
+          description: The id of the stored token (the id the token lists and revocation use). Never the token or a hash of it.
+        tokenKind:
+          type: string
+          enum: [pat, oauth, delegated]
+        oauthClientId:
+          type: string
+          description: Present for tokens issued to an OAuth application.
+        userAgent:
+          type: string
+          description: The product token of the `User-Agent` header.
+        channel:
+          type: string
+          description: The `X-PipesHub-Channel` header, when it is well formed.
+        method:
+          type: string
+        route:
+          type: string
+          description: The route template, with `:name` placeholders; never the URL or query string.
+        mcpTool:
+          type: string
+          description: The tool name, for an MCP `tools/call`.
+        statusCode:
+          type: integer
+        durationMs:
+          type: integer
+        scopeDenied:
+          type: boolean
+          description: The call was refused because the token lacked a required scope.
+        requestId:
+          type: string
+        count:
+          type: integer
+          description: How many calls this row stands for; above 1 only for rolled-up `GET` calls.
+        createdAt:
+          type: string
+          format: date-time
     DelegationEvent:
       type: object
       description: One attempt by a service account to act as someone.
@@ -25914,6 +25961,124 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /agent-activity:
+    get:
+      tags:
+        - OAuth Provider
+      summary: List calls made with access tokens
+      description: |
+        The calls made in your organisation with a personal access token, an OAuth access token or
+        a service token, newest first. Organisation administrators only; the organisation is the
+        one on the credential. Calls made from a signed-in browser session are not recorded.
+
+        Every write (any method other than `GET`), every call that ended with status 400 or above,
+        and every MCP tool call is one row. Successful `GET` calls are rolled up into one row per
+        token, route and minute, with `count` giving how many calls it stands for.
+
+        A row keeps who made the call (user, token id and kind, OAuth client), the client's
+        user-agent product token and channel, the method, the route template (for example
+        `/api/v1/knowledgeBase/{kbId}/records` written with a `:kbId` placeholder), the MCP tool
+        name, the status, whether a scope was missing, the duration and the request id. Request and
+        response bodies, query strings, addresses and token values are never stored. Rows are kept
+        for 30 days.
+
+        Pages are cut by an opaque `cursor`: pass the `nextCursor` of one page to get the next.
+      operationId: listAgentActivity
+      security:
+        - bearerAuth: []
+        - oauth2: [org:admin]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Only rows created at or after this time (ISO 8601).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: Only rows created at or before this time (ISO 8601).
+          schema:
+            type: string
+            format: date-time
+        - name: userId
+          in: query
+          required: false
+          description: Only calls made as this user.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+        - name: tokenId
+          in: query
+          required: false
+          description: Only calls made with this token (its id in the token lists).
+          schema:
+            type: string
+            maxLength: 128
+        - name: tokenKind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pat, oauth, delegated]
+        - name: client
+          in: query
+          required: false
+          description: Only calls from this client, as named by the product token of its `User-Agent`.
+          schema:
+            type: string
+            maxLength: 80
+        - name: status
+          in: query
+          required: false
+          description: Only calls whose status was in this class.
+          schema:
+            type: string
+            enum: [2xx, 4xx, 5xx]
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page.
+          schema:
+            type: string
+            maxLength: 100
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: One page of calls
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentCallEvent'
+                  nextCursor:
+                    type: string
+                    description: Present when there are older rows.
+        '400':
+          description: A filter or the cursor is malformed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not an organisation administrator, or the token lacks `org:admin`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /service-account-delegations/capability:
     get:
       tags:

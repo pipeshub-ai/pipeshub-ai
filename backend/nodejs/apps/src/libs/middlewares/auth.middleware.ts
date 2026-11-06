@@ -22,6 +22,7 @@ import { resolveOAuthTokenService } from '../services/oauth-token-service.provid
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextOrgId } from '../context/request-context';
+import { recordAgentCall } from './agent-call-recorder';
 import { CALLER_ROLE_LOOKUP_PATH, MCP_PATH } from './rate-limit.middleware';
 
 const CLIENT_NAME_HEADER = 'client-name';
@@ -53,7 +54,7 @@ export class AuthMiddleware {
 
   async authenticate(
     req: AuthenticatedUserRequest,
-    _res: Response,
+    res: Response,
     next: NextFunction,
   ) {
     try {
@@ -75,6 +76,8 @@ export class AuthMiddleware {
         // authenticate oauth token
         await this.authenticateOAuthToken(token, req);
       }
+
+      recordAgentCall(req, res);
 
       // Bind the verified token's org for the rest of the request (never a client field).
       const orgId = req.user?.orgId as string | undefined;
@@ -312,6 +315,8 @@ export class AuthMiddleware {
       accountType,
       role,
       isOAuth: true,
+      tokenId: payload.tokenRowId,
+      delegatedBy,
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
       oauthAudience: payload.aud,

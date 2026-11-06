@@ -419,11 +419,13 @@ describe('OAuthTokenService', () => {
       }
       const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').resolves({ _id: 'row-1', isRevoked: false } as any)
 
       const result = await service.verifyAccessToken(token)
       expect(result.userId).to.equal('user-1')
       expect(result.client_id).to.equal('client-1')
+      // The stored row's id, which token lists and revocation use, not the jti claim.
+      expect(result.tokenRowId).to.equal('row-1')
     })
 
     it('rejects a signed token whose scope claim is empty or missing', async () => {
