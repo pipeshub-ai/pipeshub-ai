@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from aiobotocore.session import AioSession
 
 from app.config.configuration_service import ConfigurationService
-from app.sources.client.minio.minio import MinIOClient, MinIORESTClientViaAccessKey
+from app.sources.client.iclient import IClient
+from app.sources.client.s3.s3 import create_aio_session
 
 R2_REGION = "auto"
 
@@ -33,8 +34,8 @@ def build_endpoint_url(account_id: str, jurisdiction: str | None = None) -> str:
     return f"https://{account}.{name}.r2.cloudflarestorage.com"
 
 
-class CloudflareR2RESTClientViaAccessKey(MinIORESTClientViaAccessKey):
-    """R2 S3 API client, signed with the access key pair of an R2 API token."""
+class CloudflareR2RESTClientViaAccessKey:
+    """Connection to the R2 S3 API, signed with the access key pair of an R2 API token."""
 
     def __init__(
         self,
@@ -42,26 +43,16 @@ class CloudflareR2RESTClientViaAccessKey(MinIORESTClientViaAccessKey):
         secret_access_key: str,
         account_id: str,
         jurisdiction: str | None = None,
-        bucket_name: str | None = None,
     ) -> None:
         # Empty keys would make botocore fall back to whatever AWS credentials this host has.
         if not access_key_id or not secret_access_key:
             raise ValueError("The access key ID and secret access key of an R2 API token are required")
-        super().__init__(
-            access_key_id,
-            secret_access_key,
-            build_endpoint_url(account_id, jurisdiction),
-            bucket_name,
-            region_name=R2_REGION,
-        )
-
-    def create_session(self) -> AioSession:
-        session = super().create_session()
+        self.endpoint_url = build_endpoint_url(account_id, jurisdiction)
+        self.session = create_aio_session(access_key_id, secret_access_key, R2_REGION)
         # botocore's default adds checksum headers to GetObject and PutObject that R2's API
         # reference does not list as supported.
-        session.set_config_variable("request_checksum_calculation", "when_required")
-        session.set_config_variable("response_checksum_validation", "when_required")
-        return session
+        self.session.set_config_variable("request_checksum_calculation", "when_required")
+        self.session.set_config_variable("response_checksum_validation", "when_required")
 
 
 @dataclass
@@ -70,7 +61,6 @@ class CloudflareR2AccessKeyConfig:
     secret_access_key: str = field(repr=False)
     account_id: str
     jurisdiction: str | None = None
-    bucket_name: str | None = None
 
     def create_client(self) -> CloudflareR2RESTClientViaAccessKey:
         return CloudflareR2RESTClientViaAccessKey(
@@ -78,12 +68,29 @@ class CloudflareR2AccessKeyConfig:
             self.secret_access_key,
             self.account_id,
             self.jurisdiction,
-            self.bucket_name,
         )
 
 
-class CloudflareR2Client(MinIOClient):
-    """Builder for R2 clients. R2 is reached through the same aiobotocore client as MinIO."""
+class CloudflareR2Client(IClient):
+    def __init__(self, client: CloudflareR2RESTClientViaAccessKey) -> None:
+        self.client = client
+
+    def get_client(self) -> CloudflareR2RESTClientViaAccessKey:
+        return self.client
+
+    def get_session(self) -> AioSession:
+        return self.client.session
+
+    def get_endpoint_url(self) -> str:
+        return self.client.endpoint_url
+
+    def get_credentials(self) -> dict[str, str]:
+        """What the data source needs to connect. The keys stay inside the session."""
+        return {"endpoint_url": self.client.endpoint_url}
+
+    @classmethod
+    def build_with_config(cls, config: CloudflareR2AccessKeyConfig) -> "CloudflareR2Client":
+        return cls(config.create_client())
 
     @classmethod
     async def build_from_services(
@@ -104,6 +111,5 @@ class CloudflareR2Client(MinIOClient):
                 secret_access_key=auth.get("secretKey", ""),
                 account_id=auth.get("accountId", ""),
                 jurisdiction=auth.get("jurisdiction"),
-                bucket_name=auth.get("bucket"),
             )
         )
