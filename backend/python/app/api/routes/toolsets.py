@@ -2920,6 +2920,9 @@ async def update_toolset_oauth_config(
     auth_config = body.get("authConfig", {})
     auth_config["type"] = "OAUTH"
 
+    # Read before changing the app: an unreadable list must fail the update, not sign nobody out.
+    instances = await _load_toolset_instances(org_id, config_service, raise_on_error=True)
+
     registry = _get_registry(request)
     new_oauth_id = await _create_or_update_toolset_oauth_config(
         toolset_type=toolset_type,
@@ -2939,8 +2942,6 @@ async def update_toolset_oauth_config(
         )
 
     # Deauthenticate all users of all instances using this OAuth config (parallel)
-    instances = await _load_toolset_instances(org_id, config_service)
-
     affected_instances = [i for i in instances if i.get("oauthConfigId") == oauth_config_id and i.get("orgId") == org_id]
 
     total_deauthed = 0

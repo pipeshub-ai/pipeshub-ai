@@ -331,6 +331,20 @@ async def test_delete_oauth_config_with_an_unreadable_read_is_500_and_overwrites
     store.create_key.assert_not_awaited()
 
 
+async def test_update_oauth_config_with_an_unreadable_instance_list_is_500_and_keeps_the_app() -> None:
+    cs, store, _stored = _service(reads=False)
+    save_app = AsyncMock(return_value="oc-1")
+    with patch(f"{T}._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
+         patch(f"{T}._get_oauth_config_by_id", new_callable=AsyncMock, return_value={"_id": "oc-1"}), \
+         patch(f"{T}.resolve_oauth_base_url", new_callable=AsyncMock, return_value="http://localhost:3000"), \
+         patch(f"{T}._create_or_update_toolset_oauth_config", new=save_app):
+        with pytest.raises(HTTPException) as exc:
+            await update_toolset_oauth_config("jira", "oc-1", _make_request(body_dict={"authConfig": {}}), cs)
+    assert exc.value.status_code == 500
+    save_app.assert_not_awaited()
+    store.create_key.assert_not_awaited()
+
+
 async def test_delete_oauth_config_with_readable_lists_removes_only_that_app() -> None:
     apps = [{"_id": "oc-1", "orgId": "o1"}, {"_id": "oc-9", "orgId": "o9"}]
     cs, _store, stored = _service(data={OAUTH_APPS_PATH: apps, DEFAULT_TOOLSET_INSTANCES_PATH: []})
