@@ -195,12 +195,18 @@ def _indexing_status_outdated(record: Record, *, enabled: bool) -> bool:
     return status in _WAITING_FOR_INDEXING
 
 
-def notion_person(user: dict[str, Any] | None, bot_ids: Collection[str] = ()) -> SourcePerson | None:
+def notion_person(
+    user: dict[str, Any] | None, bot_ids: Collection[str] = (), *, bots_known: bool = True,
+) -> SourcePerson | None:
     """A Notion partial user ({object, id}, ``type`` only sometimes) as a SourcePerson. A partial user
-    without its type is a bot when the user sync listed its id as one."""
+    without its type is a bot when the user sync listed its id as one; while that list is incomplete
+    (``bots_known`` False) such a user is left out, as it may be a bot read as a person."""
     if not isinstance(user, dict) or not user.get("id"):
         return None
-    return SourcePerson(source_id=user["id"], is_service_account=user.get("type") == "bot" or user["id"] in bot_ids)
+    is_bot = user.get("type") == "bot" or user["id"] in bot_ids
+    if not is_bot and user.get("type") is None and not bots_known:
+        return None
+    return SourcePerson(source_id=user["id"], is_service_account=is_bot)
 
 
 def _edit_part(revision: str | None) -> str | None:
@@ -460,6 +466,7 @@ class NotionConnector(BaseConnector):
         # Workspace information from bot owner
         self.workspace_id: Optional[str] = None
         self._bot_user_ids: set[str] = set()  # from the user sync; marks a page's untyped partial users
+        self._bot_ids_complete = False  # every page of the user listing was read
         self.workspace_name: Optional[str] = None
         # Set during a sync when part of the source was not read (a walk cut short, a page
         # whose attachments or comments failed, a user read that stopped early). Read by
@@ -1838,7 +1845,7 @@ class NotionConnector(BaseConnector):
 
             self.logger.info(f"Starting reindex for {len(records)} Notion records")
             await self._ensure_workspace_from_bot()
-            if not self._bot_user_ids:  # a reindex before any user sync: a page's untyped bot must not read as a person
+            if not self._bot_ids_complete:  # a reindex before a complete user sync: a page's untyped bot must not read as a person
                 await self._load_bot_user_ids()
 
             updated_records: list[tuple[Record, list[Permission], Record]] = []
@@ -2082,6 +2089,7 @@ class NotionConnector(BaseConnector):
             total_synced = 0
             total_skipped = 0
             user_details_complete = True
+            listing_complete = True
             workspace_emails: List[str] = []
             persons_seen = 0
             persons_without_email = 0
@@ -2113,6 +2121,7 @@ class NotionConnector(BaseConnector):
                         has_more,
                     )
                     user_details_complete = False
+                    listing_complete = False
 
                 if not users_data:
                     self.logger.info("No more users to process")
@@ -2227,6 +2236,7 @@ class NotionConnector(BaseConnector):
                 if next_cursor == cursor:
                     self.logger.warning("Notion users pagination stopping: next_cursor equals start_cursor (%s)", cursor)
                     user_details_complete = False
+                    listing_complete = False
                     break
                 cursor = next_cursor
 
@@ -2239,6 +2249,7 @@ class NotionConnector(BaseConnector):
                     "\"Read user information including email addresses\" on the integration, "
                     "then sync again."
                 )
+            self._bot_ids_complete = listing_complete
             if self.workspace_id and workspace_emails:
                 await self._add_users_to_workspace_permissions(workspace_emails)
             if user_details_complete:
@@ -4563,7 +4574,10 @@ class NotionConnector(BaseConnector):
                 self._bot_user_ids.update(
                     u["id"] for u in data.get("results") or [] if u.get("type") == "bot" and u.get("id"))
                 next_cursor = data.get("next_cursor")
-                if not data.get("has_more") or not next_cursor or next_cursor == cursor:
+                if not data.get("has_more") or not next_cursor:
+                    self._bot_ids_complete = True
+                    return
+                if next_cursor == cursor:
                     return
                 cursor = next_cursor
         except Exception as e:
@@ -5003,8 +5017,10 @@ class NotionConnector(BaseConnector):
                 weburl=obj_data.get("url"),
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
-                authored_by=notion_person(obj_data.get("created_by"), self._bot_user_ids),
-                last_modified_by=notion_person(obj_data.get("last_edited_by"), self._bot_user_ids),
+                authored_by=notion_person(
+                    obj_data.get("created_by"), self._bot_user_ids, bots_known=self._bot_ids_complete),
+                last_modified_by=notion_person(
+                    obj_data.get("last_edited_by"), self._bot_user_ids, bots_known=self._bot_ids_complete),
             )
 
         except _DatabaseUnavailable:

@@ -961,6 +961,7 @@ class TestNotionReindexKnowsTheBots:
         connector = _make_connector()
         connector.workspace_id = "ws-1"
         connector._bot_user_ids = {"bot-1"}
+        connector._bot_ids_complete = True
         mock_ds = MagicMock()
         mock_ds.list_users = AsyncMock()
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -969,6 +970,48 @@ class TestNotionReindexKnowsTheBots:
         await connector.reindex_records([MagicMock(id="rec-1", external_record_id="page-1", record_type=RecordType.FILE)])
 
         mock_ds.list_users.assert_not_awaited()
+
+
+class TestNotionAnIncompleteBotListLinksNoUnresolvedUser:
+    @pytest.mark.asyncio
+    async def test_a_failed_second_page_leaves_the_list_incomplete_and_its_bot_unlinked(self) -> None:
+        from app.connectors.sources.notion.connector import notion_person
+
+        connector = _make_connector()
+        first = _make_api_response(success=True, data={
+            "results": [{"id": "bot-1", "type": "bot"}], "has_more": True, "next_cursor": "c2",
+        })
+        failed = _make_api_response(success=False, error="rate limited")
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(side_effect=[first, failed])
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await connector._load_bot_user_ids()
+
+        assert connector._bot_user_ids == {"bot-1"} and connector._bot_ids_complete is False
+        # "bot-2" was on the page that failed: untyped, it is left out rather than linked as a person.
+        assert notion_person({"object": "user", "id": "bot-2"}, connector._bot_user_ids,
+                             bots_known=connector._bot_ids_complete) is None
+        assert notion_person({"object": "user", "id": "bot-1"}, connector._bot_user_ids,
+                             bots_known=connector._bot_ids_complete).is_service_account is True
+
+    @pytest.mark.asyncio
+    async def test_the_next_reindex_tries_the_list_again(self) -> None:
+        connector = _make_connector()
+        connector.workspace_id = "ws-1"
+        connector._bot_user_ids = {"bot-1"}  # a partial list from a failed load
+        done = _make_api_response(success=True, data={
+            "results": [{"id": "bot-1", "type": "bot"}, {"id": "bot-2", "type": "bot"}],
+            "has_more": False, "next_cursor": None,
+        })
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=done)
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._check_and_fetch_updated_record = AsyncMock(return_value=None)
+
+        await connector.reindex_records([MagicMock(id="rec-1", external_record_id="page-1", record_type=RecordType.FILE)])
+
+        assert connector._bot_user_ids == {"bot-1", "bot-2"} and connector._bot_ids_complete is True
 
 
 class TestNotionSyncUsersWorkspace:
@@ -1012,6 +1055,7 @@ class TestNotionSyncUsersWorkspace:
         assert connector.workspace_id == "ws-1"
         assert connector.workspace_name == "My Workspace"
         assert connector._bot_user_ids == {"bot-1"}  # so a page's untyped partial bot user is no person
+        assert connector._bot_ids_complete is True
         connector._create_workspace_record_group.assert_awaited_once()
         connector.data_entities_processor.on_new_app_users.assert_awaited()
         connector._add_users_to_workspace_permissions.assert_awaited_once_with(

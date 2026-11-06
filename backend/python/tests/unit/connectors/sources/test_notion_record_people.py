@@ -26,6 +26,7 @@ def connector() -> NotionConnector:
         created_by="test-user-id",
     )
     c.workspace_id = "ws-1"
+    c._bot_ids_complete = True  # as after a user sync
     return c
 
 
@@ -97,4 +98,12 @@ def test_a_page_created_by_a_known_bot_records_it_as_a_service_account(connector
     connector._bot_user_ids = {"bot-1"}
     person = notion_person({"object": "user", "id": "bot-1"}, connector._bot_user_ids)
     assert person is not None and person.is_service_account is True
+
+
+def test_while_the_bot_list_is_incomplete_an_untyped_unknown_user_is_left_out() -> None:
+    untyped = {"object": "user", "id": "someone"}
+    assert notion_person(untyped, set(), bots_known=False) is None
+    assert notion_person(untyped, set(), bots_known=True) == SourcePerson(source_id="someone", is_service_account=False)
+    typed = {"object": "user", "id": "ann", "type": "person"}
+    assert notion_person(typed, set(), bots_known=False) == SourcePerson(source_id="ann", is_service_account=False)
 

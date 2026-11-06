@@ -123,7 +123,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("github", "container", CONTAINER, "github/connector.py:178"),
     Connector("gitlab", "container", CONTAINER, "gitlab/projects.py:538"),
     Connector("gitlab_personal", "container", CONTAINER, "gitlab_personal/connector.py:107"),
-    Connector("notion", "container", CONTAINER, "notion/connector.py:2313", "workspace/team groups RECORD_GROUP_LEVEL, inherit"),
+    Connector("notion", "container", CONTAINER, "notion/connector.py:2324", "workspace/team groups RECORD_GROUP_LEVEL, inherit"),
     Connector("notion_personal", "container", CONTAINER, "notion_personal/connector.py:55"),
     Connector("localKB", "container", CONTAINER, "localKB/connector.py:57", "knowledge bases"),
     Connector("local_fs", "container", CONTAINER, "local_fs/connector.py:467"),

@@ -169,7 +169,7 @@ class TestNotionPersonalBots:
 
         await connector._load_bot_user_ids()
 
-        assert connector._bot_user_ids == {"bot-own"}
+        assert connector._bot_user_ids == {"bot-own"} and connector._bot_ids_complete is True
         datasource.list_users.assert_not_called()
 
 

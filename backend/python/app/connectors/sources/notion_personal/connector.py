@@ -173,6 +173,7 @@ class NotionPersonalConnector(NotionConnector):
             bot_user = response.data.json() if response and response.success and response.data else {}
             if isinstance(bot_user, dict) and bot_user.get("id"):
                 self._bot_user_ids.add(bot_user["id"])
+                self._bot_ids_complete = True  # a personal connection sees no other bots
         except Exception as e:
             self.logger.warning("Could not load the Notion bot user: %s", e)
 
@@ -198,6 +199,7 @@ class NotionPersonalConnector(NotionConnector):
             bot_user = response.data.json() if response.data else {}
             if bot_user.get("id"):
                 self._bot_user_ids.add(bot_user["id"])
+                self._bot_ids_complete = True
             bot_data = bot_user.get("bot", {})
             workspace_id = bot_data.get("workspace_id")
 
