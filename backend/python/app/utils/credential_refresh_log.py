@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
@@ -48,6 +49,7 @@ EVENT_DEAUTHENTICATE_FAILED = "credential_refresh.deauthenticate_failed"
 EVENT_APP_DISABLED_EVENT_FAILED = "credential_refresh.app_disabled_event_failed"
 
 JOB = "credential_refresh"
+_LOGGED_ATTR = "_credential_refresh_logged"
 MISCONFIGURED_REPEAT_S = 3600
 
 
@@ -166,26 +168,43 @@ def log_refresh_failure(
     OAuth code are fields instead. An error raised while handling a rejected refresh carries that
     rejection as its context, so plain ``log_failure`` is not safe anywhere on these paths.
 
+    A failure this module already logged (the attempt's ``end``, even at a level that was not emitted)
+    is DEBUG here, so a caller of ``refresh_now`` can log what it catches without a second line.
+
     ``while_handling=True``: ``exc`` was raised while another failure (the rejection) was being handled
     and is not caused by it, so that context is left out of its class, fields and stack, as with
     ``raise ... from None``. Only for an exception the caller swallows."""
     _new_failure(exc, while_handling=while_handling)
-    log_failure(
-        logger, event, exc, level=level, error_class=error_class,
-        http_status=_first(exc, _status), oauth_error=_first(exc, _oauth_error),
-        include_error_text=_first(exc, _from_token_endpoint) is None, **fields,
-    )
+    already = _logged(exc)
+    if isinstance(exc, RecursionError):
+        # No stack and no text: formatting a RecursionError's frames can recurse again.
+        log_event(logger, event, level=logging.DEBUG if already else logging.ERROR, **{
+            **fields, "outcome": "failure", "error_class": "internal", "error_type": "RecursionError", "reason": "recursion",
+        })
+    else:
+        log_failure(
+            logger, event, exc, level=logging.DEBUG if already else level, error_class=error_class,
+            http_status=_first(exc, _status), oauth_error=_first(exc, _oauth_error),
+            include_error_text=_first(exc, _from_token_endpoint) is None, **fields,
+        )
+    # log_failure marks only what it emitted, so a misconfigured repeat logged at a disabled DEBUG would come back at ERROR.
+    with contextlib.suppress(AttributeError, TypeError):
+        setattr(exc, _LOGGED_ATTR, True)
+
+
+def _logged(exc: BaseException) -> bool:
+    """Whether this module logged ``exc`` or one it was raised ``from`` (explicit causes only, as in log_failure)."""
+    seen: set[int] = set()
+    link: BaseException | None = exc
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        if getattr(link, _LOGGED_ATTR, False):
+            return True
+        link = link.__cause__
+    return False
 
 
 def _log_failed(logger: logging.Logger, event: str, exc: BaseException, once_key: str, **fields: object) -> None:
-    if isinstance(exc, RecursionError):
-        # No stack and no text: formatting a RecursionError's frames can recurse again. The tag
-        # tells an outer handler that the attempt's end already said it.
-        logged = _reason(exc) == "recursion"
-        exc.refresh_reason = "recursion"
-        log_event(logger, event, level=logging.DEBUG if logged else logging.ERROR, outcome="failure",
-                  error_class="internal", error_type="RecursionError", reason="recursion", **fields)
-        return
     reason = _reason(exc)
     cls = classify_error(exc)
     tagged = ERROR_CLASS_BY_REASON.get(reason)

@@ -26,7 +26,7 @@ from app.utils.request_context import get_context, reset_context, set_context
 from app.utils.structured_logging import DefaultLoggingProvider
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 LOGGER = "test.credential_refresh"
 SEEDED_RT = "rt-SEEDED-0123456789abcdef"
@@ -341,6 +341,23 @@ class TestLogRefreshFailure:
         )
         assert "http_status" not in fields
         assert "RefreshTokenInvalidError" not in line.exc_text
+
+    @pytest.mark.parametrize("make", [
+        lambda: _provider_error(503), lambda: RefreshConfigError("missing"),
+        lambda: RecursionError("maximum recursion depth exceeded"),
+    ], ids=["upstream", "misconfigured", "recursion"])
+    async def test_a_caller_line_for_what_the_attempt_ended_is_debug(
+        self, caplog: pytest.LogCaptureFixture, clock: list[float], make: Callable[[], BaseException],
+    ) -> None:
+        # At INFO, as in production: the second attempt's misconfigured end is a DEBUG line that is not emitted.
+        caplog.set_level(logging.INFO, logger=LOGGER)
+        await _attempt(make())
+        exc = await _attempt(make())
+        caplog.clear()
+
+        CR.log_refresh_failure(_logger(), CR.EVENT_CHECK_FAILED, exc)  # what a refresh_now caller does
+
+        assert caplog.records == []
 
     def test_while_handling_keeps_an_explicit_cause(self, records: _Records) -> None:
         exc = _raised(RuntimeError("wrapped"), _provider_error(503))

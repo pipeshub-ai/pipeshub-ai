@@ -24,6 +24,7 @@ from gitlab.exceptions import GitlabAuthenticationError
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.sources.client.gitlab.gitlab import GitLabResponse
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 
 from .constants import (
     GITLAB_CLOUD_URL,
@@ -239,7 +240,7 @@ class RuntimeHelper:
                 await self.refresh_token_if_needed()
                 return True
         except Exception as e:
-            self.logger.error("GitLab OAuth token refresh failed: %s", e, exc_info=True)
+            log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
             return False
 
     # ------------------------------------------------------------------

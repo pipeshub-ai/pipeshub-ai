@@ -122,6 +122,7 @@ from app.sources.client.zendesk.zendesk import (
     redact_attachment_url,
 )
 from app.sources.external.zendesk.zendesk import ZendeskDataSource
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 from app.utils.html_markdown import html_to_markdown_async
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -3718,7 +3719,7 @@ class ZendeskConnector(BaseConnector):
                     self.connector_id, self.connector_name.value, refresh_token
                 )
             except Exception as e:
-                self.logger.error(f"Zendesk token refresh after 401 failed: {e}")
+                log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
                 return False
             if not token or not token.access_token:
                 return False
