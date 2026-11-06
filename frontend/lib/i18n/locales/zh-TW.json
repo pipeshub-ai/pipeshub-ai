@@ -4829,6 +4829,8 @@
     "serviceAgentBadgeTooltip": "此服務代理使用自己的工具組憑證。它以建立者的權限檢索知識，因此所有使用者看到的結果都來自建立者有權閱讀的內容。",
     "convertToServiceAgentTooltip": "永久性操作：代理層級的工具組、與整個組織共用，並以建立者的權限檢索知識。無法復原。",
     "convertToServiceAgentTooltipNewAgent": "將此代理建立為服務代理：代理層級的工具組、與整個組織共用，並以您的權限檢索知識。",
+    "convertToServiceAgentTooltipNoOrg": "永久性操作：代理層級的工具組，並以建立者的權限檢索知識。請使用「分享」按鈕控制誰可以存取。無法復原。",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "將此代理建立為服務代理：代理層級的工具組，並以您的權限檢索知識。請使用「分享」按鈕控制誰可以存取。",
     "agentActionsMenuAria": "代理選單",
     "agentMenuCreateAsServiceAgent": "建立為服務代理",
     "agentMenuConvertToServiceAgent": "轉換為服務代理",
