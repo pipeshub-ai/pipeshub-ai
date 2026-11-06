@@ -72,6 +72,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "remove_nodes_by_field": (PROJECTED, ""),
     # kb.py
     "update_kb_permission": (PROJECTED, ""), "remove_kb_permission": (PROJECTED, ""),
+    "delete_kb_hub_app": (PROJECTED, ""),
 }
 
 
