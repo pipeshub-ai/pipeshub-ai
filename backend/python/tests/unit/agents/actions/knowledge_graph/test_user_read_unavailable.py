@@ -107,3 +107,17 @@ async def test_the_selection_error_has_a_fixed_message_and_keeps_the_cause() -> 
     assert str(err.value) == PERMISSION_CHECK_UNAVAILABLE_MESSAGE
     assert isinstance(err.value.__cause__, ConnectionError)
     assert "secret-host" not in str(err.value)
+
+
+async def test_a_scope_check_that_could_not_answer_is_not_an_identifier_not_found(monkeypatch) -> None:
+    from app.agents.actions.knowledge_graph.resolver import RecordResolver
+
+    async def one(_self, raw: str):
+        if raw == "PROJ-1":
+            raise PermissionVerificationUnavailableError(PERMISSION_CHECK_UNAVAILABLE_MESSAGE)
+        raise RuntimeError("no such key")
+    monkeypatch.setattr(RecordResolver, "_resolve_one", one)
+    resolver = RecordResolver(AsyncMock(), AsyncMock(), "org-1", "u1", "ukey", [])
+    assert (await resolver.resolve_many(["PROJ-2"])).not_found_identifiers == ["PROJ-2"]       # any other failure is still a miss
+    with pytest.raises(PermissionVerificationUnavailableError):
+        await resolver.resolve_many(["PROJ-2", "PROJ-1"])

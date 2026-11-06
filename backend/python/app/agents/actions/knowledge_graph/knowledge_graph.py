@@ -743,6 +743,8 @@ class KnowledgeGraph:
 
         try:
             result = await resolver.resolve_many(idents)
+        except PermissionVerificationUnavailableError:
+            return False, unavailable_message()
         except Exception:
             logger.exception("lookup_record resolve_many failed for %s", idents)
             return False, _NOT_FOUND_MSG
