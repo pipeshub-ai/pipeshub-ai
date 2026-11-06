@@ -231,6 +231,23 @@ def redact_secrets_in_text(text: str) -> str:
     return text
 
 
+
+URL_PATTERN = re.compile(r"https?://\S+")
+# OpenAI-style organization/project/account ids (org-abc123, proj_x9...). A digit is required and
+# `.py`/`(` must not follow, so our own names (org_context.py, org_id_hash, account_service.get) survive.
+PROVIDER_ACCOUNT_ID_PATTERN = re.compile(r"\b(?:org|proj|acct|account)[-_](?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{4,}\b(?!\.py|\()")
+
+
+def redact_error_for_log(error_msg: str, max_len: int = 1000) -> str:
+    """The raw error with URLs, account ids and credentials masked, capped at `max_len`.
+
+    A provider's error can echo the request URL, whose query string may carry
+    a credential (Google's REST endpoints accept `?key=`), or a request header.
+    """
+    text = URL_PATTERN.sub("[url]", error_msg)
+    text = PROVIDER_ACCOUNT_ID_PATTERN.sub("[redacted]", text)
+    return redact_secrets_in_text(text)[:max_len]
+
 # `input` is the rejected value itself and `ctx` can quote it back.
 _UNSAFE_VALIDATION_ERROR_KEYS = frozenset({"input", "ctx"})
 

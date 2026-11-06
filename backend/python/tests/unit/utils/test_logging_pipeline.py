@@ -405,7 +405,7 @@ class TestTextFields:
         assert "pw@" not in line and "s3cr3t" not in line and "k-123456789" not in line
 
     def test_credential_named_numbers_and_bools_are_kept(self) -> None:
-        assert L._record_fields(_record(token_count=12, secret_rotated=False, password=None)) == {
+        assert L.log_record_fields(_record(token_count=12, secret_rotated=False, password=None)) == {
             "token_count": 12, "secret_rotated": False, "password": None,
         }
 

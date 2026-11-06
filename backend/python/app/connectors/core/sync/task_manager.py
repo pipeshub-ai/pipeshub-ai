@@ -9,10 +9,11 @@ import logging
 from typing import Coroutine, Dict, Optional
 
 from app.utils.request_context import (
+    RequestContext,
+    bind_context,
     get_context,
     new_system_root,
     reset_context,
-    set_context,
 )
 
 
@@ -77,13 +78,15 @@ class SyncTaskManager:
         return self._spawn(key, coro)
 
     def _spawn(self, key: str, coro: Coroutine) -> asyncio.Task:
-        # Inherit the triggering request's context (create_task copies it); only
-        # a pure background trigger with no context mints a fresh root.
+        # Inherit the triggering request's or message's root (create_task copies it).
+        # A background trigger, with no root or a detached task's shared one, mints a
+        # fresh root per sync, keeping the org a job scope set.
         async def _traced() -> None:
-            if get_context() is not None:
+            ctx = get_context()
+            if ctx is not None and not ctx.detached:
                 await coro
                 return
-            token = set_context(new_system_root())
+            token = bind_context(RequestContext(new_system_root(), org_id=ctx.org_id if ctx else None))
             try:
                 await coro
             finally:

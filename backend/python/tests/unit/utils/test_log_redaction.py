@@ -386,3 +386,30 @@ def test_every_service_installs_redaction_at_startup() -> None:
 )
 def test_account_key_is_a_credential_name(name: str, expected: bool) -> None:
     assert is_credential_name(name) is expected
+
+
+class TestRedactErrorForLog:
+    """Provider error text on its way to a log line (app.utils.log_redaction.redact_error_for_log)."""
+
+    @pytest.mark.parametrize("ours", [
+        'File "/app/python/app/core/org_context.py", line 3',
+        "KeyError: org_id_hash",
+        "org_context_missing site=x",
+        "account_service.get_user failed",
+    ])
+    def test_our_own_names_survive(self, ours: str) -> None:
+        from app.utils.log_redaction import redact_error_for_log
+
+        assert redact_error_for_log(ours) == ours
+
+    @pytest.mark.parametrize("provider_id", ["org-AbCd1234", "proj_abc123XYZ", "acct-9f8e7d"])
+    def test_provider_account_ids_are_masked(self, provider_id: str) -> None:
+        from app.utils.log_redaction import redact_error_for_log
+
+        assert redact_error_for_log(f"quota for {provider_id} exceeded") == "quota for [redacted] exceeded"
+
+    def test_urls_and_keys_masked_and_capped(self) -> None:
+        from app.utils.log_redaction import redact_error_for_log
+
+        out = redact_error_for_log("GET https://gen.example/v1?key=AIzaSyA1234567890abcdefghijklmnopqrstuv failed" + "x" * 2000)
+        assert out.startswith("GET [url] failed") and "AIza" not in out and len(out) == 1000
