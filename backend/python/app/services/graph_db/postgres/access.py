@@ -249,7 +249,8 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
     kb = [(c, i, a) for c, i, d, a in pending if apps[a] and c == "records"]
     if kb:
         app_of_kb = {i: a for _, i, a in kb}
-        for r in await tx.fetch("/* pipeshub:graph.access_kb */ SELECT e.from_id, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.from_id = ANY($2::text[]) AND e.to_coll = 'apps' AND e.to_id = ANY($3::text[])",
+        # custom plan: the generic one reads every membership edge of the app (edges_by_target) instead of the asked records by key
+        for r in await tx.fetch_custom_plan("/* pipeshub:graph.access_kb */ SELECT e.from_id, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.from_id = ANY($2::text[]) AND e.to_coll = 'apps' AND e.to_id = ANY($3::text[])",
                                 org, [i for _, i, _ in kb], sorted({a for _, _, a in kb})):
             if app_of_kb[r["from_id"]] == r["to_id"]:      # a member of its own app, not of another that also opens everything
                 ok.add(r["from_id"])
