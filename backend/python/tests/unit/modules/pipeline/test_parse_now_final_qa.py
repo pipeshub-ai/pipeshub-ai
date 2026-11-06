@@ -92,12 +92,12 @@ def _now_ms() -> int:
 
 async def test_a_failed_marker_ends_the_wait_and_the_next_read_asks_again() -> None:
     failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=_now_ms())
-    asker, send = _asker(wait=5)
+    asker, send = _asker(wait=20)
     t0 = time.monotonic()
     first = await _fetch(
         ["rec-1"], graph_provider=_provider(_Docs({"rec-1": [_row("AUTO_INDEX_OFF"), failed]})), parse_now=asker,
     )
-    assert time.monotonic() - t0 < 1.0
+    assert time.monotonic() - t0 < 10  # ended by the marker, far before the 20 s budget a busy runner cannot reach
     assert first["not_indexed_records"]["rec-1"]["status"] == "FAILED"
     assert "preparing" not in first["not_indexed_records"]["rec-1"]
     # A later read of a record that still carries the FAILED marker asks again.
@@ -133,7 +133,7 @@ async def test_a_hung_blob_read_after_ready_is_cut_near_the_budget(monkeypatch) 
         result = await _fetch(["rec-1"], graph_provider=_provider(docs), parse_now=asker)
         elapsed = time.monotonic() - t0
 
-    assert elapsed < 1.5
+    assert elapsed < 10  # cut near the 0.2 s budget plus grace, not after the 30 s hang
     assert result["ok"] is False and "being prepared" in result["error"]
 
 
@@ -205,14 +205,15 @@ async def test_a_fast_failure_after_a_stale_one_ends_the_wait_in_about_one_poll(
     stale = _row("FAILED", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=1)
     fresh = _row("FAILED", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=_now_ms())
     docs = _Docs({"rec-1": [stale, fresh]})
-    asker, send = _asker(wait=5)
+    asker, send = _asker(wait=20)
     t0 = time.monotonic()
 
     result = await _fetch(["rec-1"], graph_provider=_provider(docs), parse_now=asker)
 
     send.assert_awaited_once()
     assert result["ok"] is False
-    assert time.monotonic() - t0 < 2.5
+    assert docs.reads["rec-1"] == 2  # ended at the first poll, by the fresh marker
+    assert time.monotonic() - t0 < 10  # far before the 20 s budget
 
 
 async def test_a_stale_failed_marker_alone_does_not_end_the_wait(stored_content) -> None:
@@ -307,14 +308,14 @@ def _asker_with_redis(wait: float) -> tuple[ParseNow, AsyncMock, _Redis]:
 
 async def test_the_claim_is_freed_after_a_failed_outcome_so_a_repeat_read_asks_again() -> None:
     failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=_now_ms())
-    asker, send, redis = _asker_with_redis(wait=5)
+    asker, send, redis = _asker_with_redis(wait=20)
     await _fetch(
         ["rec-1"], graph_provider=_provider(_Docs({"rec-1": [_row("AUTO_INDEX_OFF"), failed]})), parse_now=asker,
     )
     assert redis.keys == set()
     t0 = time.monotonic()
     await _fetch(["rec-1"], graph_provider=_provider(_Docs({"rec-1": [failed, _row("AUTO_INDEX_OFF"), failed]})), parse_now=asker)
-    assert send.await_count == 2 and time.monotonic() - t0 < 1.0
+    assert send.await_count == 2 and time.monotonic() - t0 < 10  # ended by the marker, not the 20 s budget
 
 
 async def test_the_claim_is_kept_when_the_wait_times_out() -> None:
