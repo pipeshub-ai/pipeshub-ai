@@ -8,6 +8,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 from __future__ import annotations
 
 import random
+from typing import Any
 
 import pytest
 
@@ -347,10 +348,10 @@ async def test_the_scope_read_looks_only_at_what_the_user_can_reach(w: World) ->
     real = w.p._kh_v3_accessible_rows
     real_q = w.p._q
 
-    async def counting(fn, transaction, **kw):
-        async def inner(tx):
+    async def counting(fn: Any, transaction: str | None, **kw: Any) -> Any:  # noqa: ANN401
+        async def inner(tx: Any) -> Any:  # noqa: ANN401
             class Counted:
-                def __getattr__(self, name: str):
+                def __getattr__(self, name: str) -> Any:  # noqa: ANN401
                     return getattr(tx, name)
 
                 async def fetch(self, sql: str, *args: object) -> list:

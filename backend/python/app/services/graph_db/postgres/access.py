@@ -215,7 +215,7 @@ async def _down(tx: Tx, org: str, starts: list[Node], mode: str, granted_l: list
         ids = [i for _, i in frontier]
         found: list[tuple[Node, Node, str | None, str | None]] = []
         for k in range(0, len(ids), _CHUNK):
-            for r in await tx.fetch("""/* pipeshub:graph.access_children */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, n.doc->>'permissionModel' AS model,
+            rows = await tx.fetch("""/* pipeshub:graph.access_children */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, n.doc->>'permissionModel' AS model,
                   n.doc->>'connectorId' AS cid
                 FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = e.to_coll AND n.id = e.to_id
                 LEFT JOIN graph.edges i ON i.org_id = e.org_id AND i.coll = 'inheritPermissions' AND i.from_coll = e.to_coll AND i.from_id = e.to_id
@@ -226,8 +226,8 @@ async def _down(tx: Tx, org: str, starts: list[Node], mode: str, granted_l: list
                                 OR (n.id = ANY($5::text[]) AND ((i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') = 'RESTRICTED')
                                                                  OR coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN')))
                               WHEN 'seed' THEN coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN' AND (i.from_id IS NOT NULL OR n.id = ANY($5::text[]))
-                              ELSE e.to_coll = 'recordGroups' END""", org, ids[k:k + _CHUNK], _HIER_TYPES, mode, granted_l, sorted({c for c, _ in frontier})):
-                found.append(((r["from_coll"], r["from_id"]), (r["to_coll"], r["to_id"]), r["model"], r["cid"]))
+                              ELSE e.to_coll = 'recordGroups' END""", org, ids[k:k + _CHUNK], _HIER_TYPES, mode, granted_l, sorted({c for c, _ in frontier}))
+            found += [((r["from_coll"], r["from_id"]), (r["to_coll"], r["to_id"]), r["model"], r["cid"]) for r in rows]
         frontier = []
         for p, c, model, cid in found:
             if p in seen and c not in seen:
