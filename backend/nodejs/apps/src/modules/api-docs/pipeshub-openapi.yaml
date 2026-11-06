@@ -50144,10 +50144,14 @@ paths:
         **Permissions**
 
         The authenticated user must have `can_edit` on the agent (typically the
-        owner). Turning on `shareWithOrg` also needs `can_share`. Turning a
-        regular agent into a service-account agent (`isServiceAccount: true`)
-        is limited to the agent's owner or an organization administrator,
-        because a service-account agent is shared with the whole organization.
+        owner). Turning on `shareWithOrg` for an agent that is not shared also
+        needs `can_share`. Converting a regular agent into a service-account
+        agent (changing `isServiceAccount` from `false` to `true`) is limited
+        to the agent's owner or an organization administrator, because a
+        service-account agent searches with its creator's access. A conversion
+        may turn on `shareWithOrg` in the same request without `can_share`.
+        Resending `isServiceAccount: true` for an agent that is already a
+        service-account agent needs no extra permission.
 
         **Success response**
 
@@ -50193,9 +50197,9 @@ paths:
             or the caller can see the agent (for example one shared with the
             organization) but is not its owner, so may not edit it. Also returned
             when an editor without `can_share` turns on `shareWithOrg`, when an
-            editor who is neither the owner nor an administrator sets
-            `isServiceAccount: true`, and when someone other than an
-            administrator changes `serviceAccountUserId`.
+            editor who is neither the owner nor an administrator converts a
+            regular agent by setting `isServiceAccount: true`, and when someone
+            other than an administrator changes `serviceAccountUserId`.
           content:
             application/json:
               schema:
@@ -50232,9 +50236,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: |
-            The change needs the caller's organization role (setting
-            `isServiceAccount: true` as a non-owner, or changing
-            `serviceAccountUserId`) and the role could not be confirmed just
+            The change needs the caller's organization role (converting a
+            regular agent by setting `isServiceAccount: true` as a non-owner, or
+            changing `serviceAccountUserId`) and the role could not be confirmed just
             now. Nothing was saved; retry.
           content:
             application/json:

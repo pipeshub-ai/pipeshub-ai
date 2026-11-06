@@ -72,3 +72,13 @@ export function canConvertToServiceAgent(
   if (!loadedAgent) return !editingExisting;
   return loadedAgent.user_role === 'OWNER' || isAdmin === true;
 }
+
+/**
+ * Whether the org-sharing switch is locked. Turning sharing on needs the
+ * agent's can_share as well as the viewer's permission, and the server refuses
+ * the whole save otherwise. An agent that is already shared stays switchable,
+ * so an editor can turn it off and back on before saving.
+ */
+export function isOrgShareLocked(loadedAgent: AgentDetail | null, canShareAgent: boolean): boolean {
+  return !canShareAgent || Boolean(loadedAgent && !loadedAgent.can_share && !loadedAgent.shareWithOrg);
+}

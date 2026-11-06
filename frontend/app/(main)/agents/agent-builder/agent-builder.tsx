@@ -35,8 +35,8 @@ import { connectionError } from './connection-rules';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { invalidateModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { canConvertToServiceAgent, getAgentBuilderPermissions } from './agent-builder-permissions';
-import { selectIsAdmin, useUserStore } from '@/lib/store/user-store';
+import { canConvertToServiceAgent, getAgentBuilderPermissions, isOrgShareLocked } from './agent-builder-permissions';
+import { selectRefreshedIsAdmin, useUserStore } from '@/lib/store/user-store';
 import { useUserPermission } from '@/config';
 import { toast } from '@/lib/store/toast-store';
 import { getUserFacingErrorMessage } from '@/lib/api/api-error';
@@ -207,7 +207,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const { canPersist, isAgentStructureLocked, isServiceAccountToolsetOrgLocked, isServiceAccount } =
     useMemo(() => getAgentBuilderPermissions(loadedAgent), [loadedAgent]);
   const canAccessServiceAgent = useUserPermission('accessServiceAgent');
-  const isAdmin = useUserStore(selectIsAdmin);
+  const isAdmin = useUserStore(selectRefreshedIsAdmin);
   const canDeleteAgentPermission = useUserPermission('deleteAgent');
   const canShareAgent = useUserPermission('shareAgent');
 
@@ -995,7 +995,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           onRequestDeleteAgent={() => setAgentDeleteDialogOpen(true)}
           serviceAccountPermissionDenied={!canAccessServiceAgent}
           deletePermissionDenied={!canDeleteAgentPermission}
-          sharePermissionDenied={!canShareAgent}
+          sharePermissionDenied={isOrgShareLocked(loadedAgent, canShareAgent)}
           createdBy={loadedAgent?.createdBy ?? null}
         />
 

@@ -194,6 +194,9 @@ onSessionEnd(() => useUserStore.getState().clearProfile());
 
 export const selectProfile = (s: UserProfileStore) => s.profile;
 export const selectIsAdmin = (s: UserProfileStore) => s.profile?.isAdmin ?? null;
+/** isAdmin once this session's profile refresh has finished; null before then, because the persisted value may be out of date. */
+export const selectRefreshedIsAdmin = (s: UserProfileStore) =>
+  s.isInitialized && !s.error ? (s.profile?.isAdmin ?? null) : null;
 export const selectAvatarUrl = (s: UserProfileStore) => s.profile?.avatarUrl ?? null;
 export const selectFullName = (s: UserProfileStore) => s.profile?.fullName ?? null;
 export const selectUserEmail = (s: UserProfileStore) => s.profile?.email ?? null;
