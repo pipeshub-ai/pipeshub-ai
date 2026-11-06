@@ -5336,7 +5336,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         def _half(anchor_field: str, other_field: str, label: str) -> str:
             cursor = (f'CONCAT_SEPARATOR("\\u0001", PARSE_IDENTIFIER(edge.{anchor_field}).key, "{label}", '
                       f'PARSE_IDENTIFIER(edge.{other_field}).collection, PARSE_IDENTIFIER(edge.{other_field}).key, '
-                      f'edge.relationshipType)')
+                      f'edge.relationshipType, edge._key)')
             page = f"LET cursor = {cursor} FILTER cursor > @after SORT cursor" if paged else ""
             return f"""
             FOR edge IN {edges}

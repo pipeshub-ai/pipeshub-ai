@@ -360,6 +360,7 @@ async def get_neighbour_impl(
         batch, over, spent = await _readable_neighbour_rows(
             graph_provider, org_id, access, expand, relations, direction,
             page=row_limit + 1, budget=_HOP_SCAN_LIMIT, want=row_limit,
+            connector_id=connector_id, include_tests=include_tests,
         )
         fanout_capped = fanout_capped or over
         incomplete = incomplete or spent

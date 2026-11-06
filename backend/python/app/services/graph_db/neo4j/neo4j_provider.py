@@ -4198,7 +4198,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "WITH n, m, rel, labels(m)[0] AS label, "
                 "CASE WHEN startNode(rel).id = n.id THEN 'outbound' ELSE 'inbound' END AS dir "
                 "WITH n, m, rel, dir, n.id + '\\u0001' + dir + '\\u0001' + coalesce(label, '') + '\\u0001' "
-                "+ coalesce(m.id, '') + '\\u0001' + coalesce(rel.relationshipType, '') AS cursor "
+                "+ coalesce(m.id, '') + '\\u0001' + coalesce(rel.relationshipType, '') + '\\u0001' + elementId(rel) AS cursor "
                 "WHERE cursor > $after"
             ) if paged else ""
             query = f"""

@@ -307,18 +307,18 @@ class CodeGraphMixin(PgBase):
         paged = after is not None
         try:
             if paged:
-                # cursor = the row's sort key; ORDER BY before LIMIT makes a page the next slice of the ordered edges.
+                # cursor = the row's sort key, ending in the edge's own key so parallel edges never tie; ORDER BY before LIMIT makes a page the next slice of the ordered edges.
                 rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT e.anchor, e.coll, e.key, e.dir,
                     coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.doc,
-                    concat_ws(chr(1), e.anchor, e.dir, e.coll, e.key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, ''))) COLLATE "C" AS page_key FROM (
-                    SELECT e.from_id AS anchor, e.to_coll AS coll, e.to_id AS key, 'outbound' AS dir, e.ekey, e.doc FROM graph.edges e
+                    concat_ws(chr(1), e.anchor, e.dir, e.coll, e.key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.edge_coll, e.ekey) COLLATE "C" AS page_key FROM (
+                    SELECT e.from_id AS anchor, e.to_coll AS coll, e.to_id AS key, 'outbound' AS dir, e.ekey, e.doc, e.coll AS edge_coll FROM graph.edges e
                       WHERE $7::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = ANY($4::text[])
                     UNION ALL
-                    SELECT e.to_id, e.from_coll, e.from_id, 'inbound', e.ekey, e.doc FROM graph.edges e
+                    SELECT e.to_id, e.from_coll, e.from_id, 'inbound', e.ekey, e.doc, e.coll FROM graph.edges e
                       WHERE $8::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = ANY($4::text[])
                         AND NOT ($9::bool AND e.from_coll = e.to_coll AND e.from_id = e.to_id)) e
                     WHERE coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($5::text[])
-                      AND concat_ws(chr(1), e.anchor, e.dir, e.coll, e.key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, ''))) COLLATE "C" > $10::text
+                      AND concat_ws(chr(1), e.anchor, e.dir, e.coll, e.key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.edge_coll, e.ekey) COLLATE "C" > $10::text
                     ORDER BY page_key LIMIT $6""",
                                                           org, _LINK_COLLS, node_collection, node_keys, relationship_types, limit, out, inn, both, after), transaction)
             else:

@@ -87,7 +87,7 @@ class TestDepth:
 
             async def get_neighbors_for_nodes_by_relationship_types(
                 self, node_keys, node_collection, relationship_types, direction,
-                limit=5000, transaction=None, raise_on_error=False
+                limit=5000, transaction=None, raise_on_error=False, after=None
             ) -> list[dict]:
                 # A directed walk asks for outbound edges once per hop, plus inbound
                 # containment while it climbs out of the start symbol; count the hops.
@@ -117,6 +117,9 @@ class TestDepth:
 class TestFrontierCap:
     async def test_hitting_the_cap_is_reported_not_silent(self, graph, monkeypatch) -> None:
         monkeypatch.setattr(path_mod, "_FRONTIER_LIMIT", 1)
+        # Two readable steps from the start: more than one row to keep.
+        graph.edges.append({"_from": f"{BLOCKS}/k_caller", "_to": f"{BLOCKS}/k_client",
+                            "relationshipType": "CALLS"})
         result = await _path(graph, b=PANEL)
         assert result["found"] is False
         assert result["capped"] is True
@@ -168,7 +171,7 @@ async def test_a_provider_failure_is_not_reported_as_no_path() -> None:
         async def get_neighbors_for_nodes_by_relationship_types(self, **kwargs: object) -> list:
             raise RuntimeError("neo4j is down")
 
-    with pytest.raises(RuntimeError, match="neo4j is down"):
+    with pytest.raises(RuntimeError, match="Failed to walk"):
         await _bfs_edges(_Broken(), "a", "b", max_depth=2, relations=["CALLS"])
 
 
@@ -181,7 +184,7 @@ class TestDirectedWalkAsksOnlyForEdgesItCanTake:
 
             async def get_neighbors_for_nodes_by_relationship_types(
                 self, node_keys, node_collection, relationship_types, direction,
-                limit=5000, transaction=None, raise_on_error=False
+                limit=5000, transaction=None, raise_on_error=False, after=None
             ) -> list[dict]:
                 self.asked.append((direction, tuple(relationship_types), limit))
                 return []

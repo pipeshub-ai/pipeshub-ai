@@ -489,28 +489,37 @@ async def _readable_blocks(
     return out
 
 
-async def _readable_keys(
+async def _readable_block_records(
     graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
-) -> set[str]:
-    """The keys among ``keys`` of blocks in this org whose file the caller may read.
+    connector_id: str | None = None,
+) -> dict[str, str]:
+    """Block key -> record id, for the blocks among ``keys`` in this org (and ``connector_id``) the caller may read.
 
     The one check a traversal applies at every hop (S-7): what is reached
     through a file the caller cannot read, and what is counted, must not
-    depend on that file. Loads only key, record and org.
+    depend on that file. Loads only key, record, org and connector.
     """
     wanted = sorted({k for k in keys if k})
     if not wanted:
-        return set()
+        return {}
     rows = [
         _unwrap(row) for row in await graph_provider.get_nodes_by_field_in(
             collection=_BLOCKS, field_name="_key", field_values=wanted,
-            return_fields=["_key", "recordId", "orgId"], raise_on_error=True,
+            return_fields=["_key", "recordId", "orgId", "connectorId"], raise_on_error=True,
         ) or []
     ]
-    rows = [r for r in rows if r.get("orgId") == org_id]
+    rows = [r for r in rows if r.get("orgId") == org_id
+            and (connector_id is None or r.get("connectorId") == connector_id)]
     readable = await access.readable(r.get("recordId") for r in rows)
-    return {key for r in rows
+    return {key: r["recordId"] for r in rows
             if r.get("recordId") in readable and (key := r.get("_key") or r.get("id"))}
+
+
+async def _readable_keys(
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
+) -> set[str]:
+    """The keys among ``keys`` of blocks in this org whose file the caller may read."""
+    return set(await _readable_block_records(graph_provider, org_id, access, keys))
 
 
 async def attach_file_paths(
@@ -542,18 +551,24 @@ def _key_of(block: dict) -> str:
 
 
 async def _readable_neighbour_rows(
-    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: list[str],
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess | None, keys: list[str],
     relations: list[str], direction: str, *, page: int, budget: int, want: int | None = None,
+    connector_id: str | None = None, include_tests: bool = True,
+    accept: "Callable[[dict[str, Any]], bool] | None" = None,
 ) -> tuple[list[dict[str, Any]], bool, bool]:
     """Edge rows from ``keys`` whose far end the caller can read: ``(rows, over, incomplete)``.
 
-    Pages the store in a fixed order and filters each page, so rows the caller
-    cannot read neither fill ``want`` nor move ``over``. ``over`` is true when
-    more than ``want`` readable rows exist (the first ``want`` are returned).
-    ``incomplete`` is true when ``budget`` raw rows were scanned before the
-    store ran out or ``want`` was passed.
+    Pages the store in a fixed order and filters each page before counting, so
+    rows the caller cannot read, rows ``accept`` refuses, blocks outside
+    ``connector_id`` and (unless ``include_tests``) test-file blocks neither
+    fill ``want`` nor move ``over``. Test rows are still returned, uncounted, so
+    the caller can say how many it hid. ``over`` is true when more than ``want``
+    counted rows exist (the first ``want`` are returned). ``incomplete`` is true
+    when ``budget`` raw rows were scanned before the store ran out or ``want``
+    was passed. ``access=None`` skips the readability check.
     """
-    out: list[dict[str, Any]] = []
+    counted: list[dict[str, Any]] = []
+    tests: list[dict[str, Any]] = []
     scanned, after = 0, ""
     while True:
         try:
@@ -565,19 +580,33 @@ async def _readable_neighbour_rows(
             logger.exception("Neighbour walk failed")
             raise RuntimeError("Failed to walk the code graph") from exc
         scanned += len(raw)
-        ok_blocks = await _readable_keys(
-            graph_provider, org_id, access, (r.get("key") for r in raw if r.get("collection") == _BLOCKS))
-        ok_records = await access.readable(r.get("key") for r in raw if r.get("collection") == _RECORDS)
-        out += [r for r in raw if r.get("key") in (ok_blocks if r.get("collection") == _BLOCKS else ok_records)
-                and r.get("collection") in (_BLOCKS, _RECORDS)]
-        if want is not None and len(out) > want:
-            return out[:want], True, False
+        raw_kept = [r for r in raw if r.get("collection") in (_BLOCKS, _RECORDS) and (accept is None or accept(r))]
+        block_keys = [r.get("key") for r in raw_kept if r.get("collection") == _BLOCKS]
+        if access is None:
+            ok_blocks, ok_records = dict.fromkeys(k for k in block_keys if k), None
+        else:
+            ok_blocks = await _readable_block_records(graph_provider, org_id, access, block_keys, connector_id)
+            ok_records = await access.readable(r.get("key") for r in raw_kept if r.get("collection") == _RECORDS)
+        roles = {} if include_tests else await get_record_roles(graph_provider, org_id, set(ok_blocks.values()))
+        for r in raw_kept:
+            if r.get("collection") == _BLOCKS:
+                if r.get("key") not in ok_blocks:
+                    continue
+                (tests if roles.get(ok_blocks[r["key"]]) == TEST_ROLE else counted).append(r)
+            elif ok_records is None or r.get("key") in ok_records:
+                counted.append(r)
+        if want is not None and len(counted) > want:
+            return counted[:want] + tests, True, False
         if len(raw) < page:
-            return out, False, False
+            return counted + tests, False, False
         if scanned >= budget:
-            # shortcut: a spent budget reveals only that the node has more than `budget` edges in total.
-            return out, False, True
-        after = raw[-1]["cursor"]
+            # shortcut: the scan stops after `budget` raw rows; filter readability in the store query if hubs routinely exceed it.
+            return counted + tests, False, True
+        # A provider that ignores `after` would repeat a page for ever.
+        if not (nxt := raw[-1].get("cursor")) or nxt <= after:
+            logger.error("Neighbour query did not advance its cursor")
+            raise RuntimeError("Failed to walk the code graph")
+        after = nxt
 
 
 async def _degrees(
