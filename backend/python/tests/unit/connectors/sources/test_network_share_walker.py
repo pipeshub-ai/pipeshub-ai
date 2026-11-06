@@ -166,9 +166,12 @@ async def _walk(
     existing_by_id: dict[str, FileRecord] | None = None,
     existing_by_revision: dict[str, FileRecord] | None = None,
     fail_ids: set[str] | None = None,
+    rejected_ids: set[str] | None = None,
+    failing_writes: int = 0,
 ):
     upserts: list[list[tuple[FileRecord, list]]] = []
     moves: list[list[tuple[str, FileRecord, list]]] = []
+    writes = {"failed": 0}
     by_id = existing_by_id or {}
     by_rev = existing_by_revision or {}
 
@@ -183,6 +186,11 @@ async def _walk(
         return by_rev.get(rev)
 
     async def flush_upserts(batch):
+        if writes["failed"] < failing_writes:
+            writes["failed"] += 1
+            raise RuntimeError("store unavailable")
+        if any(record.external_record_id in (rejected_ids or set()) for record, _perms in batch):
+            raise ValueError("store rejected the record")
         upserts.append(list(batch))
 
     async def flush_moves(batch):
@@ -690,6 +698,68 @@ class TestShareWalker:
         result, _upserts, _ = await _walk(ds, fail_ids={f"{SHARE}/docs"})
         assert result.complete is False
         assert result.unread == {f"{SHARE}/docs"}
+
+
+class TestShareWalkerRejectedRecords:
+    def share_of_five_files_and_a_folder(self) -> FakeNetworkShareDataSource:
+        files = [_entry(f"f{i}.txt", file_id=i + 1) for i in range(5)]
+        return FakeNetworkShareDataSource(
+            tree={
+                (SHARE, ""): [*files, _entry("sub", is_directory=True, file_id=10)],
+                (SHARE, "sub"): [_entry("deep.txt", file_id=11)],
+            }
+        )
+
+    async def test_a_record_the_store_always_rejects_leaves_the_rest_of_the_share_synced(self):
+        result, upserts, _ = await _walk(
+            self.share_of_five_files_and_a_folder(), batch_size=2, rejected_ids={f"{SHARE}/f1.txt"}
+        )
+
+        written = _ids(upserts)
+        assert f"{SHARE}/f1.txt" not in written
+        assert written == {f"{SHARE}/f{i}.txt" for i in (0, 2, 3, 4)} | {f"{SHARE}/sub", f"{SHARE}/sub/deep.txt"}
+        assert result.complete is False
+        assert result.unread == {f"{SHARE}/f1.txt"}
+
+    async def test_a_batch_that_fails_once_is_saved_record_by_record(self):
+        result, upserts, _ = await _walk(self.share_of_five_files_and_a_folder(), batch_size=100, failing_writes=1)
+
+        assert len(_ids(upserts)) == 7
+        assert all(len(batch) == 1 for batch in upserts)
+        assert result.complete is True
+        assert result.unread == set()
+
+    async def test_a_store_that_saves_nothing_fails_the_walk_as_before(self):
+        # Every record failing is the store, not one record: the walk must not end as if it had run.
+        with pytest.raises(RuntimeError, match="store unavailable"):
+            await _walk(self.share_of_five_files_and_a_folder(), batch_size=2, failing_writes=1000)
+
+    async def test_a_refused_sign_in_while_saving_still_stops_the_walk(self):
+        ds = self.share_of_five_files_and_a_folder()
+
+        async def refuse(_batch):
+            raise NetworkShareAuthError("refused")
+
+        walker = ShareWalker(
+            data_source=ds,
+            mapper=RecordMapper(),
+            logger=logging.getLogger("test.walker"),
+            connector_name=Connectors.SMB,
+            connector_id="smb-1",
+            batch_size=2,
+            get_by_external_id=lambda _ext_id: _none(),
+            get_by_revision=lambda _rev: _none(),
+            flush_upserts=refuse,
+            flush_moves=refuse,
+            permissions_for=lambda _record: [],
+        )
+
+        with pytest.raises(NetworkShareAuthError):
+            await walker.walk_share(SHARE, FilterCollection(), FilterCollection())
+
+
+async def _none():
+    return None
 
 
 class TestShareWalkerRefusedSignIn:
