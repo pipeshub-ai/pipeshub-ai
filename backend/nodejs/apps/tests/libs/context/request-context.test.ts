@@ -12,7 +12,6 @@ import {
   currentDisplayId,
   injectRequestHeaders,
   injectEnvelope,
-  HEADER_MCP_RELAY,
 } from '../../../src/libs/context/request-context';
 
 describe('request-context', () => {
@@ -173,15 +172,6 @@ describe('request-context', () => {
         const out = injectRequestHeaders({ 'X-Request-Id': 'preexisting' });
         expect(out['X-Request-Id']).to.equal('preexisting');
         expect(out[HEADER_REQUEST_ID]).to.equal(undefined);
-      });
-    });
-
-    it('adds the /mcp relay header when the context has one', () => {
-      runWithRequestContext({ rootId: 'root-9', mcpRelay: 'relay-1' }, () => {
-        expect(injectRequestHeaders({})[HEADER_MCP_RELAY]).to.equal('relay-1');
-      });
-      runWithRequestContext({ rootId: 'root-9' }, () => {
-        expect(injectRequestHeaders({})).to.not.have.property(HEADER_MCP_RELAY);
       });
     });
 

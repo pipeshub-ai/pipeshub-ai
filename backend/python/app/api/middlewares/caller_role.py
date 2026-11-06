@@ -43,10 +43,9 @@ logger = create_logger(__name__)
 
 CALLER_ROLE_PATH = "/api/v1/users/me/role"
 _TIMEOUT_SECONDS = 5.0
-# Node authenticates the caller from the Authorization header, plus the /mcp relay header for a
-# token issued for /mcp, which Node accepts elsewhere only as part of an /mcp call. Nothing else
-# is sent; cookies in particular can carry a long-lived refresh token.
-_FORWARDED_HEADERS = ("authorization", "x-pipeshub-mcp-relay")
+# Node authenticates the caller from the Authorization header alone, so nothing else is
+# sent; cookies in particular can carry a long-lived refresh token.
+_FORWARDED_HEADERS = ("authorization",)
 SERVICE_AUTHORIZATION_HEADER = "x-service-authorization"
 _SERVICE_TOKEN_TTL = timedelta(minutes=5)
 

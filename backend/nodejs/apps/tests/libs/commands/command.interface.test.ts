@@ -169,12 +169,6 @@ describe('command.interface', () => {
   })
 
   describe('sanitizeHeaders', () => {
-    it('keeps the /mcp relay header, which the role lookup needs', () => {
-      const cmd = new TestCommand('http://example.com')
-      const result = cmd.testSanitizeHeaders({ 'X-Pipeshub-Mcp-Relay': 'relay-1' })
-      expect(result).to.have.property('x-pipeshub-mcp-relay', 'relay-1')
-    })
-
     it('should add content-type application/json when no content-type is present', () => {
       const cmd = new TestCommand('http://example.com')
       const result = cmd.testSanitizeHeaders({})
