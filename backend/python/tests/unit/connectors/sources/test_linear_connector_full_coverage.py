@@ -593,6 +593,206 @@ class TestProjectToRecords:
             assert record.shared_with_me_record_group_ids == []
             assert record.shared_groups_complete is True
 
+    @staticmethod
+    def _grants(connector, **teams) -> None:
+        from app.connectors.sources.linear.team_access import team_permissions
+        connector._team_permissions = {
+            team_id: team_permissions({"id": team_id, "visibility": kind}, {}) for team_id, kind in teams.items()}
+
+    @pytest.mark.asyncio
+    async def test_the_project_is_granted_to_the_readers_of_its_other_synced_teams(self) -> None:
+        """Union: the home team's readers through its group, the other teams' on the project."""
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "private", "team-2": "public"})
+
+        records = await connector._project_to_records("proj-1", {"team-1", "team-2"})
+
+        project_record, grants = records[0]
+        assert project_record.external_record_group_id == "team-1"
+        assert {(g.external_id, g.entity_type) for g in grants} == {
+            ("team-2", "GROUP"), ("linear-workspace-members", "GROUP")}
+        assert project_record.rewrite_permissions is True  # a team taken off the project loses its grant
+
+    @pytest.mark.asyncio
+    async def test_a_team_outside_the_sync_adds_no_reader(self) -> None:
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "private"})
+
+        records = await connector._project_to_records("proj-1", {"team-1"})
+
+        assert records[0][1] == []
+
+    @pytest.mark.asyncio
+    async def test_a_project_with_one_team_is_granted_nothing_extra(self) -> None:
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", False))
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "public"})
+
+        records = await connector._project_to_records("proj-1", {"team-1"})
+
+        assert records[0][1] == []
+
+    @pytest.mark.asyncio
+    async def test_children_inherit_from_the_project_and_carry_no_grant_of_their_own(self) -> None:
+        """One record per child, one ACL: the widened readers reach them through the project."""
+        project = _make_project_data(
+            external_links=_page([{"id": "link-1", "url": "https://example.com/spec", "label": "Spec"}]))
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "private", "team-2": "public"})
+
+        records = await connector._project_to_records("proj-1", {"team-1", "team-2"})
+
+        children = records[1:]
+        assert children
+        for record, grants in children:
+            assert grants == []
+            assert record.inherit_permissions is True
+            assert record.parent_external_record_id == "proj-1"
+            assert record.external_record_group_id == "team-1"
+            assert record.shared_with_me_record_group_ids == []
+        assert len({r.external_record_id for r, _ in records}) == len(records)
+
+    @pytest.mark.asyncio
+    async def test_a_team_taken_off_the_project_is_gone_from_the_next_grant(self) -> None:
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "private", "team-2": "public"})
+        scope = {"team-1", "team-2"}
+        assert (await connector._project_to_records("proj-1", scope))[0][1]
+
+        project["teams"] = _teams(("team-1", True))
+        records = await connector._project_to_records("proj-1", scope)
+
+        assert records[0][1] == [] and records[0][0].rewrite_permissions is True
+
+    @pytest.mark.asyncio
+    async def test_without_this_runs_team_permissions_the_stored_grants_are_kept(self) -> None:
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        connector._team_permissions = {}
+
+        records = await connector._project_to_records("proj-1", {"team-1", "team-2"})
+
+        assert records[0][1] == []
+        assert records[0][0].rewrite_permissions is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("changed", [True, False])
+    @pytest.mark.parametrize("links_truncated", [False, True])
+    async def test_a_changed_team_set_refreshes_the_project_with_the_new_grants(self, changed, links_truncated) -> None:
+        """A team change does not bump updatedAt; the stamp in the listing is what shows it."""
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "private", "team-2": "public"})
+        stored_stamp = connector._project_children_stamp(project)
+        grants_stamp = connector._project_grants_stamp(project, {"team-1", "team-2"})
+        stored = MagicMock(external_record_id="proj-1", external_record_group_id="team-1",
+                           external_revision_id=f"1:{stored_stamp}:{grants_stamp}")
+        if changed:  # team-2 left the project after it was stored
+            project["teams"] = _teams(("team-1", True))
+        listed = {"proj-1": {"id": "proj-1", "teams": project["teams"]}}
+        if links_truncated:  # no stamp from the listing: refreshed whatever changed
+            listed["proj-1"]["externalLinks"] = {"nodes": [], "pageInfo": {"hasNextPage": True}}
+        connector._reconciler.run_projects = AsyncMock(return_value=(0, listed, {"proj-1": stored}))
+        processor = connector.data_entities_processor
+        processor.on_new_records = AsyncMock()
+        processor.on_record_content_update = AsyncMock()
+        rg = MagicMock(external_group_id="team-1")
+
+        await connector._sync_deleted_projects([(rg, []), (MagicMock(external_group_id="team-2"), [])])
+
+        if not changed and not links_truncated:
+            processor.on_new_records.assert_not_awaited()
+            return
+        written = processor.on_new_records.await_args.args[0]
+        if not changed:
+            assert written[0][1] and written[0][0].rewrite_permissions is True
+            return
+        assert written[0][1] == [] and written[0][0].rewrite_permissions is True
+
+    @pytest.mark.asyncio
+    async def test_a_project_written_without_this_runs_team_permissions_is_rewritten_by_the_next_sync(self) -> None:
+        """The guarded write keeps the stored grants and leaves no grants fingerprint, so the
+        next sync that has read the teams refreshes the project and drops what is stale."""
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        connector._team_permissions = {}
+        scope = {"team-1", "team-2"}
+        guarded = (await connector._project_to_records("proj-1", scope))[0][0]
+        assert guarded.rewrite_permissions is False
+        stored = MagicMock(external_record_id="proj-1", external_record_group_id="team-1",
+                           external_revision_id=guarded.external_revision_id)
+        connector._refreshed_project_ids = set()  # the next sync, which reads the teams
+        self._grants(connector, **{"team-1": "private", "team-2": "private"})
+        listed = {"proj-1": {"id": "proj-1", "teams": project["teams"]}}
+        connector._reconciler.run_projects = AsyncMock(return_value=(0, listed, {"proj-1": stored}))
+        processor = connector.data_entities_processor
+        processor.on_new_records = AsyncMock()
+        processor.on_record_content_update = AsyncMock()
+
+        await connector._sync_deleted_projects([(MagicMock(external_group_id=t), []) for t in sorted(scope)])
+
+        project_record, grants = processor.on_new_records.await_args.args[0][0]
+        assert project_record.rewrite_permissions is True and [g.external_id for g in grants] == ["team-2"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change", ["other team made private", "other team taken out of the sync"])
+    async def test_what_its_synced_teams_grant_changing_refreshes_the_project(self, change) -> None:
+        """Neither moves the project's updatedAt nor its teams; the grants it was written with do."""
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "private", "team-2": "public"})
+        scope = {"team-1", "team-2"}
+        written, before = (await connector._project_to_records("proj-1", scope))[0]
+        assert sorted(g.external_id for g in before) == ["linear-workspace-members", "team-2"]
+        stored = MagicMock(external_record_id="proj-1", external_record_group_id="team-1",
+                           external_revision_id=written.external_revision_id)
+        connector._refreshed_project_ids = set()  # the next sync
+        if change == "other team made private":
+            self._grants(connector, **{"team-1": "private", "team-2": "private"})
+        else:
+            scope = {"team-1"}
+            self._grants(connector, **{"team-1": "private"})
+        listed = {"proj-1": {"id": "proj-1", "teams": project["teams"]}}
+        connector._reconciler.run_projects = AsyncMock(return_value=(0, listed, {"proj-1": stored}))
+        processor = connector.data_entities_processor
+        processor.on_new_records = AsyncMock()
+        processor.on_record_content_update = AsyncMock()
+
+        await connector._sync_deleted_projects([(MagicMock(external_group_id=t), []) for t in sorted(scope)])
+
+        project_record, grants = processor.on_new_records.await_args.args[0][0]
+        assert project_record.rewrite_permissions is True
+        # Before: team-2's group and every workspace member. After: team-2's group, or nothing.
+        assert [g.external_id for g in grants] == ([] if change == "other team taken out of the sync" else ["team-2"])
+
+    def test_the_stamp_follows_the_teams_and_reads_alike_from_the_listing_and_the_project(self) -> None:
+        stamp = LinearConnector._project_children_stamp
+        full = {"teams": {"nodes": [{"id": "b", "name": "B"}, {"id": "a", "name": "A"}]}}
+        light = {"teams": {"nodes": [{"id": "a"}, {"id": "b"}], "pageInfo": {"hasNextPage": False}}}
+        assert stamp(full) == stamp(light)
+        assert stamp(full) != stamp({"teams": {"nodes": [{"id": "a"}]}})
+        assert stamp({"teams": {"nodes": [{"id": "a"}], "pageInfo": {"hasNextPage": True}}}) is None
+
     @pytest.mark.asyncio
     async def test_files_are_filed_again_on_every_read(self) -> None:
         """So they follow the project's current teams. A rebuilt file keeps its version,
