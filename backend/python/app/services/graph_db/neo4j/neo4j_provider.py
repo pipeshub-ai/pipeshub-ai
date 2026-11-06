@@ -18587,8 +18587,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             row = results[0]
             self.logger.info(
-                "Person %s -> user %s: %s (%s permission, %s app-relation edges moved)",
-                email,
+                "Person -> user %s: %s (%s permission, %s app-relation edges moved)",
                 user_key,
                 row.get("mode"),
                 row.get("moved_permissions"),
@@ -18597,7 +18596,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return row.get("mode")
 
         except Exception as e:
-            self.logger.error(f"❌ Migrate person to user failed for {email}: {str(e)}")
+            self.logger.error("Migrate person to user failed for user %s in org %s: %s", user_key, org_id, e)
             raise
 
     async def reap_stale_external_app_relations(

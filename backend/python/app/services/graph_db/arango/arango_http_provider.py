@@ -8835,7 +8835,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             mode = PersonMigrationMode.SPLIT if is_crm else PersonMigrationMode.MIGRATED
             self.logger.info(
                 "Person %s -> user %s: %s (%d edge(s) moved)",
-                email, user_key, mode, moved,
+                person.id, user_key, mode, moved,
             )
             return mode
 
@@ -8845,7 +8845,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     await self.rollback_transaction(txn)
                 except Exception as rb_err:
                     self.logger.warning(f"⚠️ Rollback of person migration failed: {rb_err}")
-            self.logger.error(f"❌ Migrate person to user failed for {email}: {str(e)}")
+            self.logger.error("Migrate person to user failed for user %s in org %s: %s", user_key, org_id, e)
             raise
 
     async def reap_stale_external_app_relations(
