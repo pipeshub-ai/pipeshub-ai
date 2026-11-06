@@ -132,13 +132,16 @@ class _Lock:
 
 
 async def test_one_tick_of_the_job_pages_syncs_and_advances_in_each_apps_own_org(pg_provider, org_ctx) -> None:
-    """The real context binding: the loop has no org of its own, two orgs hold a connector of the same id, and every tick must move the cursor."""
+    """The real context binding: the loop has no org of its own, two orgs hold a connector of the same id (one a legacy instance whose document
+    names no org), and every tick must move the cursor."""
     tag, orgs = uuid.uuid4().hex[:8], [_org(), _org()]
     cid = f"tick-{tag}"
     for o in orgs:
         with org_ctx(o):
-            await pg_provider.batch_upsert_nodes([{"_key": cid, "type": "DRIVE", "orgId": o}], "apps")
+            await pg_provider.batch_upsert_nodes([{"_key": cid, "type": "DRIVE", **({"orgId": o} if o == orgs[0] else {})}], "apps")
             await pg_provider.batch_upsert_nodes([{"_key": f"{o[:6]}-{i}", "connectorId": cid, "orgId": o, "virtualRecordId": f"v-{o[:6]}-{i}"} for i in range(3)], "records")
+    with org_ctx(orgs[1]):
+        assert "orgId" not in await pg_provider.get_document(cid, "apps")
     synced: list[tuple[str, str]] = []
 
     async def sync(vrid: str) -> None:
