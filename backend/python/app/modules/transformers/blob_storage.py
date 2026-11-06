@@ -49,6 +49,7 @@ from app.modules.transformers.stored_write import (
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.cache.interface import ISignedUrlCache, NoopSignedUrlCache
 from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
@@ -2865,20 +2866,22 @@ class BlobStorage(Transformer):
         return result
 
     async def _records_still_using_vrid(self, virtual_record_id: str) -> list[str]:
-        """Live records (any connector) referencing *virtual_record_id*.
+        """Records (any connector, the trash included) referencing *virtual_record_id*.
 
-        Same rule as the vector cleanup: raise rather than read a failed lookup
-        as "unreferenced", and confirm an empty answer once after a short pause
-        so a lagging replica cannot turn into a deleted blob.
+        A restore reads this content back, and the trash purge releases it once
+        no record holds it. Same rule as the vector cleanup otherwise: raise
+        rather than read a failed lookup as "unreferenced", and confirm an empty
+        answer once after a short pause so a lagging replica cannot turn into a
+        deleted blob.
         """
         raw = await self.graph_provider.get_records_by_virtual_record_id(
-            virtual_record_id, raise_on_error=True
+            virtual_record_id, raise_on_error=True, visibility=RecordVisibility.ALL
         )
         remaining = remaining_record_keys(raw)
         if not remaining:
             await asyncio.sleep(EMPTY_CONFIRM_DELAY_SECONDS)
             raw = await self.graph_provider.get_records_by_virtual_record_id(
-                virtual_record_id, raise_on_error=True
+                virtual_record_id, raise_on_error=True, visibility=RecordVisibility.ALL
             )
             remaining = remaining_record_keys(raw)
         return remaining
@@ -2920,7 +2923,7 @@ class BlobStorage(Transformer):
 
         Content is deduplicated across connectors, so other records can still
         hold this VRID and read these very documents; nothing is deleted while
-        any live record references it.
+        any record references it, one in the trash included.
 
         Raises on transient failures (HTTP errors, connection issues, a graph
         that cannot be read) so the caller's retry loop can re-attempt the

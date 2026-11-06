@@ -71,4 +71,9 @@ class TestCount:
     async def test_an_unsupported_entity_type_is_refused(self) -> None:
         graph = _graph([], capped=False)
         with pytest.raises(ValueError, match="Unsupported entity type"):
-            await count_accessible_entity_records(graph, _context(), entity_id="t1", entity_type="person")
+            await count_accessible_entity_records(graph, _context(), entity_id="t1", entity_type="no_such_type")
+
+    async def test_a_person_from_search_is_counted_like_any_entity(self) -> None:
+        graph = _graph([_row(f"r{i}") for i in range(3)], capped=False)
+        counted = await count_accessible_entity_records(graph, _context(), entity_id="u1", entity_type="person")
+        assert _n(counted) == (3, True)

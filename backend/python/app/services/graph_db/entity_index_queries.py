@@ -29,8 +29,9 @@ ENTITY_INDEX_CANDIDATE_COLLECTIONS = frozenset({_APPS, _ORGS})
 class EntityIndexSource:
     """How one projected source is read.
 
-    ``scope_field`` is ``connectorId`` for connector-owned sources and
-    ``orgId`` for taxonomy. ``canonical_only`` keeps legacy taxonomy nodes
+    ``scope_field`` is ``connectorId`` for connector-owned sources,
+    ``orgId`` for taxonomy and people, and ``parentOrgId`` for external
+    organisations. ``canonical_only`` keeps legacy taxonomy nodes
     (no ``normalizedName``) and merged-away ones (``mergedInto``) out; ``include_global`` admits nodes without an
     org (departments are seeded globally)."""
 
@@ -39,10 +40,16 @@ class EntityIndexSource:
     name_field: str
     # Read when name_field is missing, as on the index path.
     name_fallback: str | None = None
+    # A whitespace-only name falls back too (people: ``name.strip() or email``);
+    # groups keep ``groupName or name``, which a blank groupName does not pass.
+    blank_name_falls_back: bool = False
     fields: tuple[str, ...] = ()
     list_fields: tuple[str, ...] = ()
     canonical_only: bool = False
     include_global: bool = False
+    # Boolean fields a node must have set to true (``isExternal``: a CRM
+    # account, never the org itself).
+    required_true: tuple[str, ...] = ()
 
 
 def _taxonomy(collection: str) -> EntityIndexSource:
@@ -66,6 +73,13 @@ ENTITY_INDEX_SOURCES: dict[str, EntityIndexSource] = {
         ),
         EntityIndexSource(
             CollectionNames.DEPARTMENTS.value, "orgId", "departmentName", include_global=True,
+        ),
+        # Named as on the index path (SinkOrchestrator._sync_record_linked_entities).
+        EntityIndexSource(
+            CollectionNames.USERS.value, "orgId", "fullName", name_fallback="email", blank_name_falls_back=True,
+        ),
+        EntityIndexSource(
+            CollectionNames.ORGS.value, "parentOrgId", "name", required_true=("isExternal",),
         ),
         *(
             _taxonomy(c.value)
@@ -96,14 +110,17 @@ def _check_candidate_collection(collection: str) -> None:
 
 def build_entity_index_candidate_aql(collection: str, *, with_sweep: bool) -> str:
     _check_candidate_collection(collection)
-    deleting = f'FILTER doc.status != "{APP_STATUS_DELETING}"' if collection == _APPS else ""
+    # A CRM account lives among the orgs (isExternal) but is a document of its org, not an org to index.
+    excluded = (
+        f'FILTER doc.status != "{APP_STATUS_DELETING}"' if collection == _APPS else "FILTER doc.isExternal != true"
+    )
     due = f"doc.{ENTITY_INDEX_STATE_FIELD} != @marker"
     if with_sweep:
         swept = f"doc.{ENTITY_INDEX_SWEPT_AT_FIELD}"
         due = f"{due} OR {swept} == null OR {swept} < @sweep_before"
     return f"""
     FOR doc IN {collection}
-        {deleting}
+        {excluded}
         FILTER {due}
         LIMIT 1
         RETURN doc
@@ -113,8 +130,9 @@ def build_entity_index_candidate_aql(collection: str, *, with_sweep: bool) -> st
 def build_entity_index_candidate_cypher(collection: str, *, with_sweep: bool) -> str:
     _check_candidate_collection(collection)
     label = collection_to_label(collection)
-    deleting = (
-        f"AND coalesce(n.status, '') <> '{APP_STATUS_DELETING}'" if collection == _APPS else ""
+    excluded = (
+        f"AND coalesce(n.status, '') <> '{APP_STATUS_DELETING}'" if collection == _APPS
+        else "AND coalesce(n.isExternal, false) <> true"
     )
     due = f"coalesce(n.{ENTITY_INDEX_STATE_FIELD}, '') <> $marker"
     if with_sweep:
@@ -123,10 +141,19 @@ def build_entity_index_candidate_cypher(collection: str, *, with_sweep: bool) ->
     return f"""
     MATCH (n:{label})
     WHERE ({due})
-      {deleting}
+      {excluded}
     RETURN n
     LIMIT 1
     """
+
+
+def _aql_name(spec: EntityIndexSource) -> str:
+    name, fallback = f"n.{spec.name_field}", f"n.{spec.name_fallback}"
+    if not spec.name_fallback:
+        return name
+    if spec.blank_name_falls_back:
+        return f'TRIM({name}) != "" ? {name} : {fallback}'
+    return f"{name} || {fallback}"
 
 
 def build_entity_index_source_page_aql(source: str, *, has_after_key: bool) -> str:
@@ -137,13 +164,13 @@ def build_entity_index_source_page_aql(source: str, *, has_after_key: bool) -> s
     filters = [f"FILTER {scope}"]
     if spec.canonical_only:
         filters.append("FILTER n.normalizedName != null AND n.mergedInto == null")
+    filters.extend(f"FILTER n.{f} == true" for f in spec.required_true)
     if has_after_key:
         filters.append("FILTER n._key > @after_key")
     projection = ", ".join(
         [
             "_key: n._key",
-            f"name: n.{spec.name_field} || n.{spec.name_fallback}"
-            if spec.name_fallback else f"name: n.{spec.name_field}",
+            f"name: {_aql_name(spec)}",
             *(f"{f}: n.{f}" for f in spec.fields),
             *(f"{f}: n.{f} || []" for f in spec.list_fields),
         ]
@@ -158,6 +185,12 @@ def build_entity_index_source_page_aql(source: str, *, has_after_key: bool) -> s
     """
 
 
+def _name_test(spec: EntityIndexSource) -> str:
+    if spec.blank_name_falls_back:
+        return f"trim(coalesce(toStringOrNull(n.{spec.name_field}), ''))"
+    return f"coalesce(n.{spec.name_field}, '')"
+
+
 def build_entity_index_source_page_cypher(source: str, *, has_after_key: bool) -> str:
     """Two variants, like ``build_page_records_for_vector_membership_backfill_cypher``:
     an ``$after_key IS NULL OR`` predicate would stop the planner range-scanning
@@ -170,12 +203,15 @@ def build_entity_index_source_page_cypher(source: str, *, has_after_key: bool) -
     predicates = [scope]
     if spec.canonical_only:
         predicates.append("n.normalizedName IS NOT NULL AND n.mergedInto IS NULL")
+    predicates.extend(f"n.{f} = true" for f in spec.required_true)
     if has_after_key:
         predicates.append("n.id > $after_key")
     projection = ", ".join(
         [
             "n.id AS _key",
-            f"coalesce(n.{spec.name_field}, n.{spec.name_fallback}) AS name"
+            # An empty name falls back too, as AQL's ``||`` does.
+            f"CASE WHEN {_name_test(spec)} <> '' THEN n.{spec.name_field} "
+            f"ELSE n.{spec.name_fallback} END AS name"
             if spec.name_fallback else f"n.{spec.name_field} AS name",
             *(f"n.{f} AS {f}" for f in spec.fields),
             *(f"coalesce(n.{f}, []) AS {f}" for f in spec.list_fields),

@@ -133,7 +133,42 @@ class TestGuards:
         assert ok is True
         assert "ignoredEntityTypes" not in json.loads(text)
         _, search_kwargs = patched[1].call_args
-        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["record", "named_entity"], ["organization", "product"])
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (
+            ["organization", "record", "named_entity"], ["organization", "product"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_organisation_search_with_extraction_off_searches_the_organisation_entities(
+        self, patched, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        ok, _ = await execute_search_entities(_state(), "Orrin Biotech", entity_types=["organization"])
+        assert ok is True
+        _, search_kwargs = patched[1].call_args
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["organization"], None)
+
+    @pytest.mark.asyncio
+    async def test_a_person_search_with_extraction_off_searches_the_people_entities(
+        self, patched, monkeypatch,
+    ) -> None:
+        # "person" is both an entity type (the members records name) and a
+        # named-entity kind: read as the kind alone, every people lookup failed
+        # while extraction was off, the default.
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        ok, _ = await execute_search_entities(_state(), "Mira Kowalski", entity_types=["person"])
+        assert ok is True
+        _, search_kwargs = patched[1].call_args
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["person"], None)
+
+    @pytest.mark.asyncio
+    async def test_a_person_search_with_extraction_on_also_searches_named_people(
+        self, patched, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
+        ok, _ = await execute_search_entities(_state(), "Mira Kowalski", entity_types=["person"])
+        assert ok is True
+        _, search_kwargs = patched[1].call_args
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["person", "named_entity"], ["person"])
 
     @pytest.mark.asyncio
     async def test_access_failure_is_a_failed_call_not_empty_results(self, patched) -> None:
@@ -160,7 +195,7 @@ class TestGuards:
 class TestSearch:
     @pytest.mark.asyncio
     async def test_scope_comes_from_agent_sources(self, patched) -> None:
-        await execute_search_entities(_state(), "legal", entity_types=["topic", "person"], top_k=99)
+        await execute_search_entities(_state(), "legal", entity_types=["topic", "product"], top_k=99)
 
         _, kwargs = patched[0].call_args
         assert kwargs["source_ids"] == ["conf-1", "kb-1"]
@@ -393,10 +428,11 @@ class TestWhereEntitySearchIsOffered:
 
     @pytest.mark.asyncio
     async def test_an_unservable_kind_named_as_an_entity_type_is_explained_too(self, patched) -> None:
+        # The people records name are still searched; only named people are not.
         _, search = patched
         ok, payload = await self._offered(query="Sam", entity_types=["person"])
-        assert ok and payload["results"] == [] and "search_by_entities" in " ".join(payload["kindNotes"])
-        search.assert_not_called()
+        assert ok and "search_by_entities" in " ".join(payload["kindNotes"])
+        assert (search.call_args.kwargs["entity_types"], search.call_args.kwargs["kinds"]) == (["person"], None)
 
 
 class TestWithoutEntitySearch:

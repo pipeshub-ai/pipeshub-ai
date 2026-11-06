@@ -87,7 +87,7 @@ class _Neo4j:
 
     async def clean(self, s: dict[str, str]) -> None:
         await self.run(
-            "MATCH (n) WHERE n.orgId IN [$org, $other] OR n.testRun = $run DETACH DELETE n",
+            "MATCH (n) WHERE n.orgId IN [$org, $other] OR n.parentOrgId = $org OR n.testRun = $run DETACH DELETE n",
             org=s["org"], other=s["other"], run=s["run"],
         )
 
@@ -203,7 +203,7 @@ async def backend(
         pytest.skip(f"{request.param} not available: {exc}")
     run = uuid.uuid4().hex[:10]
     names = ("app", "deleting", "org", "other", "g1", "g2", "t1", "t2", "t_legacy", "t_other",
-             "d_org", "d_global", "r1", "r2", "r3")
+             "d_org", "d_global", "r1", "r2", "r3", "account")
     seeded = {"run": run, **{n: f"{n}-{run}" for n in names}}
     db = helper(provider)
     await db.seed(seeded)
@@ -280,6 +280,18 @@ class TestCandidatesAndState:
         found = await provider.get_entity_index_candidate(ORGS, marker, sweep_before=10**14)
         assert found["_key"] == s["org"]
         assert await provider.get_entity_index_candidate(ORGS, marker) is None
+
+    async def test_a_crm_account_is_never_an_org_candidate(self, backend) -> None:
+        """An account lives among the orgs but is a document of its org: no
+        org pass or sweep runs for it."""
+        provider, db, s = backend
+        marker = f"v1:it-{s['run']}"
+        await db.mark_all(marker, swept_at=10**15)
+        await provider.batch_upsert_nodes([{
+            "id": s["account"], "name": "Acme", "accountType": "enterprise", "isActive": True,
+            "isExternal": True, "parentOrgId": s["org"],
+        }], ORGS)
+        assert await provider.get_entity_index_candidate(ORGS, marker, sweep_before=10**14) is None
 
     async def test_every_state_field_is_accepted(self, backend) -> None:
         """ArangoDB's app and org schemas are strict: an unlisted field fails

@@ -16,7 +16,7 @@ def test_downgrading_the_writers_leaves_a_clean_catalog_and_an_upgrade_brings_th
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 17
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 21
 
 
 def test_downgrading_the_writers_touches_nothing_that_is_not_theirs(db):
@@ -74,6 +74,30 @@ def test_downgrading_the_stamp_writer_alone_leaves_the_other_writers_and_a_clean
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = 'w_stamps_set'").fetchone()[0] == 1
+
+
+def test_downgrading_the_restamp_queue_removes_only_its_own_objects(db):
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    r = run_migrate(url, "downgrade", "kg_0005", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT to_regclass('kg.restamp_queue') IS NULL").fetchone()[0] is True
+        assert c.execute("SELECT to_regclass('kg.job_id_seq') IS NULL").fetchone()[0] is True
+        assert c.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'kg' AND table_name = 'records' AND column_name = 'fence_job'").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname IN ('w_fence_rows', 'w_queue_add', 'w_queue_touch', 'w_queue_done')").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname LIKE 'w\\_%'").fetchone()[0] == 17        # the stamp writer and the rest stay
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+        assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
+        assert c.execute("SELECT has_table_privilege('pipeshub_vetted_kg', 'kg.records', 'UPDATE')").fetchone()[0] is True       # the records writers' pins still need it
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT to_regclass('kg.restamp_queue') IS NOT NULL").fetchone()[0] is True
+
+
 
 
 def test_a_function_that_only_shares_a_writers_name_is_not_taken_away_with_the_writers(db):

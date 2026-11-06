@@ -323,7 +323,7 @@ class GitLabConnector(BaseConnector):
         self.deleted_merge_requests = DeletedWorkItems(self, MERGE_REQUESTS)
 
     def _create_runtime(self) -> RuntimeHelper:
-        """EE override point: return EE RuntimeHelper for org-scoped token refresh."""
+        """Extension point: return the RuntimeHelper used for token refresh, which a build can scope by org."""
         return RuntimeHelper(self)
 
     # ------------------------------------------------------------------

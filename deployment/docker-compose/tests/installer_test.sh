@@ -313,6 +313,12 @@ check "reconfigure seeds port from existing .env" "$inner" 'get_existing_val APP
 check "reconfigure keeps the private-address switch" "$inner" 'get_existing_val PIPESHUB_BLOCK_PRIVATE_ADDRESSES'
 check "the private-address switch is written to .env" "$inner" 'optional_env_line PIPESHUB_BLOCK_PRIVATE_ADDRESSES'
 check "reconfigure keeps Qdrant's memory limit" "$inner" 'get_existing_val QDRANT_MEMORY_LIMIT'
+# install.sh supports bash 3.2 (macOS); case-conversion expansions need bash 4.
+if grep -vE '^[[:space:]]*#' "$INNER_INSTALLER" | grep -E '\$\{[A-Za-z_0-9]+(,,?|\^\^?)[^}]*\}' >/dev/null; then
+  fail "installer uses no bash-4 case conversion (\${v,,} / \${v^^})"
+else
+  pass "installer uses no bash-4 case conversion"
+fi
 check "Qdrant's memory limit is written to .env" "$inner" 'optional_env_line QDRANT_MEMORY_LIMIT'
 if [[ "$compose" == *"container_name:"* ]]; then
   fail "compose must not pin container_name (blocks a second project)"
@@ -818,6 +824,53 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
   seed_env "0.7.0-slim"
   run_installer "--upgrade to the tag already in use" -- --upgrade --version 0.7.0-slim
   check "asking for the current tag is a no-op with a clear message" "$out" "Already on image tag 0.7.0-slim"
+
+  # --reconfigure rewrites .env in full; datastore sizing an operator set by hand
+  # must survive it, or a small machine silently goes back to the defaults.
+  sizing=(NEO4J_HEAP_INITIAL=256M NEO4J_HEAP_MAX=1536M NEO4J_PAGECACHE=256M
+          NEO4J_MEMORY_LIMIT=2688M NEO4J_MEMORY_RESERVATION=1G
+          MONGO_MEMORY_RESERVATION=256M QDRANT_MEMORY_RESERVATION=512M)
+  seed_env "0.6.0-slim"
+  printf '%s\n' "${sizing[@]}" >>"$work/.env"
+  run_installer "--reconfigure with datastore sizing" -- --reconfigure --yes
+  for kv in "${sizing[@]}"; do
+    check "--reconfigure keeps ${kv%%=*}" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
+  done
+
+  seed_env "0.6.0-slim"
+  printf 'DATA_STORE=neo4j\nNEO4J_HEAP_INITIAL=2G\nNEO4J_HEAP_MAX=1G\n' >>"$work/.env"
+  status=0
+  out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only 2>&1)" || status=$?
+  if [[ $status -ne 0 ]]; then pass "initial heap above the maximum is refused"; else fail "initial heap above the maximum is refused"; fi
+  check "the refusal names both heap settings" "$out" "NEO4J_HEAP_INITIAL (2G) must be <= NEO4J_HEAP_MAX (1G)"
+
+  # Neo4j accepts GiB/MiB and plain bytes too; the check must read them.
+  for pair in "2GiB 1G" "1536MiB 1g" "2147483648 1024m" "010G 9G" "09G 8G"; do
+    seed_env "0.6.0-slim"
+    printf 'DATA_STORE=neo4j\nNEO4J_HEAP_INITIAL=%s\nNEO4J_HEAP_MAX=%s\n' ${pair} >>"$work/.env"
+    status=0
+    out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only </dev/null 2>&1)" || status=$?
+    if [[ $status -ne 0 ]]; then pass "initial heap above the maximum is refused (${pair})"; else fail "initial heap above the maximum is refused (${pair})"; fi
+  done
+  seed_env "0.6.0-slim"
+  printf 'DATA_STORE=neo4j\nNEO4J_HEAP_INITIAL=1GiB\nNEO4J_HEAP_MAX=1024m\n' >>"$work/.env"
+  run_installer "an initial heap equal to the maximum in other units" -- --reconfigure --yes
+
+  # ArangoDB does not read the Neo4j heap settings, so they must not block it.
+  # A docker stub with no volumes keeps the host's own stacks from steering the
+  # graph DB choice. Its own directory: the cases above may run the installer
+  # through sudo, and a root-owned .env backup from the same second would block
+  # this unprivileged run from writing its backup.
+  work="$TMP_ROOT/arango-ignores-neo4j-heap"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  [[ -f "$COMPOSE_DIR/docker-compose.yml" ]] && cp "$COMPOSE_DIR/docker-compose.yml" "$work/"
+  seed_env "0.6.0-slim"
+  nodocker="$work/nodocker"; mkdir -p "$nodocker"
+  printf '#!/bin/sh\n[ "$1" = volume ] && exit 1\nexit 0\n' >"$nodocker/docker"; chmod +x "$nodocker/docker"
+  printf 'NEO4J_HEAP_INITIAL=2G\nNEO4J_HEAP_MAX=1G\n' >>"$work/.env"
+  run_installer "an ArangoDB install ignores the Neo4j heap settings" \
+    PIPESHUB_GRAPH_DB=arango PATH="$nodocker:$PATH" -- --reconfigure --yes
+  check "the ArangoDB install was chosen" "$(cat "$work/.env")" $'\nDATA_STORE=arangodb\n'
 )
 
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"

@@ -95,6 +95,11 @@ class ConnectorSyncSkippedError(Exception):
         self.code = code
 
 
+class IncompleteSyncError(RuntimeError):
+    """A sync that finished without writing every project it read: the run fails, but a full sync still removes
+    what it saw gone from the parts it read in full (the runner), and the parts it kept as stored stay linked."""
+
+
 # Held by a sync for its whole run and by a user-link pass, so the two never overlap on one
 # connector. Keyed by id, not instance: a connector can be rebuilt between the two.
 _SYNC_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()

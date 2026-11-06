@@ -174,6 +174,18 @@ class _InMemoryGraphStore:
         self.edges[edge_collection] = [e for e in edges if e.get("_from") != _from]
         return before - len(self.edges[edge_collection])
 
+    def delete_edges_between_collections(
+        self, edge_collection: str, from_id: str, from_collection: str, to_collection: str,
+    ) -> int:
+        _from = f"{from_collection}/{from_id}"
+        edges = self.edges.get(edge_collection, [])
+        before = len(edges)
+        self.edges[edge_collection] = [
+            e for e in edges
+            if not (e.get("_from") == _from and str(e.get("_to", "")).startswith(f"{to_collection}/"))
+        ]
+        return before - len(self.edges[edge_collection])
+
     def delete_edges_to(self, edge_collection: str, to_id: str, to_collection: str) -> int:
         _to = f"{to_collection}/{to_id}"
         edges = self.edges.get(edge_collection, [])
@@ -431,9 +443,22 @@ class MockTransactionStore:
 
     # -- users ---
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False,
+    ) -> User | None:
+        return None  # this store keeps no userAppRelation edges
+
+    async def get_users_by_emails(
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, User]:
+        found = {e.lower(): await self.get_user_by_email(e, org_id=org_id) for e in emails}
+        return {e: u for e, u in found.items() if u is not None}
+
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> User | None:
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
-            if doc.get("email") == email:
+            if doc.get("email") == email and (org_id is None or doc.get("orgId") == org_id):
                 return User(
                     id=doc["_key"],
                     email=doc["email"],
@@ -617,6 +642,11 @@ class MockTransactionStore:
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         return self._s.delete_edges_from(collection, from_id, from_collection)
+
+    async def delete_edges_between_collections(
+        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
+    ) -> int:
+        return self._s.delete_edges_between_collections(edge_collection, from_id, from_collection, to_collection)
 
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str,
                           to_collection: str, collection: str) -> bool:

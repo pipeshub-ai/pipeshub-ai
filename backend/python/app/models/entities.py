@@ -1672,7 +1672,9 @@ class TicketRecord(Record):
             labels=ticket_doc.get("labels"),
             milestone=ticket_doc.get("milestone"),
             # With it lost, the email fields (then the source's user ids) read as emails.
-            is_email_hidden=bool(ticket_doc.get("is_email_hidden")),
+            is_email_hidden=bool(ticket_doc.get("is_email_hidden", False)),
+            assignee_source_id=ticket_doc.get("assignee_source_id") or [],
+            reporter_source_id=ticket_doc.get("reporter_source_id"),
             resolved_at=ticket_doc.get("resolvedAtTimestamp"),
             due_date=ticket_doc.get("dueDateTimestamp"),
             access_rule=read_access_rule(record_doc),
@@ -3323,6 +3325,7 @@ class Org(BaseModel):
     ownership_type: str | None = Field(default=None, description="Ownership type: public, private, subsidiary, government, other")
     phone: str | None = Field(default=None, description="Organization phone number")
     duns_id: str | None = Field(default=None, description="DUNS number (Data Universal Numbering System)")
+    parent_org_id: str | None = Field(default=None, description="The org an external organisation belongs to")
 
     def to_arango_org(self) -> dict[str, Any]:
         """Convert Org model to ArangoDB document format. Output matches orgs_schema (no extra fields)."""
@@ -3341,6 +3344,7 @@ class Org(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            **({"parentOrgId": self.parent_org_id} if self.parent_org_id else {}),
         }
 
     @staticmethod
@@ -3362,6 +3366,7 @@ class Org(BaseModel):
             ownership_type=data.get("ownershipType"),
             phone=data.get("phone"),
             duns_id=data.get("dunsId"),
+            parent_org_id=data.get("parentOrgId"),
         )
 
 class Domain(BaseModel):
@@ -3862,6 +3867,10 @@ class EntityType(str, Enum):
     RECORD_GROUP = "record_group"
     CONNECTOR = "connector"
     LANGUAGE = "language"
+    # An organisation member named by records (KG-13); keyed by the user id.
+    PERSON = "person"
+    # An external organisation (a CRM account) records belong to (KG-13).
+    ORGANIZATION = "organization"
     RELATIONSHIP = "relationship"
     CUSTOM = "custom"
     NAMED_ENTITY = "named_entity"
@@ -3952,6 +3961,32 @@ class EntityRecord(BaseModel):
             record_group_ids=[group_id],
             type_category=EntityTypeCategory.PREDEFINED,
         )
+
+    @classmethod
+    def for_linked(
+        cls, entity_type: EntityType, entity_id: str, name: str, org_id: str,
+        connector_id: str | None, record_group_id: str | None,
+    ) -> "EntityRecord":
+        """The point of an entity a record links to over ``entityRelations``
+        (a person, an organisation), from one such record. Written with
+        ``merge_membership=True``: the entity spans many records, connectors
+        and groups."""
+        return cls(
+            entity_id=entity_id,
+            entity_type=entity_type,
+            name=name,
+            org_id=org_id,
+            connector_ids=[connector_id] if connector_id else [],
+            record_group_ids=[record_group_id] if record_group_id else [],
+            type_category=EntityTypeCategory.PREDEFINED,
+        )
+
+    @classmethod
+    def for_person(
+        cls, user_id: str, name: str, org_id: str, connector_id: str | None, record_group_id: str | None,
+    ) -> "EntityRecord":
+        """A member's point (KG-13)."""
+        return cls.for_linked(EntityType.PERSON, user_id, name, org_id, connector_id, record_group_id)
 
     def to_vector_payload(self) -> dict:
         """Serialise to the flat metadata dict stored on each vector point.

@@ -153,7 +153,7 @@ class RuntimeHelper:
             self.logger.warning("Could not refresh GitLab token: %s", e)
 
     def _get_refresh_kwargs(self, c: "GitLabConnector") -> dict:
-        """EE override: add org_id= to the refresh_now call for scoped etcd key paths."""
+        """Extension point: a build can pass org_id= to refresh_now so the refresh key path is scoped by org."""
         return {}
 
     async def force_refresh_oauth_token(self) -> bool:

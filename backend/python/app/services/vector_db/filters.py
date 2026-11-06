@@ -21,7 +21,9 @@ Typical provider usage::
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Union
+from dataclasses import dataclass
+from functools import cached_property
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Union
 
 from app.services.permissions.scope_fields import SCOPE_KEYS
 from app.services.vector_db.const.const import (
@@ -36,6 +38,11 @@ from app.services.vector_db.models import (
     FilterMode,
     FilterValue,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
+    from app.services.permissions.scopes import ViewerScopes
 
 # Top-level payload fields — must not be auto-prefixed with ``metadata.``.
 TOP_LEVEL_FILTER_FIELDS = frozenset(
@@ -290,3 +297,76 @@ def build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCondi
         else:
             conditions.append(FieldCondition(key=field_key, value=value))
     return conditions
+
+
+#: Most ids one list of a ScopeFilter may hold; a viewer past it is not filtered by scope (`ScopeFilterTooLarge`): the caller keeps the
+#: legacy filter for that viewer.
+MAX_SCOPE_IDS = 100_000
+
+
+class ScopeFilterTooLarge(ValueError):
+    """A viewer's scope list is longer than a store can take in one query."""
+
+
+class ScopeFilterUnsupported(ValueError):
+    """A store cannot evaluate this filter exactly (Redis tags compare without case, so an id with capitals could meet another id)."""
+
+
+@dataclass(frozen=True)
+class ScopeFilter:
+    """What one viewer may read, as a store-neutral predicate over the scope fields a point carries (ANDed with the request's filter).
+
+    A point is admitted only by a **trusted** stamp: its group carries the current field version and the deployment's scope generation,
+    and every connector it belongs to is in ``current`` (the connectors whose stamps may be used now). Then, by its stamp:
+
+    * ``container``: a record group or root group in ``readable_groups``, or a connector in ``open_apps``;
+    * ``union`` / ``intersection``: ``pathIds`` meets ``reach`` and does not meet ``excluded``;
+    * any of them: ``aclScope`` (the record's own id and the seeds on its chain) meets ``reach``;
+    * **whatever the stamp**, a point whose ``pathIds`` meet ``pending`` (the scopes whose subtree is being rewritten) is hidden, and a
+      ``container`` point of a connector in ``blocked`` (a connector with a pending root) is not admitted by the stamp at all: a point with no
+      path cannot be hidden by a path, so it is read with the legacy filter until the rewrite finishes.
+
+    Every other point (never stamped, a ``legacy`` or unknown stamp, an untrusted one, a connector not in ``current``) is **not** admitted:
+    an empty list admits nothing, never everything. ``reach`` is ``readable_groups | readable_scopes | open_apps``.
+    """
+
+    current: frozenset[str] = frozenset()
+    open_apps: frozenset[str] = frozenset()
+    readable_groups: frozenset[str] = frozenset()
+    readable_scopes: frozenset[str] = frozenset()
+    #: Restricted scopes the viewer cannot read: a ``union`` / ``intersection`` path through one hides the point.
+    excluded: frozenset[str] = frozenset()
+    #: The field version and scope generation a stamp must carry to be used (`ScopeFields.trusted`); a negative generation (the shared
+    #: state could not be read) trusts nothing.
+    version: int = 0
+    generation: int = -1
+    #: Scopes whose subtree is being rewritten (hide-first), and the connectors that have such a scope (see the class docstring). Last, so the
+    #: positional order of the fields before them is unchanged.
+    pending: frozenset[str] = frozenset()
+    blocked: frozenset[str] = frozenset()
+
+    @classmethod
+    def of(cls, scopes: ViewerScopes, current_connectors: Iterable[str] | Mapping[str, int], *, version: int, generation: int,
+           blocked: Iterable[str] = ()) -> ScopeFilter:
+        return cls(frozenset(current_connectors), scopes.open_apps, scopes.readable_groups, scopes.readable_scopes,
+                   scopes.unreadable_restricted, version, generation, scopes.pending, frozenset(blocked))
+
+    @property
+    def reach(self) -> frozenset[str]:
+        return self.readable_groups | self.readable_scopes | self.open_apps
+
+    @property
+    def trusts_nothing(self) -> bool:
+        return self.generation < 0 or not self.current
+
+    def lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
+        """``(current, open_apps, readable_groups, reach, excluded, pending, blocked)``, sorted, for a store that binds arrays. Computed once per
+        filter: callers must not mutate it."""
+        return self._lists
+
+    @cached_property
+    def _lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
+        sets = (self.current, self.open_apps, self.readable_groups, self.reach, self.excluded, self.pending, self.blocked)
+        if any(len(x) > MAX_SCOPE_IDS for x in sets):                                                     # refuse before paying for the sort
+            raise ScopeFilterTooLarge(f"a scope list holds more than {MAX_SCOPE_IDS} ids")
+        return tuple(sorted(x) for x in sets)  # type: ignore[return-value]

@@ -437,16 +437,70 @@ class SinkOrchestrator(Transformer):
                 entities.append(EntityRecord.for_record_group(
                     record.record_group_id, group_name, record.org_id, record.connector_id,
                 ))
-        if not entities:
-            return
-        try:
-            outcome = await self.entity_vector_store.upsert_entities_batch(entities, merge_membership=False)
+        if entities:
+            try:
+                outcome = await self.entity_vector_store.upsert_entities_batch(entities, merge_membership=False)
+                if outcome.failed:
+                    self.logger.warning(
+                        "Entity points for record %s not written (%d of %d)", record.id, outcome.failed, len(entities),
+                    )
+            except Exception as exc:
+                self.logger.warning("Record entity sync failed for record %s (non-fatal): %s", record.id, exc)
+        await self._sync_record_linked_entities(
+            record.id, record.org_id, record.connector_id, record.record_group_id, record.record_type,
+        )
+
+    async def _sync_record_linked_entities(
+        self, record_id: str, org_id: str, connector_id: str | None, record_group_id: str | None,
+        record_type: str | None,
+    ) -> int:
+        """A point for each member the record names and for the CRM account it
+        belongs to (KG-13), merged so each keeps every connector and group it
+        was linked from. Best-effort, as the identity points: the B-1 rebuild
+        projects them too. Returns how many points were not written (a failed
+        lookup counts as one)."""
+        from app.connectors.core.base.data_processor.record_organizations import (
+            ACCOUNT_RECORD_TYPES,
+        )
+        from app.models.entities import EntityRecord, EntityType
+
+        lookups = [(EntityType.PERSON, self.graph_provider.get_record_people)]
+        # Only CRM records link to an account; spare every other record the
+        # round-trip.
+        if record_type in ACCOUNT_RECORD_TYPES:
+            lookups.append((EntityType.ORGANIZATION, self.graph_provider.get_record_organizations))
+        failed = 0
+        for entity_type, lookup in lookups:
+            try:
+                nodes = await lookup(record_id, org_id)
+            except Exception as exc:
+                self.logger.warning("%s lookup failed for record %s (non-fatal): %s", entity_type.value, record_id, exc)
+                failed += 1
+                continue
+            entities = []
+            for node in nodes or []:
+                # Named as the rebuild names them (a person's full name, else
+                # email), so both write the same point; no name, no point.
+                name = (node.get("name") or "").strip() or (node.get("email") or "").strip()
+                if node.get("id") and name:
+                    entities.append(EntityRecord.for_linked(
+                        entity_type, node["id"], name, org_id, connector_id, record_group_id,
+                    ))
+            if not entities:
+                continue
+            try:
+                outcome = await self.entity_vector_store.upsert_entities_batch(entities, merge_membership=True)
+            except Exception as exc:
+                self.logger.warning("%s entity sync failed for record %s (non-fatal): %s", entity_type.value, record_id, exc)
+                failed += len(entities)
+                continue
             if outcome.failed:
                 self.logger.warning(
-                    "Entity points for record %s not written (%d of %d)", record.id, outcome.failed, len(entities),
+                    "%s points for record %s not written (%d of %d)",
+                    entity_type.value, record_id, outcome.failed, len(entities),
                 )
-        except Exception as exc:
-            self.logger.warning("Record entity sync failed for record %s (non-fatal): %s", record.id, exc)
+            failed += outcome.failed
+        return failed
 
     async def sync_entities_for_duplicate(self, record_doc: dict) -> bool:
         """Re-project a deduplicated record's taxonomy into the entities
@@ -581,6 +635,9 @@ class SinkOrchestrator(Transformer):
                 failed += (await self.entity_vector_store.upsert_entities_batch(
                     identities, merge_membership=False,
                 )).failed
+            failed += await self._sync_record_linked_entities(
+                str(record_key), org_id, connector_id, record_group_id, record_doc.get("recordType"),
+            )
             if failed:
                 self.logger.warning(
                     "Entity vector sync for deduplicated record %s left %d entities unwritten",

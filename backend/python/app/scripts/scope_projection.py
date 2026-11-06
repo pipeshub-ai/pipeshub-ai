@@ -1,6 +1,6 @@
 """Operator command: write the permission scope fields of a connector instance's existing vector points, and show progress.
 
-    python -m app.scripts.scope_projection run    --org ORG --connector APP [--connector APP ...] [--restart] [--max-pages N]
+    python -m app.scripts.scope_projection run    --org ORG --connector APP [--connector APP ...] [--restart] [--max-pages N] [--close-open-mark]
     python -m app.scripts.scope_projection status --org ORG --connector APP [--connector APP ...]
 
 `run` refuses to start unless the scope fields are on (`ACL_SCOPE_FIELDS=on` in every service, so points written meanwhile carry
@@ -34,6 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--connector", action="append", required=True, help="connector instance (app) id")
     run = sub.choices["run"]
     run.add_argument("--restart", action="store_true")
+    run.add_argument("--close-open-mark", action="store_true",
+                     help="close an open unsafe mark (an unclassified write that never wrote its closing mark); only when no write of the organisation's connectors is still running")
     run.add_argument("--max-pages", type=_pages, default=20)
     return parser
 
@@ -75,7 +77,8 @@ async def _main(argv: list[str]) -> int:
         code = 0
         for connector in args.connector:
             try:
-                progress = await job.run_connector(args.org, connector, restart=args.restart, max_pages=args.max_pages)
+                progress = await job.run_connector(args.org, connector, restart=args.restart, max_pages=args.max_pages,
+                                                  close_open_mark=args.close_open_mark)
             except Exception as exc:
                 sys.stdout.write(f"{args.org}/{connector}  error {type(exc).__name__}: {exc}\n")
                 code = EXIT_FAILED

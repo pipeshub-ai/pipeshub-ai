@@ -122,6 +122,8 @@ def _filter_org(expr: FilterExpression) -> str:
 
 
 class PgVectorService(IVectorDBService):
+    supports_scope_filter = True
+
     def __init__(self, config: ConfigurationService | PgVectorConfig) -> None:
         self.config_service = config
         self._cfg: PgVectorConfig | None = None
@@ -483,7 +485,7 @@ class PgVectorService(IVectorDBService):
             return []
         if sparse is not None:
             lexical.terms_of(sparse)           # a malformed lexical query is refused before either leg runs
-        scope = scope_of(req.filter)
+        scope = scope_of(req.filter, req.scope_filter)
         cfg = self._cfg.search
         with org_scope(org):
             if scope.apps is not None and cfg.eliminate_all_apps:

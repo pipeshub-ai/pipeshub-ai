@@ -26,6 +26,7 @@ from qdrant_client.http.models import (  # type: ignore
     MatchValue,
     Modifier,
     OptimizersConfigDiff,
+    PayloadSchemaType,
     ProductQuantization,
     ProductQuantizationConfig,
     CompressionRatio,
@@ -735,6 +736,8 @@ class QdrantService(IVectorDBService):
         self._assert_connected()
         if field_schema.get("type") == "keyword":
             schema = KeywordIndexParams(type=KeywordIndexType.KEYWORD)
+        elif field_schema.get("type") == "integer":
+            schema = PayloadSchemaType.INTEGER
         else:
             schema = field_schema  # type: ignore
         try:

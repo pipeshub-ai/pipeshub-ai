@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import logging
 import math
 import os
@@ -256,6 +257,10 @@ class _RecordIdSearch:
     empty_scope: bool = False
 
 
+# The scope filter of the shadow comparison's search, set only inside that task: a real search never sees one.
+_SHADOW_SCOPE_FILTER: contextvars.ContextVar[Any] = contextvars.ContextVar("acl_shadow_scope_filter", default=None)
+
+
 @dataclass
 class _QueryPlan:
     """Per-search cache so a re-query does not pay for embeddings twice.
@@ -457,6 +462,7 @@ class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
     # A class default, so an instance built without __init__ (as some tests do) has it too.
     _cached_embedding_is_local = True
+    _shadow = None
 
     def __init__(
         self,
@@ -484,6 +490,8 @@ class RetrievalService:
         self.blob_store = blob_store
         self.vector_db_service = vector_db_service
         self.collection_registry = collection_registry
+        # Compares the scope filter with the post-check on the side (ACL_FILTER_MODE=shadow); None in every other mode.
+        self._shadow = self._build_shadow(graph_provider)
 
         # Capability negotiation — determines which embedding legs are needed.
         self._capabilities = vector_db_service.get_capabilities()
@@ -505,6 +513,43 @@ class RetrievalService:
             f"supports_sparse={self._capabilities.supports_sparse_vectors}, "
             f"supports_text_search={self._capabilities.supports_server_side_text_search}"
         )
+
+    def _build_shadow(self, graph_provider: IGraphDBProvider) -> object | None:
+        """The shadow comparator in shadow mode, else None. An invalid setting raises ValueError here, at start-up, naming the setting."""
+        from app.services.permissions.wiring import build_shadow_comparator
+
+        return build_shadow_comparator(graph_provider)
+
+    def _submit_shadow(
+        self, queries, filter, asked: int, org_id: str, user_id: str | None, user_key: str | None,  # noqa: A002, ANN001
+        scope_connector_ids: frozenset[str] | None, scopes: Sequence[SelectionScope], plan: "_QueryPlan",
+        returned_vids: set[str], accessible: dict[str, str],
+    ) -> None:
+        """Hand the finished search to the shadow comparator (once per search, from the attempt that was kept), which repeats it with
+        the viewer's scope filter in a detached task. It gets a plan of its own (the embeddings are reused, nothing of the real plan is written) and never changes what this call returns."""
+        from app.services.permissions.shadow import ShadowIncomplete
+
+        shadow_plan = _QueryPlan(dense=plan.dense, sparse=plan.sparse, collections=plan.collections)
+
+        async def run_scoped(flt: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+            token = _SHADOW_SCOPE_FILTER.set(flt)
+            try:
+                found = await self._execute_parallel_searches(queries, filter, asked, org_id, user_id, plan=shadow_plan)
+            finally:
+                _SHADOW_SCOPE_FILTER.reset(token)
+            if shadow_plan.failed_collections:      # a collection that failed to answer would read as recall loss
+                raise ShadowIncomplete
+            return found
+
+        async def check(vrids: set[str]) -> set[str]:
+            found = await self.graph_provider.check_access(
+                user_key or "", org_id, virtual_record_ids=vrids, indexed_only=True, connector_ids=scope_connector_ids, scopes=scopes)
+            return set(found.records_by_vrid)
+
+        try:
+            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check)
+        except Exception as exc:  # the shadow must never cost a search
+            self.logger.warning("acl shadow comparison not started: %s", type(exc).__name__)
 
     @property
     def _result_merger(self) -> ResultMerger:
@@ -1573,6 +1618,7 @@ class RetrievalService:
                         plan=candidate_plan,
                         user_key=user_key,
                         scopes=scopes,
+                        compare=False,
                     )
                     if degraded:
                         return [], {}
@@ -2029,8 +2075,12 @@ class RetrievalService:
         plan: "_QueryPlan | None" = None,
         user_key: str | None = None,
         scopes: Sequence[SelectionScope] = (),
+        compare: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
         """Search under a container filter, then resolve what the user may read.
+
+        ``compare``: hand the finished search to the shadow comparison (when it is on). The deeper read for source diversity passes False: it
+        is the same search read at a greater depth, and one search is compared once.
 
         Returns ``(results, accessible_map, verification_degraded)``. The third
         element is what stops a graph outage being reported as an empty corpus.
@@ -2057,6 +2107,7 @@ class RetrievalService:
         best_surviving = -1
         best_degraded = False
         best_failed: list[str] = []
+        best_shadow: tuple[int, set[str], dict[str, str]] | None = None      # what the shadow comparison needs from the kept attempt
 
         for attempt in range(MAX_SEARCH_ATTEMPTS):
             # Per attempt, not per loop: a later attempt that fails verification
@@ -2137,6 +2188,7 @@ class RetrievalService:
                 )
                 best_degraded = attempt_degraded
                 best_failed = plan.failed_collections
+                best_shadow = None if attempt_degraded else (asked, returned_vids, accessible)
 
             if attempt_degraded:
                 # Retrying would hammer a graph that has just failed to answer.
@@ -2177,6 +2229,8 @@ class RetrievalService:
             )
 
         plan.failed_collections = best_failed
+        if compare and best_shadow is not None and self._shadow is not None and plan.dense is not None and self.vector_db_service.supports_scope_filter:
+            self._submit_shadow(queries, filter, best_shadow[0], org_id, user_id, user_key, scope_connector_ids, scopes, plan, best_shadow[1], best_shadow[2])
         # Over-fetching is a means, not a promise: drop the headroom this path
         # added, best-scoring first, or by record under the record cut.
         # `budget` is the record-id path's *ceiling*, not its typical output —
@@ -2690,6 +2744,7 @@ class RetrievalService:
                 filter=filter,
                 limit=fused_limit,
                 fusion_method=FusionMethod.RRF,
+                scope_filter=_SHADOW_SCOPE_FILTER.get(),
             )
             for query, dense_embedding, sparse_embedding in zip(
                 queries, dense_query_embeddings, sparse_query_embeddings
