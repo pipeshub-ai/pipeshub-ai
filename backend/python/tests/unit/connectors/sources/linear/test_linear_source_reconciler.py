@@ -457,6 +457,24 @@ class TestRunProjects:
         }]
 
     @pytest.mark.asyncio
+    async def test_a_long_team_list_is_read_to_its_end(self) -> None:
+        """The stamp must cover every team of a project, so it changes only when the teams do."""
+        def respond(operation, variables) -> GraphQLResponse:
+            if operation == "projectIds":
+                return _page("projects", [{"id": "proj-1", "trashed": False, "teams": {
+                    "nodes": [{"id": "t1"}], "pageInfo": {"hasNextPage": True, "endCursor": "c1"}}}])
+            assert operation == "projectTeams" and variables["id"] == "proj-1" and variables["after"] == "c1"
+            return _ok({"project": {"teams": {"nodes": [{"id": "t2"}],
+                                              "pageInfo": {"hasNextPage": False, "endCursor": None}}}})
+
+        env = _make(respond, stored={RecordType.PROJECT: [_record("node-1", "proj-1", RecordType.PROJECT)]})
+
+        _, listed, _ = await env.reconciler.run_projects({"team-1"})
+
+        assert [t["id"] for t in listed["proj-1"]["teams"]["nodes"]] == ["t1", "t2"]
+        assert listed["proj-1"]["teams"]["pageInfo"]["hasNextPage"] is False
+
+    @pytest.mark.asyncio
     async def test_failed_listing_removes_nothing(self) -> None:
         env = _make(lambda operation, variables: _failed(),
                     stored={RecordType.PROJECT: [_record("node-1", "proj-1", RecordType.PROJECT)]})

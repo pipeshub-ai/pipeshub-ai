@@ -677,6 +677,56 @@ class TestProjectToRecords:
         assert records[0][1] == [] and records[0][0].rewrite_permissions is True
 
     @pytest.mark.asyncio
+    async def test_without_this_runs_team_permissions_the_stored_grants_are_kept(self) -> None:
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        connector._team_permissions = {}
+
+        records = await connector._project_to_records("proj-1", {"team-1", "team-2"})
+
+        assert records[0][1] == []
+        assert records[0][0].rewrite_permissions is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("changed", [True, False])
+    async def test_a_changed_team_set_refreshes_the_project_with_the_new_grants(self, changed) -> None:
+        """A team change does not bump updatedAt; the stamp in the listing is what shows it."""
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "private", "team-2": "public"})
+        stored_stamp = connector._project_children_stamp(project)
+        stored = MagicMock(external_record_id="proj-1", external_record_group_id="team-1",
+                           external_revision_id=f"1:{stored_stamp}")
+        if changed:  # team-2 left the project after it was stored
+            project["teams"] = _teams(("team-1", True))
+        listed = {"proj-1": {"id": "proj-1", "teams": project["teams"]}}
+        connector._reconciler.run_projects = AsyncMock(return_value=(0, listed, {"proj-1": stored}))
+        processor = connector.data_entities_processor
+        processor.on_new_records = AsyncMock()
+        processor.on_record_content_update = AsyncMock()
+        rg = MagicMock(external_group_id="team-1")
+
+        await connector._sync_deleted_projects([(rg, []), (MagicMock(external_group_id="team-2"), [])])
+
+        if not changed:
+            processor.on_new_records.assert_not_awaited()
+            return
+        written = processor.on_new_records.await_args.args[0]
+        assert written[0][1] == [] and written[0][0].rewrite_permissions is True
+
+    def test_the_stamp_follows_the_teams_and_reads_alike_from_the_listing_and_the_project(self) -> None:
+        stamp = LinearConnector._project_children_stamp
+        full = {"teams": {"nodes": [{"id": "b", "name": "B"}, {"id": "a", "name": "A"}]}}
+        light = {"teams": {"nodes": [{"id": "a"}, {"id": "b"}], "pageInfo": {"hasNextPage": False}}}
+        assert stamp(full) == stamp(light)
+        assert stamp(full) != stamp({"teams": {"nodes": [{"id": "a"}]}})
+        assert stamp({"teams": {"nodes": [{"id": "a"}], "pageInfo": {"hasNextPage": True}}}) is None
+
+    @pytest.mark.asyncio
     async def test_files_are_filed_again_on_every_read(self) -> None:
         """So they follow the project's current teams. A rebuilt file keeps its version,
         so nothing is re-indexed."""

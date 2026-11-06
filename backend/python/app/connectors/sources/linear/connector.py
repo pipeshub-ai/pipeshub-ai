@@ -1119,6 +1119,7 @@ class LinearConnector(BaseConnector):
 
         # Convert teams to both UserGroups and RecordGroups
         user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
+        self._team_permissions = {}  # this run's teams only
         record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
         # Linear has no per-issue access, so a team's audience is everything in it.
         # A team with sub-teams is not declared: a private sub-team is hidden from the
@@ -2359,6 +2360,7 @@ class LinearConnector(BaseConnector):
         if not project:
             return None
         for field, operation, size in (
+            ("teams", "projectTeams", NESTED_PAGE_SIZE),
             ("externalLinks", "projectExternalLinks", NESTED_PAGE_SIZE),
             ("documents", "projectDocuments", NESTED_PAGE_SIZE),
             ("projectMilestones", "projectMilestones", NESTED_PAGE_SIZE),
@@ -2463,10 +2465,16 @@ class LinearConnector(BaseConnector):
         for child_record, _ in batch_records:
             child_record.shared_groups_complete = project_record.shared_groups_complete
 
-        # A rewrite, so a team taken off the project takes its readers' grants with it.
-        project_record.rewrite_permissions = True
+        grants: list[Permission] = []
+        if self._team_permissions:
+            # A rewrite, so a team taken off the project takes its readers' grants with it.
+            project_record.rewrite_permissions = True
+            grants = self._project_extra_permissions(full_project_data, scope, team_id)
+        else:
+            # Without this run's teams a rewrite would wipe the grants; keep the stored ones.
+            self.logger.warning(f"Team permissions not read in this run; project {project_id} keeps its stored grants")
         # The project first: a child written before it finds no parent in its team.
-        return [(project_record, self._project_extra_permissions(full_project_data, scope, team_id)), *batch_records]
+        return [(project_record, grants), *batch_records]
 
     async def _sync_comment_activity(self, synced_team_ids: set[str]) -> None:
         """Queue issues and projects for re-indexing when their discussion changed.
@@ -3561,17 +3569,18 @@ class LinearConnector(BaseConnector):
 
     @staticmethod
     def _project_children_stamp(project_data: dict[str, Any]) -> str | None:
-        """A fingerprint of a project's external links and milestones.
+        """A fingerprint of a project's teams, external links and milestones.
 
         Adding, editing or removing one does not change the project's ``updatedAt``, so
         the fingerprint is kept in the record's revision and compared on every sync with
         what the light project listing reports. None when a list is not fully known.
         """
         parts: list[str] = []
-        for field in ("externalLinks", "projectMilestones"):
+        for field in ("teams", "externalLinks", "projectMilestones"):
             connection = project_data.get(field) or {}
             if (connection.get("pageInfo") or {}).get("hasNextPage"):
                 return None
+            # A team has no updatedAt: its id alone says whether the set changed.
             parts.append(",".join(sorted(
                 f"{node.get('id')}@{node.get('updatedAt')}" for node in connection.get("nodes") or [] if node)))
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
