@@ -94,7 +94,9 @@ async def test_query_pages_by_id_and_narrows_by_kind_and_name_prefix(w: Org, org
     assert (await w.p.query_named_entities(w.org, NamedEntityQuery(limit=2, cursor="4"))) == {"entities": [], "cursor": ""}
     assert [e["id"] for e in (await w.p.query_named_entities(w.org, NamedEntityQuery(name_prefix=" AL ")))["entities"]] == ["a1", "a2", "p1"]       # trimmed and case-folded
     assert [e["id"] for e in (await w.p.query_named_entities(w.org, NamedEntityQuery(kinds=["person"], name_prefix="alpha")))["entities"]] == ["p1"]
-    assert (await w.p.query_named_entities(w.org, NamedEntityQuery(limit=1000)))["cursor"] == ""                                       # a limit above 200 is 200
+    await w.p.create_named_entities_if_absent([w.ne(f"z{i:03}", name=f"zz{i}") for i in range(205)])
+    big = await w.p.query_named_entities(w.org, NamedEntityQuery(limit=1000))
+    assert len(big["entities"]) == 200 and big["cursor"] == "200"                                                                       # a limit above 200 is 200
     assert (await w.p.query_named_entities(orgs[1].org, NamedEntityQuery()))["entities"] == []
     with pytest.raises(ValueError):
         await w.p.query_named_entities(w.org, NamedEntityQuery(cursor="x"))
@@ -112,6 +114,8 @@ async def test_a_records_entities_carry_the_edges_count_and_blocks_then_its_valu
     assert [(e["id"], e.get("mentionCount"), e.get("blockIndexes")) for e in got[:2]] == [("A", 3, [0, 2]), ("B", 1, None)]
     assert got[2]["recordId"] == "r1" and len(got) == 3
     assert await w.p.get_named_entities_for_record("nobody") == []
+    await w.mention("ghost", "A")
+    assert await w.p.get_named_entities_for_record("ghost") == []                                                                        # a record that is not there has none
     with in_org(orgs[1].org):
         assert await orgs[1].p.get_named_entities_for_record("r1") == []
 
@@ -138,6 +142,7 @@ async def test_mentions_in_records_are_the_edges_between_the_given_records_and_e
                     {"recordId": "r1", "entityId": "M", "blockIndexes": None, "extractedNames": ["m"], "mentionCount": 1},
                     {"recordId": "r2", "entityId": "B", "blockIndexes": None, "extractedNames": ["b"], "mentionCount": 1}]
     assert [r["entityId"] for r in await w.p.get_named_entity_mentions_in_records(w.org, ["B"], ["r1", "r2"])] == ["B"]
+    assert await w.p.get_named_entity_mentions_in_records(w.org, ["gone"], ["r2"]) == []                                                # an edge to a node that is gone
     assert await w.p.get_named_entity_mentions_in_records(w.org, [], ["r1"]) == [] and await w.p.get_named_entity_mentions_in_records(w.org, ["A"], []) == []
     assert await w.p.get_named_entity_mentions_in_records(orgs[1].org, ["B"], ["r1", "r2"]) == []
 
@@ -165,7 +170,7 @@ async def value_world(w: Org) -> None:
     await w.p.replace_named_entity_values("r2", [w.vm("r2", "jun", startMs=50 * DAY, endMs=51 * DAY, name="1 June"),
                                                  w.vm("r2", "usd", kind="currency", name="$500", amountFloat=400.0, amountHighFloat=500.0, currency="USD", **NODATE),
                                                  w.vm("r2", "eur", kind="currency", name="E7", amountFloat=7.0, currency="EUR", **NODATE),
-                                                 w.vm("r2", "kg", kind="quantity", name="3 kg", siValue=3.0, dimension="mass", **NODATE)])
+                                                 w.vm("r2", "kg", kind="quantity", name="3 kg", siValue=3.0, numericValue=50.0, dimension="mass", **NODATE)])
     await w.p.replace_named_entity_values("r3", [w.vm("r3", "bad", startMs="soon", endMs=None, name="bad", numericValue="x")])
 
 
@@ -179,6 +184,10 @@ async def test_date_spans_name_the_records_with_a_date_overlapping_the_range(w: 
     assert await w.p.get_named_entity_date_spans(w.org, ["r1"], 100 * DAY, 101 * DAY) == {} and await w.p.get_named_entity_date_spans(w.org, [], 0, DAY) == {}
     assert await w.p.get_named_entity_date_spans(orgs[1].org, ["r1"], 10 * DAY, 12 * DAY) == {}
     assert await w.p.get_named_entity_date_spans(w.org, ["r3"], 0, 100 * DAY) == {}                  # a malformed date never matches and never raises
+    await w.record("r4")
+    await w.p.replace_named_entity_values("r4", [w.vm("r4", "early", startMs=int(19.5 * DAY), endMs=int(20.5 * DAY)), w.vm("r4", "long", startMs=int(20.5 * DAY), endMs=60 * DAY)])
+    assert await w.p.get_named_entity_date_spans(w.org, ["r4"], 20 * DAY, 21 * DAY) == {"r4": (False, DAY)}      # one starts before the range, one is longer than it: neither names it
+    assert await w.p.get_named_entity_date_spans(w.org, ["r1"], 10 * DAY, 10 * DAY + 3_600_000) == {"r1": (True, DAY)}      # a one-hour question still counts a whole-day value
 
 
 async def test_values_in_records_name_the_values_that_satisfy_a_constraint_largest_first(w: Org, orgs: tuple[Org, Org]) -> None:
@@ -190,7 +199,11 @@ async def test_values_in_records_name_the_values_that_satisfy_a_constraint_large
     dates = await w.p.get_named_entity_values_in_records(w.org, NamedEntityQuery(date_start_ms=0, date_end_ms=60 * DAY), ["r1", "r2"])
     assert dates == {"r1": ["1 May", "May"], "r2": ["1 June"]}                                                              # equal starts: by name
     assert await w.p.get_named_entity_values_in_records(w.org, NamedEntityQuery(quantity_min=1.0, quantity_max=5.0, dimension="mass"), ["r1", "r2"]) == {"r2": ["3 kg"]}
-    assert await w.p.get_named_entity_values_in_records(w.org, NamedEntityQuery(percent_min=10.0, percent_max=60.0), ["r1", "r2"]) == {"r1": ["50%"]}
+    assert await w.p.get_named_entity_values_in_records(w.org, NamedEntityQuery(amount_min=450.0, amount_max=1000.0, currency="USD"), ["r2"]) == {"r2": ["$500"]}      # the range reaches the high end
+    assert await w.p.get_named_entity_values_in_records(w.org, NamedEntityQuery(percent_min=10.0, percent_max=60.0), ["r1", "r2"]) == {"r1": ["50%"]}      # r2's 3 kg has a numeric value of 50 too
+    await w.record("r5")
+    await w.p.replace_named_entity_values("r5", [w.vm("r5", "both", name="both", startMs=10 * DAY, endMs=11 * DAY, amountFloat=9.0, currency="USD")])
+    assert await w.p.get_named_entity_values_in_records(w.org, NamedEntityQuery(date_start_ms=0, date_end_ms=60 * DAY, amount_min=1.0, amount_max=10.0), ["r5"]) == {"r5": ["both"]}      # two constraints, one name
     assert await w.p.get_named_entity_values_in_records(w.org, NamedEntityQuery(kinds=["percentage"]), ["r1", "r2"]) == {"r1": ["50%"]}
     assert await w.p.get_named_entity_values_in_records(w.org, NamedEntityQuery(kinds=["org"], name_prefix="x"), ["r1"]) == {}      # entity-node constraints are ignored
     assert await w.p.get_named_entity_values_in_records(w.org, None, ["r1"]) == {} and await w.p.get_named_entity_values_in_records(w.org, q, []) == {}
@@ -254,6 +267,17 @@ async def test_a_filter_too_broad_to_list_is_truncated_and_a_narrow_one_within_i
     assert await hits(w, ["Acme"], limit=3, within=["r0", "r1"]) == (["r0", "r1"], False)
     assert await hits(w, ["Acme"], limit=1, within=["r0", "r1"]) == ([], True)                              # within, but more than the cap
     assert await hits(w, ["Beta"], NamedEntityQuery(kinds=["org"]), limit=3) == (["r1"], False)
+    await put(w, *(f"X{i}" for i in range(4)))
+    assert await hits(w, None, NamedEntityQuery(kinds=["org"]), limit=3) == ([], True)                      # more entities of the kind than can be listed
+    await w.p.create_named_entities_if_absent([w.ne(f"P{i}", kind="person") for i in range(5)])
+    await w.mention("r0", "P0")
+    assert await hits(w, None, NamedEntityQuery(kinds=["person"]), limit=3) == ([], True)                  # five nodes of the kind, though one record mentions them
+    assert await hits(w, None, NamedEntityQuery(kinds=["person"]), limit=5) == (["r0"], False)
+    await put(w, "G")
+    for g in ("ghost1", "ghost2", "ghost3"):
+        await w.mention(g, "G")
+    await w.mention("r0", "G")
+    assert await hits(w, ["G"], limit=2) == (["r0"], False)                                                # mentions by records that are gone do not count toward the cap
 
 
 async def test_value_and_entity_constraints_must_both_hold_in_the_record(w: Org, orgs: tuple[Org, Org]) -> None:
@@ -269,6 +293,7 @@ async def test_value_and_entity_constraints_must_both_hold_in_the_record(w: Org,
     assert await hits(w, None, NamedEntityQuery(kinds=["currency", "quantity"])) == (["r1", "r2"], False)
     assert await hits(w, None, NamedEntityQuery(date_start_ms=45 * DAY, date_end_ms=60 * DAY)) == (["r2"], False)
     assert await hits(w, None, NamedEntityQuery(date_start_ms=45 * DAY, date_end_ms=60 * DAY), within=["r1"]) == ([], False)
+    assert (await w.p.get_records_for_named_entities("another-org", None, q)) == {"hits": [], "truncated": False}
 
 
 async def test_a_restricted_answer_is_the_unrestricted_one_cut_to_the_records_given(w: Org, orgs: tuple[Org, Org]) -> None:
@@ -313,6 +338,8 @@ async def test_a_failed_read_raises_and_answers_right_once_the_store_is_back(w: 
     for call in calls():
         with pytest.raises(RuntimeError, match="store down"):
             await call
+    assert (await w.p.find_named_entities(w.org, "org", []), await w.p.get_named_entity_mentions_in_records(w.org, [], ["live"]),
+            await w.p.get_named_entity_mentions_in_records(w.org, ["Acme"], [])) == ([], [], [])        # nothing to look for: the store is not asked
     monkeypatch.setattr(w.p, "_q", real)
     assert await hits(w, ["Acme"], within=["live"]) == (["live"], False) and await hits(w, None, q) == (["live"], False)       # nothing is cached as "none"
     assert len(await w.p.get_named_entities_for_record("live")) == 3 and (await w.p.get_named_entity_date_spans(w.org, ["live"], 0, 5)) == {"live": (True, 1)}
