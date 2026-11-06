@@ -66,13 +66,11 @@ rules:
       field: type
       function: truthy
 
-# These legacy toolset routes forward to connector-service paths that do not exist (or, for
-# /toolsets/configured, to a handler that always raises), so they have no success response to
-# document. Each operation's description says so; remove an entry once its route works or is removed.
+# These legacy toolset routes forward to connector-service paths that do not exist, so they have
+# no success response to document. Each operation's description says so; remove an entry once its route works or is removed.
 overrides:
   - files:
       - "backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml#/paths/~1toolsets/post/responses"
-      - "backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml#/paths/~1toolsets~1configured/get/responses"
       - "backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml#/paths/~1toolsets~1%7BtoolsetId%7D~1config/post/responses"
       - "backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml#/paths/~1toolsets~1%7BtoolsetId%7D~1config/put/responses"
       - "backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml#/paths/~1toolsets~1%7BtoolsetId%7D~1config/delete/responses"

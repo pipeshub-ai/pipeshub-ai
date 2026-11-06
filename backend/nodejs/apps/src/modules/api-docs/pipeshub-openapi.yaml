@@ -24682,6 +24682,144 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    MyToolsetsList:
+      description: Toolsets retrieved successfully
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                example: success
+              pagination:
+                type: object
+                properties:
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  total:
+                    type: integer
+                  totalPages:
+                    type: integer
+                  hasNext:
+                    type: boolean
+                  hasPrev:
+                    type: boolean
+              filterCounts:
+                type: object
+                properties:
+                  all:
+                    type: integer
+                  authenticated:
+                    type: integer
+                  notAuthenticated:
+                    type: integer
+              toolsets:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    instanceId:
+                      type: string
+                      description: Empty string for registry-only (synthetic) entries.
+                    instanceName:
+                      type: string
+                    toolsetType:
+                      type: string
+                    authType:
+                      type: string
+                      enum: [OAUTH, API_TOKEN, BASIC_AUTH, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
+                    oauthConfigId:
+                      type: string
+                      nullable: true
+                    displayName:
+                      type: string
+                    description:
+                      type: string
+                    iconPath:
+                      type: string
+                    category:
+                      type: string
+                      description: Toolset category from the backend ToolsetCategory enum.
+                      enum:
+                        - app
+                        - file
+                        - file_storage
+                        - web_search
+                        - search
+                        - research
+                        - utility
+                        - communication
+                        - productivity
+                        - database
+                        - calendar
+                        - project_management
+                        - documentation
+                        - code_execution
+                      example: app
+                    supportedAuthTypes:
+                      type: array
+                      items:
+                        type: string
+                    documentationLinks:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: false
+                        properties:
+                          title:
+                            type: string
+                          url:
+                            type: string
+                          type:
+                            type: string
+                            description: Link category, e.g. setup or pipeshub.
+                    toolCount:
+                      type: integer
+                    tools:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: false
+                        properties:
+                          name:
+                            type: string
+                          fullName:
+                            type: string
+                          description:
+                            type: string
+                    isConfigured:
+                      type: boolean
+                    isAuthenticated:
+                      type: boolean
+                    isFromRegistry:
+                      type: boolean
+                      description: true for registry-only (synthetic) entries.
+                    createdBy:
+                      type: string
+                      description: User ID that created the instance. Absent on registry-only entries.
+                    scope:
+                      type: string
+                      enum: [org, personal]
+                      description: >-
+                        `org` for the organization's instances, `personal` for the caller's own. Absent on
+                        registry-only entries.
+                    createdAtTimestamp:
+                      type: integer
+                      format: int64
+                      description: Epoch millis. Absent on registry-only entries.
+                    updatedAtTimestamp:
+                      type: integer
+                      format: int64
+                      description: Epoch millis. Absent on registry-only entries.
+                    auth:
+                      type: object
+                      nullable: true
+                      description: The credential fields the calling user saved for a non-OAuth instance, returned as stored (an API token is not masked). Null when the user saved none or the instance uses OAuth. Absent on registry-only entries.
+                      additionalProperties: true
 security:
   - bearerAuth: []
   - oauth2: []
@@ -56787,15 +56925,18 @@ paths:
         - Toolset Instances
       summary: List configured toolsets
       description: |-
-        Meant to return the toolsets configured for the authenticated user, in the shape of `GET
-        /toolsets/my-toolsets`. It currently fails for every caller: once the token and scope checks
-        pass, the connector service raises an internal error whatever is configured, and the answer is
-        `500`. Use `GET /toolsets/my-toolsets` instead. The query string is not read.
+        Legacy alias of `GET /toolsets/my-toolsets`: the toolsets configured for the authenticated user,
+        merged with that user's authentication status, in the same response shape. The query string is
+        not forwarded to the connector service, so this always answers the first page with its defaults
+        (at most 20 items, with `pagination` and `filterCounts`); call `GET /toolsets/my-toolsets` to
+        page, search or filter.
       operationId: listConfiguredToolsets
       security:
         - bearerAuth: []
         - oauth2: [toolset:read]
       responses:
+        '200':
+          $ref: '#/components/responses/MyToolsetsList'
         '400':
           $ref: '#/components/responses/XssRejected'
         '401':
@@ -56815,9 +56956,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Every request that passes the token and scope checks (`HTTP_INTERNAL_SERVER_ERROR`, "Something
-            went wrong while PipesHub tried to getting configured toolsets..."), for administrators and
-            members, with or without configured instances.
+            Unexpected error, or an unmapped error forwarded from the connector backend.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -57587,143 +57726,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Toolsets retrieved successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: success
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      total:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filterCounts:
-                    type: object
-                    properties:
-                      all:
-                        type: integer
-                      authenticated:
-                        type: integer
-                      notAuthenticated:
-                        type: integer
-                  toolsets:
-                    type: array
-                    items:
-                      type: object
-                      additionalProperties: false
-                      properties:
-                        instanceId:
-                          type: string
-                          description: Empty string for registry-only (synthetic) entries.
-                        instanceName:
-                          type: string
-                        toolsetType:
-                          type: string
-                        authType:
-                          type: string
-                          enum: [OAUTH, API_TOKEN, BASIC_AUTH, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
-                        oauthConfigId:
-                          type: string
-                          nullable: true
-                        displayName:
-                          type: string
-                        description:
-                          type: string
-                        iconPath:
-                          type: string
-                        category:
-                          type: string
-                          description: Toolset category from the backend ToolsetCategory enum.
-                          enum:
-                            - app
-                            - file
-                            - file_storage
-                            - web_search
-                            - search
-                            - research
-                            - utility
-                            - communication
-                            - productivity
-                            - database
-                            - calendar
-                            - project_management
-                            - documentation
-                            - code_execution
-                          example: app
-                        supportedAuthTypes:
-                          type: array
-                          items:
-                            type: string
-                        documentationLinks:
-                          type: array
-                          items:
-                            type: object
-                            additionalProperties: false
-                            properties:
-                              title:
-                                type: string
-                              url:
-                                type: string
-                              type:
-                                type: string
-                                description: Link category, e.g. setup or pipeshub.
-                        toolCount:
-                          type: integer
-                        tools:
-                          type: array
-                          items:
-                            type: object
-                            additionalProperties: false
-                            properties:
-                              name:
-                                type: string
-                              fullName:
-                                type: string
-                              description:
-                                type: string
-                        isConfigured:
-                          type: boolean
-                        isAuthenticated:
-                          type: boolean
-                        isFromRegistry:
-                          type: boolean
-                          description: true for registry-only (synthetic) entries.
-                        createdBy:
-                          type: string
-                          description: User ID that created the instance. Absent on registry-only entries.
-                        scope:
-                          type: string
-                          enum: [org, personal]
-                          description: >-
-                            `org` for the organization's instances, `personal` for the caller's own. Absent on
-                            registry-only entries.
-                        createdAtTimestamp:
-                          type: integer
-                          format: int64
-                          description: Epoch millis. Absent on registry-only entries.
-                        updatedAtTimestamp:
-                          type: integer
-                          format: int64
-                          description: Epoch millis. Absent on registry-only entries.
-                        auth:
-                          type: object
-                          nullable: true
-                          description: The credential fields the calling user saved for a non-OAuth instance, returned as stored (an API token is not masked). Null when the user saved none or the instance uses OAuth. Absent on registry-only entries.
-                          additionalProperties: true
+          $ref: '#/components/responses/MyToolsetsList'
         '400':
           description: |
             Invalid query parameters (`VALIDATION_ERROR`, with `metadata.errors` naming each one): `page`
