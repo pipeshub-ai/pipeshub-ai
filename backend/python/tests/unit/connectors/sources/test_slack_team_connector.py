@@ -72,6 +72,7 @@ def _make_connector():
     c._slack_executor = None
     c._thread_pool_lease = MagicMock(shutdown_and_drain=AsyncMock())
     c._unreadable_channels = []
+    c._archived_channel_ids = set()
     c._channel_list_failed = False
     c._resilience_loaded = True
     c._resilience = None
@@ -3572,6 +3573,7 @@ class TestPopulateChannelFilterCache:
         n = {"p": 0}
 
         async def clist(**kwargs):
+            assert "exclude_archived" not in kwargs  # archived channels can be chosen in a filter
             n["p"] += 1
             if n["p"] == 1:
                 return MagicMock(

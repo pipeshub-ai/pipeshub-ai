@@ -34,7 +34,7 @@ It runs in its own image (`backend/db/Dockerfile`, `pipeshubai/pipeshub-migrate`
   `backend/`). Empty here.
 
 ## Graph (`versions/graph/`)
-The `graph` schema (the PostgreSQL graph store, `DATA_STORE=postgres`) is created whole by its baseline revision `graph_0001`: tables, partitions, indexes, row policies and the vetted organisation and connector reads; a change after the baseline is a normal step revision (`graph_0002` adds the index on records by virtual record and content revision).
+The `graph` schema (the PostgreSQL graph store, `DATA_STORE=postgres`) is created whole by its baseline revision `graph_0001`: tables, partitions, indexes, row policies and the vetted organisation and connector reads; a change after the baseline is a normal step revision (`graph_0002` adds the index on records by virtual record and content revision; `graph_0003` adds the vetted reads of the code graph's hot lookups: blocks by record or by connector and name, code files by path).
 
 ## Running
 `PG_MIGRATE_URL=postgresql+psycopg://pipeshub_migrate:...@host:5432/db python -m db.migrate` (from `backend/`).
