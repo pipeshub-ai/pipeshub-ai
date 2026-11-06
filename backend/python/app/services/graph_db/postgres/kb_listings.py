@@ -228,31 +228,17 @@ class KbListingsMixin(PgBase):
                     (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'string' AND NOT $17::boolean THEN x.doc->>$14::text END) COLLATE "C" DESC,
                     (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'number' AND $17::boolean THEN (x.doc->>$14::text)::numeric END) ASC,
                     (CASE WHEN jsonb_typeof(x.doc->$14::text) = 'number' AND NOT $17::boolean THEN (x.doc->>$14::text)::numeric END) DESC, x.id) AS rn FROM kept x)
-                SELECT s.total, p.doc, p.fdoc, p.fid, p.fname, p.rn FROM (SELECT count(*) AS total FROM ranked) s
+                SELECT s.total, s.live_n, s.facets, s.folders, p.doc, p.fdoc, p.fid, p.fname, p.rn FROM
+                  (SELECT (SELECT count(*) FROM ranked) AS total, (SELECT count(*) FROM live) AS live_n,
+                          (SELECT coalesce(jsonb_agg(jsonb_build_object('rt', g.rt, 'o', g.o, 'cn', g.cn, 'st', g.st)), '[]'::jsonb)
+                           FROM (SELECT doc->>'recordType' AS rt, doc->>'origin' AS o, doc->>'connectorName' AS cn, doc->>'indexingStatus' AS st FROM live GROUP BY 1, 2, 3, 4) g) AS facets,
+                          (SELECT coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.doc->'recordName') ORDER BY t.id), '[]'::jsonb) FROM folders t
+                           WHERE coalesce((t.doc->>'isDeleted')::boolean, false) = false) AS folders) s
                   LEFT JOIN LATERAL (SELECT q.doc, q.fid, q.fname, q.rn, (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = $1 AND ff.coll = 'files' AND ff.id = te.to_id
                         WHERE te.org_id = $1 AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = q.id ORDER BY ff.id LIMIT 1) AS fdoc
                      FROM (SELECT * FROM ranked WHERE rn > $15::bigint AND rn <= $15::bigint + $16::bigint) q) p ON true ORDER BY p.rn""",
                                  org, kb_id, FOLDER_MIME_TYPES, _KB, folder_id, org_id, search or None, record_types or None, origins or None, connectors or None,
                                  indexing_status or None, date_from or None, date_to or None, sort_by, max(skip, 0), max(limit, 0), sort_order.upper() == "ASC")
-            filt = await tx.fetchrow("""/* pipeshub:graph.list_kb_records_filters */ WITH kb AS (SELECT k.id FROM graph.nodes k WHERE k.org_id = $1 AND k.coll = 'apps' AND k.id = $2 AND k.doc->>'type' = $4),
-                folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                    JOIN graph.nodes f ON f.org_id = $1 AND f.coll = 'records' AND f.id = b.from_id WHERE f.doc->>'mimeType' = ANY($3::text[])),
-                recs AS (
-                  SELECT r.id, r.doc FROM folders f JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD'
-                      AND e.from_coll = 'records' AND e.from_id = f.id AND e.to_coll = 'records' JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = e.to_id
-                  UNION
-                  SELECT r.id, r.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
-                    JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = b.from_id
-                  WHERE NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
-                                    AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)),
-                live AS (SELECT c.* FROM recs c WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND c.doc->>'orgId' = $5 AND NOT (c.doc->>'mimeType' = ANY($3::text[])))
-                SELECT (SELECT count(*) FROM live) AS n,
-                       (SELECT coalesce(array_agg(DISTINCT doc->>'recordType') FILTER (WHERE doc->>'recordType' IS NOT NULL), '{}') FROM live) AS rtypes,
-                       (SELECT coalesce(array_agg(DISTINCT doc->>'origin') FILTER (WHERE doc->>'origin' IS NOT NULL), '{}') FROM live) AS origins,
-                       (SELECT coalesce(array_agg(DISTINCT doc->>'connectorName') FILTER (WHERE doc->>'connectorName' IS NOT NULL), '{}') FROM live) AS connectors,
-                       (SELECT coalesce(array_agg(DISTINCT doc->>'indexingStatus') FILTER (WHERE doc->>'indexingStatus' IS NOT NULL), '{}') FROM live) AS statuses,
-                       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', f.id, 'name', f.doc->'recordName') ORDER BY f.id), '[]'::jsonb) FROM folders f WHERE coalesce((f.doc->>'isDeleted')::boolean, false) = false) AS folders""",
-                                  org, kb_id, FOLDER_MIME_TYPES, _KB, org_id)
             records = []
             for r in rows:
                 if r["doc"] is None:
@@ -269,7 +255,31 @@ class KbListingsMixin(PgBase):
                                 "permission": {"role": role, "type": "USER"}, "kb_id": kb_id,
                                 "folder": {"id": r["fid"], "name": r["fname"]} if r["fid"] is not None else None})
             # the folders are named only when some record exists (as the other stores' filter query, which unwinds records)
-            return records, rows[0]["total"], {**_filters(filt), "permissions": [role], "folders": _doc_list(filt["folders"]) if filt["n"] else []}
+            if folder_id is None:           # the collection's whole listing: what the page statement already counted is the facet set
+                combos, folders_json, live_n = _doc_list(rows[0]["facets"]), rows[0]["folders"], rows[0]["live_n"]
+            else:                           # one folder's page: the facets still describe the whole collection
+                filt = await tx.fetch("""/* pipeshub:graph.list_kb_records_filters */ WITH kb AS (SELECT k.id FROM graph.nodes k WHERE k.org_id = $1 AND k.coll = 'apps' AND k.id = $2 AND k.doc->>'type' = $4),
+                    folders AS (SELECT f.id, f.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
+                        JOIN graph.nodes f ON f.org_id = $1 AND f.coll = 'records' AND f.id = b.from_id WHERE f.doc->>'mimeType' = ANY($3::text[])),
+                    recs AS (
+                      SELECT r.id, r.doc FROM folders f JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD'
+                          AND e.from_coll = 'records' AND e.from_id = f.id AND e.to_coll = 'records' JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = e.to_id
+                      UNION ALL
+                      SELECT r.id, r.doc FROM kb JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = kb.id
+                        JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.id = b.from_id
+                      WHERE NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
+                                        AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)),
+                    live AS (SELECT c.* FROM recs c WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND c.doc->>'orgId' = $5 AND NOT (c.doc->>'mimeType' = ANY($3::text[])))
+                    SELECT g.rt, g.o, g.cn, g.st, g.n, f.folders
+                    FROM (SELECT doc->>'recordType' AS rt, doc->>'origin' AS o, doc->>'connectorName' AS cn, doc->>'indexingStatus' AS st, count(*) AS n FROM live GROUP BY 1, 2, 3, 4) g,
+                         (SELECT coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.doc->'recordName') ORDER BY t.id), '[]'::jsonb) AS folders FROM folders t
+                          WHERE coalesce((t.doc->>'isDeleted')::boolean, false) = false) f""",
+                                       org, kb_id, FOLDER_MIME_TYPES, _KB, org_id)
+                combos = [{"rt": r["rt"], "o": r["o"], "cn": r["cn"], "st": r["st"]} for r in filt]
+                folders_json, live_n = (filt[0]["folders"] if filt else "[]"), sum(r["n"] for r in filt)
+            facets = {k: sorted({r[c] for r in combos if r[c] is not None}) for k, c in (("recordTypes", "rt"), ("origins", "o"), ("connectors", "cn"), ("indexingStatus", "st"))}
+            # the folders are named only when some record exists (as the other stores' filter query, which unwinds records)
+            return records, rows[0]["total"], {**facets, "permissions": [role], "folders": _doc_list(folders_json) if live_n else []}
         return await self._q(go, transaction)
 
     # ---- the artifact gallery ---------------------------------------------------------------------------------------

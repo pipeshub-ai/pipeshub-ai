@@ -174,6 +174,11 @@ async def test_the_flat_listing_filters_sorts_pages_and_lists_a_record_in_each_o
     assert ids(await w.p.list_kb_records("kb1", "me", w.org, 1, 2, sort_by="createdAtTimestamp", sort_order="asc")) == ["in-top", "in-top"]
     assert (await w.p.list_kb_records("kb1", "me", w.org, 1, 2))[1] == 5                               # the total ignores the page
     assert ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="top", sort_by="createdAtTimestamp", sort_order="asc")) == ["in-top"]   # a folder: its children only
+    whole = (await w.p.list_kb_records("kb1", "me", w.org, 0, 10))[2]
+    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="top"))[2] == whole           # a folder's page offers the facets of the whole collection
+    assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, search="ALPHA", record_types=["MAIL"]))[2] == whole    # and a filter does not narrow them
+    assert whole["recordTypes"] == ["FILE", "MAIL"] and whole["origins"] == ["CONNECTOR", "UPLOAD"] and whole["connectors"] == ["GMAIL"] and whole["indexingStatus"] == ["COMPLETED"]
+    assert [f["id"] for f in whole["folders"]] == ["sub", "top", "zeta"]
     assert (await w.p.list_kb_records("kb1", "me", w.org, 0, 10, folder_id="nope"))[1] == 0
     assert ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, search="ALPHA")) == ["r2"]
     assert ids(await w.p.list_kb_records("kb1", "me", w.org, 0, 10, search="x-r1")) == ["r1"]
