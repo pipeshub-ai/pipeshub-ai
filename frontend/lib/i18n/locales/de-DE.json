@@ -1490,7 +1490,31 @@
       "webSearch": "Websuche",
       "internalAndWebSearch": "Interne + Websuche"
     },
-    "searchDegraded": "Die Ergebnisse sind möglicherweise unvollständig."
+    "searchDegraded": "Die Ergebnisse sind möglicherweise unvollständig.",
+    "compare": {
+      "toggle": "Modelle vergleichen",
+      "pickTwo": "Wählen Sie {{max}} Modelle zum Vergleichen.",
+      "pickedHint": "Jede Frage wird von beiden Modellen nebeneinander beantwortet.",
+      "costNote": "Jede Frage läuft auf beiden Modellen und verbraucht daher etwa doppelt so viel. Im Agent-Modus können beide Werkzeuge nutzen; Aktionen, die eine Freigabe brauchen, werden in jeder Spalte separat abgefragt.",
+      "pillLabel": "Vergleich {{picked}}/{{max}}",
+      "stop": "Stopp",
+      "retry": "Erneut versuchen",
+      "failed": "Dieses Modell konnte nicht antworten. Versuchen Sie es erneut.",
+      "useAnswer": "Diese Antwort verwenden",
+      "useAnswerLabel": "Antwort von {{model}} verwenden",
+      "columnLabel": "Antwort von {{model}}",
+      "chooseConflict": "Diese Antwort kann noch nicht übernommen werden. Warten Sie, bis sie fertig ist, und versuchen Sie es erneut.",
+      "chooseFailed": "Diese Antwort konnte nicht übernommen werden. Versuchen Sie es erneut.",
+      "primaryFallback": "Modell",
+      "starting": "Startet...",
+      "status": {
+        "starting": "Startet",
+        "waiting": "Wartet",
+        "streaming": "Antwortet",
+        "done": "Fertig",
+        "error": "Fehlgeschlagen"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",

@@ -3,20 +3,27 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.arangodb import CollectionNames, Connectors, RecordTypes
 from app.config.constants.neo4j import parse_node_id
 from app.core.org_context import current_org_id
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.models.entities import AppUserGroup, User
+from app.models.entities import AppUserGroup, User, substitute_user_email
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES
+from app.models.source_dates import DATED_ONLY_TIME_RANGE_KEY, upload_times_undated
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.team_grant_role import (
     TEAM_GRANT_ROLE_CAP,
     TEAM_GRANT_ROLES,
 )
-from app.services.graph_db.interface.graph_db_provider import _distinct_connector_types
+from app.services.graph_db.interface.graph_db_provider import (
+    STRICT_SCOPE_FILTER_KEY,
+    _distinct_connector_types,
+    requested_scope_ids,
+)
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.identity import _soft
+from app.services.graph_db.taxonomy import own_record_labels
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -27,6 +34,26 @@ _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connec
 
 _ROLE_RANK = {"OWNER": 4, "WRITER": 3, "READER": 2}
 _AGENT_CAN = {"can_edit": ("OWNER", "WRITER", "ORGANIZER"), "can_delete": ("OWNER",), "can_share": ("OWNER", "ORGANIZER")}
+_KB_TYPE = Connectors.KNOWLEDGE_BASE.value
+_CTX_RANK = {"OWNER": 6, "ADMIN": 5, "EDITOR": 4, "WRITER": 3, "READER": 1}
+_DETAIL_RANK = {"OWNER": 3, "WRITER": 2, "READER": 1}      # the roles a record's access details name
+_CTX_UP = ("OWNER", "ADMIN", "EDITOR", "WRITER")
+_CHECK_CHUNK = 2000     # candidate records handed to the access check at once
+# the metadata filters of a search: key, the edge from the record, the collection of the item, the field its name is in
+_META_FILTERS = (("departments", "belongsToDepartment", "departments", "departmentName"), ("categories", "belongsToCategory", "categories", "name"),
+                 ("subcategories1", "belongsToCategory", "subcategories1", "name"), ("subcategories2", "belongsToCategory", "subcategories2", "name"),
+                 ("subcategories3", "belongsToCategory", "subcategories3", "name"), ("languages", "belongsToLanguage", "languages", "name"),
+                 ("topics", "belongsToTopic", "topics", "name"))
+
+
+def _ctx_perms(role: str, *, admin: bool | None = None) -> dict[str, Any]:
+    """What a role may do inside a folder, collection or connector; at the root (``admin`` given) only an administrator may."""
+    up = admin if admin is not None else role in _CTX_UP
+    return {"role": role, "canUpload": up, "canCreateFolders": up, "canEdit": up,
+            "canDelete": admin if admin is not None else role in ("OWNER", "ADMIN", "WRITER"),
+            "canManagePermissions": admin if admin is not None else role in ("OWNER", "ADMIN")}
+
+
 _INHERIT_HOPS = 8     # the longest INHERIT_PERMISSIONS chain the walk to a node's grantees follows, as on the other stores
 
 
@@ -306,3 +333,293 @@ class PermissionsMixin(PgBase):
         except Exception as e:
             self.logger.error("get_knowledge_hub_node_access failed: %s", e)
             return None
+
+    # ---- the context role, the record access details, and the accessible search scope ----------------------------
+    async def _role_on(self, tx: Tx, org: str, user_key: str, coll: str, node_id: str, ranks: dict[str, int] = _CTX_RANK) -> tuple[str, str] | None:
+        """The highest role the user holds on a record or record group: their own grant, a group's, a role's, a team's (never above WRITER) or the
+        organization's, on the node or on what it inherits from (20 hops) or the collection it belongs to; a source account the user authenticated
+        as counts inside that connector. ``(role, source)``, a retired role read as READER; None when no grant gives one."""
+        rows = await tx.fetch("""/* pipeshub:graph.node_roles */ WITH RECURSIVE anc(coll, id, depth) AS (
+              SELECT n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3
+              UNION
+              SELECT i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
+                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20),
+            targets AS (
+              SELECT coll, id, depth FROM anc WHERE depth = 0 OR coll IN ('recordGroups', 'apps')
+              UNION SELECT b.to_coll, b.to_id, 0 FROM graph.edges b JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = 'KB'
+                WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3),
+            principals AS (
+              SELECT u.id FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $4
+              UNION SELECT l.to_id FROM graph.edges l JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'users' AND s.id = l.to_id
+                WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $4 AND l.to_coll = 'users'
+                  AND l.doc->>'connectorId' = (SELECT x.doc->>'connectorId' FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = $2 AND x.id = $3))
+            SELECT 'direct' AS kind, t.coll AS tcoll, t.id AS tid, p.doc->>'role' AS role, NULL::text AS member_role, k.doc->>'type' AS app_type
+              FROM targets t JOIN principals pr ON true
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = pr.id AND p.to_coll = t.coll AND p.to_id = t.id
+                AND p.doc->>'type' = 'USER' AND coalesce(p.doc->>'role', '') <> ''
+              LEFT JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = t.id AND t.coll = 'apps'
+            UNION ALL
+            SELECT 'group', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll IN ('groups', 'roles') AND p.to_coll = t.coll AND p.to_id = t.id AND coalesce(p.doc->>'role', '') <> ''
+              JOIN graph.nodes g ON g.org_id = $1 AND g.coll = p.from_coll AND g.id = p.from_id
+              WHERE EXISTS (SELECT 1 FROM principals pr JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = pr.id
+                AND m.to_coll = p.from_coll AND m.to_id = p.from_id AND m.doc->>'type' = 'USER')
+            UNION ALL
+            SELECT 'team', t.coll, t.id, p.doc->>'role', m.doc->>'role', NULL FROM targets t
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'teams' AND p.to_coll = t.coll AND p.to_id = t.id AND p.doc->>'type' = 'TEAM'
+              JOIN graph.nodes g ON g.org_id = $1 AND g.coll = 'teams' AND g.id = p.from_id
+              JOIN principals pr ON true
+              JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = pr.id AND m.to_coll = 'teams' AND m.to_id = p.from_id
+                AND m.doc->>'type' = 'USER'
+            UNION ALL
+            SELECT 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON true
+              JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
+              JOIN graph.nodes o ON o.org_id = $1 AND o.coll = 'organizations' AND o.id = b.to_id
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = o.id AND p.to_coll = t.coll AND p.to_id = t.id
+                AND p.doc->>'type' = 'ORG' AND coalesce(p.doc->>'role', '') <> ''""", org, coll, node_id, user_key)
+        best: tuple[str, str] | None = None
+        for r in rows:
+            role = r["role"]
+            if r["kind"] == "team":
+                role = r["role"] if r["role"] else r["member_role"]
+                role = TEAM_GRANT_ROLE_CAP if role == "OWNER" else role
+            if role in RETIRED_ROLES:
+                role = "READER"
+            if r["kind"] == "direct" and r["app_type"] == _KB_TYPE and role not in TEAM_GRANT_ROLES:
+                continue      # a direct grant on a collection counts only with a collection role
+            if r["kind"] == "team" and role not in TEAM_GRANT_ROLES:
+                continue
+            if role not in ranks:
+                continue
+            source = ("KNOWLEDGE_BASE" if r["app_type"] == _KB_TYPE else "DIRECT") if r["kind"] == "direct" else {
+                "group": "GROUP", "team": "KNOWLEDGE_BASE_TEAM" if r["tcoll"] == "apps" else "GROUP", "org": "ORGANIZATION"}[r["kind"]]
+            if r["kind"] == "direct" and not (r["tcoll"] == "apps" or (r["tcoll"], r["tid"]) == (coll, node_id)):
+                source = "DIRECT_USER_RECORD_GROUP"
+            if best is None or ranks[role] > ranks[best[0]]:
+                best = (role, source)
+        return best
+
+    async def _app_role(self, tx: Tx, org: str, user_key: str, app_id: str) -> str | None:
+        """The user's role on an app (a connector or a collection); None when nothing relates them."""
+        user = await tx.fetchrow("/* pipeshub:graph.ctx_user */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = $2", org, user_key)
+        app = await tx.fetchrow("/* pipeshub:graph.ctx_app */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2", org, app_id)
+        if not user or not app:
+            return None
+        u, a = _doc(user["doc"]), _doc(app["doc"])
+        rows = await tx.fetch("""/* pipeshub:graph.ctx_app_edges */ SELECT 'own' AS kind, NULL::text AS role, NULL::text AS member_role FROM graph.edges e
+              WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'apps' AND e.to_id = $3
+            UNION ALL SELECT 'own', NULL, NULL FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2
+              AND e.to_coll = 'users' AND e.doc->>'connectorId' = $3
+            UNION ALL SELECT 'team_rel', NULL, NULL FROM graph.edges m JOIN graph.nodes t ON t.org_id = m.org_id AND t.coll = 'teams' AND t.id = m.to_id
+              JOIN graph.edges e ON e.org_id = m.org_id AND e.coll = 'userAppRelation' AND e.from_coll = 'teams' AND e.from_id = t.id AND e.to_coll = 'apps' AND e.to_id = $3
+              WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = $2 AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER'
+            UNION ALL SELECT 'direct', p.doc->>'role', NULL FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = $2
+              AND p.to_coll = 'apps' AND p.to_id = $3 AND p.doc->>'type' = 'USER'
+            UNION ALL SELECT 'team_grant', g.doc->>'role', m.doc->>'role' FROM graph.edges m JOIN graph.nodes t ON t.org_id = m.org_id AND t.coll = 'teams' AND t.id = m.to_id
+              JOIN graph.edges g ON g.org_id = m.org_id AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = t.id AND g.to_coll = 'apps' AND g.to_id = $3
+                AND g.doc->>'type' = 'TEAM'
+              WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = $2 AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER'""",
+                              org, user_key, app_id)
+        kinds = {r["kind"] for r in rows}
+        direct = [r["role"] for r in rows if r["kind"] == "direct"]
+        team_roles = set()
+        for r in rows:
+            if r["kind"] == "team_grant":
+                base = r["role"] if r["role"] else r["member_role"]
+                team_roles.add(TEAM_GRANT_ROLE_CAP if base == "OWNER" else "READER" if base in RETIRED_ROLES else base if base in TEAM_GRANT_ROLES else None)
+        team_role = "WRITER" if "WRITER" in team_roles else "READER" if "READER" in team_roles else None      # a team never gives OWNER
+        raw = direct[0] if direct else None
+        direct_role = ("READER" if raw in RETIRED_ROLES else raw if (a.get("type") != _KB_TYPE or raw in TEAM_GRANT_ROLES) else None) if direct else None
+        own, team_rel = "own" in kinds, "team_rel" in kinds
+        if not own and not team_rel and direct_role is None and (not direct or a.get("type") == _KB_TYPE) and team_role is None:
+            return None
+        if direct_role is not None and team_role is not None and _CTX_RANK.get(team_role, 0) > _CTX_RANK.get(direct_role, 0):
+            return team_role
+        if direct_role is not None:
+            return direct_role
+        if team_role is not None:
+            return team_role
+        admin = u.get("role") == "ADMIN" or u.get("orgRole") == "ADMIN"
+        if not own and team_rel:
+            return "EDITOR" if admin else "READER"
+        if admin:
+            return "EDITOR" if (a.get("scope") or "personal") == "team" else "OWNER"
+        return "OWNER" if a.get("createdBy") in (u.get("id"), u.get("userId")) and a.get("createdBy") else "READER"
+
+    async def get_knowledge_hub_context_permissions(self, user_key: str, org_id: str, parent_id: str | None, transaction: str | None = None,
+                                                    parent_type: str | None = None) -> dict[str, Any]:
+        """What the user may do inside a folder, collection or connector, from their role on it. At the root only an administrator may do anything.
+        Anything that cannot be read answers the lowest role with no abilities, never more."""
+        org = current_org_id()
+        graph_type = None
+        if parent_id:
+            graph_type = ("record" if parent_type in ("folder", "record") else parent_type) if parent_type else None
+            if graph_type not in ("record", "recordGroup", "app"):
+                raise ValueError(f"Invalid or unsupported parent_type: {parent_type}")
+        try:
+            if org_id != org:
+                return _ctx_perms("READER")
+
+            if parent_id and parent_id not in (await self.check_access(user_key, org_id, node_ids=[parent_id], transaction=transaction)).node_ids:
+                return _ctx_perms("READER")    # no abilities on a node the access check refuses (lost connector gate, deleted target), whatever grant remains
+
+            async def go(tx: Tx) -> dict[str, Any]:
+                if not parent_id:
+                    row = await tx.fetchrow("/* pipeshub:graph.ctx_root_user */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = $2", org, user_key)
+                    if not row:
+                        return _ctx_perms("READER")
+                    d = _doc(row["doc"])
+                    admin = d.get("role") == "ADMIN" or d.get("orgRole") == "ADMIN"
+                    return _ctx_perms("ADMIN" if admin else "MEMBER", admin=admin)
+                coll = {"record": "records", "recordGroup": "recordGroups", "app": "apps"}[graph_type]
+                if graph_type == "app":
+                    return _ctx_perms(await self._app_role(tx, org, user_key, parent_id) or "READER")
+                got = await self._role_on(tx, org, user_key, coll, parent_id)
+                return _ctx_perms(got[0] if got else "READER")
+            return await self._q(go, transaction)
+        except Exception as e:
+            self.logger.error("Get knowledge hub context permissions failed: %s", e)
+            return _ctx_perms("READER")
+
+    async def check_record_access_with_details(self, user_id: str, org_id: str, record_id: str, transaction: str | None = None) -> dict | None:
+        """The record with how the user reaches it, or None. The batch access check decides whether they may; a placeholder is refused like a record they
+        cannot read. A failed read raises, never an answer of None."""
+        if org_id != current_org_id():
+            return None
+        user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+        user_key = (user or {}).get("id") or (user or {}).get("_key")
+        if not user_key:
+            return None
+        record = await self.get_document(record_id, "records", transaction, raise_on_error=True)
+        if not record:
+            return None
+        checked = await self.check_access(user_key, org_id, node_ids=[record_id], transaction=transaction)
+        if record_id not in checked.node_ids or record_id in checked.placeholder_ids:
+            return None
+        org = current_org_id()
+        type_coll = {RecordTypes.FILE.value: CollectionNames.FILES.value, RecordTypes.MAIL.value: CollectionNames.MAILS.value, RecordTypes.TICKET.value: CollectionNames.TICKETS.value}.get(record.get("recordType"))
+
+        async def go(tx: Tx) -> tuple:
+            best = await self._role_on(tx, org, user_key, "records", record_id, _DETAIL_RANK)
+            meta = await tx.fetch("""/* pipeshub:graph.record_labels */ SELECT e.coll AS ecoll, m.coll AS mcoll, m.id AS mid, m.doc AS mdoc, e.doc AS edoc FROM graph.edges e
+                JOIN graph.nodes m ON m.org_id = e.org_id AND m.coll = e.to_coll AND m.id = e.to_id
+                WHERE e.org_id = $1 AND e.from_coll = 'records' AND e.from_id = $2 AND e.coll IN ('belongsToDepartment', 'belongsToCategory', 'belongsToTopic', 'belongsToLanguage')
+                  AND m.coll IN ('departments', 'categories', 'subcategories1', 'subcategories2', 'subcategories3', 'topics', 'languages')""", org, record_id)
+            return best, meta
+        best, meta = await self._q(go, transaction)
+        extra = await self.get_document(record_id, type_coll, transaction) if type_coll else None
+        email, connector_name = (user or {}).get("email"), record.get("connectorName")
+        if extra and extra.get("webUrl"):
+            extra["webUrl"] = substitute_user_email(extra["webUrl"], email, connector_name)
+        labels: dict[str, list] = {k: [] for k in ("departments", "categories", "subcategories1", "subcategories2", "subcategories3", "topics", "languages")}
+        for m in meta:
+            d, ed = _doc(m["mdoc"]), _doc(m["edoc"])
+            item = {"id": m["mid"], "name": d.get("departmentName") if m["mcoll"] == "departments" else d.get("name")}
+            if m["mcoll"] != "departments":
+                item |= {"extractedName": ed.get("extractedName"), "extractedNames": ed.get("extractedNames"), "canonical": d.get("normalizedName") is not None,
+                         "migrated": ed.get("migratedFrom") is not None}
+            labels[m["mcoll"]].append(item)
+        kb_info = None
+        app = await self.get_document(record.get("connectorId"), "apps", transaction) if record.get("connectorId") and connector_name == Connectors.KNOWLEDGE_BASE.value else None
+        if app and app.get("type") == _KB_TYPE and await self.get_user_kb_permission(app["id"], user_key, transaction=transaction):
+            kb_info = {"id": app["id"], "name": app.get("name"), "orgId": org}
+        role, source = best if best else ("READER", "CONNECTOR")      # a connector item carries no role; what the check admitted is read access
+        record_out = {**record, "id": record["id"]}
+        record_out.pop("_key", None)
+        if record_out.get("webUrl"):
+            record_out["webUrl"] = substitute_user_email(record_out["webUrl"], email, connector_name)
+        rt = record.get("recordType")
+        return {"record": {**record_out, "fileRecord": extra if rt == RecordTypes.FILE.value else None, "mailRecord": extra if rt == RecordTypes.MAIL.value else None,
+                           "ticketRecord": extra if rt == RecordTypes.TICKET.value else None},
+                "knowledgeBase": kb_info, "folder": None, "metadata": own_record_labels(labels),
+                "permissions": [{"id": record["id"], "name": record.get("recordName"), "type": rt, "relationship": role, "accessType": source}]}
+
+    async def get_accessible_virtual_record_ids(self, user_id: str, org_id: str, filters: dict[str, list[str]] | None = None, time_range: dict[str, int] | None = None, *,
+                                                raise_on_error: bool = False, exclude_app_ids: frozenset[str] = frozenset()) -> dict[str, str]:
+        """``{virtualRecordId: recordId}`` of the indexed, live records the user may open, inside the apps they pass the gate for (or the ones the filters
+        name), narrowed by the metadata filters and the source time range. The batch access check decides each record, so this agrees with it.
+        The candidates are what the user can reach: every record of a collection or an app-level connector (the user may open them all), and for a
+        record-level connector what a walk down from the app, from the records and groups granted to the user and from the groups that declare a scope
+        reaches (``access.reachable_records``). Records the user cannot reach are never read. The grants are read once."""
+        try:
+            org = current_org_id()
+            if org_id != org:
+                return {}
+            user = await self.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
+            user_key = (user or {}).get("id") or (user or {}).get("_key")
+            if not user_key:
+                return {}
+            filters = filters or {}
+            scope = requested_scope_ids(filters)
+            if filters.get(STRICT_SCOPE_FILTER_KEY) and scope is None:
+                return {}
+            meta = [(edge, coll, field, filters[k]) for k, edge, coll, field in _META_FILTERS if filters.get(k)]
+            access = await self.get_knowledge_hub_access_v3(user_key, org_id)
+            gated = [a for a in access["gated_app_ids"] if a not in exclude_app_ids]
+            docs = {r["id"]: _doc(r["doc"]) for r in await self._q(lambda tx: tx.fetch(
+                "/* pipeshub:graph.accessible_apps */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])", org, gated), None)}
+            chosen = {i: d for i, d in docs.items() if (i in scope if scope is not None else d.get("type") != _KB_TYPE or not d.get("isHidden"))}
+            kbs = [i for i, d in chosen.items() if d.get("type") == _KB_TYPE]
+            wide = [i for i, d in chosen.items() if d.get("type") != _KB_TYPE and d.get("permissionModel") == "APP_LEVEL"]
+            level = {i: d for i, d in chosen.items() if i not in kbs and i not in wide}
+            if not chosen:
+                return {}
+            tr = time_range or {}
+            dated_only = bool(tr.get(DATED_ONLY_TIME_RANGE_KEY)) and upload_times_undated()
+            undated = upload_times_undated() and not dated_only
+            bounds = [tr.get(k) for k in ("source_created_after_ms", "source_created_before_ms", "source_updated_after_ms", "source_updated_before_ms")]
+
+            scope = (_j([{"edge": e, "coll": c, "field": f, "vals": v} for e, c, f, v in meta]), *bounds, undated, dated_only)
+
+            async def candidates(tx: Tx) -> list[Any]:
+                """The scope filters are applied where the records are read: every record of a collection or app-level connector in one statement, and the
+                records the walk reached, by key, in another."""
+                rows = list(await tx.fetch("""/* pipeshub:graph.accessible_candidates_app_wide */ SELECT r.id, r.doc->>'virtualRecordId' AS vrid FROM graph.nodes r
+                    WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'orgId' = $1 AND r.doc->>'virtualRecordId' IS NOT NULL
+                      AND ((r.doc->>'connectorId' = ANY($2::text[])) OR (r.doc->>'connectorId' = ANY($3::text[]) AND r.doc->>'origin' = 'UPLOAD'))
+                      AND (r.doc->>'indexingStatus' = 'COMPLETED' OR r.doc->>'hasIndexedCopy' = 'true') AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
+                      AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset($4::jsonb) f(edge text, coll text, field text, vals jsonb) WHERE NOT EXISTS (
+                          SELECT 1 FROM graph.edges e JOIN graph.nodes m ON m.org_id = e.org_id AND m.coll = f.coll AND m.id = e.to_id
+                          WHERE e.org_id = $1 AND e.coll = f.edge AND e.from_coll = 'records' AND e.from_id = r.id AND m.doc->f.field IN (SELECT jsonb_array_elements(f.vals))))
+                      AND ($5::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceCreatedAtTimestamp') = 'number' THEN (r.doc->>'sourceCreatedAtTimestamp')::numeric END) >= $5)
+                      AND ($6::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceCreatedAtTimestamp') = 'number' THEN (r.doc->>'sourceCreatedAtTimestamp')::numeric END) <= $6
+                           OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
+                      AND ($7::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceLastModifiedTimestamp') = 'number' THEN (r.doc->>'sourceLastModifiedTimestamp')::numeric END) >= $7)
+                      AND ($8::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceLastModifiedTimestamp') = 'number' THEN (r.doc->>'sourceLastModifiedTimestamp')::numeric END) <= $8
+                           OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
+                      AND (NOT $10 OR coalesce(r.doc->>'sourceTimestampOrigin', '') <> 'upload')
+                    ORDER BY r.id""", org, wide, kbs, *scope)) if wide or kbs else []
+                have = {r["id"] for r in rows}
+                walked = [i for i in sorted(await access_sql.reachable_records(tx, org, access, sorted(level))) if i not in have] if level else []
+                for i in range(0, len(walked), _CHECK_CHUNK * 5):
+                    rows += await tx.fetch("""/* pipeshub:graph.accessible_candidates */ SELECT r.id, r.doc->>'virtualRecordId' AS vrid FROM graph.nodes r
+                    WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = ANY($2::text[]) AND r.doc->>'orgId' = $1 AND r.doc->>'virtualRecordId' IS NOT NULL
+                      AND r.doc->>'connectorId' = ANY($3::text[])
+                      AND (r.doc->>'indexingStatus' = 'COMPLETED' OR r.doc->>'hasIndexedCopy' = 'true') AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
+                      AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset($4::jsonb) f(edge text, coll text, field text, vals jsonb) WHERE NOT EXISTS (
+                          SELECT 1 FROM graph.edges e JOIN graph.nodes m ON m.org_id = e.org_id AND m.coll = f.coll AND m.id = e.to_id
+                          WHERE e.org_id = $1 AND e.coll = f.edge AND e.from_coll = 'records' AND e.from_id = r.id AND m.doc->f.field IN (SELECT jsonb_array_elements(f.vals))))
+                      AND ($5::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceCreatedAtTimestamp') = 'number' THEN (r.doc->>'sourceCreatedAtTimestamp')::numeric END) >= $5)
+                      AND ($6::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceCreatedAtTimestamp') = 'number' THEN (r.doc->>'sourceCreatedAtTimestamp')::numeric END) <= $6
+                           OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
+                      AND ($7::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceLastModifiedTimestamp') = 'number' THEN (r.doc->>'sourceLastModifiedTimestamp')::numeric END) >= $7)
+                      AND ($8::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceLastModifiedTimestamp') = 'number' THEN (r.doc->>'sourceLastModifiedTimestamp')::numeric END) <= $8
+                           OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
+                      AND (NOT $10 OR coalesce(r.doc->>'sourceTimestampOrigin', '') <> 'upload')
+                    ORDER BY r.id""", org, walked[i:i + _CHECK_CHUNK * 5], sorted(level), *scope)
+                return sorted(rows, key=lambda r: r["id"])
+            kept = await self._q(candidates, None)
+            out: dict[str, str] = {}
+            for i in range(0, len(kept), _CHECK_CHUNK):
+                chunk = kept[i:i + _CHECK_CHUNK]
+                rows = await self._kh_v3_accessible_rows(user_key, org_id, [c["id"] for c in chunk], [], access=access, transaction=None)
+                ok = {r["id"] for r in rows if not r.get("isInternal") and not r.get("isPlaceholder")}
+                for c in chunk:
+                    if c["id"] in ok:
+                        out.setdefault(c["vrid"], c["id"])
+            return out
+        except Exception as e:
+            self.logger.error("Get accessible virtual record IDs failed: %s", e)
+            if raise_on_error:
+                raise
+            return {}
