@@ -37,7 +37,7 @@ if [ "$1" = postgres ]; then
   done
   # Create what is missing of the roles on every start, once the server answers on TCP (the initialisation server listens on the
   # socket only), so a volume that was left half-set-up repairs itself and PgBouncer's verifier file is rewritten. A failure is
-  # logged and leaves the server and PgBouncer unhealthy (no verifier file).
+  # logged and retried, and until it succeeds the server and PgBouncer stay unhealthy (no verifier file).
   roles="${PG_ROLES_SCRIPT:-/usr/local/bin/pg-roles.sh}"
   # The verifier file is the sign that role setup succeeded (the healthchecks of the server and the pooler require it): a file left by
   # an earlier start must not vouch for this one.
@@ -45,9 +45,17 @@ if [ "$1" = postgres ]; then
   rm -f "$auth_dir/userlist.txt" "$auth_dir/userlist.txt.new" 2>/dev/null || true
   if [ -x "$roles" ]; then
     (
-      for _ in $(seq 1 300); do pg_isready -q -h 127.0.0.1 -U postgres && break; sleep 1; done
-      # Already the postgres user when the container runs non-root (the Helm chart does); gosu needs root.
-      if [ "$(id -u)" = 0 ]; then gosu postgres "$roles"; else "$roles"; fi || echo "pg-entrypoint: role setup failed; see the lines above" >&2
+      # No cap on the wait: a slow crash recovery or a large volume can take longer than any fixed limit (the container's own
+      # healthcheck and start_period decide when that is too long).
+      until pg_isready -q -h 127.0.0.1 -U postgres; do sleep 1; done
+      # Retried with a pause, so the container recovers by itself once the cause clears; a permanent failure (a bad password) keeps
+      # logging and leaves the server and pooler unhealthy (no verifier file).
+      while :; do
+        # Already the postgres user when the container runs non-root (the Helm chart does); gosu needs root.
+        if [ "$(id -u)" = 0 ]; then gosu postgres "$roles"; else "$roles"; fi && break
+        echo "pg-entrypoint: role setup failed; see the lines above. Retrying in ${PG_ROLES_RETRY_SECS:-10}s" >&2
+        sleep "${PG_ROLES_RETRY_SECS:-10}"
+      done
     ) &
   fi
   # pg_textsearch must be preloaded. shared_buffers is ~25% of PG_MEMORY_LIMIT (set in .env).

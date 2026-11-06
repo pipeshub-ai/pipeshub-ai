@@ -704,7 +704,13 @@ if $FLAG_UNINSTALL; then
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
   # `down -v` with the postgres profile would delete the database with everything else: keep it unless asked.
   _keep_pg=false
-  if ! $FLAG_DELETE_POSTGRES && [[ -n "$(docker volume ls -q --filter "name=^${PROJECT_NAME}_postgres_data$" 2>/dev/null)" ]]; then
+  _pg_vol=""
+  if ! $FLAG_DELETE_POSTGRES; then
+    # A failed lookup must not read as "no PostgreSQL volume": down -v would then delete it.
+    _pg_vol="$(docker volume ls -q --filter "name=^${PROJECT_NAME}_postgres_data$" 2>&1)" \
+      || { error "Could not list Docker volumes (${_pg_vol}). Nothing was changed."; exit 1; }
+  fi
+  if [[ -n "$_pg_vol" ]]; then
     if $FLAG_YES; then
       _keep_pg=true
       info "Keeping the PostgreSQL data volume; pass --delete-postgres to remove it too."

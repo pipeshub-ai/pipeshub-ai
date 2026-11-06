@@ -584,6 +584,14 @@ STUB
   run_uninstall "y\n" --delete-postgres
   check "--delete-postgres skips the PostgreSQL question" "$([[ "$(cat "$work/out.txt")" != *"Also delete the PostgreSQL"* ]] && echo no-prompt)" "no-prompt"
   check "--delete-postgres deletes it without being asked" "$(cat "$work/docker.log")" "down -v --remove-orphans"
+  # a failed volume lookup is not "no PostgreSQL volume": the uninstall stops with nothing changed, it never runs down -v
+  sed -i 's|^  "volume ls") |  "volume ls") [ -n "${LS_FAIL:-}" ] \&\& { echo "Cannot connect to the Docker daemon" >\&2; exit 1; }; |' "$work/bin/docker"
+  : >"$work/docker.log"
+  (cd "$work" && PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" LS_FAIL=1 bash ./install.sh --uninstall --yes >"$work/out.txt" 2>&1); code=$?
+  log="$(cat "$work/docker.log")"
+  check "a failed volume lookup aborts the uninstall" "$([[ $code -ne 0 ]] && echo aborted)" "aborted"
+  check "and says nothing was changed" "$(cat "$work/out.txt")" "Nothing was changed"
+  check "and never runs down or removes a volume" "$([[ "$log" != *" down "* && "$log" != *"volume rm"* ]] && echo untouched)" "untouched"
 )
 
 echo "== In-tree installer: image refresh policy (real function + guards) =="
