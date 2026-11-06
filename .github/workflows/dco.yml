@@ -1,0 +1,82 @@
+name: dco
+
+# Developer Certificate of Origin (https://developercertificate.org): every commit in a
+# PR needs a "Signed-off-by: Name <email>" trailer matching its author email.
+# Add it with `git commit -s`; fix a branch with `git rebase --signoff origin/main`.
+
+# pull_request_target runs this file as it is on the base branch, so a pull request
+# cannot edit its own check. Nothing of the pull request is fetched or checked out:
+# its commits are listed through the API, and only their metadata is read.
+# scripts/ee/test_dco_workflow.py runs this step against local fixtures.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  signoff:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Signed-off-by on every commit
+        shell: bash
+        env:
+          NUMBER: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM: https://github.com/pipeshub-ai/pipeshub-ai.git
+        run: |
+          set -euo pipefail
+          pr=$(gh api "repos/$REPO/pulls/$NUMBER")
+          head_sha=$(jq -r .head.sha <<<"$pr")
+          opener=$(jq -r .user.login <<<"$pr")
+          opener_type=$(jq -r .user.type <<<"$pr")
+
+          # Commits already on pipeshub-ai main were checked there (or predate this check).
+          # Its commits alone are fetched, without trees or files.
+          git init -q dco
+          git -C dco fetch -q --no-tags --filter=tree:0 "$UPSTREAM" +refs/heads/main:refs/upstream/main
+          git -C dco rev-list refs/upstream/main > upstream-commits
+
+          # The PR's commits, as `git rev-list "$head_sha" --not "$BASE"` lists them.
+          gh api --paginate "repos/$REPO/compare/$BASE...$head_sha?per_page=100" --jq '.commits[] | @json' > pr-commits
+          total=$(gh api "repos/$REPO/compare/$BASE...$head_sha?per_page=1" --jq .total_commits)
+          if [ "$(wc -l < pr-commits)" -ne "$total" ]; then
+            echo "::error::GitHub listed $(wc -l < pr-commits) of this PR's $total commits; run the check again."
+            exit 1
+          fi
+
+          # The message goes into a commit object of its own, so git reads its trailers
+          # exactly as `git log` reads the real commit's.
+          empty_tree=$(git -C dco hash-object -t tree -w /dev/null)
+          missing=0
+          while IFS= read -r commit; do
+            sha=$(jq -r .sha <<<"$commit")
+            if [ "$(jq '.parents | length' <<<"$commit")" -gt 1 ] || grep -qxF -- "$sha" upstream-commits; then
+              continue
+            fi
+            email=$(jq -r .commit.author.email <<<"$commit")
+            message=$(jq -r .commit.message <<<"$commit")
+            copy=$(printf 'tree %s\nauthor dco <dco> 0 +0000\ncommitter dco <dco> 0 +0000\n\n%s\n' "$empty_tree" "$message" \
+              | git -C dco hash-object -t commit -w --stdin)
+            signers=$(git -C dco log -1 --format='%(trailers:key=Signed-off-by,valueonly,separator=%x0A)' "$copy" \
+              | sed -n 's/^.*<\([^<>]*\)>[[:space:]]*$/\1/p')
+            if [ -n "$email" ] && printf '%s\n' "$signers" | grep -qixF -- "$email"; then
+              continue
+            fi
+            # Bots such as Dependabot sign off with another address. Accept only commits GitHub
+            # signed itself for the bot account that opened this PR; commit emails alone are forgeable.
+            if [ "$opener_type" = Bot ] && [ "$(jq -r '"\(.author.login) \(.committer.login) \(.commit.verification.verified)"' <<<"$commit")" = "$opener web-flow true" ]; then
+              continue
+            fi
+            echo "::error::${sha:0:9} $(head -n1 <<<"$message") has no Signed-off-by trailer for <$email>"
+            missing=1
+          done < pr-commits
+          if [ "$missing" = 1 ]; then
+            echo "Sign off your own commits with: git rebase --signoff $BASE && git push --force-with-lease"
+            echo "A commit by someone else needs its author to sign it off (see CONTRIBUTING.md)."
+            exit 1
+          fi
