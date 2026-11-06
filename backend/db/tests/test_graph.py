@@ -330,3 +330,39 @@ def test_a_hot_lookup_uses_its_index_where_the_plain_statement_cannot(rdb, fn, p
         plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = %s AND " + hot,
                                                   (coll, "src/p7/f7.py" if coll == "codeFiles" else "rec7"))
         assert not any(_uses(p, index) for p in plain), "the plain statement used the index: the function is not needed on this server"
+
+
+def test_the_hot_lookups_keep_their_key_index_when_the_planner_expects_a_big_collection(rdb):
+    """With ORDER BY id and a LIMIT in the one query, a planner that expects millions of rows (statistics are only estimates, and a partition can hold
+    several orgs) walks the primary key in id order and filters the whole collection for a rare key. The matches are found by the key's index first."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'b' || lpad(i::text, 6, '0'), jsonb_build_object('orgId', %s::text, 'connectorId', 'c1', 'nameFolded', 'n' || (i %% 50), "
+                  "'recordId', CASE WHEN i < 3000 THEN 'common' ELSE 'rec' || (i %% 300) END) FROM generate_series(0, 11999) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'bz' || i, jsonb_build_object('orgId', %s::text, 'connectorId', 'c1', 'nameFolded', 'rare', 'recordId', 'rare') FROM generate_series(0, 2) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'codeFiles', 'f' || lpad(i::text, 6, '0'), jsonb_build_object('orgId', %s::text, "
+                  "'filePath', CASE WHEN i < 2000 THEN 'src/common.py' ELSE 'src/p' || i || '.py' END) FROM generate_series(0, 11999) i", (A, A))
+        c.execute("INSERT INTO graph.nodes VALUES (%s, 'codeFiles', 'fzz', %s::jsonb)", (A, json.dumps({"orgId": A, "filePath": "src/rare.py"})))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        leaf = c.execute("SELECT tableoid::regclass::text FROM graph.nodes WHERE org_id = %s LIMIT 1", (A,)).fetchone()[0]
+        # the planner now expects a partition of 4 billion documents (the table and its indexes: their density is what it scales to the pages it finds)
+        c.execute(f"UPDATE pg_class SET reltuples = 4000000000 WHERE oid = '{leaf}'::regclass OR oid IN (SELECT indexrelid FROM pg_index WHERE indrelid = '{leaf}'::regclass)")
+        cases = [
+            ("graph.blocks_by_record(%s, %s::text[], %s::jsonb[], true)", ("rare", ["orgId", "recordId"], [f'"{A}"', '"rare"']), "recordId"),
+            ("graph.blocks_by_record(%s, %s::text[], %s::jsonb[], true)", ("common", ["orgId", "recordId"], [f'"{A}"', '"common"']), "recordId"),
+            ("graph.blocks_by_record(%s, %s::text[], %s::jsonb[], true)", ("nope", ["orgId", "recordId"], [f'"{A}"', '"nope"']), "recordId"),
+            ("graph.blocks_by_name(%s, %s, %s::text[], %s::jsonb[], true)", ("c1", "rare", ["orgId", "connectorId", "nameFolded"], [f'"{A}"', '"c1"', '"rare"']), "nameFolded"),
+            ("graph.code_files_by_path(%s, %s::text[], %s::jsonb[], true)", ("src/rare.py", ["orgId", "filePath"], [f'"{A}"', '"src/rare.py"']), "filePath"),
+            ("graph.code_files_by_path(%s, %s::text[], %s::jsonb[], true)", ("src/common.py", ["orgId", "filePath"], [f'"{A}"', '"src/common.py"']), "filePath"),
+            ("graph.code_files_by_path(%s, %s::text[], %s::jsonb[], true)", ("src/none.py", ["orgId", "filePath"], [f'"{A}"', '"src/none.py"']), "filePath"),
+        ]
+        for call, params, key in cases:
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT node_id FROM {call}", params)
+            for i in (0, 6):
+                assert re.search(rf"Index Cond: .*\(doc ->> '{key}'::text\)", plans[i]), (call, params[0], i, plans[i])
+        # and the answers are unchanged: ascending by id, after the given id
+        as_role(c, "pipeshub_connectors", A)
+        assert [r[0] for r in c.execute("SELECT node_id FROM graph.blocks_by_record('rare', '{}', '{}', true, '', 1000)")] == ["bz0", "bz1", "bz2"]
+        assert [r[0] for r in c.execute("SELECT node_id FROM graph.blocks_by_record('rare', '{}', '{}', true, 'bz0', 1)")] == ["bz1"]

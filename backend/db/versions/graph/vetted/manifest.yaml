@@ -83,12 +83,14 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'recordId' = p_record_id AND n.id > p_after
+      -- the matches are found by the key's index first (MATERIALIZED), then ordered: with the order in the same query the planner can walk the primary key in
+      -- id order to meet the LIMIT, which filters the whole collection when it expects the key to be common
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'recordId' = p_record_id
           AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
             WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
-                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
-        ORDER BY n.id LIMIT p_limit;
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END))
+        SELECT m.id, m.doc FROM m WHERE m.id > p_after ORDER BY m.id LIMIT p_limit;
 
   # The blocks of one connector with one folded name (index nodes_block_name).
   - name: graph.blocks_by_name
@@ -109,12 +111,14 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'nameFolded' = p_name_folded AND n.id > p_after
+      -- the matches are found by the key's index first (MATERIALIZED), then ordered: with the order in the same query the planner can walk the primary key in
+      -- id order to meet the LIMIT, which filters the whole collection when it expects the key to be common
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'nameFolded' = p_name_folded
           AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
             WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
-                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
-        ORDER BY n.id LIMIT p_limit;
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END))
+        SELECT m.id, m.doc FROM m WHERE m.id > p_after ORDER BY m.id LIMIT p_limit;
 
   # The code files of one path (index nodes_codefile_path).
   - name: graph.code_files_by_path
@@ -134,9 +138,11 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND n.doc->>'filePath' = p_path AND n.id > p_after
+      -- the matches are found by the key's index first (MATERIALIZED), then ordered: with the order in the same query the planner can walk the primary key in
+      -- id order to meet the LIMIT, which filters the whole collection when it expects the key to be common
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND n.doc->>'filePath' = p_path
           AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
             WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
-                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
-        ORDER BY n.id LIMIT p_limit;
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END))
+        SELECT m.id, m.doc FROM m WHERE m.id > p_after ORDER BY m.id LIMIT p_limit;

@@ -29,12 +29,14 @@ BEGIN
   IF p_limit NOT BETWEEN 1 AND 1000 THEN RAISE EXCEPTION 'blocks_by_name: p_limit must be 1..1000' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN; END IF;       -- no org (or someone else's): no rows, the same answer
   IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-  RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
-    WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'nameFolded' = p_name_folded AND n.id > p_after
+  -- the matches are found by the key's index first (MATERIALIZED), then ordered: with the order in the same query the planner can walk the primary key in
+  -- id order to meet the LIMIT, which filters the whole collection when it expects the key to be common
+  RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n
+    WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'nameFolded' = p_name_folded
       AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
         WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
-                   ELSE n.doc->f.k IS DISTINCT FROM f.v END)
-    ORDER BY n.id LIMIT p_limit;
+                   ELSE n.doc->f.k IS DISTINCT FROM f.v END))
+    SELECT m.id, m.doc FROM m WHERE m.id > p_after ORDER BY m.id LIMIT p_limit;
 END $fn$;
 REVOKE ALL ON FUNCTION graph.blocks_by_name(text, text, text[], jsonb[], boolean, text, int) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION graph.blocks_by_name(text, text, text[], jsonb[], boolean, text, int) TO pipeshub_connectors;
