@@ -684,7 +684,7 @@ _AUDITED_CYPHER_WRITERS = frozenset({
     'batch_create_entity_relations', 'batch_update_connector_status', 'batch_update_nodes',
     'batch_update_team_member_roles', 'batch_upsert_node_relations', 'batch_upsert_nodes', 'batch_upsert_people',
     'claim_push_record', 'compare_and_set_indexing_status', 'compare_and_set_record_fields',
-    'create_edges_if_absent', 'create_node_if_absent', 'create_taxonomy_node_if_absent',
+    'create_edges_if_absent', 'create_node_if_absent', 'create_organization_if_absent', 'create_taxonomy_node_if_absent',
     'delete_records_recursive', 'drop_redundant_group_edges', 'ensure_app_membership', 'ensure_nodes',
     'ensure_taxonomy_hierarchy_edge', 'ensure_team_app_edge', 'heal_taxonomy_alias_nodes', 'increment_node_field',
     'link_record_to_group', 'migrate_legacy_kb_to_app', 'migrate_legacy_relation_edge', 'migrate_person_to_user',
