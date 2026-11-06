@@ -925,12 +925,13 @@ suite('document fingerprint', function () {
         }
       }
     }
-    faults.gates.releaseAll();
-    await Promise.race([Promise.allSettled(requests), sleep(10_000)]);
     // The model ages a token by its ticks only (0.6 window each); real time past that (slow steps, a long tick) lets a token expire that the
-    // model still counts live, and a token that lives through one tick expires once 0.4 window of such time has built up.
+    // model still counts live, and a token that lives through one tick expires once 0.4 window of such time has built up. Measured before the
+    // cleanup below, which no modeled read depends on.
     const overrun = Date.now() - t0 - ticks * 0.6 * WINDOW_MS;
     const timingViolated = overrun > 0.4 * WINDOW_MS;
+    faults.gates.releaseAll();
+    await Promise.race([Promise.allSettled(requests), sleep(10_000)]);
 
     // (a) the real trusted of every read equals the model's, for the schedule in which each B1 is adjacent to its B2 (see pruneAdjacent)
     const adjusted = runModel({ writers: sch.writers, hb: sch.hb, order: finish(pruneAdjacent(sch.writers, sch.order)) }, 'strong');
