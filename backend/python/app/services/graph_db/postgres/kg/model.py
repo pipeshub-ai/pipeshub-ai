@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 # collection -> the small code kg.graph_changes and kg.node_keys store (kg.coll_code)
+MAX_ID = 256            # the longest node id the vetted writers take (w_nodes_upsert); a node with a longer one is not part of the typed tables (it is as if it were not there)
 COLL_CODE = {"apps": 1, "recordGroups": 2, "records": 3, "users": 4, "groups": 5, "roles": 6, "teams": 7, "organizations": 8}
 CODE_COLL = {v: k for k, v in COLL_CODE.items()}
 RECORD_COLLS = ("apps", "recordGroups", "records")          # the nodes that have a kg.records row; kind = position + 1
@@ -20,7 +21,7 @@ HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")
 EDGE_COLLS = ("permission", "belongsTo", "nodeRelations", "inheritPermissions", "userAppRelation", "authenticatedAs")
 LINK_HIERARCHY, LINK_GROUP = 1, 2                            # kg.links.kind
 UAR = "@uar"                                                 # gtype of a userAppRelation row in kg.scope_members (a permission edge's gtype is its type)
-CODE_EPOCH = 2                                               # kg.projection_state.code_epoch this code writes after a verified backfill
+CODE_EPOCH = 3                                               # kg.projection_state.code_epoch this code writes after a verified backfill
 
 Key = tuple[str, str]                                        # (collection, id)
 

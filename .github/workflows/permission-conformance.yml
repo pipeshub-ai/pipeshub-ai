@@ -50,7 +50,8 @@ env:
 jobs:
   oracle:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # the test step took 9 to 19 minutes with the default xdist split, which parks the heavy tests on one worker; worksteal needs about 4
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -77,13 +78,13 @@ jobs:
       - name: Run oracle, scenario and matrix tests
         run: |
           cd backend/python
-          pytest tests/permissions -m "not integration" -n 4 -v -rx --junitxml="$RUNNER_TEMP/oracle-junit.xml"
+          pytest tests/permissions -m "not integration" -n 4 --dist worksteal -v -rx --junitxml="$RUNNER_TEMP/oracle-junit.xml"
 
       # --min-tests pins the suite size, so a module that stopped being collected fails the job; a PR that adds tests raises it.
       # The one allowed skip is the strict expected failure that reports matrix cells without a scenario, by its exact name.
       - name: Check the oracle run for skips
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 645 \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 839 \
             --allow test_coverage_gaps_are_reported
 
       - name: Run the viewer-scope service tests (no services)
@@ -163,14 +164,15 @@ jobs:
           pytest tests/permissions -m integration -v --timeout=3000 --junitxml="$RUNNER_TEMP/graph-conformance-junit.xml"
 
       # A skipped test here means a store was missing, so a skip fails the job; --min-tests pins the size of each run
-      # (a PR that adds tests raises it). The suite's two skips are tests of one store only, allowed by their exact names.
+      # (a PR that adds tests raises it; it equals what `pytest --collect-only -m integration` lists). The suite's three skips are tests of one store only. An allow is matched as a substring of the report's `classname::name`, so each one names its module.
       - name: Check the graph runs for skips
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-suite-junit.xml" --min-tests 609 \
-            --allow "test_an_edge_from_a_removed_document_is_no_parent[neo4j]" \
-            --allow "test_the_tree_labels_follow_the_edges[arango]"
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 136 \
-            --allow "test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]"
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-suite-junit.xml" --min-tests 834 \
+            --allow "test_hierarchy_backfill::test_an_edge_from_a_removed_document_is_no_parent[neo4j]" \
+            --allow "test_redundant_group_edges::test_the_tree_labels_follow_the_edges[arango]" \
+            --allow "test_record_links::test_a_hierarchy_write_does_not_overwrite_a_link_waiting_for_the_migration[neo4j]"
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 193 \
+            --allow "test_generation_paths::test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]"
 
       - name: Upload the regressions the generator filed
         if: failure()

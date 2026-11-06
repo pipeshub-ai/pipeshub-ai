@@ -5536,6 +5536,13 @@ const searchNarrowing = (
   isShared: q.isSharedFilter,
 });
 
+// A user a search was shared with may read it, but only its owner may change or delete it.
+const ownedSearchNarrowing = (req: AuthenticatedUserRequest): SearchQuery => ({
+  ...searchNarrowing(parseSessionQueryParams(req)),
+  owned: true,
+  shared: false,
+});
+
 export const getSearchById =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -5590,7 +5597,7 @@ export const deleteSearchById = async (
   try {
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
-    const narrowing = searchNarrowing(parseSessionQueryParams(req));
+    const narrowing = ownedSearchNarrowing(req);
 
     logger.debug('Attempting to delete search', {
       requestId,
@@ -5629,7 +5636,7 @@ export const shareSearch =
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const narrowing = searchNarrowing(parseSessionQueryParams(req));
+      const narrowing = ownedSearchNarrowing(req);
 
       logger.debug('Attempting to share search', {
         requestId,
@@ -5751,7 +5758,7 @@ export const unshareSearch =
 
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const narrowing = searchNarrowing(parseSessionQueryParams(req));
+      const narrowing = ownedSearchNarrowing(req);
 
       logger.debug('Attempting to unshare search', {
         requestId,
@@ -5855,7 +5862,7 @@ export const archiveSearch = async (
     if (!userId || !orgId) {
       throw new BadRequestError('User ID and Organization ID are required');
     }
-    const narrowing = searchNarrowing(parseSessionQueryParams(req));
+    const narrowing = ownedSearchNarrowing(req);
 
     logger.debug('Attempting to archive search', {
       requestId,
@@ -5932,7 +5939,7 @@ export const unarchiveSearch = async (
     if (!userId || !orgId) {
       throw new BadRequestError('User ID and Organization ID are required');
     }
-    const narrowing = searchNarrowing(parseSessionQueryParams(req));
+    const narrowing = ownedSearchNarrowing(req);
 
     logger.debug('Attempting to unarchive conversation', {
       requestId,
@@ -6020,7 +6027,7 @@ export const deleteSearchHistory = async (
       String(userId),
       {
         owned: true,
-        shared: true,
+        shared: false,
         search: deleteQuery.search,
         startDate: deleteQuery.startDate,
         endDate: deleteQuery.endDate,
