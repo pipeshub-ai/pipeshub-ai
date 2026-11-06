@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors, PermissionModel
-from app.core.org_context import current_org_id
+from app.core.org_context import OrgMismatch, current_org_id
 from app.models.entities import EntityType
 from app.models.permission import RETIRED_ROLES
 from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, upload_times_undated
@@ -266,6 +266,8 @@ class EntityAccessMixin(PgBase):
         if not scope_id:
             return []
         org = current_org_id()
+        if spec.scope_field != "connectorId" and scope_id != org:      # an org-scoped source is the ambient org's: another org's rows are not this org's to page
+            raise OrgMismatch("the scope names an org other than the ambient org")
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source */ SELECT n.id, n.doc FROM graph.nodes n
             WHERE n.org_id = $1 AND n.coll = $2 AND (n.doc->>$3 = $4 OR ($5::boolean AND n.doc->>$3 IS NULL))
               AND (NOT $6::boolean OR (n.doc->>'normalizedName' IS NOT NULL AND n.doc->>'mergedInto' IS NULL))

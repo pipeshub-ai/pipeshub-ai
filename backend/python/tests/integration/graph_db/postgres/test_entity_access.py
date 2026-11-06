@@ -8,12 +8,15 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import logging
 import random
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
 from app.core import org_context
+from app.core.org_context import OrgMismatch
 from app.services.graph_db.postgres import entity_access
 
 from .test_access import APP, rec
@@ -229,58 +232,109 @@ async def test_a_failed_read_raises_and_the_right_answer_returns(w: World, monke
 
 # ---- fuzz: the role walk against the access check --------------------------------------------------------------------------------------
 
-async def random_world(w: World, rng: random.Random) -> list[str]:
+async def random_world(w: World, rng: random.Random, *, hard: bool = False) -> tuple[list[str], dict]:
+    """A random world and the grants it holds. ``hard``: access rules, roles above READER, placeholders, and users that do not pass the connector gate."""
     users = [await user(w, f"x{i}") for i in range(4)]
-    for u in users:
-        await w.edge("userAppRelation", ("users", u), ("apps", APP))
-        await w.edge("permission", ("users", u), ("apps", APP), type="USER", role="READER")
+    for i, u in enumerate(users):
+        if not hard or i != 3:                                  # the last user of a hard world is not gated
+            await w.edge("userAppRelation", ("users", u), ("apps", APP))
+            await w.edge("permission", ("users", u), ("apps", APP), type="USER", role="READER")
     await w.nodes("recordGroups", *({"_key": f"rg{i}", "connectorId": APP} for i in range(4)))
     await w.nodes("groups", {"_key": "g0"}, {"_key": "g1"})
     await w.nodes("teams", {"_key": "t0"})
     await w.nodes("organizations", {"_key": "o0"})
+    inherits: list[tuple[str, str]] = []
     for i in range(4):
+        flag = rng.random() < 0.7
         if i and rng.random() < 0.6:
-            await w.child(("recordGroups", f"rg{rng.randrange(i)}"), ("recordGroups", f"rg{i}"), inherits=rng.random() < 0.7)
+            parent = rng.randrange(i)
+            await w.child(("recordGroups", f"rg{parent}"), ("recordGroups", f"rg{i}"), inherits=flag)
+            if flag:
+                inherits.append((f"rg{i}", f"rg{parent}"))
         else:
-            await w.child(("apps", APP), ("recordGroups", f"rg{i}"), inherits=rng.random() < 0.7)
+            await w.child(("apps", APP), ("recordGroups", f"rg{i}"), inherits=flag)
     records = [f"r{i}" for i in range(14)]
-    await w.nodes("records", *(rec(r, **done(isDeleted=rng.random() < 0.1)) for r in records))
+    rules = [None, "STRICT", "RESTRICTED"] if hard else [None]
+    await w.nodes("records", *(rec(r, **done(isDeleted=rng.random() < 0.1, **({"accessRule": rng.choice(rules)} if hard and rng.random() < 0.4 else {}),
+                                                **({"isPlaceholder": True} if hard and rng.random() < 0.15 else {}))) for r in records))
     for r in records:
         await w.child(("recordGroups", f"rg{rng.randrange(4)}"), ("records", r), inherits=rng.random() < 0.7)
         await w.edge("mentionsEntity", ("records", r), ("namedEntities", "E"))
+    members: dict[str, set[str]] = {u: set() for u in users}
     for u in users:
-        if rng.random() < 0.5:
-            await w.member(u, "g0")
-        if rng.random() < 0.5:
-            await w.member(u, "g1")
-        if rng.random() < 0.4:
-            await w.member(u, "t0", "teams")
+        for principal, coll in (("g0", "groups"), ("g1", "groups"), ("t0", "teams")):
+            if rng.random() < 0.45:
+                await w.member(u, principal, coll)
+                members[u].add(principal)
         if rng.random() < 0.4:
             await w.edge("belongsTo", ("users", u), ("organizations", "o0"), entityType="ORGANIZATION")
+            members[u].add("o0")
     targets = [("recordGroups", f"rg{i}") for i in range(4)] + [("records", r) for r in records]
-    for src, kind, role in ((("groups", "g0"), "GROUP", "READER"), (("groups", "g1"), "GROUP", "READER"), (("teams", "t0"), "TEAM", "READER"), (("organizations", "o0"), "ORG", "READER")):
+    roles = ["READER", "WRITER", "OWNER"] if hard else ["READER"]
+    grants: list[tuple[str, tuple[str, str]]] = []
+    for src, kind in ((("groups", "g0"), "GROUP"), (("groups", "g1"), "GROUP"), (("teams", "t0"), "TEAM"), (("organizations", "o0"), "ORG")):
         for t in rng.sample(targets, 3):
-            await w.edge("permission", src, t, type=kind, role=role)
+            await w.edge("permission", src, t, type=kind, role=rng.choice(roles))
+            grants.append((src[1], t))
     for u in users:
         for t in rng.sample(targets, 2):
-            await w.edge("permission", ("users", u), t, type="USER", role="READER")
-    return records
+            await w.edge("permission", ("users", u), t, type="USER", role=rng.choice(roles))
+            grants.append((u, t))
+    return records, {"members": members, "grants": grants, "inherits": inherits}
+
+
+async def entity_e(w: World) -> None:
+    await w.p.create_named_entities_if_absent([{"id": "E", "orgId": w.org, "kind": "org", "name": "E", "normKey": "e", "aliases": ["E"], "normalizedAliases": ["e"],
+                                                "createdAtTimestamp": 1, "updatedAtTimestamp": 1}])
+
+
+async def walk(w: World, u: str) -> set[str]:
+    return set(permitted_ids(await w.p.get_permitted_entity_records([ref("named_entity", "E")], w.org, u, app_level_connector_ids=[], limit_per_entity=100, window=100)))
 
 
 async def test_the_role_walk_gives_what_the_access_check_opens(w: World) -> None:
     """Over seeded random worlds (every user passes the connector gate, no access rule): the records a user holds a role on are the records ``check_access`` opens."""
-    await w.p.create_named_entities_if_absent([{"id": "E", "orgId": w.org, "kind": "org", "name": "E", "normKey": "e", "aliases": ["E"], "normalizedAliases": ["e"],
-                                                "createdAtTimestamp": 1, "updatedAtTimestamp": 1}])
-    rng = random.Random(20261106)
-    records = await random_world(w, rng)
+    await entity_e(w)
+    records, _ = await random_world(w, random.Random(20261106))
     live = {r["id"] for r in await w.p.get_all_documents("records") if not r.get("isDeleted")}
     opened = 0
     for u in (f"x{i}" for i in range(4)):
         want = await w.allowed(u, *records) & live
-        got = set(permitted_ids(await w.p.get_permitted_entity_records([ref("named_entity", "E")], w.org, u, app_level_connector_ids=[], limit_per_entity=100, window=100)))
+        got = await walk(w, u)
         assert got == want, (u, sorted(got - want), sorted(want - got))
         opened += len(want)
     assert opened > 4                                      # the worlds open something, and not everything
+
+
+async def test_the_role_walk_is_a_superset_of_the_access_check_when_rules_roles_and_the_gate_differ(w: World) -> None:
+    """Over seeded random worlds with access rules, roles above READER (a team never above WRITER), placeholders and a user outside the gate: whatever
+    ``check_access`` opens, the role walk returns (no under-admit); it also returns more, as it reads neither the rule nor the gate."""
+    await entity_e(w)
+    records, _ = await random_world(w, random.Random(4242), hard=True)
+    live = {r["id"] for r in await w.p.get_all_documents("records") if not r.get("isDeleted")}
+    extra = 0
+    for u in (f"x{i}" for i in range(4)):
+        opened = await w.allowed(u, *records) & live
+        got = await walk(w, u)
+        assert opened <= got, (u, sorted(opened - got))
+        extra += len(got - opened)
+    assert extra > 0                                       # the walk is not the access decision
+
+
+async def test_the_role_walk_ignores_the_access_rule_and_the_gate_and_lists_placeholders(w: World) -> None:
+    await entity_world(w, "other-org")
+    await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
+    await w.nodes("records", rec("shut", **done(accessRule="RESTRICTED")), rec("stub", **done(isPlaceholder=True)))
+    for r in ("shut", "stub"):
+        await w.child(("recordGroups", "g"), ("records", r))
+        await w.edge("mentionsEntity", ("records", r), ("namedEntities", "E"))
+    await w.edge("permission", ("users", "u"), ("recordGroups", "g"), type="USER", role="READER")
+    assert "shut" not in await w.allowed("u", "shut")                                       # the access check shuts a restricted record that only inherits
+    assert {"shut", "stub"} <= await walk(w, "u")                                            # the role walk does not read the rule; a stub is a record
+    assert "stub" in await w.allowed("u", "stub")
+    await user(w, "nogate")
+    await w.edge("permission", ("users", "nogate"), ("records", "old"), type="USER", role="READER")
+    assert await w.allowed("nogate", "old") == set() and await walk(w, "nogate") == {"old"}      # nor the connector gate
 
 
 # ---- what a user can reach -------------------------------------------------------------------------------------------------------------
@@ -323,6 +377,15 @@ async def test_a_collection_shared_with_the_users_team_is_reached(w: World) -> N
     await w.edge("permission", ("users", "c1"), ("apps", "nolink"), type="USER", role="BOGUS")
     ids_ = {a["id"] for a in (await w.p.get_entity_access_context("uid-c1", w.org))["apps"]}
     assert "kbteam" in ids_ and "kbteam_other" not in ids_ and "nolink" not in ids_ and "kbother" not in ids_
+
+
+async def test_an_org_argument_other_than_the_ambient_org_reaches_no_collection_or_record_group(w: World) -> None:
+    await context_world(w)
+    await w.nodes("recordGroups", {"_key": "rgm", "connectorId": "conn"})
+    await w.edge("permission", ("users", "c1"), ("recordGroups", "rgm"), type="USER", role="READER")
+    assert (await w.p.get_entity_access_context("uid-c1", w.org))["record_group_ids"] == ["rgm"]
+    got = await w.p.get_entity_access_context("uid-c1", "another-org")
+    assert got["record_group_ids"] == [] and "kb" not in {a["id"] for a in got["apps"]}             # nothing of this org is reached under another org's name
 
 
 async def test_the_record_groups_a_user_reaches_by_each_grant_and_what_inherits_from_them(w: World) -> None:
@@ -373,18 +436,25 @@ async def test_the_record_groups_a_user_reaches_by_each_grant_and_what_inherits_
     assert (await w.p.get_entity_access_context("uid-other", w.org)) is None
 
 
-async def test_the_reachable_record_groups_are_ones_the_access_check_opens(w: World) -> None:
-    """Over seeded random worlds: a record group listed as reached is one ``check_access`` opens for the user (no over-admit)."""
-    await w.p.create_named_entities_if_absent([{"id": "E", "orgId": w.org, "kind": "org", "name": "E", "normKey": "e", "aliases": ["E"], "normalizedAliases": ["e"],
-                                                "createdAtTimestamp": 1, "updatedAtTimestamp": 1}])
-    await random_world(w, random.Random(77))
+@pytest.mark.parametrize(("seed", "hard"), [(77, False), (78, True)])
+async def test_the_reachable_record_groups_are_exactly_the_granted_ones_and_what_inherits_and_the_access_check_opens_them(w: World, seed: int, hard: bool) -> None:
+    """Over seeded random worlds: the record groups reached are those a user holds a grant on (their own, a group's, their team's, the organization's) and the
+    groups that inherit from them, no more and no fewer; and ``check_access`` opens each one reached (for a user who passes the connector gate)."""
+    await entity_e(w)
+    _, model = await random_world(w, random.Random(seed), hard=hard)
     reached = 0
     for i in range(4):
-        got = await w.p.get_entity_access_context(f"uid-x{i}", w.org)
-        groups = set(got["record_group_ids"])
-        allowed = await w.allowed(f"x{i}", *(f"rg{j}" for j in range(4)))
-        assert groups <= allowed, (i, sorted(groups - allowed))
-        reached += len(groups)
+        got = set((await w.p.get_entity_access_context(f"uid-x{i}", w.org))["record_group_ids"])
+        mine = {f"x{i}"} | model["members"][f"x{i}"]
+        want = {t[1] for who, t in model["grants"] if who in mine and t[0] == "recordGroups"}
+        while more := {child for child, parent in model["inherits"] if parent in want} - want:      # what inherits from a group reached
+            want |= more
+        if hard and i == 3:
+            want = set()                                                                                 # a user who is not linked to the connector reaches none of its groups
+        assert got == want, (seed, i, sorted(got - want), sorted(want - got))
+        if not (hard and i == 3):
+            assert got <= await w.allowed(f"x{i}", *(f"rg{j}" for j in range(4))), (seed, i)
+        reached += len(got)
     assert reached > 0
 
 
@@ -450,6 +520,9 @@ async def test_the_index_source_pages_a_scope_in_key_order(w: World) -> None:
     assert {r["_key"]: r["name"] for r in await w.p.page_entity_index_source("users", w.org, None, 10) if r["_key"] in ("n1", "n2")} == {"n1": "n1@x.io", "n2": "Ann"}
     with in_org("some-other-org"):
         assert await w.p.page_entity_index_source("records", APP, None, 5) == []
+    for source in ("departments", "categories", "organizations", "users"):
+        with pytest.raises(OrgMismatch):                                                                # an org-scoped source is the ambient org's
+            await w.p.page_entity_index_source(source, "another-org", None, 5)
 
 
 async def test_the_stage_state_names_its_org(w: World) -> None:
@@ -470,3 +543,66 @@ async def test_no_org_is_an_error_not_an_empty_answer(pg_provider) -> None:
                 await call
     finally:
         org_context.pop(token)
+
+
+# ---- the rebuild loop on this store -----------------------------------------------------------------------------------------------------
+
+class _Store:
+    def __init__(self) -> None:
+        self.written: list[str] = []
+
+    async def embedding_fingerprint(self, *, recreate: bool = False) -> str:
+        return "fp"
+
+    async def collection_stamp(self) -> str:
+        return "st"
+
+    async def recreate_stale_collection(self, org_id: str) -> None:
+        return None
+
+    async def upsert_entities_batch(self, entities: list, *, merge_membership: bool = True) -> SimpleNamespace:
+        self.written += [e.entity_id for e in entities]
+        return SimpleNamespace(failed=0)
+
+    async def delete_entities(self, org_id: str, entity_type: str, entity_ids: list[str]) -> None:
+        return None
+
+
+class _Lock:
+    async def try_acquire(self) -> bool:
+        return True
+
+    async def refresh(self) -> bool:
+        return True
+
+
+async def test_the_entity_index_rebuild_ticks_with_no_ambient_org(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The loop binds no org: the candidate is read across orgs and the pass runs in the org that owns it. (This database holds the other tests' orgs, so the
+    org list is narrowed to this test's; the scope the loop gives is not.)"""
+    from app.modules.indexing.entity_index_rebuild import (
+        ORG_PASS_VERSION,
+        EntityIndexRebuilder,
+        entity_index_marker,
+    )
+    org_marker = entity_index_marker("fp", "st", version=ORG_PASS_VERSION)
+    await w.nodes("organizations", {"_key": w.org, "isActive": True, "entityIndexState": org_marker, "entityIndexSweptAt": 4_000_000_000_000})      # not due
+    await w.nodes("apps", {"_key": "idx-app", "type": "JIRA", "name": "J"})
+    await w.nodes("records", rec("ir1", connectorId="idx-app", recordName="one", indexingStatus="COMPLETED"))
+    me = w.org
+
+    async def only_mine() -> list[str]:
+        return [me]
+    monkeypatch.setattr(w.p, "_sweep_orgs", only_mine)
+    store = _Store()
+    rebuilder = EntityIndexRebuilder(logger=logging.getLogger("t"), graph_provider=w.p, store=store, lock=_Lock())
+    token = org_context.push(None)
+    try:
+        outcomes = []
+        for _ in range(10):
+            outcomes.append(await rebuilder.tick())
+            if outcomes[-1] == "idle":
+                break
+    finally:
+        org_context.pop(token)
+    assert outcomes[-1] == "idle" and "connector" in outcomes and "ir1" in store.written
+    assert (await w.p.get_document("idx-app", "apps"))["entityIndexState"] == entity_index_marker("fp", "st")
