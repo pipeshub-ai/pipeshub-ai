@@ -31,11 +31,11 @@ UPLOAD = "UPLOAD"
 
 
 @contextlib.contextmanager
-def other_org() -> Iterator[None]:
+def other_org(org: str | None = None) -> Iterator[None]:
     """Calls inside run as a request of another org would (a bound org cannot be nested in another, so the bound one is set aside)."""
     token = org_context._ctx.set(None)
     try:
-        with bind(OrgContext(_org(), None, "job", "job:test", "t")):
+        with bind(OrgContext(org or _org(), None, "job", "job:test", "t")):
             yield
     finally:
         org_context._ctx.reset(token)
@@ -219,6 +219,109 @@ async def test_a_failed_list_raises_and_the_next_call_answers(w: World, monkeypa
         await w.p.list_user_knowledge_bases("me", w.org, 0, 10)
     monkeypatch.setattr(w.p, "_q", real)
     assert await listed(w, "me") == {"kb1": "READER"}
+
+
+async def test_a_grant_to_a_collection_user_or_team_that_does_not_exist_is_not_written_and_gives_nothing_later(w: World) -> None:
+    await users(w, "real")
+    await kb(w, orgId=w.org)
+    await w.nodes("teams", {"_key": "tm"})
+    r = await w.p.create_kb_permissions("ghostkb", "real", ["real", "ghostuser"], ["tm"], "OWNER")
+    assert (r["success"], r["grantedCount"], r["grantedUsers"], r["grantedTeams"]) == (True, 0, [], [])
+    r = await w.p.create_kb_permissions("kb1", "real", ["real", "ghostuser"], ["tm", "ghostteam"], "OWNER")
+    assert (r["grantedCount"], r["grantedUsers"], r["grantedTeams"]) == (2, ["real"], ["tm"])
+    assert await w.p.get_edge("ghostuser", "users", "kb1", "apps", "permission") is None and await w.p.get_edge("real", "users", "ghostkb", "apps", "permission") is None
+    r = await w.p.create_kb_permissions(APP, "real", ["real"], [], "OWNER")                    # an app that is not a collection
+    assert r["grantedCount"] == 0
+    await kb(w, "ghostkb", orgId=w.org)                                                         # the ids appear later: no access comes with them
+    await users(w, "ghostuser")
+    assert await w.p.get_user_kb_permission("ghostkb", "real") is None and await w.p.get_user_kb_permission("kb1", "ghostuser") is None
+    assert await listed(w, "ghostuser") == {} and await w.p.count_kb_owners("ghostkb") == 0
+    with other_org():
+        assert (await w.p.create_kb_permissions("kb1", "real", ["real"], [], "OWNER"))["grantedCount"] == 0      # the ids of another org are not these
+
+
+async def test_a_collection_with_a_non_boolean_hidden_flag_still_lists_and_only_a_true_one_hides(w: World) -> None:
+    await users(w, "me")
+    for key, flag in (("odd", "maybe"), ("no", False), ("yes", True), ("str", "true"), ("none", None)):
+        await kb(w, key, orgId=w.org, isHidden=flag)
+        await grant(w, "me", "READER", key)
+    got = set(await listed(w, "me"))
+    assert {"odd", "no", "none"} <= got and "yes" not in got
+
+
+async def test_a_folder_stored_with_two_edges_to_its_collection_is_listed_once(w: World, pg_db) -> None:
+    await users(w, "me")
+    await kb(w, orgId=w.org)
+    await grant(w, "me", "READER")
+    await folder(w, "f1")
+
+    async def dup(tx) -> None:
+        await tx.execute("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) VALUES ($1, 'belongsTo', 'records', 'f1', 'apps', 'kb1', 'dup', '{}'::jsonb)", w.org)
+    await pg_db.run(dup, write=True)
+    kbs, _, _ = await w.p.list_user_knowledge_bases("me", w.org, 0, 10)
+    assert [f["id"] for f in kbs[0]["folders"]] == ["f1"]
+
+
+async def test_the_role_through_teams_is_the_highest_and_a_bad_stored_role_never_falls_back_to_the_members(w: World) -> None:
+    await users(w, "me")
+    for key in ("two", "bad", "retired", "capped", "blank", "badmember"):
+        await kb(w, key, orgId=w.org)
+    await team(w, "me", "ta", grant_role="READER", member="OWNER", key="two")
+    await w.nodes("teams", {"_key": "tb"})
+    await w.edge("permission", ("users", "me"), ("teams", "tb"), type="USER", role="READER")
+    await w.edge("permission", ("teams", "tb"), ("apps", "two"), type="TEAM", role="WRITER")
+    await team(w, "me", "tc", grant_role="EDITOR", member="OWNER", key="bad")                  # an unknown grant role is no grant: not the member's OWNER
+    await team(w, "me", "td", grant_role=None, member="COMMENTER", key="retired")                # a roleless grant, a retired member role: READER
+    await team(w, "me", "te", grant_role=None, member="OWNER", key="capped")                    # ... an OWNER member: capped at WRITER
+    await team(w, "me", "tf", grant_role="", member="WRITER", key="blank")
+    await team(w, "me", "tg", grant_role=None, member="ADMIN", key="badmember")                  # a roleless grant, an unknown member role: nothing
+    assert await listed(w, "me") == {"two": "WRITER", "retired": "READER", "capped": "WRITER", "blank": "WRITER"}
+
+
+async def test_the_same_ids_in_two_orgs_never_answer_for_each_other(w: World, pg_db) -> None:
+    other = _org()
+    await users(w, "me", "x")
+    await kb(w, orgId=w.org)
+    await grant(w, "me", "READER")
+    await grant(w, "x", "OWNER")
+    await w.nodes("teams", {"_key": "tm"})
+    try:
+        with other_org(other):
+            await w.nodes("users", {"_key": "me", "userId": "uid-me", "isActive": True}, {"_key": "x", "userId": "uid-x", "isActive": True})
+            await w.nodes("apps", {"_key": "kb1", "type": "KB", "name": "THEIRS", "orgId": other})
+            await w.nodes("teams", {"_key": "tm"})
+            await w.edge("permission", ("users", "me"), ("apps", "kb1"), type="USER", role="OWNER")
+            await w.edge("permission", ("users", "x"), ("teams", "tm"), type="USER", role="OWNER")
+            await w.edge("permission", ("teams", "tm"), ("apps", "kb1"), type="TEAM", role="OWNER")
+            theirs = await w.p.list_user_knowledge_bases("me", other, 0, 10)
+            assert [(k["name"], k["userRole"]) for k in theirs[0]] == [("THEIRS", "OWNER")]
+            assert await w.p.get_kb_permissions("kb1", ["me", "x"], ["tm"]) == {"users": {"me": "OWNER"}, "teams": {"tm": None}}
+            assert await w.p.count_kb_owners("kb1") == 1 and await w.p.get_user_kb_permission("kb1", "x") == "WRITER"
+            await w.p.remove_kb_permission("kb1", ["me"], ["tm"])
+        assert await listed(w, "me") == {"kb1": "READER"} and await w.p.get_user_kb_permission("kb1", "x") == "OWNER"
+        assert await w.p.get_kb_permissions("kb1", ["me", "x"], ["tm"]) == {"users": {"me": "READER", "x": "OWNER"}, "teams": {}}
+        assert await w.p.count_kb_owners("kb1") == 1
+        assert [k["name"] for k in (await w.p.list_user_knowledge_bases("me", w.org, 0, 10))[0]] == ["KB1"]
+        with other_org(other):
+            assert await listed(w, "me") == {}                                                  # removed there, and nothing of the other org came from here
+    finally:
+        with other_org(other):
+            await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.edges WHERE org_id = $1", other), write=True)
+            await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", other), write=True)
+
+
+async def test_removing_a_grant_leaves_the_grants_of_others_alone(w: World) -> None:
+    await users(w, "a", "b", "c")
+    await kb(w, orgId=w.org)
+    await kb(w, "kb2", orgId=w.org)
+    await w.nodes("teams", {"_key": "t1"}, {"_key": "t2"})
+    await w.p.create_kb_permissions("kb1", "a", ["a", "b"], ["t1", "t2"], "WRITER")
+    await w.p.create_kb_permissions("kb2", "a", ["a"], ["t1"], "WRITER")
+    await w.p.remove_kb_permission("kb1", ["a", "nobody"], ["t1"])
+    assert await w.p.get_kb_permissions("kb1", ["a", "b", "c"], ["t1", "t2"]) == {"users": {"b": "WRITER"}, "teams": {"t2": None}}
+    assert await w.p.get_kb_permissions("kb2", ["a"], ["t1"]) == {"users": {"a": "WRITER"}, "teams": {"t1": None}}      # the same ids on another collection
+    assert await w.p.remove_kb_permission("kb1", [], []) == {"success": True}
+    assert (await w.p.get_kb_permissions("kb1", ["b"]))["users"] == {"b": "WRITER"}
 
 
 # ---- folders ------------------------------------------------------------------------------------------------------------------------------

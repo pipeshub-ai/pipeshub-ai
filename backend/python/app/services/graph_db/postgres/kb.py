@@ -62,15 +62,15 @@ class KbMixin(PgBase):
               SELECT k.id, k.doc, best.role FROM (SELECT c.kb_id, (array_agg(c.role ORDER BY CASE c.role WHEN 'OWNER' THEN 3 WHEN 'WRITER' THEN 2 ELSE 1 END DESC))[1] AS role
                   FROM cand c WHERE c.role = ANY($6::text[]) GROUP BY c.kb_id) best
                 JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = best.kb_id
-              WHERE k.doc->>'orgId' = $3 AND k.doc->>'type' = $7 AND coalesce((k.doc->>'isHidden')::boolean, false) = false),
+              WHERE k.doc->>'orgId' = $3 AND k.doc->>'type' = $7 AND coalesce(k.doc->>'isHidden', '') <> 'true'),
             kept AS (SELECT * FROM base b WHERE ($8::text IS NULL OR position(lower($8::text) IN lower(b.doc->>'name')) > 0) AND ($9::text[] IS NULL OR b.role = ANY($9::text[])))
             SELECT s.total, s.roles, p.doc, p.role, p.folders FROM
               (SELECT (SELECT count(*) FROM kept) AS total, (SELECT coalesce(array_agg(DISTINCT role), '{}') FROM base) AS roles) s
               LEFT JOIN LATERAL (SELECT f.id, f.doc, f.role, (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'name', r.doc->'recordName',
                     'createdAtTimestamp', r.doc->'createdAtTimestamp', 'webUrl', r.doc->'webUrl') ORDER BY r.id), '[]'::jsonb)
-                  FROM graph.edges be JOIN graph.nodes r ON r.org_id = be.org_id AND r.coll = 'records' AND r.id = be.from_id
-                  WHERE be.org_id = $1 AND be.coll = 'belongsTo' AND be.from_coll = 'records' AND be.to_coll = 'apps' AND be.to_id = f.id
-                    AND r.doc->>'mimeType' = ANY($14::text[])) AS folders
+                  FROM (SELECT DISTINCT n.id, n.doc FROM graph.edges be JOIN graph.nodes n ON n.org_id = be.org_id AND n.coll = 'records' AND n.id = be.from_id
+                        WHERE be.org_id = $1 AND be.coll = 'belongsTo' AND be.from_coll = 'records' AND be.to_coll = 'apps' AND be.to_id = f.id
+                          AND n.doc->>'mimeType' = ANY($14::text[])) r) AS folders
                 FROM kept f
                 ORDER BY (CASE WHEN $10::int = 1 AND $13::boolean THEN f.doc->>'name' END) COLLATE "C" ASC, (CASE WHEN $10::int = 1 AND NOT $13::boolean THEN f.doc->>'name' END) COLLATE "C" DESC,
                          (CASE WHEN $10::int = 2 AND $13::boolean THEN f.doc->'createdAtTimestamp' END) ASC, (CASE WHEN $10::int = 2 AND NOT $13::boolean THEN f.doc->'createdAtTimestamp' END) DESC,
@@ -93,15 +93,23 @@ class KbMixin(PgBase):
     async def create_kb_permissions(self, kb_id: str, requester_id: str, user_ids: list[str], team_ids: list[str], role: str,
                                     transaction: str | None = None) -> dict:
         """Grant the users ``role`` and the teams access (a team's grant has no role); all or none."""
-        current_org_id()
+        org = current_org_id()
         try:
             now = get_epoch_timestamp_in_ms()
+            # Only grants whose collection, user or team exist in this org are written (as Neo4j's MATCH of both ends): an id that does not exist yet
+            # must not turn into access the day a node with that id appears.
+            found = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.create_kb_permissions_ends */ SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = $1
+                AND ((n.coll = 'apps' AND n.id = $2 AND n.doc->>'type' = $5) OR (n.coll = 'users' AND n.id = ANY($3::text[])) OR (n.coll = 'teams' AND n.id = ANY($4::text[])))""",
+                                                      org, kb_id, list(user_ids), list(team_ids), _KB), transaction)
+            have = {(r["coll"], r["id"]) for r in found}
+            users = [u for u in user_ids if ("users", u) in have] if ("apps", kb_id) in have else []
+            teams = [t for t in team_ids if ("teams", t) in have] if ("apps", kb_id) in have else []
             edges = [{"from_id": u, "from_collection": "users", "to_id": kb_id, "to_collection": "apps", "type": "USER", "role": role,
-                      "createdAtTimestamp": now, "updatedAtTimestamp": now} for u in user_ids]
+                      "createdAtTimestamp": now, "updatedAtTimestamp": now} for u in users]
             edges += [{"from_id": t, "from_collection": "teams", "to_id": kb_id, "to_collection": "apps", "type": "TEAM",
-                       "createdAtTimestamp": now, "updatedAtTimestamp": now} for t in team_ids]
+                       "createdAtTimestamp": now, "updatedAtTimestamp": now} for t in teams]
             await self.batch_create_edges(edges, "permission", transaction=transaction)
-            return {"success": True, "grantedCount": len(edges), "grantedUsers": list(user_ids), "grantedTeams": list(team_ids), "role": role, "kbId": kb_id, "details": {}}
+            return {"success": True, "grantedCount": len(edges), "grantedUsers": users, "grantedTeams": teams, "role": role, "kbId": kb_id, "details": {}}
         except Exception as e:
             self.logger.error(f"❌ Create KB permissions failed: {e}")
             return {"success": False, "reason": str(e)}
