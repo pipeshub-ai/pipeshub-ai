@@ -344,7 +344,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
                 # Get users for this organization
                 users = await graph_provider.get_users(org_id, active=True)
-                logger.info(f"User: {users}")
                 if not users:
                     logger.info("No users found for organization %s", org_id)
                     continue

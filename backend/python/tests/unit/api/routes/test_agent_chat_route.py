@@ -12,6 +12,7 @@ AG-UI formatter, serialised exactly as `stream_bridge.py` writes them.
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -118,6 +119,17 @@ class TestChatStreamAccess:
         assert call["user_info"]["fullName"] == "Bob B."
         assert call["query_info"]["is_service_account"] is True
         assert call["cancellation_owner"].user_id == "u-bob"
+
+    def test_service_account_chat_logs_the_agent_id_not_who_is_chatting(self, graph, loop, caplog) -> None:
+        caplog.set_level(logging.DEBUG, logger="test.agent_routes")
+        c, _ = make_client(graph)
+        body = {"query": "hi", "callerDisplayName": "Bob B.", "callerEmail": "bob@acme.test"}
+        assert _stream(c, "sa", "bob", body).status_code == 200
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "test.agent_routes"]
+        for personal in ("Bob B.", "bob@acme.test", "alice@acme.test"):
+            assert not any(personal in m for m in messages), f"{personal!r} was logged"
+        assert "Loaded service account agent sa" in messages
 
     def test_service_account_artifacts_belong_to_the_person_chatting(self, graph, loop) -> None:
         c, _ = make_client(graph)
