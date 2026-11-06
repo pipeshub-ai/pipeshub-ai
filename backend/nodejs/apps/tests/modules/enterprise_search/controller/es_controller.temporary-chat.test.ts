@@ -204,7 +204,7 @@ describe('es_controller temporary chat', () => {
     expect(out.error?.statusCode).to.equal(404)
   })
 
-  it('share, pin, archive, rename, fork and project-link return 400 for a temporary chat', async () => {
+  it('share, pin, archive, rename, fork, soft-delete and project-link return 400 for a temporary chat', async () => {
     const store = fresh()
     const chat = store.addSession({
       orgId: ORG,
@@ -228,15 +228,20 @@ describe('es_controller temporary chat', () => {
     const fork = await call(controller.forkConversation(appConfig) as JsonHandler, {
       params: { ...params, messageId: String(oid()) },
     })
+    const softDelete = await call(
+      controller.deleteConversationById(appConfig) as JsonHandler,
+      { params },
+    )
     const projectLink = await call(controller.setConversationProject as JsonHandler, {
       params,
       body: { projectId: String(oid()) },
     })
 
-    for (const out of [share, pin, archive, rename, fork, projectLink]) {
+    for (const out of [share, pin, archive, rename, fork, softDelete, projectLink]) {
       expect(out.error?.statusCode).to.equal(400)
       expect(out.error?.message).to.equal(TEMPORARY_CHAT_ACTION_ERROR)
     }
+    expect(store.session(chat._id)?.isTemporary).to.equal(true)
   })
 
   it('purge deletes the temporary row and its messages, and leaves a normal chat', async () => {

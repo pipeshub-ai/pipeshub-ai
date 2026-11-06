@@ -37,7 +37,12 @@ function localStore(): Storage | null {
 }
 
 export function readTemporaryChatSession(): TemporaryChatSession | null {
-  const raw = storage()?.getItem(KEY);
+  let raw: string | null = null;
+  try {
+    raw = storage()?.getItem(KEY) ?? null;
+  } catch {
+    return null;
+  }
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as TemporaryChatSession;
@@ -53,11 +58,19 @@ export function readTemporaryChatSession(): TemporaryChatSession | null {
 }
 
 export function writeTemporaryChatSession(conversationId: string | null): void {
-  storage()?.setItem(KEY, JSON.stringify({ conversationId }));
+  try {
+    storage()?.setItem(KEY, JSON.stringify({ conversationId }));
+  } catch {
+    // Quota / private-mode: leave helpers must still reach the purge DELETE.
+  }
 }
 
 export function clearTemporaryChatSession(): void {
-  storage()?.removeItem(KEY);
+  try {
+    storage()?.removeItem(KEY);
+  } catch {
+    // Same as write — do not block leave-time purge.
+  }
 }
 
 /** Conversation id to hard-delete when leaving a temporary chat, or null to keep it. */
@@ -80,14 +93,22 @@ export function temporaryChatIdToPurgeOnNavigate(opts: {
 /** Remember a temporary chat to delete after the tab is gone (not on F5). */
 export function markTemporaryChatPurgePending(conversationId: string): void {
   if (!conversationId) return;
-  localStore()?.setItem(
-    PENDING_PURGE_KEY,
-    JSON.stringify({ conversationId, ts: Date.now() } satisfies PendingPurge),
-  );
+  try {
+    localStore()?.setItem(
+      PENDING_PURGE_KEY,
+      JSON.stringify({ conversationId, ts: Date.now() } satisfies PendingPurge),
+    );
+  } catch {
+    // Best-effort marker; missing it only delays cleanup until leave/sweep.
+  }
 }
 
 export function clearTemporaryChatPurgePending(): void {
-  localStore()?.removeItem(PENDING_PURGE_KEY);
+  try {
+    localStore()?.removeItem(PENDING_PURGE_KEY);
+  } catch {
+    // Ignore — consume path tolerates a stale marker.
+  }
 }
 
 /**
