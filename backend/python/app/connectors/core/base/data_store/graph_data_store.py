@@ -698,6 +698,9 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_between_collections(self, from_id: str, from_collection: str, edge_collection: str, to_collection: str) -> None:
         return await self.graph_provider.delete_edges_between_collections(from_id, from_collection, edge_collection, to_collection, transaction=self.txn)
 
+    async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int:
+        return await self.graph_provider.delete_record_entity_relations(record_id, to_collection, origin, transaction=self.txn)
+
     async def delete_edges_by_relationship_types(
         self,
         from_id: str,
@@ -838,6 +841,19 @@ class GraphTransactionStore(TransactionStore):
             person, transaction=self.txn, raise_on_error=raise_on_error
         )
 
+
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        return await self.graph_provider.get_person_by_source_key(
+            source_key, org_id, transaction=self.txn, raise_on_error=True
+        )
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return self.graph_provider.is_transient_error(error)
+
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        return await self.graph_provider.upsert_person_by_source_key(
+            person, transaction=self.txn, raise_on_error=raise_on_error
+        )
     async def ensure_app_membership(
         self,
         principal_id: str,
@@ -2033,7 +2049,7 @@ _wrap_patch("batch_upsert_nodes")
 # writes that move no structure: grants, memberships, people, sync points, content and indexing state, and the transaction itself
 _HARMLESS_WRITERS = frozenset({
     "batch_upsert_nodes", "batch_update_nodes", "batch_upsert_people",
-    "upsert_person_by_email", "ensure_app_membership", "reap_stale_external_app_relations", "create_user_group_hierarchy",
+    "upsert_person_by_email", "upsert_person_by_source_key", "ensure_app_membership", "reap_stale_external_app_relations", "create_user_group_hierarchy",
     "create_user_group_membership", "batch_create_user_app_edges", "batch_upsert_user_groups",
     "batch_upsert_app_roles", "batch_upsert_app_users", "ensure_team_app_edge", "upsert_authenticated_as", "remove_authenticated_as",
     "batch_upsert_orgs", "commit", "rollback", "create_user_groups", "create_users", "create_orgs", "create_sync_point",
@@ -2043,6 +2059,8 @@ _HARMLESS_WRITERS = frozenset({
     "delete_record_by_external_id", "compare_and_set_indexing_status",
     # a push claim writes the document id and version of the record, never a field that decides access or place
     "claim_push_record", "retag_push_record",
+    # clears a record's entityRelations edges to one entity collection: never a hierarchy, group, inherit or grant edge
+    "delete_record_entity_relations",
 })
 CLASSIFIED_WRITERS = frozenset(_STRUCTURAL_WRITERS) | frozenset(_CONNECTOR_WRITERS) | _HARMLESS_WRITERS
 

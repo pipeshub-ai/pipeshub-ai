@@ -4537,7 +4537,107 @@ class TestLinkRecordToGroupEdgeCases:
 # ===========================================================================
 
 
+async def _source_id_read_that_fails(_source_id: str, _connector_id: str, *, raise_on_error: bool = False) -> None:
+    """A graph read that fails, as the store answers it: None unless the caller asks for the error."""
+    if raise_on_error:
+        raise RuntimeError("graph read timed out")
+
+
 class TestHandleRecordPermissionsEntityTypes:
+    @pytest.mark.asyncio
+    async def test_a_user_grant_without_an_email_resolves_by_the_source_user_id(self) -> None:
+        """A source that hides emails (Jira Cloud) grants by its own user id;
+        that member must still get the edge rather than lose access."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        member = MagicMock()
+        member.id = "u-ann"
+        tx_store.get_user_by_source_id = AsyncMock(return_value=member)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        await proc._handle_record_permissions(record, [perm], tx_store)
+
+        tx_store.get_user_by_source_id.assert_awaited_once_with("acc-1", "conn-1", raise_on_error=True)
+        (edges,) = tx_store.batch_create_edges.await_args.args[:1]
+        assert [e["from_id"] for e in edges] == ["u-ann"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_source_id_read_keeps_the_records_previous_grants(self) -> None:
+        """A replace after a read that failed would have written the record's grants without that user."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        stored = {"rec-1": [{"from_id": "u-ann", "to_id": "rec-1"}]}  # the grant the record already has
+
+        async def replace(to_id: str, _coll: str, edges: list[dict], _edge_coll: str) -> None:
+            stored[to_id] = edges
+
+        tx_store.replace_edges_to = AsyncMock(side_effect=replace)
+        tx_store.get_user_by_source_id = AsyncMock(side_effect=_source_id_read_that_fails)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        with pytest.raises(RuntimeError, match="graph read timed out"):
+            await proc._handle_record_permissions(record, [perm], tx_store, replace=True)
+
+        tx_store.replace_edges_to.assert_not_awaited()
+        tx_store.batch_create_edges.assert_not_awaited()
+        assert stored["rec-1"] == [{"from_id": "u-ann", "to_id": "rec-1"}]
+
+    @pytest.mark.asyncio
+    async def test_a_source_id_nobody_has_skips_only_that_user(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        bea = MagicMock()
+        bea.id = "u-bea"
+        tx_store.get_user_by_source_id = AsyncMock(side_effect=lambda sid, *_a, **_k: bea if sid == "acc-bea" else None)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perms = [Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id=sid)
+                 for sid in ("acc-gone", "acc-bea")]
+
+        await proc._handle_record_permissions(record, perms, tx_store, replace=True)
+
+        (_to, _coll, edges, _edge_coll) = tx_store.replace_edges_to.await_args.args
+        assert [e["from_id"] for e in edges] == ["u-bea"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_source_id_read_fails_the_records_write_for_the_sync_to_retry(self) -> None:
+        """The path: on_new_records rolls its transaction back and raises to its caller (the connector's sync),
+        so the record's write is never reported done with a user left out."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_source_id = AsyncMock(side_effect=_source_id_read_that_fails)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        with pytest.raises(RuntimeError, match="graph read timed out"):
+            await proc.on_new_records([(record, [perm])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_user_grant_naming_nobody_known_is_reported(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_source_id = AsyncMock(return_value=None)
+        record = _make_record()
+        record.id = "rec-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        await proc._handle_record_permissions(record, [perm], tx_store)
+
+        tx_store.batch_create_edges.assert_not_awaited()
+        proc.logger.warning.assert_called()
+
     @pytest.mark.asyncio
     async def test_group_permission_found(self):
         """Creates permission edge for GROUP entity when group found."""
@@ -7056,6 +7156,25 @@ def _renamed_share_file(name: str, mime_type: str) -> FileRecord:
         extension=name.rsplit(".", 1)[-1],
         size_in_bytes=10,
     )
+
+
+class TestOnRecordsMovedRefreshesPeople:
+    """A move can carry a new revision, whose people (author, last editor)
+    may differ, so the moved record's person edges are rewritten like any
+    other update's."""
+
+    pytestmark = pytest.mark.anyio
+
+    async def test_the_moved_record_gets_its_people_rewritten(self) -> None:
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-abc", external_revision_id="sha-before")
+        new_record = _make_code_record(record_id="fresh-uuid", external_revision_id="sha-after")
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+        proc._handle_record_people = AsyncMock()
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        proc._handle_record_people.assert_awaited_once_with(new_record, tx_store)
 
 
 class TestOnRecordsMovedKeepsStoredState:

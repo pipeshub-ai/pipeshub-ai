@@ -46,6 +46,7 @@ PARSE_POOL_ALLOWED = {
     "_Worker.__init__",  # extra_env, empty in off
     "_Lane._start_worker", "_Lane._new_worker",  # the one-line hook
     "_pool", "submit", "shutdown_parse_pool", "pool_stats",  # mode branches, pinned by the branch tests
+    "run_blocking",  # the optional cancel event, pinned by test_run_blocking_cancel_event_is_optional
 }
 TABLE_DETECTOR_ALLOWED = {
     "_session",  # reads _threads()
@@ -151,3 +152,16 @@ def test_shutdown_order_in_off_is_pool_first() -> None:
             if isinstance(n, ast.Call)
         }
         assert lines["shutdown_parse_pool"] < lines["governor.close"], name
+
+
+def test_run_blocking_cancel_event_is_optional(lanes_off: None) -> None:
+    """The one new parameter of ``run_blocking`` changes nothing unless it is given."""
+    import inspect
+
+    parameter = inspect.signature(parse_pool.run_blocking).parameters["cancelled"]
+    assert parameter.default is None and parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parse_pool.run_blocking(os.getpid, label="x") != os.getpid()  # a one-shot worker, as before
+    gone = threading.Event()
+    gone.set()
+    with pytest.raises(parse_pool.ParseAbandonedError):
+        parse_pool.run_blocking(os.getpid, label="x", cancelled=gone)

@@ -1167,12 +1167,15 @@ extension btree_gin schema=ext owner=pipeshub_owner
 extension pg_trgm schema=ext owner=<bootstrap-superuser>
 extension plpgsql schema=pg_catalog owner=<bootstrap-superuser>
 extension vector schema=ext owner=<bootstrap-superuser>
-func graph.blocks_by_name(text,text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=8292463faaa0e8d24f8c7b889b3bca07 ext=-
-func graph.blocks_by_record(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=def2c57326873fd6eda4d4367cbcc7bd ext=-
-func graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=1cfa00c604a90e7c2eb51b21bb20ec95 ext=-
+func graph.blocks_by_name(text,text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=cb2d61dbf4fa5a83445d28bdda0486bb ext=-
+func graph.blocks_by_record(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=523eb45c3655082b03631500638ae570 ext=-
+func graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=7a77f90546ea23c4be106caaf27764e9 ext=-
+func graph.record_by_external(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=fecf8201da859ec9b8130c4a6c38c607 ext=-
+func graph.records_by_virtual_id(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=3df6f9c4d84262a8f7f4e7737a445350 ext=-
 func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
 func graph.system_apps(boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=48011eecd76084ecc02f84468779b9b1 ext=-
 func graph.system_orgs(boolean,boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=e304f1fb996469c629ea8ca32ecee2c6 ext=-
+func graph.user_by_user_id(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=06aa7f0e52fbe10f39035dc887d816dc ext=-
 func identity.gauge_auth_configs() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=3552003eb4695b7ca0cab3eeae5e9e09 ext=-
 func identity.gauge_live_orgs() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=f76feba6daecb9efd1f27e8c4fcf3455 ext=-
 func identity.gauge_user_counts() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=9e6fc8a791411aba6338419c433f72cc ext=-
@@ -1234,6 +1237,7 @@ func kg.w_nodes_upsert(smallint[],text[]) owner=pipeshub_vetted_kg secdef=true l
 func kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=2e71bdff7589756a237e177947d0fdcf ext=-
 func kg.w_queue_add(bigint,bigint,text,text,boolean) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=b05070a103e3b9bc5ebba0ff7a18b405 ext=-
 func kg.w_queue_done(bigint) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=467c0f9bfc6703cd72e683e9fc46db19 ext=-
+func kg.w_queue_release(bigint,text) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f4738c5680101d255c4271ae22f91add ext=-
 func kg.w_queue_touch(bigint,bigint,text,integer,text) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=440883b83254a80bebe6109249c25487 ext=-
 func kg.w_records_delete(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=ffd03e3d4587772a450530f01b8e3a1d ext=-
 func kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=302660cdf71b21314a58ad2e3c8c3f43 ext=-
@@ -1266,6 +1270,12 @@ funcacl graph.blocks_by_record(text,text[],jsonb[],boolean,text,integer) pipeshu
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_query EXECUTE
+funcacl graph.record_by_external(text,text) pipeshub_connectors EXECUTE
+funcacl graph.record_by_external(text,text) pipeshub_indexing EXECUTE
+funcacl graph.record_by_external(text,text) pipeshub_query EXECUTE
+funcacl graph.records_by_virtual_id(text[]) pipeshub_connectors EXECUTE
+funcacl graph.records_by_virtual_id(text[]) pipeshub_indexing EXECUTE
+funcacl graph.records_by_virtual_id(text[]) pipeshub_query EXECUTE
 funcacl graph.system_app(text) pipeshub_connectors EXECUTE
 funcacl graph.system_app(text) pipeshub_indexing EXECUTE
 funcacl graph.system_apps(boolean,text,text,integer) pipeshub_connectors EXECUTE
@@ -1273,6 +1283,9 @@ funcacl graph.system_apps(boolean,text,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_query EXECUTE
+funcacl graph.user_by_user_id(text) pipeshub_connectors EXECUTE
+funcacl graph.user_by_user_id(text) pipeshub_indexing EXECUTE
+funcacl graph.user_by_user_id(text) pipeshub_query EXECUTE
 funcacl identity.gauge_auth_configs() pipeshub_jobs EXECUTE
 funcacl identity.gauge_live_orgs() pipeshub_jobs EXECUTE
 funcacl identity.gauge_user_counts() pipeshub_jobs EXECUTE
@@ -1325,6 +1338,7 @@ funcacl kg.w_nodes_upsert(smallint[],text[]) pipeshub_connectors EXECUTE
 funcacl kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) pipeshub_connectors EXECUTE
 funcacl kg.w_queue_add(bigint,bigint,text,text,boolean) pipeshub_connectors EXECUTE
 funcacl kg.w_queue_done(bigint) pipeshub_connectors EXECUTE
+funcacl kg.w_queue_release(bigint,text) pipeshub_connectors EXECUTE
 funcacl kg.w_queue_touch(bigint,bigint,text,integer,text) pipeshub_connectors EXECUTE
 funcacl kg.w_records_delete(bigint[]) pipeshub_connectors EXECUTE
 funcacl kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) pipeshub_connectors EXECUTE
@@ -1655,6 +1669,7 @@ pin kg.w_nodes_upsert(smallint[],text[]) kg.node_keys upsert key=- set= txn=- ma
 pin kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) kg.projection_state upsert key=- set=code_epoch,mode,verify_digest,backfill_cursor,verified_at txn=- max=5000
 pin kg.w_queue_add(bigint,bigint,text,text,boolean) kg.restamp_queue upsert key=- set= txn=- max=5000
 pin kg.w_queue_done(bigint) kg.restamp_queue delete key=id set=- txn=- max=5000
+pin kg.w_queue_release(bigint,text) kg.restamp_queue update key=- set=- txn=- max=5000
 pin kg.w_queue_touch(bigint,bigint,text,integer,text) kg.restamp_queue update key=- set=- txn=- max=5000
 pin kg.w_records_delete(bigint[]) kg.records delete key=sk set=- txn=- max=5000
 pin kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) kg.records upsert key=- set=coll,id,kind,app_sk,group_sk,parent_sk,rule,model,vrid,name,name_key,updated_ms,created_ms,size_bytes,record_type,origin,external_id,deleted,placeholder,granted txn=- max=5000

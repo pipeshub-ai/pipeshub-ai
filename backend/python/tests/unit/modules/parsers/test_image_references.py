@@ -471,6 +471,9 @@ _DEADLINE_SCRIPT = textwrap.dedent(
 )
 
 
+# Its child process takes about 30 s on an idle host and has its own 120 s
+# timeout, so the suite-wide 30 s limit failed it whenever the host was busy.
+@pytest.mark.timeout(180)
 def test_no_crafted_input_makes_a_single_scan_run_away() -> None:
     """The work counts above cannot see a pattern that backtracks inside one call. Each family's largest input, and each shared-tail input, is scanned once in a
     child process under a deadline of seconds where a scan takes milliseconds: only a real blow-up misses it."""

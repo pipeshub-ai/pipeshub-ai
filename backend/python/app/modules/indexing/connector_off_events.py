@@ -123,11 +123,14 @@ def gating_connector_id(record: Mapping[str, Any]) -> str | None:
     return None
 
 
+_NON_NULL_STATUS_FIELDS = frozenset({"indexingStatus", "extractionStatus", "parsingStatus"})
+
+
 def connector_off_updates(record: Mapping[str, Any]) -> dict[str, Any]:
     """The fields the handler writes on a record whose connector is off."""
     updates: dict[str, Any] = {
         "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
-        "extractionStatus": record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+        "extractionStatus": record.get("extractionStatus") or ProgressStatus.NOT_STARTED.value,
         "processingStartedAt": None,
         "reason": CONNECTOR_OFF,
     }
@@ -431,7 +434,11 @@ class GraphConnectorOffFilter:
                 written_fields = connector_off_updates(record)
                 rows.append((
                     record_id,
-                    {field: record.get(field) for field in written_fields},
+                    # A legacy record may lack a status; None is not a status, so that key is left as written.
+                    {
+                        field: record.get(field) for field in written_fields
+                        if record.get(field) is not None or field not in _NON_NULL_STATUS_FIELDS
+                    },
                     {"indexingStatus": written_fields["indexingStatus"], "reason": written_fields["reason"]},
                 ))
             try:

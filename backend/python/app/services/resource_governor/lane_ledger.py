@@ -62,10 +62,20 @@ BRAKE_SPACING_SECONDS = LANE_BRAKE_PERIOD_SECONDS - 2.0
 
 NO_CAP = 0xFFFFFFFF
 _MAGIC = b"PXLEDGR\0"
-_VERSION = 1
+# The version is part of the shared directory's name (see ``open_lane_budget``), so a
+# process of another layout never reads or rewrites this one's record.
+LEDGER_VERSION = 2
+_VERSION = LEDGER_VERSION
 RECORD_SIZE = 128
 _HEADER = struct.Struct("<8sII")
-_BODY = struct.Struct("<IIdIdIddId")
+_BODY = struct.Struct("<IIdIdIddIddIId")
+# A waiting weighted request keeps its flag fresh by rewriting it; one that stops
+# (killed, stopped) is ignored after this long.
+WAITER_FRESH_SECONDS = 2.0
+WAITER_REWRITE_SECONDS = 0.5
+# After a weighted request is admitted or gives up, no other may register for this
+# long and every acquirer ignores the flag, so weight-1 work gets a window.
+WAITER_COOLDOWN_SECONDS = 2.5
 
 
 @dataclass(frozen=True)
@@ -80,6 +90,10 @@ class LedgerRecord:
     window_start: float = 0.0
     spawns_in_window: int = 0
     reap_request_at: float = 0.0
+    waiter_at: float = 0.0
+    waiter_weight: int = 0
+    waiter_pid: int = 0
+    waiter_clear_at: float = 0.0
 
     def encode(self) -> bytes:
         body = _BODY.pack(
@@ -93,6 +107,10 @@ class LedgerRecord:
             self.window_start,
             self.spawns_in_window,
             self.reap_request_at,
+            self.waiter_at,
+            self.waiter_weight,
+            self.waiter_pid,
+            self.waiter_clear_at,
         )
         raw = bytearray(RECORD_SIZE)
         _HEADER.pack_into(raw, 0, _MAGIC, _VERSION, 0)
@@ -137,6 +155,20 @@ def pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def active_waiter(record: LedgerRecord, now: float) -> tuple[int, int] | None:
+    """``(weight, pid)`` of the weighted request that others must leave room for, if any.
+
+    None when no flag is set, when it has gone stale, or while the cooldown after
+    the last waiter is running (every acquirer ignores the flag then).
+    """
+    if record.waiter_at <= 0 or record.waiter_weight <= 0:
+        return None
+    age = now - record.waiter_at
+    if age < -1.0 or age > WAITER_FRESH_SECONDS or now < record.waiter_clear_at:
+        return None
+    return record.waiter_weight, record.waiter_pid
 
 
 def cap_is_live(record: LedgerRecord, now: float, alive: Callable[[int], bool]) -> bool:

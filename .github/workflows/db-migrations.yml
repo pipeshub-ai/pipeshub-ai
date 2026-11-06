@@ -37,8 +37,8 @@ jobs:
             suites: ''
           - shard: graph
             files: tests/test_graph.py tests/test_retrieval.py
-            min_tests: 62
-            suites: '--expect-suite tests.test_graph=41 --expect-suite tests.test_retrieval=22'
+            min_tests: 68
+            suites: '--expect-suite tests.test_graph=46 --expect-suite tests.test_retrieval=22'
           - shard: vetted
             files: tests/test_vetted.py tests/test_vetted_kernel.py tests/test_change_log.py
             min_tests: 533
@@ -61,8 +61,8 @@ jobs:
             suites: ''
           - shard: kg
             files: tests/test_kg_schema.py tests/test_kg_writers.py tests/test_kg_downgrade.py
-            min_tests: 293
-            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=278 --expect-suite tests.test_kg_downgrade=7'
+            min_tests: 307
+            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=292 --expect-suite tests.test_kg_downgrade=7'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

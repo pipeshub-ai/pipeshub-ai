@@ -32,6 +32,7 @@ from app.containers.connector import (
 )
 from app.edition_services import get_data_entities_processor_cls
 from app.modules.indexing.record_republish import record_event
+from app.schema.node_validator import SchemaValidationError
 from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
@@ -39,6 +40,7 @@ from app.services.graph_db.common.record_visibility import (
 )
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.telemetry.modules.schema_metrics import record_schema_rejection
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import CONNECTOR_OFF
 
@@ -110,6 +112,13 @@ class EntityEventService(BaseEventService):
             else:
                 self.logger.error(f"Unknown entity event type: {event_type}")
                 return False
+        except SchemaValidationError as e:
+            # Permanent: redelivering the event cannot make the payload valid. Handled, not retried.
+            # The data processor marks an error it already logged and counted: report it once.
+            if not getattr(e, "schema_reported", False):
+                self.logger.error(f"Entity event {event_type} rejected by schema validation (collection={e.collection}): {e}")
+                record_schema_rejection(e.collection)
+            return True
         except Exception as e:
             self.logger.error(f"Error processing entity event: {str(e)}")
             return False
@@ -207,6 +216,8 @@ class EntityEventService(BaseEventService):
 
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error creating organization: {str(e)}")
             return False
@@ -233,6 +244,8 @@ class EntityEventService(BaseEventService):
             )
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error updating organization: {str(e)}")
             return False
@@ -264,6 +277,8 @@ class EntityEventService(BaseEventService):
             await self._remove_api_toolset_data(payload["orgId"])
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error deleting organization: {str(e)}")
             return False
@@ -379,6 +394,8 @@ class EntityEventService(BaseEventService):
             self._schedule_connector_link(payload["orgId"])
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error creating/updating user: {str(e)}")
             return False
@@ -528,6 +545,8 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"✅ Successfully updated user: {payload['email']}")
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error updating user: {str(e)}")
             return False
@@ -566,6 +585,8 @@ class EntityEventService(BaseEventService):
                 await self._remove_api_toolset_data(payload["orgId"], payload["userId"])
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
@@ -655,6 +676,8 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error enabling apps: {str(e)}")
             return False
@@ -674,7 +697,6 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"📥 Processing app disabled event: {payload}")
 
             # Set apps as inactive
-            app_updates = []
             for app_name in apps:
                 app_doc = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value
@@ -682,21 +704,16 @@ class EntityEventService(BaseEventService):
                 if not app_doc:
                     self.logger.error(f"App not found: {app_name}")
                     return False
-                app_data = {
-                    "id": connector_id,
-                    "name": app_doc.get("name", app_doc.get("_key", connector_id)),
-                    "type": app_doc.get("type"),
-                    "appGroup": app_doc.get("appGroup"),
-                    "isActive": False,
-                    "createdAtTimestamp": app_doc.get("createdAtTimestamp"),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
-                app_updates.append(app_data)
 
-            # Update apps in database
-            await self.graph_provider.batch_upsert_nodes(
-                app_updates, CollectionNames.APPS.value
-            )
+            # Update apps in database. Only the two fields that change: rebuilding the
+            # whole document from the stored one would write None for a field a legacy
+            # app lacks, which the schema (rightly) rejects.
+            for _ in apps:
+                await self.graph_provider.update_node(
+                    connector_id,
+                    CollectionNames.APPS.value,
+                    {"isActive": False, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+                )
             await notify_principals_changed(org_id)  # before the (slow) cleanup below; see process_event
 
             # Stop any running sync/reindex and wait for it to unwind, bounded:
@@ -774,6 +791,8 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"✅ Successfully disabled apps for org: {org_id}")
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error disabling apps: {str(e)}")
             return False
