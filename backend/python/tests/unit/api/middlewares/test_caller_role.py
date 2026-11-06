@@ -158,6 +158,21 @@ class TestFetchCallerRole:
         assert "x-organization-id" not in sent
         assert "x-is-admin" not in sent
         assert sent["host"] == "nodejs:3000"
+        assert "x-pipeshub-mcp-relay" not in sent
+
+    async def test_forwards_the_mcp_relay_header(self) -> None:
+        # Node accepts a token issued for /mcp on the lookup only with the relay header.
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"role": "member"})
+
+        headers = {"Authorization": "Bearer caller-token", "X-Pipeshub-Mcp-Relay": "relay-1"}
+        with _node(handler):
+            await fetch_caller_role(_request(headers), _config_service())
+
+        assert seen[0].headers["x-pipeshub-mcp-relay"] == "relay-1"
 
     async def test_carries_a_caller_role_service_token_for_nodes_rate_limiter(self):
         seen: list = []

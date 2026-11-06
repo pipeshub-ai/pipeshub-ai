@@ -415,8 +415,12 @@ async def test_the_own_record_of_an_app_is_still_listed_beside_the_foreign_ones(
 
 
 @pytest.mark.neo4j_only  # ArangoDB's schema rejects a record with no connectorId field, so this shape exists only on Neo4j
-async def test_a_record_without_a_connector_id_is_listed_as_the_access_check_says(world: _World) -> None:
+async def test_a_record_without_a_connector_id_is_listed_as_the_access_check_says(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The access check denies a record with no connector, so the declared group does not list it."""
+    # The point is how reads treat a shape the schema (rightly) refuses to create, so schema validation is off here.
+    monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "off")
     props = {k: v for k, v in rec("xc-nc", "zz NoConnector", connector_id=APP_A)["props"].items() if k != "connectorId"}
     await world.graph.batch_upsert_nodes([{**props, "id": world.sid("xc-nc"), "orgId": world.org}], collection="records")
     await world.graph.batch_create_edges(

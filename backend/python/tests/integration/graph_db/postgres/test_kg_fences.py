@@ -435,7 +435,8 @@ async def test_a_stopped_worker_returns_between_batches_while_jobs_keep_coming_a
     left_marks, left_jobs = await marks(p, org), await jobs(pg_db, org)
     assert (left_marks == 0) or left_jobs                                # whatever it left hidden has a job that will restamp it
     await no_stale_visible(p, pg_db, org)
-    assert await restamp.run_jobs(pg_db, org, "w2", batch=50) >= 0
+    # the stopped worker may have claimed a job just before it stopped: that job is not claimable until its claim is stale (restamp.claim), so the next worker takes over claims as if their time had passed
+    assert await restamp.run_jobs(pg_db, org, "w2", batch=50, stale_ms=0) >= 0
     assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
 
 

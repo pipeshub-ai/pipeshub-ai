@@ -341,7 +341,7 @@ class SourceCatalog:
             lines.extend([
                 "**Entities.** Records are tagged with departments, categories, subcategories, "
                 "topics and languages; record groups (project, space, folder, channel), "
-                "colleagues, companies (CRM accounts) and record titles are indexed. "
+                "colleagues, companies and record titles are indexed. "
                 "When a question names one, call "
                 f"`{search_entities}(query=...)`: it returns the entity's type, the apps it "
                 "appears in, and a few openable records for the best matches. "
