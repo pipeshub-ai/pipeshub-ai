@@ -214,16 +214,15 @@ class _Env:
 
     def readers(self, item: Issue | Project) -> set[str]:
         """Emails of the users PipesHub shows an issue or project to. Linear shows a project
-        in several teams to the readers of any of them; PipesHub, by choice, only to those of
-        its home team: the lead team, else the first synced team by id."""
+        in several teams to the readers of any of them; PipesHub does so for the teams it
+        syncs, as a team outside the sync adds no readers."""
         if not isinstance(item, Project):
             return self.ws.readers(item)
         synced = self.synced_team_ids()
         teams = [t for t in item.teams if t.id in synced]
-        home = item.lead if item.lead in teams else min(teams, key=lambda t: t.id, default=None)
-        if item.trashed or home is None:
+        if item.trashed:
             return set()
-        return {u.email for u in self.ws.users if self.ws.can_see_team(u, home)}
+        return {u.email for u in self.ws.users if any(self.ws.can_see_team(u, t) for t in teams)}
 
     def owners(self, doc: dict[str, Any]) -> list[Issue | Project]:
         """The Linear issues or projects a record's content comes from."""
@@ -667,9 +666,9 @@ async def test_a_deactivated_person_outside_the_organization_reads_nothing(env: 
 
 # ---------------------------------------------------------------------- projects in several teams
 
-async def test_a_project_is_readable_through_its_home_team_only(env: _Env) -> None:
-    """A project in several teams, with its documents, links and files, is filed under its
-    lead team, else its first team by id, whatever order the teams are listed in."""
+async def test_a_project_is_readable_through_every_team_it_belongs_to(env: _Env) -> None:
+    """A project in several teams, with its documents, links and files, is readable by the
+    readers of each of them, whatever order the teams are listed in and whichever leads."""
     p = await _people(env, "alice", "bob", "carol", "gail", guests=("gail",))
     ws = env.ws
     eng = ws.team("ENG", members=[p["sync"], p["carol"], p["gail"]])
