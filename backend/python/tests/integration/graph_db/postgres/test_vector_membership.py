@@ -189,6 +189,18 @@ async def test_a_system_scope_skips_the_apps_that_are_done_or_being_deleted(pg_p
         assert await pg_provider.get_app_needing_vector_membership_backfill() is None
 
 
+async def test_a_system_scope_picks_the_lowest_id_in_byte_order(pg_provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    """As under an org context (ORDER BY id COLLATE "C"): the database collation's order of the cross-org read does not decide the walk."""
+    apps = [{"_key": "a", "orgId": "o2"}, {"_key": "b", "orgId": "o1"}, {"_key": "B", "orgId": "o3"}, {"_key": "B", "orgId": "o0"}]
+
+    async def listed(*a: object, **k: object) -> list[dict]:
+        return apps
+    monkeypatch.setattr(pg_provider, "_system_apps_page", listed)
+    with org_context.system("test.vector-membership"):
+        got = await pg_provider.get_app_needing_vector_membership_backfill()
+    assert (got["_key"], got["orgId"]) == ("B", "o0")
+
+
 async def tree(w: World) -> None:
     folder = FOLDER_MIME_TYPES[0]
     await w.nodes("apps", {"_key": "kb", "type": "KB"}, {"_key": "kb2", "type": "KB"}, {"_key": "drive", "type": "DRIVE"})
