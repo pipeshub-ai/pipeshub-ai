@@ -851,7 +851,7 @@ class TestUpdateAgentServiceAccountGuards:
             "logger": MagicMock(),
         }
         services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_edit": True}
+            return_value={"can_edit": True, "can_share": True, "user_role": "OWNER"}
         )
         services["graph_provider"].get_agent = AsyncMock(
             return_value={"isServiceAccount": False, "shareWithOrg": False}

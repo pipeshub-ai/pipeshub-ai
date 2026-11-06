@@ -300,6 +300,60 @@ def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None =
     return bool(connector_id and doc_connector and doc_connector != connector_id)
 
 
+# What a save of unchanged content does with each stored indexing status. Every
+# status is in exactly one set (a unit test enforces it), so a new status cannot
+# fall through to "queue it again on every sync" unnoticed.
+#
+# Outcomes indexing reached for this content. The same bytes give the same
+# outcome, so they are kept: a sync is not a retry. A retry is asked for
+# (Reindex), or follows a new revision.
+INDEXING_OUTCOME_STATUSES = frozenset({
+    ProgressStatus.COMPLETED.value,
+    ProgressStatus.EMPTY.value,
+    ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+    ProgressStatus.PASSWORD_PROTECTED.value,
+    ProgressStatus.FAILED.value,
+})
+# Work already asked for. Its event exists, and the stranded-record sweep (QUEUED)
+# or the stale IN_PROGRESS scan re-sends a lost one; another event would index
+# the record twice.
+INDEXING_PENDING_STATUSES = frozenset({
+    ProgressStatus.QUEUED.value,
+    ProgressStatus.IN_PROGRESS.value,
+})
+# Not indexed, for a reason the save may now answer: no event was acknowledged
+# (NOT_STARTED), the connector chose not to index (AUTO_INDEX_OFF), or the record
+# waits on something outside its content (PAUSED, ENABLE_MULTIMODAL_MODELS).
+# SKIPPED is a stage status listed for completeness. The save's own status decides.
+INDEXING_REOPENED_STATUSES = frozenset({
+    ProgressStatus.NOT_STARTED.value,
+    ProgressStatus.AUTO_INDEX_OFF.value,
+    ProgressStatus.PAUSED.value,
+    ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
+    ProgressStatus.SKIPPED.value,
+})
+
+
+def _requests_index_event(record: Record) -> bool:
+    """Whether a saved record asked for an indexing event.
+
+    A save leaves a record NOT_STARTED exactly when it wants one, and
+    ``_mark_queued_after_publish`` moves it to QUEUED once the event is
+    acknowledged. Every other status is an outcome, pending work or a choice
+    not to index, so publishing for it would only repeat work.
+    """
+    if record.indexing_status != ProgressStatus.NOT_STARTED.value:
+        return False
+    if record.is_internal or record.is_placeholder:
+        return False
+    # A Knowledge Base folder has no content to index.
+    return not (
+        record.origin == OriginTypes.UPLOAD
+        and isinstance(record, FileRecord)
+        and record.is_file is False
+    )
+
+
 def _system_file_reason(record: Record) -> str | None:
     """Why a synced file is not content, or None. A Knowledge Base upload is the user's
     explicit choice and is kept: a push that stores nothing is retried until its deadline."""
@@ -2016,6 +2070,39 @@ class DataSourceEntitiesProcessor:
             record.queued_at = get_epoch_timestamp_in_ms()
 
     @staticmethod
+    def _keeps_stored_indexing(record: Record, existing_record: Record, *, reindex_restored: bool) -> bool:
+        """Whether a connector save leaves the stored indexing state as it is.
+
+        It does when the content indexing saw is unchanged and the stored status
+        is an outcome for that content or work already under way. The connector's
+        own status (the model's QUEUED default, or AUTO_INDEX_OFF from a filter)
+        then applies only to what is not yet indexed: AUTO_INDEX_OFF still stops a
+        QUEUED record before indexing starts, but cannot take back an outcome.
+
+        Resetting the status instead made every sync queue each unchanged file
+        that was not COMPLETED again, and erase its outcome until indexing
+        reached it (a file share's unsupported files counted as queued).
+
+        A stub (also a real record a narrowed filter turns back into one) is
+        never indexed, so it keeps the AUTO_INDEX_OFF the save gave it.
+        """
+        if record.is_placeholder or reindex_restored:
+            return False
+        if record.external_revision_id != existing_record.external_revision_id:
+            return False
+        stored = existing_record.indexing_status
+        if (
+            stored == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+            and DataSourceEntitiesProcessor._file_type_changed(record, existing_record)
+        ):
+            # The type can become supported with the revision unchanged (an object
+            # store's MD5 does not move): the outcome was for the old type.
+            return False
+        if stored == ProgressStatus.QUEUED.value:
+            return record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+        return stored in INDEXING_OUTCOME_STATUSES or stored in INDEXING_PENDING_STATUSES
+
+    @staticmethod
     def _reindexes_on_restore(record: Record, existing_record: Record) -> bool:
         """Whether a record a sync brings back from the trash is indexed again.
 
@@ -2769,45 +2856,40 @@ class DataSourceEntitiesProcessor:
             #       the new URL on every sync, and
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
+            keeps_stored_indexing = False
             if record.origin != OriginTypes.UPLOAD:
-                # A stub (also a real record a narrowed filter turns back into one) is
-                # never indexed: it keeps the AUTO_INDEX_OFF set above, not re-queued.
-                if existing_record.indexing_status == ProgressStatus.COMPLETED.value and not record.is_placeholder:
-                    if record.external_revision_id != existing_record.external_revision_id:
-                        # Real content change on an already-indexed record: re-queue it,
-                        # even when the connector stamped AUTO_INDEX_OFF for a manual-only
-                        # filter. Honouring that stamp here downgraded a COMPLETED record
-                        # to AUTO_INDEX_OFF on every source change, which both lost the
-                        # fact that it had been indexed and left its stale vectors in
-                        # place with no event to correct them. Manual-only still holds for
-                        # records the user never indexed: this branch is reached only when
-                        # the stored status is already COMPLETED.
-                        record.indexing_status = ProgressStatus.NOT_STARTED.value
-                    else:
-                        # Unchanged content stays COMPLETED (blocks re-publish
-                        # below). Resetting unconditionally made every full
-                        # re-sync re-embed the entire already-indexed set, and
-                        # clobbered AUTO_INDEX_OFF on manually-indexed records.
-                        record.indexing_status = ProgressStatus.COMPLETED.value
-                        # Indexing owns these fields and, with nothing to re-index,
-                        # may never write them again: left at the model defaults the
-                        # upsert would erase them. They come from this row, the one
-                        # whose status decides the skip. A reindexed restore starts clean.
-                        if not reindex_restored:
-                            self._preserve_indexing_state(record, existing_record)
-                elif (
-                    existing_record.indexing_status == ProgressStatus.PASSWORD_PROTECTED.value
-                    and record.external_revision_id == existing_record.external_revision_id
-                    and not reindex_restored
-                ):
-                    # The same bytes need the same password: queuing the record again
-                    # on every full sync would only repeat the verdict. A changed
-                    # revision takes the normal path and is indexed again.
+                keeps_stored_indexing = self._keeps_stored_indexing(
+                    record, existing_record, reindex_restored=reindex_restored
+                )
+                if keeps_stored_indexing:
+                    # Indexing owns these fields and, with nothing to re-index, may
+                    # never write them again: left at the model defaults the upsert
+                    # would erase them. They come from this row, the one whose status
+                    # decides the skip.
                     self._preserve_indexing_state(record, existing_record)
+                elif (
+                    existing_record.indexing_status == ProgressStatus.COMPLETED.value
+                    and not record.is_placeholder
+                ):
+                    # Real content change on an already-indexed record: re-queue it,
+                    # even when the connector stamped AUTO_INDEX_OFF for a manual-only
+                    # filter. Honouring that stamp here downgraded a COMPLETED record
+                    # to AUTO_INDEX_OFF on every source change, which both lost the
+                    # fact that it had been indexed and left its stale vectors in
+                    # place with no event to correct them. Manual-only still holds for
+                    # records the user never indexed: this branch is reached only when
+                    # the stored status is already COMPLETED.
+                    record.indexing_status = ProgressStatus.NOT_STARTED.value
             elif record.external_revision_id == existing_record.external_revision_id:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).
+                keeps_stored_indexing = True
                 record.indexing_status = existing_record.indexing_status
+            if not keeps_stored_indexing and record.indexing_status == ProgressStatus.QUEUED.value:
+                # The model's QUEUED default asks for indexing. Stored as NOT_STARTED
+                # it is published, and turns QUEUED only once the event is acknowledged
+                # (see the same remap for a new record above).
+                record.indexing_status = ProgressStatus.NOT_STARTED.value
             if not record.weburl:
                 record.weburl = existing_record.weburl
             # Same fall-back rule for source timestamps: connectors whose source
@@ -2837,11 +2919,12 @@ class DataSourceEntitiesProcessor:
             # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
             if existing_record.is_placeholder and not record.is_placeholder:
                 record.is_placeholder = False
-            if record.external_revision_id != existing_record.external_revision_id:
-                if publishes_event:
-                    self._stamp_queued_at(record)
-            elif record.is_placeholder and not (
-                record.rewrite_permissions or record.access_rule == AccessRule.RESTRICTED
+            if publishes_event and not keeps_stored_indexing:
+                self._stamp_queued_at(record)
+            if (
+                record.external_revision_id == existing_record.external_revision_id
+                and record.is_placeholder
+                and not (record.rewrite_permissions or record.access_rule == AccessRule.RESTRICTED)
             ):
                 # The record is upserted below whether or not its content changed,
                 # so a changed restriction reaches the node without a content edit.
@@ -3055,55 +3138,15 @@ class DataSourceEntitiesProcessor:
         # Before the indexing events and for every record, AUTO_INDEX_OFF ones included:
         # the filters below are about whether there is anything to index.
         await self._publish_record_titles((title_changes or {}).values())
-        publishable: list[Record] = []
-        for record in records_to_publish:
-            # Skip publishing indexing events for records with AUTO_INDEX_OFF status
-            if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
-                self.logger.debug(
-                    f"Skipping automatic indexing event for record {record.id} "
-                    f"with AUTO_INDEX_OFF status"
-                )
-                continue
-
-            if record.is_internal:
-                self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
-                continue
-
-            # Already indexed and unchanged — the COMPLETED status was carried
-            # forward from the stored record precisely so this publish can be
-            # skipped; there is nothing for the indexing consumer to redo.
-            # FAILED is a verdict the connector reached itself (a page that
-            # answered an error), stored with its reason: indexing would only
-            # fetch it again, fail the same way, and replace that reason.
-            if record.indexing_status in (
-                ProgressStatus.COMPLETED.value,
-                ProgressStatus.PASSWORD_PROTECTED.value,
-                ProgressStatus.FAILED.value,
-            ):
-                self.logger.debug(
-                    f"Skipping indexing event for already-settled record {record.id} "
-                    f"({record.indexing_status})"
-                )
-                continue
-
-            # KB folders carry no indexable content; they are created COMPLETED
-            # and must not emit a newRecord event (the indexing consumer would
-            # skip them anyway, but this avoids leaving them stuck non-COMPLETED).
-            if (
-                record.origin == OriginTypes.UPLOAD
-                and isinstance(record, FileRecord)
-                and record.is_file is False
-            ):
-                self.logger.debug(f"Skipping newRecord event for KB folder {record.id}")
-                continue
-
-            if record.is_placeholder:
-                self.logger.debug(
-                    f"Skipping automatic indexing event for placeholder record {record.id}"
-                )
-                continue
-
-            publishable.append(record)
+        # Only what the save asked to index: an unchanged record keeps its outcome or
+        # its pending event, and a status the publish does not know is never re-sent.
+        publishable = [record for record in records_to_publish if _requests_index_event(record)]
+        if len(publishable) < len(records_to_publish):
+            self.logger.debug(
+                "Publishing indexing events for %d of %d saved records; the rest are unchanged, "
+                "pending, not to be indexed or have nothing to index",
+                len(publishable), len(records_to_publish),
+            )
 
         await self._flush_pending_blob_moves(pending_moves)
 
@@ -3798,7 +3841,7 @@ class DataSourceEntitiesProcessor:
             def _publishable(candidates: list[Record]) -> list[Record]:
                 return [r for r in candidates if _is_publishable(r)]
 
-            new_batch = _publishable(new_records_to_publish)
+            new_batch = [r for r in new_records_to_publish if _requests_index_event(r)]
             if new_batch:
                 # `acked` is used, not discarded (it was): the CAS below is what
                 # turns NOT_STARTED into QUEUED, and only for records whose event

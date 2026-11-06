@@ -574,7 +574,9 @@ async def _resolve_service_account_binding(
 
 
 async def _only_an_administrator_may_bind(
-    request: Request, config_service: ConfigurationService,
+    request: Request,
+    config_service: ConfigurationService,
+    detail: str = "Only an administrator can choose the service account an agent searches as.",
 ) -> None:
     """Refuse a change of binding from anyone who does not administer the org.
 
@@ -603,13 +605,7 @@ async def _only_an_administrator_may_bind(
             ),
         )
     if not role.is_admin:
-        raise HTTPException(
-            status_code=HttpStatusCode.FORBIDDEN.value,
-            detail=(
-                "Only an administrator can choose the service account an agent "
-                "searches as."
-            ),
-        )
+        raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail=detail)
 
 
 async def _checked_service_account_binding(
@@ -3480,6 +3476,21 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
         final_shared = bool(body.get("shareWithOrg", agent.get("shareWithOrg", False)))
         final_service_account = bool(body.get("isServiceAccount", agent.get("isServiceAccount", False)))
+
+        # A service agent searches as its creator until it is bound, and is shared
+        # with the whole organisation, so an editor converting someone else's agent
+        # would hand everyone the owner's access. Only the owner or an
+        # administrator may decide that.
+        converting = final_service_account and not agent.get("isServiceAccount")
+        if converting and perm.get("user_role") != "OWNER":
+            await _only_an_administrator_may_bind(
+                request,
+                services["config_service"],
+                detail="Only the agent's owner or an administrator can turn it into a service agent.",
+            )
+        # A conversion shares the agent as a matter of course and is checked above.
+        if final_shared and not agent.get("shareWithOrg") and not converting and not perm.get("can_share", False):
+            raise PermissionDeniedError("share this agent with the organisation")
 
         if "serviceAccountUserId" in body:
             body["serviceAccountUserId"] = await _checked_service_account_binding(

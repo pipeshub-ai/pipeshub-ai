@@ -96,4 +96,9 @@ describe('McpServerIcon', () => {
   it("shows Zapier's logo", () => {
     expect(logo(<McpServerIcon typeId="zapier" name="Zapier" />)).toBe('zapier icon');
   });
+
+  it("shows Trello's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="trello" name="Trello" />)).toBe('trello icon');
+    expect(logo(<McpServerIcon typeId={null} name="Trello" />)).toBe('trello icon');
+  });
 });

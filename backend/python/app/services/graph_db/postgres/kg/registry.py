@@ -70,6 +70,10 @@ WRITERS: dict[str, tuple[str, str]] = {
     # delete.py, lookups.py
     "delete_record": (PROJECTED, ""), "unlink_nodes_missed_by_full_sync": (PROJECTED, ""), "link_record_to_group": (PROJECTED, ""), "update_node_if_match": (PROJECTED, ""),
     "remove_nodes_by_field": (PROJECTED, ""),
+    # kb.py
+    "update_kb_permission": (PROJECTED, ""), "remove_kb_permission": (PROJECTED, ""),
+    # permissions.py
+    "batch_update_team_member_roles": (PROJECTED, ""), "delete_all_team_permissions": (PROJECTED, ""),
 }
 
 
