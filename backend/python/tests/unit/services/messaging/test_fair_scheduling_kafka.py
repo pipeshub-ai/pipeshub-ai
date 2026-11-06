@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,7 +29,10 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     _ReadOutcome,
     _SchedulerRebalanceListener,
 )
-from app.services.messaging.scheduling.interface import EnqueueResult, FairSchedulerConfig
+from app.services.messaging.scheduling.interface import (
+    EnqueueResult,
+    FairSchedulerConfig,
+)
 
 
 @pytest.fixture
@@ -1067,7 +1071,7 @@ class TestWatermarkClaimIsAlwaysSettled:
 class TestFailedHandBackKeepsTheMessage:
     """A hand-back whose re-publish fails has no copy on the topic, so this offset is the only one left."""
 
-    def _consumer(self, logger, plain_config):
+    def _consumer(self, logger, plain_config) -> IndexingKafkaConsumer:
         consumer = _make_consumer(logger, plain_config, _fair_config())
         consumer.consumer = MagicMock()
         consumer.consumer.commit = AsyncMock()
@@ -1077,7 +1081,7 @@ class TestFailedHandBackKeepsTheMessage:
         consumer.indexing_semaphore = asyncio.Semaphore(1)
         consumer._requeue_message = AsyncMock(side_effect=RuntimeError("broker unavailable"))
 
-        async def handler(_message):
+        async def handler(_message) -> AsyncGenerator[None, None]:
             raise concurrency.RecordLeaseHeld("record lease held", delay_s=30.0)
             yield
 
