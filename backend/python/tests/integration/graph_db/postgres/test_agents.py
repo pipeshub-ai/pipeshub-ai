@@ -26,11 +26,12 @@ async def agent_world(w: World) -> None:
                   {"_key": "w1", "name": "Writer", "createdBy": "boss", "models": ["gpt-4"], "webSearch": "serper"},
                   {"_key": "nomodels", "name": "Bare", "createdBy": "nobody", "models": "gpt-4", "webSearch": "serper"},
                   {"_key": "gtype", "name": "Gtype", "createdBy": "boss", "models": ["gpt-4"], "webSearch": "serper"}, {"_key": "out_only", "name": "Out", "createdBy": "outsider", "models": ["gpt-4"], "webSearch": "serper"},
-                  {"_key": "dom", "name": "Dom", "createdBy": "boss", "models": ["gpt-4"], "webSearch": "serper"})
+                  {"_key": "dom", "name": "Dom", "createdBy": "boss", "models": ["gpt-4"], "webSearch": "serper"},
+                  {"_key": "num", "name": "Num", "createdBy": "boss", "models": [5, {"k": "5"}, None], "webSearch": "serper"})
     await w.nodes("users", {"_key": "boss", "fullName": "The Boss"}, {"_key": "ann", "name": "Ann"}, {"_key": "outsider", "fullName": "Out"})
     for u in ("boss", "ann"):
         await w.edge("belongsTo", ("users", u), ("organizations", w.org), entityType="ORGANIZATION")
-    for a in ("a1", "a2", "gone", "nomodels"):
+    for a in ("a1", "a2", "gone", "nomodels", "num"):
         await w.edge("permission", ("users", "boss" if a != "a2" else "ann"), ("agentInstances", a), type="USER", role="OWNER")
     await w.edge("permission", ("users", "boss"), ("agentInstances", "w1"), type="USER", role="WRITER")           # a writer is not the owner
     await w.edge("permission", ("users", "outsider"), ("agentInstances", "a3"), type="USER", role="OWNER")        # an owner who is not of the org
@@ -50,6 +51,7 @@ async def test_the_agents_of_a_model_are_those_the_org_owns_or_is_given_and_that
     assert got == [{"name": "Alpha", "_key": "a1", "creatorName": "The Boss"}, {"name": "Shared", "_key": "a3", "creatorName": "The Boss"}]      # the key, or <key>_..., not gpt-40
     assert [a["_key"] for a in await p.get_agents_by_model_key(w.org, "claude")] == ["a1"]                  # a key that starts <key>_
     assert [a["_key"] for a in await p.get_agents_by_model_key(w.org, "gpt-40")] == ["a2"] and (await p.get_agents_by_model_key(w.org, "gpt-40"))[0]["creatorName"] == "Ann"
+    assert await p.get_agents_by_model_key(w.org, "5") == [] and await p.get_agents_by_model_key(w.org, "k") == []           # a model that is not a string names no key
     assert await p.get_agents_by_model_key(w.org, "nope") == [] and await p.get_agents_by_model_key(w.org, "gpt") == []
     assert await p.get_agents_by_model_key(_org(), "gpt-4") == []
     await p.update_node("a2", "agentInstances", {"createdBy": "unknown"})
@@ -64,7 +66,7 @@ async def test_the_agents_of_a_web_search_provider_follow_the_same_rule(w: World
     await agent_world(w)
     p = w.p
     got = await p.get_agents_by_web_search_provider(w.org, "serper")
-    assert [(a["_key"], a["creatorName"]) for a in got] == [("a1", "The Boss"), ("a3", "The Boss"), ("nomodels", None)]
+    assert [(a["_key"], a["creatorName"]) for a in got] == [("a1", "The Boss"), ("a3", "The Boss"), ("nomodels", None), ("num", "The Boss")]
     assert [a["_key"] for a in await p.get_agents_by_web_search_provider(w.org, "bing")] == ["a2"]
     assert await p.get_agents_by_web_search_provider(w.org, "none") == [] and await p.get_agents_by_web_search_provider(_org(), "serper") == []
 
@@ -85,10 +87,14 @@ async def full_agent(w: World) -> None:
     await w.edge("agentHasToolset", ("agentInstances", "ag"), ("agentToolsets", "ts"))
     await w.edge("toolsetHasTool", ("agentToolsets", "ts"), ("agentTools", "t1"))
     await w.edge("toolsetHasTool", ("agentToolsets", "ts"), ("agentTools", "t0"))
+    await w.nodes("agentToolsets", {"_key": "ts2", "name": "mail", "displayName": "Mail", "type": "app", "instanceId": "i2", "instanceName": "Team Mail", "selectedTools": ["z"]})
+    await w.nodes("agentTools", {"_key": "x1", "name": "draft", "fullName": "mail.draft"})
+    await w.edge("agentHasToolset", ("agentInstances", "ag2"), ("agentToolsets", "ts2"))
+    await w.edge("toolsetHasTool", ("agentToolsets", "ts2"), ("agentTools", "x1"))
     await w.nodes("agentKnowledge", {"_key": "k1", "connectorId": "kapp", "filters": '{"recordGroups": ["g"]}'}, {"_key": "k2", "connectorId": "ghost-app", "filters": None},
-                  {"_key": "k3", "connectorId": "kapp", "filters": "not json"})
+                  {"_key": "k3", "connectorId": "kapp", "filters": "not json"}, {"_key": "k4", "connectorId": "kapp", "filters": ["a"]})
     await w.nodes("apps", {"_key": "kapp", "name": "Drive", "type": "GOOGLE_DRIVE"})
-    for k in ("k1", "k2", "k3"):
+    for k in ("k1", "k2", "k3", "k4"):
         await w.edge("agentHasKnowledge", ("agentInstances", "ag"), ("agentKnowledge", k))
     await w.nodes("agentSkills", {"_key": "s1", "name": "summarise", "description": "sd", "category": "c", "subcategory": "sc", "version": "2", "status": "ACTIVE"})
     await w.edge("agentHasSkill", ("agentInstances", "ag"), ("agentSkills", "s1"))
@@ -111,11 +117,13 @@ async def test_an_agent_comes_with_its_toolsets_knowledge_skills_servers_and_whe
     assert know["k1"]["filtersParsed"] == {"recordGroups": ["g"]} and know["k1"]["name"] == "Drive" and know["k1"]["type"] == "GOOGLE_DRIVE" and know["k1"]["displayName"] == "Drive"
     assert know["k2"]["filtersParsed"] == {} and know["k2"]["type"] == "UNKNOWN" and know["k2"]["name"] == "ghost-app"          # an app that is gone: named by its id
     assert know["k3"]["filtersParsed"] == {} and know["k3"]["filters"] == "not json"
+    assert know["k4"]["filtersParsed"] == ["a"]                                                                      # neither null nor a string: passed through
     assert a["skills"] == [{"name": "summarise", "description": "sd", "category": "c", "subcategory": "sc", "version": "2", "status": "ACTIVE", "deprecatedReason": None, "replacedBy": None}]
     assert a["mcpServers"] == [{"_key": "ms", "name": "mcp", "displayName": "MCP", "typeId": "tid", "instanceId": "mi", "allTools": True,
                                 "tools": [{"_key": "mt", "name": "mtool", "fullName": "mcp.mtool", "description": "md"}]}]
     other = await p.get_agent("ag2", w.org)
-    assert other["toolsets"] == [] and other["knowledge"] == [] and other["skills"] == [] and other["mcpServers"] == []          # nothing of another agent's leaks in
+    assert [(t["_key"], [x["_key"] for x in t["tools"]]) for t in other["toolsets"]] == [("ts2", ["x1"])]          # its own toolset and tool, none of ag's
+    assert other["knowledge"] == [] and other["skills"] == [] and other["mcpServers"] == [] and [t["_key"] for t in a["toolsets"]] == ["ts"]      # nothing crosses between the two
 
 
 async def test_the_org_share_is_the_orgs_own_grant_and_a_deleted_or_other_orgs_agent_is_not_there(w: World) -> None:
@@ -130,6 +138,7 @@ async def test_the_org_share_is_the_orgs_own_grant_and_a_deleted_or_other_orgs_a
     await p.delete_edge(w.org, "organizations", "ag", "agentInstances", "permission")
     assert (await p.get_agent("ag", w.org))["shareWithOrg"] is False
     assert await p.get_agent("dead", w.org) is None and await p.get_agent("missing") is None
+    assert await p.get_agent("ag", _org()) is None                                          # an org that is not the ambient one reads nothing
     with in_org(_org()):
         assert await p.get_agent("ag", w.org) is None
 
