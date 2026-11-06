@@ -7,6 +7,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 const logger = Logger.getInstance({ service: 'Temporary Chat Cleanup' });
 const CHAT_ATTACHMENT_CONNECTOR = 'ATTACHMENTS';
 const STAND_IN_TTL_SECONDS = 60;
+const ATTACHMENT_DELETE_TIMEOUT_MS = 15_000;
 
 /** Chat-upload record ids on this conversation only — never KB/connector citations. */
 export function collectTemporaryChatAttachmentRecordIds(
@@ -71,6 +72,7 @@ export async function deleteTemporaryChatAttachments(
         const aiRes = await fetch(aiUrl, {
           method: 'DELETE',
           headers: { Authorization: authorization },
+          signal: AbortSignal.timeout(ATTACHMENT_DELETE_TIMEOUT_MS),
         });
         if (aiRes.status >= 400 && aiRes.status !== 404) {
           logger.warn('Temporary chat attachment delete rejected', {
