@@ -698,6 +698,9 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_between_collections(self, from_id: str, from_collection: str, edge_collection: str, to_collection: str) -> None:
         return await self.graph_provider.delete_edges_between_collections(from_id, from_collection, edge_collection, to_collection, transaction=self.txn)
 
+    async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int:
+        return await self.graph_provider.delete_record_entity_relations(record_id, to_collection, origin, transaction=self.txn)
+
     async def delete_edges_by_relationship_types(
         self,
         from_id: str,
@@ -2043,6 +2046,8 @@ _HARMLESS_WRITERS = frozenset({
     "delete_record_by_external_id", "compare_and_set_indexing_status",
     # a push claim writes the document id and version of the record, never a field that decides access or place
     "claim_push_record", "retag_push_record",
+    # clears a record's entityRelations edges to one entity collection: never a hierarchy, group, inherit or grant edge
+    "delete_record_entity_relations",
 })
 CLASSIFIED_WRITERS = frozenset(_STRUCTURAL_WRITERS) | frozenset(_CONNECTOR_WRITERS) | _HARMLESS_WRITERS
 
