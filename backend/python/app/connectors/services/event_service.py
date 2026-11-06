@@ -64,10 +64,16 @@ from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_s
 from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
+from app.utils.logging_fields import bind_log_fields, log_event, log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Bounded because this runs inline in the sync consumer loop: a longer wait
 # stalls every other connector's events behind one delete.
+
+
+def _stored_type(connector_doc: dict[str, Any] | None) -> str:
+    """The instance's stored type as a registry name ("Google Drive" -> "googledrive"), or ""."""
+    return ((connector_doc or {}).get("type") or "").replace(" ", "").lower()
 
 
 def _message_timestamp_ms(payload: dict[str, Any]) -> int | None:
@@ -442,7 +448,7 @@ class EventService:
         request body, so it could build one connector's class over another
         instance's config and credentials.
         """
-        stored = (connector_doc.get("type") or "").replace(" ", "").lower()
+        stored = _stored_type(connector_doc)
         if not stored:
             return event_name
         if stored != event_name:
@@ -527,21 +533,24 @@ class EventService:
             connector_name = parts[0].replace(" ", "").lower()
             action = parts[1].lower()
 
-            self.logger.info(f"Handling {connector_name} connector event: {action}")
+            # Every line of the event, and of the tasks it starts, names the instance.
+            # The event's name is only a fallback: the start path re-binds the stored type.
+            with log_fields(connector_id=payload.get("connectorId"), connector_type=connector_name):
+                self.logger.info(f"Handling {connector_name} connector event: {action}")
 
-            if action == "init":
-                return await self._handle_init(connector_name, payload)
-            elif action == "start":
-                return await self._handle_start_sync(connector_name, payload)
-            elif action == "resync":
-                return await self._handle_start_sync(connector_name, payload)
-            elif action == "reindex":
-                return await self._handle_reindex(connector_name, payload)
-            elif action == "delete":
-                return await self._handle_delete(connector_name, payload)
-            else:
-                self.logger.error(f"Unknown {connector_name.capitalize()} connector event type: {action}")
-                return False
+                if action == "init":
+                    return await self._handle_init(connector_name, payload)
+                elif action == "start":
+                    return await self._handle_start_sync(connector_name, payload)
+                elif action == "resync":
+                    return await self._handle_start_sync(connector_name, payload)
+                elif action == "reindex":
+                    return await self._handle_reindex(connector_name, payload)
+                elif action == "delete":
+                    return await self._handle_delete(connector_name, payload)
+                else:
+                    self.logger.error(f"Unknown {connector_name.capitalize()} connector event type: {action}")
+                    return False
 
         except Exception as e:
             self.logger.error(f"Error handling connector event {event_type}: {e}", exc_info=True)
@@ -607,17 +616,17 @@ class EventService:
             )
 
             if not connector:
-                self.logger.error(f"❌ Failed to create {connector_name} connector")
+                self.logger.error(f"Failed to create {connector_name} connector")
                 return False
 
             is_initialized = await connector.init()
 
             if not is_initialized:
-                self.logger.error(f"❌ Failed to initialize {connector_name} connector (init returned False). Not storing in container.")
+                self.logger.error(f"Failed to initialize {connector_name} connector (init returned False). Not storing in container.")
                 await self._dispose_unstored(connector_name, connector)
                 return False
 
-            self.logger.info(f"✅ Successfully initialized {connector_name} connector")
+            self.logger.info(f"Successfully initialized {connector_name} connector")
 
             await self._store_connector(connector_id, connector)
 
@@ -765,6 +774,7 @@ class EventService:
         if admission is not Admission.GRANTED or lease is None:
             # REFUSED_BY_STOP: the user asked to stop this very request while it
             # was in flight. Recording intent here would undo their stop.
+            log_event(self.logger, "sync_run.refused", reason=admission.value)
             return True
 
         try:
@@ -822,6 +832,9 @@ class EventService:
             document_key=connector_id,
             collection=CollectionNames.APPS.value,
         )
+        # The stored type, not the event's (the resync route takes that from the request body).
+        # process_event's log_fields scope ends this binding.
+        bind_log_fields(connector_type=_stored_type(connector_doc) or None)
 
         # Ahead of _ensure_connector, which does OAuth and HTTP: no point paying
         # for an init on a connector the database has already disabled.
@@ -916,9 +929,9 @@ class EventService:
                     status=AppStatus.FULL_SYNCING.value,
                     is_locked=True,
                 )
-                self.logger.info(f"🔒 Set status=FULL_SYNCING, isLocked=True for connector {connector_id}")
+                self.logger.info(f"Set status=FULL_SYNCING, isLocked=True for connector {connector_id}")
             except Exception as lock_err:
-                self.logger.error(f"❌ Failed to set lock for connector {connector_id}: {lock_err}")
+                self.logger.error(f"Failed to set lock for connector {connector_id}: {lock_err}")
                 return False, False
 
             # The prep below deletes sync edges before the sync task runs: the knowledge hub stops listing this
@@ -933,11 +946,11 @@ class EventService:
                         connector_id=connector_id
                     )
                     if success:
-                        self.logger.info(f"✅ Successfully deleted {deleted_count} sync points for connector {connector_id}")
+                        self.logger.info(f"Successfully deleted {deleted_count} sync points for connector {connector_id}")
                     else:
-                        self.logger.warning(f"⚠️ Failed to delete sync points for connector {connector_id}, continuing with sync")
+                        self.logger.warning(f"Failed to delete sync points for connector {connector_id}, continuing with sync")
                 except Exception as sync_point_error:
-                    self.logger.error(f"❌ Error deleting sync points for connector {connector_id}: {sync_point_error}")
+                    self.logger.error(f"Error deleting sync points for connector {connector_id}: {sync_point_error}")
                     self.logger.warning("Continuing with sync despite sync point deletion failure")
 
                 # The connector's links are not deleted here. Deleting them up front
@@ -993,23 +1006,23 @@ class EventService:
                     self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
 
             except Exception as e:
-                self.logger.error(f"❌ Failed during full sync prep for {connector_id}: {e}")
+                self.logger.error(f"Failed during full sync prep for {connector_id}: {e}")
                 # No sync task will end this mark; the next stamp picks up whatever the prep deleted.
                 await self._kh_scope_end(connector_id, prep_generation, stamp=False)
                 # Release lock immediately so the connector is not stuck
                 try:
                     await self._update_app_status(connector_id, status=AppStatus.IDLE.value, is_locked=False)
                 except Exception as revert_err:
-                    self.logger.error(f"❌ Failed to revert lock for connector {connector_id}: {revert_err}")
+                    self.logger.error(f"Failed to revert lock for connector {connector_id}: {revert_err}")
                 return False, False
 
             # Prep done and task scheduled — release the lock now.
             # Status stays FULL_SYNCING until run_sync() finishes.
             try:
                 if await self._release_full_sync_lock(connector_id):
-                    self.logger.info(f"🔓 Released lock for connector {connector_id} (status remains FULL_SYNCING)")
+                    self.logger.info(f"Released lock for connector {connector_id} (status remains FULL_SYNCING)")
             except Exception as unlock_err:
-                self.logger.error(f"❌ Failed to release lock for connector {connector_id}: {unlock_err}")
+                self.logger.error(f"Failed to release lock for connector {connector_id}: {unlock_err}")
                 # Non-fatal: sync task is already running; log and continue
 
         else:
@@ -1251,7 +1264,7 @@ class EventService:
         try:
             return await self.graph_provider.kh_scope_mark_stale(connector_id)
         except Exception as e:
-            self.logger.error(f"❌ Could not mark knowledge hub scopes stale for {connector_id}: {e}")
+            self.logger.error(f"Could not mark knowledge hub scopes stale for {connector_id}: {e}")
             return None
 
     async def _kh_scope_end(self, connector_id: str, generation: int | None, *, stamp: bool) -> None:
@@ -1263,7 +1276,7 @@ class EventService:
             if stamp and await self.graph_provider.kh_scope_enabled():
                 await self.graph_provider.kh_scope_stamp(connector_id)
         except Exception as e:
-            self.logger.error(f"❌ Knowledge hub scope stamp failed for {connector_id}: {e}")
+            self.logger.error(f"Knowledge hub scope stamp failed for {connector_id}: {e}")
 
     @staticmethod
     def _reindex_task_key(
@@ -1565,7 +1578,7 @@ class EventService:
             if fetched_count < batch_size:
                 break
 
-        self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
+        self.logger.info(f"Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
 
     async def _rerun_stage_by_state(
         self,
@@ -1620,7 +1633,7 @@ class EventService:
                     total += len(records)
                 if len(page) < batch_size:
                     break
-        self.logger.info(f"✅ Re-ran {stages} for {total} records of connector {connector_id}")
+        self.logger.info(f"Re-ran {stages} for {total} records of connector {connector_id}")
 
     async def _release_storage(
         self,
@@ -1655,7 +1668,7 @@ class EventService:
             self.logger.error("'orgId' and 'connectorId' are required in the delete payload")
             return False
 
-        self.logger.info(f"🗑️ Processing async deletion for {connector_name} connector {connector_id}")
+        self.logger.info(f"Processing async deletion for {connector_name} connector {connector_id}")
 
         graph_deleted = False
         try:
@@ -1743,7 +1756,7 @@ class EventService:
             graph_deleted = True
 
             self.logger.info(
-                f"✅ Graph DB deletion complete for connector {connector_id}. "
+                f"Graph DB deletion complete for connector {connector_id}. "
                 f"Records: {result.get('deleted_records_count', 0)}"
             )
 
@@ -1798,12 +1811,12 @@ class EventService:
             _storage_release_tasks.add(task)
             task.add_done_callback(_storage_release_tasks.discard)
 
-            self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
+            self.logger.info(f"Async deletion complete for connector {connector_id}")
             return True
 
         except Exception as e:
             self.logger.error(
-                f"❌ Async deletion failed for connector {connector_id}: {e}",
+                f"Async deletion failed for connector {connector_id}: {e}",
                 exc_info=True
             )
             if graph_deleted:
@@ -1828,10 +1841,10 @@ class EventService:
                     }],
                     CollectionNames.APPS.value
                 )
-                self.logger.info(f"↩️ Reverted status for connector {connector_id}")
+                self.logger.info(f"Reverted status for connector {connector_id}")
             except Exception as revert_err:
                 self.logger.error(
-                    f"❌ Failed to revert status for connector {connector_id}: {revert_err}. "
+                    f"Failed to revert status for connector {connector_id}: {revert_err}. "
                     f"Connector may be stuck in DELETING state."
                 )
             return False
