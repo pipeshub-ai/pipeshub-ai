@@ -841,6 +841,19 @@ class GraphTransactionStore(TransactionStore):
             person, transaction=self.txn, raise_on_error=raise_on_error
         )
 
+
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        return await self.graph_provider.get_person_by_source_key(
+            source_key, org_id, transaction=self.txn, raise_on_error=True
+        )
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return self.graph_provider.is_transient_error(error)
+
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        return await self.graph_provider.upsert_person_by_source_key(
+            person, transaction=self.txn, raise_on_error=raise_on_error
+        )
     async def ensure_app_membership(
         self,
         principal_id: str,
@@ -2036,7 +2049,7 @@ _wrap_patch("batch_upsert_nodes")
 # writes that move no structure: grants, memberships, people, sync points, content and indexing state, and the transaction itself
 _HARMLESS_WRITERS = frozenset({
     "batch_upsert_nodes", "batch_update_nodes", "batch_upsert_people",
-    "upsert_person_by_email", "ensure_app_membership", "reap_stale_external_app_relations", "create_user_group_hierarchy",
+    "upsert_person_by_email", "upsert_person_by_source_key", "ensure_app_membership", "reap_stale_external_app_relations", "create_user_group_hierarchy",
     "create_user_group_membership", "batch_create_user_app_edges", "batch_upsert_user_groups",
     "batch_upsert_app_roles", "batch_upsert_app_users", "ensure_team_app_edge", "upsert_authenticated_as", "remove_authenticated_as",
     "batch_upsert_orgs", "commit", "rollback", "create_user_groups", "create_users", "create_orgs", "create_sync_point",

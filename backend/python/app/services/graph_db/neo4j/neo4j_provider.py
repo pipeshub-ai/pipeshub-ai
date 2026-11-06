@@ -1148,6 +1148,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [
             "CREATE CONSTRAINT person_org_email_unique IF NOT EXISTS "
             f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.email) IS UNIQUE",
+            # A person a source names without an email (see Person.source_key).
+            "CREATE CONSTRAINT person_org_source_key_unique IF NOT EXISTS "
+            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.sourceKey) IS UNIQUE",
             # A sync point key names one sync point: connectors embed their org and
             # connector id, code-graph build state its record group's id. Without it
             # two first upserts both created one, and reads returned either (B3).
@@ -6141,7 +6144,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         raise_on_error: bool = False,
         org_id: str | None = None,
     ) -> User | None:
-        """Get user by email"""
+        """Get user by email; with ``org_id``, only a user of that organisation."""
         normalized_email = email.strip().lower() if email else ""
         if not normalized_email:
             return None
@@ -18432,6 +18435,60 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise
             return None
 
+
+    async def get_person_by_source_key(
+        self, source_key: str, org_id: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> Person | None:
+        """See :meth:`IGraphDBProvider.get_person_by_source_key`."""
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            rows = await self.client.execute_query(
+                f"MATCH (p:{label} {{sourceKey: $source_key, orgId: $org_id}}) RETURN p LIMIT 1",
+                parameters={"source_key": source_key, "org_id": org_id},
+                txn_id=transaction,
+            )
+            if not rows:
+                return None
+            return Person.from_arango_person(
+                self._neo4j_to_arango_node(dict(rows[0]["p"]), CollectionNames.PEOPLE.value)
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Get person by source key failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return None
+
+    async def upsert_person_by_source_key(
+        self,
+        person: Person,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> str | None:
+        """See :meth:`IGraphDBProvider.upsert_person_by_source_key`. Atomic
+        through the person_org_source_key_unique constraint."""
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            person_doc = person.to_arango_person()
+            self.validator.validate_node(CollectionNames.PEOPLE.value, person_doc)
+            props = self._arango_to_neo4j_node(person_doc, CollectionNames.PEOPLE.value)
+            results = await self.client.execute_query(
+                f"""
+                MERGE (p:{label} {{sourceKey: $source_key, orgId: $org_id}})
+                ON CREATE SET p = $props
+                RETURN p.id AS id
+                """,
+                parameters={"source_key": person.source_key, "org_id": person.org_id, "props": props},
+                txn_id=transaction,
+            )
+            return results[0]["id"] if results else None
+        except SchemaValidationError:
+            raise
+        except Exception as e:
+            self.logger.error(f"❌ Upsert person by source key failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return None
     async def ensure_app_membership(
         self,
         principal_id: str,
@@ -18553,6 +18610,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             app_rel = edge_collection_to_relationship(
                 CollectionNames.USER_APP_RELATION.value
             )
+            entity_rel = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
 
             # The transfers are written out per relationship type rather than looped:
             # Cypher has no dynamic relationship type without APOC.
@@ -18580,6 +18638,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 ON CREATE SET moved = properties(r)
                 DELETE r
                 RETURN count(*) AS moved_app_relations
+            }}
+
+            // Records naming the person (author, editor, owner) point AT it; they follow
+            // it to the user whether or not it splits.
+            CALL {{
+                WITH p, u
+                MATCH (rec)-[r:{entity_rel}]->(p)
+                MERGE (rec)-[moved:{entity_rel} {{edgeType: r.edgeType}}]->(u)
+                ON CREATE SET moved = properties(r)
+                DELETE r
+                RETURN count(*) AS moved_entity_relations
             }}
 
             // Aggregating rather than returning the deleted node keeps this block from

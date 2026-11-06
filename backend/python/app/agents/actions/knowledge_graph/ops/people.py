@@ -1,6 +1,6 @@
 """``find_records_by_person`` operation — records a person is linked to by a
 role the connectors write (assignee, reporter, creator, author, owner,
-reviewer, recipient, lead, mentioned, involved), limited to what the user can read inside the turn, newest first,
+editor, reviewer, recipient, lead, mentioned, involved), limited to what the user can read inside the turn, newest first,
 paged by cursor.
 
 Listing and access go through the entity listing engine
@@ -52,6 +52,7 @@ ROLE_EDGES: dict[str, str] = {
     "creator": EntityRelations.CREATED_BY.value,
     "author": EntityRelations.AUTHORED_BY.value,
     "owner": EntityRelations.OWNED_BY.value,
+    "editor": EntityRelations.LAST_MODIFIED_BY.value,
     "reviewer": EntityRelations.REVIEWED_BY.value,
     "recipient": EntityRelations.ADDRESSED_TO.value,
     "lead": EntityRelations.LEAD_BY.value,
