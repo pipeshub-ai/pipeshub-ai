@@ -163,7 +163,7 @@ class PermissionsMixin(PgBase):
             records = await walk(tx, "records", record_ids, exact_record_ids) if record_ids or exact_record_ids else []
             return {"groups": [{"id": g["id"], "connectorId": g["cid"]} for g in groups],
                     "records": [{"id": r["id"], "vrid": r["vrid"], "connectorId": r["cid"]} for r in records]}
-        return await self._q(go)
+        return await self._q(go, None)
 
     # ---- who holds a grant on a node, and the writes of grants -----------------------------------------------------
     async def _users_granted_on(self, node_id: str, limit: int | None, transaction: str | None) -> list[dict]:
