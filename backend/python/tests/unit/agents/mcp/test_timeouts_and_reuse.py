@@ -183,6 +183,24 @@ class TestAListingDiscoversABoundedNumberOfServers:
         assert most == 3
         assert all(entry["tools"] for entry in instances)
 
+    async def test_a_servers_budget_is_what_is_left_of_the_deadline_when_less_than_its_own(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The yielded wait follows a controlled clock: the full budget early, then what is left, then nothing."""
+        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_DEADLINE_SECONDS", 15)
+        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_BUDGET_SECONDS", 10)
+        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_MIN_SECONDS", 1)
+        now = [100.0]
+        loop = asyncio.get_running_loop()
+        budgets = []
+        with patch.object(loop, "time", side_effect=lambda: now[0]):  # nothing below sleeps on the loop
+            discovery = mcp_servers._ListingDiscovery()
+            for at in (100.0, 107.0, 113.5, 114.5):
+                now[0] = at
+                async with discovery.slot() as budget:
+                    budgets.append(budget)
+        assert budgets == [10, 8.0, 1.5, 0]
+
     async def test_servers_whose_turn_comes_after_the_deadline_are_reported_as_timed_out(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
