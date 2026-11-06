@@ -245,7 +245,9 @@ async def test_a_record_waiting_for_a_stage_does_not_hold_an_indexing_slot(stage
         await until(lambda: len([r for r in ran if r in free]) == 6, timeout=20.0)     # a held record parked in a slot would stall them for its whole wait; load only stretches seconds
         assert not [r for r in ran if r in held]
         assert len(slots) == len(free)  # one slot for each unrelated record, none for a held one
-    await until(lambda: set(held) <= set(ran), timeout=15.0)
+    # a hand-back waits at least the first retry back-off (15 s, whatever PG_QUEUE_HANDBACK_BASE_S says) from the claim, which is before the release: the
+    # redelivery lands within a fraction of a second of a 15 s deadline counted from the release, so the deadline allows a stalled runner
+    await until(lambda: set(held) <= set(ran), timeout=60.0)
 
 
 async def test_a_paused_stage_stops_claiming_until_the_pause_ends(stage, monkeypatch) -> None:

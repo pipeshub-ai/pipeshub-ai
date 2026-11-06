@@ -291,6 +291,10 @@ class FakeRecordsDb:
 
     async def on_record_content_update(self, record: Record, permissions: list[Any] | None = None) -> None:
         self.content_updates.append(record)
+        # The processor upserts the record before it publishes updateRecord.
+        self.records[record.external_record_id] = record
+        if permissions is not None:
+            self.record_permissions[record.external_record_id] = list(permissions)
 
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append((record, permissions))

@@ -112,6 +112,10 @@ from app.connectors.sources.atlassian.core.confluence_html import (
     is_cloud_attachment_download_url,
     prepare_streaming_html,
 )
+from app.connectors.sources.atlassian.core.confluence_sync import (
+    save_synced_records,
+    synced,
+)
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.connectors.sources.atlassian.core.quota import (
     API_TOKEN_REQUESTS_PER_SECOND,
@@ -2343,8 +2347,8 @@ class ConfluenceConnector(BaseConnector):
                             else AccessRule.STRICT
                         )
 
-                        # Add item to batch
-                        records_with_permissions.append((webpage_record, permissions))
+                        # Add item to batch. A content change publishes updateRecord.
+                        records_with_permissions.append(synced(webpage_record, permissions, existing_record))
                         total_synced += 1
                         self.logger.debug(f"{content_type.capitalize()} {item_title}: {len(permissions)} permissions")
 
@@ -2532,7 +2536,9 @@ class ConfluenceConnector(BaseConnector):
                                         # Attachments follow the page's access through inheritance.
                                         attachment_record.inherit_permissions = True
                                         attachment_record.rewrite_permissions = True
-                                        records_with_permissions.append((attachment_record, []))
+                                        records_with_permissions.append(
+                                            synced(attachment_record, [], existing_attachment)
+                                        )
                                         total_attachments_synced += 1
 
                                 except AtlassianQuotaExhausted:
@@ -2558,9 +2564,9 @@ class ConfluenceConnector(BaseConnector):
 
                 # Save batch to database
                 if records_with_permissions:
-                    await self.data_entities_processor.on_new_records(records_with_permissions)
+                    await save_synced_records(self.data_entities_processor, records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments)")
-                    await self._drop_legacy_comment_records(self._saved_as_blocks(r for r, _ in records_with_permissions))
+                    await self._drop_legacy_comment_records(self._saved_as_blocks(r for r, *_ in records_with_permissions))
                 if not within_ids:
                     await self._save_batch_checkpoint(
                         sync_point_key, items_data, nothing_skipped=listing_complete,

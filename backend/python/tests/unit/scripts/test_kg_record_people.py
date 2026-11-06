@@ -47,6 +47,8 @@ def _graph(pages: list[list[str]], failing: frozenset[str] = frozenset()) -> Mag
     graph.update_node = AsyncMock(return_value=True)
     graph.get_record_group_organization = AsyncMock(return_value=None)
     graph.stamp_external_org_parents = AsyncMock(return_value=0)
+    graph.page_entity_index_source = AsyncMock(return_value=[])
+    graph.batch_update_nodes = AsyncMock(return_value=True)
     return graph
 
 
@@ -204,6 +206,7 @@ async def test_apply_stamps_accounts_first_and_links_deals_to_them() -> None:
         get_user_by_email=graph.get_user_by_email, get_user_by_source_id=graph.get_user_by_source_id,
         delete_edges_between_collections=AsyncMock(), batch_create_entity_relations=AsyncMock(),
         get_record_group_organization=graph.get_record_group_organization,
+        delete_record_entity_relations=AsyncMock(return_value=0),
     )
     data_store = MagicMock()
 
@@ -236,3 +239,30 @@ async def test_a_failed_account_lookup_fails_the_page() -> None:
 
     assert code == EXIT_PARTIAL
     assert _lines(out)[-1]["total"]["failed_pages"] == 1
+
+
+async def test_apply_keys_the_orgs_accounts_for_extracted_names() -> None:
+    """Accounts synced before KG-13 3b carry no normalizedName, so names in
+    documents could not find them."""
+    graph, out = _graph([]), io.StringIO()
+    graph.page_entity_index_source = AsyncMock(side_effect=[
+        [{"_key": "a1", "name": "Globex Corp."}, {"_key": "a2", "name": "Acme"}], [{"_key": "a3", "name": "Initech"}],
+    ])
+    code = await backfill(graph, MagicMock(), "org-1", apply=True, logger=logging.getLogger("t"), out=out, page_size=2)
+    assert code == 0
+    written = [doc for call in graph.batch_update_nodes.await_args_list for doc in call.args[0]]
+    assert written == [
+        {"id": "a1", "normalizedName": "globex"}, {"id": "a2", "normalizedName": "acme"},
+        {"id": "a3", "normalizedName": "initech"},
+    ]
+    assert _lines(out)[-1]["accounts_keyed"] == 3
+
+
+async def test_a_failed_keying_is_partial_and_a_dry_run_skips_it() -> None:
+    graph, out = _graph([]), io.StringIO()
+    graph.page_entity_index_source = AsyncMock(side_effect=RuntimeError("down"))
+    assert await backfill(graph, MagicMock(), "org-1", apply=True, logger=logging.getLogger("t"), out=out) == 1
+    assert _lines(out)[-1]["accounts_keyed"] is None
+    graph = _graph([])
+    await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=io.StringIO())
+    graph.batch_update_nodes.assert_not_awaited()
