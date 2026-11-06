@@ -506,6 +506,8 @@ export function McpInstanceConfigPanel({
   };
 
   const save = async () => {
+    // Read now: closing the panel mid-save unmounts the section that set it.
+    const saveAccess = isPersonal ? null : manageAccessSave.current;
     setIsSaving(true);
     try {
       const payload = buildPayload();
@@ -526,7 +528,7 @@ export function McpInstanceConfigPanel({
 
       await saveCredentialsIfProvided(instanceId);
       await saveLogoIfChanged(instanceId);
-      if (!isPersonal) await manageAccessSave.current?.(instanceId);
+      await saveAccess?.(instanceId);
 
       onSaved();
       requestOpenChange(false);

@@ -21,7 +21,13 @@ vi.mock('@/config', () => ({
   McpInheritedCallout: () => null,
   McpManageAccess: (props: McpManageAccessProps) => {
     mocks.section(props);
-    props.saveRef.current = mocks.saveAccess;
+    React.useEffect(() => {
+      const { saveRef } = props;
+      saveRef.current = mocks.saveAccess;
+      return () => {
+        saveRef.current = null;
+      };
+    });
     return <div data-testid="manage-access" />;
   },
 }));
@@ -54,11 +60,11 @@ vi.mock('../../../../components', () => ({
 
 import { McpInstanceConfigPanel } from '../mcp-instance-config-panel';
 
-function panel(scope: 'org' | 'personal', onSaved = vi.fn()) {
+function panel(scope: 'org' | 'personal', onSaved = vi.fn(), open = true) {
   return (
     <Theme>
       <McpInstanceConfigPanel
-        state={{ open: true, mode: 'create', editingInstance: null, prefillTemplate: null }}
+        state={{ open, mode: 'create', editingInstance: null, prefillTemplate: null }}
         templates={[]}
         instances={[]}
         customStdioAllowed={false}
@@ -98,6 +104,23 @@ describe('McpInstanceConfigPanel Manage Access', () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(mocks.saveAccess).toHaveBeenCalledWith('new-1');
     expect(mocks.createInstance.mock.invocationCallOrder[0]).toBeLessThan(mocks.saveAccess.mock.invocationCallOrder[0] as number);
+  });
+
+  it('still saves access when the panel is closed while the server is being saved', async () => {
+    let finishCreate: (value: { _id: string }) => void = () => undefined;
+    mocks.createInstance.mockReturnValue(new Promise((resolve) => (finishCreate = resolve)));
+    const onSaved = vi.fn();
+    const view = render(panel('org', onSaved));
+
+    typeInto('workspace.mcpServers.form.name', 'Internal tools');
+    typeInto('workspace.mcpServers.form.url', 'https://mcp.example.com');
+    fireEvent.click(screen.getByText('save'));
+    view.rerender(panel('org', onSaved, false));
+    expect(screen.queryByTestId('manage-access')).toBeNull();
+
+    finishCreate({ _id: 'new-1' });
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(mocks.saveAccess).toHaveBeenCalledWith('new-1');
   });
 
   it('has no Manage Access on a personal server', () => {
