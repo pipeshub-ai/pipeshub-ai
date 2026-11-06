@@ -254,6 +254,25 @@ class PgBase:
         return {f: doc.get("id" if f == "_key" else f) for f in fields} if fields else _arango(doc, collection)
 
 
+_PG_TRUE = frozenset({"t", "tr", "tru", "true", "y", "ye", "yes", "on", "1"})
+_PG_FALSE = frozenset({"f", "fa", "fal", "fals", "false", "n", "no", "of", "off", "0"})
+
+
+def _pgbool(v: object) -> bool:
+    """``coalesce((doc->>key)::boolean, false)`` for a stored value, including its refusal: JSON null or absent is false, a boolean is itself, a string or an
+    integer reads as PostgreSQL reads its text (case-insensitive, prefixes of true/false/yes/no/on/off, 1 and 0, trimmed of ASCII blanks only), and anything
+    else (another text, a float, an array, an object) raises as the cast does, so an unreadable flag never reads as "live"."""
+    if v is None or isinstance(v, bool):
+        return bool(v)
+    if isinstance(v, (str, int)):
+        t = str(v).strip(" \t\n\r\v\f").lower()
+        if t in _PG_TRUE:
+            return True
+        if t in _PG_FALSE:
+            return False
+    raise ValueError("a document flag is not a boolean")
+
+
 def _field(name: str) -> str:
     return "id" if name == "_key" else name
 

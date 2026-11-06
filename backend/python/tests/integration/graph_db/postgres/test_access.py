@@ -137,6 +137,40 @@ async def test_deleted_nodes_and_stubs_are_not_opened_except_a_stub_asked_by_id(
     assert got.records_by_vrid == {"v3": "real"}                   # a stub reached only by its virtual record id is not cited
 
 
+async def test_the_virtual_record_lookup_admits_what_the_plain_statement_admitted(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The vetted read of graph_0004 and the plain statement answer alike, whichever side a record falls on: deleted, stub (asked or not), another
+    org's claim, no virtual record id, two records for one id."""
+    await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
+    await w.nodes("records", rec("gone", isDeleted=True, virtualRecordId="v1"), rec("stub", isPlaceholder=True, virtualRecordId="v2"),
+                  rec("real", virtualRecordId="v3"), rec("twin", virtualRecordId="v3"), rec("asked_stub", isPlaceholder=True, virtualRecordId="v6"),
+                  rec("foreign", virtualRecordId="v4", orgId="someone-else"), rec("nov"), rec("shut", virtualRecordId="v7", accessRule="RESTRICTED"))
+    await w.nodes("records", {**rec("claimless", virtualRecordId="v8"), "orgId": None})
+    for k in ("gone", "stub", "real", "twin", "asked_stub", "foreign", "nov", "shut", "claimless"):
+        await w.child(("recordGroups", "g"), ("records", k))
+    await w.child(("apps", APP), ("recordGroups", "g"))
+    asks = [{"node_ids": ["asked_stub"], "virtual_record_ids": ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"]}, {"node_ids": [], "virtual_record_ids": ["v3"]},
+            {"node_ids": ["real"], "virtual_record_ids": ["nope"]}, {"node_ids": ["stub"], "virtual_record_ids": ["v2"]}]
+    new = [await w.p.check_access("u", w.org, **a) for a in asks]
+    monkeypatch.setattr("app.services.graph_db.postgres.access._VRID_PAGE", 0)          # a page can never be short: every ask takes the plain statement
+    old = [await w.p.check_access("u", w.org, **a) for a in asks]
+    for n, o, a in zip(new, old, asks, strict=True):
+        assert (set(n.node_ids), n.placeholder_ids, n.records_by_vrid.keys()) == (set(o.node_ids), o.placeholder_ids, o.records_by_vrid.keys()), a
+    assert set(new[0].records_by_vrid) == {"v3"} and new[0].records_by_vrid["v3"] in {"real", "twin"}      # only a live, readable record is cited by its virtual record id
+
+
+async def test_a_flag_the_database_cannot_read_fails_the_check_as_the_cast_did(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A virtual record whose ``isDeleted`` is no boolean must not read as live: both the vetted read and the statement refuse, alike."""
+    await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
+    await w.nodes("records", rec("odd", virtualRecordId="v1", isDeleted="garbage"), rec("fine", virtualRecordId="v2"))
+    await w.child(("apps", APP), ("recordGroups", "g"))
+    for k in ("odd", "fine"):
+        await w.child(("recordGroups", "g"), ("records", k))
+    for page in (5000, 0):                                   # the vetted read, then the plain statement
+        monkeypatch.setattr("app.services.graph_db.postgres.access._VRID_PAGE", page)
+        with pytest.raises(PermissionVerificationUnavailableError):
+            await w.p.check_access("u", w.org, virtual_record_ids=["v1"])
+
+
 async def test_a_record_of_a_knowledge_base_opens_by_membership_of_its_own_app_only(w: World) -> None:
     await w.nodes("apps", {"_key": "kb1", "type": "KB"}, {"_key": "kb2", "type": "KB"})
     await w.edge("permission", ("users", "u"), ("apps", "kb1"), type="USER", role="READER")

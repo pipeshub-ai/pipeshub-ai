@@ -20,7 +20,14 @@ from app.models.entities import Record
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
 from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
-from app.services.graph_db.postgres.base import PgBase, _arango, _doc, _j, _node
+from app.services.graph_db.postgres.base import (
+    PgBase,
+    _arango,
+    _doc,
+    _j,
+    _node,
+    _pgbool,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -59,6 +66,10 @@ async def _upsert_docs(tx: Tx, org: str, coll: str, docs: list[dict]) -> None:
                      org, coll, _j([{"id": i, "doc": by_id[i]} for i in sorted(by_id)]))
 
 
+_RECORD_BY_EXTERNAL_PAGE = 100       # the function's LIMIT
+_RECORD_BY_EXTERNAL = "/* pipeshub:graph.record_by_external */ SELECT node_id, doc FROM graph.record_by_external($1, $2)"       # the vetted read of graph_0004
+
+
 class RecordsMixin(PgBase):
     # ---- single reads ------------------------------------------------------------------------------------------
     async def get_record_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None,
@@ -66,10 +77,18 @@ class RecordsMixin(PgBase):
         """None means there is no such record, never that the lookup failed: a lookup that could not be read raises ``GraphQueryError``."""
         org = current_org_id()
         try:
-            d = await self._one("""/* pipeshub:graph.get_record_by_external_id */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
-                AND n.doc->>'connectorId' = $2 AND n.doc->>'externalRecordId' = $3
-                AND ($4::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($4::int = 2)) LIMIT 1""",
-                                org, connector_id, external_id, _vis(visibility), transaction=transaction)
+            vis = _vis(visibility)
+            rows = None
+            if isinstance(connector_id, str) and isinstance(external_id, str) and 0 < len(connector_id) <= 200 and 0 < len(external_id) <= 2000:
+                # the vetted read returns every record of the pair, and the visibility is read off the documents; a full page may not be all of them
+                rows = await self._q(lambda tx: tx.fetch(_RECORD_BY_EXTERNAL, connector_id, external_id), transaction)
+            if rows is not None and len(rows) < _RECORD_BY_EXTERNAL_PAGE:
+                d = next((x for x in (_doc(r["doc"]) for r in rows) if vis == 0 or _pgbool(x.get("isDeleted")) == (vis == 2)), None)
+            else:
+                d = await self._one("""/* pipeshub:graph.get_record_by_external_id */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
+                    AND n.doc->>'connectorId' = $2 AND n.doc->>'externalRecordId' = $3
+                    AND ($4::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($4::int = 2)) LIMIT 1""",
+                                    org, connector_id, external_id, vis, transaction=transaction)
             return Record.from_arango_base_record(_arango(d, _RECORDS)) if d else None
         except Exception as e:
             if raise_on_error:

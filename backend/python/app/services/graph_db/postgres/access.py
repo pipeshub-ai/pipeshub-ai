@@ -11,7 +11,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES
-from app.services.graph_db.postgres.base import NotImplementedInPostgres
+from app.services.graph_db.postgres.base import NotImplementedInPostgres, _pgbool
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,6 +25,8 @@ PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
 
 
 
+_VRID_SQL = "/* pipeshub:graph.records_by_virtual_id */ SELECT node_id, doc FROM graph.records_by_virtual_id($1::text[])"       # the vetted read of graph_0004
+_VRID_PAGE = 5000
 _HIER_TYPES = ["PARENT_CHILD", "ATTACHMENT"]
 _CHUNK = 10_000
 
@@ -208,6 +210,11 @@ def _is_seed(doc: dict, coll: str, app_id: str, granted: set[str], node_id: str)
             and (rule is None or rule == "OPEN") and node_id in granted)
 
 
+def _text(v: object) -> str | None:
+    """``doc->>key`` for a stored value: its text, None for JSON null or absent."""
+    return v if v is None or isinstance(v, str) else json.dumps(v)
+
+
 async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str], access: dict[str, Any]) -> list[dict[str, Any]]:
     if access.get("probe"):      # a browse that tests grants from the node: its grants are not in ``by_connector``, so it is not answered by guessing
         raise NotImplementedInPostgres("an access check with a grant probe is not implemented")
@@ -222,11 +229,23 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
           AND t.coll IN ('records', 'recordGroups', 'apps') AND t.id = ANY($2::text[])""", org, node_ids)
     if vrids:
         seen_ids = {r["id"] for r in rows}
-        rows = [*rows, *(r for r in await tx.fetch("""/* pipeshub:graph.access_targets_vrid */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
+        found = None
+        if len(vrids) <= 1000 and all(0 < len(v) <= 200 for v in vrids):      # the vetted read of graph_0004: the deleted and placeholder records are dropped here
+            raw = await tx.fetch(_VRID_SQL, vrids)
+            if len(raw) < _VRID_PAGE:
+                asked = set(node_ids)
+                found = []
+                for r in raw:
+                    d = json.loads(r["doc"]) if isinstance(r["doc"], str) else r["doc"]
+                    if not _pgbool(d.get("isDeleted")) and (not _pgbool(d.get("isPlaceholder")) or r["node_id"] in asked):
+                        found.append({"coll": "records", "id": r["node_id"], "doc": r["doc"], "app_id": _text(d.get("connectorId"))})
+        if found is None:
+            found = await tx.fetch("""/* pipeshub:graph.access_targets_vrid */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
             FROM graph.nodes t
             WHERE t.org_id = $1 AND t.doc->>'orgId' = $1 AND NOT coalesce((t.doc->>'isDeleted')::boolean, false)
               AND (NOT coalesce((t.doc->>'isPlaceholder')::boolean, false) OR t.id = ANY($2::text[]))
-              AND t.coll = 'records' AND t.doc->>'virtualRecordId' = ANY($3::text[])""", org, node_ids, vrids) if r["id"] not in seen_ids)]
+              AND t.coll = 'records' AND t.doc->>'virtualRecordId' = ANY($3::text[])""", org, node_ids, vrids)
+        rows = [*rows, *(r for r in found if r["id"] not in seen_ids)]
     targets = []
     for r in rows:
         doc = json.loads(r["doc"]) if isinstance(r["doc"], str) else dict(r["doc"])

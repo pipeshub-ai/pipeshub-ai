@@ -1170,9 +1170,12 @@ extension vector schema=ext owner=<bootstrap-superuser>
 func graph.blocks_by_name(text,text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=b491f16fab6d186b4104d3aa7fdeeaf4 ext=-
 func graph.blocks_by_record(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=d4d8aa2b35d16ca2938e0aabe7107cf4 ext=-
 func graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=cf5821ea8e95a779237b5894a5bc4e73 ext=-
+func graph.record_by_external(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=fecf8201da859ec9b8130c4a6c38c607 ext=-
+func graph.records_by_virtual_id(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=3df6f9c4d84262a8f7f4e7737a445350 ext=-
 func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
 func graph.system_apps(boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=48011eecd76084ecc02f84468779b9b1 ext=-
 func graph.system_orgs(boolean,boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=e304f1fb996469c629ea8ca32ecee2c6 ext=-
+func graph.user_by_user_id(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=06aa7f0e52fbe10f39035dc887d816dc ext=-
 func identity.gauge_auth_configs() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=3552003eb4695b7ca0cab3eeae5e9e09 ext=-
 func identity.gauge_live_orgs() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=f76feba6daecb9efd1f27e8c4fcf3455 ext=-
 func identity.gauge_user_counts() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=9e6fc8a791411aba6338419c433f72cc ext=-
@@ -1266,6 +1269,12 @@ funcacl graph.blocks_by_record(text,text[],jsonb[],boolean,text,integer) pipeshu
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_query EXECUTE
+funcacl graph.record_by_external(text,text) pipeshub_connectors EXECUTE
+funcacl graph.record_by_external(text,text) pipeshub_indexing EXECUTE
+funcacl graph.record_by_external(text,text) pipeshub_query EXECUTE
+funcacl graph.records_by_virtual_id(text[]) pipeshub_connectors EXECUTE
+funcacl graph.records_by_virtual_id(text[]) pipeshub_indexing EXECUTE
+funcacl graph.records_by_virtual_id(text[]) pipeshub_query EXECUTE
 funcacl graph.system_app(text) pipeshub_connectors EXECUTE
 funcacl graph.system_app(text) pipeshub_indexing EXECUTE
 funcacl graph.system_apps(boolean,text,text,integer) pipeshub_connectors EXECUTE
@@ -1273,6 +1282,9 @@ funcacl graph.system_apps(boolean,text,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_query EXECUTE
+funcacl graph.user_by_user_id(text) pipeshub_connectors EXECUTE
+funcacl graph.user_by_user_id(text) pipeshub_indexing EXECUTE
+funcacl graph.user_by_user_id(text) pipeshub_query EXECUTE
 funcacl identity.gauge_auth_configs() pipeshub_jobs EXECUTE
 funcacl identity.gauge_live_orgs() pipeshub_jobs EXECUTE
 funcacl identity.gauge_user_counts() pipeshub_jobs EXECUTE
