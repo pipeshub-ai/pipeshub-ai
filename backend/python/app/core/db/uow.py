@@ -146,14 +146,18 @@ class Tx:
         self.kg_dirty = False  # a statement of this unit that the guard recognised writes graph.nodes or graph.edges (the capture trigger's mark is the authority)
         self._open = True
 
+    @staticmethod
+    def _check_usage(sql: str) -> None:
+        if _REBIND.search(_COMMENTS.sub(" ", sql)):
+            raise UowUsageError("a statement may not change the unit's org, role or settings")
+        if any(_TXN_CONTROL.match(" ".join(st.lower().split())) for st in _SQL_NOISE.sub(" ", sql).split(";")):
+            raise UowUsageError("transaction control statements are not allowed inside a unit; use tx.savepoint()")
+
     async def _run(self, op: str, sql: str, *args: object, internal: bool = False) -> Any:  # noqa: ANN401
         if not self._open:
             raise RuntimeError("transaction handle used outside its unit of work")
         if not internal:
-            if _REBIND.search(_COMMENTS.sub(" ", sql)):
-                raise UowUsageError("a statement may not change the unit's org, role or settings")
-            if any(_TXN_CONTROL.match(" ".join(st.lower().split())) for st in _SQL_NOISE.sub(" ", sql).split(";")):
-                raise UowUsageError("transaction control statements are not allowed inside a unit; use tx.savepoint()")
+            self._check_usage(sql)
             if (hook := self._db.graph_write_hook) is not None and _GRAPH_DML.search(_SQL_NOISE.sub(" ", sql)):
                 hook(self, sql)  # may refuse (strict mode): before the statement runs
                 self.kg_dirty = True
@@ -255,6 +259,7 @@ class Tx:
         """``fetch`` planned for these arguments every time, whatever the unit's plan mode. For a statement whose generic plan (what a prepared statement
         gets from its sixth run on) reads far more than its custom plan; the rest of the unit keeps its mode, which is put back afterwards. A failed
         statement leaves the unit failed."""
+        self._check_usage(sql)  # a refusal must come before the mode changes: nothing would put it back
         was = await self._run("fetchval", "/* pipeshub:kernel.plan_mode */ SELECT current_setting('plan_cache_mode')", internal=True)
         mode = "/* pipeshub:kernel.plan_mode */ SELECT set_config('plan_cache_mode', $1, true)"
         if was != "force_custom_plan":
