@@ -18,9 +18,9 @@ from app.utils.url_fetcher import private_addresses_blocked
 
 # S3's wording for these names the signing algorithm, not what the admin has to change.
 _ACTIONABLE_ERRORS = {
-    "InvalidAccessKeyId": "the storage server does not know this access key; check the Access Key",
+    "InvalidAccessKeyId": "MinIO does not know this access key; check the Access Key",
     "SignatureDoesNotMatch": "the secret key does not match the access key; check the Secret Key",
-    "RequestTimeTooSkewed": "the clocks of PipesHub and the storage server differ by more than 15 minutes",
+    "RequestTimeTooSkewed": "the clocks of PipesHub and the MinIO server differ by more than 15 minutes",
 }
 
 
@@ -119,7 +119,7 @@ class MinIODataSource:
         """Handle S3 API response with comprehensive error handling."""
         try:
             if response is None:
-                return S3Response(success=False, error="Empty response from the storage server")
+                return S3Response(success=False, error="Empty response from MinIO API")
 
             if isinstance(response, dict):
                 if 'Error' in response:

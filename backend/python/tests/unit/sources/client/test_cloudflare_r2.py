@@ -4,17 +4,17 @@ requests are read at botocore's last step before sending, so these check what R2
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 from aiobotocore.config import AioConfig
 from botocore.exceptions import ClientError
 
+from app.connectors.sources.web.address_guard import GuardedResolver
 from app.sources.client.cloudflare_r2.cloudflare_r2 import (
     CloudflareR2AccessKeyConfig,
     CloudflareR2Client,
-    CloudflareR2RESTClientViaAccessKey,
     build_endpoint_url,
 )
 from app.sources.external.cloudflare_r2.cloudflare_r2 import CloudflareR2DataSource
@@ -99,16 +99,14 @@ class TestBuildFromServices:
         client = await CloudflareR2Client.build_from_services(
             LOGGER,
             _config_service(
-                {"accessKey": "key-id", "secretKey": "secret", "accountId": ACCOUNT, "jurisdiction": "eu", "bucket": "b"}
+                {"accessKey": "key-id", "secretKey": "secret", "accountId": ACCOUNT, "jurisdiction": "eu"}
             ),
             "connector-1",
         )
-        credentials = client.get_credentials()
-        assert credentials["aws_access_key_id"] == "key-id"
-        assert credentials["aws_secret_access_key"] == "secret"
+        credentials = await client.get_session().get_credentials()
+        assert (credentials.access_key, credentials.secret_key) == ("key-id", "secret")
         assert client.get_endpoint_url() == f"https://{ACCOUNT}.eu.r2.cloudflarestorage.com"
-        assert client.get_region_name() == "auto"
-        assert client.get_bucket_name() == "b"
+        assert client.get_session().get_config_variable("region") == "auto"
 
     async def test_a_missing_configuration_is_refused(self) -> None:
         with pytest.raises(ValueError, match="connector-1"):
@@ -135,6 +133,10 @@ class TestBuildFromServices:
     def test_the_secret_stays_out_of_the_config_repr(self) -> None:
         assert "hunter2" not in repr(CloudflareR2AccessKeyConfig("key-id", "hunter2", ACCOUNT))
 
+    def test_the_data_source_is_not_handed_the_keys(self) -> None:
+        client = CloudflareR2Client.build_with_config(CloudflareR2AccessKeyConfig("key-id", "hunter2", ACCOUNT))
+        assert client.get_credentials() == {"endpoint_url": f"https://{HOST}"}
+
 
 class TestRequests:
     @pytest.mark.parametrize(
@@ -160,7 +162,7 @@ class TestRequests:
 
     async def test_a_presigned_url_points_at_r2_and_carries_the_token_key(self) -> None:
         response = await CloudflareR2DataSource(_client()).generate_presigned_url(
-            ClientMethod="get_object", Params={"Bucket": "docs", "Key": "a/b.pdf"}, ExpiresIn=60,
+            ClientMethod="get_object", Params={"Bucket": "docs", "Key": "a/b.pdf"}, ExpiresIn=60, region_name="WNAM",
         )
         assert response.success, response.error
         url = urlparse(response.data)
@@ -169,21 +171,23 @@ class TestRequests:
         assert query["X-Amz-Credential"][0].startswith("key-id/")
         assert "/auto/s3/aws4_request" in query["X-Amz-Credential"][0]
         assert query["X-Amz-Expires"] == ["60"]
+        assert query["X-Amz-Algorithm"] == ["AWS4-HMAC-SHA256"]
         assert "checksum" not in response.data.lower()
 
     async def test_the_built_client_keeps_r2_settings_alongside_the_retry_budget(self) -> None:
-        rest_client = CloudflareR2RESTClientViaAccessKey("key-id", "secret", ACCOUNT)
-        rest_client.get_session().set_default_client_config(
+        client = _client()
+        client.get_session().set_default_client_config(
             AioConfig(retries={"mode": "standard", "total_max_attempts": 4})
         )
-        with patch("app.sources.client.minio.minio.check_url_allowed"):
-            client_context = await rest_client.get_s3_client()
-        async with client_context as client:
-            assert client.meta.endpoint_url == f"https://{HOST}"
-            assert client.meta.region_name == "auto"
-            assert client.meta.config.retries["total_max_attempts"] == 4
-            assert client.meta.config.request_checksum_calculation == "when_required"
-            assert client.meta.config.response_checksum_validation == "when_required"
+        data_source = CloudflareR2DataSource(client)
+        async with data_source.shared_client():
+            built = data_source._shared_client.get()
+            assert built.meta.endpoint_url == f"https://{HOST}"
+            assert built.meta.region_name == "auto"
+            assert built.meta.config.retries["total_max_attempts"] == 4
+            assert built.meta.config.request_checksum_calculation == "when_required"
+            assert built.meta.config.response_checksum_validation == "when_required"
+            assert isinstance(built.meta.config.connector_args["resolver"], GuardedResolver)
 
 
 class TestResponses:
@@ -228,10 +232,19 @@ class TestResponses:
     async def test_the_next_page_token_is_sent_and_returned(self) -> None:
         s3_client = AsyncMock()
         s3_client.list_objects_v2.return_value = {"Contents": [{"Key": "a"}], "NextContinuationToken": "page-3"}
-        response = await self._data_source(s3_client).list_objects_v2(Bucket="docs", ContinuationToken="page-2")
+        response = await self._data_source(s3_client).list_objects_v2(
+            Bucket="docs", ContinuationToken="page-2", Prefix=None,
+        )
         s3_client.list_objects_v2.assert_awaited_once_with(Bucket="docs", ContinuationToken="page-2")
         assert response.success
         assert response.data["NextContinuationToken"] == "page-3"
+
+    async def test_an_unexpected_failure_is_a_response_and_not_an_exception(self) -> None:
+        s3_client = AsyncMock()
+        s3_client.head_object.side_effect = OSError("connection reset.")
+        response = await self._data_source(s3_client).head_object(Bucket="docs", Key="a")
+        assert not response.success
+        assert response.error == "Unexpected error: connection reset"
 
     async def test_an_empty_answer_is_a_failure_that_does_not_name_another_product(self) -> None:
         s3_client = AsyncMock()
