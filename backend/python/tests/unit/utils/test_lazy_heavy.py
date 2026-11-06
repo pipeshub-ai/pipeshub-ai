@@ -20,8 +20,7 @@ if TYPE_CHECKING:
 @pytest.fixture(autouse=True)
 def _fresh_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(lazy_heavy._state, "done", False)
-    monkeypatch.setattr(lazy_heavy._state, "lock", None)
-    monkeypatch.setattr(lazy_heavy._state, "lock_loop", None)
+    monkeypatch.setattr(lazy_heavy._state, "inflight", None)
 
 
 @pytest.fixture
@@ -109,7 +108,9 @@ async def test_a_failed_import_raises_and_is_retried_not_cached(monkeypatch: pyt
     assert len(calls) == 2
 
 
-async def test_callers_waiting_on_a_failed_import_each_see_it_or_the_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_callers_waiting_on_one_failed_import_all_see_that_failure_and_the_next_call_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = []
 
     def flaky() -> None:
@@ -120,8 +121,47 @@ async def test_callers_waiting_on_a_failed_import_each_see_it_or_the_retry(monke
 
     monkeypatch.setattr(lazy_heavy, "_import_docling", flaky)
     results = await asyncio.gather(*(lazy_heavy.ensure_docling() for _ in range(5)), return_exceptions=True)
-    assert sum(isinstance(r, ImportError) for r in results) == 1
+    assert all(isinstance(r, ImportError) for r in results)
+    assert len(calls) == 1
+    await lazy_heavy.ensure_docling()
     assert len(calls) == 2
+
+
+async def test_a_cancelled_first_caller_does_not_start_a_second_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    attempts: list[int] = []
+
+    def slow() -> None:
+        attempts.append(1)
+        started.set()
+        release.wait(5)
+
+    monkeypatch.setattr(lazy_heavy, "_import_docling", slow)
+    first = asyncio.create_task(lazy_heavy.ensure_docling())
+    assert await asyncio.to_thread(started.wait, 5)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    second = asyncio.create_task(lazy_heavy.ensure_docling())
+    await asyncio.sleep(0.05)
+    assert not second.done(), "the import is still running"
+    release.set()
+    await asyncio.wait_for(second, 5)
+    assert len(attempts) == 1
+    assert lazy_heavy._state.done
+
+
+async def test_every_caller_cancelled_still_lets_the_import_finish(monkeypatch: pytest.MonkeyPatch) -> None:
+    release = threading.Event()
+    monkeypatch.setattr(lazy_heavy, "_import_docling", lambda: release.wait(5))
+    task = asyncio.create_task(lazy_heavy.ensure_docling())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    release.set()
+    await asyncio.wait_for(lazy_heavy.ensure_docling(), 5)
+    assert lazy_heavy._state.done
 
 
 async def test_detector_counterexample_an_inline_import_is_caught(fake_heavy: tuple[str, list[int]]) -> None:
@@ -170,3 +210,15 @@ def test_the_loop_check_passes_off_the_loop_and_once_docling_is_loaded(monkeypat
         lazy_heavy.require_off_loop()
 
     asyncio.run(on_loop())
+
+
+async def test_a_module_another_thread_is_still_importing_does_not_count_as_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``docling.document_converter`` is in ``sys.modules`` before it has executed."""
+    from types import SimpleNamespace
+
+    spec = SimpleNamespace(_initializing=True)
+    monkeypatch.setitem(sys.modules, "docling.document_converter", SimpleNamespace(__spec__=spec))  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="ensure_docling"):
+        lazy_heavy.require_off_loop()
+    spec._initializing = False  # the import finished in the worker thread
+    lazy_heavy.require_off_loop()

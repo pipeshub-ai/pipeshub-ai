@@ -26,14 +26,9 @@ with patch.dict("sys.modules", {
 
 @pytest.fixture
 def parser():
-    with patch.dict("sys.modules", {
-        "docling": MagicMock(),
-        "docling.datamodel": MagicMock(),
-        "docling.datamodel.document": MagicMock(),
-        "docling.document_converter": MagicMock(),
-    }):
-        with patch("docling.document_converter.DocumentConverter"):
-            return DoclingMarkdownParser()
+    parser = DoclingMarkdownParser()
+    parser.converter = MagicMock()
+    return parser
 
 
 class TestParseFileFailure:

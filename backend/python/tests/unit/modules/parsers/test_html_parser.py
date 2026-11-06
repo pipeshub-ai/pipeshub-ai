@@ -14,9 +14,8 @@ from app.utils.converters.caption_map import apply_caption_map as _apply_caption
 
 @pytest.fixture
 def parser():
-    """Create DoclingHtmlParser with mocked DocumentConverter to avoid heavy import."""
-    with patch("docling.document_converter.DocumentConverter"):
-        return DoclingHtmlParser()
+    """Create a DoclingHtmlParser (the constructor does not touch the converter)."""
+    return DoclingHtmlParser()
 
 
 # ---------------------------------------------------------------------------
