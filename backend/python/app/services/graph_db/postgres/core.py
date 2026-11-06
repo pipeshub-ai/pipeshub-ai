@@ -453,6 +453,7 @@ class CoreMixin(PgBase):
             raise ValueError(f"update_edge needs '<collection>/<key>' ids, got {from_key!r} and {to_key!r}")
         org = current_org_id()
         colls, kind = _edge_scope(collection, pair=True)
+        _VALIDATOR.validate_edge_update(collection, edge_updates)      # before the first statement, as the other edge writers do
 
         async def go(tx: Tx) -> int:
             rows = await tx.fetch("""/* pipeshub:graph.update_edge_read */ SELECT e.coll, e.ekey, e.doc FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[])

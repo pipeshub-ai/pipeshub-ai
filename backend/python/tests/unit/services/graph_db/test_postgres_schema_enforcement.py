@@ -238,12 +238,12 @@ CLASSIFICATION: dict[str, str] = {
                      "stage_state_compare_and_set", "soft_delete_records", "restore_records", "record_purge_failure", "retag_push_record",
                      "claim_push_record", "take_back_kept_record_group", "update_kb_permission"], "targeted"),
     **dict.fromkeys(["batch_create_edges", "create_edges_if_absent", "batch_upsert_node_relations", "ensure_app_membership", "ensure_team_app_edge",
-                     "upsert_authenticated_as", "link_record_to_group", "batch_update_team_member_roles"], "edge"),
+                     "upsert_authenticated_as", "link_record_to_group", "batch_update_team_member_roles", "update_edge"], "edge"),
     "batch_upsert_app_users": "delegates",       # builds users and edges, then calls batch_upsert_nodes and batch_create_edges
     **dict.fromkeys([
         "backfill_block_name_folded", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",
         "delete_blocks_for_records", "delete_edges_between_collections", "delete_edges_by_relationship_types", "delete_edges_by_source_keys",
-        "delete_all_team_permissions", "remove_kb_permission", "delete_kb_hub_app", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_nodes", "delete_parent_child_edge_to_record",
+        "delete_all_team_permissions", "remove_kb_permission", "delete_kb_hub_app", "delete_connector_sync_edges", "reap_stale_external_app_relations", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_nodes", "delete_parent_child_edge_to_record",
         "delete_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges",
         "increment_node_field", "purge_trash_kept_record_groups", "purge_trashed_records", "remove_authenticated_as", "remove_nodes_by_field",
         "remove_sync_point", "stage_states_delete_for_virtual_records", "stage_states_delete_unheld_revisions",
@@ -299,6 +299,7 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
     ("fields_if_match bad", "update_node_fields_if_match", ("r1", "records", {"indexingStatus": "NOT_A_STATUS"}, {"indexingStatus": "NOT_STARTED"}), {}),
     ("update_knowledge_base bad", "update_knowledge_base", ("kb1", {"scope": "NOT_A_SCOPE"}), {}),
     ("batch_update_team_member_roles bad", "batch_update_team_member_roles", ("t1", [{"userId": "u1", "role": "NOT_A_ROLE"}], 1), {}),
+    ("update_edge bad role", "update_edge", ("users/u1", "records/r1", {"role": "NOT_A_ROLE"}, "permission"), {}),
     ("cas_record_fields bad", "compare_and_set_record_fields", (["r1"], "rev-1", {"indexingStatus": "NOT_A_STATUS"}), {}),
     # replace: full
     ("replace bad enum", "update_node_if_match", ("r1", "records", rec(recordType="NOT_A_TYPE"), "version", 1), {}),
@@ -336,6 +337,7 @@ VALID: list[tuple[str, str, tuple, dict]] = [
     ("fields_if_match", "update_node_fields_if_match", ("r1", "records", {"indexingStatus": "COMPLETED"}, {"indexingStatus": "NOT_STARTED"}), {}),
     ("update_knowledge_base", "update_knowledge_base", ("kb1", {"name": "KB", "scope": "personal"}), {}),
     ("batch_update_team_member_roles", "batch_update_team_member_roles", ("t1", [{"userId": "u1", "role": "OWNER"}], 1), {}),
+    ("update_edge", "update_edge", ("users/u1", "records/r1", {"role": "WRITER"}, "permission"), {}),
     ("cas_record_fields", "compare_and_set_record_fields", (["r1"], "rev-1", {"indexingStatus": "COMPLETED"}), {}),
     ("replace", "update_node_if_match", ("r1", "records", rec(version=2), "version", 1), {}),
     ("batch_update_connector_status", "batch_update_connector_status", ("apps", ["a1"]), {"is_active": True, "is_agent_active": False}),
