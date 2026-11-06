@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import jwt from 'jsonwebtoken'
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 import { RequestContextStore, getRequestContext, runWithRequestContext } from '../../../../src/libs/context/request-context'
 import { createOAuthRedirectMiddleware } from '../../../../src/modules/oauth_provider/middlewares/oauth.redirect.middleware'
@@ -112,6 +113,41 @@ describe('OAuthRedirectMiddleware', () => {
       expect(mockRes.redirect.firstCall.args[0]).to.include('http://frontend:3000/oauth/authorize?client_id=cid')
       expect(mockNext.called).to.be.false
       expect(req.user).to.equal(undefined)
+    })
+
+    // The order is the point: identity is bound after the signature check and before the session check.
+    it('binds the verified identity before the session check, so the refusal line says whose session it was', async () => {
+      mockTokenService.verifyToken.resolves({ userId: 'u1', orgId: 'o1', email: 'u@e.com' })
+      findSessionRefusal.resolves('Session expired, please login again')
+      let atRefusal: RequestContextStore | undefined
+      mockLogger.info.callsFake((message: string) => {
+        if (message.startsWith('Session refused')) atRefusal = { ...getRequestContext()! }
+      })
+      const mw = createOAuthRedirectMiddleware(mockTokenService, mockLogger, 'http://frontend:3000')
+
+      await runWithRequestContext({ rootId: 'r1' }, () =>
+        mw({ headers: { authorization: 'Bearer valid-token' }, query: {} } as any, mockRes, mockNext),
+      )
+
+      expect(mockRes.redirect.calledOnce).to.be.true
+      expect(atRefusal).to.deep.equal({ rootId: 'r1', orgId: 'o1', userId: 'u1' })
+    })
+
+    it('binds nothing for a token that fails verification', async () => {
+      mockTokenService.verifyToken.rejects(new Error('invalid signature'))
+      let store: RequestContextStore | undefined
+      const mw = createOAuthRedirectMiddleware(mockTokenService, mockLogger, 'http://frontend:3000')
+
+      // Readable claims under a wrong signature: nothing may be taken from them before verification passes.
+      const forged = jwt.sign({ userId: 'u1', orgId: 'o1' }, 'not-the-secret')
+      await runWithRequestContext({ rootId: 'r1' }, async () => {
+        await mw({ headers: { authorization: `Bearer ${forged}` }, query: {} } as any, mockRes, mockNext)
+        store = getRequestContext()
+      })
+
+      expect(mockRes.redirect.calledOnce).to.be.true
+      expect(findSessionRefusal.called).to.be.false
+      expect(store).to.deep.equal({ rootId: 'r1' })
     })
 
     it('should pass a failed session check on as an error, not as a sign-in', async () => {

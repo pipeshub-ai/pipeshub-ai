@@ -174,3 +174,62 @@ describe('AuthMiddleware puts the verified org and user on later log lines', () 
     expect(JSON.stringify(seen.record)).to.not.contain('a@b.c')
   })
 })
+
+describe('AuthMiddleware at LOG_LEVEL=debug logs no token payload', () => {
+  const PERSONAL = ['alice@example.com', 'Alice', 'Smith']
+  let log: sinon.SinonStub
+  let tokens: sinon.SinonStubbedInstance<AuthTokenService>
+  let mw: AuthMiddleware
+  let savedLevel: string | undefined
+
+  beforeEach(() => {
+    savedLevel = process.env.LOG_LEVEL
+    process.env.LOG_LEVEL = 'debug'
+    ;(Logger as any).instance = null
+    sinon.stub(seam, 'getProvider').returns(
+      Object.assign(new seam.DefaultLoggingProvider(), { fileLoggingEnabled: () => false }),
+    )
+    log = sinon.stub((Logger.getInstance() as any).logger, 'log')
+    tokens = sinon.createStubInstance(AuthTokenService)
+    mw = new AuthMiddleware(Logger.getInstance({ service: 'AuthMiddleware' }), tokens as unknown as AuthTokenService, sinon.stub().returns(null))
+  })
+  afterEach(() => {
+    sinon.restore()
+    ;(Logger as any).instance = null
+    if (savedLevel === undefined) delete process.env.LOG_LEVEL
+    else process.env.LOG_LEVEL = savedLevel
+  })
+
+  const claims = () => ({
+    userId: 'u1', orgId: 'org_a', role: 'member', email: 'alice@example.com', firstName: 'Alice', lastName: 'Smith',
+    fullName: 'Alice Smith', iat: Math.floor(Date.now() / 1000),
+  })
+  const debugRecords = () => log.getCalls().map((c) => c.args[0]).filter((r) => r.level === 'debug')
+  const passes = (call: (next: (e?: unknown) => void) => Promise<void>) =>
+    new Promise<unknown>((resolve) => {
+      void call((err?: unknown) => resolve(err))
+    })
+
+  it('a session token: the debug line is written, without the email or the name', async () => {
+    sinon.stub(jwt, 'decode').returns({ userId: 'u1', orgId: 'org_a' })
+    sinon.stub(Users, 'findOne').returns(query({ _id: 'u1', orgId: 'org_a', isDeleted: false }))
+    sinon.stub(UserActivities, 'findOne').returns(query(null))
+    tokens.verifyToken.resolves(claims() as any)
+
+    const err = await passes((next) => mw.authenticate({ headers: { authorization: 'Bearer t' }, get: sinon.stub() } as any, {} as any, next as any))
+
+    expect(err).to.equal(undefined)
+    expect(debugRecords().map((r) => r.message)).to.include('User authenticated')
+    for (const value of PERSONAL) expect(JSON.stringify(debugRecords()), value).to.not.contain(value)
+  })
+
+  it('a scoped token: the debug lines are written, without the email or the name', async () => {
+    tokens.verifyScopedToken.resolves(claims() as any)
+
+    const err = await passes((next) => mw.scopedTokenValidator('mail:send')({ headers: { authorization: 'Bearer t' } } as any, {} as any, next as any))
+
+    expect(err).to.equal(undefined)
+    expect(debugRecords()).to.have.length.greaterThan(0)
+    for (const value of PERSONAL) expect(JSON.stringify(debugRecords()), value).to.not.contain(value)
+  })
+})
