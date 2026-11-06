@@ -924,8 +924,9 @@ class LookupsMixin(PgBase):
             app = await self._system_read(lambda tx: tx.fetchrow("/* pipeshub:graph.system_app */ SELECT org_id FROM graph.system_app($1)", connector_id))
             if not app:
                 return []
-            with org_context.for_org(app["org_id"], job="graph.vector_membership_backfill"):
-                rows = await self._lrows(sql, app["org_id"], connector_id, after_key or None, n)
+            holder = app[0]          # the org that holds the connector's app
+            with org_context.for_org(holder, job="graph.vector_membership_backfill"):
+                rows = await self._lrows(sql, holder, connector_id, after_key or None, n)
         return [{"_key": r["id"], **{f: _doc(r["doc"]).get(f) for f in PAGE_RECORD_FIELDS if f != "_key"}} for r in rows]
 
     async def _fetch_existing_file_names_in_parent(self, kb_id: str, parent_folder_id: str | None, transaction: str | None = None, *,
