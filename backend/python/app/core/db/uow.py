@@ -253,11 +253,15 @@ class Tx:
 
     async def fetch_custom_plan(self, sql: str, *args: object) -> list[asyncpg.Record]:
         """``fetch`` planned for these arguments every time, whatever the unit's plan mode. For a statement whose generic plan (what a prepared statement
-        gets from its sixth run on) reads far more than its custom plan; the rest of the unit keeps its mode. A failed statement leaves the unit failed."""
+        gets from its sixth run on) reads far more than its custom plan; the rest of the unit keeps its mode, which is put back afterwards. A failed
+        statement leaves the unit failed."""
+        was = await self._run("fetchval", "/* pipeshub:kernel.plan_mode */ SELECT current_setting('plan_cache_mode')", internal=True)
         mode = "/* pipeshub:kernel.plan_mode */ SELECT set_config('plan_cache_mode', $1, true)"
-        await self._run("execute", mode, "force_custom_plan", internal=True)
+        if was != "force_custom_plan":
+            await self._run("execute", mode, "force_custom_plan", internal=True)
         rows = await self._run("fetch", sql, *args)
-        await self._run("execute", mode, "auto", internal=True)
+        if was != "force_custom_plan":
+            await self._run("execute", mode, was, internal=True)
         return rows
 
     def _close(self) -> None:

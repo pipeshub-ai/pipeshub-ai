@@ -88,3 +88,15 @@ async def test_the_membership_read_never_gets_the_generic_plan(kb_world) -> None
         assert counts[0]["generic_plans"] == 0 and counts[0]["custom_plans"] == 8, dict(counts[0])
     finally:
         await p.rollback_transaction(t)
+
+
+@pytest.mark.parametrize(("custom", "mode"), [(False, "auto"), (True, "force_custom_plan")])
+async def test_a_custom_plan_fetch_gives_the_units_plan_mode_back(pg_db, org_ctx, custom: bool, mode: str) -> None:
+    """A unit that is custom-planned throughout stays so after the call; any other keeps its own mode."""
+    async def run(tx) -> list[str]:
+        seen = [await tx.fetchval("SELECT current_setting('plan_cache_mode')")]
+        await tx.fetch_custom_plan("SELECT 1")
+        seen.append(await tx.fetchval("SELECT current_setting('plan_cache_mode')"))
+        return seen
+    with org_ctx(uuid.uuid4().hex[:24]):
+        assert await pg_db.run(run, custom_plan=custom) == [mode, mode]
