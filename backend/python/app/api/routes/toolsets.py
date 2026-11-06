@@ -1974,8 +1974,18 @@ async def get_authenticated_toolsets(
         is_authenticated = auth_type == "NONE" or bool(user_auth and user_auth.get("isAuthenticated", False))
         if not is_authenticated:
             continue
+        # Preserve the stored scope for approval checks while ignoring stale
+        # authentication state for credential-free NONE toolsets.
         auth_by_instance[inst.get("_id", "")] = (
-            {"isAuthenticated": True, "authType": "NONE"}
+            {
+                "isAuthenticated": True,
+                "authType": "NONE",
+                **(
+                    {"scope": user_auth["scope"]}
+                    if isinstance(user_auth, dict) and "scope" in user_auth
+                    else {}
+                ),
+            }
             if auth_type == "NONE"
             else user_auth
         )
