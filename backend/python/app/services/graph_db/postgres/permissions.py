@@ -566,14 +566,30 @@ class PermissionsMixin(PgBase):
             undated = upload_times_undated() and not dated_only
             bounds = [tr.get(k) for k in ("source_created_after_ms", "source_created_before_ms", "source_updated_after_ms", "source_updated_before_ms")]
 
-            async def candidates(tx: Tx) -> list[str]:
-                ids = {r["id"] for r in await tx.fetch("""/* pipeshub:graph.accessible_candidates_app_wide */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'records'
-                    AND ((doc->>'connectorId' = ANY($2::text[])) OR (doc->>'connectorId' = ANY($3::text[]) AND doc->>'origin' = 'UPLOAD'))""", org, wide, kbs)}
-                return sorted(ids | await access_sql.reachable_records(tx, org, access, sorted(level)))
-            ids = await self._q(candidates, None)
-            kept: list[Any] = []
-            for i in range(0, len(ids), _CHECK_CHUNK * 5):
-                kept += await self._q(lambda tx, part=ids[i:i + _CHECK_CHUNK * 5]: tx.fetch("""/* pipeshub:graph.accessible_candidates */ SELECT r.id, r.doc->>'virtualRecordId' AS vrid FROM graph.nodes r
+            scope = (_j([{"edge": e, "coll": c, "field": f, "vals": v} for e, c, f, v in meta]), *bounds, undated, dated_only)
+
+            async def candidates(tx: Tx) -> list[Any]:
+                """The scope filters are applied where the records are read: every record of a collection or app-level connector in one statement, and the
+                records the walk reached, by key, in another."""
+                rows = list(await tx.fetch("""/* pipeshub:graph.accessible_candidates_app_wide */ SELECT r.id, r.doc->>'virtualRecordId' AS vrid FROM graph.nodes r
+                    WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'orgId' = $1 AND r.doc->>'virtualRecordId' IS NOT NULL
+                      AND ((r.doc->>'connectorId' = ANY($2::text[])) OR (r.doc->>'connectorId' = ANY($3::text[]) AND r.doc->>'origin' = 'UPLOAD'))
+                      AND (r.doc->>'indexingStatus' = 'COMPLETED' OR r.doc->>'hasIndexedCopy' = 'true') AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
+                      AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset($4::jsonb) f(edge text, coll text, field text, vals jsonb) WHERE NOT EXISTS (
+                          SELECT 1 FROM graph.edges e JOIN graph.nodes m ON m.org_id = e.org_id AND m.coll = f.coll AND m.id = e.to_id
+                          WHERE e.org_id = $1 AND e.coll = f.edge AND e.from_coll = 'records' AND e.from_id = r.id AND m.doc->f.field IN (SELECT jsonb_array_elements(f.vals))))
+                      AND ($5::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceCreatedAtTimestamp') = 'number' THEN (r.doc->>'sourceCreatedAtTimestamp')::numeric END) >= $5)
+                      AND ($6::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceCreatedAtTimestamp') = 'number' THEN (r.doc->>'sourceCreatedAtTimestamp')::numeric END) <= $6
+                           OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
+                      AND ($7::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceLastModifiedTimestamp') = 'number' THEN (r.doc->>'sourceLastModifiedTimestamp')::numeric END) >= $7)
+                      AND ($8::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceLastModifiedTimestamp') = 'number' THEN (r.doc->>'sourceLastModifiedTimestamp')::numeric END) <= $8
+                           OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
+                      AND (NOT $10 OR coalesce(r.doc->>'sourceTimestampOrigin', '') <> 'upload')
+                    ORDER BY r.id""", org, wide, kbs, *scope)) if wide or kbs else []
+                have = {r["id"] for r in rows}
+                walked = [i for i in sorted(await access_sql.reachable_records(tx, org, access, sorted(level))) if i not in have] if level else []
+                for i in range(0, len(walked), _CHECK_CHUNK * 5):
+                    rows += await tx.fetch("""/* pipeshub:graph.accessible_candidates */ SELECT r.id, r.doc->>'virtualRecordId' AS vrid FROM graph.nodes r
                     WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = ANY($2::text[]) AND r.doc->>'orgId' = $1 AND r.doc->>'virtualRecordId' IS NOT NULL
                       AND r.doc->>'connectorId' = ANY($3::text[])
                       AND (r.doc->>'indexingStatus' = 'COMPLETED' OR r.doc->>'hasIndexedCopy' = 'true') AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
@@ -587,7 +603,9 @@ class PermissionsMixin(PgBase):
                       AND ($8::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceLastModifiedTimestamp') = 'number' THEN (r.doc->>'sourceLastModifiedTimestamp')::numeric END) <= $8
                            OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
                       AND (NOT $10 OR coalesce(r.doc->>'sourceTimestampOrigin', '') <> 'upload')
-                    ORDER BY r.id""", org, part, sorted(chosen), _j([{"edge": e, "coll": c, "field": f, "vals": v} for e, c, f, v in meta]), *bounds, undated, dated_only), None)
+                    ORDER BY r.id""", org, walked[i:i + _CHECK_CHUNK * 5], sorted(level), *scope)
+                return sorted(rows, key=lambda r: r["id"])
+            kept = await self._q(candidates, None)
             out: dict[str, str] = {}
             for i in range(0, len(kept), _CHECK_CHUNK):
                 chunk = kept[i:i + _CHECK_CHUNK]

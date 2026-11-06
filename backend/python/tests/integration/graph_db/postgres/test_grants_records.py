@@ -7,6 +7,9 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import random
+from typing import Any
+
 import pytest
 
 from .test_access import APP, World, _org, rec
@@ -142,6 +145,20 @@ async def test_metadata_and_time_filters_keep_only_the_records_they_name(w: Worl
     assert set((await got({"topics": ["tax"]}, {"source_created_after_ms": 150})).values()) == set()
     other = await w.p.get_accessible_virtual_record_ids("uid-nogate", w.org, {"topics": ["tax"]})
     assert other == {}                                                                                      # a filter never opens what the check refuses
+
+
+async def test_the_filters_apply_to_a_collections_records_as_to_a_connectors(w: World) -> None:
+    await world(w)
+    await w.nodes("topics", {"_key": "tp", "name": "tax"})
+    await w.edge("belongsToTopic", ("records", "k1"), ("topics", "tp"))
+    await w.p.update_node("k1", "records", {"sourceCreatedAtTimestamp": 100, "sourceTimestampOrigin": "file"})
+
+    async def got(f: dict | None = None, t: dict | None = None) -> dict:
+        return await w.p.get_accessible_virtual_record_ids("uid-kbu", w.org, f, t)
+    assert set((await got()).values()) == {"k1"}
+    assert set((await got({"topics": ["tax"]})).values()) == {"k1"} and await got({"topics": ["hr"]}) == {}
+    assert set((await got(None, {"source_created_after_ms": 50})).values()) == {"k1"} and await got(None, {"source_created_after_ms": 150}) == {}
+    assert await got(None, {"source_created_before_ms": 50}) == {} and set((await got(None, {"source_created_before_ms": 150})).values()) == {"k1"}
 
 
 async def test_the_scope_read_fails_closed_unless_asked_to_raise_and_comes_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -316,13 +333,34 @@ async def test_the_scope_read_looks_only_at_what_the_user_can_reach(w: World) ->
     await w.child(("apps", APP), ("recordGroups", "big"))
     hidden = [vr(f"hid{i}", accessRule="RESTRICTED") for i in range(1000)]
     loose = [vr(f"loose{i}") for i in range(1000)]            # no edge to anything: nothing reaches them
-    await w.nodes("records", *hidden, *loose, vr("mine1"), vr("mine2"), vr("mine3"))
+    flat = [vr(f"flat{i}") for i in range(1000)]              # open, in a reached group, but they do not inherit from it: nothing opens them
+    below = [vr(f"below{i}") for i in range(1000)]            # open children of a granted record that do not inherit from it
+    await w.nodes("records", *hidden, *loose, *flat, *below, vr("mine1"), vr("mine2"), vr("mine3"), vr("granted_top"))
+    await grant(w, "gm", "records", "granted_top")
+    await w.p.batch_create_edges([{"from_collection": "records", "from_id": "granted_top", "to_collection": "records", "to_id": r["_key"], "relationshipType": "PARENT_CHILD"} for r in below], "nodeRelations")
+    await w.p.batch_create_edges([{"from_collection": "recordGroups", "from_id": "big", "to_collection": "records", "to_id": r["_key"], "relationshipType": "PARENT_CHILD"} for r in flat], "nodeRelations")
     await w.p.batch_create_edges([{"from_collection": "recordGroups", "from_id": "big", "to_collection": "records", "to_id": r["_key"], "relationshipType": "PARENT_CHILD"}
                                   for r in (*hidden, vr("mine1"), vr("mine2"), vr("mine3"))], "nodeRelations")
     await w.p.batch_create_edges([{"from_collection": "records", "from_id": r["_key"], "to_collection": "recordGroups", "to_id": "big"}
                                   for r in (*hidden, vr("mine1"), vr("mine2"), vr("mine3"))], "inheritPermissions")
     asked: list[str] = []
+    read = {"children": 0}
     real = w.p._kh_v3_accessible_rows
+    real_q = w.p._q
+
+    async def counting(fn: Any, transaction: str | None, **kw: Any) -> Any:  # noqa: ANN401
+        async def inner(tx: Any) -> Any:  # noqa: ANN401
+            class Counted:
+                def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+                    return getattr(tx, name)
+
+                async def fetch(self, sql: str, *args: object) -> list:
+                    rows = await tx.fetch(sql, *args)
+                    read["children"] += len(rows) if "access_children" in sql else 0
+                    return rows
+            return await fn(Counted())
+        return await real_q(inner, transaction, **kw)
+    w.p._q = counting
 
     async def spy(user_key: str, org_id: str, node_ids: list[str], *a: object, **k: object) -> list:
         asked.extend(node_ids)
@@ -332,8 +370,10 @@ async def test_the_scope_read_looks_only_at_what_the_user_can_reach(w: World) ->
         got = await w.p.get_accessible_virtual_record_ids("uid-gm", w.org, {"apps": [APP]})
     finally:
         w.p._kh_v3_accessible_rows = real
-    assert {"mine1", "mine2", "mine3"} <= set(got.values()) and not {r for r in got.values() if r.startswith(("hid", "loose"))}
-    assert len(asked) == len(set(asked)) <= 10, len(asked)            # the 2,000 records nobody reaches were never handed to the check
+        w.p._q = real_q
+    assert {"mine1", "mine2", "mine3"} <= set(got.values()) and not {r for r in got.values() if r.startswith(("hid", "loose", "flat", "below"))}
+    assert len(asked) == len(set(asked)) <= 12, len(asked)            # the 4,000 records nobody reaches were never handed to the check
+    assert read["children"] <= 40, read["children"]                    # nor were they read by the walk (only the children it can take come back)
 
 
 async def test_a_timestamp_that_is_not_a_number_drops_that_record_only(w: World) -> None:
@@ -399,3 +439,102 @@ async def test_a_grant_from_a_user_who_is_not_there_gives_nothing(w: World) -> N
     await world(w)
     await w.edge("permission", ("users", "ghost"), ("records", "open1"), type="USER", role="OWNER")
     assert await ctx(w, "ghost", "open1", "record") == LOW
+
+
+# ---- the walk against the batch check, on random graphs --------------------------------------------------------------------------------
+
+def fuzz_graph(seed: int) -> tuple[dict, dict, list[str]]:
+    """A random graph of one connector: nested groups (some deleted, some declaring a scope), records under records and groups by PARENT_CHILD and
+    ATTACHMENT edges that inherit or not, all three access rules, belongsTo, grants by a user, a group, a team and the organization on records and groups,
+    and (every third graph) a 55-group chain with a shortcut into the middle of it."""
+    rng = random.Random(seed)
+    nodes: dict[str, list[dict]] = {}
+    edges: dict[str, list[dict]] = {}
+
+    def node(coll: str, key: str, **doc: object) -> None:
+        nodes.setdefault(coll, []).append({"_key": key, **doc})
+
+    def edge(coll: str, f: tuple[str, str], t: tuple[str, str], **doc: object) -> None:
+        edges.setdefault(coll, []).append({"from_collection": f[0], "from_id": f[1], "to_collection": t[0], "to_id": t[1], **doc})
+    node("apps", "A", type="CONNECTOR", isActive=True, **({"permissionModel": "APP_LEVEL"} if seed % 9 == 4 else {}))
+    for u in ("u1", "u2", "u3"):
+        node("users", u, userId=f"uid-{u}")
+    node("groups", "pg")
+    node("teams", "tm")
+    node("organizations", "O")
+    for u in ("u1", "u2"):
+        edge("permission", ("users", u), ("apps", "A"), type="USER", role="READER")        # u3 passes no gate
+        edge("belongsTo", ("users", u), ("organizations", "O"), entityType="ORGANIZATION")
+    edge("permission", ("users", "u1"), ("groups", "pg"), type="USER", role="READER")
+    edge("permission", ("users", "u2"), ("teams", "tm"), type="USER", role="READER")
+    groups: list[str] = []
+    for i in range(rng.randint(5, 9)):
+        g = f"g{i}"
+        node("recordGroups", g, connectorId="A", accessRule=rng.choice(["OPEN", "OPEN", "STRICT", "RESTRICTED"]), isDeleted=rng.random() < 0.1,
+             **({"permissionModel": "RECORD_GROUP_LEVEL"} if rng.random() < 0.3 else {}))
+        parent = rng.choice(["A", *groups])
+        edge("nodeRelations", ("apps" if parent == "A" else "recordGroups", parent), ("recordGroups", g), relationshipType="PARENT_CHILD")
+        if rng.random() < 0.7:
+            edge("inheritPermissions", ("recordGroups", g), ("apps" if parent == "A" else "recordGroups", parent))
+        groups.append(g)
+    records: list[str] = []
+    if seed % 3 == 0:
+        for i in range(55):
+            node("recordGroups", f"c{i}", connectorId="A")
+            prev = ("apps", "A") if i == 0 else ("recordGroups", f"c{i - 1}")
+            edge("nodeRelations", prev, ("recordGroups", f"c{i}"), relationshipType="PARENT_CHILD")
+            edge("inheritPermissions", ("recordGroups", f"c{i}"), prev)
+        edge("nodeRelations", ("recordGroups", rng.choice(groups)), ("recordGroups", "c30"), relationshipType="PARENT_CHILD")      # a shortcut into the chain
+        edge("inheritPermissions", ("recordGroups", "c30"), ("recordGroups", rng.choice(groups)))
+        groups += ["c20", "c54"]
+        for k in ("deepA", "deepB"):
+            node("records", k, connectorId="A", virtualRecordId=f"v-{k}", indexingStatus="COMPLETED", accessRule=rng.choice(["OPEN", "RESTRICTED"]))
+            edge("nodeRelations", ("recordGroups", "c54"), ("records", k), relationshipType="PARENT_CHILD")
+            edge("inheritPermissions", ("records", k), ("recordGroups", "c54"))
+            records.append(k)
+    for i in range(rng.randint(18, 32)):
+        r = f"r{i}"
+        node("records", r, connectorId="A", virtualRecordId=f"v-{r}" if not (records and rng.random() < 0.1) else f"v-{records[-1]}",
+             accessRule=rng.choice(["OPEN", "OPEN", "STRICT", "RESTRICTED"]), isDeleted=rng.random() < 0.08, isPlaceholder=rng.random() < 0.05,
+             indexingStatus="COMPLETED" if rng.random() < 0.9 else "QUEUED")
+        parent = rng.choice([("apps", "A"), *(("recordGroups", g) for g in groups), *(("records", x) for x in records)])
+        edge("nodeRelations", parent, ("records", r), relationshipType=rng.choice(["PARENT_CHILD", "ATTACHMENT"]))
+        if rng.random() < 0.6:
+            edge("inheritPermissions", ("records", r), parent)
+        if rng.random() < 0.4:
+            edge("belongsTo", ("records", r), ("recordGroups", rng.choice(groups)))
+        records.append(r)
+    sources = {("users", "u1"): "USER", ("users", "u2"): "USER", ("groups", "pg"): "GROUP", ("teams", "tm"): "TEAM", ("organizations", "O"): "ORG"}
+    for _ in range(rng.randint(4, 10)):
+        src = rng.choice(list(sources))
+        tgt = rng.choice([("records", x) for x in records] + [("recordGroups", g) for g in groups])
+        edge("permission", src, tgt, type=sources[src], role="READER")
+    return nodes, edges, records
+
+
+async def test_the_scope_equals_what_the_batch_check_admits_on_random_graphs(w: World, pg_db) -> None:
+    served = refused = 0
+    for seed in range(25):
+        org = _org()
+        nodes, edges, records = fuzz_graph(seed)
+        with in_org(org):
+            fw = World(w.p, org)
+            for coll, docs in nodes.items():
+                await fw.nodes(coll, *docs)
+            for coll, docs in edges.items():
+                await w.p.batch_create_edges(docs, coll)
+            docs = {d["_key"]: d for d in nodes["records"]}
+            for user in ("u1", "u2", "u3"):
+                admitted = await w.p.check_access(user, org, node_ids=records)
+                want: dict[str, str] = {}
+                for r in sorted(admitted.node_ids - admitted.placeholder_ids):
+                    d = docs[r]
+                    if d.get("indexingStatus") == "COMPLETED" and not d.get("isDeleted"):
+                        want.setdefault(d["virtualRecordId"], r)
+                got = await w.p.get_accessible_virtual_record_ids(f"uid-{user}", org)
+                assert got == want, (seed, user, sorted(got.items() ^ want.items()))
+                served += len(want)
+                refused += len(records) - len(want)
+            await pg_db.run(lambda tx, o=org: tx.execute("DELETE FROM graph.edges WHERE org_id = $1", o), write=True)
+            await pg_db.run(lambda tx, o=org: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", o), write=True)
+    assert served > 100 and refused > 100            # the graphs open something to somebody and shut something to everybody
