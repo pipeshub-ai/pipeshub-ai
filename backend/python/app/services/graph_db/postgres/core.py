@@ -5,6 +5,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.neo4j import parse_node_id
 from app.core.org_context import current_or_system, current_org_id
 
 if TYPE_CHECKING:
@@ -421,3 +422,49 @@ class CoreMixin(PgBase):
             AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) RETURNING 1) SELECT count(*) FROM d""",
                                                      org, colls, to_collection, to_id, kind), transaction, write=True)
 
+    # ---- checks on documents and edges, and the update of an edge -------------------------------------------------------------------
+    async def check_collection_has_document(self, collection_name: str, document_id: str, transaction: str | None = None) -> bool:
+        org = current_org_id()
+        try:
+            return bool(await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.check_collection_has_document */ SELECT EXISTS (SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3)",
+                                                           org, collection_name, document_id), transaction))
+        except Exception:
+            self.logger.exception("Check collection has document failed")
+            return False
+
+    async def check_edge_exists(self, from_key: str, to_key: str, edge_collection: str, transaction: str | None = None) -> bool:
+        """Whether an edge of the collection runs from the node with this key to the node with that one (the nodes are named by key alone, as on Neo4j)."""
+        org = current_org_id()
+        colls, kind = _edge_scope(edge_collection, pair=True)
+        try:
+            return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.check_edge_exists */ SELECT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[])
+                AND e.to_id = $4 AND e.from_id = $3 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))))""",
+                                                           org, colls, from_key, to_key, kind), transaction))
+        except Exception:
+            self.logger.exception("Check edge exists failed")
+            return False
+
+    async def update_edge(self, from_key: str, to_key: str, edge_updates: dict, collection: str, transaction: str | None = None) -> bool:
+        """Merges ``edge_updates`` into the edges of the collection between two nodes named ``<collection>/<key>`` (a null removes a property); True when there was
+        one. An edge whose key changes with the update (a grant's type, an authenticated-as link's connector) is re-keyed, and the change is the capture's like
+        any other write of a grant. A failure raises."""
+        (fc, fid), (tc, tid) = parse_node_id(from_key), parse_node_id(to_key)
+        if not fc or not tc:
+            raise ValueError(f"update_edge needs '<collection>/<key>' ids, got {from_key!r} and {to_key!r}")
+        org = current_org_id()
+        colls, kind = _edge_scope(collection, pair=True)
+        _VALIDATOR.validate_edge_update(collection, edge_updates)      # before the first statement, as the other edge writers do
+
+        async def go(tx: Tx) -> int:
+            rows = await tx.fetch("""/* pipeshub:graph.update_edge_read */ SELECT e.coll, e.ekey, e.doc FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[])
+                AND e.from_coll = $3 AND e.from_id = $4 AND e.to_coll = $5 AND e.to_id = $6
+                AND ($7::int = 0 OR ($7::int = 1 AND e.ekey = '') OR ($7::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) ORDER BY e.coll, e.ekey FOR UPDATE""",
+                                  org, colls, fc, fid, tc, tid, kind)
+            docs = [{k: v for k, v in {**_doc(r["doc"]), **edge_updates}.items() if v is not None} for r in rows]
+            if len(rows) > 1 and any(_ekey(r["coll"], d) != r["ekey"] for r, d in zip(rows, docs, strict=True)):
+                raise ValueError(f"update_edge would change the key of {len(rows)} edges between {from_key} and {to_key}: name one of them")
+            for r, doc in zip(rows, docs, strict=True):
+                await tx.execute("""/* pipeshub:graph.update_edge */ UPDATE graph.edges SET doc = $7::jsonb, ekey = $8 WHERE org_id = $1 AND coll = $2 AND from_coll = $3 AND from_id = $4
+                    AND to_coll = $5 AND to_id = $6 AND ekey = $9""", org, r["coll"], fc, fid, tc, tid, _j(doc), _ekey(r["coll"], doc), r["ekey"])
+            return len(rows)
+        return await self._q(go, transaction, write=True) > 0
