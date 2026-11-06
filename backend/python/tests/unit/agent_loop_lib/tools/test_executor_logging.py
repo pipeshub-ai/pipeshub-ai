@@ -294,6 +294,24 @@ class TestRaisedFromTheCall:
         assert (fields["error_class"], fields["error_type"], fields["outcome"]) == ("internal", "KeyError", "failure")
         assert len([r for r in caplog.records if r.exc_info and r.levelno > logging.DEBUG]) == 1
 
+    async def test_an_exception_logged_at_warn_and_returned_as_an_error_class_is_error_with_its_stack(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.DEBUG)
+
+        async def _logs_warn_then_returns(**_kwargs: Any) -> ToolOutput:  # noqa: ANN401
+            exc = RuntimeError("r")
+            error_class.log_failure(_PROBE, "probe.failed", exc, error_class="timeout")
+            return ToolOutput(success=False, error="r", cause=exc, end_fields={"error_class": "internal"})
+
+        await _executor(_Tool(_logs_warn_then_returns)).call_tool(_call())
+
+        (probe,) = [r for r in caplog.records if r.getMessage() == "probe.failed"]
+        record, fields = _one_end(caplog)
+        assert probe.levelno == logging.WARNING and probe.exc_info is None
+        assert record.levelno == logging.ERROR and record.exc_info is not None
+        assert fields["error_class"] == "internal"
+
     @pytest.mark.parametrize(("shared", "level"), [
         (httpx.ReadTimeout("slow"), logging.WARNING),
         (KeyError("k"), logging.ERROR),

@@ -230,6 +230,27 @@ def _raised(exc: BaseException) -> BaseException:
         return e
 
 
+class TestLoggedLevel:
+    def test_never_logged(self) -> None:
+        assert EC.logged_level(_raised(KeyError("k"))) is None
+
+    def test_the_level_it_was_logged_at(self, capture) -> None:
+        logger, _ = capture
+        exc = _raised(_http_status_error(429))
+        EC.log_failure(logger, "x.end", exc)
+        assert EC.logged_level(exc) == logging.WARNING
+
+    def test_the_highest_over_the_cause_chain(self, capture) -> None:
+        logger, _ = capture
+        inner = _raised(_http_status_error(429))
+        EC.log_failure(logger, "inner.end", inner)
+        outer = _chained(RuntimeError("outer"), inner)
+        assert EC.logged_level(outer) == logging.WARNING  # seen through the cause
+        EC.log_failure(logger, "outer.end", outer, level=logging.ERROR)
+        assert EC.logged_level(outer) == logging.ERROR
+        assert EC.logged_level(inner) == logging.WARNING
+
+
 class TestLogFailure:
     def test_fields_level_and_no_stack_at_warn(self, capture) -> None:
         logger, records = capture
