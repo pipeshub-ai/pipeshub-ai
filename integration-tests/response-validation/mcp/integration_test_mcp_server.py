@@ -44,6 +44,7 @@ CURATED_TOOLS = {
     "pipeshub_upload",
     "pipeshub_indexing_status",
     "pipeshub_connect_source",
+    "pipeshub_add_web_source",
 }
 
 # Registered by PipesHub itself (modules/mcp/code-graph.tools.ts), not the
@@ -102,7 +103,7 @@ class TestMcpHandshake:
 
     def test_instructions_are_present(self, mcp_surface: dict) -> None:
         instructions = mcp_surface["instructions"]
-        assert instructions.startswith("# PipesHub MCP"), instructions[:120]
+        assert instructions.startswith("PipesHub "), instructions[:120]
 
 
 # ====================================================================

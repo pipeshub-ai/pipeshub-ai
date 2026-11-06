@@ -92,6 +92,7 @@ class TestMCPRegistry:
         assert "okta" in type_ids
         assert "zoom" in type_ids
         assert "trello" in type_ids
+        assert "paypal" in type_ids
 
     def test_airtable_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -165,6 +166,25 @@ class TestMCPRegistry:
             "hub:read:content",
             "hub:write:content",
         }
+
+    def test_paypal_catalog_entry(self) -> None:
+        """PayPal is the official production host, Streamable HTTP, and it registers clients itself."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        paypal = registry.get_template("paypal")
+        assert paypal is not None
+        assert paypal.display_name == "PayPal"
+        assert paypal.transport == MCPTransport.STREAMABLE_HTTP
+        assert paypal.default_auth_mode == MCPAuthMode.OAUTH
+        assert paypal.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert paypal.default_url == "https://mcp.paypal.com/mcp"
+        assert paypal.url_editable is False
+        assert paypal.supports_dcr is True
+        assert paypal.authorization_url == "https://mcp.paypal.com/authorize"
+        assert paypal.token_url == "https://mcp.paypal.com/token"
+        assert paypal.default_scopes == []
+        assert paypal.icon == "/icons/connectors/paypal.svg"
+        assert paypal.documentation_url == "https://developer.paypal.com/tools/mcp-server/"
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode
