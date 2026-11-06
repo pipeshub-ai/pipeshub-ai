@@ -21,6 +21,7 @@ import sys
 from typing import TYPE_CHECKING, TextIO
 
 from app.config.constants.arangodb import CollectionNames
+from app.core import org_context
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -34,43 +35,70 @@ EXIT_PARTIAL = 1
 EXIT_INVALID = 2
 
 
+def detect_provider_type(graph: IGraphDBProvider) -> str:
+    """Detect graph database provider type dynamically against the backend."""
+    if hasattr(graph, "provider_type") and getattr(graph, "provider_type", None):
+        return str(graph.provider_type).lower()
+    type_name = type(graph).__name__.lower()
+    if "neo4j" in type_name or hasattr(graph, "_driver") or (hasattr(graph, "client") and hasattr(getattr(graph, "client", None), "execute_query")):
+        return "neo4j"
+    if "postgres" in type_name or hasattr(graph, "_id_rows"):
+        return "postgres"
+    if "arango" in type_name or hasattr(graph, "http_client"):
+        return "arangodb"
+    import os
+    env_store = os.getenv("DATA_STORE", "").lower()
+    if env_store in ("neo4j", "arangodb", "arango", "postgres"):
+        return "neo4j" if env_store == "neo4j" else ("postgres" if env_store == "postgres" else "arangodb")
+    return "arangodb"
+
+
 async def fetch_unnormalized_users(
     graph: IGraphDBProvider,
     org_id: str | None,
     limit: int,
+    offset: int = 0,
 ) -> list[dict]:
     """Find user nodes whose email is not lowercase and stripped.
 
     Returns dicts with keys: ``id``, ``orgId``, ``email``, ``newEmail``.
     """
     if hasattr(graph, "fetch_unnormalized_users"):
-        return await graph.fetch_unnormalized_users(org_id, limit)
+        try:
+            return await graph.fetch_unnormalized_users(org_id, limit, offset=offset)
+        except TypeError:
+            return await graph.fetch_unnormalized_users(org_id, limit)
 
     from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
     from app.services.graph_db.postgres.identity import IdentityMixin
 
-    if isinstance(graph, ArangoHTTPProvider):
+    provider = detect_provider_type(graph)
+
+    if provider == "arangodb" or isinstance(graph, ArangoHTTPProvider) or hasattr(graph, "http_client"):
         query = f"""
         FOR u IN {CollectionNames.USERS.value}
             {"FILTER u.orgId == @org_id" if org_id else ""}
             FILTER u.email != null AND u.email != "" AND u.email != LOWER(TRIM(u.email))
-            LIMIT @limit
+            SORT u._key ASC
+            LIMIT @offset, @limit
             RETURN {{ id: u._key, orgId: u.orgId, email: u.email, newEmail: LOWER(TRIM(u.email)) }}
         """
-        bind_vars: dict = {"limit": limit, **({"org_id": org_id} if org_id else {})}
-        return await graph.http_client.execute_aql(query, bind_vars=bind_vars)
+        bind_vars: dict = {"limit": limit, "offset": offset, **({"org_id": org_id} if org_id else {})}
+        client = getattr(graph, "http_client", None) or getattr(graph, "client", None)
+        return await client.execute_aql(query, bind_vars=bind_vars)
 
-    if isinstance(graph, Neo4jProvider):
+    if provider == "neo4j" or isinstance(graph, Neo4jProvider) or hasattr(graph, "client"):
         where_clause = "WHERE u.orgId = $org_id" if org_id else "WHERE true"
         query = f"""
         MATCH (u:User)
         {where_clause}
           AND u.email IS NOT NULL AND u.email <> "" AND u.email <> toLower(trim(u.email))
         RETURN u.id AS id, u.orgId AS orgId, u.email AS email, toLower(trim(u.email)) AS newEmail
-        LIMIT $limit
+        ORDER BY u.id ASC
+        SKIP $offset LIMIT $limit
         """
-        params: dict = {"limit": limit, **({"org_id": org_id} if org_id else {})}
+        params: dict = {"limit": limit, "offset": offset, **({"org_id": org_id} if org_id else {})}
         results = await graph.client.execute_query(query, parameters=params)
         return [
             {
@@ -82,18 +110,19 @@ async def fetch_unnormalized_users(
             for row in results or []
         ]
 
-    if isinstance(graph, IdentityMixin) or hasattr(graph, "_id_rows"):
+    if provider == "postgres" or isinstance(graph, IdentityMixin) or hasattr(graph, "_id_rows"):
         query = """
         /* pipeshub:graph.unnormalized_user_emails */
         SELECT id, org_id, doc->>'email' AS email, lower(trim(doc->>'email')) AS new_email
         FROM graph.nodes
         WHERE coll = 'users'
-          AND ($1::text IS NULL OR org_id = $1)
-          AND doc->>'email' IS NOT NULL AND doc->>'email' <> ''
-          AND doc->>'email' <> lower(trim(doc->>'email'))
-        LIMIT $2
+        AND ($1::text IS NULL OR org_id = $1)
+        AND doc->>'email' IS NOT NULL AND doc->>'email' <> ''
+        AND doc->>'email' <> lower(trim(doc->>'email'))
+        ORDER BY id ASC
+        LIMIT $2 OFFSET $3
         """
-        rows = await graph._id_rows(query, [org_id, limit])
+        rows = await graph._id_rows(query, [org_id, limit, offset], None)
         return [
             {
                 "id": r["id"],
@@ -118,11 +147,13 @@ async def normalize_emails_for_org(
 ) -> dict[str, int]:
     """Process user email normalization in batches for a given organization (or global)."""
     stats = {"scanned": 0, "updated": 0, "failed_batches": 0}
-    seen_ids: set[str] = set()
+    offset = 0
 
     while True:
         try:
-            candidates = await fetch_unnormalized_users(graph, org_id, batch_size)
+            candidates = await fetch_unnormalized_users(
+                graph, org_id, limit=batch_size, offset=offset if not apply else 0
+            )
         except Exception as exc:
             logger.exception("Failed to query unnormalized users for org %s", org_id)
             stats["failed_batches"] += 1
@@ -132,24 +163,17 @@ async def normalize_emails_for_org(
         if not candidates:
             break
 
-        # In dry-run mode, candidates won't be modified in DB, so break out
-        # once all candidates have been seen to avoid infinite loop.
-        new_candidates = [c for c in candidates if c["id"] not in seen_ids]
-        if not new_candidates:
-            break
-
-        seen_ids.update(c["id"] for c in new_candidates)
-        stats["scanned"] += len(new_candidates)
+        stats["scanned"] += len(candidates)
 
         if apply:
             now = get_epoch_timestamp_in_ms()
             update_nodes = [
                 {
                     "id": c["id"],
-                    "email": c["newEmail"],
+                    "email": (c.get("newEmail") or c.get("email", "")).strip().lower(),
                     "updatedAtTimestamp": now,
                 }
-                for c in new_candidates
+                for c in candidates
             ]
             try:
                 await graph.batch_upsert_nodes(update_nodes, CollectionNames.USERS.value)
@@ -158,15 +182,16 @@ async def normalize_emails_for_org(
                 logger.exception("Failed to write normalized email batch for org %s", org_id)
                 stats["failed_batches"] += 1
                 out.write(json.dumps({"org_id": org_id, "error": type(exc).__name__, "message": str(exc)}) + "\n")
-                continue
+                break
         else:
-            stats["updated"] += len(new_candidates)
+            stats["updated"] += len(candidates)
+            offset += len(candidates)
 
         out.write(
             json.dumps({
                 "status": "progress",
                 "org_id": org_id or "all",
-                "batch_size": len(new_candidates),
+                "batch_size": len(candidates),
                 "total_updated": stats["updated"],
                 "applied": apply,
             })
@@ -205,24 +230,44 @@ async def run_normalization(
     total_stats = {"total_scanned": 0, "total_updated": 0, "total_failed_batches": 0}
 
     if org_id:
-        target_orgs: list[str | None] = [org_id]
+        target_orgs = [org_id]
     else:
         try:
-            org_docs = await graph.get_all_orgs()
-            target_orgs = [o.get("id") or o.get("_key") for o in org_docs if o]
-        except Exception:
-            # If get_all_orgs fails or is unsupported, perform a global pass with org_id=None
-            target_orgs = [None]
+            with org_context.system("normalize_user_emails.get_all_orgs"):
+                org_docs = await graph.get_all_orgs(raise_on_error=True)
+        except Exception as exc:
+            logger.exception("Failed to enumerate organizations")
+            out.write(json.dumps({"error": type(exc).__name__, "message": str(exc)}) + "\n")
+            return EXIT_INVALID
+
+        target_orgs = []
+        for o in org_docs or []:
+            if not o:
+                continue
+            oid = o.get("id") or o.get("_key")
+            if not oid:
+                logger.error("Organization document is missing id or _key: %s", o)
+                out.write(json.dumps({"error": "InvalidOrganizationDocument", "doc": o}) + "\n")
+                return EXIT_INVALID
+            target_orgs.append(str(oid))
 
     for target in target_orgs:
-        res = await normalize_emails_for_org(
-            graph,
-            target,
-            apply=apply,
-            logger=logger,
-            out=out,
-            batch_size=batch_size,
-        )
+        try:
+            with org_context.for_org(target, job="normalize_user_emails"):
+                res = await normalize_emails_for_org(
+                    graph,
+                    target,
+                    apply=apply,
+                    logger=logger,
+                    out=out,
+                    batch_size=batch_size,
+                )
+        except Exception as exc:
+            logger.exception("Failed normalization pass for org %s", target)
+            total_stats["total_failed_batches"] += 1
+            out.write(json.dumps({"org_id": target, "error": type(exc).__name__, "message": str(exc)}) + "\n")
+            continue
+
         total_stats["total_scanned"] += res["scanned"]
         total_stats["total_updated"] += res["updated"]
         total_stats["total_failed_batches"] += res["failed_batches"]
@@ -240,6 +285,25 @@ async def run_normalization(
     )
 
     return EXIT_PARTIAL if total_stats["total_failed_batches"] else EXIT_SUCCESS
+
+
+async def normalize_all_orgs(
+    graph: IGraphDBProvider,
+    *,
+    apply: bool = False,
+    logger: Logger,
+    out: TextIO,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> int:
+    """Normalize user emails across all organizations."""
+    return await run_normalization(
+        graph,
+        all_orgs=True,
+        apply=apply,
+        logger=logger,
+        out=out,
+        batch_size=batch_size,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

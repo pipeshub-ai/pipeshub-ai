@@ -6106,9 +6106,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return {}
         try:
             scoped = org_id is not None
-            where_clause = "WHERE u.orgId = $org_id AND u.email IN $emails" if scoped else "WHERE u.email IN $emails"
+            email_predicate = "(u.email IN $emails OR toLower(trim(u.email)) IN $emails)"
+            where_clause = f"WHERE u.orgId = $org_id AND {email_predicate}" if scoped else f"WHERE {email_predicate}"
             # Direct comparison against normalized inputs allows the composite index
-            # on (orgId, email) to be used without scanning all user nodes.
+            # on (orgId, email) to be used, while the case-insensitive fallback ensures
+            # legacy unnormalized emails are findable during rollout.
             query = f"""
             MATCH (u:User)
             {where_clause}
@@ -6121,7 +6123,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for row in results or []:
                 user_dict = self._neo4j_to_arango_node(dict(row["u"]), CollectionNames.USERS.value)
                 u = User.from_arango_user(user_dict)
-                key = (user_dict.get("email") or "").lower()
+                key = (user_dict.get("email") or "").strip().lower()
                 if key not in found or (u.is_active and not found[key].is_active):
                     found[key] = u
             return found
@@ -6145,12 +6147,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
         try:
             scoped = org_id is not None
-            where_clause = "WHERE u.orgId = $org_id AND u.email = $email" if scoped else "WHERE u.email = $email"
+            email_predicate = "(u.email = $email OR toLower(trim(u.email)) = $email)"
+            where_clause = f"WHERE u.orgId = $org_id AND {email_predicate}" if scoped else f"WHERE {email_predicate}"
             parameters = {"email": normalized_email, **({"org_id": org_id} if scoped else {})}
             query = f"""
             MATCH (u:User)
             {where_clause}
             RETURN u
+            ORDER BY u.isActive DESC
             LIMIT 1
             """
 

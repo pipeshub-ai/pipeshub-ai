@@ -7806,11 +7806,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_filter = "FILTER user.orgId == @org_id" if scoped else ""
         bind_vars = {"emails": wanted, **({"org_id": org_id} if scoped else {})}
         # Direct comparison against normalized inputs allows the persistent index
-        # on (orgId, email) to be used without a full collection scan.
+        # on (orgId, email) to be used, while the case-insensitive fallback ensures
+        # legacy unnormalized emails are findable during rollout.
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
             {org_filter}
-            FILTER user.email IN @emails
+            FILTER (user.email IN @emails OR LOWER(TRIM(user.email)) IN @emails)
             RETURN user
         """
         try:
@@ -7819,7 +7820,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for row in rows or []:
                 node = self._translate_node_from_arango(row)
                 u = User.from_arango_user(node)
-                key = (row.get("email") or "").lower()
+                key = (row.get("email") or "").strip().lower()
                 if key not in found or (u.is_active and not found[key].is_active):
                     found[key] = u
             return found
@@ -7849,7 +7850,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
             {org_filter}
-            FILTER user.email == @email
+            FILTER (user.email == @email OR LOWER(TRIM(user.email)) == @email)
+            SORT user.isActive DESC
             LIMIT 1
             RETURN user
         """
