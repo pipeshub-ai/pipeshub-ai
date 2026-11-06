@@ -12,7 +12,8 @@ import asyncio
 
 import pytest
 
-from app.core.org_context import OrgMismatch
+from app.core import org_context
+from app.core.org_context import MissingOrgContext, OrgMismatch, SystemContextNotAllowed
 from app.models.entities import Person
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
 
@@ -413,3 +414,23 @@ async def test_a_failed_root_listing_raises_rather_than_listing_nothing_and_come
         await w.p.get_knowledge_hub_root_nodes_v2("u", w.org, ["x"], 10)
     monkeypatch.setattr(w.p, "_q", real)
     assert [r["id"] for r in (await w.p.get_knowledge_hub_root_nodes_v2("u", w.org, ["x"], 10))["partitions"][0]["rows"]] == ["x"]
+
+
+NO_ORG = {
+    "organization_exists": ("Acme",), "get_app_user_by_email": ("a@x.io", "app"), "get_person_by_email": ("a@x.io", "o"),
+    "apply_verified_user_email": ("u", "o", "a@x.io"), "get_knowledge_hub_filter_options": ("u", "o"), "get_knowledge_hub_breadcrumbs": ("n", "u", "o"),
+    "get_knowledge_hub_parent_node": ("n", []), "get_knowledge_hub_root_nodes_v2": ("u", "o", [], 10),
+}
+
+
+@pytest.mark.parametrize("name", sorted(NO_ORG))
+async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_provider, name: str) -> None:
+    with pytest.raises(MissingOrgContext):
+        await getattr(pg_provider, name)(*NO_ORG[name])
+    with org_context.system("test.no-org"), pytest.raises((SystemContextNotAllowed, MissingOrgContext)):
+        await getattr(pg_provider, name)(*NO_ORG[name])
+
+
+async def test_no_org_is_an_error_for_a_person_upsert(pg_provider) -> None:
+    with pytest.raises(MissingOrgContext):
+        await pg_provider.upsert_person_by_email(Person(email="a@x.io", org_id="o"))
