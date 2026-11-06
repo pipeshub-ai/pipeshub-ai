@@ -2,6 +2,7 @@ import { createHash, createSecretKey, KeyObject } from 'node:crypto';
 import { Request } from 'express';
 import jwt from 'jsonwebtoken';
 import { TokenScopes } from '../enums/token-scopes.enum';
+import { HEADER_MCP_RELAY } from '../context/request-context';
 
 /**
  * Marks an API call the /mcp handler makes on behalf of a tool call. Each tool call reaches the
@@ -9,7 +10,7 @@ import { TokenScopes } from '../enums/token-scopes.enum';
  * part of an /mcp call already counted and authorised", bound to that token so it cannot be
  * lifted onto another one.
  */
-export const MCP_RELAY_HEADER = 'x-pipeshub-mcp-relay';
+export const MCP_RELAY_HEADER = HEADER_MCP_RELAY;
 
 const RELAY_LIFETIME_SECONDS = 300;
 
