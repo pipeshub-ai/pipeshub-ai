@@ -2710,9 +2710,16 @@ const deleteConversation = async (
     // The chat's artifacts go first, outside the transaction (a network call
     // would hold it open): if they cannot be deleted the chat stays, so a
     // retry finishes the cleanup instead of orphaning them.
-    if (!(await convRepo().findDeletable(conversationId as string, actor))) {
+    const deletable = await convRepo().findDeletable(
+      conversationId as string,
+      actor,
+    );
+    if (!deletable) {
       throw new NotFoundError('Conversation not found');
     }
+    // Soft-delete would leave a temporary chat stuck: the TTL sweep only
+    // hard-deletes non-deleted rows. Owners must use DELETE …/temporary.
+    assertNotTemporary(deletable);
     await deleteConversationArtifacts(appConfig, String(conversationId), req);
 
     const result = await unitOfWork.run((tx) =>
