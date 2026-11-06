@@ -187,6 +187,8 @@ class EntityReadsMixin(PgBase):
                 CASE WHEN jsonb_typeof(v.doc->'amountHighFloat') = 'number' THEN (v.doc->>'amountHighFloat')::float8 END AS ah,
                 CASE WHEN jsonb_typeof(v.doc->'siValue') = 'number' THEN (v.doc->>'siValue')::float8 END AS si,
                 CASE WHEN jsonb_typeof(v.doc->'numericValue') = 'number' THEN (v.doc->>'numericValue')::float8 END AS nv) f
+              JOIN graph.nodes r ON r.org_id = v.org_id AND r.coll = 'records' AND r.id = v.doc->>'recordId'      -- only live records count toward the cap
+                AND r.doc->>'orgId' = $2 AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
               WHERE v.org_id = $1 AND v.coll = 'valueMentions' AND v.doc->>'orgId' = $2 AND v.doc->>'recordId' IS NOT NULL
                 AND ($14::text[] IS NULL OR v.doc->>'recordId' = ANY($14::text[]))
                 AND (cardinality($3::text[]) = 0 OR v.doc->>'kind' = ANY($3::text[]))
@@ -262,7 +264,8 @@ class EntityReadsMixin(PgBase):
         if not keys:
             return []
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_records_for_named_entities_nodes */ SELECT DISTINCT e.from_id AS rid FROM graph.edges e
-            JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id
+            JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id AND r.doc->>'orgId' = $2 AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
+            JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = 'namedEntities' AND n.id = e.to_id      -- a dangling edge names no entity
             WHERE e.org_id = $1 AND e.coll = 'mentionsEntity' AND e.from_coll = 'records' AND e.to_coll = 'namedEntities' AND e.to_id = ANY($3::text[])
               AND e.doc->>'orgId' = $2 ORDER BY rid LIMIT $4""", org, org_id, keys, cap + 1), None)
         return None if len(rows) > cap else [r["rid"] for r in rows]
