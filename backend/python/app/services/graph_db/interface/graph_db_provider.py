@@ -1736,6 +1736,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Walk one hop from many nodes at once along the given relationship types.
@@ -1751,6 +1752,10 @@ class IGraphDBProvider(ABC):
             relationship_types (List[str]): Relationship type values to follow
             direction (str): "outbound", "inbound", or "any"
             limit (int): Maximum rows to return across the whole frontier
+            after (Optional[str]): Keyset paging. ``None`` keeps the unordered
+                single query. Any string (``""`` for the first page) returns rows
+                in ascending ``cursor`` order whose ``cursor`` is greater than it;
+                pass the last row's ``cursor`` to get the next page.
             transaction (Optional[str]): Optional transaction context
 
         Returns:

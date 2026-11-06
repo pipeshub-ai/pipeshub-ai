@@ -79,6 +79,12 @@ class GoogleClient(IClient):
         return self.client
 
     @staticmethod
+    def delegated_scopes_for(service_name: str) -> list[str]:
+        """The scopes a service account's delegated token asks for when building *service_name*
+        without explicit scopes: what an admin's domain-wide delegation grant must cover."""
+        return GoogleClient._get_optimized_scopes(service_name)
+
+    @staticmethod
     def _get_optimized_scopes(service_name: str, additional_scopes: Optional[List[str]] = None) -> List[str]:
         """
         Get optimized scopes for a specific service.

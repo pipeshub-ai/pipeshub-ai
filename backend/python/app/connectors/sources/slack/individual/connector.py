@@ -1123,7 +1123,6 @@ class SlackIndividualConnector(BaseConnector):
             await self.rate_limiter.acquire(Tier.T2)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_list(
-                exclude_archived=True,
                 types=types_param,
                 limit=PAGE_SIZE_CHANNELS,
                 cursor=cursor,
@@ -1152,11 +1151,12 @@ class SlackIndividualConnector(BaseConnector):
                 if not self._should_include_channel_in_filter(cd):
                     continue
                 if (
-                    not cd.get("is_im")
+                    cd.get("is_private")
+                    and not cd.get("is_im")
                     and not cd.get("is_mpim")
                     and not cd.get("is_member")
                 ):
-                    continue
+                    continue  # a user token reads a public channel it is not in, never a private one
                 if include_ids and cid not in include_ids:
                     continue
 
@@ -1970,8 +1970,9 @@ class SlackIndividualConnector(BaseConnector):
             if not resp or not resp.success:
                 error = getattr(resp, "error", "no response")
                 # The thread or channel is gone: nothing more can be read, so
-                # a retry would fail the same way. Treat it as finished.
-                if error in ("thread_not_found", "channel_not_found", "not_in_channel"):
+                # a retry would fail the same way. Treat it as finished, but only
+                # before any page was fetched; after that the replies are partial.
+                if cursor is None and error in ("thread_not_found", "channel_not_found", "not_in_channel"):
                     self.logger.warning(
                         f"Skipping replies of thread ts={thread_ts} in {channel_id}: {error}"
                     )
@@ -4555,7 +4556,6 @@ class SlackIndividualConnector(BaseConnector):
                 await self.rate_limiter.acquire(Tier.T2)
                 ds = await self._fresh_datasource()
                 resp = await ds.conversations_list(
-                    exclude_archived=True,
                     types=types_param,
                     limit=PAGE_SIZE_CHANNELS,
                     cursor=api_cursor,
@@ -4571,7 +4571,8 @@ class SlackIndividualConnector(BaseConnector):
                     if not cid:
                         continue
                     if (
-                        not ch.get("is_im")
+                        ch.get("is_private")
+                        and not ch.get("is_im")
                         and not ch.get("is_mpim")
                         and not ch.get("is_member")
                     ):
