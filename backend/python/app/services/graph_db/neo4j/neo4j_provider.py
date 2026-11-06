@@ -23515,17 +23515,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not org_id or not key or not node.get("name"):
             raise ValueError("an extracted organisation needs an org, an id and a name")
         now = get_epoch_timestamp_in_ms()
+        props = {
+            "name": node["name"], "normalizedName": node.get("normalizedName"),
+            "accountType": "enterprise", "isActive": True, "isExternal": True, "parentOrgId": org_id,
+            "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        }
+        self.validator.validate_node(CollectionNames.ORGS.value, {"id": key, **props})
         label = collection_to_label(CollectionNames.ORGS.value)
         await self.client.execute_query(
             f"""
             MERGE (o:{label} {{id: $id}})
             ON CREATE SET o += $props
             """,
-            parameters={"id": key, "props": {
-                "name": node["name"], "normalizedName": node.get("normalizedName"),
-                "accountType": "enterprise", "isActive": True, "isExternal": True, "parentOrgId": org_id,
-                "createdAtTimestamp": now, "updatedAtTimestamp": now,
-            }},
+            parameters={"id": key, "props": props},
             txn_id=transaction,
         )
 
