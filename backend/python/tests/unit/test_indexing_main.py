@@ -3142,6 +3142,24 @@ class TestRepublishStrandedRecords:
         producer.send_event.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_metadata_saves_do_not_keep_a_lost_event_from_recovery(self) -> None:
+        """A QUEUED row whose event was lost, saved again and again by syncs, is still recovered."""
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(
+                        queuedAtTimestamp=1, updatedAtTimestamp=get_epoch_timestamp_in_ms()
+                    )
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
     async def test_a_stale_queue_stamp_is_still_recovered(self) -> None:
         graph = _sweep_graph(
             {ProgressStatus.NOT_STARTED.value: [self._old_record(queuedAtTimestamp=1)]},
