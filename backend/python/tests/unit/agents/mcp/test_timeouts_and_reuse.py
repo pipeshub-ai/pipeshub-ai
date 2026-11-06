@@ -202,6 +202,9 @@ class TestAListingDiscoversABoundedNumberOfServers:
         monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_CONCURRENCY", 2)
         monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_DEADLINE_SECONDS", 0.3)
         monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_MIN_SECONDS", 0.05)
+        # A server's own budget (20 s) is longer than the bound: only a wait clipped to what is left of
+        # the 0.3 s deadline, not the per-server budget, ends the slow servers in time.
+        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_BUDGET_SECONDS", 20)
         started = time.monotonic()
         with patch.object(mcp_servers, "discover_tools_for_owner", new=_discover):
             instances = await _list_my_servers(_listing_store(10))
