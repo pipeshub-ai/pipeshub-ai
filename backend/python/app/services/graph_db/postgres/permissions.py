@@ -167,9 +167,10 @@ class PermissionsMixin(PgBase):
         async def walk(tx: Tx, coll: str, roots: list[str], exact: list[str]) -> list[dict[str, Any]]:
             found: dict[str, dict[str, Any]] = {}
 
-            async def live(ids: list[str]) -> list[Any]:
+            async def live(ids: list[str]) -> list[Any]:          # at most one past the limit, as the children: a long id list is never read in full
                 return await tx.fetch("""/* pipeshub:graph.selection_nodes_live */ SELECT id, doc->>'connectorId' AS cid, doc->>'virtualRecordId' AS vrid FROM graph.nodes
-                    WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) AND coalesce((doc->>'isDeleted')::boolean, false) = false""", org, coll, ids)
+                    WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) AND id <> ALL($4::text[]) AND coalesce((doc->>'isDeleted')::boolean, false) = false
+                    LIMIT $5""", org, coll, ids, list(found), limit + 1 - len(found))
 
             rows = await live(list(roots))
             for hop in range(access_sql.MAX_HOPS + 1):
@@ -184,8 +185,8 @@ class PermissionsMixin(PgBase):
                     WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = $2 AND e.to_coll = $2 AND e.from_id = ANY($3::text[])
                       AND e.doc->>'relationshipType' = ANY($4::text[]) AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND n.id <> ALL($5::text[])
                     LIMIT $6""", org, coll, frontier, ["PARENT_CHILD", "ATTACHMENT"], list(found), limit + 1 - len(found))
-            if exact:
-                found.update((r["id"], r) for r in await live(exact) if r["id"] not in found)
+            if exact and len(found) <= limit:
+                found.update((r["id"], r) for r in await live(exact))
             return list(found.values())[:limit + 1]
 
         async def go(tx: Tx) -> dict[str, list[dict[str, Any]]]:

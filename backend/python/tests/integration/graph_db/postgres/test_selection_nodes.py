@@ -142,3 +142,13 @@ async def test_a_wide_level_is_cut_only_past_the_limit_and_deleted_or_repeated_c
     assert len((await ids(p, record_ids=["wide"], limit=11))[1]) == 11                 # exactly at the limit: every live node, none cut
     assert len((await ids(p, record_ids=["wide"], limit=10))[1]) == 11                 # one past it: the caller reads it as too large
     assert (await ids(p, record_ids=["wide"], limit=50))[1] == {"wide", *kids}
+
+
+async def test_a_long_root_or_exact_list_is_cut_one_past_the_limit_and_nothing_is_counted_twice(pg_db) -> None:
+    p = bound(pg_db)
+    keys = [f"r{i:02d}" for i in range(12)]
+    await p.batch_upsert_nodes([rec(p.org, k) for k in keys] + [rec(p.org, "dead", isDeleted=True)], "records")
+    assert len((await ids(p, record_ids=keys, limit=5))[1]) == 6                                  # roots: one past the limit
+    assert len((await ids(p, exact_record_ids=keys, limit=5))[1]) == 6                            # exact files alike
+    assert (await ids(p, record_ids=keys[:3], exact_record_ids=[*keys[:5], "dead"], limit=5))[1] == set(keys[:5])     # a root named again is counted once; a deleted file is none
+    assert len((await ids(p, record_ids=keys[:6], exact_record_ids=keys[6:], limit=5))[1]) == 6   # past the limit already: the exact files are not read
