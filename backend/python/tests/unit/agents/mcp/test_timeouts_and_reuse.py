@@ -183,6 +183,24 @@ class TestAListingDiscoversABoundedNumberOfServers:
         assert most == 3
         assert all(entry["tools"] for entry in instances)
 
+    async def test_a_servers_budget_is_what_is_left_of_the_deadline_when_less_than_its_own(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The yielded wait follows a controlled clock: the full budget early, then what is left, then nothing."""
+        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_DEADLINE_SECONDS", 15)
+        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_BUDGET_SECONDS", 10)
+        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_MIN_SECONDS", 1)
+        now = [100.0]
+        loop = asyncio.get_running_loop()
+        budgets = []
+        with patch.object(loop, "time", side_effect=lambda: now[0]):  # nothing below sleeps on the loop
+            discovery = mcp_servers._ListingDiscovery()
+            for at in (100.0, 107.0, 113.5, 114.5):
+                now[0] = at
+                async with discovery.slot() as budget:
+                    budgets.append(budget)
+        assert budgets == [10, 8.0, 1.5, 0]
+
     async def test_servers_whose_turn_comes_after_the_deadline_are_reported_as_timed_out(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -194,17 +212,22 @@ class TestAListingDiscoversABoundedNumberOfServers:
 
         async def _discover(instance: dict, auth: dict, owner: str, cfg: object, **kwargs: Any) -> tuple:  # noqa: ANN401
             discovered.append(instance["_id"])
-            await asyncio.sleep(0.2)
+            # The first two answer within the deadline; every later one would take 30 s, so a listing
+            # that waited for them instead of cutting at the deadline could not finish under the bound.
+            await asyncio.sleep(0.2 if len(discovered) <= 2 else 30)
             return [MCPToolInfo(name="t", namespaced_name=f"mcp_{instance['_id']}_t")], auth
 
         monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_CONCURRENCY", 2)
         monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_DEADLINE_SECONDS", 0.3)
         monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_MIN_SECONDS", 0.05)
+        # A server's own budget (20 s) is longer than the bound: only a wait clipped to what is left of
+        # the 0.3 s deadline, not the per-server budget, ends the slow servers in time.
+        monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_BUDGET_SECONDS", 20)
         started = time.monotonic()
         with patch.object(mcp_servers, "discover_tools_for_owner", new=_discover):
             instances = await _list_my_servers(_listing_store(10))
 
-        assert time.monotonic() - started < 1.5
+        assert time.monotonic() - started < 10
         listed = [entry for entry in instances if entry["tools"]]
         late = [entry for entry in instances if entry["toolsTimedOut"]]
         assert len(listed) == 2

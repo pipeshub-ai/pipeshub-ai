@@ -79,6 +79,9 @@ WRITERS: dict[str, tuple[str, str]] = {
     "update_edge": (PROJECTED, ""), "delete_connector_sync_edges": (PROJECTED, ""), "reap_stale_external_app_relations": (PROJECTED, ""),
     # delete.py: a connector instance and everything of it goes in one unit
     "delete_connector_instance": (PROJECTED, ""),
+    # sync_state.py
+    "update_user_sync_state": (NO_PROJECTION, "the sync state of a user's relation to an app is not an access field"), "update_drive_sync_state": (NO_PROJECTION, "the sync state of a drive node, not an access field"),
+    "backfill_indexed_copy_flags": (NO_PROJECTION, _STATUS), "reset_indexing_status_for_connector": (NO_PROJECTION, _STATUS),
 }
 
 
