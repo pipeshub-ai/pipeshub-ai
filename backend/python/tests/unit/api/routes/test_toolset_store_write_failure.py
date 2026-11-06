@@ -265,7 +265,7 @@ async def test_create_instance_with_a_readable_list_keeps_the_others() -> None:
     assert [i["_id"] for i in stored[DEFAULT_TOOLSET_INSTANCES_PATH]] == ["i0", result["instance"]["_id"]]
 
 
-async def test_update_instance_with_an_unreadable_list_is_500_and_overwrites_nothing() -> None:
+async def test_update_instance_with_an_unreadable_list_is_500_not_404() -> None:
     cs, store, _stored = _service(reads=False)
     req = _make_request(body_dict={"instanceName": "Renamed"})
     req.app.state.toolset_registry = _make_registry("jira")
@@ -276,7 +276,7 @@ async def test_update_instance_with_an_unreadable_list_is_500_and_overwrites_not
     store.create_key.assert_not_awaited()
 
 
-async def test_delete_instance_with_an_unreadable_list_is_500_and_overwrites_nothing() -> None:
+async def test_delete_instance_with_an_unreadable_list_is_500_and_keeps_credentials() -> None:
     cs, store, _stored = _service(reads=False)
     req = _make_request()
     req.app.state.toolset_registry = _make_registry("jira")
@@ -285,6 +285,7 @@ async def test_delete_instance_with_an_unreadable_list_is_500_and_overwrites_not
             await delete_toolset_instance("i1", req, cs)
     assert exc.value.status_code == 500
     store.create_key.assert_not_awaited()
+    store.delete_key.assert_not_awaited()
 
 
 async def test_new_oauth_app_with_an_unreadable_list_overwrites_nothing() -> None:
