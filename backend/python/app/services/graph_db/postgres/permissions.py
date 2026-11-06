@@ -129,6 +129,42 @@ class PermissionsMixin(PgBase):
             access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
         return await self._q(lambda tx: access_sql.accessible_rows(tx, org, ids, vrids, access), transaction)
 
+    async def get_selection_nodes(self, org_id: str, *, group_ids: list[str], record_ids: list[str],
+                                  exact_record_ids: list[str], limit: int) -> dict[str, list[dict[str, Any]]]:
+        """What a selection covers, from the hierarchy alone (see the interface). Walks down a level at a time with single-table lookups,
+        through live nodes only, and stops once more than ``limit`` nodes are found (the caller reads that as too large). Another org reads nothing."""
+        org = current_org_id()
+        if org_id != org:
+            return {"groups": [], "records": []}
+
+        async def walk(tx: Tx, coll: str, roots: list[str], exact: list[str]) -> list[dict[str, Any]]:
+            found: dict[str, dict[str, Any]] = {}
+
+            async def live(ids: list[str]) -> list[Any]:
+                return await tx.fetch("""/* pipeshub:graph.selection_nodes_live */ SELECT id, doc->>'connectorId' AS cid, doc->>'virtualRecordId' AS vrid FROM graph.nodes
+                    WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) AND coalesce((doc->>'isDeleted')::boolean, false) = false""", org, coll, ids)
+
+            frontier = list(roots)
+            for _ in range(access_sql.MAX_HOPS + 1):
+                fresh = [r for r in await live(frontier) if r["id"] not in found]
+                found.update((r["id"], r) for r in fresh)
+                frontier = [r["id"] for r in fresh]
+                if not frontier or len(found) > limit:
+                    break
+                frontier = [e["to_id"] for e in await tx.fetch("""/* pipeshub:graph.selection_nodes_children */ SELECT DISTINCT to_id FROM graph.edges WHERE org_id = $1
+                    AND coll = 'nodeRelations' AND from_coll = $2 AND to_coll = $2 AND from_id = ANY($3::text[]) AND doc->>'relationshipType' = ANY($4::text[])""",
+                                                              org, coll, frontier, ["PARENT_CHILD", "ATTACHMENT"])]
+            if exact:
+                found.update((r["id"], r) for r in await live(exact) if r["id"] not in found)
+            return list(found.values())[:limit + 1]
+
+        async def go(tx: Tx) -> dict[str, list[dict[str, Any]]]:
+            groups = await walk(tx, "recordGroups", group_ids, []) if group_ids else []
+            records = await walk(tx, "records", record_ids, exact_record_ids) if record_ids or exact_record_ids else []
+            return {"groups": [{"id": g["id"], "connectorId": g["cid"]} for g in groups],
+                    "records": [{"id": r["id"], "vrid": r["vrid"], "connectorId": r["cid"]} for r in records]}
+        return await self._q(go)
+
     # ---- who holds a grant on a node, and the writes of grants -----------------------------------------------------
     async def _users_granted_on(self, node_id: str, limit: int | None, transaction: str | None) -> list[dict]:
         """The users holding a PERMISSION edge on the node or on an ancestor it inherits from (up to ``_INHERIT_HOPS``), nearest first, then by id."""

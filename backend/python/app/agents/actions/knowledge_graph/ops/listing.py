@@ -285,6 +285,7 @@ async def execute_list_files(
         from app.modules.retrieval.selection_scope import (
             has_selection,
             resolve_request_scopes,
+            resolve_user_key,
         )
 
         # Input normalization
@@ -350,8 +351,7 @@ async def execute_list_files(
         parent_id: str | None = None
         parent_type: str | None = None
         if selection_search or any(key in filters for key in ALLOWED_FILTER_KEYS):
-            user = await graph_provider.get_user_by_user_id(user_id=user_id)
-            bound_user_key = (user.get("_key") or user.get("id")) if user else None
+            bound_user_key = await resolve_user_key(graph_provider, user_id)
             if not bound_user_key:
                 return False, "User not found."
         if selection_search:

@@ -1520,9 +1520,11 @@ async def update_record(
 
             return enriched_result
 
-        except HTTPException:
-            raise
         except Exception as e:
+            # The update is done: a limit check the graph could not answer (a 503) ends in the
+            # fallback below, not in a failed answer for a write that went through.
+            if isinstance(e, HTTPException) and e.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+                raise
             logger.error(f"❌ Failed to enrich update record response: {str(e)}")
             # Return with required fields even if enrichment fails. For a
             # connected app with a limit, the enrichment's own limit check may be

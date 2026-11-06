@@ -11,9 +11,10 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.graph_db.interface.graph_db_provider import (
     AGENT_BOUND_FILTER_KEYS,
     ALLOWED_FILTER_KEYS,
@@ -31,7 +32,9 @@ from app.services.vector_db.const.const import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Awaitable, Iterable, Mapping
+
+_T = TypeVar("_T")
 
 # Written for the reader: the Node gateway passes a 404 or 422 message through.
 SELECTION_TOO_LARGE_MESSAGE = (
@@ -71,6 +74,23 @@ SERVER_SET_FILTER_KEYS = frozenset((*ALLOWED_FILTER_KEYS, SELECTION_APPS_FILTER_
 _MEMO_SECONDS = 30.0
 _MEMO_MAX_ENTRIES = 256
 _memo: dict[tuple, tuple[float, SelectionScope]] = {}
+
+
+async def _answered(read: Awaitable[_T]) -> _T:
+    """``read``, with a store failure raised as ``PermissionVerificationUnavailableError``.
+    A failed read is "could not tell", never "outside the limit" or "nothing selected"."""
+    try:
+        return await read
+    except (PermissionVerificationUnavailableError, NotImplementedError):
+        raise
+    except Exception as exc:
+        raise PermissionVerificationUnavailableError(str(exc)) from exc
+
+
+async def resolve_user_key(graph_provider: IGraphDBProvider, user_id: str) -> str | None:
+    """The user's graph key; None when no such user exists. Raises when the lookup fails."""
+    user = await _answered(graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True))
+    return (user.get("_key") or user.get("id")) if user else None
 
 
 def max_selection_nodes() -> int:
@@ -247,10 +267,10 @@ async def resolve_selection_scope(
     limit = max_selection_nodes()
     nodes: dict[str, list[dict[str, Any]]] = {"groups": [], "records": []}
     if group_ids or record_ids or exact_ids:
-        nodes = await graph_provider.get_selection_nodes(
+        nodes = await _answered(graph_provider.get_selection_nodes(
             org_id, group_ids=group_ids, record_ids=record_ids,
             exact_record_ids=exact_ids, limit=limit,
-        )
+        ))
     if nodes.get("truncated") or len(nodes["groups"]) + len(nodes["records"]) > limit:
         raise SelectionTooLargeError
 
@@ -331,11 +351,11 @@ async def require_membership_ready(
     filtered_by_membership = scope.app_ids | frozenset(scope.groups.values())
     if not filtered_by_membership:
         return
-    apps = await graph_provider.get_nodes_by_field_in(
+    apps = await _answered(graph_provider.get_nodes_by_field_in(
         CollectionNames.APPS.value, "id", sorted(filtered_by_membership),
         return_fields=["id", "vectorMembershipBackfilled", "vectorMembershipBackfillExhausted"],
         raise_on_error=True,
-    )
+    ))
     # Ids with no App document (a sentinel, an attachment id) are simply absent.
     for app in apps or []:
         if not app.get("vectorMembershipBackfilled") or app.get("vectorMembershipBackfillExhausted"):
@@ -385,8 +405,7 @@ async def outside_connection(
     ids = [i for i in dict.fromkeys(node_ids) if i]
     if connection_sources is None or not ids:
         return set()
-    user = await graph_provider.get_user_by_user_id(user_id=user_id)
-    user_key = (user.get("_key") or user.get("id")) if user else None
+    user_key = await resolve_user_key(graph_provider, user_id)
     if not user_key:
         return set(ids)
     bound: dict[str, Any] = {}
@@ -394,6 +413,38 @@ async def outside_connection(
     _, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, bound)
     access = await graph_provider.check_access(user_key, org_id, node_ids=ids, scopes=scopes)
     return set(ids) - set(access.node_ids_in_scope)
+
+
+async def groups_outside_connection(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    groups: Mapping[str, str],
+    connection_sources: Mapping[str, Iterable[str]] | None,
+) -> set[str]:
+    """Of ``groups`` (record group id -> its app id), those a connected app limited
+    to ``connection_sources`` does not cover; none when the app has no limit.
+
+    Judged by where a group sits, not by whether the user holds a permission on
+    the group node itself: a user with grants only on records inside a group
+    still reaches them, so the group is inside a limit that names its app.
+
+    Raises:
+        SelectionTooLargeError, PermissionVerificationUnavailableError: see
+            ``resolve_selection_scope``.
+    """
+    if connection_sources is None or not groups:
+        return set()
+    user_key = await resolve_user_key(graph_provider, user_id)
+    if not user_key:
+        return set(groups)
+    bound: dict[str, Any] = {}
+    _set_bound(bound, CONNECTION_BOUND_FILTER_KEYS, connection_sources)
+    _, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, bound)
+    return {
+        group_id for group_id, app_id in groups.items()
+        if not all(scope.admits({"id": group_id, "connectorId": app_id}) for scope in scopes)
+    }
 
 
 async def connection_coverage(
@@ -410,8 +461,7 @@ async def connection_coverage(
         SelectionTooLargeError, PermissionVerificationUnavailableError: see
             ``resolve_selection_scope``.
     """
-    user = await graph_provider.get_user_by_user_id(user_id=user_id)
-    user_key = (user.get("_key") or user.get("id")) if user else None
+    user_key = await resolve_user_key(graph_provider, user_id)
     if not user_key:
         return frozenset(), frozenset()
     bound: dict[str, Any] = {}
@@ -518,9 +568,10 @@ async def readable_named_nodes(
             for i in node_ids if i in readable
         ))
         if wanted:
-            rows = await graph_provider.get_nodes_by_field_in(
+            rows = await _answered(graph_provider.get_nodes_by_field_in(
                 collection, "id", wanted, return_fields=["id", *_NAMED_FIELDS[collection]],
-            )
+                raise_on_error=True,
+            ))
             docs[collection] = {(row.get("id") or row.get("_key")): row for row in rows or []}
     return [
         NamedNode(key=key, id=node_id, doc=docs[_NAMED_COLLECTIONS[key]][node_id])
@@ -544,8 +595,7 @@ async def connection_named_nodes(
         SelectionTooLargeError, PermissionVerificationUnavailableError: see
             ``resolve_selection_scope``.
     """
-    user = await graph_provider.get_user_by_user_id(user_id=user_id)
-    user_key = (user.get("_key") or user.get("id")) if user else None
+    user_key = await resolve_user_key(graph_provider, user_id)
     if not user_key:
         return []
     bound: dict[str, Any] = {}
@@ -597,8 +647,7 @@ async def prepare_turn_scope(
     # with no app to work on, that means nothing, never everything.
     turn[STRICT_SCOPE_FILTER_KEY] = True
     bind(PROJECT_BOUND_FILTER_KEYS, project_sources)
-    user = await graph_provider.get_user_by_user_id(user_id=user_id)
-    user_key = (user.get("_key") or user.get("id")) if user else None
+    user_key = await resolve_user_key(graph_provider, user_id)
     scope = (await resolve_request_scopes(graph_provider, user_key, org_id, turn))[0] if user_key else None
     if scope is not None and not scope.is_empty:
         await require_membership_ready(graph_provider, scope)
@@ -619,8 +668,7 @@ async def unreadable_scope_error(
     Distinct from a search that finds no hits.
     """
     if has_selection(filters):
-        user = await graph_provider.get_user_by_user_id(user_id=user_id)
-        user_key = (user.get("_key") or user.get("id")) if user else None
+        user_key = await resolve_user_key(graph_provider, user_id)
         if not user_key:
             return None
         # Memoized: prepare_turn_scope resolved the same selection a moment ago.
