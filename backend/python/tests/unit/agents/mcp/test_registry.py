@@ -90,6 +90,7 @@ class TestMCPRegistry:
         assert "docusign" in type_ids
         assert "okta" in type_ids
         assert "zoom" in type_ids
+        assert "trello" in type_ids
 
     def test_okta_and_docusign_catalog_entries(self) -> None:
         """Okta's address is per org, so it has no fixed URL and always asks for an OAuth app.
