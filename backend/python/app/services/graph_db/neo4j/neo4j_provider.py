@@ -2535,11 +2535,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         for i, ((from_label, to_label), rows) in enumerate(self._edges_by_labels(edges).items()):
             # Duplicate members: the last row wins (the rows keep the order of the input per key).
             members = list(
-                {row["from_key"]: {**row, "sem": _semantic_props(row["props"])} for row in rows}.values()
+                {(row["from_key"], row["to_key"]): {**row, "sem": _semantic_props(row["props"])} for row in rows}.values()
             )
             parameters[f"edges_{i}"] = members
             if to_label == to_node_label:
-                keep.extend(f"{from_label}|{member['from_key']}" for member in members)
+                # Only an edge into *to_id* keeps its source's old edge; one into another node of the label does not.
+                keep.extend(f"{from_label}|{member['from_key']}" for member in members if member["to_key"] == to_id)
             creates.append(f"""
             CALL {{
                 UNWIND $edges_{i} AS edge
@@ -2580,10 +2581,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         collection: str,
         transaction: str | None = None,
     ) -> None:
-        """Replace the *collection* edges into *to_id*.
-
-        Every edge in *edges* must target *to_id*: a source in the list keeps its old edge.
-        """
+        """Replace the *collection* edges into *to_id*: every old one is gone unless *edges* has it again."""
         # One statement, so a failure deletes nothing: the code default of
         # NEO4J_EXPLICIT_TRANSACTIONS is true, but false is a supported mode in
         # which a separate delete would commit before the new edges were written,

@@ -6478,6 +6478,15 @@ class TestReplaceEdgesToStatementShape:
         _, params = self._build(neo4j_provider, edges)
         assert sorted(params["keep"]) == ["Group|x", "User|u1", "User|u2"]
 
+    def test_an_edge_into_another_node_of_the_label_keeps_no_old_edge_into_the_target(
+        self, neo4j_provider: Neo4jProvider,
+    ) -> None:
+        """A source whose only supplied edge goes to g2 must lose its old edge into g1, as the interface replaces."""
+        edges = [self._edge("u1"), {**self._edge("u2"), "to_id": "g2"}, {**self._edge("u1"), "to_id": "g2"}]
+        _, params = self._build(neo4j_provider, edges)
+        assert params["keep"] == ["User|u1"]
+        assert sorted((r["from_key"], r["to_key"]) for r in params["edges_0"]) == [("u1", "g1"), ("u1", "g2"), ("u2", "g2")]
+
     def test_duplicate_member_last_row_wins(self, neo4j_provider: Neo4jProvider) -> None:
         _, params = self._build(neo4j_provider, [self._edge("u1"), self._edge("u1", "OWNER")])
         users = [r for r in params["edges_0"] if r["from_key"] == "u1"]

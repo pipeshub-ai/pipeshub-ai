@@ -346,6 +346,15 @@ class TestMemoryTable:
             s, p = pair.statement(g, 0, n, role=PermissionType.WRITE)
             table["retained_changed"][n] = await run_measured(provider, s, p, f"ch{n}{pair.prefix}")
 
+        # A failed or partial run would give a wrong slope: each must have moved exactly what its shape says.
+        want = {"removed": lambda n: (0, n - keep_one), "added": lambda n: (n - keep_one, 0),
+                "retained_unchanged": lambda n: (0, 0), "retained_changed": lambda n: (0, 0)}
+        for kind, counts in want.items():
+            for n in SCALES:
+                out = table[kind][n]
+                assert "error" not in out, (kind, n, out)
+                assert (out["created"], out["deleted"]) == counts(n), (kind, n, out)
+
         def per_member(kind: str) -> float:
             lo, hi = SCALES[0], SCALES[-1]
             return (table[kind][hi]["pool_bytes"] - table[kind][lo]["pool_bytes"]) / (hi - lo)
@@ -373,10 +382,11 @@ class TestMemoryTable:
         # Heap outside the pool: the decoded N-key list held by statements blocked on the group lock.
         heap: dict = {}
         async with provider.client.driver.session(database="neo4j") as probe:
-            baseline = await heap_floor(provider, probe)
             for n in (100_000, 200_000, 500_000):
                 await pair.ensure_users(n)
                 group = await pair.group(f"hp{n}", 0, 1)
+                # After this size's seeding and the last size's sessions closed: only the key list differs below.
+                baseline = await heap_floor(provider, probe)
                 holders = 1
                 stmts = [pair.statement(group, 0, n) for _ in range(holders)]
                 async with provider.client.driver.session(database="neo4j") as locker:
@@ -394,8 +404,11 @@ class TestMemoryTable:
                     ]
                     await asyncio.sleep(3)
                     held = await heap_floor(provider, probe)
+                    # Cancelled while the lock is held, so none starts its write; a local task cancel alone
+                    # would leave the server running the statement once the lock goes.
+                    for tx in txs:
+                        tx.cancel()
                     await lock_tx.rollback()
-                    # The waiting statements are abandoned, not run: each would hold the group lock to its commit.
                     for task in waits:
                         task.cancel()
                     await asyncio.gather(*waits, return_exceptions=True)
@@ -414,7 +427,10 @@ class TestMemoryTable:
         if out := os.environ.get("NEO4J_IT_MEASURE_OUT"):
             with open(out + ".heap", "w") as fh:
                 fh.write(text)
-        assert heap
+        heap_max = 1536 * 1024 * 1024  # the preset's server.memory.heap.max_size
+        for n, row in heap.items():
+            assert row["held_floor"] > row["baseline_floor"], (n, row)  # the waiting key list is on the heap
+            assert row["held_floor"] < heap_max, (n, row)
 
 
 async def _consume(tx, statement: str, parameters: dict) -> None:

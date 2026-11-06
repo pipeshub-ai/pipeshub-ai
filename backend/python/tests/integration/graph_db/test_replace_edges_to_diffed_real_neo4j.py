@@ -154,6 +154,19 @@ class TestAddAndRemove:
         assert await stored_count(provider, other) == 5
 
 
+    async def test_a_member_listed_only_into_another_group_loses_its_edge_into_the_target(self, world) -> None:
+        """The interface deletes every old edge into the target: an edge supplied for a second node of the
+        same label keeps no old grant into the first."""
+        provider, users, group = world
+        other = group + "2"
+        await replace(provider, group, permissions(users[:2], group))
+
+        await replace(provider, group, permissions([users[0]], group) + permissions([users[1]], other))
+
+        assert set(await stored(provider, group)) == {f"User|{users[0]}"}
+        assert set(await stored(provider, other)) == {f"User|{users[1]}"}
+
+
 class TestDuplicates:
     async def test_same_principal_twice_last_wins(self, world) -> None:
         provider, users, group = world
@@ -244,6 +257,17 @@ async def stored_to_record(provider: Neo4jProvider, record: str) -> dict[str, di
     return {r["k"]: r["p"] for r in rows}
 
 
+async def blocked_on_a_lock(provider: Neo4jProvider, timeout: float = 30.0) -> bool:
+    """Whether a transaction reports waiting on a lock within ``timeout``: the server's own view of it."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        rows = await provider.client.execute_query("SHOW TRANSACTIONS YIELD status RETURN status")
+        if any(str(r.get("status", "")).startswith("Blocked") for r in rows):
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
 class TestConcurrentOverlap:
     """A holds its open transaction after its statement; B starts and must wait for the group lock."""
 
@@ -259,20 +283,31 @@ class TestConcurrentOverlap:
             database="neo4j"
         ) as s2:
             tx1 = await s1.begin_transaction()
-            stmt, params = provider._replace_edges_to_cypher(group, GROUPS, permissions(first, group), PERMISSION)
-            await (await tx1.run(f"{stmt}\n RETURN count(*) AS done", params)).consume()
-            tx2 = await s2.begin_transaction()
-            stmt, params = provider._replace_edges_to_cypher(group, GROUPS, permissions(second, group), PERMISSION)
+            tx2 = None
+            second_run = None
+            try:
+                stmt, params = provider._replace_edges_to_cypher(group, GROUPS, permissions(first, group), PERMISSION)
+                await (await tx1.run(f"{stmt}\n RETURN count(*) AS done", params)).consume()
+                tx2 = await s2.begin_transaction()
+                stmt, params = provider._replace_edges_to_cypher(group, GROUPS, permissions(second, group), PERMISSION)
 
-            async def second_replace() -> None:
-                await (await tx2.run(f"{stmt}\n RETURN count(*) AS done", params)).consume()
+                async def second_replace() -> None:
+                    await (await tx2.run(f"{stmt}\n RETURN count(*) AS done", params)).consume()
 
-            second_run = asyncio.create_task(second_replace())
-            await asyncio.sleep(1.5)
-            assert not second_run.done(), "the second replace must wait for the group lock"
-            await tx1.commit()
-            await second_run
-            await tx2.commit()
+                second_run = asyncio.create_task(second_replace())
+                assert await blocked_on_a_lock(provider), "the second replace must wait for the group lock"
+                assert not second_run.done()
+                await tx1.commit()
+                await second_run
+                await tx2.commit()
+            finally:
+                # A failure above must not close the sessions under a statement that still runs in them.
+                if second_run is not None and not second_run.done():
+                    second_run.cancel()
+                    await asyncio.gather(second_run, return_exceptions=True)
+                for tx in (tx2, tx1):
+                    if tx is not None and not tx.closed():
+                        await tx.rollback()
 
         assert set(await stored(provider, group)) == {f"User|{u}" for u in second}
 
