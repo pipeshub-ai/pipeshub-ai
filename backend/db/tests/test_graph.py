@@ -330,3 +330,121 @@ def test_a_hot_lookup_uses_its_index_where_the_plain_statement_cannot(rdb, fn, p
         plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = %s AND " + hot,
                                                   (coll, "src/p7/f7.py" if coll == "codeFiles" else "rec7"))
         assert not any(_uses(p, index) for p in plain), "the plain statement used the index: the function is not needed on this server"
+
+
+# ---- the lookups of graph_0004 -----------------------------------------------------------------------------------------------------------
+# (function, collection, the old statement's predicate on n.doc, sample arguments, the key its index leads with after org_id)
+LOOKUPS = {
+    "record_by_external": ("records", "n.doc->>'connectorId' = %s AND n.doc->>'externalRecordId' = %s", ("app1", "e1"), "externalRecordId"),
+    "user_by_user_id": ("users", "n.doc->>'userId' = %s", ("x",), "userId"),
+}
+
+
+def _seed_lookups(c):
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for coll, key in (("records", "externalRecordId"),):
+            for i, (conn, ext) in enumerate((("app1", "e1"), ("app1", "e2"), ("app2", "e1"))):
+                c.execute(NODE, (org, coll, f"{coll[0]}{i}", json.dumps({"connectorId": conn, key: ext, "orgId": org})))
+        c.execute(NODE, (org, "records", "rdel", json.dumps({"connectorId": "app1", "externalRecordId": "e1", "isDeleted": True, "orgId": org})))     # the same pair, deleted
+        c.execute(NODE, (org, "records", "rnone", json.dumps({"orgId": org})))                                                                           # no key at all
+        for i, uid in enumerate(("x", "y")):
+            c.execute(NODE, (org, "users", f"u{i}", json.dumps({"userId": uid})))
+    as_role(c, "pipeshub_connectors", A)
+    c.execute(NODE, (A, "users", "uA", json.dumps({"userId": "only-a"})))
+
+
+def test_a_lookup_of_graph_0004_returns_what_the_plain_statement_returned_for_the_org_alone(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_lookups(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for fn, (coll, pred, args, _key) in LOOKUPS.items():
+                n = pred.count("%s")
+                probes = [args, ("app2", "e1")[-n:] if n == 2 else ("y",), ("nope",) * n, ("only-a",) if n == 1 else ("app1", "only-a")]
+                for probe in probes:
+                    old = sorted(r[0] for r in c.execute(f"SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = '{coll}' AND {pred}", probe))
+                    new = sorted(r[0] for r in c.execute(f"SELECT node_id FROM graph.{fn}({', '.join(['%s'] * n)})", probe))
+                    assert new == old, (org, fn, probe, new, old)
+        # both directions spelled out: the pair that two records hold is found with both, and A's own user never reaches B
+        as_role(c, "pipeshub_connectors", A)
+        assert sorted(r[0] for r in c.execute("SELECT node_id FROM graph.record_by_external('app1', 'e1')")) == ["r0", "rdel"]
+        assert [r[0] for r in c.execute("SELECT node_id FROM graph.user_by_user_id('only-a')")] == ["uA"]
+        as_role(c, "pipeshub_connectors", B)
+        assert c.execute("SELECT count(*) FROM graph.user_by_user_id('only-a')").fetchone()[0] == 0
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            for fn, (_coll, pred, args, _k) in LOOKUPS.items():
+                assert c.execute(f"SELECT count(*) FROM graph.{fn}({', '.join(['%s'] * pred.count('%s'))})", args).fetchone()[0] == 0
+
+
+def test_the_virtual_record_lookup_returns_the_records_of_the_org_that_hold_a_virtual_record_id(rdb):
+    cluster, name = rdb
+    docs = {"a1": {"virtualRecordId": "v1", "orgId": A}, "a2": {"virtualRecordId": "v1", "orgId": A, "isDeleted": True}, "a3": {"virtualRecordId": "v2", "orgId": A},
+            "a4": {"virtualRecordId": "v2", "orgId": "other"}, "a5": {"virtualRecordId": "v3"}, "a6": {"orgId": A}}
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for k, d in docs.items():
+                c.execute(NODE, (org, "records", f"{org[0]}{k}", json.dumps({**d, **({"orgId": org} if d.get("orgId") == A else {})})))
+            c.execute(NODE, (org, "recordGroups", f"{org[0]}g", json.dumps({"virtualRecordId": "v1", "orgId": org})))        # not a record
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for probe in (["v1"], ["v1", "v2", "v3"], ["nope"], [], ["v1", "v1"]):
+                old = sorted(r[0] for r in c.execute("SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' "
+                                                     "AND n.doc->>'orgId' = n.org_id AND n.doc->>'virtualRecordId' = ANY(%s::text[])", (probe,)))
+                new = sorted(r[0] for r in c.execute("SELECT node_id FROM graph.records_by_virtual_id(%s::text[])", (probe,)))
+                assert new == old, (org, probe, new, old)
+            assert sorted(r[0] for r in c.execute("SELECT node_id FROM graph.records_by_virtual_id('{v1,v2}')")) == [f"{org[0]}a1", f"{org[0]}a2", f"{org[0]}a3"]
+        as_role(c, "pipeshub_connectors")
+        assert c.execute("SELECT count(*) FROM graph.records_by_virtual_id('{v1}')").fetchone()[0] == 0
+
+
+BAD_LOOKUP = [("record_by_external", "(%s, %s)", a) for a in ((None, "e"), ("", "e"), ("c" * 201, "e"), ("c", None), ("c", ""), ("c", "e" * 2001))] + [
+    ("user_by_user_id", "(%s)", a) for a in ((None,), ("",), ("u" * 201,))] + [
+    ("records_by_virtual_id", "(%s::text[])", a) for a in ((None,), ([None],), ([""],), (["v" * 201],), (["v"] * 1001,))]
+
+
+def test_a_lookup_of_graph_0004_refuses_a_bad_argument_and_only_the_graph_services_may_call_it(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        for fn, marks, args in BAD_LOOKUP:
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute(f"SELECT * FROM graph.{fn}{marks}", args)
+            c.execute("ROLLBACK")
+        names = [*LOOKUPS, "records_by_virtual_id"]
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            for fn in names:
+                has = c.execute("SELECT has_function_privilege(%s, p.oid, 'EXECUTE') FROM pg_proc p WHERE p.pronamespace = 'graph'::regnamespace AND p.proname = %s", (role, fn)).fetchone()[0]
+                assert has is ok, (role, fn)
+
+
+def test_the_lookups_of_graph_0004_use_their_index_where_the_plain_statement_cannot(rdb):
+    """Row-level security leaves a plain statement the org_id prefix of the expression index; the function applies the org itself and the index condition
+    names the key. Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'connectorId', 'app1', 'externalRecordId', 'e' || i, 'virtualRecordId', 'v' || i) "
+                  "FROM generate_series(1, 4000) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'users', 'u' || i, jsonb_build_object('userId', 'x' || i) FROM generate_series(1, 20000) i", (A,))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        cases = [
+            ("record_by_external", "graph.record_by_external(%s, %s)", ("app1", "e777"), "externalRecordId"),
+            ("user_by_user_id", "graph.user_by_user_id(%s)", ("x777",), "userId"),
+            ("records_by_virtual_id", "graph.records_by_virtual_id(%s::text[])", (["v1", "v777", "v3000"],), "virtualRecordId"),
+        ]
+        for fn, call, params, key in cases:
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT node_id FROM {call}", params)
+            for i in (0, 6):                 # the first (custom) and the seventh call
+                assert re.search(rf"Index Cond: .*\(doc ->> '{key}'::text\)", plans[i]), (fn, i, plans[i])
+                assert "Seq Scan on" not in plans[i], (fn, i)
+        # the plain statements the provider sent before: the index is reached by org_id alone
+        coll_of = {"record_by_external": "records", "user_by_user_id": "users", "records_by_virtual_id": "records"}
+        old = {"record_by_external": ("n.doc->>'externalRecordId' = %s", ("e777",), "externalRecordId"), "user_by_user_id": ("n.doc->>'userId' = %s", ("x777",), "userId")}
+        for fn, (pred, params, key) in old.items():
+            plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = '{coll_of[fn]}' AND {pred}", params)
+            assert not any(re.search(rf"Index Cond: .*\(doc ->> '{key}'::text\)", p) for p in plain), plain[0]
