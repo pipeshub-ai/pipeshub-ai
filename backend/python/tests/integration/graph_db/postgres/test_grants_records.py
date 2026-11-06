@@ -1,0 +1,286 @@
+"""The record access details, the accessible search scope and the context role on PostgreSQL, against a real database.
+
+The first two must agree with the batch access check (``check_access``) on a varied world, both ways: nothing it refuses, nothing it admits left out.
+The context role is the lowest one (no abilities) wherever it cannot be read, and rises only with a grant the user holds.
+
+Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none.
+"""
+from __future__ import annotations
+
+import pytest
+
+from .test_access import APP, World, _org, rec
+from .test_access import w as w  # noqa: PLC0414
+from .test_grants import failing, grant, in_org
+
+pytestmark = pytest.mark.integration
+
+LOW = {"role": "READER", "canUpload": False, "canCreateFolders": False, "canEdit": False, "canDelete": False, "canManagePermissions": False}
+
+
+def vr(key: str, **kw: object) -> dict:
+    """An indexed, live record with a virtual record id of its own."""
+    return rec(key, **{"virtualRecordId": f"v-{key}", "indexingStatus": "COMPLETED", "origin": "CONNECTOR", "recordType": "FILE", **kw})
+
+
+async def world(w: World) -> None:
+    """Users with every kind of path to records, collections and a connector."""
+    await w.nodes("users", {"_key": "v", "userId": "uid-v"}, {"_key": "gm", "userId": "uid-gm", "email": "gm@x.io"}, {"_key": "tm", "userId": "uid-tm"},
+                  {"_key": "kbu", "userId": "uid-kbu"}, {"_key": "nogate", "userId": "uid-nogate"}, {"_key": "u", "userId": "uid-u", "email": "u@x.io"})
+    for who in ("v", "gm", "tm"):
+        await w.edge("permission", ("users", who), ("apps", APP), type="USER", role="READER")        # the connector gate
+    await w.nodes("groups", {"_key": "grp"})
+    await w.nodes("teams", {"_key": "team"})
+    await w.nodes("recordGroups", {"_key": "rg", "connectorId": APP}, {"_key": "rg2", "connectorId": APP})
+    await w.child(("apps", APP), ("recordGroups", "rg"))
+    await w.child(("apps", APP), ("recordGroups", "rg2"))
+    await w.nodes("records", vr("open1"), vr("open2"), vr("shut", accessRule="RESTRICTED"), vr("trashed", isDeleted=True), vr("unindexed", indexingStatus="QUEUED"),
+                  vr("stub", isPlaceholder=True), vr("inRg2"), vr("dup1", virtualRecordId="v-dup"), vr("dup2", virtualRecordId="v-dup"))
+    for k in ("open1", "open2", "shut", "trashed", "unindexed", "stub", "dup1", "dup2"):
+        await w.child(("recordGroups", "rg"), ("records", k))
+    await w.child(("recordGroups", "rg2"), ("records", "inRg2"))
+    await grant(w, "v", "records", "shut")
+    await grant(w, "gm", "recordGroups", "rg2")
+    await w.member("gm", "grp")
+    await w.edge("permission", ("groups", "grp"), ("recordGroups", "rg"), type="GROUP", role="WRITER")
+    # collections
+    await w.nodes("apps", {"_key": "kb1", "type": "KB", "name": "KB1"}, {"_key": "kb2", "type": "KB", "isHidden": True}, {"_key": "kb3", "type": "KB"})
+    for kb, k in (("kb1", "k1"), ("kb2", "k2"), ("kb3", "k3")):
+        await w.nodes("records", vr(k, connectorId=kb, origin="UPLOAD", connectorName="KB"))
+        await w.child(("apps", kb), ("records", k))
+    await grant(w, "kbu", "apps", "kb1", "WRITER")
+    await grant(w, "kbu", "apps", "kb2", "READER")
+    await w.member("tm", "team", "teams")
+    await w.edge("permission", ("teams", "team"), ("apps", "kb3"), type="TEAM")
+
+
+VIEWERS = ("u", "v", "gm", "tm", "kbu", "nogate")
+RECORDS = ("open1", "open2", "shut", "trashed", "unindexed", "stub", "inRg2", "dup1", "dup2", "k1", "k2", "k3")
+
+
+async def admitted(w: World, key: str) -> set[str]:
+    """What the batch access check opens, a placeholder left out."""
+    got = await w.p.check_access(key, w.org, node_ids=list(RECORDS))
+    return set(got.node_ids - got.placeholder_ids)
+
+
+async def test_the_record_details_open_exactly_for_the_records_the_batch_check_admits(w: World) -> None:
+    await world(w)
+    seen = 0
+    for who in VIEWERS:
+        want = await admitted(w, who)
+        got = {r for r in RECORDS if await w.p.check_record_access_with_details(f"uid-{who}" if who != "u" else "uid-u", w.org, r)}
+        assert got == want, (who, got ^ want)
+        seen += len(want)
+    assert seen > 6                                       # the world opens something to somebody
+
+
+async def test_the_accessible_scope_is_exactly_the_indexed_live_records_the_batch_check_admits(w: World) -> None:
+    await world(w)
+    for who in VIEWERS:
+        admit = await admitted(w, who)
+        want = {r for r in admit if r not in ("trashed", "unindexed", "k2")}        # trashed, not indexed, and a hidden collection when nothing is asked for
+        got = await w.p.get_accessible_virtual_record_ids(f"uid-{who}", w.org)
+        cited: dict[str, str] = {}
+        for r in sorted(want):          # a virtual record id carried by two records is cited by the smallest one the user may open
+            cited.setdefault("v-dup" if r in ("dup1", "dup2") else f"v-{r}", r)
+        assert got == cited, who
+
+
+async def test_the_scope_filters_narrow_and_never_widen(w: World) -> None:
+    await world(w)
+    p = w.p
+    full = await p.get_accessible_virtual_record_ids("uid-kbu", w.org)
+    assert set(full.values()) == {"k1"}                                                   # kb2 is hidden when unscoped; the connector is not kbu's
+    assert set((await p.get_accessible_virtual_record_ids("uid-kbu", w.org, {"kb": ["kb2"]})).values()) == {"k2"}      # asked for by name, a hidden one is served
+    assert await p.get_accessible_virtual_record_ids("uid-kbu", w.org, {"kb": ["kb3"]}) == {}                        # not kbu's
+    assert await p.get_accessible_virtual_record_ids("uid-kbu", w.org, {"apps": ["no-such"]}) == {}
+    assert await p.get_accessible_virtual_record_ids("uid-kbu", w.org, {"kb": [""]}) == {}                           # a value that is no id narrows to nothing
+    assert await p.get_accessible_virtual_record_ids("uid-kbu", w.org, {"strictScope": True}) == {}                  # an empty strict scope stays empty
+    assert set((await p.get_accessible_virtual_record_ids("uid-kbu", w.org, {"strictScope": False})).values()) == {"k1"}
+    assert await p.get_accessible_virtual_record_ids("uid-kbu", w.org, exclude_app_ids=frozenset({"kb1"})) == {}
+    gm = await p.get_accessible_virtual_record_ids("uid-gm", w.org, {"apps": [APP]})
+    assert set(gm.values()) == {"open1", "open2", "inRg2", "dup1"}
+    assert await p.get_accessible_virtual_record_ids("uid-gm", w.org, {"apps": ["kb1"]}) == {}                       # a collection gm is not in
+    assert await p.get_accessible_virtual_record_ids("uid-nogate", w.org) == {}
+    assert await p.get_accessible_virtual_record_ids("uid-nobody", w.org) == {}
+    assert await p.get_accessible_virtual_record_ids("uid-gm", _org()) == {}
+
+
+async def test_metadata_and_time_filters_keep_only_the_records_they_name(w: World) -> None:
+    await world(w)
+    await w.nodes("departments", {"_key": "d1", "departmentName": "Legal"})
+    await w.nodes("topics", {"_key": "t1", "name": "tax"}, {"_key": "t2", "name": "hr"})
+    await w.edge("belongsToDepartment", ("records", "open1"), ("departments", "d1"))
+    await w.edge("belongsToTopic", ("records", "open1"), ("topics", "t1"))
+    await w.edge("belongsToTopic", ("records", "open2"), ("topics", "t2"))
+    await w.p.update_node("open1", "records", {"sourceCreatedAtTimestamp": 100, "sourceLastModifiedTimestamp": 300})
+    await w.p.update_node("open2", "records", {"sourceCreatedAtTimestamp": 200, "sourceLastModifiedTimestamp": 400})
+    got = lambda f=None, t=None: w.p.get_accessible_virtual_record_ids("uid-gm", w.org, f, t)  # noqa: E731
+    assert set((await got({"departments": ["Legal"]})).values()) == {"open1"}
+    assert set((await got({"departments": ["Legal"], "topics": ["hr"]})).values()) == set()               # every filter must hold
+    assert set((await got({"topics": ["tax", "hr"]})).values()) == {"open1", "open2"}
+    assert set((await got({"topics": ["unknown"]})).values()) == set()
+    assert set((await got(None, {"source_created_after_ms": 150})).values()) == {"open2"}
+    assert set((await got(None, {"source_updated_before_ms": 350})).values()) == {"open1"}
+    assert set((await got({"topics": ["tax"]}, {"source_created_after_ms": 150})).values()) == set()
+    other = await w.p.get_accessible_virtual_record_ids("uid-nogate", w.org, {"topics": ["tax"]})
+    assert other == {}                                                                                      # a filter never opens what the check refuses
+
+
+async def test_the_scope_read_fails_closed_unless_asked_to_raise_and_comes_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await world(w)
+    real = w.p._q
+    monkeypatch.setattr(w.p, "_q", failing)
+    assert await w.p.get_accessible_virtual_record_ids("uid-gm", w.org) == {}
+    with pytest.raises(RuntimeError):
+        await w.p.get_accessible_virtual_record_ids("uid-gm", w.org, raise_on_error=True)
+    monkeypatch.setattr(w.p, "_q", real)
+    assert set((await w.p.get_accessible_virtual_record_ids("uid-gm", w.org)).values()) >= {"open1", "inRg2"}      # the records are back once the store answers
+
+
+async def test_a_grant_taken_away_closes_the_record_in_both_reads_and_one_given_opens_it(w: World) -> None:
+    await world(w)
+    assert await w.p.check_record_access_with_details("uid-v", w.org, "shut")
+    assert "v-shut" in await w.p.get_accessible_virtual_record_ids("uid-v", w.org)
+    await w.p.delete_edge("v", "users", "shut", "records", "permission")
+    assert await w.p.check_record_access_with_details("uid-v", w.org, "shut") is None
+    assert "v-shut" not in await w.p.get_accessible_virtual_record_ids("uid-v", w.org)
+    await grant(w, "v", "records", "shut")
+    assert await w.p.check_record_access_with_details("uid-v", w.org, "shut")
+    assert "v-shut" in await w.p.get_accessible_virtual_record_ids("uid-v", w.org)
+
+
+async def test_the_details_name_the_record_the_best_role_and_the_collection(w: World) -> None:
+    await world(w)
+    await w.nodes("departments", {"_key": "d1", "departmentName": "Legal"})
+    await w.edge("belongsToDepartment", ("records", "open1"), ("departments", "d1"))
+    await w.nodes("files", {"_key": "open1", "webUrl": "http://x/{user.email}"})
+    await w.p.update_node("open1", "records", {"recordType": "FILE", "webUrl": "http://rec"})
+    got = await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
+    assert got["record"]["id"] == "open1" and "_key" not in got["record"] and got["record"]["fileRecord"]["_key"] == "open1"
+    assert got["record"]["mailRecord"] is None and got["metadata"]["departments"][0]["id"] == "d1"
+    assert got["permissions"][0]["relationship"] == "WRITER" and got["permissions"][0]["name"] == "open1"       # the group's grant on the record group
+    assert got["knowledgeBase"] is None and got["folder"] is None
+    assert (await w.p.check_record_access_with_details("uid-v", w.org, "open1"))["permissions"][0]["relationship"] == "READER"      # the connector item: read access
+    kb = await w.p.check_record_access_with_details("uid-kbu", w.org, "k1")
+    assert kb["knowledgeBase"] == {"id": "kb1", "name": "KB1", "orgId": w.org} and kb["permissions"][0]["relationship"] == "WRITER"
+    assert await w.p.check_record_access_with_details("uid-gm", _org(), "open1") is None
+    assert await w.p.check_record_access_with_details("uid-gm", w.org, "missing") is None
+    assert await w.p.check_record_access_with_details("uid-gm", w.org, "stub") is None                        # a placeholder is not a record to open
+    assert await w.p.check_record_access_with_details("uid-gm", w.org, "trashed") is None
+
+
+async def test_a_details_read_that_cannot_be_answered_raises_instead_of_refusing_and_comes_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await world(w)
+    real = w.p._q
+    monkeypatch.setattr(w.p, "_q", failing)
+    with pytest.raises(Exception):  # noqa: B017, PT011
+        await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
+    monkeypatch.setattr(w.p, "_q", real)
+    assert await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
+
+
+# ---- the context role --------------------------------------------------------------------------------------------------------------------
+
+async def ctx(w: World, who: str, node: str | None, kind: str | None = None, org: str | None = None) -> dict:
+    return await w.p.get_knowledge_hub_context_permissions(who, org or w.org, node, parent_type=kind)
+
+
+def abilities(role: str) -> dict:
+    up = role in ("OWNER", "ADMIN", "EDITOR", "WRITER")
+    return {"role": role, "canUpload": up, "canCreateFolders": up, "canEdit": up, "canDelete": role in ("OWNER", "ADMIN", "WRITER"),
+            "canManagePermissions": role in ("OWNER", "ADMIN")}
+
+
+async def test_at_the_root_only_an_administrator_may_do_anything(w: World) -> None:
+    await w.nodes("users", {"_key": "adm", "role": "ADMIN"}, {"_key": "adm2", "orgRole": "ADMIN"}, {"_key": "member"})
+    full = {"role": "ADMIN", "canUpload": True, "canCreateFolders": True, "canEdit": True, "canDelete": True, "canManagePermissions": True}
+    assert await ctx(w, "adm", None) == full and await ctx(w, "adm2", None) == full
+    assert await ctx(w, "member", None) == {**LOW, "role": "MEMBER"}
+    assert await ctx(w, "nobody", None) == LOW
+    assert await ctx(w, "adm", None, org=_org()) == LOW                                  # another org's administrator is nobody here
+
+
+async def test_a_role_on_a_record_comes_from_the_best_grant_on_it_or_what_it_inherits_and_no_grant_gives_none(w: World) -> None:
+    await world(w)
+    await w.nodes("users", {"_key": "inh"}, {"_key": "weird"}, {"_key": "ret"}, {"_key": "orgm"})
+    await w.nodes("organizations", {"_key": w.org})
+    await w.edge("permission", ("users", "inh"), ("recordGroups", "rg"), type="USER", role="OWNER")
+    await w.edge("permission", ("users", "weird"), ("records", "open1"), type="USER", role="SUPERUSER")           # a role nobody ranks gives nothing
+    await w.edge("permission", ("users", "ret"), ("records", "open1"), type="USER", role="COMMENTER")            # a retired role reads as READER
+    await w.edge("permission", ("users", "v"), ("records", "open1"), type="USER", role="READER")
+    await w.edge("permission", ("users", "v"), ("recordGroups", "rg"), type="USER", role="EDITOR")                 # the higher of the two
+    await w.edge("belongsTo", ("users", "orgm"), ("organizations", w.org), entityType="ORGANIZATION")
+    await w.edge("permission", ("organizations", w.org), ("records", "open2"), type="ORG", role="WRITER")
+    assert await ctx(w, "inh", "open1", "record") == abilities("OWNER")             # inherited from the record group
+    assert await ctx(w, "inh", "open1", "folder") == abilities("OWNER")             # a folder is a record
+    assert await ctx(w, "v", "open1", "record") == abilities("EDITOR")
+    assert await ctx(w, "gm", "open1", "record") == abilities("WRITER")             # through a group on the record group
+    assert await ctx(w, "ret", "open1", "record") == abilities("READER")
+    assert await ctx(w, "weird", "open1", "record") == LOW
+    assert await ctx(w, "orgm", "open2", "record") == abilities("WRITER")           # the organization's grant
+    assert await ctx(w, "nogate", "open1", "record") == LOW and await ctx(w, "orgm", "open1", "record") == LOW
+    assert await ctx(w, "inh", "open1", "record", org=_org()) == LOW
+    assert await ctx(w, "inh", "missing", "record") == LOW
+    await w.p.delete_edge("inh", "users", "rg", "recordGroups", "permission")
+    assert await ctx(w, "inh", "open1", "record") == LOW                              # a grant taken away
+    await w.p.delete_all_team_permissions("team")
+    assert await ctx(w, "gm", "rg", "recordGroup") == abilities("WRITER")           # the group's grant on the record group itself
+
+
+async def test_a_team_never_gives_more_than_writer_and_a_removed_member_loses_it(w: World) -> None:
+    await world(w)
+    await w.nodes("users", {"_key": "boss"})
+    await w.edge("permission", ("users", "boss"), ("teams", "team"), type="USER", role="OWNER")
+    await w.edge("permission", ("teams", "team"), ("recordGroups", "rg2"), type="TEAM")                           # no role: the member's team role applies, capped
+    assert await ctx(w, "boss", "inRg2", "record") == abilities("WRITER")
+    assert await ctx(w, "tm", "inRg2", "record") == abilities("READER")
+    await w.p.delete_team_member_edges("team", ["boss"])
+    assert await ctx(w, "boss", "inRg2", "record") == LOW
+
+
+async def test_a_role_on_an_app_follows_the_relation_the_grant_and_the_team(w: World) -> None:
+    await world(w)
+    await w.nodes("users", {"_key": "adm", "userId": "uid-adm", "role": "ADMIN"}, {"_key": "maker", "userId": "uid-maker"}, {"_key": "rel"}, {"_key": "viaTeam"},
+                  {"_key": "strange"})
+    await w.nodes("apps", {"_key": "team_app", "type": "SLACK", "scope": "team", "createdBy": "uid-maker"}, {"_key": "own_app", "type": "SLACK", "scope": "personal", "createdBy": "uid-maker"})
+    for u in ("adm", "maker", "rel"):
+        await w.edge("userAppRelation", ("users", u), ("apps", "team_app"))
+        await w.edge("userAppRelation", ("users", u), ("apps", "own_app"))
+    await w.edge("userAppRelation", ("teams", "team"), ("apps", "team_app"))
+    await w.member("viaTeam", "team", "teams")
+    await w.edge("permission", ("users", "strange"), ("apps", "kb1"), type="USER", role="SUPERUSER")
+    assert await ctx(w, "adm", "team_app", "app") == abilities("EDITOR") and await ctx(w, "adm", "own_app", "app") == abilities("OWNER")
+    assert await ctx(w, "maker", "team_app", "app") == abilities("OWNER")
+    assert await ctx(w, "rel", "team_app", "app") == abilities("READER")
+    assert await ctx(w, "viaTeam", "team_app", "app") == abilities("READER")                  # only through the team
+    assert await ctx(w, "nogate", "team_app", "app") == LOW and await ctx(w, "nobody", "team_app", "app") == LOW
+    assert await ctx(w, "kbu", "kb1", "app") == abilities("WRITER") and await ctx(w, "strange", "kb1", "app") == LOW      # a role no collection has is no grant
+    assert await ctx(w, "tm", "kb3", "app") == abilities("READER")                           # a team share: the team role, never owner
+    await w.p.delete_edge("kbu", "users", "kb1", "apps", "permission")
+    assert await ctx(w, "kbu", "kb1", "app") == LOW
+
+
+async def test_an_unsupported_parent_is_refused_and_a_failed_read_gives_the_lowest_role_then_recovers(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await world(w)
+    with pytest.raises(ValueError, match="parent_type"):
+        await ctx(w, "gm", "open1", "banana")
+    with pytest.raises(ValueError, match="parent_type"):
+        await ctx(w, "gm", "open1", None)
+    real = w.p._q
+    monkeypatch.setattr(w.p, "_q", failing)
+    assert await ctx(w, "gm", "rg", "recordGroup") == LOW
+    monkeypatch.setattr(w.p, "_q", real)
+    assert await ctx(w, "gm", "rg", "recordGroup") == abilities("WRITER")
+
+
+async def test_other_orgs_see_none_of_this(w: World) -> None:
+    await world(w)
+    other = _org()
+    with in_org(other):
+        ow = World(w.p, other)
+        await ow.nodes("users", {"_key": "gm", "userId": "uid-gm"})
+        assert await w.p.get_accessible_virtual_record_ids("uid-gm", other) == {}
+        assert await w.p.check_record_access_with_details("uid-gm", other, "open1") is None
+        assert await w.p.get_knowledge_hub_context_permissions("gm", other, "rg", parent_type="recordGroup") == LOW
