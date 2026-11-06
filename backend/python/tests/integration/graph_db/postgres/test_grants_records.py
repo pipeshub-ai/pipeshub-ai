@@ -333,7 +333,10 @@ async def test_the_scope_read_looks_only_at_what_the_user_can_reach(w: World) ->
     hidden = [vr(f"hid{i}", accessRule="RESTRICTED") for i in range(1000)]
     loose = [vr(f"loose{i}") for i in range(1000)]            # no edge to anything: nothing reaches them
     flat = [vr(f"flat{i}") for i in range(1000)]              # open, in a reached group, but they do not inherit from it: nothing opens them
-    await w.nodes("records", *hidden, *loose, *flat, vr("mine1"), vr("mine2"), vr("mine3"))
+    below = [vr(f"below{i}") for i in range(1000)]            # open children of a granted record that do not inherit from it
+    await w.nodes("records", *hidden, *loose, *flat, *below, vr("mine1"), vr("mine2"), vr("mine3"), vr("granted_top"))
+    await grant(w, "gm", "records", "granted_top")
+    await w.p.batch_create_edges([{"from_collection": "records", "from_id": "granted_top", "to_collection": "records", "to_id": r["_key"], "relationshipType": "PARENT_CHILD"} for r in below], "nodeRelations")
     await w.p.batch_create_edges([{"from_collection": "recordGroups", "from_id": "big", "to_collection": "records", "to_id": r["_key"], "relationshipType": "PARENT_CHILD"} for r in flat], "nodeRelations")
     await w.p.batch_create_edges([{"from_collection": "recordGroups", "from_id": "big", "to_collection": "records", "to_id": r["_key"], "relationshipType": "PARENT_CHILD"}
                                   for r in (*hidden, vr("mine1"), vr("mine2"), vr("mine3"))], "nodeRelations")
@@ -344,10 +347,10 @@ async def test_the_scope_read_looks_only_at_what_the_user_can_reach(w: World) ->
     real = w.p._kh_v3_accessible_rows
     real_q = w.p._q
 
-    async def counting(fn, transaction, **kw):  # noqa: ANN001, ANN003, ANN202
-        async def inner(tx):  # noqa: ANN001, ANN202
+    async def counting(fn, transaction, **kw):
+        async def inner(tx):
             class Counted:
-                def __getattr__(self, name: str):  # noqa: ANN204
+                def __getattr__(self, name: str):
                     return getattr(tx, name)
 
                 async def fetch(self, sql: str, *args: object) -> list:
@@ -367,8 +370,8 @@ async def test_the_scope_read_looks_only_at_what_the_user_can_reach(w: World) ->
     finally:
         w.p._kh_v3_accessible_rows = real
         w.p._q = real_q
-    assert {"mine1", "mine2", "mine3"} <= set(got.values()) and not {r for r in got.values() if r.startswith(("hid", "loose", "flat"))}
-    assert len(asked) == len(set(asked)) <= 10, len(asked)            # the 3,000 records nobody reaches were never handed to the check
+    assert {"mine1", "mine2", "mine3"} <= set(got.values()) and not {r for r in got.values() if r.startswith(("hid", "loose", "flat", "below"))}
+    assert len(asked) == len(set(asked)) <= 12, len(asked)            # the 4,000 records nobody reaches were never handed to the check
     assert read["children"] <= 40, read["children"]                    # nor were they read by the walk (only the children it can take come back)
 
 
