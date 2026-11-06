@@ -37,10 +37,13 @@ def _store() -> FakeConfigService:
         "/services/mcp/credentials/gh/agent-1": _cred(),
         "/services/mcp/credentials/alice-own/u-alice": _cred(),
         "/services/mcp/oauth-clients/alice-own": {"clientId": "static"},
+        "/services/mcp/logos/alice-own": {"dataUrl": "data:image/png;base64,AA=="},
+        "/services/mcp/logos/gh": {"dataUrl": "data:image/png;base64,AA=="},
         "/services/mcp/credentials/bob-own/u-bob": _cred(),
         # org-2: must never be touched
         "/services/mcp/instances/other": _instance("other", org="org-2"),
         "/services/mcp/credentials/other/u-alice": _cred("org-2"),
+        "/services/mcp/logos/other": {"dataUrl": "data:image/png;base64,AA=="},
         "/services/mcp/user-instances/org-2/u-zed/zed-own": _instance("zed-own", org="org-2", owner="u-zed", scope="personal"),
     })
 
@@ -62,6 +65,7 @@ class TestRemoveUserMcpData:
             "/services/mcp/user-instances/org-1/u-alice/alice-own",
             "/services/mcp/credentials/alice-own/u-alice",
             "/services/mcp/oauth-clients/alice-own",
+            "/services/mcp/logos/alice-own",
             "/services/mcp/credentials/gh/u-alice",
             "/services/mcp/credentials/gh/u-alice/dcr-client",
         }
@@ -70,6 +74,8 @@ class TestRemoveUserMcpData:
         for kept in (
             "/services/mcp/credentials/gh/u-bob", "/services/mcp/credentials/gh/_shared",
             "/services/mcp/credentials/gh/agent-1", "/services/mcp/credentials/bob-own/u-bob",
+            # An org server's logo stays when one of its users goes.
+            "/services/mcp/logos/gh",
             # Same user id in another org: not this org's data.
             "/services/mcp/credentials/other/u-alice",
         ):
@@ -98,6 +104,7 @@ class TestRemoveOrgMcpData:
         assert not [k for k in store.data if "/gh" in k or "alice-own" in k or "bob-own" in k]
         assert "/services/mcp/instances/other" in store.data
         assert "/services/mcp/credentials/other/u-alice" in store.data
+        assert "/services/mcp/logos/other" in store.data
         assert "/services/mcp/user-instances/org-2/u-zed/zed-own" in store.data
 
 

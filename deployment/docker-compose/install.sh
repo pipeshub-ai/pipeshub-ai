@@ -480,7 +480,8 @@ port_owned_by_project() {
 
 # Check if a Docker volume (by exact name) exists.
 volume_exists() {
-  docker volume ls --format '{{.Name}}' 2>/dev/null | grep -qx "$1"
+  # an exact lookup, not `volume ls | grep -q`: under pipefail grep's early exit can SIGPIPE docker and read as "absent"
+  docker volume inspect "$1" >/dev/null 2>&1
 }
 
 # Check if a TCP port is bound on localhost.
@@ -989,7 +990,7 @@ if ! ${SKIP_WIZARD:-false}; then
   # ── 5. EXISTING VOLUME DETECTION ────────────────────────────────────────────
   header "Existing data detection"
 
-  DETECTED_ARANGO=false; DETECTED_NEO4J=false; DETECTED_ETCD=false
+  DETECTED_ARANGO=false; DETECTED_NEO4J=false; DETECTED_ETCD=false; DETECTED_KAFKA=false
 
   if volume_exists "${PROJECT_NAME}_arango_data"; then
     DETECTED_ARANGO=true
@@ -1003,6 +1004,10 @@ if ! ${SKIP_WIZARD:-false}; then
     DETECTED_ETCD=true
     success "Found existing etcd volume: ${PROJECT_NAME}_etcd_data"
   fi
+  if volume_exists "${PROJECT_NAME}_kafka_data" || volume_exists "${PROJECT_NAME}_zookeeper_data"; then
+    DETECTED_KAFKA=true
+    success "Found existing Kafka volume: ${PROJECT_NAME}_kafka_data"
+  fi
   if ! $DETECTED_ARANGO && ! $DETECTED_NEO4J; then
     info "No existing graph database volumes found — starting fresh."
   fi
@@ -1014,8 +1019,8 @@ if ! ${SKIP_WIZARD:-false}; then
   printf "  ${GREEN}[1] Slim${RESET}  — Smaller image (model downloads on first use), fewer containers.\n"
   printf "         Broker: Redis Streams  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: yes\n"
   printf "         Recommended for: laptops, low-resource servers.\n\n"
-  printf "  [2] Full  — Larger image with the embedding model bundled; uses Kafka.\n"
-  printf "         Broker: Kafka  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: yes\n"
+  printf "  [2] Full  — Larger image with the embedding model bundled.\n"
+  printf "         Broker: Redis Streams (Kafka kept if already installed)  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: yes\n"
   printf "         Recommended for: production servers, air-gapped deployments.\n\n"
   printf "  [3] Eval  — Slim image without the coding-sandbox pull or Slack bot.\n"
   printf "         Broker: Redis Streams  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: no\n"
@@ -1030,7 +1035,7 @@ if ! ${SKIP_WIZARD:-false}; then
   fi
 
   case "$DEPLOY_TYPE" in
-    full) DEFAULT_IMAGE_TAG="latest"; DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="kafka"; DEFAULT_KV="redis" ;;
+    full) DEFAULT_IMAGE_TAG="latest"; DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="redis"; DEFAULT_KV="redis" ;;
     eval) DEFAULT_IMAGE_TAG="slim";   DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="redis"; DEFAULT_KV="redis" ;;
     *)    DEPLOY_TYPE="slim"
           DEFAULT_IMAGE_TAG="slim";   DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="redis"; DEFAULT_KV="redis" ;;
@@ -1041,6 +1046,9 @@ if ! ${SKIP_WIZARD:-false}; then
     DEFAULT_GRAPH="arango"; info "Defaulting graph DB to ArangoDB to reuse existing data volume."
   elif $DETECTED_NEO4J && ! $DETECTED_ARANGO; then
     DEFAULT_GRAPH="neo4j";  info "Defaulting graph DB to Neo4j to reuse existing data volume."
+  fi
+  if $DETECTED_KAFKA; then
+    DEFAULT_BROKER="kafka"; info "Keeping Kafka to reuse the existing broker volume."
   fi
   if $DETECTED_ETCD; then
     DEFAULT_KV="etcd"; info "Defaulting KV store to etcd to reuse existing data volume."
@@ -1244,6 +1252,15 @@ if ! ${SKIP_WIZARD:-false}; then
   MONGO_IMAGE_TAG="$(get_existing_val MONGO_IMAGE_TAG "")"
   MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "")"
   MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
+  MONGO_MEMORY_RESERVATION="$(get_existing_val MONGO_MEMORY_RESERVATION "")"
+  # Datastore memory sizing (docs/deployment/vector-db-sizing.md): an operator
+  # lowers these on a small machine, so a rewrite must not put the defaults back.
+  NEO4J_HEAP_INITIAL="$(get_existing_val NEO4J_HEAP_INITIAL "")"
+  NEO4J_HEAP_MAX="$(get_existing_val NEO4J_HEAP_MAX "")"
+  NEO4J_PAGECACHE="$(get_existing_val NEO4J_PAGECACHE "")"
+  NEO4J_MEMORY_LIMIT="$(get_existing_val NEO4J_MEMORY_LIMIT "")"
+  NEO4J_MEMORY_RESERVATION="$(get_existing_val NEO4J_MEMORY_RESERVATION "")"
+  QDRANT_MEMORY_RESERVATION="$(get_existing_val QDRANT_MEMORY_RESERVATION "")"
   # Qdrant's memory limit decides search speed once the index grows
   # (docs/deployment/vector-db-sizing.md); keep an operator's value.
   QDRANT_MEMORY_LIMIT="$(get_existing_val QDRANT_MEMORY_LIMIT "${QDRANT_MEMORY_LIMIT:-}")"
@@ -1369,6 +1386,13 @@ ARANGO_PASSWORD=${ARANGO_PASSWORD}
 NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=${NEO4J_PASSWORD}
 NEO4J_DATABASE=neo4j
+# Neo4j memory. Keep heap max + page cache clearly below the container limit,
+# and the initial heap no larger than the maximum.
+$(optional_env_line NEO4J_HEAP_INITIAL "$NEO4J_HEAP_INITIAL" "1G")
+$(optional_env_line NEO4J_HEAP_MAX "$NEO4J_HEAP_MAX" "2G")
+$(optional_env_line NEO4J_PAGECACHE "$NEO4J_PAGECACHE" "1G")
+$(optional_env_line NEO4J_MEMORY_LIMIT "$NEO4J_MEMORY_LIMIT" "3G")
+$(optional_env_line NEO4J_MEMORY_RESERVATION "$NEO4J_MEMORY_RESERVATION" "2G")
 
 # ── Key-value / config store ─────────────────────────────────────────────────
 # "redis" (default, uses always-on Redis) | "etcd" (dedicated container)
@@ -1410,6 +1434,7 @@ $(optional_env_line MONGO_IMAGE_TAG "$MONGO_IMAGE_TAG" "8.0.17")
 # larger or dedicated hosts; avoid dropping the cache below 1 GB.
 $(optional_env_line MONGO_CACHE_GB "$MONGO_CACHE_GB" "1")
 $(optional_env_line MONGO_MEMORY_LIMIT "$MONGO_MEMORY_LIMIT" "2G")
+$(optional_env_line MONGO_MEMORY_RESERVATION "$MONGO_MEMORY_RESERVATION" "512M")
 
 # App container memory ceiling and its combined memory+swap ceiling. Derived
 # from this machine on a fresh install; set them yourself to pin. The governor
@@ -1429,6 +1454,7 @@ QDRANT_API_KEY=${QDRANT_API_KEY}
 # warning. Search stays fast only while the index fits; size it from
 # docs/deployment/vector-db-sizing.md.
 $(optional_env_line QDRANT_MEMORY_LIMIT "$QDRANT_MEMORY_LIMIT" "6G")
+$(optional_env_line QDRANT_MEMORY_RESERVATION "$QDRANT_MEMORY_RESERVATION" "2G")
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
 # Do not write MAX_CONCURRENT_* / EMBEDDING_*_CONCURRENCY here. Empty values
@@ -1546,7 +1572,6 @@ _app_memswap_mb="$(_parse_mem_mb "${APP_MEMSWAP_LIMIT:-16G}")" || _app_memswap_m
 if [[ -n "$_app_mem_mb" && -n "$_app_memswap_mb" ]] && (( _app_memswap_mb < _app_mem_mb )); then
   die "APP_MEMSWAP_LIMIT (${APP_MEMSWAP_LIMIT:-16G}) must be >= APP_MEMORY_LIMIT (${APP_MEMORY_LIMIT:-10G}). Raise APP_MEMSWAP_LIMIT in .env (or raise both together) before launching."
 fi
-
 # Resolve APP_PORT from .env when wizard was skipped (upgrade / reuse)
 APP_PORT="${APP_PORT:-3000}"
 HEALTH_URL="http://localhost:${APP_PORT}/api/v1/health/services"
@@ -1615,6 +1640,37 @@ case "${DATA_STORE:-}" in
     success "Repaired graph DB configuration in .env (DATA_STORE=${DATA_STORE})."
     ;;
 esac
+
+# Byte size in Neo4j's setting syntax (plain bytes, or k/m/g/t with an optional
+# B or iB suffix, any case; all binary) -> bytes. Returns 1 if not recognised.
+_parse_neo4j_bytes() {
+  local v n unit
+  # tr, not ${1,,}: the installer supports bash 3.2 (macOS), which lacks it.
+  v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  [[ "$v" =~ ^([0-9]+)([kmgt]?)(ib|b)?$ ]] || return 1
+  # 10#: a leading zero (010G) would otherwise be read as octal.
+  n=$(( 10#${BASH_REMATCH[1]} )); unit="${BASH_REMATCH[2]}"
+  case "$unit" in
+    k) n=$(( n * 1024 )) ;;
+    m) n=$(( n * 1024 ** 2 )) ;;
+    g) n=$(( n * 1024 ** 3 )) ;;
+    t) n=$(( n * 1024 ** 4 )) ;;
+  esac
+  echo "$n"
+}
+
+# The JVM refuses to start when the initial heap exceeds the maximum, and Neo4j
+# would then restart in a loop with only a JVM error in its log. Only Neo4j
+# reads these settings, so an ArangoDB deployment is not held to them.
+if [[ "$DATA_STORE" == "neo4j" ]]; then
+  _neo4j_heap_init="$(_parse_neo4j_bytes "${NEO4J_HEAP_INITIAL:-1G}")" || _neo4j_heap_init=""
+  _neo4j_heap_max="$(_parse_neo4j_bytes "${NEO4J_HEAP_MAX:-2G}")" || _neo4j_heap_max=""
+  if [[ -z "$_neo4j_heap_init" || -z "$_neo4j_heap_max" ]]; then
+    warn "Could not read NEO4J_HEAP_INITIAL (${NEO4J_HEAP_INITIAL:-1G}) or NEO4J_HEAP_MAX (${NEO4J_HEAP_MAX:-2G}) as a size; not checking that the initial heap fits the maximum."
+  elif (( _neo4j_heap_init > _neo4j_heap_max )); then
+    die "NEO4J_HEAP_INITIAL (${NEO4J_HEAP_INITIAL:-1G}) must be <= NEO4J_HEAP_MAX (${NEO4J_HEAP_MAX:-2G}). Lower NEO4J_HEAP_INITIAL in .env before launching."
+  fi
+fi
 
 # Repair COMPOSE_PROFILES if it disagrees with the configured services. Without
 # this, reusing an .env written by an older installer (or hand-edited) can start

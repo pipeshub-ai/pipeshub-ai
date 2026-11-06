@@ -58,3 +58,17 @@ async def test_a_finished_migration_does_not_run_again() -> None:
     service, _ = _service(provider, done=True)
     assert (await service.migrate())["skipped"] is True
     provider.backfill_hierarchy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_structure_change_that_could_not_be_recorded_keeps_the_migration_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The edges are written but the connectors' generation could not be moved (the organisations cannot be listed): no completion flag,
+    so the next start runs it again."""
+    monkeypatch.setenv("ACL_SCOPE_FIELDS", "on")
+    provider = MagicMock()
+    provider.backfill_hierarchy = AsyncMock(return_value={"added": ADDED})
+    provider.get_all_orgs = AsyncMock(side_effect=RuntimeError("graph down"))
+    service, config = _service(provider)
+    result = await service.migrate()
+    assert result["success"] is False
+    config.set_config.assert_not_awaited()

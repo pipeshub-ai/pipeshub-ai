@@ -18,8 +18,10 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import AppStatus, CollectionNames
+from app.services.permissions.structure_generation import note_structure_change
 from app.connectors.core.base.connector.connector_service import (
     ConnectorSyncSkippedError,
+    IncompleteSyncError,
     connector_sync_lock,
     dispose_connector,
 )
@@ -692,7 +694,11 @@ async def _unlink_what_full_sync_missed(
         )
     except Exception as e:
         logger.error(f"Could not unlink what the full sync of {connector_id} missed: {e}")
+        await note_structure_change(graph_provider, connector_id, logger)  # part of it may have run
         return False
+    if deleted or not ok:
+        # a structural write made outside the transaction store (it removes hierarchy, group, inherit and grant edges)
+        await note_structure_change(graph_provider, connector_id, logger)
     if ok:
         logger.info(f"Full sync of {connector_id}: removed {deleted} edge(s) of nodes it did not see")
     return bool(ok)
@@ -770,10 +776,16 @@ async def run_sync_task(
                 )
         except Exception as e:
             logger.warning(f"Could not clear pendingResync for {connector_id}: {e}")
-        if lease is None:
-            await _run_sync_alone(connector, connector_id)
-        else:
-            await _run_until_aborted(connector, lease)
+        incomplete: IncompleteSyncError | None = None
+        try:
+            if lease is None:
+                await _run_sync_alone(connector, connector_id)
+            else:
+                await _run_until_aborted(connector, lease)
+        except IncompleteSyncError as exc:
+            # It ran to the end and kept what it could not read as stored, so the removal below is still safe;
+            # the run fails after it.
+            incomplete = exc
         finished = True
         # Only for a sync that ran to the end: one cut off partway saw only part
         # of the source, and everything it had not reached keeps its links.
@@ -783,6 +795,8 @@ async def run_sync_task(
             unlink_failed = not await _unlink_what_full_sync_missed(
                 connector, connector_id, graph_provider, logger, seen
             )
+        if incomplete is not None:
+            raise incomplete
     except asyncio.CancelledError:
         stopped = True
         raise

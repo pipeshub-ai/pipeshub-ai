@@ -147,6 +147,16 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/unit/services/artifact_registry/fakes.py",
     f"{PYTHON}/tests/unit/services/vector_db/test_strategy_contract.py",
     f"{PYTHON}/tests/unit/web/qa/lab.py",
+    f"{PYTHON}/tests/permissions/graph.py",
+    f"{PYTHON}/tests/permissions/model.py",
+    f"{PYTHON}/tests/permissions/runner.py",
+    f"{PYTHON}/tests/permissions/scenario.py",
+    f"{PYTHON}/tests/permissions/mutations.py",
+    f"{PYTHON}/tests/permissions/oracle.py",
+    f"{PYTHON}/tests/permissions/scope_corpus.py",
+    f"{PYTHON}/tests/permissions/scope_layer.py",
+    f"{PYTHON}/tests/permissions/stamp_world.py",
+    f"{PYTHON}/tests/permissions/scenarios/**",
 )
 
 # backend-matrix.yml's Python suites. Their tests import more than their own
@@ -215,6 +225,7 @@ CONNECTOR_SHARDS = {
     ),
     "connectors-2": (
         "jira", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual", "servicenow",
+        "zammad_sim",
     ),
     "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres", "salesforce"),
     "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear", "servicenow_sim"),
@@ -317,7 +328,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "salesforce": ("salesforce",),
     "servicenow": ("servicenow", "servicenow_sim"),
     "smb": ("smb",),
-    "zammad": ("zammad",),
+    "zammad": ("zammad", "zammad_sim"),
     "zendesk": ("zendesk",),
 }
 CONNECTOR_TESTS = "integration-tests/connectors"
@@ -326,6 +337,7 @@ CONNECTOR_TESTS = "integration-tests/connectors"
 CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "bookstack": ("bookstack", "bookstack_sim"),
     "servicenow": ("servicenow", "servicenow_sim"),
+    "zammad": ("zammad", "zammad_sim"),
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
     "local_fs": ("local_fs", "local_fs_sim"),

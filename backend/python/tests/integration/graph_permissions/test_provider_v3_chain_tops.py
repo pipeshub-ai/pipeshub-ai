@@ -36,6 +36,8 @@ from .loaders import arango_shape, load_into_arango, load_into_neo4j
 if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
+pytestmark = pytest.mark.integration
+
 APP = "ct-app"
 RGL = "RECORD_GROUP_LEVEL"
 GROUP = {"group_type": "DRIVE", "connector": DRIVE, "connectorId": APP}

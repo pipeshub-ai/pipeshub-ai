@@ -84,7 +84,7 @@ class TestArangoGetKnowledgeHubNodeAccess:
             org_id="org1",
             folder_mime_types=["application/vnd.folder"],
         )
-        assert result == {**node, "userRole": None}     # a connector item carries no role
+        assert result == {**node, "userRole": None, "isPlaceholder": False}     # a connector item carries no role
         arango.check_access.assert_awaited_once_with("user1", "org1", node_ids=["rec123"], transaction=None)
         bind_vars = arango.http_client.execute_aql.call_args_list[0].kwargs["bind_vars"]
         assert bind_vars == {"node_id": "rec123", "org_id": "org1",

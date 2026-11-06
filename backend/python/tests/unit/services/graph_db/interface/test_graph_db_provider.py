@@ -192,6 +192,7 @@ class TestAbstractMethodInventory:
         "get_document",
         "get_record_by_id",
         "get_typed_records_batch",
+        "page_record_ids_by_type",
         "get_node_depths_batch",
         "get_all_documents",
         "get_documents_paginated",
@@ -199,6 +200,7 @@ class TestAbstractMethodInventory:
         "ensure_nodes",
         "stage_state_get",
         "stage_states_for_revision",
+        "stage_state_org_for_virtual_record",
         "stage_state_create",
         "stage_state_compare_and_set",
         "stage_states_stale",
@@ -304,6 +306,10 @@ class TestAbstractMethodInventory:
         "get_entity_candidate_records",
         "get_permitted_entity_records",
         "find_users",
+        "get_record_people",
+        "get_record_organizations",
+        "get_record_group_organization",
+        "stamp_external_org_parents",
         "get_taxonomy_entity_membership",
         "get_unreached_taxonomy_entities",
         "find_taxonomy_nodes",
@@ -312,6 +318,7 @@ class TestAbstractMethodInventory:
         "ensure_taxonomy_hierarchy_edge",
         # User operations
         "get_user_by_email",
+        "get_users_by_emails",
         "get_user_by_source_id",
         "get_user_by_user_id",
         "apply_verified_user_email",
@@ -535,6 +542,18 @@ class TestAbstractMethodInventory:
         "schedule_named_entity_reextract",
         # Migrations
         "migrate_legacy_relation_edge",
+        # Used by callers, once only on the concrete providers
+        "_get_kb_context_for_record",
+        "_fetch_existing_file_names_in_parent",
+        "_validate_upload_context",
+        "get_user_app_ids",
+        "get_user_permission_app_ids",
+        "_create_reindex_event_payload",
+        "delete_inherit_permissions_relation_record_group",
+        "get_user_apps",
+        "delete_all_edges_for_node",
+        "get_template",
+        "clone_agent_template",
     ]
 
     def test_all_expected_methods_are_abstract(self):

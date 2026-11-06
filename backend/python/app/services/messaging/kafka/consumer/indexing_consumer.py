@@ -154,12 +154,14 @@ class _InFlightOffset:
     a stalled watermark is never the silent default.
     """
 
-    __slots__ = ("tp", "offset", "resolved")
+    __slots__ = ("tp", "offset", "resolved", "epoch")
 
-    def __init__(self, tp: "TopicPartition", offset: int) -> None:
+    def __init__(self, tp: "TopicPartition", offset: int, epoch: int | None = None) -> None:
         self.tp = tp
         self.offset = offset
         self.resolved = False
+        # The partition's assignment when this delivery began; None when unknown.
+        self.epoch = epoch
 
 
 class _ReadOutcome:
@@ -216,6 +218,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         disposition_sink: Optional[AbandonedMessageSink] = None,
         connector_off_filter: ConnectorOffFilter | None = None,
         stage_admission: "concurrency.StageAdmission | None" = None,
+        priority_lane: "concurrency.PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
     ) -> None:
         self.logger = logger
@@ -241,6 +244,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if stage_admission is not None and governor is not None:
             raise ValueError("a pipeline-stage consumer admits through its own limit, not a governor")
         self.stage_admission = stage_admission
+        if priority_lane is not None and stage_admission is not None:
+            raise ValueError("a consumer is a pipeline stage or the priority lane, not both")
+        # The consumer of the priority topic: reads past the backlog, on caps of its own.
+        self.priority_lane = priority_lane
         # Shared by every indexing consumer in the process (see WorkerLoop); None runs a loop of
         # this consumer's own.
         self._shared_worker = worker
@@ -326,6 +333,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._partitions_with_data: set[TopicPartition] = set()
         # Partitions revoked since the last poll; see __read_phase.
         self._revoked_since_poll: set[TopicPartition] = set()
+        # Bumped on every revocation: a delivery of an earlier assignment settles nothing, however late it ends.
+        self._partition_epoch: dict[TopicPartition, int] = {}
         self._deferred_messages: deque[
             tuple[TopicPartition, ConsumerRecord, StreamMessage, FairnessKey]
         ] = deque()
@@ -399,7 +408,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # Legacy static semaphores, created in the worker thread's event loop.
             self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
             self.indexing_semaphore = asyncio.Semaphore(
-                self.stage_admission.limit if self.stage_admission else messaging_env.max_concurrent_indexing
+                concurrency.local_index_permits(self)
             )
             self.logger.info("Worker thread event loop started with semaphores initialized")
 
@@ -431,7 +440,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self._shared_worker.add_exit_listener(self._stop_taking_work)
             self._shared_worker.call(lambda: self._on_worker_loop_started(loop))
             # Reported once, under the record consumer: every consumer on the loop sees the same lag.
-            self.loop_lag_monitor = self._shared_worker.lag_monitor if self.stage_admission is None else None
+            self.loop_lag_monitor = self._shared_worker.lag_monitor if self.stage_admission is None and self.priority_lane is None else None
             self.worker_loop_ready.set()
             return
 
@@ -831,6 +840,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if not revoked_set:
             return
         self._revoked_since_poll.update(revoked_set)
+        for tp in revoked_set:
+            self._partition_epoch[tp] = self._partition_epoch.get(tp, 0) + 1
 
         purged = self._scheduler.purge(lambda item: item[0] in revoked_set)
         for tp in revoked_set:
@@ -1870,6 +1881,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # from nothing and commit past offsets the next owner still needs.
             if self.consumer is None or tp in self._revoked_since_poll:
                 return
+            # The revocation flag is cleared at the next poll; a delivery that ends after that is still of the
+            # revoked assignment, and settling it would commit from a watermark rebuilt without its backlog.
+            if in_flight.epoch is not None and in_flight.epoch != self._partition_epoch.get(tp, 0):
+                return
             watermark = (
                 offset_tracker.mark_done(tp, offset)
                 if done
@@ -1970,7 +1985,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             key, (tp, message, parsed) = dispatched
             metrics.record_dispatch("kafka", key[0] if key else "unknown")
-            in_flight = _InFlightOffset(tp, message.offset)
+            in_flight = _InFlightOffset(tp, message.offset, self._partition_epoch.get(tp, 0))
             record_key = self.__record_key(message, parsed) if parallel else None
             reserved = (
                 self.__reserve_record(record_key)
@@ -2785,7 +2800,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     parse_tier = event.data.tier if event.data else None
                                     timeline.mark(timing.PARSE_REQUESTED)
                                     if self.governor is not None:
-                                        parse_lease_pool = concurrency.parse_lease_pool(parse_tier)
+                                        parse_lease_pool = concurrency.parse_lease_pool(parse_tier, self)
                                     # Node-local gate first, cluster lease
                                     # second. The gate is an asyncio Event and
                                     # costs nothing to queue on, so it absorbs

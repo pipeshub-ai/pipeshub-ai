@@ -8,7 +8,8 @@ import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-b
 import { toast } from '@/lib/store/toast-store';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { apiClient, isProcessedError } from '@/lib/api';
+import { isProcessedError } from '@/lib/api';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { isMcpInstanceReadOnly, McpInheritedCallout } from '@/config';
 import { useWorkspaceDrawerNestedModalHost, WorkspaceRightPanel } from '../../../components/workspace-right-panel';
 import { ConfirmationDialog, FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
@@ -19,6 +20,8 @@ import { mcpConnectionState, usesSharedCredential, type McpConnectionState } fro
 import { useCopyText } from '@/lib/hooks/use-copy-text';
 import { McpPanelTitle, McpServerActionsMenu, type McpMenuEntry } from './mcp-panel-header';
 import { McpClientSecretPrefixHint } from './mcp-client-secret-prefix-hint';
+import { McpLogoField } from './mcp-logo-field';
+import { setMcpServerLogo, useMcpServerLogo } from '../../logo-store';
 import { McpToolsApprovalsTab, type McpToolsLoad } from './mcp-tools-approvals-tab';
 import {
   isOauthClientMissing,
@@ -127,7 +130,6 @@ export function McpInstanceConfigPanel({
   const [toolsLoad, setToolsLoad] = useState<McpToolsLoad>({ status: 'idle' });
   const [disconnectTarget, setDisconnectTarget] = useState<McpMyServerEntry | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const [creatorName, setCreatorName] = useState<string | null>(null);
   const { copy } = useCopyText();
 
   const liveInstance = useMemo(
@@ -159,6 +161,10 @@ export function McpInstanceConfigPanel({
   const [scopeTags, setScopeTags] = useState<TagItem[]>([]);
   const [connectTimeout, setConnectTimeout] = useState('');
   const [callTimeout, setCallTimeout] = useState('');
+  const savedLogo = useMcpServerLogo(mode === 'edit' ? editingInstance?._id : null);
+  /** undefined: unchanged; null: remove it; a data URL: the new logo. */
+  const [logoDraft, setLogoDraft] = useState<string | null | undefined>(undefined);
+  const [isReadingLogo, setIsReadingLogo] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [pendingImpact, setPendingImpact] = useState<McpEditCredentialImpact>('none');
   const nestedModalHost = useWorkspaceDrawerNestedModalHost(open);
@@ -187,6 +193,8 @@ export function McpInstanceConfigPanel({
     setToolsLoad({ status: 'idle' });
     setConfirmDiscard(false);
     setPendingImpact('none');
+    setLogoDraft(undefined);
+    setIsReadingLogo(false);
     if (editingInstance) {
       setName(editingInstance.name);
       setDescription(editingInstance.description ?? '');
@@ -436,6 +444,22 @@ export function McpInstanceConfigPanel({
     }
   };
 
+  const saveLogoIfChanged = async (instanceId: string) => {
+    if (isTemplateBased || logoDraft === undefined || logoDraft === savedLogo) return;
+    try {
+      if (logoDraft) {
+        const { logo } = await McpServersApi.setLogo(instanceId, logoDraft);
+        setMcpServerLogo(instanceId, logo);
+      } else {
+        await McpServersApi.removeLogo(instanceId);
+        setMcpServerLogo(instanceId, null);
+      }
+    } catch (error) {
+      const detail = isProcessedError(error) ? error.message : undefined;
+      toast.error(t('workspace.mcpServers.toasts.logoSaveError'), detail ? { description: detail } : undefined);
+    }
+  };
+
   const buildPayload = (): McpServerInstancePayload => ({
     name: name.trim(),
     typeId: resolvedTemplate?.typeId ?? null,
@@ -468,7 +492,7 @@ export function McpInstanceConfigPanel({
   });
 
   const handleSave = () => {
-    if (!isValid) return;
+    if (!isValid || isReadingLogo) return;
     if (mode === 'edit' && editingInstance) {
       const impact = mcpEditCredentialImpact(editingInstance, buildPayload());
       if (impact !== 'none') {
@@ -499,6 +523,7 @@ export function McpInstanceConfigPanel({
       }
 
       await saveCredentialsIfProvided(instanceId);
+      await saveLogoIfChanged(instanceId);
 
       onSaved();
       requestOpenChange(false);
@@ -578,28 +603,8 @@ export function McpInstanceConfigPanel({
 
   const createdBy = liveInstance?.createdBy;
   const creatorHidden = isMcpInstanceReadOnly(liveInstance);
-  useEffect(() => {
-    if (!open || !createdBy || creatorHidden) {
-      setCreatorName(null);
-      return;
-    }
-    let cancelled = false;
-    apiClient
-      .post('/api/v1/users/by-ids', { userIds: [createdBy] })
-      .then(({ data }) => {
-        if (cancelled) return;
-        const users = Array.isArray(data) ? data : data?.users ?? [];
-        const user = (users[0] ?? {}) as Record<string, unknown>;
-        const fullName = String(user.name ?? user.fullName ?? '').trim();
-        setCreatorName(fullName || createdBy);
-      })
-      .catch(() => {
-        if (!cancelled) setCreatorName(createdBy);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, createdBy, creatorHidden]);
+  const creator = useUserDirectoryEntry(open && !creatorHidden ? createdBy : null);
+  const creatorName = creator ? creator.name?.trim() || createdBy : null;
 
   const menuEntries: McpMenuEntry[] = [];
   if (mode === 'edit' && liveInstance) {
@@ -689,6 +694,15 @@ export function McpInstanceConfigPanel({
       <FormField label={t('workspace.mcpServers.form.description')} optional>
         <TextField.Root size="2" value={description} onChange={(e) => setDescription(e.target.value)} />
       </FormField>
+
+      {!isTemplateBased && !isReadOnly && (
+        <McpLogoField
+          key={editingInstance?._id ?? 'new'}
+          logo={logoDraft === undefined ? savedLogo : logoDraft}
+          onChange={setLogoDraft}
+          onReadingChange={setIsReadingLogo}
+        />
+      )}
 
       {!isTemplateBased && (
         <FormField label={t('workspace.mcpServers.form.transport')} required>
@@ -1009,12 +1023,16 @@ export function McpInstanceConfigPanel({
         icon={mode === 'edit' && liveInstance ? undefined : 'hub'}
         titleNode={
           mode === 'edit' && liveInstance ? (
-            <McpPanelTitle instance={liveInstance} state={isMcpInstanceDisabled(liveInstance) ? 'disabled' : connectionState} />
+            <McpPanelTitle
+              instance={liveInstance}
+              state={isMcpInstanceDisabled(liveInstance) ? 'disabled' : connectionState}
+              logo={savedLogo}
+            />
           ) : undefined
         }
         primaryLabel={mode === 'edit' ? t('common.save') : t('common.create')}
         secondaryLabel={t('common.cancel')}
-        primaryDisabled={!isValid}
+        primaryDisabled={!isValid || isReadingLogo}
         primaryLoading={isSaving}
         onPrimaryClick={handleSave}
         hideFooter={!showFooter}

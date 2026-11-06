@@ -145,6 +145,32 @@ class TestProcessEventEdgeCases:
             )
 
 
+@pytest.mark.asyncio
+async def test_a_retry_clears_the_vectors_of_the_vrid_on_the_record_not_the_one_in_the_message() -> None:
+    """The first attempt's vectors are under the VRID it saved on the record."""
+    handler = _make_handler()
+    handler.event_processor.graph_provider.get_document = AsyncMock(
+        return_value=_vector_only_graph_doc(virtualRecordId="saved-by-attempt-1")
+    )
+    pipeline = handler.event_processor.processor.indexing_pipeline
+    pipeline.bulk_delete_embeddings = AsyncMock(side_effect=RuntimeError("stop after the clear"))
+
+    with pytest.raises(RuntimeError, match="stop after the clear"):
+        await _collect_events(
+            handler,
+            EventTypes.REINDEX_RECORD.value,
+            {
+                "recordId": "rec-1",
+                "orgId": "org-1",
+                "virtualRecordId": "vrid-in-the-message",
+                "mimeType": MimeTypes.XLSX.value,
+                "extension": "xlsx",
+            },
+        )
+
+    pipeline.bulk_delete_embeddings.assert_awaited_once_with(["saved-by-attempt-1"], org_id="org-1")
+
+
 # ===================================================================
 # Bulk delete event
 # ===================================================================
@@ -1534,6 +1560,20 @@ class TestDeleteRecordEvent:
         )
 
     @pytest.mark.asyncio
+    async def test_delete_record_without_an_org_takes_it_from_the_record_before_the_embeddings_go(self) -> None:
+        """The embeddings are deleted for one org; an event without its org must not fail
+        closed while the record can still name it."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "orgId": "org-1"})
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        await _collect_events(handler, EventTypes.DELETE_RECORD.value, {"recordId": "r1", "virtualRecordId": "vr1"})
+
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
+
+    @pytest.mark.asyncio
     async def test_delete_record_without_entity_vector_store_still_completes(self):
         """No entity store configured (the default in most deployments/tests)
         must not break the delete — it is a best-effort cleanup."""
@@ -1559,6 +1599,7 @@ class TestDeleteRecordSharedCopyHandover:
     def _handler() -> "RecordEventHandler":
         handler = _make_handler()
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=None)
         return handler
 
     @pytest.mark.asyncio
@@ -5754,6 +5795,24 @@ class TestOnMessageAbandoned:
         )
 
         gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_status_write_is_logged_as_an_error_and_not_taken_for_a_record_that_moved_on(self) -> None:
+        """The database failing is not "the record moved on": the swap raises, nothing else is written, and the log says
+        the marking failed (at error level, with the cause), not that the record was left alone."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "indexingStatus": ProgressStatus.QUEUED.value})
+        gp.update_node = AsyncMock(return_value=True)
+        gp.compare_and_set_indexing_status = AsyncMock(side_effect=ConnectionError("graph restarting"))
+
+        await handler.on_message_abandoned(self._message(), reason="4 transient failures", attempts=4)  # never raises
+
+        gp.update_node.assert_not_awaited()
+        errors = [str(c.args[0]) % c.args[1:] for c in handler.logger.error.call_args_list]
+        assert any("Error while marking record r1 FAILED" in e and "graph restarting" in e for e in errors)
+        infos = [str(c.args[0]) for c in handler.logger.info.call_args_list]
+        assert not any("moved on" in i for i in infos)
 
     @pytest.mark.asyncio
     async def test_never_fails_a_record_whose_handler_is_still_running(self):

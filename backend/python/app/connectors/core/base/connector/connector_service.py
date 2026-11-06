@@ -27,6 +27,7 @@ from app.connectors.core.thread_pool import (
 )
 from app.models.entities import AppUser, AppUserGroup, Record
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole, NotificationOutcome
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.notification.notification_service import NotificationService
@@ -92,6 +93,11 @@ class ConnectorSyncSkippedError(Exception):
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message or code)
         self.code = code
+
+
+class IncompleteSyncError(RuntimeError):
+    """A sync that finished without writing every project it read: the run fails, but a full sync still removes
+    what it saw gone from the parts it read in full (the runner), and the parts it kept as stored stay linked."""
 
 
 # Held by a sync for its whole run and by a user-link pass, so the two never overlap on one
@@ -672,6 +678,7 @@ class BaseConnector(ABC):
             external_id=source_group_id,
             type=PermissionType.READ,
         )
+        await notify_principals_changed(org_id)  # the creator's app link and group membership are new edges
         self.logger.info(
             "ConnectorGroup ensured for connector %s (members: %s)",
             self.connector_id,

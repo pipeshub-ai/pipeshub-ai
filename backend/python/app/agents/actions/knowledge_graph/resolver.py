@@ -328,7 +328,10 @@ class RecordResolver:
                 org_id=self._org_id,
                 folder_mime_types=self._folder_mime_types,
             )
-            if node and await self._in_excluded_app(match.id):
+            if node and node.get("isPlaceholder") is True:
+                # Listed for browsing, but not a record to open: the same answer as for one the user cannot read.
+                logger.debug("resolve_one(%r): candidate %s is a placeholder", raw, match.id)
+            elif node and await self._in_excluded_app(match.id):
                 logger.debug("resolve_one(%r): candidate %s is switched-off demo data", raw, match.id)
             elif node:
                 if not match.record_type:

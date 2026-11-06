@@ -67,6 +67,9 @@ class SparseVector:
     values: list[float]
 
 
+_ORG_KEYS = frozenset({"orgId", "metadata.orgId"})
+
+
 @dataclass
 class FieldCondition:
     """One filter predicate on a payload field.
@@ -101,6 +104,11 @@ class FilterExpression:
         too, so a count-only expression matches most of a collection. Delete
         paths refuse one on that basis.
 
+        A condition on the organisation field does not count once ``must``
+        carries a length bound: org plus a bound selects most of that org, not
+        the narrow purge the caller meant. Without a bound, org alone is the
+        deliberate whole-organisation removal and still counts.
+
         ``must_not`` never counts: it only ever *subtracts*, so a term there is
         not the positive match a bound needs. Counting it would let
         ``filter_collection(MUST_NOT, max_values=..., virtualRecordId=x)``, a
@@ -116,15 +124,18 @@ class FilterExpression:
         outright), which leaves the bound standing alone as the whole filter —
         and a point whose field is absent satisfies a bound.
         """
+        bounded = any(cond.values_count_lte is not None for cond in self.must)
+
         def _matches_a_value(conds: list[FieldCondition]) -> bool:
             return any(
-                cond.value is not None or cond.values is not None
+                (cond.value is not None or cond.values is not None)
+                and not (bounded and cond.key in _ORG_KEYS)
                 for cond in conds
             )
 
         if _matches_a_value(self.must):
             return True
-        if any(cond.values_count_lte is not None for cond in self.must):
+        if bounded:
             return False
         return _matches_a_value(self.should)
 
@@ -235,6 +246,8 @@ class HybridSearchRequest:
     limit: int = 10
     fusion_method: FusionMethod = FusionMethod.RRF
     with_payload: bool = True
+    # What one viewer may read (filters.ScopeFilter), ANDed with ``filter``; only a store that translates it accepts a request carrying one.
+    scope_filter: Any | None = None
 
 
 @dataclass
@@ -359,6 +372,10 @@ class VectorDBCapabilities:
     supports_multi_collection: bool = True
     max_recommended_collections: int | None = None
     score_semantics: ScoreSemantics = ScoreSemantics.RANK_FUSED
+    # The collection stamp is kept by the provider itself (get/set_collection_stamp), not as a point.
+    stamps_in_catalog: bool = False
+    # The embedding model and dimension belong to each org's space, not to the collection.
+    spaces_per_org: bool = False
 
 
 @dataclass

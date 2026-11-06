@@ -92,8 +92,26 @@ class TestRequiredTopics:
         assert Topic.SYNC_EVENTS.value in REQUIRED_TOPICS
         assert Topic.HEALTH_CHECK.value in REQUIRED_TOPICS
 
+    def test_record_title_events_topic(self) -> None:
+        assert Topic.RECORD_TITLE_EVENTS.value == "record-title-events"
+        assert Topic.RECORD_TITLE_EVENTS.value in REQUIRED_TOPICS
+
     def test_has_at_least_five_topics(self):
         assert len(REQUIRED_TOPICS) >= 5
+
+    def test_has_the_priority_topic(self) -> None:
+        assert Topic.RECORD_EVENTS_PRIORITY.value == "record-events-priority"
+        assert Topic.RECORD_EVENTS_PRIORITY.value in REQUIRED_TOPICS
+
+    def test_priority_lane_caps_are_small_and_configurable(self, monkeypatch) -> None:
+        monkeypatch.delenv("PRIORITY_LANE_HEAVY_LIMIT", raising=False)
+        monkeypatch.delenv("PRIORITY_LANE_LIGHT_LIMIT", raising=False)
+        assert (messaging_env.priority_lane_heavy_limit, messaging_env.priority_lane_light_limit) == (1, 3)
+
+        monkeypatch.setenv("PRIORITY_LANE_HEAVY_LIMIT", "2")
+        monkeypatch.setenv("PRIORITY_LANE_LIGHT_LIMIT", "0")
+        assert messaging_env.priority_lane_heavy_limit == 2
+        assert messaging_env.priority_lane_light_limit == 1  # never below one: the lane would stop
 
 
 class TestMessagingEnvConfig:

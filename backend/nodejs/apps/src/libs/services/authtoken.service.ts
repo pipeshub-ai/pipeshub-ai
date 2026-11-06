@@ -6,6 +6,8 @@ import { Logger } from '../services/logger.service';
 import { isUserActionScope } from '../enums/token-scopes.enum';
 import { deriveUserActionSecret } from '../utils/jwtKeys';
 import jwt, { SignOptions } from 'jsonwebtoken';
+import { Request } from 'express';
+import { isMcpRelay, relayKey } from '../middlewares/mcp-relay';
 
 interface TokenPayload extends Record<string, any> {}
 
@@ -73,6 +75,7 @@ export class AuthTokenService {
   private readonly userActionVerificationKey: KeyObject;
   private readonly jwtAlgorithms: jwt.Algorithm[];
   private readonly scopedJwtAlgorithms: jwt.Algorithm[];
+  private relayVerificationKey?: KeyObject;
 
   constructor(jwtSecret: string, scopedJwtSecret: string) {
     this.jwtSecret = jwtSecret;
@@ -86,6 +89,12 @@ export class AuthTokenService {
         : this.scopedJwtVerificationKey;
     this.jwtAlgorithms = algorithmsFor(this.jwtVerificationKey);
     this.scopedJwtAlgorithms = algorithmsFor(this.scopedJwtVerificationKey);
+  }
+
+  /** Whether `req` is an API call the /mcp handler made for one of its tool calls. */
+  isMcpRelay(req: Request): boolean {
+    this.relayVerificationKey ??= relayKey(this.scopedJwtSecret);
+    return isMcpRelay(req, this.relayVerificationKey);
   }
 
   async verifyToken(token: string): Promise<TokenPayload> {

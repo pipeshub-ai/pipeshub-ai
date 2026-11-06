@@ -71,6 +71,9 @@ class IVectorDBService(ABC):
     # Capabilities and health (new)
     # ------------------------------------------------------------------
 
+    #: Whether a search request may carry a ``ScopeFilter`` (``filters.ScopeFilter``); a store that cannot refuses one.
+    supports_scope_filter = False
+
     @abstractmethod
     def get_capabilities(self) -> VectorDBCapabilities:
         """Return static capability descriptor for this provider."""
@@ -153,6 +156,29 @@ class IVectorDBService(ABC):
     async def get_collection_info(self, collection_name: str) -> VectorCollectionInfo:
         """Return normalised, provider-neutral collection metadata."""
         raise NotImplementedError
+
+    async def org_holds_points(self) -> bool:
+        """For providers with ``spaces_per_org``: whether the calling org holds any point (of any collection, deleted-but-kept rows
+        included). A read only; an org that holds none can change its embedding model."""
+        raise NotImplementedError
+
+    async def org_space_accepts(self, identity: str | None, dimension: int, current_identity: str | None = None) -> bool:
+        """For providers with ``spaces_per_org``: whether the calling org's active space already takes vectors of this model identity
+        (``provider:model:dimension``, None when unknown) and dimension, so changing to it changes nothing. ``current_identity`` is the one
+        configured now: a nameless space that holds points is read as named by it. A read only."""
+        raise NotImplementedError
+
+    async def get_collection_stamp(self, collection_name: str) -> str | None:
+        """The collection's stamp. Only for providers whose capabilities say ``stamps_in_catalog``."""
+        raise NotImplementedError
+
+    async def set_collection_stamp(self, collection_name: str, stamp: str) -> str:
+        """Sets the stamp unless the collection has one; answers the stamp in force. Only for ``stamps_in_catalog`` providers."""
+        raise NotImplementedError
+
+    async def orgs_of_virtual_records(self, virtual_record_ids: list[str]) -> dict[str, set[str]] | None:
+        """The orgs holding points of each virtual record (absent: none), or None when the provider cannot say without being told an org."""
+        return None
 
     @abstractmethod
     async def collection_exists(self, collection_name: str) -> bool:
@@ -249,8 +275,13 @@ class IVectorDBService(ABC):
         collection_name: str,
         point_ids: List[str],
         payload: dict,
+        *,
+        org_id: str,
     ) -> None:
-        """Merge ``payload`` into the points with these ids, by id.
+        """Merge ``payload`` into the points of ``org_id`` with these ids, by id.
+
+        Ids that belong to another org are left alone, as if they did not exist; a
+        missing or blank ``org_id`` raises ``OrgRequired``.
 
         Unlike ``set_payload``, which finds its points with a search (an
         OpenSearch ``update_by_query`` cannot see a document until the index
@@ -285,6 +316,10 @@ class IVectorDBService(ABC):
     ) -> None:
         """Delete matching points.
 
+        Like ``overwrite_payload`` and ``set_payload``, the filter must pin ``metadata.orgId`` to one
+        non-blank org in MUST (``filters.require_filter_org``); otherwise ``OrgRequired`` is raised and
+        nothing is touched. An org-only filter is allowed: it removes a whole organisation.
+
         ``refresh=True`` asks the provider to make the write immediately
         visible to a subsequent read. Only pass it when the caller re-reads the
         matched set to decide whether it is done — on OpenSearch it forces a
@@ -300,6 +335,7 @@ class IVectorDBService(ABC):
         payload: dict,
         points: FilterExpression,
     ) -> None:
+        """Replace the payload of matching points. ``points`` must pin ``metadata.orgId`` (see ``delete_points``)."""
         raise NotImplementedError
 
     @abstractmethod
@@ -312,7 +348,7 @@ class IVectorDBService(ABC):
     ) -> None:
         """Merge ``payload`` into matching points without replacing the rest.
 
-        See ``delete_points`` for ``refresh``.
+        See ``delete_points`` for ``refresh`` and for the org the filter must pin.
 
         Must not use Qdrant ``overwrite_payload`` (that drops ``page_content``).
         Rejects an empty filter — the same safety rule as ``delete_points``.

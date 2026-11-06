@@ -834,9 +834,30 @@ class SalesforceConnector(BaseConnector):
         """EE override: injects org_id for tenant isolation on Person nodes."""
         return Person(**kwargs)
 
+    async def _own_external_orgs(self, tx_store: TransactionStore, nodes: list[dict]) -> list[dict]:
+        """The account organisations among ``nodes`` this connector's org may
+        reuse by name, in order: those recording it as parentOrgId
+        (`_create_org`), and ones written before that was recorded which the
+        org reaches through its own prospect or customer edge (the next upsert
+        stamps them). An unstamped node none of its edges reaches may be
+        another org's, so it is never reused. A failed edge read raises: read
+        as "no edges", it would duplicate every unstamped account."""
+        org_id = self.data_entities_processor.org_id
+        nodes = [n for n in nodes if n.get("isExternal") is True and n.get("parentOrgId") in (None, org_id)]
+        if not any(n.get("parentOrgId") is None for n in nodes):
+            return nodes
+        owner = f"{CollectionNames.ORGS.value}/{org_id}"
+        owned = {
+            str(edge.get("_to") or "").split("/", 1)[-1]
+            for collection in (CollectionNames.PROSPECT.value, CollectionNames.CUSTOMER.value)
+            for edge in await tx_store.get_edges_from_node(owner, collection, raise_on_error=True)
+        }
+        return [n for n in nodes if n.get("parentOrgId") is not None or (n.get("_key") or n.get("id")) in owned]
+
     def _create_org(self, **kwargs) -> Org:
-        """EE override: injects org_id as parentOrgId for tenant isolation on external Org nodes."""
-        return Org(**kwargs)
+        """An account's external organisation, recording the org it belongs to
+        as parentOrgId, which scopes the organisation entity to that org."""
+        return Org(**{"parent_org_id": self.data_entities_processor.org_id, **kwargs})
 
     def __init__(
         self,
@@ -4714,19 +4735,15 @@ class SalesforceConnector(BaseConnector):
         try:
             newly_synced_account_ids: Set[str] = set()
             org_id = self.data_entities_processor.org_id
-            parent_org_id = self._get_parent_org_id()
 
             # One-time setup: snapshot existing external orgs into a name -> _key map.
             # Updated in place each page so that newly upserted orgs are recognized as
             # existing on subsequent pages (correct delete-then-recreate behaviour).
             async with self.data_store_provider.transaction() as tx_store:
-                all_orgs = await tx_store.get_all_orgs()
-            external_org_key_by_name: Dict[str, str] = {
-                o["name"]: o["_key"]
-                for o in (all_orgs or [])
-                if o.get("isExternal") is True
-                and (parent_org_id is None or o.get("parentOrgId") == parent_org_id)
-            }
+                # Unknown is not empty: a failed read would re-create every account.
+                all_orgs = await tx_store.get_all_orgs(raise_on_error=True)
+                own_orgs = await self._own_external_orgs(tx_store, all_orgs or [])
+            external_org_key_by_name: Dict[str, str] = {o["name"]: o["_key"] for o in own_orgs}
 
             total_orgs = 0
             total_record_groups = 0
@@ -4814,12 +4831,10 @@ class SalesforceConnector(BaseConnector):
                     tx_store: TransactionStore, orgs_with_edges: list[tuple[Org, RecordGroup, dict, dict | None]]
                 ) -> None:
                     nonlocal external_org_key_by_name
-                    all_orgs = await tx_store.get_all_orgs(is_external=True)
-                    parent_org_id = self._get_parent_org_id()
+                    all_orgs = await tx_store.get_all_orgs(is_external=True, raise_on_error=True)
                     external_org_key_by_name = {
                         o["name"]: o.get("id", o.get("_key"))
-                        for o in all_orgs
-                        if parent_org_id is None or o.get("parentOrgId") == parent_org_id
+                        for o in await self._own_external_orgs(tx_store, all_orgs)
                     }
                     delete_tasks = []
                     for org, rg, _, _ in orgs_with_edges:
@@ -5028,11 +5043,7 @@ class SalesforceConnector(BaseConnector):
                     }
                     org_name_map = {
                         node.get("name"): node
-                        for node in (existing_orgs_result or [])
-                        if parent_org_id is None or (
-                            node.get("isExternal") is True
-                            and node.get("parentOrgId") == parent_org_id
-                        )
+                        for node in await self._own_external_orgs(tx_store, existing_orgs_result or [])
                     }
 
                     unchanged_emails: set = set()
