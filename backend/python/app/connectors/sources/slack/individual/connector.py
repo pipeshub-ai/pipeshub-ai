@@ -1123,7 +1123,6 @@ class SlackIndividualConnector(BaseConnector):
             await self.rate_limiter.acquire(Tier.T2)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_list(
-                exclude_archived=True,
                 types=types_param,
                 limit=PAGE_SIZE_CHANNELS,
                 cursor=cursor,
@@ -4556,7 +4555,6 @@ class SlackIndividualConnector(BaseConnector):
                 await self.rate_limiter.acquire(Tier.T2)
                 ds = await self._fresh_datasource()
                 resp = await ds.conversations_list(
-                    exclude_archived=True,
                     types=types_param,
                     limit=PAGE_SIZE_CHANNELS,
                     cursor=api_cursor,

@@ -236,6 +236,31 @@ class TestArchivedAndDirectConversations:
         assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
         assert all(p.entity_type == EntityType.USER for p in store.group_access[SECRET])
 
+    async def test_an_archived_private_channel_whose_members_cannot_be_read_keeps_its_stored_grants(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        workspace.channels[SECRET]["is_archived"] = True
+
+        workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
+                       when=lambda p: p.get("channel") == SECRET)
+        await connector.run_sync()
+
+        assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
+
+    async def test_a_live_private_channel_whose_members_cannot_be_read_still_grants_nobody(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+
+        workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
+                       when=lambda p: p.get("channel") == SECRET)
+        await connector.run_sync()
+
+        assert store.access_emails(SECRET) == set()
+
     async def test_an_archived_channel_the_bot_is_not_in_is_not_joined(self, workspace, store, checkpoints) -> None:
         workspace.channels[GENERAL].update(is_archived=True, is_member=False)
         connector, _ = await workspace_connector(store, checkpoints)
@@ -243,7 +268,7 @@ class TestArchivedAndDirectConversations:
         await connector.run_sync()
 
         assert not workspace.calls_to("conversations.join")
-        assert connector._unreadable_channels == ["general"]
+        assert connector._unreadable_archived_channels == ["general"]
         assert GENERAL in store.record_groups
 
     async def test_the_workspace_connector_reads_only_public_and_private_channels(self, workspace, store, checkpoints) -> None:

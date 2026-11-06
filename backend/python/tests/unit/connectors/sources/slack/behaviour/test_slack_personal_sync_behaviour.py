@@ -155,6 +155,22 @@ class TestPublicChannelsThePersonHasNotJoined:
         assert "G0OTHER" not in store.record_groups
 
 
+class TestArchivedChannels:
+    async def test_an_archived_channel_is_synced_and_stays_the_persons_alone(self, workspace, store, checkpoints) -> None:
+        kept = ts_minutes_ago(30)
+        workspace.post(SECRET, kept, BOB, "before archiving")
+        workspace.channels[SECRET]["is_archived"] = True
+        connector, _ = await personal_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert not any(c.params.get("exclude_archived") for c in workspace.calls_to("conversations.list"))
+        assert block_ts(store, SECRET) == [kept]
+        assert store.group_access[SECRET] == []
+        assert store.record_groups[SECRET].inherit_permissions is True
+        assert SECRET in {o.id for o in (await connector.get_filter_options("channel_ids", limit=100)).options}
+
+
 class TestAccountAndTokens:
     async def test_the_sync_refuses_to_run_when_the_persons_email_is_unknown(self, workspace, store, checkpoints) -> None:
         del workspace.users[0]["profile"]["email"]

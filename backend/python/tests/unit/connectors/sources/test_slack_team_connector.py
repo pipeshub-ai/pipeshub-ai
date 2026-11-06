@@ -3573,6 +3573,7 @@ class TestPopulateChannelFilterCache:
         n = {"p": 0}
 
         async def clist(**kwargs):
+            assert "exclude_archived" not in kwargs  # archived channels can be chosen in a filter
             n["p"] += 1
             if n["p"] == 1:
                 return MagicMock(

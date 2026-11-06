@@ -496,7 +496,8 @@ class FakeSlackStore:
             if existing:
                 group.id = existing.id
             self.record_groups[group.external_group_id] = group
-            self.group_access[group.external_group_id] = list(permissions)
+            if permissions is not None:  # None: the grants are unknown and the stored ones stay
+                self.group_access[group.external_group_id] = list(permissions)
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         return self.record_groups.get(external_id)
