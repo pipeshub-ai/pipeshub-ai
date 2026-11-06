@@ -185,3 +185,11 @@ async def test_create_kb_permissions_does_not_swallow_a_schema_rejection() -> No
     h.p._q = AsyncMock(return_value=[{"coll": "apps", "id": "kb1"}, {"coll": "users", "id": "u1"}])
     with pytest.raises(SchemaValidationError):
         await h.call("create_kb_permissions", "kb1", "requester", ["u1"], [], "NOT_A_ROLE")
+
+
+async def test_clone_agent_template_does_not_swallow_a_schema_rejection() -> None:
+    # It answers every other error with None ("no such template"); a rejected clone must reach the caller as the rejection it is.
+    h = Harness()
+    h.p.get_document = AsyncMock(return_value={"id": "t1", "name": 5})
+    with pytest.raises(SchemaValidationError):
+        await h.call("clone_agent_template", "t1")
