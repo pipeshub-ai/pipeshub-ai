@@ -54,7 +54,7 @@ _DEFAULT_DELETE_ROLES = ("OWNER", "WRITER")
 
 
 _CHUNK = 5000      # records removed per statement, inside the one transaction
-_CONNECTOR_NODE_COLLS = ("syncPoints", "stageStates", "agentKnowledge")      # nodes that name their connector and hang off no edge the cascade follows
+_CONNECTOR_NODE_COLLS = ("syncPoints", "stageStates", "agentKnowledge", "blocks")      # nodes that name their connector and hang off no edge the cascade follows (blocks: the ones no record owns any more)
 
 
 async def _remove_nodes(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
@@ -66,6 +66,23 @@ async def _remove_nodes(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
     await _sweep_edges(tx, org, _EDGE_COLLS, [f"{coll}/{k}" for k in keys])
     return await tx.fetchval("/* pipeshub:graph.connector_delete_nodes */ WITH d AS (DELETE FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) RETURNING 1) SELECT count(*) FROM d",
                              org, coll, keys)
+
+
+async def _lock_labels(tx: Tx, org: str, coll: str, keys: list[str]) -> None:
+    await tx.execute("/* pipeshub:graph.connector_delete_lock_labels */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) ORDER BY id FOR UPDATE", org, coll, keys)
+
+
+async def _remove_unlinked_labels(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
+    """Removes the taxonomy nodes of ``keys`` that no record links and no merge points at or from. The link check is made in the statement that deletes, after the rows
+    are locked, so a record linked to a label in the meantime keeps it (the writer of such a link does not lock the label: the check is as late as it can be)."""
+    await _lock_labels(tx, org, coll, keys)
+    gone = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.connector_delete_unlinked_taxonomy */ DELETE FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = $2
+        AND t.id = ANY($3::text[]) AND t.doc->>'mergedInto' IS NULL
+          AND NOT EXISTS (SELECT 1 FROM graph.nodes o WHERE o.org_id = t.org_id AND o.coll = t.coll AND o.doc->>'mergedInto' = t.id)
+          AND NOT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = t.org_id AND e.coll = $4 AND e.to_coll = t.coll AND e.to_id = t.id AND e.from_coll = 'records')
+        RETURNING t.id""", org, coll, keys, TAXONOMY_EDGE_COLLECTIONS[coll])]
+    await _sweep_edges(tx, org, _EDGE_COLLS, [f"{coll}/{k}" for k in gone])
+    return len(gone)
 
 
 async def _delete_connector(tx: Tx, org: str, connector_id: str) -> dict[str, Any]:
@@ -92,8 +109,14 @@ async def _delete_connector(tx: Tx, org: str, connector_id: str) -> dict[str, An
                                org, ids["records"]) if ids["records"] else 0
     removed_records = 0
     for pass_ in range(3):      # a record written while this ran is taken in the same unit, then the unit is checked
-        keys = ids["records"] if pass_ == 0 else [r["id"] for r in await tx.fetch(
-            "/* pipeshub:graph.connector_delete_late */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND doc->>'connectorId' = $2", org, connector_id)]
+        if pass_ == 0:
+            keys = ids["records"]
+        else:
+            late = await tx.fetch("/* pipeshub:graph.connector_delete_late */ SELECT id, doc->>'virtualRecordId' AS vrid FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND doc->>'connectorId' = $2",
+                                  org, connector_id)
+            keys = [r["id"] for r in late]
+            if needs_vrids:      # a late record's vector must be named for the cleanup like the others
+                vrids.extend(sorted({r["vrid"] for r in late if r["vrid"]} - set(vrids)))
         if not keys:
             break
         for i in range(0, len(keys), _CHUNK):
@@ -106,21 +129,17 @@ async def _delete_connector(tx: Tx, org: str, connector_id: str) -> dict[str, An
     for coll in _CONNECTOR_NODE_COLLS:
         keys = [r["id"] for r in await tx.fetch("/* pipeshub:graph.connector_delete_named */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND doc->>'connectorId' = $3",
                                                 org, coll, connector_id)]
-        await _remove_nodes(tx, org, coll, keys)
+        removed = await _remove_nodes(tx, org, coll, keys)
+        blocks += removed if coll == "blocks" else 0
     await tx.execute("/* pipeshub:graph.connector_delete_links */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs' AND doc->>'connectorId' = $2", org, connector_id)
     await _remove_nodes(tx, org, "apps", [connector_id])
     left = await tx.fetchval("""/* pipeshub:graph.connector_delete_left */ SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND doc->>'connectorId' = $2
-        AND coll IN ('records', 'recordGroups', 'roles', 'groups', 'syncPoints', 'stageStates', 'agentKnowledge')""", org, connector_id)
+        AND coll IN ('records', 'recordGroups', 'roles', 'groups', 'syncPoints', 'stageStates', 'agentKnowledge', 'blocks')""", org, connector_id)
     if left:
         raise RuntimeError(f"{left} node(s) of the connector remain")
     labels = 0
     for coll, found in taxonomy.items():      # the nodes only this connector's records linked; a merge loser, and the node a loser points at, are left for the redirect
-        edge = TAXONOMY_EDGE_COLLECTIONS[coll]
-        gone = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.connector_delete_unlinked_taxonomy */ SELECT t.id FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = $2
-            AND t.id = ANY($3::text[]) AND t.doc->>'mergedInto' IS NULL
-              AND NOT EXISTS (SELECT 1 FROM graph.nodes o WHERE o.org_id = t.org_id AND o.coll = t.coll AND o.doc->>'mergedInto' = t.id)
-              AND NOT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = t.org_id AND e.coll = $4 AND e.to_coll = t.coll AND e.to_id = t.id AND e.from_coll = 'records')""", org, coll, found, edge)]
-        labels += await _remove_nodes(tx, org, coll, gone)
+        labels += await _remove_unlinked_labels(tx, org, coll, found)
     return {"success": True, "deleted_records_count": removed_records, "deleted_record_groups_count": counts["recordGroups"], "deleted_roles_count": counts["roles"],
             "deleted_groups_count": counts["groups"], "deleted_blocks_count": blocks, "deleted_isoftype_targets_count": typed, "cascade_retries": 0,
             "deleted_orphan_type_docs_count": 0, "deleted_orphan_taxonomy_count": labels, "virtual_record_ids": vrids, "record_group_ids": ids["recordGroups"],

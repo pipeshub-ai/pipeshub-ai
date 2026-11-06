@@ -847,8 +847,7 @@ class LookupsMixin(PgBase):
 
     async def get_connector_instances_with_filters(self, collection: str, scope: str | None = None, user_id: str | None = None, *, is_admin: bool = False,
                                                    search: str | None = None, page: int = 1, limit: int = 20, transaction: str | None = None) -> tuple[list[dict], int]:
-        """One page of the instances the user may see, newest first, and the total. An admin sees the team's and their own; anyone else only their own (no user
-        sees nothing). ``search`` is a literal, case-insensitive "contains" on name, type and group (the Neo4j provider reads it as a regular expression)."""
+        """One page of the instances the user may see, newest first, and the total. An admin sees the team's and their own; anyone else only their own (with no user: an admin sees the team's, anyone else nothing). ``search`` is a literal, case-insensitive "contains" on name, type and group (the Neo4j provider reads it as a regular expression)."""
         org = current_org_id()
         pattern = None if not search else "%" + search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         try:

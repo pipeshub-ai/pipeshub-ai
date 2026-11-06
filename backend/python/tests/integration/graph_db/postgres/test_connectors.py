@@ -179,6 +179,60 @@ async def test_a_record_written_while_the_delete_ran_is_taken_with_it(w: World, 
     assert ("records", "c1-late") not in (await snapshot(w))[0]
 
 
+async def test_a_record_written_during_the_delete_of_an_app_without_membership_cleanup_names_its_vector(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await connector(w, "c1")
+    await w.p.update_node("c1", "apps", {"vectorMembershipBackfilled": False})
+    real = delete_module._remove_records
+    calls = 0
+
+    async def late(tx: Tx, org: str, ids: list[str]) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await tx.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'records', 'c1-late', jsonb_build_object('id', 'c1-late', 'connectorId', 'c1', 'virtualRecordId', 'vlate'))", org)
+        return await real(tx, org, ids)
+    monkeypatch.setattr(delete_module, "_remove_records", late)
+    got = await w.p.delete_connector_instance("c1", w.org)
+    assert got["success"] is True and sorted(got["virtual_record_ids"]) == ["v1", "v2", "vlate"]
+
+
+async def test_a_label_linked_while_the_delete_ran_is_kept_with_its_link(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await connector(w, "c1")
+    await w.nodes("records", {"_key": "x1", "connectorId": "c2"})
+    real = delete_module._lock_labels
+
+    async def link_after_lock(tx: Tx, org: str, coll: str, keys: list[str]) -> None:
+        await real(tx, org, coll, keys)
+        # what a writer that committed after the labels were read would have left (the next statement sees a committed row as it sees this one)
+        await tx.execute("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) VALUES ($1, 'belongsToTopic', 'records', 'x1', 'topics', 'c1-t', '', '{}'::jsonb)", org)
+    monkeypatch.setattr(delete_module, "_lock_labels", link_after_lock)
+    got = await w.p.delete_connector_instance("c1", w.org)
+    nodes, edges = await snapshot(w)
+    assert got["success"] is True and ("topics", "c1-t") in nodes and ("belongsToTopic", "records", "x1", "topics", "c1-t", "") in edges and got["deleted_orphan_taxonomy_count"] == 0
+
+
+async def test_blocks_that_name_the_connector_go_even_when_no_record_owns_them(w: World) -> None:
+    await connector(w, "c1")
+    await connector(w, "c2", vrid="x")
+    await w.nodes("blocks", {"_key": "orphan", "recordId": "gone-record", "connectorId": "c1"}, {"_key": "orphan2", "recordId": "gone-record", "connectorId": "c2"})
+    got = await w.p.delete_connector_instance("c1", w.org)
+    nodes = (await snapshot(w))[0]
+    assert ("blocks", "orphan") not in nodes and ("blocks", "orphan2") in nodes and got["deleted_blocks_count"] == 2          # the block of a record, and the orphan
+
+
+async def test_a_delete_that_leaves_a_block_of_the_connector_is_refused(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await connector(w, "c1")
+    await w.nodes("blocks", {"_key": "orphan", "recordId": "gone-record", "connectorId": "c1"})
+    before = await snapshot(w)
+    real = delete_module._remove_nodes
+
+    async def keep_blocks(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
+        return 0 if coll == "blocks" else await real(tx, org, coll, keys)
+    monkeypatch.setattr(delete_module, "_remove_nodes", keep_blocks)
+    got = await w.p.delete_connector_instance("c1", w.org)
+    assert got["success"] is False and "remain" in got["error"] and await snapshot(w) == before
+
+
 async def test_the_instances_list_is_scoped_filtered_literal_and_newest_first(w: World) -> None:
     await w.nodes("apps", {"_key": "a", "name": "Alpha_One", "type": "DRIVE", "appGroup": "Google", "scope": "team", "createdBy": "boss", "createdAtTimestamp": 1},
                   {"_key": "b", "name": "Beta", "type": "SLACK", "appGroup": "Chat", "scope": "personal", "createdBy": "boss", "createdAtTimestamp": 3},
@@ -191,6 +245,7 @@ async def test_the_instances_list_is_scoped_filtered_literal_and_newest_first(w:
     assert await ids(user_id="boss", is_admin=True) == (["b", "a", "d"], 3)
     assert (await ids(user_id="boss"))[0] == ["b", "a"] and (await ids(user_id="ann"))[0] == ["c", "d"]       # not an admin: only their own
     assert (await ids(user_id="ann", is_admin=True))[0] == ["c", "a", "d"]                                    # an admin: the team's and their own
+    assert await ids(user_id=None, is_admin=True) == (["a", "d"], 2)                                         # an admin with no user: the team's
     assert await ids(user_id=None) == ([], 0) and await ids(user_id="nobody") == ([], 0)
     assert (await ids(user_id="ann", scope="personal"))[0] == ["c"]
     assert (await ids(user_id="boss", search="ALPHA"))[0] == ["a"] and (await ids(user_id="boss", search="slack"))[0] == ["b"] and (await ids(user_id="boss", search="chat"))[0] == ["b"]
@@ -226,8 +281,14 @@ async def test_the_stats_count_the_live_records_of_the_connector_once(w: World) 
     await w.nodes("stageStates", {"_key": "v:1:entities", "status": "COMPLETED"})
     for r, g in (("ok", "top"), ("twice", "top"), ("twice", "mid"), ("deep", "low"), ("in", "top"), ("ph", "top"), ("del", "top"), ("folder", "top"), ("stray", "cut")):
         await w.edge("belongsTo", ("records", r), ("recordGroups", g))
+    for i in range(1, 13):      # a chain of groups up to the app: the first ten hops count, the ones past them do not
+        await w.nodes("recordGroups", {"_key": f"d{i}"})
+        await w.edge("belongsTo", ("recordGroups", f"d{i}"), ("apps", APP) if i == 1 else ("recordGroups", f"d{i - 1}"))
+    await w.nodes("records", {"_key": "at10", **base}, {"_key": "at11", **base})
+    await w.edge("belongsTo", ("records", "at10"), ("recordGroups", "d10"))
+    await w.edge("belongsTo", ("records", "at11"), ("recordGroups", "d11"))
     got = await w.p.get_connector_stats(w.org, APP)
-    assert got["success"] is True and got["data"]["origin"] == "CONNECTOR" and got["data"]["stats"]["total"] == 3          # ok, twice, deep
+    assert got["success"] is True and got["data"]["origin"] == "CONNECTOR" and got["data"]["stats"]["total"] == 4          # ok, twice, deep, the one ten hops up
     assert got["data"]["stats"]["entitiesStatus"]["COMPLETED"] == 1                                    # only ok has a stage state on its revision
     assert (await w.p.get_connector_stats(_org(), APP))["data"]["stats"]["total"] == 0                           # another org's id sees nothing
     await w.nodes("apps", {"_key": "kb", "type": Connectors.KNOWLEDGE_BASE.value})
