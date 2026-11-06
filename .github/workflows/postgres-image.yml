@@ -75,3 +75,6 @@ jobs:
 
       - name: A failed role setup leaves the server and pooler unhealthy
         run: bash deployment/docker-compose/tests/postgres_role_failure_test.sh
+
+      - name: A failed role setup is retried and recovers once the cause clears
+        run: bash deployment/docker-compose/tests/postgres_role_recovery_test.sh
