@@ -1,19 +1,35 @@
+"""The process's one logging pipeline (contract: docs/logging.md).
+
+Every logger writes through one handler on the root logger, to stdout, with one
+formatter: text (fields as `` | k=v``) or JSON (``LOG_FORMAT=json``), both
+redacted. ``LOG_LEVEL`` and ``LOG_LEVELS`` set the levels.
+"""
+
 import asyncio
+import functools
+import json
 import logging
 import os
+import re
 import sys
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from httpx import URL
 
-from app.utils.log_redaction import redact_secrets_in_text, refresh_env_secrets
+from app.utils.log_redaction import (
+    REDACTED,
+    redact_secrets_in_text,
+    refresh_env_secrets,
+)
 from app.utils.request_context import NO_CONTEXT, current_display_id, get_context
+from app.utils.sensitive_names import is_credential_name
 from app.utils.structured_logging import StructuredLoggingProvider, get_provider
 from app.utils.url_redaction import redact_sensitive_query_params, redact_url
 
 # ``%(trace)s`` expands to ``[req:<id> thr:<thread> task:<task>] `` only when a
 # context is in flight, so startup/background lines stay clean.
-LOG_FORMAT = (
+TEXT_FORMAT = (
     "%(asctime)s - %(name)s - %(levelname)s - "
     "%(trace)s[%(filename)s:%(lineno)d] - %(message)s"
 )
@@ -100,14 +116,9 @@ class _RedactingWrapper(logging.Formatter):
         return redact_secrets_in_text(self.inner.format(record))
 
 
-def install_log_redaction() -> None:
-    """Make every handler in the process redact its output.
-
-    ``create_logger`` handlers already do. This covers the root handler and
-    the ones uvicorn installs when it configures logging, which happens after
-    this module is imported, so each service calls it again at startup. It
-    also re-reads the secret env values, which may have been loaded since.
-    """
+def _redact_all_handlers() -> None:
+    """Make every handler in the process redact its output, re-reading the
+    secret env values first, which may have been loaded since import."""
     refresh_env_secrets()
     loggers = [logging.getLogger()]
     loggers += [lg for lg in logging.Logger.manager.loggerDict.values() if isinstance(lg, logging.Logger)]
@@ -117,8 +128,45 @@ def install_log_redaction() -> None:
                 handler.setFormatter(_RedactingWrapper(handler.formatter or logging.Formatter()))
 
 
-class ColoredFormatter(RedactingFormatter):
-    """Formatter that adds colors for WARNING (yellow) and ERROR (red) in console output."""
+# Attributes every record has, plus the ones the record factory and uvicorn
+# add; anything else on a record came from ``extra=`` and is a field.
+_RESERVED = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {
+    "message", "asctime", "request_id", "task", "trace", "color_message",
+}
+_UNREDACTED_TYPES = (int, float, bool, type(None))
+_is_credential_key = functools.lru_cache(maxsize=1024)(is_credential_name)
+
+
+def _record_fields(record: logging.LogRecord) -> dict[str, object]:
+    """The record's ``extra=`` fields in the order passed. Numbers, booleans and
+    None keep their type; anything else becomes a string, and a string under a
+    credential name (``token``, ``apiKey``) is masked."""
+    fields: dict[str, object] = {}
+    for key, value in record.__dict__.items():
+        if key in _RESERVED or key.startswith("_"):
+            continue
+        if isinstance(value, _UNREDACTED_TYPES):
+            fields[key] = value
+        else:
+            fields[key] = REDACTED if _is_credential_key(key) else str(value)
+    return fields
+
+
+# Shared with Node (docs/logging.md, "Field values in text"): bare when it
+# matches, else a JSON string.
+_BARE_VALUE = re.compile(r"[A-Za-z0-9._:@/-]+")
+
+
+def _text_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = str(value)
+    return text if _BARE_VALUE.fullmatch(text) else json.dumps(text, ensure_ascii=False)
+
+
+class TextFormatter(RedactingFormatter):
+    """The text line, with the record's fields after `` | `` and, when
+    ``color`` is set, WARNING in yellow and ERROR in red."""
 
     YELLOW = "\033[33m"
     RED = "\033[31m"
@@ -130,12 +178,56 @@ class ColoredFormatter(RedactingFormatter):
         logging.CRITICAL: RED,
     }
 
-    def format(self, record) -> str:
+    def __init__(self, fmt: str = TEXT_FORMAT, *, color: bool = False) -> None:
+        super().__init__(fmt)
+        self.color = color
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        # Here rather than in format(): the fields then come before the traceback.
+        line = super().formatMessage(record)
+        pairs = [f"{k}={_text_value(v)}" for k, v in _record_fields(record).items() if v is not None]
+        return f"{line} | {' '.join(pairs)}" if pairs else line
+
+    def format(self, record: logging.LogRecord) -> str:
         formatted = super().format(record)
-        color = self.COLORS.get(record.levelno)
-        if color:
-            return f"{color}{formatted}{self.RESET}"
-        return formatted
+        color = self.COLORS.get(record.levelno) if self.color else None
+        return f"{color}{formatted}{self.RESET}" if color else formatted
+
+
+class JsonFormatter(logging.Formatter):
+    """One JSON object per line. Every string is redacted before it is
+    serialised, so an escaped newline cannot hide a private key."""
+
+    _pipeshub_redacting = True
+
+    def format(self, record: logging.LogRecord) -> str:
+        out: dict[str, object] = {
+            "timestamp": datetime.fromtimestamp(record.created, timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
+            "level": record.levelname.lower(),  # the same names as Node's JSON (docs/logging.md)
+            "logger": record.name,
+            "filename": record.filename,
+            "line": record.lineno,
+            "message": redact_secrets_in_text(record.getMessage()),
+            "request_id": getattr(record, "request_id", "") or None,
+        }
+        for key, value in _record_fields(record).items():
+            out.setdefault(key, redact_secrets_in_text(value) if isinstance(value, str) else value)
+        stack = self._stack(record)
+        if stack:
+            out["stack"] = redact_secrets_in_text(stack)
+        else:
+            out.pop("stack", None)
+        return json.dumps(out, ensure_ascii=False, default=str)
+
+    def _stack(self, record: logging.LogRecord) -> str:
+        if record.exc_info and not record.exc_text:
+            record.exc_text = self.formatException(record.exc_info)
+        parts = [record.exc_text] if record.exc_text else []
+        if record.stack_info:
+            parts.append(self.formatStack(record.stack_info))
+        return "\n".join(parts)
 
 
 class HttpxSuccessFilter(logging.Filter):
@@ -224,24 +316,137 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-# Configure base logging settings
-logging.basicConfig(
-    level=logging.INFO,
-    format=LOG_FORMAT,
-    encoding="utf-8",
-)
+_ENV_KEYS = ("LOG_LEVEL", "LOG_LEVELS", "LOG_FORMAT", "DATA_STORE")
+# The env values last applied ("env"), so an unchanged env costs one tuple compare.
+_synced: dict[str, tuple[str, ...]] = {}
+# create_logger names outside the ``app`` tree, which LOG_LEVEL also reaches.
+_SERVICE_LOGGERS: set[str] = set()
 
-install_log_redaction()
 
-# Suppress Neo4j notification warnings (missing labels, etc.)
-data_store = os.getenv("DATA_STORE", "arangodb").lower()
-if data_store == "neo4j":
-    neo4j_notifications_logger = logging.getLogger("neo4j.notifications")
-    neo4j_notifications_logger.setLevel(logging.ERROR)  # Only show errors, suppress warnings
+def _level_named(name: str) -> int | None:
+    return logging.getLevelNamesMapping().get(name.strip().upper())
 
-# Suppress opensearch-py transport INFO logs (logs every HTTP request at INFO level).
-# Errors and warnings are still visible.
-logging.getLogger("opensearch").setLevel(logging.WARNING)
+
+@functools.lru_cache(maxsize=16)
+def _parse_levels(log_level: str, log_levels: str) -> tuple[int, dict[str, int]]:
+    """``LOG_LEVEL`` and the ``LOG_LEVELS`` overrides. A bad value is warned
+    about (once, through the cache) and ignored rather than stopping a service."""
+    level = _level_named(log_level or "INFO")
+    if level is None or level == logging.NOTSET:
+        # NOTSET on ``app`` would mean "whatever root says", not "everything".
+        logging.getLogger(__name__).warning("LOG_LEVEL %r is not a level name; using INFO", log_level)
+        level = logging.INFO
+    overrides: dict[str, int] = {}
+    for raw in log_levels.split(","):
+        entry = raw.strip()
+        if not entry:
+            continue
+        name, sep, value = entry.partition("=")
+        override = _level_named(value)
+        if not sep or not name.strip() or override is None:
+            logging.getLogger(__name__).warning("LOG_LEVELS entry %r is not name=LEVEL; skipped", entry)
+            continue
+        overrides[name.strip()] = override
+    return level, overrides
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_format(value: str) -> str:
+    fmt = value.strip().lower() or "text"
+    if fmt not in ("text", "json"):
+        logging.getLogger(__name__).warning("LOG_FORMAT %r is not text or json; using text", value)
+        return "text"
+    return fmt
+
+
+def _set_level(logger: logging.Logger, level: int) -> None:
+    # setLevel clears every logger's level cache, so skip it when nothing changes.
+    if logger.level != level:
+        logger.setLevel(level)
+
+
+def _service_level(level: int) -> int:
+    # Below INFO only: at INFO and above the app loggers inherit root, which is
+    # also what keeps pytest's caplog.set_level working for them.
+    return level if level < logging.INFO else logging.NOTSET
+
+
+def _apply_levels(level: int, overrides: dict[str, int], data_store: str) -> None:
+    """Root never goes below INFO: some libraries log whole requests, prompts
+    and bodies at DEBUG. ``LOG_LEVELS`` can still name any logger, root too."""
+    _set_level(logging.getLogger(), max(level, logging.INFO))
+    for name in ("app", *_SERVICE_LOGGERS):
+        _set_level(logging.getLogger(name), _service_level(level))
+    # opensearch-py logs every request at INFO; neo4j warns about missing labels.
+    defaults = {"opensearch": logging.WARNING}
+    if (data_store or "arangodb").lower() == "neo4j":
+        defaults["neo4j.notifications"] = logging.ERROR
+    for name, override in {**defaults, **overrides}.items():
+        _set_level(logging.getLogger(name), override)
+
+
+def _sync_from_env(*, force: bool = False) -> None:
+    """Apply the logging env when it has changed since the last call (a ``.env``
+    is loaded after this module is imported). ``force`` re-applies the
+    ``LOG_LEVELS`` entries, which uvicorn's logging config resets."""
+    env = tuple(os.getenv(key, "") for key in _ENV_KEYS)
+    level, overrides = _parse_levels(env[0], env[1])
+    previous = _synced.get("env")
+    if env != previous:
+        format_changed = previous is not None and previous[2] != env[2]
+        _synced["env"] = env
+        _apply_levels(level, overrides, env[3])
+        if format_changed:
+            _reset_console_formatter()
+    elif force:
+        for name, override in overrides.items():
+            _set_level(logging.getLogger(name), override)
+
+
+def _isatty(stream: object) -> bool:
+    try:
+        return bool(stream.isatty())  # type: ignore[attr-defined]
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def _formatter(*, color: bool) -> logging.Formatter:
+    if _parse_format(os.getenv("LOG_FORMAT", "")) == "json":
+        return JsonFormatter()
+    return TextFormatter(color=color)
+
+
+def _console_handlers() -> list[logging.Handler]:
+    return [h for h in logging.getLogger().handlers if getattr(h, "_pipeshub_console", False)]
+
+
+def _install_console_handler() -> None:
+    """Put the one stdout handler on root. A reload replaces it. A root that
+    already has other handlers (pytest's, or a script's own ``basicConfig``)
+    is left alone, as ``basicConfig`` would."""
+    root = logging.getLogger()
+    ours = _console_handlers()
+    if not ours and root.handlers:
+        return
+    for handler in ours:
+        root.removeHandler(handler)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(_formatter(color=_isatty(sys.stdout)))
+    handler._pipeshub_console = True  # type: ignore[attr-defined]
+    root.addHandler(handler)
+
+
+def _reset_console_formatter() -> None:
+    """After a LOG_FORMAT change: the new default, offered to the provider again
+    by the next routing."""
+    for handler in _console_handlers():
+        handler.setFormatter(_formatter(color=_isatty(getattr(handler, "stream", None))))
+        handler._pipeshub_provider_routed = False  # type: ignore[attr-defined]
+
+
+_install_console_handler()
+_sync_from_env()
+_redact_all_handlers()
 
 # Suppress /health* endpoint noise from uvicorn access logs (process_monitor polling)
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
@@ -276,40 +481,48 @@ def _route_root_handlers(provider: StructuredLoggingProvider) -> None:
         handler._pipeshub_provider_routed = True  # type: ignore[attr-defined]
 
 
+def _route_uvicorn_handlers(provider: StructuredLoggingProvider) -> None:
+    """Under LOG_FORMAT=json, uvicorn's own handlers write JSON too, so stdout
+    holds nothing else. Their streams, filters and levels are kept."""
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        for handler in logging.getLogger(name).handlers:
+            if getattr(handler, "_pipeshub_provider_routed", False):
+                continue
+            handler.setFormatter(_provider_formatter(provider, JsonFormatter()))
+            handler._pipeshub_provider_routed = True  # type: ignore[attr-defined]
+
+
+def install_log_redaction() -> None:
+    """Post-server-start logging sync, called from each service's lifespan.
+
+    uvicorn configures logging after this module is imported: it resets its
+    loggers' levels and installs its own handlers. This re-applies the
+    ``LOG_LEVELS`` entries, gives uvicorn's handlers the JSON formatter under
+    ``LOG_FORMAT=json``, and makes every handler redact, with the secret env
+    values re-read.
+    """
+    _sync_from_env(force=True)
+    if _parse_format(os.getenv("LOG_FORMAT", "")) == "json":
+        _route_uvicorn_handlers(get_provider())
+    _redact_all_handlers()
+
+
 def create_logger(service_name: str) -> logging.Logger:
-    """
-    Create a logger for a specific service with file and console handlers
-    """
-    # Create logger
-    logging_level = os.getenv("LOG_LEVEL", "info").lower()
+    """The logger named ``service_name``. Its lines go to the one console
+    handler on root, and to ``logs/<service_name>.log`` when the logging
+    provider keeps files."""
     logger = logging.getLogger(service_name)
-    if logging_level == "debug":
-        logger.setLevel(logging.DEBUG)
-    else:
-        logger.setLevel(logging.INFO)
+    _sync_from_env()
+    if service_name not in _SERVICE_LOGGERS and service_name != "app" and not service_name.startswith("app."):
+        _SERVICE_LOGGERS.add(service_name)
+        level, overrides = _parse_levels(*_synced["env"][:2])
+        _set_level(logger, overrides.get(service_name, _service_level(level)))
 
-    # Prevent DUPLICATE handlers
-    if not logger.handlers:
-        # Enhanced format: request id + thread/task + filename and line number
-        log_format = LOG_FORMAT
-
-        provider = get_provider()
-        _route_root_handlers(provider)
-
-        if provider.file_logging_enabled():
-            os.makedirs(log_dir, exist_ok=True)
-            file_handler = logging.FileHandler(
-                os.path.join(log_dir, f"{service_name}.log"),
-                encoding="utf-8",  # Explicitly set encoding here too
-            )
-            file_handler.setFormatter(RedactingFormatter(log_format))
-            logger.addHandler(file_handler)
-
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(
-            _provider_formatter(provider, ColoredFormatter(log_format))
-        )
-        logger.addHandler(console_handler)
-        logger.propagate = False
-
+    provider = get_provider()
+    _route_root_handlers(provider)
+    if not logger.handlers and provider.file_logging_enabled():
+        os.makedirs(log_dir, exist_ok=True)
+        file_handler = logging.FileHandler(os.path.join(log_dir, f"{service_name}.log"), encoding="utf-8")
+        file_handler.setFormatter(_formatter(color=False))
+        logger.addHandler(file_handler)
     return logger

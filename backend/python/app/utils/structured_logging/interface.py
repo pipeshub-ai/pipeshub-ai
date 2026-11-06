@@ -14,9 +14,12 @@ from abc import ABC, abstractmethod
 class StructuredLoggingProvider(ABC):
     @abstractmethod
     def console_formatter(self, default: logging.Formatter) -> logging.Formatter:
-        """Formatter for the stdout handler. ``default`` is the text formatter
-        the logger would use on its own. May raise on a misconfigured
-        deployment; callers must not swallow that."""
+        """Formatter for the console handler every logger writes through
+        (stdout), and for uvicorn's handlers under ``LOG_FORMAT=json``.
+        ``default`` is the formatter the logger would use on its own: text, or
+        JSON under ``LOG_FORMAT=json``. A formatter that does not redact is
+        wrapped so that it does. May raise on a misconfigured deployment;
+        callers must not swallow that."""
 
     @abstractmethod
     def file_logging_enabled(self) -> bool:
@@ -25,8 +28,8 @@ class StructuredLoggingProvider(ABC):
     @abstractmethod
     def hash_org_id(self, org_id: str) -> str | None:
         """Non-reversible stand-in for ``org_id``, set on the record as
-        ``organization_id_hash``; ``None`` leaves the org off the record.
-        Never return ``org_id`` itself."""
+        ``organization_id_hash`` (so it is a field of the line); ``None``
+        leaves the org off the record. Never return ``org_id`` itself."""
 
 
 class DefaultLoggingProvider(StructuredLoggingProvider):

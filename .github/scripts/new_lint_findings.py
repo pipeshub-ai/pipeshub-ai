@@ -16,6 +16,7 @@ sorts it in a cleanup pull request.
 Usage, from the repository root:
     new_lint_findings.py ruff   <merge-base> <file>...   (files under backend/python)
     new_lint_findings.py eslint <merge-base> <file>...   (files under backend/nodejs/apps)
+    new_lint_findings.py log-emoji <merge-base> <file>... (files under backend/python; emoji in log calls)
 """
 import collections
 import json
@@ -23,7 +24,8 @@ import os
 import subprocess
 import sys
 
-CWD = {"ruff": "backend/python", "eslint": "backend/nodejs/apps"}
+CWD = {"ruff": "backend/python", "eslint": "backend/nodejs/apps", "log-emoji": "backend/python"}
+LOG_EMOJI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "log_emoji.py")
 
 
 def lint(tool: str, files: list[str]) -> list[tuple[str, str, int]]:
@@ -32,17 +34,19 @@ def lint(tool: str, files: list[str]) -> list[tuple[str, str, int]]:
     rel = [os.path.relpath(f, cwd) for f in files]
     if tool == "ruff":
         cmd = ["ruff", "check", "--output-format=json", "--exit-zero", *rel]
+    elif tool == "log-emoji":
+        cmd = [sys.executable, LOG_EMOJI, *rel]
     else:
         cmd = ["npx", "eslint", "--format", "json", *rel]
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
     # ESLint exits 1 when it finds errors and 2 when it cannot run at all.
-    if proc.returncode not in (0, 1) or (tool == "ruff" and proc.returncode):
+    if proc.returncode not in (0, 1) or (tool != "eslint" and proc.returncode):
         sys.stderr.write(proc.stderr)
         sys.exit(f"{tool} could not run (exit {proc.returncode})")
     root = os.getcwd()
     found = []
     for item in json.loads(proc.stdout or "[]"):
-        if tool == "ruff":
+        if tool != "eslint":   # ruff and log-emoji print the same shape
             loc = item.get("location") or {}
             found.append((os.path.relpath(item["filename"], root), item["code"] or "syntax", loc.get("row", 0)))
         else:
