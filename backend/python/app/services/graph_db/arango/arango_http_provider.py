@@ -12150,9 +12150,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def sweep_deleted_connector_writes(self, connector_id: str) -> tuple[int, int]:
         # A pass that cannot remove an edge fails, and the next one finds its block again.
-        removed = await self.delete_blocks_by_connector_id(connector_id, raise_edge_errors=True)
-        states, _ = await self._delete_stage_states_by_connector_id(None, connector_id)
-        return removed + states, await self._count_connector_blocks_and_stage_states(connector_id)
+        # Either removal failing does not stop the other: a block that keeps conflicting
+        # must not hold back the connector's stage states, nor the reverse.
+        removed = 0
+        first_error: Exception | None = None
+        try:
+            removed += await self.delete_blocks_by_connector_id(connector_id, raise_edge_errors=True)
+        except Exception as e:
+            first_error = e
+        try:
+            removed += (await self._delete_stage_states_by_connector_id(None, connector_id))[0]
+        except Exception as e:
+            first_error = first_error or e
+        if first_error is not None:
+            raise first_error
+        return removed, await self._count_connector_blocks_and_stage_states(connector_id)
 
     async def _sweep_writes_during_delete(self, connector_id: str) -> int | None:
         """Remove the blocks and stage states in-flight indexing wrote for a connector after its

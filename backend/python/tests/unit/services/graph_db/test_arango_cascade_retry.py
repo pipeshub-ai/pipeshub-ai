@@ -210,6 +210,29 @@ async def test_a_late_write_pass_raises_what_the_store_raises(p) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_block_that_conflicts_does_not_hold_back_the_stage_states(p) -> None:
+    """Both removals run in every pass; the pass still fails, so the next one retries the blocks."""
+    p.delete_blocks_by_connector_id = AsyncMock(side_effect=CONFLICT)
+    p._delete_stage_states_by_connector_id = AsyncMock(return_value=(2, True))
+    p._count_connector_blocks_and_stage_states = AsyncMock(return_value=0)
+
+    with pytest.raises(Exception, match="1200"):
+        await p.sweep_deleted_connector_writes("c1")
+    p._delete_stage_states_by_connector_id.assert_awaited_once_with(None, "c1")
+    p._count_connector_blocks_and_stage_states.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_pass_raises_the_block_error_when_both_removals_fail(p) -> None:
+    p.delete_blocks_by_connector_id = AsyncMock(side_effect=RuntimeError("blocks"))
+    p._delete_stage_states_by_connector_id = AsyncMock(side_effect=CONFLICT)
+
+    with pytest.raises(RuntimeError, match="blocks"):
+        await p.sweep_deleted_connector_writes("c1")
+    p._delete_stage_states_by_connector_id.assert_awaited_once_with(None, "c1")
+
+
+@pytest.mark.asyncio
 async def test_a_late_write_pass_fails_on_an_edge_it_cannot_remove(p) -> None:
     """On its own, an edge REMOVE skips a conflicting edge while its block still goes; nothing
     counts edges, so the pass must fail and run again rather than leave the edge pointing at nothing."""

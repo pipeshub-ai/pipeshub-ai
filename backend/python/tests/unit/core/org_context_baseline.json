@@ -154,6 +154,7 @@
   "app/connectors/services/connector_intents.py": 1,
   "app/connectors/services/event_service.py": 6,
   "app/connectors/services/kafka_service.py": 1,
+  "app/connectors/services/late_write_sweep.py": 1,
   "app/connectors/services/storage_release.py": 1,
   "app/connectors/services/stored_content_heal.py": 5,
   "app/connectors/services/trash_purge.py": 1,
