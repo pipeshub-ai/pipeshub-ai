@@ -302,6 +302,37 @@ class TestLegacyNodes:
         assert binds["after_key"] == "K" and binds["@nodes"] == TOPICS
 
 
+class TestStrayEdges:
+    async def test_neo4j(self) -> None:
+        p = _neo4j([{"_key": "l", "name": "Bug", "mergedInto": "w", "records": 1}])
+        rows = await p.find_merged_taxonomy_nodes_with_edges(TOPICS, "org-1", 50, after_key="a")
+        query = p.client.execute_query.await_args.args[0]
+        params = p.client.execute_query.await_args.kwargs["parameters"]
+        assert "WHERE n.mergedInto IS NOT NULL AND n.orgId = $org_id" in query
+        assert "MATCH (r:Record)-[:BELONGS_TO_TOPIC]->(n)" in query and "WHERE r.orgId = $org_id" in query
+        assert params == {"org_id": "org-1", "limit": 50, "after_key": "a"}
+        assert rows == [{"_key": "l", "name": "Bug", "mergedInto": "w", "records": 1}]
+
+    async def test_arango(self) -> None:
+        p = _arango([])
+        await p.find_merged_taxonomy_nodes_with_edges(TOPICS, "org-1", 50)
+        query = p.http_client.execute_aql.await_args.args[0]
+        binds = p.http_client.execute_aql.await_args.kwargs["bind_vars"]
+        assert "FILTER n.mergedInto != null AND n.orgId == @org_id" in query
+        assert "FILTER rec != null AND rec.orgId == @org_id" in query
+        assert query.index("FILTER records > 0") < query.index("LIMIT @limit")
+        assert binds["@nodes"] == TOPICS and binds["@edges"] == "belongsToTopic"
+        # The first page binds "" so the (orgId, _key) index serves it.
+        assert "n._key > @after_key" in query and "@after_key == null" not in query
+        assert binds["after_key"] == ""
+
+    @pytest.mark.parametrize("make", [_neo4j, _arango], ids=["neo4j", "arango"])
+    async def test_guards(self, make) -> None:
+        with pytest.raises(ValueError):
+            await make().find_merged_taxonomy_nodes_with_edges("records", "org-1", 5)
+        assert await make().find_merged_taxonomy_nodes_with_edges(TOPICS, "", 5) == []
+
+
 class TestMergedNodesAreNotTargets:
     async def test_neo4j_tier0_lookup(self) -> None:
         p = _neo4j()
