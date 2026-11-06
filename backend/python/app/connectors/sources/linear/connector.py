@@ -1714,7 +1714,7 @@ class LinearConnector(BaseConnector):
             try:
                 pages = self._api.pages(
                     "issues", ["issues"], page_size=batch_size, after=after_cursor,
-                    fetch=lambda ds, first, after: ds.issues(first=first, after=after, filter=team_filter),
+                    fetch=lambda ds, first, after: ds.issues(first=first, after=after, filter=team_filter, includeArchived=True),
                 )
                 async for issues_list, end_cursor, _ in pages:
                     if issues_list:
@@ -1726,6 +1726,9 @@ class LinearConnector(BaseConnector):
                         # Linear's team filter also returns sub-team issues; each is synced in its own team's pass.
                         issue_team_id = (issue_data.get("team") or {}).get("id")
                         if issue_team_id and issue_team_id != team_id:
+                            continue
+                        # includeArchived also lists the trash; trashed issues leave through the deletion sync.
+                        if issue_data.get("trashed"):
                             continue
                         try:
                             batch_records.extend(await self._issue_to_records(
@@ -2494,10 +2497,10 @@ class LinearConnector(BaseConnector):
         for start in range(0, len(issue_ids), ISSUE_REFRESH_BATCH):
             batch = issue_ids[start:start + ISSUE_REFRESH_BATCH]
             data = await self._api.run(
-                "issues", lambda ds, ids=batch: ds.issues(first=len(ids), filter={"id": {"in": ids}}))
+                "issues", lambda ds, ids=batch: ds.issues(first=len(ids), filter={"id": {"in": ids}}, includeArchived=True))
             for issue_data in ((data.get("issues") or {}).get("nodes") or []):
                 team_id = (issue_data.get("team") or {}).get("id")
-                if not team_id or team_id not in scope:
+                if not team_id or team_id not in scope or issue_data.get("trashed"):
                     continue
                 known = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id, external_record_id=issue_data.get("id", ""))

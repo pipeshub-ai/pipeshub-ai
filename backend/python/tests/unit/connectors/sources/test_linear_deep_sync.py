@@ -782,6 +782,38 @@ class TestFetchIssuesForTeamBatch:
         assert len(batches) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("team_id", ["t1", "t-private"])
+    async def test_an_issue_archived_before_the_first_sync_is_indexed_in_its_team(self, team_id) -> None:
+        """Linear lists archived issues only with includeArchived; the team's group, not the issue, carries the ACL."""
+        archived = {**_make_issue_data("iss-a", "ENG-9"), "archivedAt": "2024-02-01T00:00:00.000Z",
+                    "trashed": False, "team": {"id": team_id}}
+        connector, ds = self._connector_with_issue_pages(GraphQLResponse(success=True, data={
+            "issues": {"nodes": [archived], "pageInfo": {"hasNextPage": False}}}, status_code=200))
+        connector._transform_issue_to_ticket_record = LinearConnector._transform_issue_to_ticket_record.__get__(connector)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+        batches = await self._batches_for(connector, team_id)
+
+        assert ds.issues.await_args.kwargs["includeArchived"] is True
+        (record, permissions), = batches[0][:1]
+        assert record.external_record_id == "iss-a"
+        assert record.external_record_group_id == team_id
+        assert permissions == []
+
+    @pytest.mark.asyncio
+    async def test_a_trashed_issue_in_the_listing_is_left_to_the_deletion_sync(self) -> None:
+        trashed = {**_make_issue_data("iss-t", "ENG-8"), "archivedAt": "2024-02-01T00:00:00.000Z", "trashed": True}
+        connector, _ = self._connector_with_issue_pages(GraphQLResponse(success=True, data={
+            "issues": {"nodes": [trashed], "pageInfo": {"hasNextPage": False}}}, status_code=200))
+
+        assert await self._batches(connector) == []
+        connector._transform_issue_to_ticket_record.assert_not_called()
+
+    async def _batches_for(self, connector: LinearConnector, team_id: str) -> list:
+        with patch("app.connectors.sources.linear.connector.asyncio.sleep", new=AsyncMock()):
+            return [b async for b in connector._fetch_issues_for_team_batch(team_id=team_id, team_key="ENG")]
+
+    @pytest.mark.asyncio
     async def test_single_page(self):
         connector = _make_connector()
         connector.sync_filters = None
@@ -808,7 +840,7 @@ class TestFetchIssuesForTeamBatch:
         # Fifty issues a page, this team only, in Linear's default order: the list
         # is not sorted by update time, so pages do not shift while it is read.
         ds.issues.assert_awaited_once_with(
-            first=50, after=None, filter={"team": {"id": {"eq": "t1"}}})
+            first=50, after=None, filter={"team": {"id": {"eq": "t1"}}}, includeArchived=True)
         assert "t1" not in connector.issues_sync_point.store
         assert "iss-1" in connector._refreshed_issue_ids
 
@@ -950,7 +982,7 @@ class TestFetchIssuesForTeamBatch:
 
         assert batches == []
         ds.issues.assert_awaited_once_with(
-            first=50, after="cur1", filter={"team": {"id": {"eq": "t1"}}})
+            first=50, after="cur1", filter={"team": {"id": {"eq": "t1"}}}, includeArchived=True)
 
     @pytest.mark.asyncio
     async def test_rejected_saved_cursor_restarts_the_listing(self) -> None:

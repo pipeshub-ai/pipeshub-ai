@@ -783,7 +783,7 @@ class TestCommentActivity:
         ]
         # One request for the issues this sync has not already read.
         datasource.issues.assert_awaited_once_with(
-            first=4, filter={"id": {"in": ["issue-elsewhere", "issue-known", "issue-new", "issue-stub"]}})
+            first=4, filter={"id": {"in": ["issue-elsewhere", "issue-known", "issue-new", "issue-stub"]}}, includeArchived=True)
         # An issue of a team outside the sync is not stored.
         assert [c.args[0]["id"] for c in connector._issue_to_records.await_args_list] == [
             "issue-known", "issue-new", "issue-stub"]
