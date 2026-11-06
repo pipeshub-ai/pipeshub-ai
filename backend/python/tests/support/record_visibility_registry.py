@@ -84,6 +84,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_records_linking_to_weburls": (Rule.LIVE, "joins a newly indexed record to the records that pasted its address"),
     "get_linked_records": (Rule.LIVE, "shown to users"),
     "get_entity_candidate_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
+    "page_record_ids_by_type": (Rule.LIVE, "the record-people backfill links live records only"),
     "get_permitted_entity_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
     "get_records_for_named_entities": (Rule.LIVE, "entity filters and find_records_by_value list these records to users"),
     "filter_nodes_with_permission_role": (
@@ -123,6 +124,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_file_paths_for_records": (Rule.ALL, _BY_KEY + "; the code graph maps block owners to their paths"),
     "get_child_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_parent_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
+    # The people a record names; returns no record.
+    "get_record_people": (Rule.ALL, _STRUCTURE),
+    # The CRM accounts a record belongs to (KG-13); returns no record.
+    "get_record_organizations": (Rule.ALL, _STRUCTURE),
     "get_record_parent_adjacency": (
         Rule.ALL, _STRUCTURE + "; Location drops a trashed ancestor through the access check",
     ),

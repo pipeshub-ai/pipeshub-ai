@@ -25,6 +25,7 @@ from typing import Any
 
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
+    ScopeFilterUnsupported,
     build_filter_expression,
     canonical_filter_key,
     forbid_org_in_payload,
@@ -255,6 +256,9 @@ class InMemoryVectorDBService(IVectorDBService):
     async def query_nearest_points(
         self, collection_name: str, requests: list[HybridSearchRequest],
     ) -> list[list[SearchResult]]:
+        for request in requests:
+            if request.scope_filter is not None:          # a double that ignored the filter would answer more than the real stores do
+                raise ScopeFilterUnsupported(f"{type(self).__name__} does not evaluate a scope filter")
         return [self._search(collection_name, request) for request in requests]
 
     def _search(self, collection_name: str, request: HybridSearchRequest) -> list[SearchResult]:

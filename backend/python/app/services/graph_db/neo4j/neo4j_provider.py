@@ -685,6 +685,29 @@ def _trash_list_page_query(*, hinted: bool) -> str:
 _PURGE_WALK_INDEX = "record_org_deleted_at"
 _PURGE_WALK_HINT = "USING INDEX r:Record(orgId, deletedAtTimestamp, id)"
 _INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
+# The record-people backfill's paging index, created by ensure_schema. By its
+# statistics the planner can prefer (orgId, recordType) and then sort every page.
+_RECORD_ORG_ID_INDEX = "record_org_id_key"
+_RECORD_ORG_ID_HINT = "USING INDEX record:Record(orgId, id)"
+_RECORD_ORG_ID_HINT_WARNING = (
+    "The record-people backfill's index %s is not ready; paging records without it until it is: %s"
+)
+
+
+def _record_ids_by_type_page(hint: str) -> str:
+    """One page of an org's records of some types, after a key, in (orgId, id)
+    index order: every page, the first too (after ""), seeks an id range, so
+    the index gives the order and the page stops at the limit."""
+    return f"""
+            MATCH (record:Record)
+            {hint}
+            WHERE record.orgId = $org_id AND record.id > $after_key
+              AND record.recordType IN $types
+              AND coalesce(record.isDeleted, false) = false
+            RETURN record.id AS id
+            ORDER BY record.orgId, record.id
+            LIMIT $limit
+            """
 # A write that waited for a node's lock while another transaction deleted it.
 _ENTITY_NOT_FOUND = "Neo.ClientError.Statement.EntityNotFound"
 
@@ -1251,6 +1274,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_connector_id_key IF NOT EXISTS "
             "FOR (n:Record) ON (n.connectorId, n.id)"
+        )
+
+        # COMPOSITE: the record-people backfill pages an org's records by id;
+        # with only orgId indexed every page sorted the whole org.
+        indexes.append(
+            "CREATE INDEX record_org_id_key IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.id)"
         )
 
         # SINGLE: duplicateReconcilePending. The reconcile retry sweep looks for
@@ -3813,7 +3843,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 labels = row.get("labels") or []
                 key = row.get("key")
                 if labels and key:
-                    result.append(f"{label_to_collection(labels[0])}/{key}")
+                    result.append(f"{collection_of_labels(labels) or label_to_collection(labels[0])}/{key}")
             return result
         except Exception as e:
             self.logger.error(f"❌ Get edges by target keys failed: {str(e)}")
@@ -4114,7 +4144,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for row in results or []:
                 labels = row.get("labels") or []
                 neighbours.append({
-                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "collection": (collection_of_labels(labels) or label_to_collection(labels[0])) if labels else "",
                     "key": row.get("key"),
                     "relationshipType": row.get("relationshipType"),
                     "sourceLineNumber": row.get("sourceLineNumber"),
@@ -4138,6 +4168,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after: str | None = None,
     ) -> list[dict[str, Any]]:
         """Walk one hop from many nodes at once.
 
@@ -4160,11 +4191,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "inbound": f"(n:{anchor_label})<-[rel:{rel_type}]-(m)",
                 "any": f"(n:{anchor_label})-[rel:{rel_type}]-(m)",
             }[direction]
+            paged = after is not None
+            # cursor = the row's sort key; ORDER BY before LIMIT makes a page the
+            # next slice of the whole ordered edge set.
+            page = (
+                # No label in the key: labels() has no order, and elementId(rel) already makes it unique.
+                "WITH n, m, rel, CASE WHEN startNode(rel).id = n.id THEN 'outbound' ELSE 'inbound' END AS dir "
+                "WITH n, m, rel, dir, n.id + '\\u0001' + dir + '\\u0001' "
+                "+ coalesce(m.id, '') + '\\u0001' + coalesce(rel.relationshipType, '') + '\\u0001' + elementId(rel) AS cursor "
+                "WHERE cursor > $after"
+            ) if paged else ""
             query = f"""
             MATCH {pattern}
             WHERE n.id IN $node_keys
               AND rel.relationshipType IN $relationship_types
-            RETURN n.id AS anchorKey,
+            {page}
+            RETURN {"cursor, " if paged else ""}n.id AS anchorKey,
                    labels(m) AS labels,
                    m.id AS key,
                    CASE WHEN startNode(rel).id = n.id
@@ -4175,6 +4217,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                    rel.provenance AS provenance,
                    rel.line AS line,
                    rel.confidence AS confidence
+            {"ORDER BY cursor" if paged else ""}
             LIMIT $limit
             """
             results = await self.client.execute_query(
@@ -4183,6 +4226,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "node_keys": node_keys,
                     "relationship_types": relationship_types,
                     "limit": limit,
+                    **({"after": after} if paged else {}),
                 },
                 txn_id=transaction
             )
@@ -4190,8 +4234,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for row in results or []:
                 labels = row.get("labels") or []
                 neighbours.append({
+                    **({"cursor": row.get("cursor")} if paged else {}),
                     "anchorKey": row.get("anchorKey"),
-                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "collection": (collection_of_labels(labels) or label_to_collection(labels[0])) if labels else "",
                     "key": row.get("key"),
                     "direction": row.get("direction"),
                     "relationshipType": row.get("relationshipType"),
@@ -5975,25 +6020,65 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     # ==================== User Operations ====================
 
+    async def get_users_by_emails(
+        self,
+        emails: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        org_id: str | None = None,
+    ) -> dict[str, User]:
+        """See :meth:`IGraphDBProvider.get_users_by_emails`."""
+        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        if not wanted:
+            return {}
+        try:
+            scoped = org_id is not None
+            org_filter = "AND u.orgId = $org_id" if scoped else ""
+            # toLower(u.email) keeps matching case-insensitive, which the
+            # user_email index cannot serve.
+            query = f"""
+            MATCH (u:User)
+            WHERE toLower(u.email) IN $emails {org_filter}
+            RETURN u
+            """
+            results = await self.client.execute_query(
+                query, parameters={"emails": wanted, **({"org_id": org_id} if scoped else {})}, txn_id=transaction,
+            )
+            found: dict[str, User] = {}
+            for row in results or []:
+                user_dict = self._neo4j_to_arango_node(dict(row["u"]), CollectionNames.USERS.value)
+                found.setdefault(user_dict["email"].lower(), User.from_arango_user(user_dict))
+            return found
+        except Exception as e:
+            self.logger.error(f"❌ Get users by emails failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return {}
+
     async def get_user_by_email(
         self,
         email: str,
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> User | None:
         """Get user by email"""
         try:
-            query = """
+            scoped = org_id is not None
+            org_filter = "AND u.orgId = $org_id" if scoped else ""
+            parameters = {"email": email, **({"org_id": org_id} if scoped else {})}
+            query = f"""
             MATCH (u:User)
-            WHERE toLower(u.email) = toLower($email)
+            WHERE toLower(u.email) = toLower($email) {org_filter}
             RETURN u
             LIMIT 1
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"email": email},
+                parameters=parameters,
                 txn_id=transaction
             )
 
@@ -12589,6 +12674,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to retrieve record for id {record_id}: {str(e)}")
             return None
+
+    async def page_record_ids_by_type(
+        self,
+        org_id: str,
+        record_types: list[str],
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """See :meth:`IGraphDBProvider.page_record_ids_by_type`."""
+        if limit < 0:
+            raise ValueError("limit must not be negative")
+        if not org_id or not record_types or limit == 0:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        rows = await self._execute_hinted(
+            _record_ids_by_type_page(_RECORD_ORG_ID_HINT),
+            _record_ids_by_type_page(""),
+            {"org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": limit},
+            None,
+            index=_RECORD_ORG_ID_INDEX,
+            warning=_RECORD_ORG_ID_HINT_WARNING,
+        )
+        return [str(row["id"]) for row in rows or [] if row.get("id")]
 
     async def get_typed_records_batch(
         self,
@@ -22321,7 +22431,28 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             edge_collection_to_relationship(CollectionNames.BELONGS_TO.value),
             (collection_to_label(CollectionNames.RECORD_GROUPS.value),),
         ),
+        KnowledgeGraphEntityType.PERSON.value: (
+            edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value),
+            (collection_to_label(CollectionNames.USERS.value),),
+        ),
+        KnowledgeGraphEntityType.ORGANIZATION.value: (
+            edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value),
+            (collection_to_label(CollectionNames.ORGS.value),),
+        ),
     }
+    # How a node ``e`` of each org-owned entity type is matched to $org_id.
+    # An external organisation (a CRM account) carries the org it belongs to as
+    # parentOrgId; the org itself is never an entity.
+    _ENTITY_ORG_SCOPE = {
+        KnowledgeGraphEntityType.RECORD_GROUP.value: "e.orgId = $org_id",
+        KnowledgeGraphEntityType.PERSON.value: "e.orgId = $org_id",
+        KnowledgeGraphEntityType.ORGANIZATION.value: "e.isExternal = true AND e.parentOrgId = $org_id",
+    }
+    # Entity types records reach over entityRelations (KG-13).
+    _LINKED_ENTITY_TYPES = frozenset({
+        KnowledgeGraphEntityType.PERSON.value, KnowledgeGraphEntityType.ORGANIZATION.value,
+    })
+    _MEMBERSHIP_ENTITY_TYPES = TAXONOMY_ENTITY_TYPES | _LINKED_ENTITY_TYPES
 
     async def _get_taxonomy_entities_for_record_via_edge(
         self,
@@ -22476,6 +22607,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         f".{SOURCE_TIMESTAMP_ORIGIN_FIELD}, .indexingStatus, .{HAS_INDEXED_COPY}, .mimeType}}"
     )
 
+    @staticmethod
+    def _candidate_arrow(entity_type: str) -> str:
+        """``->`` for edges from the record to the entity; undirected for a
+        person, whom Slack links user -> record and record_people links
+        record -> user."""
+        return "-" if entity_type == KnowledgeGraphEntityType.PERSON.value else "->"
+
     def _entity_node_match(self, entity_type: str) -> tuple[str, str]:
         """The record relationship for ``entity_type`` and a clause binding
         ``e`` to the node whose id is ``ref.id``."""
@@ -22524,26 +22662,28 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _entity_candidate_match(self, entity_type: str) -> str:
         """Clauses binding ``rec`` to each record linked to ``ref``, ready for
         a ``WHERE`` on ``rec``. A person's relations run both ways, and only
-        their User end is the person (a RecordGroup is also MENTIONED_IN)."""
+        their User end is the person (a RecordGroup is also MENTIONED_IN). The
+        person is gated on the org too: this org's record may name a user of
+        another org."""
         if entity_type == PERSON_ENTITY_TYPE:
             relation = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
             return f"""CALL {{
                 WITH ref
                 MATCH (rec:Record)-[r:{relation}]->(p:User)
-                WHERE p.id IN ref.userIds AND r.edgeType IN ref.outTypes
+                WHERE p.id IN ref.userIds AND p.orgId = $org_id AND r.edgeType IN ref.outTypes
                 RETURN rec
                 UNION
                 WITH ref
                 MATCH (p:User)-[r:{relation}]->(rec:Record)
-                WHERE p.id IN ref.userIds AND r.edgeType IN ref.inTypes
+                WHERE p.id IN ref.userIds AND p.orgId = $org_id AND r.edgeType IN ref.inTypes
                 RETURN rec
               }}
               WITH *"""
         relationship, entity_match = self._entity_node_match(entity_type)
-        if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
-            entity_match += "\n              WHERE e.orgId = $org_id"
+        if entity_type in self._ENTITY_ORG_SCOPE:
+            entity_match += f"\n              WHERE {self._ENTITY_ORG_SCOPE[entity_type]}"
         return f"""{entity_match}
-              MATCH (rec:Record)-[:{relationship}]->(e)"""
+              MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)"""
 
     def _entity_candidate_records_cypher(self, entity_type: str) -> str:
         projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
@@ -22675,6 +22815,85 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 **(person_query_ref(ref) if ref_type == PERSON_ENTITY_TYPE else {}),
             })
         return refs_by_type
+
+    async def get_record_people(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_people`."""
+        return await self._record_linked_entities(
+            record_id, org_id, KnowledgeGraphEntityType.PERSON.value,
+            "e.fullName AS name, e.email AS email",
+        )
+
+    async def get_record_organizations(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_organizations`."""
+        return await self._record_linked_entities(
+            record_id, org_id, KnowledgeGraphEntityType.ORGANIZATION.value, "e.name AS name",
+        )
+
+    async def _record_linked_entities(
+        self, record_id: str, org_id: str, entity_type: str, fields: str,
+    ) -> list[dict[str, Any]]:
+        if not record_id or not org_id:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        relationship, (label,) = self._ENTITY_CANDIDATE_TARGETS[entity_type]
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (rec:Record {{id: $record_id}})-[:{relationship}]{self._candidate_arrow(entity_type)}(e:{label})
+            WHERE rec.orgId = $org_id AND {self._ENTITY_ORG_SCOPE[entity_type]}
+            WITH DISTINCT e
+            RETURN e.id AS id, {fields}
+            ORDER BY id
+            """,
+            parameters={"record_id": record_id, "org_id": org_id},
+        )
+        return [dict(r) for r in rows or [] if r.get("id")]
+
+    async def get_record_group_organization(
+        self, record_group_id: str, org_id: str, transaction: str | None = None,
+    ) -> str | None:
+        """See :meth:`IGraphDBProvider.get_record_group_organization`."""
+        if not record_group_id or not org_id:
+            return None
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (:{collection_to_label(CollectionNames.RECORD_GROUPS.value)} {{id: $group_id}})
+                  -[:{edge_collection_to_relationship(CollectionNames.DEAL_OF.value)}]->
+                  (e:{collection_to_label(CollectionNames.ORGS.value)})
+            WHERE {self._ENTITY_ORG_SCOPE[KnowledgeGraphEntityType.ORGANIZATION.value]}
+            RETURN e.id AS id
+            ORDER BY id
+            LIMIT 1
+            """,
+            parameters={"group_id": record_group_id, "org_id": org_id},
+            txn_id=transaction,
+        )
+        return next((r["id"] for r in rows or [] if r.get("id")), None)
+
+    async def stamp_external_org_parents(self, org_id: str) -> int:
+        """See :meth:`IGraphDBProvider.stamp_external_org_parents`."""
+        if not org_id:
+            return 0
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        label = collection_to_label(CollectionNames.ORGS.value)
+        relationships = "|".join(
+            edge_collection_to_relationship(c)
+            for c in (CollectionNames.PROSPECT.value, CollectionNames.CUSTOMER.value)
+        )
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (:{label} {{id: $org_id}})-[:{relationships}]->(e:{label})
+            WHERE e.isExternal = true AND e.parentOrgId IS NULL
+            WITH DISTINCT e
+            SET e.parentOrgId = $org_id
+            RETURN count(e) AS stamped
+            """,
+            parameters={"org_id": org_id},
+        )
+        return int((rows or [{}])[0].get("stamped") or 0)
 
     async def get_permitted_entity_records(
         self,
@@ -22839,7 +23058,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ids_by_type: dict[str, list[str]] = {}
         for ref in refs:
             ref_id, ref_type = str(ref.get("id") or ""), ref.get("type")
-            if ref_id and ref_type in TAXONOMY_ENTITY_TYPES:
+            if ref_id and ref_type in self._MEMBERSHIP_ENTITY_TYPES:
                 bucket = ids_by_type.setdefault(ref_type, [])
                 if ref_id not in bucket:
                     bucket.append(ref_id)
@@ -22847,13 +23066,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         results: dict[tuple[str, str], dict[str, list[str]]] = {}
         for ref_type, ref_ids in ids_by_type.items():
             relationship, entity_match = self._entity_node_match(ref_type)
+            if ref_type in self._ENTITY_ORG_SCOPE:
+                entity_match += f"\n              WHERE {self._ENTITY_ORG_SCOPE[ref_type]}"
             # The aggregating CALL yields one row per ref even when nothing links.
             query = f"""
             UNWIND $refs AS ref
             CALL {{
               WITH ref
               {entity_match}
-              OPTIONAL MATCH (rec:Record)-[:{relationship}]->(e)
+              OPTIONAL MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(ref_type)}(e)
               WHERE rec.orgId = $org_id AND coalesce(rec.isDeleted, false) = false
               RETURN [c IN collect(DISTINCT rec.connectorId) WHERE c IS NOT NULL] AS connector_ids,
                      [g IN collect(DISTINCT rec.recordGroupId) WHERE g IS NOT NULL] AS group_ids

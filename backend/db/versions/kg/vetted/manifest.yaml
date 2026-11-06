@@ -441,3 +441,138 @@ functions:
         GET DIAGNOSTICS v_n = ROW_COUNT;
         RETURN v_n;
       END;
+
+  - name: kg.w_stamps_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.records", "set": ["path", "class_id", "self_lit", "seed", "own_grant", "under_deleted", "legacy_reason", "leaf"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_colls", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_paths", "type": "bytea[]", "max_items": 5000}
+      - {"name": "p_classes", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_self_lits", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_seeds", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_own_grants", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_under_deleted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_legacy", "type": "smallint[]", "max_items": 5000, "item_range": [0, 8]}
+      - {"name": "p_leaves", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.records"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_colls) <> cardinality(p_sks) OR cardinality(p_ids) <> cardinality(p_sks) OR cardinality(p_kinds) <> cardinality(p_sks) OR cardinality(p_paths) <> cardinality(p_sks) OR cardinality(p_classes) <> cardinality(p_sks) OR cardinality(p_self_lits) <> cardinality(p_sks) OR cardinality(p_seeds) <> cardinality(p_sks) OR cardinality(p_own_grants) <> cardinality(p_sks) OR cardinality(p_under_deleted) <> cardinality(p_sks) OR cardinality(p_legacy) <> cardinality(p_sks) OR cardinality(p_leaves) <> cardinality(p_sks) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.records (org_id, sk, coll, id, kind, path, class_id, self_lit, seed, own_grant, under_deleted, legacy_reason, leaf) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h, k.i, k.j, k.k, k.l FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_paths, p_classes, p_self_lits, p_seeds, p_own_grants, p_under_deleted, p_legacy, p_leaves) AS k(a, b, c, d, e, f, g, h, i, j, k, l)
+          ON CONFLICT (org_id, sk) DO UPDATE SET path = excluded.path, class_id = excluded.class_id, self_lit = excluded.self_lit, seed = excluded.seed, own_grant = excluded.own_grant, under_deleted = excluded.under_deleted, legacy_reason = excluded.legacy_reason, leaf = excluded.leaf;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_fence_rows
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.records", "set": ["fence_job"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_colls", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_jobs", "type": "bigint[]", "max_items": 5000}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.records"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_colls) <> cardinality(p_sks) OR cardinality(p_ids) <> cardinality(p_sks) OR cardinality(p_kinds) <> cardinality(p_sks) OR cardinality(p_jobs) <> cardinality(p_sks) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.records (org_id, sk, coll, id, kind, fence_job) SELECT v_org, k.a, k.b, k.c, k.d, k.e FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_jobs) AS k(a, b, c, d, e)
+          ON CONFLICT (org_id, sk) DO UPDATE SET fence_job = excluded.fence_job;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_queue_add
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.restamp_queue", "set": []}]
+    args:
+      - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
+      - {"name": "p_app_sk", "type": "bigint", "range": [0, 9223372036854775807]}
+      - {"name": "p_kind", "type": "text", "enum": ["rows", "app"]}
+      - {"name": "p_reason", "type": "text", "length": [1, 64]}
+      - {"name": "p_fenced", "type": "boolean"}
+    returns: "boolean"
+    no_org: "false"
+    body: |
+      DECLARE v_now bigint;
+      BEGIN
+        v_now := floor(extract(epoch FROM clock_timestamp()) * 1000);
+        INSERT INTO kg.restamp_queue (org_id, id, app_sk, kind, reason, fenced, enqueued_ms) VALUES (v_org, p_id, p_app_sk, p_kind, p_reason, p_fenced, v_now)
+          ON CONFLICT (org_id, id) DO NOTHING;
+        RETURN true;
+      END;
+
+  - name: kg.w_queue_touch
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "update", "rel": "kg.restamp_queue"}]
+    args:
+      - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
+      - {"name": "p_seen", "type": "bigint", "range": [0, 9223372036854775807]}
+      - {"name": "p_worker", "type": "text", "length": [1, 128]}
+      - {"name": "p_attempts", "type": "int", "range": [0, 1000000]}
+      - {"name": "p_cursor", "type": "text", "nullable": true, "length": [0, 512]}
+    returns: "bigint"
+    no_org: "0"
+    reads: ["kg.restamp_queue"]
+    body: |
+      DECLARE v_beat bigint; v_n integer;
+      BEGIN
+        v_beat := GREATEST(floor(extract(epoch FROM clock_timestamp()) * 1000), p_seen + 1);
+        UPDATE kg.restamp_queue t SET claimed_by = p_worker, heartbeat_ms = v_beat, attempts = p_attempts, cursor = p_cursor WHERE t.org_id = v_org AND t.id = p_id AND t.heartbeat_ms = p_seen;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        IF v_n = 1 THEN
+          RETURN v_beat;
+        END IF;
+        RETURN NULL;
+      END;
+
+  - name: kg.w_queue_done
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.restamp_queue", "key": ["id"]}]
+    args:
+      - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
+    returns: "boolean"
+    no_org: "false"
+    reads: ["kg.restamp_queue"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        DELETE FROM kg.restamp_queue t WHERE t.org_id = v_org AND t.id = p_id;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n = 1;
+      END;

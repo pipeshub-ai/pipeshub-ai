@@ -253,6 +253,8 @@ PERSON_ENTITY_TYPE = "person"
 PERSON_EDGES_TO_USER: tuple[str, ...] = tuple(r.value for r in (
     EntityRelations.ASSIGNED_TO, EntityRelations.REPORTED_BY,
     EntityRelations.CREATED_BY, EntityRelations.LEAD_BY,
+    EntityRelations.AUTHORED_BY, EntityRelations.OWNED_BY,
+    EntityRelations.REVIEWED_BY, EntityRelations.ADDRESSED_TO,
 ))
 PERSON_EDGES_FROM_USER: tuple[str, ...] = tuple(r.value for r in (
     EntityRelations.MENTIONED_IN, EntityRelations.INVOLVED_IN,
@@ -262,9 +264,13 @@ PERSON_EDGES_FROM_USER: tuple[str, ...] = tuple(r.value for r in (
 def person_query_ref(ref: dict[str, Any]) -> dict[str, list[str]]:
     """The person fields of a ``person`` ref as a candidate query reads them:
     its user ids, and its edge types kept to the allow-list of each direction
-    (Record->User ``outTypes``, User->Record ``inTypes``)."""
+    (Record->User ``outTypes``, User->Record ``inTypes``). A ref naming
+    neither (a person entity from search) links by every person relation."""
+    user_ids = list(dict.fromkeys(str(i) for i in ref.get("userIds") or [ref.get("id")] if i))
+    if "outTypes" not in ref and "inTypes" not in ref:
+        return {"userIds": user_ids, "outTypes": list(PERSON_EDGES_TO_USER), "inTypes": list(PERSON_EDGES_FROM_USER)}
     return {
-        "userIds": list(dict.fromkeys(str(i) for i in ref.get("userIds") or [ref.get("id")] if i)),
+        "userIds": user_ids,
         "outTypes": [t for t in PERSON_EDGES_TO_USER if t in (ref.get("outTypes") or ())],
         "inTypes": [t for t in PERSON_EDGES_FROM_USER if t in (ref.get("inTypes") or ())],
     }

@@ -88,7 +88,7 @@ from app.services.messaging.config import (
     get_message_broker_type,
     messaging_env,
 )
-from app.services.messaging.consumer_concurrency import StageAdmission
+from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
 from app.services.messaging.distributed_concurrency import (
     DistributedConcurrencyManager,
 )
@@ -1818,8 +1818,10 @@ async def _republish_stranded_records(
                 # "put in line for indexing" time. updatedAt cannot carry this
                 # alone: connectors may fill it with source-system time (a Jira
                 # issue last edited a year ago), which made every freshly synced
-                # row look stranded and sent it twice; it stays in the max for
-                # rows written before queuedAtTimestamp existed.
+                # row look stranded and sent it twice. Nor can it join the max: a
+                # metadata save moves it, and a row whose event was lost would
+                # never age while its source keeps changing. It stands in only
+                # for rows written before queuedAtTimestamp existed.
                 # lastRepublishedAt is our own: publishing changes nothing about
                 # the row, so without it a record stays eligible and every tick
                 # sends another copy of the same event -- worst precisely when
@@ -1832,8 +1834,9 @@ async def _republish_stranded_records(
                 # park, often hours older.
                 clocks: list[float] = []
                 for value in (
-                    record.get("queuedAtTimestamp"),
-                    record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
+                    record.get("queuedAtTimestamp")
+                    if record.get("queuedAtTimestamp") is not None
+                    else record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
                     record.get("lastRepublishedAt"),
                     enabled_at.get(connector_id) if parked_while_off else None,
                 ):
@@ -2289,6 +2292,72 @@ async def start_kafka_consumers(
         await record_kafka_consumer.start(record_message_handler)  # type: ignore[arg-type]
         logger.info("✅ Record message consumer started")
 
+        # The priority lane: records someone is waiting to read are parsed ahead of the backlog, by the
+        # same handler, on small caps of their own. Records stay indexable without it, so a broker that
+        # will not create its topic only delays it.
+        admin = MessagingFactory.create_admin(logger, producer_config, broker_type)
+        priority_topic = Topic.RECORD_EVENTS_PRIORITY.value
+
+        async def start_priority_consumer() -> None:
+            priority_config = await MessagingUtils.create_consumer_config(
+                app_container,
+                "records_priority_consumer_client",
+                "records_priority_consumer_group",
+                [priority_topic],
+                is_indexing=True,
+            )
+            priority_consumer = MessagingFactory.create_consumer(
+                broker_type=broker_type,
+                logger=logger,
+                config=priority_config,
+                consumer_type=ConsumerType.INDEXING,
+                retry_manager=retry_manager,
+                producer=retry_producer,
+                concurrency_manager=concurrency_manager,
+                governor=governor,
+                backpressure_coordinator=get_default_backpressure_coordinator(),
+                disposition_sink=record_event_handler,
+                connector_off_filter=connector_off_filter,
+                priority_lane=PriorityLane(
+                    heavy_limit=messaging_env.priority_lane_heavy_limit,
+                    light_limit=messaging_env.priority_lane_light_limit,
+                    workers=_indexing_worker_count(),
+                ),
+                worker=worker,
+            )
+            # The retry producer is owned by the record consumer's entry, so it is closed once.
+            entry = (priority_topic, priority_consumer, None)
+            consumers.append(entry)
+            try:
+                await priority_consumer.start(record_message_handler)  # type: ignore[arg-type]
+            except Exception:
+                consumers.remove(entry)
+                try:
+                    await priority_consumer.stop()
+                except Exception as exc:
+                    logger.error("Error stopping the priority consumer after a failed start: %s", exc)
+                raise
+            logger.info("✅ Priority record consumer started: %s", priority_topic)
+
+        try:
+            await admin.ensure_topics_exist([priority_topic])
+            await start_priority_consumer()
+        except Exception as e:
+            logger.error(
+                "❌ The priority record consumer did not start (%s). Records are still indexed; reading a record "
+                "before it is indexed waits for it. Retrying in the background.",
+                e,
+            )
+            setattr(
+                app_container,
+                "priority_startup_task",
+                spawn_detached(
+                    _start_when_topics_exist(
+                        admin, [priority_topic], start_priority_consumer, logger, "Priority record"
+                    )
+                ),
+            )
+
         # Pipeline stages: one consumer per stage topic, each on its own permits and
         # cluster lease pool, so stage work (classification, entities, ...) never holds an indexing permit.
         pipeline_runtime = await _resolve_pipeline_runtime(app_container)
@@ -2353,7 +2422,6 @@ async def start_kafka_consumers(
                         logger.error("Error stopping %s consumer after a failed start: %s", entry[0], exc)
                 raise
 
-        admin = MessagingFactory.create_admin(logger, producer_config, broker_type)
         await _start_record_title_consumer(
             app_container, admin, consumers,
             broker_type=broker_type, retry_manager=retry_manager, worker=worker, logger=logger,
@@ -2407,7 +2475,7 @@ async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_
 
     logger = container.logger()
     # A stage start still waiting for its topics must not start consumers once these stop.
-    for attr in ("stage_startup_task", "record_title_startup_task"):
+    for attr in ("stage_startup_task", "record_title_startup_task", "priority_startup_task"):
         startup = getattr(container, attr, None)
         if isinstance(startup, asyncio.Task) and not startup.done():
             _ = startup.cancel()

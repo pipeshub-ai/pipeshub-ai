@@ -3,7 +3,9 @@ import os
 from app.services.permissions.scope_fields import (
     ACL_SCOPE_FIELD,
     PATH_IDS_FIELD,
+    SCOPE_GENERATION_FIELD,
     SCOPE_STAMP_FIELD,
+    SCOPE_VERSION_FIELD,
 )
 from app.services.vector_db.collections import CollectionType, sanitize_collection_name
 
@@ -30,6 +32,12 @@ SCOPE_KEYWORD_INDEXES = (
     (PATH_IDS_FIELD, {"type": "keyword"}),
     (ACL_SCOPE_FIELD, {"type": "keyword"}),
     (SCOPE_STAMP_FIELD, {"type": "keyword"}),
+)
+
+# The two integers a scope filter compares (Redis cannot filter a field that is not in its index; Qdrant and OpenSearch are faster with one).
+SCOPE_INTEGER_INDEXES = (
+    (SCOPE_VERSION_FIELD, {"type": "integer"}),
+    (SCOPE_GENERATION_FIELD, {"type": "integer"}),
 )
 
 VECTOR_DB_SERVICE_NAME = os.getenv("VECTOR_DB_TYPE", "qdrant")

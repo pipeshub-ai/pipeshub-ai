@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 CAP = 5000
+STAMP_COLS = ("sk", "coll", "id", "kind", "path", "class_id", "self_lit", "seed", "own_grant", "under_deleted", "legacy_reason", "leaf")
 RECORD_COLS = ("sk", "coll", "id", "kind", "app_sk", "group_sk", "parent_sk", "rule", "model", "vrid", "name", "name_key", "updated_ms", "created_ms",
                "size_bytes", "record_type", "origin", "external_id", "deleted", "placeholder", "granted")
 
@@ -93,6 +94,37 @@ class KgWriter:
     async def closure_delete(self, rows: list[tuple[int, int, int]]) -> int:
         return sum([await self.tx.fetchval("/* pipeshub:kg.w_closure_delete */ SELECT kg.w_closure_delete($1::bigint[], $2::bigint[], $3::bigint[])",
                                            [r[0] for r in p], [r[1] for r in p], [r[2] for r in p]) for p in _chunks(sorted(rows))])
+
+    async def stamps_set(self, rows: list[dict]) -> int:
+        """The access stamps of records (path, class, flags): one upsert whose update list is the stamp columns and nothing else."""
+        n = 0
+        for part in _chunks(rows):
+            n += await self.tx.fetchval(
+                "/* pipeshub:kg.w_stamps_set */ SELECT kg.w_stamps_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::bytea[], $6::bigint[], $7::boolean[], $8::boolean[], $9::boolean[], "
+                "$10::boolean[], $11::smallint[], $12::boolean[])", *[[r[c] for r in part] for c in STAMP_COLS])
+        return n
+
+    async def fence_rows(self, rows: list[tuple[int, int, str, int]], job: int | None) -> int:
+        """Mark records that kg holds as hidden until restamp job ``job`` stamps them (None: lift the mark): rows are (sk, coll code, id, kind code). The writer is an upsert, so the
+        caller passes rows it has read from kg.records: a key kg holds no row for would get a row of nothing but a key."""
+        n = 0
+        for part in _chunks(sorted(rows)):
+            n += await self.tx.fetchval("/* pipeshub:kg.w_fence_rows */ SELECT kg.w_fence_rows($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::bigint[])",
+                                        [r[0] for r in part], [r[1] for r in part], [r[2] for r in part], [r[3] for r in part], [job] * len(part))
+        return n
+
+    async def queue_add(self, job: int, app_sk: int, kind: str, reason: str, *, fenced: bool) -> bool:
+        """Queue a restamp job; an id already taken is left as it is."""
+        return await self.tx.fetchval("/* pipeshub:kg.w_queue_add */ SELECT kg.w_queue_add($1, $2, $3, $4, $5)", job, app_sk, kind, reason, fenced)
+
+    async def queue_touch(self, job: int, seen: int, worker: str, attempts: int, cursor: str | None) -> int | None:
+        """Claim or heartbeat a job if nobody has touched it since ``seen`` (compare and set on the heartbeat): returns the new heartbeat, which is the database's clock, or None when
+        another worker took the job."""
+        return await self.tx.fetchval("/* pipeshub:kg.w_queue_touch */ SELECT kg.w_queue_touch($1, $2, $3, $4, $5)", job, seen, worker, attempts, cursor) or None
+
+    async def queue_done(self, job: int) -> bool:
+        """Delete a finished job; False when it was not there."""
+        return await self.tx.fetchval("/* pipeshub:kg.w_queue_done */ SELECT kg.w_queue_done($1)", job)
 
     async def changes_ack(self) -> int:
         """This transaction's own rows of kg.graph_changes."""

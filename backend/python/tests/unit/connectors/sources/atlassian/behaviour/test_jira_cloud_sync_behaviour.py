@@ -37,7 +37,10 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
-from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.sources.atlassian.jira_cloud.connector import (
+    IncompleteSyncError,
+    JiraConnector,
+)
 from app.connectors.utils.record_ids import new_record_id
 from app.models.entities import (
     FileRecord,
@@ -1678,22 +1681,28 @@ class TestUnfinishedUserRead:
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
         assert sorted(site_db.kept_records) == stored, "the project's stored records are noted as seen"
 
-    @pytest.mark.parametrize(("status", "complete"), [(500, False), (400, True), (404, True)])
-    async def test_a_full_sync_whose_issue_search_fails_is_classed_by_its_status(
-        self, api, site_db, checkpoints, search, status, complete
+    @pytest.mark.parametrize(("status", "kept"), [(500, True), (400, False), (404, False)])
+    async def test_a_full_sync_whose_issue_search_fails_keeps_the_records_only_when_the_read_may_pass(
+        self, api, site_db, checkpoints, search, status, kept
     ) -> None:
         self._stub_bo_everywhere(api)
         self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
         connector, _ = await ready_connector(site_db, checkpoints)
         await connector.run_sync()
+        stored = sorted(r.id for r in site_db.records.values() if r.external_record_group_id == "10000")
 
         checkpoints.sync_points.clear()
         search.add("ENG", None, json_response({"errorMessages": ["no"]}, status=status))
-        await run_full_sync(connector, site_db)
+        if status == 500:
+            # The run fails, but the removal after it still runs: the project's records are noted as seen.
+            with pytest.raises(IncompleteSyncError):
+                await run_full_sync(connector, site_db)
+        else:
+            await run_full_sync(connector, site_db)
 
-        assert connector.full_sync_coverage().complete is complete
-        assert site_db.kept_records == [], "only a refusal keeps the records"
+        assert connector.full_sync_coverage().complete is True
+        assert (sorted(site_db.kept_records) == stored) if kept else (site_db.kept_records == [])
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
@@ -2143,7 +2152,6 @@ def titles(connector: JiraConnector) -> list[str]:
 class TestWhatASyncKeptAsStored:
     # A kept project access or a short user read is noted as seen instead (see TestUnfinishedUserRead).
     @pytest.mark.parametrize("break_jira", [
-        pytest.param(lambda api, search: search.add("ENG", None, json_response({"errorMessages": ["boom"]}, status=500)), id="an-issue-read-failed"),
         pytest.param(lambda api, search: groups_in_two_pages(api, json_response({}, status=503)), id="the-group-list-was-cut-short"),
         pytest.param(lambda api, search: api.on("GET", f"{JIRA}/project/ENG/role/10002", json_response({}, status=500)), id="a-role-read-failed"),
     ])
