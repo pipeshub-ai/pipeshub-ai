@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
-from app.core.org_context import for_org
+from app.core.org_context import for_org, system
 from app.services.messaging.config import RedisConfig, messaging_env
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.org_metrics import ORG_SKIPPED
@@ -253,10 +253,29 @@ async def run_vector_membership_backfill_tick(
     if not await lock.try_acquire():
         return
 
-    app = await graph_provider.get_app_needing_vector_membership_backfill()
+    with system("vector_membership_backfill"):      # picking the next app looks across orgs; everything after it acts for that app's org
+        app = await graph_provider.get_app_needing_vector_membership_backfill()
     if not app:
         return
 
+    app_org = app.get(_APP_ORG_FIELD)
+    with for_org(str(app_org), job="vector_membership_backfill") if app_org else contextlib.nullcontext():
+        await _backfill_app_page(
+            app, logger=logger, graph_provider=graph_provider, pipeline=pipeline, lock=lock,
+            page_size=page_size, vrid_pause_ms=vrid_pause_ms,
+        )
+
+
+async def _backfill_app_page(
+    app: dict,
+    *,
+    logger: Logger,
+    graph_provider: IGraphDBProvider,
+    pipeline: Any,  # noqa: ANN401
+    lock: LeaderLock,
+    page_size: int,
+    vrid_pause_ms: int,
+) -> None:
     connector_id = _app_key(app)
     if not connector_id:
         logger.warning("App needing vector membership backfill is missing _key")
@@ -275,7 +294,7 @@ async def run_vector_membership_backfill_tick(
     failed = 0
     vrids = distinct_non_empty_vrids(page)
     # The membership write acts for one org. Each point set is written for the org its record names (a VRID shared by two orgs is
-    # synced once per org); a record that names none falls back to the app's own org, which the loop has no ambient context for.
+    # synced once per org); a record that names none falls back to the app's own org.
     app_org = app.get(_APP_ORG_FIELD)
     orgs_of: dict[str, list[str]] = {}
     for row in page:
