@@ -1344,11 +1344,13 @@ class LinearConnector(BaseConnector):
         """Whether the team has any issue the incremental listing would return."""
         team_filter: dict[str, Any] = {"team": {"id": {"eq": team_id}}}
         self._apply_date_filters_to_linear_filter(team_filter, since)
-        data = await self._api.call("issueIds", {"first": 1, "filter": team_filter})
+        data = await self._api.call("issueIds", {"first": 1, "filter": team_filter, "includeArchived": True})
         return bool(((data.get("issues") or {}).get("nodes") or []))
 
     def _team_issue_checkpoint(self, team_id: str) -> ListingCheckpoint:
-        return self._checkpoint(self.issues_sync_point, f"team_issues_{team_id}")
+        # v2: listings include archived issues. The new key lists each team once in full, so
+        # issues archived before an older checkpoint are picked up.
+        return self._checkpoint(self.issues_sync_point, f"team_issues_v2_{team_id}")
 
     async def _hold_checkpoint(self, checkpoint: ListingCheckpoint, team_key: str, failures: list[str]) -> bool:
         """Some issues of this run could not be stored. Keep the checkpoint so the next
@@ -1714,7 +1716,7 @@ class LinearConnector(BaseConnector):
             try:
                 pages = self._api.pages(
                     "issues", ["issues"], page_size=batch_size, after=after_cursor,
-                    fetch=lambda ds, first, after: ds.issues(first=first, after=after, filter=team_filter),
+                    fetch=lambda ds, first, after: ds.issues(first=first, after=after, filter=team_filter, includeArchived=True),
                 )
                 async for issues_list, end_cursor, _ in pages:
                     if issues_list:
@@ -1726,6 +1728,9 @@ class LinearConnector(BaseConnector):
                         # Linear's team filter also returns sub-team issues; each is synced in its own team's pass.
                         issue_team_id = (issue_data.get("team") or {}).get("id")
                         if issue_team_id and issue_team_id != team_id:
+                            continue
+                        # includeArchived also lists the trash; trashed issues leave through the deletion sync.
+                        if issue_data.get("trashed"):
                             continue
                         try:
                             batch_records.extend(await self._issue_to_records(
@@ -2494,10 +2499,10 @@ class LinearConnector(BaseConnector):
         for start in range(0, len(issue_ids), ISSUE_REFRESH_BATCH):
             batch = issue_ids[start:start + ISSUE_REFRESH_BATCH]
             data = await self._api.run(
-                "issues", lambda ds, ids=batch: ds.issues(first=len(ids), filter={"id": {"in": ids}}))
+                "issues", lambda ds, ids=batch: ds.issues(first=len(ids), filter={"id": {"in": ids}}, includeArchived=True))
             for issue_data in ((data.get("issues") or {}).get("nodes") or []):
                 team_id = (issue_data.get("team") or {}).get("id")
-                if not team_id or team_id not in scope:
+                if not team_id or team_id not in scope or issue_data.get("trashed"):
                     continue
                 known = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id, external_record_id=issue_data.get("id", ""))

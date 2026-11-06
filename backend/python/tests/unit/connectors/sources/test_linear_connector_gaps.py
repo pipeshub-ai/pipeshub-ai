@@ -1233,7 +1233,7 @@ class TestSyncIssuesForTeamsExtended:
         conn = _make_connector()
         conn._now = MagicMock(return_value=1704070000000)
         rg, perms = _make_team_rg()
-        conn.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1700000000000}
+        conn.issues_sync_point.store["team_issues_v2_team-1"] = {"last_sync_time": 1700000000000}
 
         ticket = _ticket_record(source_updated_at=1704067200000)
         file_rec = _file_record()
@@ -1251,7 +1251,7 @@ class TestSyncIssuesForTeamsExtended:
         assert (full_sync_team_ids, failed) == (set(), [])
         # The checkpoint is when this run started, not the newest updatedAt it saw:
         # an issue changed while the list was being read is picked up next time.
-        assert conn.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1704070000000
+        assert conn.issues_sync_point.store["team_issues_v2_team-1"]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
     async def test_skips_empty_batches_from_fetch(self):
