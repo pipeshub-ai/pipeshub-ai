@@ -956,10 +956,12 @@ class IdentityMixin(PgBase):
         for aid, ks in know.items():
             for k in ks:
                 raw, cid = k.get("filters"), k.get("connectorId")
-                parsed = raw if isinstance(raw, dict) else {}
+                parsed = {} if raw is None else raw      # a value that is neither null nor a string passes through, as on Neo4j
                 if isinstance(raw, str):
-                    with contextlib.suppress(ValueError):
+                    try:
                         parsed = json.loads(raw)
+                    except ValueError:
+                        parsed = {}
                 app = apps.get(cid)
                 out[aid]["knowledge"].append({"_key": k["id"], "connectorId": cid, "filters": raw, "filtersParsed": parsed, "name": app.get("name", "") if app else cid,
                                               "type": app.get("type", "APP") if app else "UNKNOWN", "displayName": app.get("name", "") if app else cid})
@@ -982,6 +984,8 @@ class IdentityMixin(PgBase):
         """The live agent with its toolsets, knowledge, skills, MCP servers and ``shareWithOrg``; None when it is not there. No permission is checked: callers
         call ``check_agent_permission`` first. An MCP read that fails leaves the list empty and marks ``mcpServersUnavailable``, so a save cannot detach every server."""
         org = current_org_id()
+        if not self._mine(org_id):
+            return None
         try:
             rows = await self._id_rows("""/* pipeshub:graph.get_agent */ SELECT doc, EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = $1 AND o.coll = 'permission' AND o.from_coll = 'organizations'
                   AND ($3::text IS NULL OR o.from_id = $3) AND o.to_coll = 'agentInstances' AND o.to_id = a.id) AS shared FROM graph.nodes a WHERE a.org_id = $1 AND a.coll = 'agentInstances'
@@ -1022,7 +1026,8 @@ class IdentityMixin(PgBase):
                     AND p.to_coll = 'agentInstances' AND p.doc->>'type' = 'ORG')
                 SELECT a.doc->>'name' AS name, a.id AS "_key", coalesce(c.doc->>'fullName', c.doc->>'name') AS "creatorName" FROM x
                 JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = x.agent AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
-                  AND jsonb_typeof(a.doc->'models') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(a.doc->'models') m WHERE m = $3 OR left(m, length($3) + 1) = $3 || '_')
+                  AND jsonb_typeof(a.doc->'models') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.doc->'models') e, LATERAL (SELECT e #>> '{}' AS m) q
+                    WHERE jsonb_typeof(e) = 'string' AND (q.m = $3 OR left(q.m, length($3) + 1) = $3 || '_'))
                 LEFT JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'users' AND c.id = a.doc->>'createdBy' ORDER BY a.id""", [current_org_id(), org_id, model_key], None)
             return [dict(r) for r in rows]
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
