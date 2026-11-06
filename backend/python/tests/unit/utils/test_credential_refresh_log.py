@@ -186,6 +186,7 @@ class TestRefreshAttempt:
         [end] = _ends(records)
         assert end.levelno == logging.ERROR
         assert log_record_fields(end)["error_class"] == "misconfigured"
+        assert "reason" not in log_record_fields(end)  # not invalid_grant: the grant was never judged
 
     async def test_save_failure_is_an_internal_error_with_one_stack(self, records: _Records) -> None:
         exc = _raised(CredentialSaveError("Could not save refreshed credentials"))
@@ -307,6 +308,48 @@ def _line(records: _Records) -> dict[str, object]:
     return log_record_fields(records[-1])
 
 
+class TestLogRefreshFailure:
+    def _while_handling_a_rejection(self) -> BaseException:
+        rejection = _raised(RefreshTokenInvalidError(f"rejected. {_provider_error(400, 'invalid_grant')}"),
+                            _provider_error(400, "invalid_grant"))
+        try:
+            try:
+                raise rejection
+            except RefreshTokenInvalidError:
+                raise RuntimeError("graph down")  # noqa: B904 - the implicit context is the case under test
+        except RuntimeError as e:
+            return e
+
+    def test_text_from_the_token_endpoint_never_reaches_the_line_or_stack(self, records: _Records) -> None:
+        CR.log_refresh_failure(_logger(), "x.failed", self._while_handling_a_rejection(), level=logging.ERROR)
+
+        [line] = records
+        text = TextFormatter().format(line) + repr(log_record_fields(line))
+        assert line.exc_text
+        assert "error_message" not in log_record_fields(line)
+        for seeded in (SEEDED_RT, SEEDED_SECRET, "idp.example"):
+            assert seeded not in text
+        assert "RuntimeError: <message omitted>" in line.exc_text
+
+    def test_while_handling_cuts_the_unrelated_context(self, records: _Records) -> None:
+        CR.log_refresh_failure(_logger(), "x.failed", self._while_handling_a_rejection(), while_handling=True)
+
+        [line] = records
+        fields = log_record_fields(line)
+        assert (line.levelno, fields["error_class"], fields["error_message"]) == (
+            logging.ERROR, "internal", "RuntimeError: graph down",
+        )
+        assert "http_status" not in fields
+        assert "RefreshTokenInvalidError" not in line.exc_text
+
+    def test_while_handling_keeps_an_explicit_cause(self, records: _Records) -> None:
+        exc = _raised(RuntimeError("wrapped"), _provider_error(503))
+
+        CR.log_refresh_failure(_logger(), "x.failed", exc, while_handling=True)
+
+        assert log_record_fields(records[0])["http_status"] == 503
+
+
 class TestRefreshScope:
     def test_binds_kind_trigger_and_ids(self, records: _Records) -> None:
         with CR.refresh_scope(CR.Kind.CONNECTOR, trigger=CR.Trigger.SCAN, connector_id="c1", provider="jira"):
@@ -322,6 +365,10 @@ class TestRefreshScope:
             assert _line(records)["trigger"] == "on_demand"
         with CR.refresh_scope(CR.Kind.CONNECTOR, trigger=CR.Trigger.SCHEDULED), CR.refresh_scope(CR.Kind.CONNECTOR):
             assert _line(records)["trigger"] == "scheduled"
+
+    def test_a_sync_trigger_is_not_taken_for_a_refresh_trigger(self, records: _Records) -> None:
+        with log_fields(trigger="boot"), CR.refresh_scope(CR.Kind.CONNECTOR, connector_id="c1"):
+            assert _line(records)["trigger"] == "on_demand"
 
     def test_binds_the_org_as_a_job_when_none_is_bound(self, records: _Records) -> None:
         with CR.refresh_scope(CR.Kind.CONNECTOR, org_id="o1"):

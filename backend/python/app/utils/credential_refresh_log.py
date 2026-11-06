@@ -8,6 +8,8 @@
 - Outer handlers log :func:`log_check_failed`, never an ``end``; the failure the choke point already
   logged drops to DEBUG there.
 - Strike handlers log only their decision (:func:`log_strike`, :func:`log_deauthenticated`).
+- Every other failure line uses :func:`log_refresh_failure`, never plain ``log_failure``: no text the
+  token endpoint answered reaches a line or a stack.
 """
 
 import asyncio
@@ -80,10 +82,10 @@ def org_of(doc: Mapping[str, object] | None) -> str | None:
 @contextmanager
 def refresh_scope(kind: Kind, *, trigger: Trigger | None = None, org_id: str | None = None,
                   **ids: object) -> Iterator[None]:
-    """Bind which credential and why on every line in the block. ``trigger=None`` keeps the bound
-    one, else ``on_demand``. ``org_id`` is bound as a job only when no org is bound: an ambient org
-    (a request, a sync run, a service token) wins."""
-    if trigger is None and "trigger" not in current_log_fields():
+    """Bind which credential and why on every line in the block. ``trigger=None`` keeps the trigger
+    of an enclosing refresh scope, else ``on_demand`` (never a sync's own ``trigger``). ``org_id`` is
+    bound as a job only when no org is bound: an ambient org (a request, a sync run, a service token) wins."""
+    if trigger is None and "refresh_kind" not in current_log_fields():
         trigger = Trigger.ON_DEMAND
     ambient = org_context.peek()
     with log_fields(refresh_kind=kind, trigger=trigger, **ids), _job_org(
@@ -128,9 +130,11 @@ async def refresh_attempt(logger: logging.Logger, *, once_key: str) -> AsyncIter
     log_event(logger, EVENT_END, outcome="success", reason=attempt.reason, duration_ms=_ms_since(start))
 
 
-def log_check_failed(logger: logging.Logger, exc: BaseException, *, once_key: str) -> None:
+def log_check_failed(logger: logging.Logger, exc: BaseException, *, once_key: str, while_handling: bool = False) -> None:
     """An outer handler's failure line: DEBUG when the attempt's ``end`` already logged ``exc``,
-    the full line for errors raised outside the attempt (loading the token, scheduling)."""
+    the full line for errors raised outside the attempt (loading the token, scheduling).
+    ``while_handling``: see :func:`log_refresh_failure`."""
+    _new_failure(exc, while_handling=while_handling)
     _log_failed(logger, EVENT_CHECK_FAILED, exc, once_key)
 
 
@@ -152,6 +156,27 @@ def log_deauthenticated(logger: logging.Logger, *, reason: str, strikes: int, pa
     log_event(logger, EVENT_DEAUTHENTICATED, level=logging.WARNING, reason=reason, strikes=strikes, path=path, **fields)
 
 
+def log_refresh_failure(
+    logger: logging.Logger, event: str, exc: BaseException, /, *, level: int | None = None,
+    error_class: str | None = None, while_handling: bool = False, **fields: object,
+) -> None:
+    """``log_failure`` for every failure line of a refresh service. When anything in the chain came
+    from the token endpoint, its text is left out of the line and the stack: it can quote the refresh
+    token, the token URL or the redirect URI in prose the redactor cannot recognise. Its status and
+    OAuth code are fields instead. An error raised while handling a rejected refresh carries that
+    rejection as its context, so plain ``log_failure`` is not safe anywhere on these paths.
+
+    ``while_handling=True``: ``exc`` was raised while another failure (the rejection) was being handled
+    and is not caused by it, so that context is left out of its class, fields and stack, as with
+    ``raise ... from None``. Only for an exception the caller swallows."""
+    _new_failure(exc, while_handling=while_handling)
+    log_failure(
+        logger, event, exc, level=level, error_class=error_class,
+        http_status=_first(exc, _status), oauth_error=_first(exc, _oauth_error),
+        include_error_text=_first(exc, _from_token_endpoint) is None, **fields,
+    )
+
+
 def _log_failed(logger: logging.Logger, event: str, exc: BaseException, once_key: str, **fields: object) -> None:
     if isinstance(exc, RecursionError):
         # No stack and no text: formatting a RecursionError's frames can recurse again. The tag
@@ -163,17 +188,18 @@ def _log_failed(logger: logging.Logger, event: str, exc: BaseException, once_key
         return
     reason = _reason(exc)
     cls = classify_error(exc)
-    if cls != "misconfigured":
-        cls = ERROR_CLASS_BY_REASON.get(reason, cls)
+    tagged = ERROR_CLASS_BY_REASON.get(reason)
+    if cls == "misconfigured" and tagged not in (None, cls):
+        reason = None  # the provider rejected our client, not the grant the tag names
+    elif tagged:
+        cls = tagged
     quiet = cls == "misconfigured" and not log_once(f"{JOB}:{once_key}", MISCONFIGURED_REPEAT_S)
-    status = _first(exc, _status)
-    log_failure(
-        logger, event, exc, level=logging.DEBUG if quiet else None, error_class=cls, reason=reason,
-        http_status=status, oauth_error=_first(exc, _oauth_error),
-        # A token endpoint's answer can quote the refresh token in prose the redactor cannot recognise;
-        # the status and the OAuth code say why.
-        include_error_text=status is None, **fields,
-    )
+    log_refresh_failure(logger, event, exc, level=logging.DEBUG if quiet else None, error_class=cls, reason=reason, **fields)
+
+
+def _new_failure(exc: BaseException, *, while_handling: bool) -> None:
+    if while_handling and exc.__cause__ is None:
+        exc.__suppress_context__ = True
 
 
 def _first(exc: BaseException, read: Callable[[BaseException], object]) -> object:
@@ -200,6 +226,11 @@ def _reason(exc: BaseException) -> str | None:
 
 def _oauth_error(link: BaseException) -> str | None:
     return _str_attr(link, "error_code")
+
+
+def _from_token_endpoint(link: BaseException) -> bool | None:
+    tagged_rejection = _str_attr(link, "refresh_reason") == "invalid_grant"  # its message embeds the endpoint's answer
+    return True if _status(link) is not None or _oauth_error(link) or tagged_rejection else None
 
 
 def _status(link: BaseException) -> int | None:

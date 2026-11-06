@@ -32,11 +32,12 @@ from app.utils.structured_logging import DefaultLoggingProvider
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-LOGGER = "connector_service.credential_refresh"
+LOGGER = "connector_service.refresh"
 TYPE = "testapp"
 SEEDED_RT = "rt-SEEDED-0123456789abcdef"
 SEEDED_SECRET = "cs-SEEDED-fedcba9876543210"
-INVALID_GRANT = (400, '{"error": "invalid_grant", "error_description": "Token is not active"}')
+# Providers echo the refresh token in prose (the review's F1 body): no redactor pattern matches it.
+INVALID_GRANT = (400, f'{{"error": "invalid_grant", "error_description": "refresh token {SEEDED_RT} is not active"}}')
 
 
 class FakeTokenEndpoint:
@@ -191,7 +192,7 @@ def _fields(record: logging.LogRecord) -> dict[str, object]:
 def _assert_no_secrets(caplog: pytest.LogCaptureFixture) -> None:
     for record in caplog.records:
         text = TextFormatter().format(record) + repr(log_record_fields(record))
-        for seeded in (SEEDED_RT, SEEDED_SECRET, "idp.example", "Token is not active"):
+        for seeded in (SEEDED_RT, SEEDED_SECRET, "idp.example", "localhost/cb", "is not active"):
             assert seeded not in text
 
 
@@ -314,10 +315,17 @@ class TestFailedRefresh:
         endpoint.answers = [INVALID_GRANT] * 3
         config.store[_key("c1")] = _expired()
         _connectors(graph, _doc("c1", "o1"))
+        graph.get_document = AsyncMock(return_value={"orgId": "o1", "type": "Test App"})
+        published_under: list[str | None] = []
+        service.set_messaging_producer(MagicMock(send_message=AsyncMock(
+            side_effect=lambda **_: published_under.append(oc.peek().org_id if oc.peek() else None),
+        )))
 
         for _ in range(trs.MAX_REFRESH_TOKEN_INVALID_FAILURES):
             await service._refresh_all_tokens()
 
+        # The one effect beyond logging: the appDisabled envelope now carries the connector's org (signed when ENVELOPE_SIGN=true).
+        assert published_under == ["o1"]
         ends = _events(caplog, CR.EVENT_END)
         assert [r.levelno for r in ends] == [logging.WARNING] * 3
         assert {(f["error_class"], f["reason"], f["oauth_error"], f["http_status"]) for f in map(_fields, ends)} == {
@@ -329,10 +337,54 @@ class TestFailedRefresh:
         [deauth] = _events(caplog, CR.EVENT_DEAUTHENTICATED)
         assert deauth.levelno == logging.WARNING
         assert _fields(deauth).items() >= {
-            "reason": "refresh_token_invalid", "strikes": 3, "path": "background", "app_disabled_event": "direct_write",
+            "reason": "refresh_token_invalid", "strikes": 3, "path": "background", "app_disabled_event": "sent",
             "connector_id": "c1", "org_id": "o1", "trigger": "scan",
         }.items()
         assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+        _assert_no_secrets(caplog)
+
+    @pytest.mark.parametrize(("break_it", "event", "cls"), [
+        (lambda svc, graph: setattr(graph, "update_node", AsyncMock(side_effect=RuntimeError("graph down"))),
+         CR.EVENT_DEAUTHENTICATE_FAILED, "internal"),
+        (lambda svc, graph: svc.set_messaging_producer(MagicMock(send_message=AsyncMock(side_effect=TypeError("bad message")))),
+         CR.EVENT_APP_DISABLED_EVENT_FAILED, "internal"),
+    ])
+    async def test_failure_while_handling_a_rejection_keeps_the_provider_text_out_of_the_stack(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock,
+        endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture, break_it: object, event: str, cls: str,
+    ) -> None:
+        # Review F1: the deauth runs inside `except RefreshTokenInvalidError`, so its error carries the rejection
+        # (token URL, redirect URI, body echoing the refresh token) as __context__.
+        endpoint.answers = [INVALID_GRANT] * 3
+        config.store[_key("c1")] = _expired()
+        _connectors(graph, _doc("c1", "o1"))
+        graph.get_document = AsyncMock(return_value={"orgId": "o1", "type": "Test App"})
+        break_it(service, graph)
+
+        for _ in range(trs.MAX_REFRESH_TOKEN_INVALID_FAILURES):
+            await service._refresh_all_tokens()
+
+        [line] = _events(caplog, event)
+        # Classed by its own error, not by the rejection it interrupted; the rejection is on the attempt's end line.
+        assert (line.levelno, _fields(line)["error_class"]) == (logging.ERROR, cls)
+        assert "http_status" not in _fields(line)
+        assert line.exc_text
+        assert "RefreshTokenInvalidError" not in line.exc_text
+        _assert_no_secrets(caplog)
+
+    async def test_strike_handler_failing_in_a_timer_keeps_the_provider_text_out(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, endpoint: FakeTokenEndpoint,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        endpoint.answers = [INVALID_GRANT]
+        config.store[_key("c1")] = _expired()
+        service._stored_refresh_token = AsyncMock(side_effect=RuntimeError("config store down"))
+
+        await service._delayed_refresh("c1", TYPE, 0)
+
+        [line] = _events(caplog, CR.EVENT_CHECK_FAILED)
+        assert line.levelno == logging.ERROR
+        assert _fields(line).items() >= {"connector_id": "c1", "trigger": "scheduled", "error_class": "internal"}.items()
         _assert_no_secrets(caplog)
 
     async def test_superseded_rejection_is_a_strike_that_does_not_count(
@@ -472,7 +524,7 @@ class TestDeauthentication:
         await service._mark_connector_unauthenticated("c1")
 
         [line] = _events(caplog, CR.EVENT_DEAUTHENTICATE_FAILED)
-        assert (line.levelno, _fields(line)["outcome"]) == (logging.ERROR, "failure")
+        assert (line.levelno, _fields(line)["outcome"], _fields(line)["reason"]) == (logging.ERROR, "failure", "not_updated")
 
     @pytest.mark.parametrize(("send", "sent", "failure_level"), [
         (AsyncMock(), "sent", None),

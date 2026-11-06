@@ -207,7 +207,13 @@ Every line in a refresh carries `refresh_kind` (`connector`, `toolset`, `mcp`), 
 kind's ids (`connector_id`, `connector_type`), `provider`, and the org as a job context when nothing else bound one. A timer
 firing gets its own `sys-credential_refresh-` root, with `scheduled_by` naming the root that armed it. Exactly one `end` is
 written per attempt, by the code that calls the token endpoint. A misconfigured credential (no OAuth client, the provider
-rejected our client) is ERROR with a stack once per credential per hour and DEBUG in between.
+rejected our client) is ERROR with a stack once per credential per hour and DEBUG in between. `trigger` is set by the refresh
+scope and never inherited from a sync's own `trigger`.
+
+Nothing a token endpoint answered is logged as text: its body, and the token URL and redirect URI in the exception message, can
+quote the refresh token in prose no redactor recognises. When the exception chain holds such an answer, every failure line of
+a refresh service (`log_refresh_failure`) leaves the text out of `error_message` and the stack (each exception shows as
+`Type: <message omitted>`) and logs `http_status` and `oauth_error` instead.
 
 ## Redaction
 

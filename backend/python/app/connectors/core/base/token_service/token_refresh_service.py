@@ -36,13 +36,13 @@ from app.utils.credential_refresh_log import (
     fresh_root,
     log_check_failed,
     log_deauthenticated,
+    log_refresh_failure,
     log_scheduled,
     log_strike,
     org_of,
     refresh_attempt,
     refresh_scope,
 )
-from app.utils.error_class import log_failure
 from app.utils.logging_fields import log_event
 from app.utils.oauth_config import (
     carry_oauth_url_settings,
@@ -108,7 +108,7 @@ class TokenRefreshService:
         self.configuration_service = configuration_service
         self.graph_provider = graph_provider
         self._messaging_producer = messaging_producer
-        self.logger = logging.getLogger("connector_service.credential_refresh")
+        self.logger = logging.getLogger("connector_service.refresh")
         self._refresh_tasks: dict[str, asyncio.Task] = {}
         self._scheduled_at: dict[str, datetime] = {}  # last logged refresh time, so a re-arm of the same one is DEBUG
         self._running = False
@@ -742,9 +742,9 @@ class TokenRefreshService:
                     path="background", app_disabled_event="sent" if event_sent else "direct_write",
                 )
             else:
-                log_event(self.logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure")
+                log_event(self.logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_updated")
         except Exception as e:
-            log_failure(self.logger, EVENT_DEAUTHENTICATE_FAILED, e, level=logging.ERROR)
+            log_refresh_failure(self.logger, EVENT_DEAUTHENTICATE_FAILED, e, level=logging.ERROR, while_handling=True)
 
     async def _send_app_disabled_event(self, connector_id: str) -> bool:
         """Publish the platform appDisabled event for this connector instance."""
@@ -785,7 +785,7 @@ class TokenRefreshService:
             return True
         except Exception as e:
             # The caller falls back to writing isActive itself.
-            log_failure(self.logger, EVENT_APP_DISABLED_EVENT_FAILED, e)
+            log_refresh_failure(self.logger, EVENT_APP_DISABLED_EVENT_FAILED, e, while_handling=True)
             return False
 
     async def _perform_token_refresh(
@@ -1190,7 +1190,9 @@ class TokenRefreshService:
             self.logger.debug(f"Token refresh task cancelled for connector {connector_id} (likely rescheduled)")
             raise
         except Exception as e:
-            self.logger.error(f"Error in delayed token refresh for connector {connector_id}: {e}", exc_info=True)
+            # Reached only when the strike handler itself fails, inside `except RefreshTokenInvalidError`.
+            with self._scope(connector_id, connector_type, trigger=Trigger.SCHEDULED):
+                log_check_failed(self.logger, e, once_key=_once_key(connector_id), while_handling=True)
         finally:
             # Remove task from tracking only if it's this task
             if connector_id in self._refresh_tasks and self._refresh_tasks[connector_id].done():
