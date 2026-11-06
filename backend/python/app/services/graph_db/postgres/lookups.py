@@ -668,7 +668,7 @@ class LookupsMixin(PgBase):
                     AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 8)
                 SELECT u.doc->>'email' AS email FROM anc JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.to_coll = anc.coll
                   AND p.to_id = anc.id AND p.doc->>'role' = 'OWNER' AND p.doc->>'type' = 'USER'
-                  JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = p.from_id ORDER BY anc.depth, u.id LIMIT 1""", org, record_id), transaction)
+                  JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = p.from_id AND u.doc->>'email' IS NOT NULL ORDER BY anc.depth, u.id LIMIT 1""", org, record_id), transaction)
             return rows[0]["email"] if rows else None
         except Exception as e:
             self.logger.error("Get record owner email failed: %s", e)
