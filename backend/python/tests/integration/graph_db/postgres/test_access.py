@@ -168,7 +168,7 @@ async def test_a_flag_the_database_cannot_read_fails_the_check_as_the_cast_did(w
     for page in (5000, 0):                                   # the vetted read, then the plain statement
         monkeypatch.setattr("app.services.graph_db.postgres.access._VRID_PAGE", page)
         with pytest.raises(PermissionVerificationUnavailableError):
-            await w.p.filter_accessible_virtual_record_ids(["v1"], "u", w.org)
+            await w.p.check_access("u", w.org, virtual_record_ids=["v1"])
 
 
 async def test_a_record_of_a_knowledge_base_opens_by_membership_of_its_own_app_only(w: World) -> None:
