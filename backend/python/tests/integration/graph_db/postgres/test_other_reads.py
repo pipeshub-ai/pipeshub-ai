@@ -145,6 +145,17 @@ async def test_a_failed_all_team_fill_changes_nothing_and_goes_through_when_retr
         await w.p.ensure_all_team_with_users(w.org)
     assert await w.p.get_document(f"all_{w.org}", "teams") is None and await members(w) == {}          # the team made in the same unit went with it
     monkeypatch.setattr(w.p, "batch_create_edges", real)
+    rows = w.p._id_rows
+
+    async def users_down(sql: str, *a: object, **k: object) -> list:
+        if "pipeshub:graph.get_users" in sql:
+            raise RuntimeError("store down")
+        return await rows(sql, *a, **k)
+    monkeypatch.setattr(w.p, "_id_rows", users_down)
+    with pytest.raises(RuntimeError):                                                                     # a failed user read is not an empty org
+        await w.p.ensure_all_team_with_users(w.org)
+    assert await w.p.get_document(f"all_{w.org}", "teams") is None and await members(w) == {}
+    monkeypatch.setattr(w.p, "_id_rows", rows)
     await w.p.ensure_all_team_with_users(w.org)
     assert await members(w) == {"a": "OWNER", "b": "READER"}
 

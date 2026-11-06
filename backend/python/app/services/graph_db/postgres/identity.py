@@ -216,11 +216,12 @@ class IdentityMixin(PgBase):
 
     @_soft(list)
     async def get_users(self, org_id: str, *, active: bool = True) -> list[dict]:
-        if not self._mine(org_id):
-            return []
+        return await self._org_users(None, active=active) if self._mine(org_id) else []
+
+    async def _org_users(self, tid: str | None, *, active: bool) -> list[dict]:
         rows = await self._id_rows("""/* pipeshub:graph.get_users */ SELECT u.doc FROM graph.edges b JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
             WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $1 AND b.doc->>'entityType' = 'ORGANIZATION'
-              AND (NOT $2 OR coalesce((u.doc->>'isActive')::boolean, false))""", [current_org_id(), active], None)
+              AND (NOT $2 OR coalesce((u.doc->>'isActive')::boolean, false))""", [current_org_id(), active], tid)
         return [_arango(_doc(r["doc"]), "users") for r in rows]
 
     @_soft(lambda: ([], 0))
@@ -894,7 +895,8 @@ class IdentityMixin(PgBase):
         self._require_org(org_id)
         async with self._atomic(None) as tid:
             team_id = await self._all_team(org_id, tid)
-            users = sorted(await self.get_users(org_id, active=True), key=lambda u: u.get("createdAtTimestamp", 0))
+            # the raising read, not get_users: a failed read must not fill the team with nobody and report success
+            users = sorted(await self._org_users(tid, active=True), key=lambda u: u.get("createdAtTimestamp", 0))
             await self._join_all_team(team_id, [k for u in users if (k := u.get("id"))], owner_if_empty=True, tid=tid)
 
     # ---- what an agent still uses, and counts of connector instances ----------------------------------------------------------------
