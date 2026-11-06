@@ -511,3 +511,34 @@ def test_an_empty_enum_is_refused_rather_than_dropping_its_check(key):
     arg = {"name": "p_a", "type": "text[]", "max_items": 10, key: []}
     with pytest.raises(vetted.ManifestError, match="non-empty list"):
         vetted.parse({"name": "kt.w_x", "class": "read", "scope": "org", "returns": "int", "no_org": "0", "body": "BEGIN RETURN 1; END;", "args": [arg]})
+
+
+def test_the_compose_image_role_script_has_the_layout_of_bootstrap_roles():
+    """deployment/docker-compose/postgres/pg-roles.sh builds the roles for the Compose install by itself; it must not drift from
+    db.bootstrap_roles (a missing vetted owner makes the migrations fail with 'the vetted owner ... is missing')."""
+    import re
+
+    from db import bootstrap_roles as b
+
+    text = (Path(__file__).resolve().parents[3] / "deployment/docker-compose/postgres/pg-roles.sh").read_text()
+    sql = re.sub(r"--[^\n']*(?=\n)", "", text)                     # comments
+    flat = lambda s: re.sub(r"\s+", " ", s).strip()
+    vetted = {f"pipeshub_vetted_{s}" for s in b.SHIPPED_VETTED}
+    quoted = set(re.findall(r"'(pipeshub_\w+)'", sql))
+    assert quoted == {r for r, _ in b.ROLES} | vetted
+    logins = set(re.findall(r"\('(pipeshub_\w+)', :'\w+'\)", sql)) | {"pipeshub_ro"}
+    assert logins == {r for r, login in b.ROLES if login}
+    assert set(re.findall(r":(PG_\w+_PASSWORD)\b", text)) | set(re.findall(r"\w+:(PG_\w+_PASSWORD)", text)) == set(b.PASSWORD_VARS.values())
+    grants, handed_out = set(), set()
+    for roles, members, opts in re.findall(r"GRANT\s+(pipeshub_\w+(?:,\s*pipeshub_\w+)*)\s+TO\s+([\w,\s]+?)\s*(WITH[^;]*)?;", sql):
+        for role in re.split(r",\s*", roles):
+            for member in re.split(r",\s*", members.strip()):
+                if role in vetted:
+                    handed_out.add(role)
+                    assert (member, "ADMIN TRUE", "INHERIT FALSE", "SET FALSE") == ("pipeshub_owner", *re.findall(r"ADMIN TRUE|INHERIT \w+|SET \w+", opts))
+                else:
+                    flags = dict(re.findall(r"(INHERIT|SET) (\w+)", opts))
+                    grants.add((role, member, flags.get("INHERIT", "TRUE") == "TRUE", flags.get("SET", "TRUE") == "TRUE"))
+    assert grants == set(b.GRANTS)
+    assert handed_out == vetted
+    assert flat(b.LARGE_OBJECTS_SQL) in flat(sql)
