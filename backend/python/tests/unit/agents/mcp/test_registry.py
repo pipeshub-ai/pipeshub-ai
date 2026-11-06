@@ -91,6 +91,7 @@ class TestMCPRegistry:
         assert "docusign" in type_ids
         assert "okta" in type_ids
         assert "zoom" in type_ids
+        assert "trello" in type_ids
 
     def test_airtable_catalog_entry(self) -> None:
         registry = MCPRegistry()

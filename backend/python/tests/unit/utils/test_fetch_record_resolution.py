@@ -343,7 +343,7 @@ def _provider(docs: _Docs, **kwargs) -> MagicMock:
     return provider
 
 
-def _asker(*, sent: bool | Exception = True, wait: float = 0.3) -> tuple[ParseNow, AsyncMock]:
+def _asker(*, sent: bool | Exception = True, wait: float = 5) -> tuple[ParseNow, AsyncMock]:
     producer = MagicMock()
     if isinstance(sent, Exception):
         producer.send_message = AsyncMock(side_effect=sent)
