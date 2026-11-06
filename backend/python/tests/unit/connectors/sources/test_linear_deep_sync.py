@@ -671,7 +671,7 @@ class TestSyncIssuesForTeams:
         await connector._sync_issues_for_teams([(rg, [])])
         connector.data_entities_processor.on_new_records.assert_awaited_once()
         # Stored under the team's id (a key can be renamed), at the run's start time.
-        assert connector.issues_sync_point.store == {"team_issues_t1": {
+        assert connector.issues_sync_point.store == {"team_issues_v2_t1": {
             "last_sync_time": 1700000005000, "resume_cursor": "", "resume_since": 0,
             "resume_started_at": 0, "held_runs": 0,
         }}
@@ -697,7 +697,7 @@ class TestSyncIssuesForTeams:
         assert call_count == 2
         assert failed == ["Team T1"]
         assert full_sync_team_ids == {"t1", "t2"}
-        assert set(connector.issues_sync_point.store) == {"team_issues_t2"}
+        assert set(connector.issues_sync_point.store) == {"team_issues_v2_t2"}
 
     @staticmethod
     def _connector_with_issue_pages(*responses: GraphQLResponse) -> tuple[LinearConnector, MagicMock]:
@@ -985,7 +985,7 @@ class TestFetchIssuesForTeamBatch:
         # The first page was handed over and its cursor saved; the listing did not
         # end quietly, so the caller cannot mistake it for complete.
         assert [[r.external_record_id for r, _ in b] for b in batches] == [["i1"]]
-        saved = connector.issues_sync_point.store["team_issues_t1"]
+        saved = connector.issues_sync_point.store["team_issues_v2_t1"]
         assert saved["resume_cursor"] == "cur1"
         assert saved["resume_started_at"] == 1700000005000
         assert saved["last_sync_time"] == 0
@@ -995,7 +995,7 @@ class TestFetchIssuesForTeamBatch:
         connector = _make_connector()
         connector.sync_filters = None
         connector.indexing_filters = None
-        connector.issues_sync_point.store["team_issues_t1"] = {
+        connector.issues_sync_point.store["team_issues_v2_t1"] = {
             "last_sync_time": 0, "resume_cursor": "cur1", "resume_since": 0,
             "resume_started_at": 1700000005000,
         }
@@ -1020,7 +1020,7 @@ class TestFetchIssuesForTeamBatch:
         connector.sync_filters = None
         connector.indexing_filters = None
         connector._extract_files_from_markdown = AsyncMock(return_value=([], []))
-        connector.issues_sync_point.store["team_issues_t1"] = {
+        connector.issues_sync_point.store["team_issues_v2_t1"] = {
             "last_sync_time": 0, "resume_cursor": "stale", "resume_since": 0,
             "resume_started_at": 1700000005000,
         }
@@ -1054,7 +1054,7 @@ class TestFetchIssuesForTeamBatch:
         connector = _make_connector()
         connector.sync_filters = None
         connector.indexing_filters = None
-        connector.issues_sync_point.store["team_issues_t1"] = {
+        connector.issues_sync_point.store["team_issues_v2_t1"] = {
             "last_sync_time": 0, "resume_cursor": "cur1", "resume_since": 0,
             "resume_started_at": 1700000005000,
         }
@@ -1072,7 +1072,7 @@ class TestFetchIssuesForTeamBatch:
                 pass
 
         ds.issues.assert_awaited_once()
-        assert connector.issues_sync_point.store["team_issues_t1"]["resume_cursor"] == "cur1"
+        assert connector.issues_sync_point.store["team_issues_v2_t1"]["resume_cursor"] == "cur1"
 
     @pytest.mark.asyncio
     async def test_issue_that_cannot_be_converted_is_reported_to_the_caller(self) -> None:

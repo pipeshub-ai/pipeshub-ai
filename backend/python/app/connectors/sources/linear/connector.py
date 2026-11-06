@@ -1344,11 +1344,13 @@ class LinearConnector(BaseConnector):
         """Whether the team has any issue the incremental listing would return."""
         team_filter: dict[str, Any] = {"team": {"id": {"eq": team_id}}}
         self._apply_date_filters_to_linear_filter(team_filter, since)
-        data = await self._api.call("issueIds", {"first": 1, "filter": team_filter})
+        data = await self._api.call("issueIds", {"first": 1, "filter": team_filter, "includeArchived": True})
         return bool(((data.get("issues") or {}).get("nodes") or []))
 
     def _team_issue_checkpoint(self, team_id: str) -> ListingCheckpoint:
-        return self._checkpoint(self.issues_sync_point, f"team_issues_{team_id}")
+        # v2: listings include archived issues. The new key lists each team once in full, so
+        # issues archived before an older checkpoint are picked up.
+        return self._checkpoint(self.issues_sync_point, f"team_issues_v2_{team_id}")
 
     async def _hold_checkpoint(self, checkpoint: ListingCheckpoint, team_key: str, failures: list[str]) -> bool:
         """Some issues of this run could not be stored. Keep the checkpoint so the next

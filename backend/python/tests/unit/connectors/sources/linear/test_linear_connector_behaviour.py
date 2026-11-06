@@ -207,7 +207,7 @@ class TestCollaborators:
     def test_team_issue_checkpoint_is_keyed_by_team_id(self) -> None:
         connector = _make_connector()
         checkpoint = connector._team_issue_checkpoint("5f2c-team-uuid")
-        assert checkpoint._key == "team_issues_5f2c-team-uuid"
+        assert checkpoint._key == "team_issues_v2_5f2c-team-uuid"
         assert checkpoint._sync_point is connector.issues_sync_point
 
     def test_per_key_checkpoint_helpers_are_gone(self) -> None:
@@ -882,19 +882,19 @@ class TestRemoveStaleTeams:
     @pytest.mark.asyncio
     async def test_removed_team_forgets_its_issue_checkpoint(self) -> None:
         connector = _make_connector()
-        connector.issues_sync_point.store["team_issues_team-gone"] = {
+        connector.issues_sync_point.store["team_issues_v2_team-gone"] = {
             "last_sync_time": NOW - 1000, "resume_cursor": "cursor-1",
             "resume_since": 5, "resume_started_at": NOW - 500, "held_runs": 1,
         }
-        connector.issues_sync_point.store["team_issues_team-kept"] = {"last_sync_time": NOW - 1000}
+        connector.issues_sync_point.store["team_issues_v2_team-kept"] = {"last_sync_time": NOW - 1000}
         connector._reconciler.remove_stale_teams = AsyncMock(return_value=["team-gone"])
 
         await connector._remove_stale_teams({"team-kept"})
 
         # If the team comes back it is read from the beginning.
-        assert connector.issues_sync_point.store["team_issues_team-gone"] == {
+        assert connector.issues_sync_point.store["team_issues_v2_team-gone"] == {
             "last_sync_time": 0, "resume_cursor": "", "resume_since": 0, "resume_started_at": 0, "held_runs": 0}
-        assert connector.issues_sync_point.store["team_issues_team-kept"] == {"last_sync_time": NOW - 1000}
+        assert connector.issues_sync_point.store["team_issues_v2_team-kept"] == {"last_sync_time": NOW - 1000}
 
 
 class TestDateScope:
@@ -1358,7 +1358,7 @@ class TestChangeProbe:
 
         connector = _make_connector()
         connector.sync_filters = None
-        connector.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1700000000000}
+        connector.issues_sync_point.store["team_issues_v2_team-1"] = {"last_sync_time": 1700000000000}
         datasource = MagicMock()
         datasource.execute_operation = AsyncMock(return_value=GraphQLResponse(
             success=True, data={"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}))
@@ -1375,7 +1375,7 @@ class TestChangeProbe:
         assert operation == "issueIds" and variables["first"] == 1
         assert variables["filter"]["team"] == {"id": {"eq": "team-1"}}
         assert "gt" in variables["filter"]["updatedAt"]
-        assert connector.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] > 1700000000000
+        assert connector.issues_sync_point.store["team_issues_v2_team-1"]["last_sync_time"] > 1700000000000
         assert connector_module.ISSUE_PAGE_SIZE == 50
 
     @pytest.mark.asyncio
@@ -1527,7 +1527,7 @@ class TestPartialScans:
         assert failed == ["Engineering"]
         assert connector.full_sync_coverage().complete is False
         connector.data_entities_processor.on_new_records.assert_awaited_once()
-        stored = connector.issues_sync_point.store["team_issues_team-1"]
+        stored = connector.issues_sync_point.store["team_issues_v2_team-1"]
         assert not stored.get("last_sync_time"), "a partly read team moved its checkpoint"
         assert stored["resume_cursor"] == "cur1"
 
@@ -1545,7 +1545,7 @@ class TestPartialScans:
         assert failed == []
         assert connector.full_sync_coverage().complete is True
         assert connector.data_entities_processor.on_new_records.await_count == 2
-        stored = connector.issues_sync_point.store["team_issues_team-1"]
+        stored = connector.issues_sync_point.store["team_issues_v2_team-1"]
         assert stored["last_sync_time"] == NOW and stored["resume_cursor"] == ""
 
     @pytest.mark.asyncio
