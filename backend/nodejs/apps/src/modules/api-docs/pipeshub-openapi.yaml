@@ -50148,7 +50148,8 @@ paths:
         needs `can_share`. Converting a regular agent into a service-account
         agent (changing `isServiceAccount` from `false` to `true`) is limited
         to the agent's owner or an organization administrator, because a
-        service-account agent searches with its creator's access. A conversion
+        service-account agent searches with its creator's access unless it is
+        bound to a service account (`serviceAccountUserId`). A conversion
         may turn on `shareWithOrg` in the same request without `can_share`.
         Resending `isServiceAccount: true` for an agent that is already a
         service-account agent needs no extra permission.
