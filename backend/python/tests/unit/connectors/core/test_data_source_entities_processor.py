@@ -6401,7 +6401,7 @@ def _make_code_record(
     connector_id: str = "conn-1",
     external_record_id: str = "/ns/-/blob/HEAD/src/new.py",
     external_revision_id: str = "sha-new",
-    indexing_status: str | None = None,
+    indexing_status: str = ProgressStatus.QUEUED.value,
     is_internal: bool = False,
     version: int = 0,
 ) -> MagicMock:
@@ -6580,7 +6580,10 @@ class TestOnRecordsMovedReindex:
         tx_store.get_record_by_external_id = AsyncMock(return_value=None)
 
         new_record = _make_code_record(record_id="brand-new")
-        processed_record = _make_code_record(record_id="brand-new", is_internal=False)
+        # What the save returns for a new record it wants indexed.
+        processed_record = _make_code_record(
+            record_id="brand-new", is_internal=False, indexing_status=ProgressStatus.NOT_STARTED.value,
+        )
 
         proc = _make_processor()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -7386,6 +7389,7 @@ class TestOnRecordsMovedKbUpload:
         tx_store = _make_tx_store()
         tx_store.get_record_by_external_id = AsyncMock(return_value=None)
         new_record = _make_kb_upload_record()
+        new_record.indexing_status = ProgressStatus.NOT_STARTED.value  # as the save leaves a new record
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=(new_record, [])):
@@ -8661,6 +8665,7 @@ class TestRecordBatchTransactions:
         async def process_record(record, permissions, store, moved, **kwargs) -> tuple:
             index = int(record.external_record_id)
             record.id = f"rec-{index}"
+            record.indexing_status = ProgressStatus.NOT_STARTED.value  # a save that asks for indexing
             return await process(record, index, size, moved)
 
         proc._process_record = process_record
