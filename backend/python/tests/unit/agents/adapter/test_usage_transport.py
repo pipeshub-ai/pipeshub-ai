@@ -165,7 +165,7 @@ class TestEachCallLogsOneEndLine:
             _ = [e async for e in transport.stream([UserMessage(content="hi")], _TOOLS)]
 
         [record] = _end_lines(caplog)
-        assert record.levelno == logging.INFO  # the retry or llm_call.failed line judges it
+        assert record.levelno == logging.DEBUG  # the retry or llm_call.failed line reports it
         fields = _fields(record)
         assert (fields["error_class"], fields["status"], fields["error_type"], fields["outcome"]) == (
             "upstream_5xx", 502, "TransportError", "failure",
@@ -252,6 +252,33 @@ class TestEachCallLogsOneEndLine:
         for formatter in (TextFormatter(), JsonFormatter()):
             line = formatter.format(record)
             assert "sentinel" not in line, line
+
+    async def test_a_finished_call_is_info_and_a_failed_attempt_is_debug(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        inner = ScriptedTransport().add_text("ok", usage=_USAGE).add_error(
+            TransportError("slow down", status_code=429, retryable=True),
+        )
+        transport = UsageReportingTransport(inner, _Ledger().add)
+        with caplog.at_level(logging.DEBUG, logger="app.agents.agent_loop.usage_transport"):
+            await transport.complete([UserMessage(content="hi")])
+            with pytest.raises(TransportError):
+                await transport.complete([UserMessage(content="hi")])
+            inner.add_error(TransportError("down", status_code=503))
+            with pytest.raises(TransportError):
+                await transport.complete_structured([UserMessage(content="hi")], {"type": "object"})
+
+        assert [(r.levelno, _fields(r)["outcome"]) for r in _end_lines(caplog)] == [
+            (logging.INFO, "success"), (logging.DEBUG, "failure"), (logging.DEBUG, "failure"),
+        ]
+
+    async def test_an_unnamed_model_is_left_out(self, caplog: pytest.LogCaptureFixture) -> None:
+        inner = ScriptedTransport()
+        inner._model = ""
+        with caplog.at_level(logging.DEBUG, logger="app.agents.agent_loop.usage_transport"):
+            await UsageReportingTransport(inner, _Ledger().add).complete([UserMessage(content="hi")])
+
+        assert "model" not in _fields(_end_lines(caplog)[0])
 
     async def test_a_logging_failure_keeps_the_response(self) -> None:
         with patch("app.agents.agent_loop.usage_transport.log_event", side_effect=RuntimeError("log bug")):

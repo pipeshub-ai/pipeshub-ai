@@ -38,9 +38,10 @@ class UsageReportingTransport(LLMTransport):
     `sink` as `(source, usage)`. A call that raises, or a stream abandoned
     before its final event, has no usage to report.
 
-    Every call, finished or not, also logs one INFO `llm_call.end`: ids, sizes
-    and enums only, never messages or output. A failure is INFO here too: the
-    retry hook or the agent's `llm_call.failed` is the line that judges it."""
+    Every call, finished or not, also logs one `llm_call.end`: ids, sizes and
+    enums only, never messages or output. INFO when it finished; DEBUG when it
+    failed, since the retry hook's `llm_call.retry` or the agent's `llm_call.failed`
+    is the line that reports it."""
 
     def __init__(self, inner: LLMTransport, sink: Callable[[str, TokenUsage], None]) -> None:
         self._inner = inner
@@ -70,7 +71,7 @@ class UsageReportingTransport(LLMTransport):
     ) -> None:
         try:
             fields: dict[str, Any] = {
-                "source": current_llm_usage_source(), "provider": self.provider, "model": self.model_name,
+                "source": current_llm_usage_source(), "provider": self.provider, "model": self.model_name or None,
                 "duration_ms": round((time.perf_counter() - started) * 1000), "tools_offered": len(tools or ()),
             }
             if response is not None:
@@ -95,7 +96,7 @@ class UsageReportingTransport(LLMTransport):
                     "error_type": type(exc).__name__ if exc is not None else None,
                     "status": exc.status_code if isinstance(exc, TransportError) else None,
                 }
-            log_event(logger, "llm_call.end", **fields)
+            log_event(logger, "llm_call.end", level=logging.INFO if response is not None else logging.DEBUG, **fields)
         except Exception:
             # Logging must never cost the call it describes.
             logger.debug("llm_call.end not logged", exc_info=True)
