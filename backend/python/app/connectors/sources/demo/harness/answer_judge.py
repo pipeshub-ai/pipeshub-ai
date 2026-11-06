@@ -122,8 +122,10 @@ early get a 12% discount" conflicts: grandfathering, a phased roll-out or an \
 incentive to move early says how and when the move happens, not that it does \
 not happen. Such a sentence conflicts only when it reverses the plan within the \
 claim's own subject, like "Existing Enterprise customers stay on per-seat \
-pricing for good", or when the claim itself is about those customers or that \
-period.
+pricing for good", or when it breaks a deadline or a coverage the claim \
+itself states: "Existing customers keep per-seat pricing until 2028" \
+conflicts with "Every Enterprise customer moves to the platform fee by June \
+2026".
 
 Be strict. None of these supports a claim:
 - a hedged or uncertain statement ("may", "might", "I think", "probably", \

@@ -796,9 +796,18 @@ cases:
     about: the new model is only a pilot; Enterprise as a whole keeps per-seat pricing
     answer: |
       The platform fee plus usage bands is only being piloted with five customers in 2026.
-      Everyone else on Enterprise stays on per-seat pricing.
+      There is no plan to move the rest of Enterprise off per-seat pricing.
     claims:
       - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
+        expect: contradicted
+
+  - id: pricing-transition-misses-the-claimed-deadline
+    about: transition terms conflict when they break a deadline the claim itself states
+    answer: |
+      New Enterprise customers get an annual platform fee plus usage bands from 2026.
+      Existing Enterprise customers keep per-seat pricing until 2028.
+    claims:
+      - state: "Every Enterprise customer moves to the platform fee by June 2026."
         expect: contradicted
 
   - id: pricing-target-fee

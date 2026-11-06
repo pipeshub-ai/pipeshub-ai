@@ -313,7 +313,7 @@ the `JUDGE_*` settings. The calibration summary and its JSON (`provider`,
 
 ### Calibration
 
-`answer_judge_calibration.yaml` holds 93 hand-labelled hard cases (113 claims):
+`answer_judge_calibration.yaml` holds 94 hand-labelled hard cases (114 claims):
 negation, "under" against "up to and including", the right amount on the
 wrong subject, time phrases ("will sign off on Monday"), hedging, a fact buried
 in a long answer, answers that state a fact and also something incompatible
