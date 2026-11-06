@@ -31,6 +31,7 @@ from .ops import (
     _degrees,
     _key_of,
     _readable_blocks,
+    _readable_neighbour_rows,
     _readable_only,
     _repo_matches,
     _unwrap,
@@ -543,6 +544,7 @@ _ENTRY_FILES = re.compile(
 _ENTRY_KINDS = {"function", "method"}
 _ENTRY_SCAN_BLOCKS = 5000
 _ENTRY_BATCH = 400
+_ENTRY_CALLER_PAGE = 5000
 DEFAULT_ENTRY_LIMIT = 30
 
 
@@ -596,13 +598,15 @@ async def entry_points_impl(
 
     called: set[str] = set()
     keys = [k for b in candidates if (k := _key_of(b))]
+    callers_cut = False
     for start in range(0, len(keys), _ENTRY_BATCH):
-        rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
-            node_keys=keys[start:start + _ENTRY_BATCH], node_collection=_BLOCKS,
-            relationship_types=[RecordRelations.CALLS.value], direction="inbound",
-            limit=50000, raise_on_error=True,
+        # Only callers the caller can read count: an unreadable file's call must not hide an entry point.
+        rows, _, spent = await _readable_neighbour_rows(
+            graph_provider, org_id, access, keys[start:start + _ENTRY_BATCH], [RecordRelations.CALLS.value],
+            "inbound", page=_ENTRY_CALLER_PAGE, budget=50000,
         )
-        called |= {r.get("anchorKey") for r in rows or []}
+        callers_cut = callers_cut or spent
+        called |= {r.get("anchorKey") for r in rows}
     uncalled = [b for b in candidates if _key_of(b) not in called]
     await attach_file_paths(graph_provider, org_id, uncalled)
 
@@ -629,7 +633,8 @@ async def entry_points_impl(
         **({"coverage": gap} if (gap := coverage_for(candidates)) else {}),
         "entry_points": points,
         "total": len(uncalled),
-        "truncated": len(uncalled) > limit or scan_capped,
+        "truncated": len(uncalled) > limit or scan_capped or callers_cut,
+        **({"incomplete": True} if callers_cut else {}),
     }
     if scan_capped:
         out["note"] = (f"Only the first {_ENTRY_SCAN_BLOCKS} symbols were scanned; pass `repo` "
