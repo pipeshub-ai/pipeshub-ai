@@ -354,6 +354,7 @@ class TestMemoryTable:
                 out = table[kind][n]
                 assert "error" not in out, (kind, n, out)
                 assert (out["created"], out["deleted"]) == counts(n), (kind, n, out)
+                assert out["pool_bytes"] > 0, (kind, n, out)  # a run that ended between polls gives no sample
 
         def per_member(kind: str) -> float:
             lo, hi = SCALES[0], SCALES[-1]
@@ -397,24 +398,28 @@ class TestMemoryTable:
                         )
                     ).consume()
                     sessions = [provider.client.driver.session(database="neo4j") for _ in stmts]
-                    txs = [await s.begin_transaction() for s in sessions]
-                    waits = [
-                        asyncio.create_task(_consume(tx, f"{s}\n RETURN count(*) AS done", p))
-                        for tx, (s, p) in zip(txs, stmts, strict=True)
-                    ]
-                    await asyncio.sleep(3)
-                    held = await heap_floor(provider, probe)
-                    # Cancelled while the lock is held, so none starts its write; a local task cancel alone
-                    # would leave the server running the statement once the lock goes.
-                    for tx in txs:
-                        tx.cancel()
-                    await lock_tx.rollback()
-                    for task in waits:
-                        task.cancel()
-                    await asyncio.gather(*waits, return_exceptions=True)
-                    for s in sessions:
-                        with contextlib.suppress(Exception):
-                            await asyncio.wait_for(s.close(), 30)
+                    txs: list = []
+                    waits: list[asyncio.Task] = []
+                    try:
+                        txs = [await s.begin_transaction() for s in sessions]
+                        waits = [
+                            asyncio.create_task(_consume(tx, f"{s}\n RETURN count(*) AS done", p))
+                            for tx, (s, p) in zip(txs, stmts, strict=True)
+                        ]
+                        await asyncio.sleep(3)
+                        held = await heap_floor(provider, probe)
+                    finally:
+                        # Cancelled while the lock is held, so none starts its write, also when the measurement
+                        # failed; a local task cancel alone would leave the server running it once the lock goes.
+                        for tx in txs:
+                            tx.cancel()
+                        await lock_tx.rollback()
+                        for task in waits:
+                            task.cancel()
+                        await asyncio.gather(*waits, return_exceptions=True)
+                        for s in sessions:
+                            with contextlib.suppress(Exception):
+                                await asyncio.wait_for(s.close(), 30)
                 heap[n] = {
                     "baseline_floor": baseline,
                     "held_floor": held,
