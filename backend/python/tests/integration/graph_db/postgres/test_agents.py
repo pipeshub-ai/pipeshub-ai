@@ -126,6 +126,32 @@ async def test_an_agent_comes_with_its_toolsets_knowledge_skills_servers_and_whe
     assert other["knowledge"] == [] and other["skills"] == [] and other["mcpServers"] == [] and [t["_key"] for t in a["toolsets"]] == ["ts"]      # nothing crosses between the two
 
 
+async def test_an_agent_read_in_a_transaction_sees_what_that_transaction_linked(w: World) -> None:
+    """Every part of the document is read in the caller's transaction: toolsets, tools, knowledge, skills and servers linked in it are there before the commit."""
+    await w.nodes("agentInstances", {"_key": "ag", "name": "Tx"})
+    p = w.p
+    t = await p.begin_transaction([], [])
+    e = lambda f, fc, to, tc: {"from_id": f, "from_collection": fc, "to_id": to, "to_collection": tc}      # noqa: E731
+    await p.batch_upsert_nodes([{"_key": "ts", "name": "slack"}], "agentToolsets", transaction=t)
+    await p.batch_upsert_nodes([{"_key": "t1", "name": "send"}], "agentTools", transaction=t)
+    await p.batch_upsert_nodes([{"_key": "k1", "connectorId": "kapp", "filters": None}], "agentKnowledge", transaction=t)
+    await p.batch_upsert_nodes([{"_key": "kapp", "name": "Drive", "type": "GOOGLE_DRIVE"}], "apps", transaction=t)
+    await p.batch_upsert_nodes([{"_key": "s1", "name": "summarise"}], "agentSkills", transaction=t)
+    await p.batch_upsert_nodes([{"_key": "ms", "name": "mcp"}], "agentMcpServers", transaction=t)
+    await p.batch_create_edges([e("ag", "agentInstances", "ts", "agentToolsets")], "agentHasToolset", transaction=t)
+    await p.batch_create_edges([e("ts", "agentToolsets", "t1", "agentTools")], "toolsetHasTool", transaction=t)
+    await p.batch_create_edges([e("ag", "agentInstances", "k1", "agentKnowledge")], "agentHasKnowledge", transaction=t)
+    await p.batch_create_edges([e("ag", "agentInstances", "s1", "agentSkills")], "agentHasSkill", transaction=t)
+    await p.batch_create_edges([e("ag", "agentInstances", "ms", "agentMcpServers")], "agentHasMcpServer", transaction=t)
+    inside = await p.get_agent("ag", w.org, transaction=t)
+    outside = await p.get_agent("ag", w.org)
+    await p.rollback_transaction(t)
+    assert [(s["_key"], [x["_key"] for x in s["tools"]]) for s in inside["toolsets"]] == [("ts", ["t1"])]
+    assert [(k["_key"], k["name"]) for k in inside["knowledge"]] == [("k1", "Drive")]
+    assert [s["name"] for s in inside["skills"]] == ["summarise"] and [s["_key"] for s in inside["mcpServers"]] == ["ms"]
+    assert outside["toolsets"] == [] and outside["knowledge"] == [] and outside["skills"] == [] and outside["mcpServers"] == []
+
+
 async def test_another_orgs_nodes_with_the_same_ids_never_reach_an_agents_document(w: World) -> None:
     """Every join of the agent's document stays in the agent's org: another org holding the same agent, toolset, tool and app ids, plus a tool and an app
     of its own under them, changes nothing."""
