@@ -35,3 +35,39 @@ async def test_an_unpaged_call_is_the_old_query(make, bind_key) -> None:
     await p.get_neighbors_for_nodes_by_relationship_types(["a"], "blocks", ["CALLS"], "any", limit=3)
     query, binds = run.call_args.args[0], run.call_args.kwargs[bind_key]
     assert "after" not in binds and "cursor" not in query and "ORDER BY" not in query and "SORT" not in query
+
+
+# The page key ends in the edge's own key, so parallel edges never tie at a page boundary.
+async def test_the_arango_cursor_ends_with_the_edge_key() -> None:
+    p, run = _arango()
+    await p.get_neighbors_for_nodes_by_relationship_types(["a"], "blocks", ["CALLS"], "outbound", after="")
+    assert "edge.relationshipType, edge._key)" in run.call_args.args[0]
+
+
+async def test_the_neo4j_cursor_ends_with_the_edge_key() -> None:
+    p, run = _neo4j()
+    await p.get_neighbors_for_nodes_by_relationship_types(["a"], "blocks", ["CALLS"], "outbound", after="")
+    assert "+ elementId(rel) AS cursor" in run.call_args.args[0]
+
+
+async def test_the_postgres_cursor_ends_with_the_edge_key() -> None:
+    from app.core.org_context import OrgContext, bind
+    from app.services.graph_db.postgres.codegraph import CodeGraphMixin
+
+    seen: list[str] = []
+
+    class Tx:
+        async def fetch(self, sql: str, *args: object) -> list:
+            seen.append(sql)
+            return []
+
+    class P(CodeGraphMixin):
+        def __init__(self) -> None:
+            self.logger = MagicMock()
+
+        async def _q(self, fn, transaction=None):  # noqa: ANN001, ANN201
+            return await fn(Tx())
+
+    with bind(OrgContext("org-1", None, "job", "job:test", "t")):
+        await P().get_neighbors_for_nodes_by_relationship_types(["a"], "blocks", ["CALLS"], "outbound", after="")
+    assert "e.edge_coll, e.ekey) COLLATE" in seen[0]

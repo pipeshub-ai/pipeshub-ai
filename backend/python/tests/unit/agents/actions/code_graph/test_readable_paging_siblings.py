@@ -197,3 +197,68 @@ async def test_a_provider_that_ignores_after_is_an_error_not_a_loop_or_a_keyerro
     with pytest.raises(RuntimeError, match="Failed to walk"):
         await _readable_neighbour_rows(g, ORG, RecordAccess(g, ORG, USER), ["k_caller"], ["CALLS"], "outbound",
                                        page=2, budget=100)
+
+
+async def test_hidden_tests_do_not_depend_on_where_a_hidden_row_puts_the_page_break() -> None:
+    """Page size is LIMIT + 1 = 6; one unreadable row sorted first moves the break past a test callee."""
+    def build(hidden: bool) -> FakeGraphProvider:
+        g = hub(1, rec="rec-t", prefix="v005a", role="test", deny=False)     # sorts between v005 and v006
+        for i in range(8):
+            g.blocks[f"v{i:03d}"] = {**_block(f"v{i:03d}", "rec-b", "x", f"sym_v{i}", f"v{i:03d}"), "connectorId": CONN}
+            g.blocks[f"v{i:03d}"].pop("filePath")
+            call(g, "k_caller", f"v{i:03d}")
+        call(g, "k_caller", "v005a000")
+        if hidden:
+            g.records["rec-h"] = {"_key": "rec-h", "orgId": ORG, "connectorId": CONN, "virtualRecordId": "v-h"}
+            g.deny_records.add("rec-h")
+            g.blocks["a000"] = {**_block("a000", "rec-h", "x", "sym_a000", "a000"), "connectorId": CONN}
+            g.blocks["a000"].pop("filePath")
+            call(g, "k_caller", "a000")
+        return g
+    bare, with_hidden = await walk(build(False)), await walk(build(True))
+    assert with_hidden == bare and bare["fanout_capped"] is True and "hidden_tests" not in bare
+
+
+async def test_degrees_with_the_real_row_limit_ignore_many_hidden_rows(monkeypatch) -> None:
+    monkeypatch.setattr(ops, "_DEGREE_ROW_LIMIT", 50000)
+    g = hub(60)
+    for i in range(60):
+        call(g, "k_caller", f"h{i:03d}")
+    for i in range(4):
+        call(g, "k_caller", "k_target")
+    out = await _degrees(g, [g.blocks["k_caller"], g.blocks["k_panel"]], ["CALLS"], ORG, RecordAccess(g, ORG, USER))
+    assert out == ({"k_caller": 4}, False)
+
+
+async def test_a_cursor_that_advances_in_the_stores_collation_only_is_not_an_error() -> None:
+    class Collated(FakeGraphProvider):
+        pages = iter([[{"collection": BLOCKS, "key": "k_target", "cursor": "b"}] * 2,
+                      [{"collection": BLOCKS, "key": "k_target", "cursor": "a"}] * 2, []])
+
+        async def get_neighbors_for_nodes_by_relationship_types(self, **kw) -> list[dict]:
+            return next(self.pages)
+
+    g = Collated()
+    rows, _, _ = await _readable_neighbour_rows(g, ORG, RecordAccess(g, ORG, USER), ["k_caller"], ["CALLS"],
+                                                "outbound", page=2, budget=100)
+    assert len(rows) == 4
+
+
+async def test_degrees_log_a_failed_fetch_but_raise_a_failed_access_check() -> None:
+    blocks = lambda g: [g.blocks["k_caller"], g.blocks["k_panel"]]  # noqa: E731
+
+    class FetchFails(FakeGraphProvider):
+        async def get_neighbors_for_nodes_by_relationship_types(self, **kw) -> list[dict]:
+            raise RuntimeError("store down")
+
+    class AccessFails(FakeGraphProvider):
+        async def get_nodes_by_field_in(self, collection, *a, **kw) -> list[dict]:
+            if collection == BLOCKS:
+                raise RuntimeError("access check down")
+            return await super().get_nodes_by_field_in(collection, *a, **kw)
+
+    g = FetchFails()
+    assert await _degrees(g, blocks(g), ["CALLS"], ORG, RecordAccess(g, ORG, USER)) == ({}, False)
+    g = AccessFails()
+    with pytest.raises(RuntimeError, match="access check down"):
+        await _degrees(g, blocks(g), ["CALLS"], ORG, RecordAccess(g, ORG, USER))

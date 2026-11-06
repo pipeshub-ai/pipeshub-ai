@@ -550,6 +550,10 @@ def _key_of(block: dict) -> str:
     return block.get("_key") or block.get("id") or ""
 
 
+class _WalkFailed(RuntimeError):
+    """The store's neighbour query failed (as opposed to the access check)."""
+
+
 async def _readable_neighbour_rows(
     graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess | None, keys: list[str],
     relations: list[str], direction: str, *, page: int, budget: int, want: int | None = None,
@@ -578,7 +582,7 @@ async def _readable_neighbour_rows(
             ) or [])
         except Exception as exc:
             logger.exception("Neighbour walk failed")
-            raise RuntimeError("Failed to walk the code graph") from exc
+            raise _WalkFailed("Failed to walk the code graph") from exc
         scanned += len(raw)
         raw_kept = [r for r in raw if r.get("collection") in (_BLOCKS, _RECORDS) and (accept is None or accept(r))]
         block_keys = [r.get("key") for r in raw_kept if r.get("collection") == _BLOCKS]
@@ -596,16 +600,18 @@ async def _readable_neighbour_rows(
             elif ok_records is None or r.get("key") in ok_records:
                 counted.append(r)
         if want is not None and len(counted) > want:
-            return counted[:want] + tests, True, False
+            # Test rows past the last kept row would depend on where hidden rows put the page breaks.
+            last = counted[want - 1].get("cursor") or ""
+            return counted[:want] + [t for t in tests if (t.get("cursor") or "") <= last], True, False
         if len(raw) < page:
             return counted + tests, False, False
         if scanned >= budget:
             # shortcut: the scan stops after `budget` raw rows; filter readability in the store query if hubs routinely exceed it.
             return counted + tests, False, True
-        # A provider that ignores `after` would repeat a page for ever.
-        if not (nxt := raw[-1].get("cursor")) or nxt <= after:
+        # A provider that ignores `after` would repeat a page for ever (equality only: the store's collation is not ours).
+        if not (nxt := raw[-1].get("cursor")) or nxt == after:
             logger.error("Neighbour query did not advance its cursor")
-            raise RuntimeError("Failed to walk the code graph")
+            raise _WalkFailed("Failed to walk the code graph")
         after = nxt
 
 
@@ -634,8 +640,8 @@ async def _degrees(
             graph_provider, org_id, access, keys, relations, "any",
             page=_DEGREE_PAGE, budget=_DEGREE_ROW_LIMIT,
         )
-    except Exception as exc:
-        logger.warning("Degree lookup failed: %s", exc)
+    except _WalkFailed as exc:
+        logger.warning("Degree lookup failed: %s", exc.__cause__ or exc)
         return {}, False
     counts: Counter = Counter(r["anchorKey"] for r in rows if r.get("anchorKey"))
     # Capped only when the scan budget ran out: hidden edges below it change nothing.
