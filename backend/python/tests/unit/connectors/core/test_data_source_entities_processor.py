@@ -4517,6 +4517,13 @@ class TestLinkRecordToGroupEdgeCases:
 # ===========================================================================
 
 
+async def _source_id_read_that_fails(_source_id, _connector_id, *, raise_on_error: bool = False):
+    """A graph read that fails, as the store answers it: None unless the caller asks for the error."""
+    if raise_on_error:
+        raise RuntimeError("graph read timed out")
+    return None
+
+
 class TestHandleRecordPermissionsEntityTypes:
     @pytest.mark.asyncio
     async def test_a_user_grant_without_an_email_resolves_by_the_source_user_id(self) -> None:
@@ -4534,9 +4541,69 @@ class TestHandleRecordPermissionsEntityTypes:
 
         await proc._handle_record_permissions(record, [perm], tx_store)
 
-        tx_store.get_user_by_source_id.assert_awaited_once_with("acc-1", "conn-1")
+        tx_store.get_user_by_source_id.assert_awaited_once_with("acc-1", "conn-1", raise_on_error=True)
         (edges,) = tx_store.batch_create_edges.await_args.args[:1]
         assert [e["from_id"] for e in edges] == ["u-ann"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_source_id_read_keeps_the_records_previous_grants(self) -> None:
+        """A replace after a read that failed would have written the record's grants without that user."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        stored = {"rec-1": [{"from_id": "u-ann", "to_id": "rec-1"}]}  # the grant the record already has
+
+        async def replace(to_id, _coll, edges, _edge_coll):
+            stored[to_id] = edges
+
+        tx_store.replace_edges_to = AsyncMock(side_effect=replace)
+        tx_store.get_user_by_source_id = AsyncMock(side_effect=_source_id_read_that_fails)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        with pytest.raises(RuntimeError, match="graph read timed out"):
+            await proc._handle_record_permissions(record, [perm], tx_store, replace=True)
+
+        tx_store.replace_edges_to.assert_not_awaited()
+        tx_store.batch_create_edges.assert_not_awaited()
+        assert stored["rec-1"] == [{"from_id": "u-ann", "to_id": "rec-1"}]
+
+    @pytest.mark.asyncio
+    async def test_a_source_id_nobody_has_skips_only_that_user(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        bea = MagicMock()
+        bea.id = "u-bea"
+        tx_store.get_user_by_source_id = AsyncMock(side_effect=lambda sid, *_a, **_k: bea if sid == "acc-bea" else None)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perms = [Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id=sid)
+                 for sid in ("acc-gone", "acc-bea")]
+
+        await proc._handle_record_permissions(record, perms, tx_store, replace=True)
+
+        (_to, _coll, edges, _edge_coll) = tx_store.replace_edges_to.await_args.args
+        assert [e["from_id"] for e in edges] == ["u-bea"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_source_id_read_fails_the_records_write_for_the_sync_to_retry(self) -> None:
+        """The path: on_new_records rolls its transaction back and raises to its caller (the connector's sync),
+        so the record's write is never reported done with a user left out."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_source_id = AsyncMock(side_effect=_source_id_read_that_fails)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        with pytest.raises(RuntimeError, match="graph read timed out"):
+            await proc.on_new_records([(record, [perm])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_user_grant_naming_nobody_known_is_reported(self) -> None:

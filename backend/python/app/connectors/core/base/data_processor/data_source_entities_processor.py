@@ -2314,8 +2314,11 @@ class DataSourceEntitiesProcessor:
                     if resolved:
                         from_id, from_collection = resolved
                 elif permission.external_id:
-                    # A source that hides emails grants by its own user id.
-                    user = await tx_store.get_user_by_source_id(permission.external_id, record.connector_id)
+                    # A source that hides emails grants by its own user id. A failed read is raised, as for
+                    # groups and roles: taken for "no such user", a replace would remove that user's grant.
+                    user = await tx_store.get_user_by_source_id(
+                        permission.external_id, record.connector_id, raise_on_error=True,
+                    )
                     if user is None:
                         self.logger.warning(
                             "User with source id %s for connector %s not found; record %s gets no grant from it",
