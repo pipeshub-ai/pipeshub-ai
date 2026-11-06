@@ -32,6 +32,17 @@ async def test_steps_run_in_order() -> None:
     assert calls == ["a", "b"]
 
 
+@pytest.mark.asyncio
+async def test_personal_connector_never_links_other_users() -> None:
+    # Jira Cloud/DC Personal inherit the team steps; their records inherit the app, so a
+    # link pass would give every matched Jira user the creator's personal records.
+    from app.connectors.core.registry.connector_builder import ConnectorScope
+    c = MagicMock(user_link_steps=("a",), scope=ConnectorScope.PERSONAL.value)
+    c.a = AsyncMock()
+    await BaseConnector.link_new_users(c)
+    c.a.assert_not_awaited()
+
+
 def test_confluence_data_center_links_with_its_user_and_group_steps() -> None:
     assert ConfluenceDataCenterConnector.user_link_steps == ("_sync_users", "_sync_user_groups")
 
@@ -116,3 +127,32 @@ async def test_jira_data_center_pass_keeps_the_sync_state() -> None:
     assert (c._kept_unread_access, c._user_read_unfinished) == (True, True)
     assert c._kept_after_refusal == [("projects", "")]
     assert c._dc_name_to_source_id == {"x": "y"}
+
+
+@pytest.mark.asyncio
+async def test_personal_sync_withdraws_every_app_user_but_the_creator() -> None:
+    c = MagicMock(creator_email="Alice@x.com", connector_id="c1")
+    alice, bob = MagicMock(email="alice@x.com"), MagicMock(email="bob@x.com")
+    c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[alice, bob])
+    c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+    await BaseConnector.withdraw_app_users_except_creator(c)
+    c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c1", [bob])
+
+
+@pytest.mark.asyncio
+async def test_personal_cleanup_without_a_creator_email_withdraws_everyone() -> None:
+    c = MagicMock(creator_email=None, connector_id="c1")
+    bob = MagicMock(email="bob@x.com")
+    c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[bob])
+    c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+    await BaseConnector.withdraw_app_users_except_creator(c)
+    c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c1", [bob])
+
+
+@pytest.mark.asyncio
+async def test_a_failed_personal_cleanup_stops_the_sync() -> None:
+    # Content written after it would reach the links it could not remove.
+    c = MagicMock(creator_email="alice@x.com", connector_id="c1")
+    c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=RuntimeError("graph down"))
+    with pytest.raises(RuntimeError, match="graph down"):
+        await BaseConnector.withdraw_app_users_except_creator(c)
