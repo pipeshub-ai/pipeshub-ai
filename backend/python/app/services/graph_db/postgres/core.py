@@ -425,8 +425,10 @@ class CoreMixin(PgBase):
                 AND e.from_coll = $3 AND e.from_id = $4 AND e.to_coll = $5 AND e.to_id = $6
                 AND ($7::int = 0 OR ($7::int = 1 AND e.ekey = '') OR ($7::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) ORDER BY e.coll, e.ekey FOR UPDATE""",
                                   org, colls, fc, fid, tc, tid, kind)
-            for r in rows:
-                doc = {k: v for k, v in {**_doc(r["doc"]), **edge_updates}.items() if v is not None}
+            docs = [{k: v for k, v in {**_doc(r["doc"]), **edge_updates}.items() if v is not None} for r in rows]
+            if len(rows) > 1 and any(_ekey(r["coll"], d) != r["ekey"] for r, d in zip(rows, docs, strict=True)):
+                raise ValueError(f"update_edge would change the key of {len(rows)} edges between {from_key} and {to_key}: name one of them")
+            for r, doc in zip(rows, docs, strict=True):
                 await tx.execute("""/* pipeshub:graph.update_edge */ UPDATE graph.edges SET doc = $7::jsonb, ekey = $8 WHERE org_id = $1 AND coll = $2 AND from_coll = $3 AND from_id = $4
                     AND to_coll = $5 AND to_id = $6 AND ekey = $9""", org, r["coll"], fc, fid, tc, tid, _j(doc), _ekey(r["coll"], doc), r["ekey"])
             return len(rows)
