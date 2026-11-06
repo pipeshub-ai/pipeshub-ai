@@ -19,6 +19,7 @@ from app.services.graph_db.postgres.codegraph import CodeGraphMixin
 from app.services.graph_db.postgres.core import CoreMixin
 from app.services.graph_db.postgres.delete import DeleteMixin
 from app.services.graph_db.postgres.entities import EntityMixin
+from app.services.graph_db.postgres.entity_access import EntityAccessMixin
 from app.services.graph_db.postgres.entity_reads import EntityReadsMixin
 from app.services.graph_db.postgres.hierarchy import HierarchyMixin, HubMixin
 from app.services.graph_db.postgres.identity import IdentityMixin
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
 
 __all__ = ["NotImplementedInPostgres", "PostgresGraphProvider", "unimplemented"]
 
-_MIXINS = (CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, IdentityMixin, PermissionsMixin, KbMixin, KbListingsMixin, SyncStateMixin, EntityMixin, EntityReadsMixin, CoreMixin)
+_MIXINS = (CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, IdentityMixin, PermissionsMixin, KbMixin, KbListingsMixin, SyncStateMixin, EntityMixin, EntityReadsMixin, EntityAccessMixin, CoreMixin)
 for _m in _MIXINS:
     instrument_org_methods(_m)  # the interface does it for methods a subclass defines itself, not for inherited ones
     instrument_writers(_m)  # the kg registry's guard names the provider method that writes the graph
