@@ -1252,7 +1252,7 @@ class TestFetchUsersPhases:
 
         assert await connector._keep_licensed_users([licensed, unlicensed], mapping) == [licensed]
         connector._fetch_group_members.assert_awaited_once_with("g1", "jira-software-users")
-        assert connector._unlicensed_account_ids == {"unlic"}, "kept for the scheme's user grants"
+        assert connector._licensed_account_ids == {"lic"}, "kept for the scheme's user grants"
 
     @pytest.mark.asyncio
     async def test_product_access_unknown_keeps_every_user(self) -> None:
@@ -4441,19 +4441,38 @@ class TestGroupSyncForbiddenNotification:
         connector.notify.assert_not_awaited()
 
 
-@pytest.mark.parametrize("read_unfinished,account_type,unlicensed,granted", [
-    (False, "atlassian", False, False),  # a complete user read without them: no Jira product access
-    (True, "atlassian", False, True),    # a cut-short read may have missed a licensed account
-    (True, "customer", False, False),    # a portal customer never browses the project
-    (True, "atlassian", True, False),    # the licence filter left them out; a failed email lookup changes nothing
+@pytest.mark.parametrize("read_unfinished,account_type,licensed,granted", [
+    (False, "atlassian", None, False),       # a complete user read without them: no Jira product access
+    (True, "atlassian", None, True),         # a cut-short read may have missed a licensed account
+    (True, "customer", None, False),         # a portal customer never browses the project
+    (True, "atlassian", set(), False),       # outside the product groups, listed or not
+    (True, "atlassian", {"acc-u"}, True),    # in a product group but missing from the cut-short user read
 ])
-def test_a_browse_grant_to_an_account_outside_the_licensed_users(read_unfinished, account_type, unlicensed, granted) -> None:
+def test_a_browse_grant_to_an_account_outside_the_licensed_users(read_unfinished, account_type, licensed, granted) -> None:
     connector = _make_connector()
     connector._user_read_unfinished = read_unfinished
-    connector._unlicensed_account_ids = {"acc-u"} if unlicensed else set()
+    connector._licensed_account_ids = licensed
     grant = {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-u", "user": {
         "accountId": "acc-u", "emailAddress": "u@acme.com", "active": True, "accountType": account_type}}}
 
     perms = connector._permissions_for_browse_grant(grant, "ENG", {}, {"acc-x": _make_app_user("x@acme.com", "acc-x")}, set())
 
     assert [p.email for p in perms] == (["u@acme.com"] if granted else [])
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_account_outside_the_product_groups_gets_no_browse_grant() -> None:
+    """A hidden-email account whose lookup failed never reaches the licence filter; the groups still decide."""
+    connector = _make_connector()
+    connector._fetch_group_members = AsyncMock(return_value=(["acc-x", "acc-lic"], True))
+    listed = [_make_app_user("x@acme.com", "acc-x")]
+    kept = await connector._keep_licensed_users(listed, {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]})
+    connector._user_read_unfinished = True  # what a failed email lookup leaves
+
+    def grant(account_id: str) -> dict:
+        return {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": account_id, "user": {
+            "accountId": account_id, "emailAddress": f"{account_id}@acme.com", "active": True, "accountType": "atlassian"}}}
+
+    users = {u.source_user_id: u for u in kept}
+    assert connector._permissions_for_browse_grant(grant("acc-unlic"), "ENG", {}, users, set()) == []
+    assert [p.email for p in connector._permissions_for_browse_grant(grant("acc-lic"), "ENG", {}, users, set())] == ["acc-lic@acme.com"]

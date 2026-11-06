@@ -530,8 +530,8 @@ class JiraConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
-        # Accounts the licence filter left out this run: no Jira product access, so no grant names them.
-        self._unlicensed_account_ids: set[str] = set()
+        # Members of the product groups this run, by account id; None when they could not be read.
+        self._licensed_account_ids: set[str] | None = None
         # True when this sync kept stored groups, roles, a lead, a project or its issues after
         # a read that may pass on a later run (408, 429, 5xx, a transport error);
         # full_sync_coverage() then reports the read as incomplete.
@@ -2187,7 +2187,7 @@ class JiraConnector(BaseConnector):
     _SYNC_STATE = (
         "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
         "_group_bulk_forbidden", "_app_roles_unread", "_projects_naming_unread_roles", "_app_roles_mapping",
-        "_unlicensed_account_ids",
+        "_licensed_account_ids",
     )
     user_link_steps = ("_link_users_groups_and_roles",)
 
@@ -2643,7 +2643,7 @@ class JiraConnector(BaseConnector):
         Jira treats any other account as anonymous, so its group, role and user grants never
         reach it. When the roles or a role group's members can't be read, every user is kept.
         """
-        self._unlicensed_account_ids = set()
+        self._licensed_account_ids = None
         if self._app_roles_unread:
             # Some roles are missing from the mapping, so their members are unknown, not unlicensed.
             self.logger.warning("⚠️ Not every application role could be read; keeping every Jira user")
@@ -2664,7 +2664,7 @@ class JiraConnector(BaseConnector):
                 return jira_users
             licensed.update(members)
         kept = [u for u in jira_users if u.source_user_id in licensed]
-        self._unlicensed_account_ids = {u.source_user_id for u in jira_users if u.source_user_id not in licensed}
+        self._licensed_account_ids = licensed
         if len(kept) < len(jira_users):
             self.logger.info(
                 f"👥 {len(jira_users) - len(kept)} Jira user(s) without Jira product access left out"
@@ -2960,7 +2960,7 @@ class JiraConnector(BaseConnector):
                 return grant_permissions
             elif (
                 user_email and self._user_read_unfinished
-                and holder_param not in self._unlicensed_account_ids
+                and (self._licensed_account_ids is None or holder_param in self._licensed_account_ids)
                 and user_data.get("accountType", "atlassian") == "atlassian"
             ):
                 # Only a user list cut short leaves out a licensed account. After a complete read,
