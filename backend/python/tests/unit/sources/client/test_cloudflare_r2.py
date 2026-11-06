@@ -160,6 +160,11 @@ class TestRequests:
         assert "/auto/s3/aws4_request" in authorization
         assert not [h for h in sent["headers"] if "checksum" in h or h == "x-amz-trailer"]
 
+    async def test_bucket_listing_leaves_out_the_arguments_r2_refuses(self) -> None:
+        # Real R2 answers NotImplemented to max-buckets; the connector always sends it.
+        sent = await _sent_request("list_buckets", MaxBuckets=1000, Prefix="pi", ContinuationToken=None)
+        assert urlparse(sent["url"]).query == ""
+
     async def test_a_presigned_url_points_at_r2_and_carries_the_token_key(self) -> None:
         response = await CloudflareR2DataSource(_client()).generate_presigned_url(
             ClientMethod="get_object", Params={"Bucket": "docs", "Key": "a/b.pdf"}, ExpiresIn=60, region_name="WNAM",

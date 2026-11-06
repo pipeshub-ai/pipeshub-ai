@@ -88,6 +88,10 @@ class CloudflareR2DataSource:
         return S3Response(success=True, data=response)
 
     async def list_buckets(self, **params: object) -> S3Response:
+        # R2 answers NotImplemented to max-buckets. The object store connectors filter and page
+        # the full list themselves, as they do for any store that ignores these two.
+        params.pop("MaxBuckets", None)
+        params.pop("Prefix", None)
         return await self._call("list_buckets", **params)
 
     async def list_objects_v2(self, **params: object) -> S3Response:

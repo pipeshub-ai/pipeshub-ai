@@ -216,6 +216,12 @@ CONNECTOR_MINIO_INFO = (
     "to discover the buckets and to load the Bucket Names options."
     "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
 )
+CONNECTOR_CLOUDFLARE_R2_INFO = (
+    "This connector only lists and reads objects, so give it a read-only R2 API token that can list "
+    "buckets and read objects. An Admin Read only token can do both, and it can read every bucket in "
+    "the account. An Object Read only token limited to the buckets to sync is tighter, if it can list them."
+    "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
+)
 
 
 INTERNAL_CONNECTOR_GROUP_NAME = "ConnectorGroup"

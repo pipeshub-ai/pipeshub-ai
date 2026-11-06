@@ -321,7 +321,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     **{
         name: ()
         for name in (
-            "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "databricks", "discord",
+            "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "cloudflare_r2", "databricks", "discord",
             "dropbox_individual", "drupal_wiki", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
             "lumos", "monday", "pagerduty", "posthog", "redshift", "trello", "workday",
             "zoom",

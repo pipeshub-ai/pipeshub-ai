@@ -55,14 +55,6 @@ async def check_buckets(data_source: CloudflareR2DataSource, checks: Checks, buc
         return []
     names = [bucket["Name"] for bucket in response.data.get("Buckets", [])]
     checks.report("ListBuckets", True, names)
-
-    if names:
-        filtered = await data_source.list_buckets(MaxBuckets=1, Prefix=names[0])
-        checks.report(
-            "ListBuckets with MaxBuckets and Prefix",
-            filtered.success,
-            [b["Name"] for b in filtered.data.get("Buckets", [])] if filtered.success else filtered.error,
-        )
     return names
 
 
