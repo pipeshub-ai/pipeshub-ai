@@ -381,7 +381,7 @@ NO_ORG_CALLS = {
 }
 NO_ORG_KW = {"find_file_by_name_in_parent": {"kb_id": "kb", "file_name": "f", "mime_type": "m"}, "link_record_to_group": {"inherit": True},
              "remove_nodes_by_field": {"field_value": 1}}
-LOOKUP_METHODS = {n for n, f in vars(LookupsMixin).items() if not n.startswith("__") and callable(f)} - {"_lrows", "_permitted", "_records_page", "_page_ids"}
+LOOKUP_METHODS = {n for n, f in vars(LookupsMixin).items() if not n.startswith("__") and callable(f)} - {"_lrows", "_permitted", "_records_page", "_page_ids", "_key_by_external"}
 
 
 def test_every_public_method_of_the_module_is_in_the_no_org_cases() -> None:
