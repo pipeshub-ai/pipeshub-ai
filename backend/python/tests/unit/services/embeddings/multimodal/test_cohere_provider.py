@@ -29,8 +29,13 @@ class TestCohereImageInputTypeHelper:
         [
             ("embed-v4.0", True),
             ("embed-4-preview", True),
+            ("embed-v5.0-pro", True),
+            ("embed-v5.0-fast", True),
+            ("embed-v6.0", True),
             ("embed-english-v3.0", False),
+            ("embed-english-light-v3.0", False),
             ("embed-multilingual-v3.0", False),
+            ("embed-english-v2.0", False),
             (None, False),
         ],
     )
