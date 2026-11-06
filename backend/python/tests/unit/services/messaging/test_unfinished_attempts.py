@@ -405,6 +405,16 @@ class TestKafkaConsumer:
         assert consumer._requeue_message.await_args.kwargs["delay_s"] == 0.05
         consumer._commit_offset.assert_awaited_once()
 
+    async def test_a_failed_hand_back_raises_so_fifo_seeks_back_and_commits_nothing(self, tracker) -> None:
+        consumer = _kafka_consumer(tracker, Sink(), Indexer(tracker))
+        self._lease_never_free(consumer)
+        consumer._requeue_message = AsyncMock(side_effect=RuntimeError("broker unavailable"))
+        wait, poll = self._short_lease_wait()
+        with wait, poll, pytest.raises(RuntimeError, match="broker unavailable"):
+            await _run(consumer, "r1")
+
+        consumer._commit_offset.assert_not_awaited()
+
     async def test_a_held_lease_never_fails_the_record_however_long_it_lasts(self, tracker) -> None:
         sink = Sink()
         consumer = _kafka_consumer(tracker, sink, Indexer(tracker))

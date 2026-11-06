@@ -1162,6 +1162,7 @@ class TestProcessMessageWrapper:
         instead of leaking it — otherwise a handful of duplicate deliveries
         for one record can exhaust MAX_CONCURRENT_INDEXING for everyone."""
         consumer.running = True
+        consumer._requeue_message = AsyncMock()
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
 
@@ -1303,6 +1304,7 @@ class TestProcessMessageWrapper:
         (which reverts IN_PROGRESS) runs — otherwise the cancellation is
         only observed by the consumer loop and the record is stuck."""
         consumer.running = True
+        consumer._requeue_message = AsyncMock()
         # Exhausted: acquire() never resolves, forcing the timeout below to
         # fire while the handler is suspended there.
         consumer.parsing_semaphore = asyncio.Semaphore(0)
@@ -1579,6 +1581,7 @@ class TestTimingSummary:
         async def try_acquire(pool, _owner, _limit, _lease_seconds) -> bool:
             return not pool.startswith("record:")
 
+        consumer._requeue_message = AsyncMock()
         self._gated(consumer, try_acquire)
         with (
             patch.object(

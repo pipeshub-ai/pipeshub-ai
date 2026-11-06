@@ -146,7 +146,7 @@ class _InFlightOffset:
     """One buffered offset's outstanding claim on the commit watermark.
 
     ``__process_message_wrapper`` has several paths that deliberately return
-    without committing (shutdown, a contended record lease). Committing
+    without committing (shutdown, a failed hand-back). Committing
     ``offset + 1`` per message let a later message cover those; a watermark
     does not, so an offset nobody resolves stalls every later commit on its
     partition. Each path therefore states which end it reached, and the
@@ -1852,8 +1852,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         once, and commit if that let the watermark advance.
 
         ``done=True`` means this delivery is finished with (processed,
-        re-queued, dead-lettered, or superseded by a duplicate that holds the
-        record lease) and the watermark may pass it. ``done=False`` means it
+        re-queued or dead-lettered) and the watermark may pass it. ``done=False`` means it
         was not processed and must be redelivered, so it becomes a floor the
         watermark stops at until the offset is read again.
 
@@ -1892,6 +1891,45 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 await self.consumer.commit({tp: watermark})  # type: ignore
 
         await self._run_on_main_loop(do_resolve())
+
+    async def __rebuffer_after_failed_handback(
+        self,
+        message: ConsumerRecord,
+        parsed: StreamMessage,
+        in_flight: "_InFlightOffset | None",
+        delay_s: float | None,
+    ) -> None:
+        """Put a message nothing re-published back in the buffer.
+
+        A redelivery floor would not do: the read position is already past the
+        offset, so only a restart brings it back, and the dwell sweep commits
+        past it first. A buffered offset floors the watermark with no dwell clock.
+        """
+        if not self.running:
+            await self.__resolve_offset(in_flight, done=False)
+            return
+        tp = TopicPartition(message.topic, message.partition)
+        delay = delay_s if delay_s is not None else _compute_retry_backoff_seconds(1)
+        parsed.payload["_retry_not_before"] = time.time() + delay
+
+        async def rebuffer() -> None:
+            epoch = in_flight.epoch if in_flight is not None else None
+            # Revoked meanwhile: nothing committed it, so the next owner reads it.
+            if tp in self._revoked_since_poll or (
+                epoch is not None and epoch != self._partition_epoch.get(tp, 0)
+            ):
+                return
+            self._offset_tracker.track(tp, message.offset)
+            key = self.key_extractor.extract(parsed)
+            accepted = self._scheduler.enqueue(
+                key, (tp, message, parsed), not_before=self.__retry_not_before(parsed)
+            )
+            if accepted != EnqueueResult.ACCEPTED:
+                self._deferred_messages.append((tp, message, parsed, key))
+
+        await self._run_on_main_loop(rebuffer())
+        if in_flight is not None:
+            in_flight.resolved = True
 
     async def __sweep_stale_offsets(self) -> None:
         """Force-resolve offsets held past the dwell budget.
@@ -3001,10 +3039,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 except Exception as requeue_error:
                     self.logger.error(
                         "Failed to re-queue %s after its admission wait: %s. "
-                        "Leaving the offset uncommitted for redelivery",
+                        "Keeping it for redelivery",
                         message_id, requeue_error,
                     )
-                    await self.__resolve_offset(in_flight, done=False)
+                    if self._scheduler is None:
+                        # The future's callback seeks back here. Returning would
+                        # let the next message's commit cover this offset.
+                        raise
+                    await self.__rebuffer_after_failed_handback(
+                        message, parsed_message, in_flight, e.delay_s
+                    )
                     return False
             await self.__settle_done(message, in_flight)
             return False

@@ -11,6 +11,7 @@ scheduling is disabled.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiokafka import TopicPartition
 
+from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import messaging_env
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
@@ -26,7 +28,7 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     _ReadOutcome,
     _SchedulerRebalanceListener,
 )
-from app.services.messaging.scheduling.interface import FairSchedulerConfig
+from app.services.messaging.scheduling.interface import EnqueueResult, FairSchedulerConfig
 
 
 @pytest.fixture
@@ -1060,6 +1062,86 @@ class TestWatermarkClaimIsAlwaysSettled:
         await consumer._IndexingKafkaConsumer__sweep_stale_offsets()
 
         consumer.consumer.commit.assert_not_awaited()
+
+
+class TestFailedHandBackKeepsTheMessage:
+    """A hand-back whose re-publish fails has no copy on the topic, so this offset is the only one left."""
+
+    def _consumer(self, logger, plain_config):
+        consumer = _make_consumer(logger, plain_config, _fair_config())
+        consumer.consumer = MagicMock()
+        consumer.consumer.commit = AsyncMock()
+        consumer.main_loop = None
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer._requeue_message = AsyncMock(side_effect=RuntimeError("broker unavailable"))
+
+        async def handler(_message):
+            raise concurrency.RecordLeaseHeld("record lease held", delay_s=30.0)
+            yield
+
+        consumer.message_handler = handler
+        return consumer
+
+    async def _hand_back(self, consumer, tp) -> _InFlightOffset:
+        tracker = consumer._offset_tracker
+        tracker.track(tp, 0)
+        tracker.mark_dispatched(tp, 0)
+        tracker.track(tp, 1)
+        in_flight = _InFlightOffset(tp, 0, 0)
+        result = await consumer._IndexingKafkaConsumer__process_message_wrapper(
+            _make_message(offset=0, record_id="rec-1"), in_flight=in_flight
+        )
+        assert result is False
+        return in_flight
+
+    async def test_it_goes_back_in_the_buffer_and_nothing_commits_past_it(
+        self, logger, plain_config
+    ) -> None:
+        consumer = self._consumer(logger, plain_config)
+        tp = TopicPartition("record-events", 0)
+
+        in_flight = await self._hand_back(consumer, tp)
+
+        assert in_flight.resolved
+        assert consumer._scheduler.pending_count == 1
+        # Not due yet: it holds no slot while it waits out the delay.
+        assert consumer._scheduler.dequeue(can_dispatch=lambda _item: True) is None
+        # The sweep is what lost it before: a buffered offset has no dwell clock.
+        assert consumer._offset_tracker.stale_offsets(0.0) == []
+        await consumer._IndexingKafkaConsumer__resolve_offset(_InFlightOffset(tp, 1, 0), done=True)
+        for call in consumer.consumer.commit.await_args_list:
+            assert call.args[0][tp] <= 0
+
+    async def test_a_full_buffer_parks_it_instead_of_dropping_it(
+        self, logger, plain_config
+    ) -> None:
+        consumer = self._consumer(logger, plain_config)
+        consumer._scheduler.enqueue = MagicMock(return_value=EnqueueResult.BUFFER_FULL)
+        tp = TopicPartition("record-events", 0)
+
+        await self._hand_back(consumer, tp)
+
+        assert [entry[1].offset for entry in consumer._deferred_messages] == [0]
+        assert consumer._offset_tracker.stale_offsets(0.0) == []
+
+    async def test_during_shutdown_it_stays_uncommitted_for_the_next_process(
+        self, logger, plain_config
+    ) -> None:
+        consumer = self._consumer(logger, plain_config)
+        tp = TopicPartition("record-events", 0)
+        rebuffer = consumer._IndexingKafkaConsumer__rebuffer_after_failed_handback
+        consumer.running = False
+        consumer._offset_tracker.track(tp, 0)
+        in_flight = _InFlightOffset(tp, 0, 0)
+        parsed = MagicMock(payload={})
+
+        await rebuffer(_make_message(offset=0, record_id="rec-1"), parsed, in_flight, 30.0)
+
+        assert consumer._scheduler.pending_count == 0
+        for call in consumer.consumer.commit.await_args_list:
+            assert call.args[0][tp] <= 0
 
 
 class TestDwellNeverSkipsUnprocessedMessages:
