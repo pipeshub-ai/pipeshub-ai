@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.core import org_context
-from app.core.db.errors import DbTimeout, DeadlockDetected, LockTimeout, PoolTimeout, SerializationConflict
+from app.core.db.errors import (
+    DbTimeout,
+    DeadlockDetected,
+    LockTimeout,
+    PoolTimeout,
+    SerializationConflict,
+)
 from app.core.org_context import OrgContext, OrgMismatch, bind
 from app.modules.named_entities.keys import value_mention_key
 from app.schema.node_validator import SchemaValidationError
