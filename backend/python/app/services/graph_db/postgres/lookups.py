@@ -9,7 +9,12 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors, ProgressStatus
+from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
+    CollectionNames,
+    Connectors,
+    ProgressStatus,
+)
 from app.core.org_context import current_or_system, current_org_id
 from app.exceptions.graph_db_exceptions import (
     GraphQueryError,
