@@ -180,7 +180,7 @@ async def tree(w: World) -> None:
     await w.nodes("records", {"_key": "fold", "recordName": "Docs", "mimeType": folder},
                   {"_key": "root1", "recordName": "Report.TXT", "mimeType": "text/plain"}, {"_key": "root2", "recordName": "Viafile", "mimeType": None},
                   {"_key": "root_gone", "recordName": "Gone", "mimeType": "text/plain", "isDeleted": True}, {"_key": "root_nomime", "recordName": "Nomime"},
-                  {"_key": "root_noname", "mimeType": "text/plain"}, {"_key": "root_umlaut", "recordName": "Ärger.txt", "mimeType": "text/plain"}, {"_key": "nested", "recordName": "Nested.txt", "mimeType": "text/plain"},
+                  {"_key": "root_noname", "mimeType": "text/plain"}, {"_key": "root_umlaut", "recordName": "Ärger.txt", "mimeType": "text/plain"}, {"_key": "root_dotted", "recordName": "İstanbul.txt", "mimeType": "text/plain"}, {"_key": "nested", "recordName": "Nested.txt", "mimeType": "text/plain"},
                   {"_key": "kb2file", "recordName": "Other.txt", "mimeType": "text/plain"}, {"_key": "drivefile", "recordName": "Drive.txt", "mimeType": "text/plain"},
                   {"_key": "c1", "recordName": "Child1", "mimeType": "text/csv"}, {"_key": "c2", "recordName": "Child2"}, {"_key": "c_nofile", "recordName": "Nofile", "mimeType": "text/csv"},
                   {"_key": "c_notfile", "recordName": "Notfile", "mimeType": "text/csv"}, {"_key": "c_gone", "recordName": "Cgone", "mimeType": "text/csv", "isDeleted": True},
@@ -188,7 +188,7 @@ async def tree(w: World) -> None:
     await w.nodes("files", {"_key": "root1", "isFile": True}, {"_key": "root2", "isFile": True, "mimeType": "image/png"}, {"_key": "nested", "isFile": True},
                   {"_key": "c1", "isFile": True}, {"_key": "c2", "isFile": True, "mimeType": "application/pdf"}, {"_key": "c_notfile", "isFile": False},
                   {"_key": "c_gone", "isFile": True}, {"_key": "c_attach", "isFile": True}, {"_key": "fold", "isFile": False}, {"_key": "root_notfile", "isFile": False, "mimeType": "text/plain"})
-    for r in ("root1", "root2", "root_gone", "root_nomime", "root_noname", "root_umlaut", "nested", "fold", "root_notfile"):
+    for r in ("root1", "root2", "root_gone", "root_nomime", "root_noname", "root_umlaut", "root_dotted", "nested", "fold", "root_notfile"):
         await w.edge("belongsTo", ("records", r), ("apps", "kb"))
     await w.edge("belongsTo", ("records", "kb2file"), ("apps", "kb2"))
     await w.edge("belongsTo", ("records", "drivefile"), ("apps", "drive"))
@@ -203,13 +203,13 @@ async def tree(w: World) -> None:
 async def test_the_names_at_the_root_of_a_knowledge_base_are_its_live_top_level_files(w: World) -> None:
     await tree(w)
     got = await w.p._fetch_existing_file_names_in_parent("kb", None)
-    assert got == {("report.txt", "text/plain"), ("viafile", "image/png"), ("ärger.txt", "text/plain")}      # the mime type of the record, else of its file; not a folder, a nested file, a deleted one or one without a type
+    assert got == {("report.txt", "text/plain"), ("viafile", "image/png"), ("ärger.txt", "text/plain"), ("İstanbul.txt".lower(), "text/plain")}      # the mime type of the record, else of its file; not a folder, a nested file, a deleted one or one without a type
     assert await w.p._fetch_existing_file_names_in_parent("kb2", None) == {("other.txt", "text/plain")} and await w.p._fetch_existing_file_names_in_parent("drive", None) == set()
     assert await w.p._fetch_existing_file_names_in_parent("none", None) == set()
     with in_org(_org()):
         assert await w.p._fetch_existing_file_names_in_parent("kb", None) == set()
     await w.p.update_node("root1", "records", {"isDeleted": True})
-    assert await w.p._fetch_existing_file_names_in_parent("kb", None) == {("viafile", "image/png"), ("ärger.txt", "text/plain")}
+    assert await w.p._fetch_existing_file_names_in_parent("kb", None) == {("viafile", "image/png"), ("ärger.txt", "text/plain"), ("İstanbul.txt".lower(), "text/plain")}
 
 
 async def test_the_names_in_a_folder_are_its_live_children_that_are_files(w: World) -> None:
