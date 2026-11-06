@@ -24,6 +24,7 @@ from app.services.graph_db.common.utils import (
 )
 from app.services.graph_db.postgres.base import (
     _LINK_COLLS,
+    _VALIDATOR,
     PgBase,
     _arango,
     _doc,
@@ -552,7 +553,15 @@ class LookupsMixin(PgBase):
             return 0
         org = current_org_id()
         now = get_epoch_timestamp_in_ms()
-        props = _j({"createdAtTimestamp": now, "updatedAtTimestamp": now})
+        stamps = {"createdAtTimestamp": now, "updatedAtTimestamp": now}
+        browse = {"relationshipType": "PARENT_CHILD", **stamps}
+        if record_group_id:      # the edges it will write, checked before the first statement
+            _VALIDATOR.validate_edge("belongsTo", stamps)
+            if inherit:
+                _VALIDATOR.validate_edge("inheritPermissions", stamps)
+            if browse_root:
+                _VALIDATOR.validate_edge("nodeRelations", browse)
+        props = _j(stamps)
 
         async def link(tx: Tx, coll: str) -> None:
             await tx.execute("""/* pipeshub:graph.link_record_to_group_edge */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
@@ -581,7 +590,7 @@ class LookupsMixin(PgBase):
                         SELECT $1, 'nodeRelations', 'recordGroups', g.id, 'records', r.id, '', $4::jsonb FROM graph.nodes r, graph.nodes g
                         WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2 AND g.org_id = $1 AND g.coll = 'recordGroups' AND g.id = $3
                         ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc""", org, record_id, record_group_id,
-                                     _j({"relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}))
+                                     _j(browse))
                 elif browse_root is False:
                     await tx.execute("""/* pipeshub:graph.link_record_to_group_unroot */ DELETE FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
                         AND e.from_coll = 'recordGroups' AND e.from_id = $3 AND e.to_coll = 'records' AND e.to_id = $2""", org, record_id, record_group_id)
@@ -606,6 +615,7 @@ class LookupsMixin(PgBase):
             return False
         doc = _node(node, collection)
         doc["id"] = key
+        _VALIDATOR.validate_node(collection, doc)
         r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = jsonb_strip_nulls($5::jsonb)
             WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->$4::text = $6::jsonb RETURNING 1) SELECT count(*) FROM u""",
                                                  org, collection, key, match_field, _j(doc), _j(match_value)), transaction, write=True)
@@ -656,3 +666,42 @@ class LookupsMixin(PgBase):
         except Exception as e:
             self.logger.error(f"❌ Get file record by ID failed: {str(e)}")
             raise GraphQueryError(f"Could not read file record {record_id}: {e}") from e
+
+    async def get_record_owner_source_user_email(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> str | None:
+        """The email of a user holding an OWNER grant of type USER on the record or on what it inherits permissions from (8 hops), the nearest first."""
+        org = current_org_id()
+        try:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_record_owner_source_user_email */ WITH RECURSIVE anc(coll, id, depth) AS (
+                  SELECT n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $2
+                  UNION
+                  SELECT i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
+                    AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 8)
+                SELECT u.doc->>'email' AS email FROM anc JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.to_coll = anc.coll
+                  AND p.to_id = anc.id AND p.doc->>'role' = 'OWNER' AND p.doc->>'type' = 'USER'
+                  JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = p.from_id AND u.doc->>'email' IS NOT NULL ORDER BY anc.depth, u.id LIMIT 1""", org, record_id), transaction)
+            return rows[0]["email"] if rows else None
+        except Exception as e:
+            self.logger.error("Get record owner email failed: %s", e)
+            if raise_on_error:
+                raise
+            return None
+
+    async def get_message_id_header_by_key(self, record_key: str, collection: str, transaction: str | None = None) -> str | None:
+        org = current_org_id()
+        try:
+            return await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.get_message_id_header_by_key */ SELECT doc->>'messageIdHeader' FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3",
+                                                        org, collection, record_key), transaction)
+        except Exception as e:
+            self.logger.error("Failed to get messageIdHeader for record %s: %s", record_key, e)
+            return None
+
+    async def get_related_mails_by_message_id_header(self, message_id_header: str, exclude_key: str, collection: str, transaction: str | None = None) -> list[str]:
+        """The keys of the other documents of the collection with this message id header. A read by a document field: there is no index for it."""
+        org = current_org_id()
+        try:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_related_mails_by_message_id_header */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = $2
+                AND doc->>'messageIdHeader' = $3 AND id <> $4 ORDER BY id""", org, collection, message_id_header, exclude_key), transaction)
+            return [r["id"] for r in rows]
+        except Exception as e:
+            self.logger.error("Failed to get related mails by messageIdHeader: %s", e)
+            return []

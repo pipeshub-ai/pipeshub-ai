@@ -373,7 +373,8 @@ NO_ORG_CALLS = {
     "get_parent_record_ids_by_relation_type": ("a", "RELATED"), "get_address_links_batch": (["a"], "o"), "get_linked_records": ("a", "o", "u", ["RELATED"]),
     "get_record_parent_adjacency": (["a"], "o"), "get_records_by_parent_record": ("a", "c", "o", 0), "get_records_by_record_group": ("g", "c", "o", 0),
     "link_record_to_group": ("a", "g"), "batch_upsert_people": ([],), "update_node_if_match": ("a", "records", {}, "f", 1),
-    "remove_nodes_by_field": ("records", "f"), "get_file_record_by_id": ("a",),
+    "remove_nodes_by_field": ("records", "f"), "get_file_record_by_id": ("a",), "get_record_owner_source_user_email": ("a",),
+    "get_message_id_header_by_key": ("a", "mails"), "get_related_mails_by_message_id_header": ("h", "a", "mails"),
 }
 NO_ORG_KW = {"find_file_by_name_in_parent": {"kb_id": "kb", "file_name": "f", "mime_type": "m"}, "link_record_to_group": {"inherit": True},
              "remove_nodes_by_field": {"field_value": 1}}

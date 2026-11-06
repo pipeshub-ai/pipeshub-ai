@@ -7,7 +7,8 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
-from app.core.org_context import current_or_system, spawn_in_request
+from app.core.org_context import current_or_system, current_org_id, spawn_in_request
+from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from app.core.org_context import OrgContext
 
 _HIER = ("PARENT_CHILD", "ATTACHMENT")
+_VALIDATOR = NodeSchemaValidator()
 
 
 class NotImplementedInPostgres(NotImplementedError):
@@ -199,6 +201,28 @@ class PgBase:
             return await self._txn(transaction).run(fn)
         # Fails closed: no ambient org raises MissingOrgContext. A system context (org enumeration at start-up) reads through the jobs role.
         return await self._db.run(fn, write=write, jobs=current_or_system().kind == "system")
+
+    async def _validate_upserts(self, collection: str, docs: list[dict], transaction: str | None = None) -> None:
+        """Check every document before the first write. A payload lacking required fields is legal only for a node that exists: one read per batch
+        for those ids, and an absent one is a create without them."""
+        merged: dict[Any, dict] = {}      # a repeated id is written as one merged document (last wins per field): that is what is checked
+        for d in docs:
+            key = d.get("id", d.get("_key"))        # as the validator reads it
+            merged[key] = {**merged.get(key, {}), **d}
+        lacking = {}
+        for key, d in merged.items():
+            if missing := _VALIDATOR.validate_node_upsert(collection, d):
+                if not isinstance(key, str):
+                    raise SchemaValidationError(collection, f"a document without an id lacks required fields {missing}")
+                lacking[key] = missing
+        if not lacking:
+            return
+        rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.existing_keys_for_upsert */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[])",
+                                                 current_org_id(), collection, list(lacking)), transaction)
+        present = {r["id"] for r in rows}
+        for key, missing in lacking.items():
+            if key not in present:
+                raise SchemaValidationError(collection, f"node '{key}' does not exist and the write lacks required fields {missing}")
 
     async def _system_read(self, fn: Callable[[Tx], Awaitable[Any]]) -> Any:  # noqa: ANN401
         """A cross-org read that goes through the vetted ``graph.system_*`` functions: the service's own role, no org bound, no jobs login."""

@@ -1579,7 +1579,31 @@
       "webSearch": "Web search",
       "internalAndWebSearch": "Internal + web search"
     },
-    "searchDegraded": "Results may be incomplete."
+    "searchDegraded": "Results may be incomplete.",
+    "compare": {
+      "toggle": "Compare models",
+      "pickTwo": "Pick {{max}} models to compare.",
+      "pickedHint": "Each question is answered by both models side by side.",
+      "costNote": "Every question runs on both models, so it uses about twice the usage. In Agent mode both can use tools; actions that need approval ask you separately in each column.",
+      "pillLabel": "Compare {{picked}}/{{max}}",
+      "stop": "Stop",
+      "retry": "Retry",
+      "failed": "This model could not answer. Try again.",
+      "useAnswer": "Use this answer",
+      "useAnswerLabel": "Use the answer from {{model}}",
+      "columnLabel": "Answer from {{model}}",
+      "chooseConflict": "This answer is not ready to keep yet. Wait for it to finish and try again.",
+      "chooseFailed": "Could not keep this answer. Try again.",
+      "primaryFallback": "Model",
+      "starting": "Starting...",
+      "status": {
+        "starting": "Starting",
+        "waiting": "Waiting",
+        "streaming": "Answering",
+        "done": "Done",
+        "error": "Failed"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",
