@@ -16,7 +16,9 @@ import pytest
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.core import org_context
-from app.modules.indexing.vector_membership_backfill import run_vector_membership_backfill_tick
+from app.modules.indexing.vector_membership_backfill import (
+    run_vector_membership_backfill_tick,
+)
 from app.services.graph_db.vector_membership_queries import PAGE_RECORD_FIELDS
 
 from .test_access import World, _org

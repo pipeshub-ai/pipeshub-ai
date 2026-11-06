@@ -15,7 +15,6 @@ from app.config.constants.arangodb import (
     Connectors,
     ProgressStatus,
 )
-from app.core import org_context
 from app.core.org_context import current_or_system, current_org_id
 from app.exceptions.graph_db_exceptions import (
     GraphQueryError,
