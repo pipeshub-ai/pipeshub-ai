@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -174,3 +175,13 @@ def test_an_unnamed_app_stub_is_inactive_and_stamped() -> None:
 
 def test_a_named_app_stub_stays_active() -> None:
     assert _stub_app("c1", "JIRA")["isActive"] is True
+
+
+# ---- knowledge base grants: a schema rejection is not turned into a failure result ----------------------------------------------------------
+
+async def test_create_kb_permissions_does_not_swallow_a_schema_rejection() -> None:
+    # The method answers every other error with {"success": False}; a rejected grant must reach the caller as the rejection it is.
+    h = Harness()
+    h.p._q = AsyncMock(return_value=[{"coll": "apps", "id": "kb1"}, {"coll": "users", "id": "u1"}])
+    with pytest.raises(SchemaValidationError):
+        await h.call("create_kb_permissions", "kb1", "requester", ["u1"], [], "NOT_A_ROLE")
