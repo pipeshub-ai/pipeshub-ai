@@ -194,7 +194,9 @@ class TestAListingDiscoversABoundedNumberOfServers:
 
         async def _discover(instance: dict, auth: dict, owner: str, cfg: object, **kwargs: Any) -> tuple:  # noqa: ANN401
             discovered.append(instance["_id"])
-            await asyncio.sleep(0.2)
+            # The first two answer within the deadline; every later one would take 30 s, so a listing
+            # that waited for them instead of cutting at the deadline could not finish under the bound.
+            await asyncio.sleep(0.2 if len(discovered) <= 2 else 30)
             return [MCPToolInfo(name="t", namespaced_name=f"mcp_{instance['_id']}_t")], auth
 
         monkeypatch.setattr(mcp_servers, "LISTING_DISCOVERY_CONCURRENCY", 2)
@@ -204,7 +206,7 @@ class TestAListingDiscoversABoundedNumberOfServers:
         with patch.object(mcp_servers, "discover_tools_for_owner", new=_discover):
             instances = await _list_my_servers(_listing_store(10))
 
-        assert time.monotonic() - started < 1.5
+        assert time.monotonic() - started < 10
         listed = [entry for entry in instances if entry["tools"]]
         late = [entry for entry in instances if entry["toolsTimedOut"]]
         assert len(listed) == 2
