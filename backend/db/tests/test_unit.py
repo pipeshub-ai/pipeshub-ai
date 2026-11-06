@@ -542,3 +542,4 @@ def test_the_compose_image_role_script_has_the_layout_of_bootstrap_roles():
     assert grants == set(b.GRANTS)
     assert handed_out == vetted
     assert flat(b.LARGE_OBJECTS_SQL) in flat(sql)
+    assert {"pg_trgm", "vector"} <= set(re.findall(r"CREATE EXTENSION IF NOT EXISTS (\w+) WITH SCHEMA ext", sql))   # the extensions CI installs
