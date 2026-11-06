@@ -11447,6 +11447,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         retry_conflicts: bool = False,
         stats: dict[str, int] | None = None,
+        backoff_base: float | None = None,
     ) -> tuple[int, list[str]]:
         """Delete isOfType target nodes using pre-collected targets.
 
@@ -11473,7 +11474,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         for collection, keys in targets_by_collection.items():
             deleted, failed_batches = await self._delete_nodes_by_keys(
-                transaction, keys, collection, retry_conflicts=retry_conflicts, stats=stats
+                transaction, keys, collection, retry_conflicts=retry_conflicts, stats=stats,
+                backoff_base=backoff_base,
             )
             total_deleted += deleted
 
@@ -11503,11 +11505,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         retry_conflicts: bool = False,
         stats: dict[str, int] | None = None,
+        backoff_base: float | None = None,
     ) -> tuple[int, int]:
         """Delete documents by their ID values using batching.
 
         With ``retry_conflicts`` (auto-committed batches only) a batch that lost to a
         concurrent writer's lock (a deadlock) is run again: it rolled back whole.
+        ``backoff_base`` sets the wait before each retry (the cascade's 50 ms by default);
+        a connector delete passes ``CONNECTOR_DELETE_BASE_SECONDS``, since indexing jobs
+        still in flight keep writing its records for seconds.
         """
         if not keys:
             return (0, 0)
@@ -11547,7 +11553,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             raise
                         if stats is not None:
                             stats["retries"] = stats.get("retries", 0) + 1
-                        await cascade_backoff(attempt)
+                        if backoff_base is None:
+                            await cascade_backoff(attempt)
+                        else:
+                            await cascade_backoff(attempt, base=backoff_base)
 
                 deleted_in_batch = results[0]["deleted_count"] if results else 0
                 total_deleted += deleted_in_batch
@@ -11969,6 +11978,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     isoftype_targets,
                     retry_conflicts=created_transaction,
                     stats=cascade_stats,
+                    backoff_base=CONNECTOR_DELETE_BASE_SECONDS,
                 )
                 # Same-id type nodes cover records whose IS_OF_TYPE edge was already gone.
                 deleted_isoftype += await self._delete_type_docs_matching_record_keys(
@@ -11989,6 +11999,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     removed_counts[collection], failed_batches[collection] = await self._delete_nodes_by_keys(
                         transaction, collected[keys_key], collection,
                         retry_conflicts=created_transaction, stats=cascade_stats,
+                        backoff_base=CONNECTOR_DELETE_BASE_SECONDS,
                     )
                 deleted_records = removed_counts[CollectionNames.RECORDS.value]
                 deleted_rg = removed_counts[CollectionNames.RECORD_GROUPS.value]

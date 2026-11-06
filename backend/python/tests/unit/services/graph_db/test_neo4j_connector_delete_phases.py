@@ -344,3 +344,38 @@ async def test_a_late_write_pass_raises_what_the_store_raises() -> None:
     p._count_connector_blocks_and_stage_states = AsyncMock(side_effect=RuntimeError("unavailable"))
     with pytest.raises(RuntimeError):
         await p.sweep_deleted_connector_writes("c1")
+
+
+@pytest.mark.asyncio
+async def test_a_connector_delete_backs_off_its_node_batches_like_its_other_steps() -> None:
+    """Indexing still writing a deleted connector's records conflicts with its node batches too:
+    at the cascade's 50 ms base they lost every attempt before the sweep could run."""
+    from app.services.graph_db.common.cascade_retry import CONNECTOR_DELETE_BASE_SECONDS
+
+    p = _provider()
+    p._collect_isoftype_targets = AsyncMock(return_value=([{"id": "f1", "collection": "files"}], True))
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is True, result
+    assert p._delete_isoftype_targets_from_collected.await_args.kwargs["backoff_base"] == CONNECTOR_DELETE_BASE_SECONDS
+    batch_calls = p._delete_nodes_by_keys.await_args_list
+    assert batch_calls and all(c.kwargs.get("backoff_base") == CONNECTOR_DELETE_BASE_SECONDS for c in batch_calls
+                               if c.kwargs.get("retry_conflicts"))
+
+
+@pytest.mark.asyncio
+async def test_a_node_batch_that_loses_to_a_writer_waits_the_base_it_was_given(no_wait) -> None:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = MagicMock()
+    conflict = Neo4jError("deadlock")
+    p.is_write_conflict = MagicMock(return_value=True)
+    p.client = MagicMock(execute_query=AsyncMock(side_effect=[conflict, [{"deleted_count": 1}]]))
+
+    assert await p._delete_nodes_by_keys("txn", ["a"], "records", retry_conflicts=True, backoff_base=0.5) == (1, 0)
+    assert no_wait.await_args.kwargs["base"] == 0.5
+
+    no_wait.reset_mock()
+    p.client.execute_query = AsyncMock(side_effect=[conflict, [{"deleted_count": 1}]])
+    assert await p._delete_nodes_by_keys("txn", ["a"], "records", retry_conflicts=True) == (1, 0)
+    assert "base" not in no_wait.await_args.kwargs
