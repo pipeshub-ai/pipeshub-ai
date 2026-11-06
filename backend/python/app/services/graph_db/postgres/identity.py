@@ -77,8 +77,10 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
 
 
 def _far(coll: str, incoming: bool, e: dict) -> tuple:  # noqa: FBT001
-    """The identity of an edge of a user: the node at its other end and its key."""
-    return (e["from_collection"], e["from_id"], _ekey(coll, e)) if incoming else (e["to_collection"], e["to_id"], _ekey(coll, e))
+    """The identity of an edge of a user: the node at its other end and its key. A user holds one grant on a node whatever its type, as a MERGE does, so a
+    permission is keyed by the node alone."""
+    key = "" if coll == "permission" else _ekey(coll, e)
+    return (e["from_collection"], e["from_id"], key) if incoming else (e["to_collection"], e["to_id"], key)
 
 
 class IdentityMixin(PgBase):
@@ -769,22 +771,26 @@ class IdentityMixin(PgBase):
         edges between the two and ones the login has are left as they are) and the stubs go, all in one transaction. A second real login with the
         email is a conflict. None when the login user is not there."""
         self._require_org(org_id)
-        keep = await self.get_user_by_user_id(user_id)
-        keep_key = graph_user_key(keep) if keep else None
-        if not keep_key:
-            return None
-        peers = [_arango(_doc(r["doc"]), "users") for r in await self._id_rows(
-            "/* pipeshub:graph.verified_email_peers */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) ORDER BY id",
-            [current_org_id(), email], None)]
-        stubs: list[str] = []
-        for peer in peers:
-            kind = classify_email_peer(user_id, keep_key, peer)
-            if kind == "login":
-                raise GraphUserEmailConflictError("Email already belongs to another login user in the graph", conflicting_user_id=str(peer.get("userId") or ""))
-            if kind == "stub" and (key := graph_user_key(peer)):
-                stubs.append(key)
-        connector_ids = await connector_ids_of_users(self, stubs)
+        org = current_org_id()
         async with self._atomic(None) as tid:
+            # Two verifications of one address are serialised: the second reads what the first committed, and finds its login user there as a conflict.
+            await self._id_rows("/* pipeshub:graph.verified_email_lock */ SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [f"verified_email:{org}:{email.lower()}"], tid, write=True)
+            found = await self._id_rows("/* pipeshub:graph.verified_email_login */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND doc->>'userId' = $2 LIMIT 1",
+                                        [org, user_id], tid)
+            keep_key = graph_user_key(_arango(_doc(found[0]["doc"]), "users")) if found else None
+            if not keep_key:
+                return None
+            peers = [_arango(_doc(r["doc"]), "users") for r in await self._id_rows(
+                "/* pipeshub:graph.verified_email_peers */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) ORDER BY id",
+                [org, email], tid)]
+            stubs: list[str] = []
+            for peer in peers:
+                kind = classify_email_peer(user_id, keep_key, peer)
+                if kind == "login":
+                    raise GraphUserEmailConflictError("Email already belongs to another login user in the graph", conflicting_user_id=str(peer.get("userId") or ""))
+                if kind == "stub" and (key := graph_user_key(peer)):
+                    stubs.append(key)
+            connector_ids = await connector_ids_of_users(self, stubs)
             for stub in stubs:
                 await self._absorb_user_stub(keep_key, stub, tid)
             await self.batch_upsert_nodes([{"id": keep_key, "userId": user_id, "orgId": org_id, "email": email, "updatedAtTimestamp": get_epoch_timestamp_in_ms()}], "users", tid)

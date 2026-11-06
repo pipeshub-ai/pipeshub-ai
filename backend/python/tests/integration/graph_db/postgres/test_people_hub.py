@@ -214,6 +214,70 @@ async def test_a_verified_email_merges_the_stubs_into_the_login_user_and_keeps_e
     assert await role(w, "bystander", "r") == "READER"                        # nobody else's edges moved
 
 
+async def test_a_merge_keeps_the_stronger_grant_whatever_the_type_of_either(w: World) -> None:
+    await merge_world(w)
+    await w.nodes("records", rec("same"), rec("lower"), rec("up"))
+    for k in ("same", "lower", "up"):
+        await w.child(("apps", APP), ("records", k))
+    await w.edge("permission", ("users", "login"), ("records", "same"), type="USER", role="WRITER")
+    await w.edge("permission", ("users", "stub1"), ("records", "same"), type="GROUP", role="READER")          # weaker, and of another type: the login user keeps theirs
+    await w.edge("permission", ("users", "login"), ("records", "up"), type="USER", role="READER")
+    await w.edge("permission", ("users", "stub1"), ("records", "up"), type="GROUP", role="OWNER")             # stronger: it becomes the one grant
+    await w.p.apply_verified_user_email(LOGIN, w.org, "new@x.io")
+    same, up = await w.p.get_edges_from_node("users/login", "permission"), None
+    by_target = {e["to_id"]: e for e in same}
+    assert (by_target["same"]["role"], by_target["same"]["type"]) == ("WRITER", "USER")
+    assert (by_target["up"]["role"], by_target["up"]["type"]) == ("OWNER", "GROUP") and up is None
+    assert len([e for e in same if e["to_id"] in ("same", "up")]) == 2                                          # one grant per node
+
+
+async def test_a_merge_moves_every_kind_of_edge_a_stub_can_hold_and_keeps_what_the_login_user_has(w: World) -> None:
+    await merge_world(w)
+    await w.nodes("organizations", {"_key": w.org})
+    await w.nodes("users", {"_key": "src"}, {"_key": "other"})
+    await w.nodes("drives", {"_key": "d1"})
+    await w.nodes("records", rec("made"))
+    await w.edge("belongsTo", ("users", "stub1"), ("organizations", w.org), entityType="ORGANIZATION")
+    await w.edge("userDriveRelation", ("users", "stub1"), ("drives", "d1"), access="owner")
+    await w.edge("authenticatedAs", ("users", "stub1"), ("users", "src"), connectorId="c1", note="stub")
+    await w.edge("authenticatedAs", ("users", "stub1"), ("users", "src"), connectorId="c2")
+    await w.edge("authenticatedAs", ("users", "login"), ("users", "src"), connectorId="c1", note="login")      # the login user already has the c1 link
+    await w.edge("authenticatedAs", ("users", "other"), ("users", "stub1"), connectorId="c3")                  # an edge into the stub
+    await w.edge("entityRelations", ("records", "made"), ("users", "stub1"), edgeType="CREATED_BY")           # so is this one
+    await w.p.apply_verified_user_email(LOGIN, w.org, "new@x.io")
+    p = w.p
+    assert [e["to_id"] for e in await p.get_edges_from_node("users/login", "belongsTo")] == [w.org]
+    assert [(e["to_id"], e["access"]) for e in await p.get_edges_from_node("users/login", "userDriveRelation")] == [("d1", "owner")]
+    links = {e["connectorId"]: e.get("note") for e in await p.get_edges_from_node("users/login", "authenticatedAs")}
+    assert links == {"c1": "login", "c2": None}                                                                  # the login user's own c1 link stays, c2 moves over
+    assert [(e["from_id"], e["connectorId"]) for e in await p.get_edges_to_node("users/login", "authenticatedAs")] == [("other", "c3")]
+    assert [(e["from_id"], e["edgeType"]) for e in await p.get_edges_to_node("users/login", "entityRelations")] == [("made", "CREATED_BY")]
+    for coll in ("belongsTo", "userDriveRelation", "authenticatedAs", "entityRelations", "userAppRelation", "permission"):
+        assert not (await p.get_edges_from_node("users/stub1", coll) + await p.get_edges_to_node("users/stub1", coll))      # nothing is left on the stub
+
+
+async def test_two_verifications_of_one_address_cannot_both_go_through(w: World) -> None:
+    await merge_world(w)
+    await w.nodes("users", {"_key": "login2", "userId": "d" * 24, "email": "old2@x.io", "isActive": True})
+    res = await asyncio.gather(w.p.apply_verified_user_email(LOGIN, w.org, "new@x.io"), w.p.apply_verified_user_email("d" * 24, w.org, "new@x.io"), return_exceptions=True)
+    won = [r for r in res if isinstance(r, dict)]
+    lost = [r for r in res if isinstance(r, GraphUserEmailConflictError)]
+    assert len(won) == 1 and len(lost) == 1 and sorted(won[0]["mergedStubKeys"]) == ["stub1", "stub2"]
+    winner = LOGIN if (await w.p.get_document("login", "users"))["email"] == "new@x.io" else "d" * 24
+    other = "login2" if winner == LOGIN else "login"
+    assert (await w.p.get_document(other, "users"))["email"].startswith("old")                                  # the loser kept its own address
+
+
+async def test_the_owner_of_a_record_is_the_nearest_owner_that_has_an_email(w: World) -> None:
+    await w.nodes("users", {"_key": "near"}, {"_key": "far", "email": "far@x.io"})
+    await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
+    await w.nodes("records", rec("r"))
+    await w.child(("recordGroups", "g"), ("records", "r"))
+    await grant(w, "near", "records", "r", "OWNER")
+    await grant(w, "far", "recordGroups", "g", "OWNER")
+    assert await w.p.get_record_owner_source_user_email("r") == "far@x.io"                                      # the nearer owner has none to give
+
+
 async def test_a_verified_email_held_by_another_login_changes_nothing(w: World) -> None:
     await merge_world(w)
     await w.nodes("users", {"_key": "rival", "userId": "b" * 24, "email": "new@x.io", "isActive": True})
