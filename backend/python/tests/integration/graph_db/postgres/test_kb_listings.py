@@ -7,15 +7,21 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from app.core import org_context
 from app.core.org_context import MissingOrgContext
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
 
-from .test_access import World
 from .test_identity import w as _identity_world  # noqa: F401
 from .test_kb import FOLDER, folder, grant, kb, other_org, team, users
+
+if TYPE_CHECKING:
+    from .test_access import World
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
