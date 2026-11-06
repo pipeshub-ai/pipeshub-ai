@@ -7,6 +7,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 import pytest
@@ -147,6 +148,28 @@ async def test_the_backfill_under_a_system_context_marks_every_org(w: World, pg_
         try:
             with org_context.system("test.backfill"):
                 assert await w.p.backfill_indexed_copy_flags() >= 2
+        finally:
+            org_context._ctx.reset(token)
+        assert await field(w, "mine", "hasIndexedCopy") is True
+        with other_org(other):
+            assert (await w.p.get_document("theirs", "records"))["hasIndexedCopy"] is True
+    finally:
+        with other_org(other):
+            await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", other), write=True)
+
+
+async def test_the_boot_call_of_the_indexing_service_backfills_every_org_without_an_ambient_org(w: World, pg_provider, pg_db) -> None:
+    from app.containers.indexing import _backfill_indexed_copy_flags
+
+    other = _org()
+    try:
+        with other_org(other):
+            await w.nodes("organizations", {"_key": other, "isActive": True})
+            await w.nodes("records", {"_key": "theirs", "indexingStatus": "COMPLETED", "orgId": other})
+        await record(w, "mine", indexingStatus="COMPLETED")
+        token = org_context._ctx.set(None)                                  # boot: no org is bound
+        try:
+            await _backfill_indexed_copy_flags(pg_provider, logging.getLogger("boot"))
         finally:
             org_context._ctx.reset(token)
         assert await field(w, "mine", "hasIndexedCopy") is True

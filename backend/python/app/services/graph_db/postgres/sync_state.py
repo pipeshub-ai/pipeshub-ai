@@ -146,13 +146,17 @@ class SyncStateMixin(PgBase):
         included = [s for s in (only_statuses or []) if isinstance(s, str) and s]
         if only_statuses is not None and not included:
             return
-        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.reset_indexing_status_for_connector */ UPDATE graph.nodes n
-            SET doc = n.doc || jsonb_build_object('indexingStatus', $3::text) || CASE WHEN $7::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('reason', $7::text) END
-            WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'connectorId' = $2
-              AND (cardinality($4::text[]) = 0 OR NOT coalesce(n.doc->>'indexingStatus', '') = ANY($4::text[]))
-              AND ($5::text[] IS NULL OR n.doc->>'indexingStatus' = ANY($5::text[]))
-              AND ($6::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($6::int = 2))""",
-                                             org, connector_id, status, excluded, included or None, _vis(visibility), reason), transaction, write=True)
+        try:
+            await self._q(lambda tx: tx.execute("""/* pipeshub:graph.reset_indexing_status_for_connector */ UPDATE graph.nodes n
+                SET doc = n.doc || jsonb_build_object('indexingStatus', $3::text) || CASE WHEN $7::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('reason', $7::text) END
+                WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'connectorId' = $2
+                  AND (cardinality($4::text[]) = 0 OR NOT coalesce(n.doc->>'indexingStatus', '') = ANY($4::text[]))
+                  AND ($5::text[] IS NULL OR n.doc->>'indexingStatus' = ANY($5::text[]))
+                  AND ($6::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($6::int = 2))""",
+                                                 org, connector_id, status, excluded, included or None, _vis(visibility), reason), transaction, write=True)
+        except Exception:
+            self.logger.error("❌ Failed to reset indexing status for connector %s", connector_id)
+            raise
 
     async def update_queued_duplicates_status(self, record_id: str, new_indexing_status: str, virtual_record_id: str | None = None,
                                               transaction: str | None = None, reason: str | None = None) -> int:
