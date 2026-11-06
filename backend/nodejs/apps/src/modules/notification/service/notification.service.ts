@@ -5,11 +5,12 @@ import { inject, injectable } from 'inversify';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TYPES } from '../../../libs/types/container.types';
+import { findSessionRefusal } from '../../../libs/utils/user-session.utils';
 
 interface CustomSocketData {
   userId: string;
   orgId: string;
-  forceLogoutReason?: 'missing_role' | 'invalid_token';
+  forceLogoutReason?: 'missing_role' | 'invalid_token' | 'session_ended';
 }
 
 type CustomSocket = Socket<
@@ -37,6 +38,8 @@ export class NotificationService {
   private readonly MAX_RETRY_COUNT = 3;
   private readonly QUEUE_PROCESSING_INTERVAL_MS = 5000; // Process queue every 5 seconds
   private readonly MAX_QUEUE_SIZE_PER_USER = 100; // Maximum notifications per user to prevent memory issues
+  // The same session rules authMiddleware holds every HTTP request to.
+  private sessionRefusal: typeof findSessionRefusal = findSessionRefusal;
 
   constructor(
     @inject(TYPES.AuthTokenService) private authTokenService: AuthTokenService,
@@ -76,6 +79,24 @@ export class NotificationService {
         if (role !== 'admin' && role !== 'member') {
           // Allow the socket to connect briefly so we can emit force_logout.
           socket.data.forceLogoutReason = 'missing_role';
+        } else {
+          // A signature that still verifies says nothing about a logout,
+          // password change or disabled account since the token was issued.
+          let refusal: string | null;
+          try {
+            refusal = await this.sessionRefusal(decodedData, this.logger);
+          } catch (error) {
+            // Fail closed, and not as an auth failure, so the client retries rather than signing out.
+            this.logger.error('Notification handshake: session check failed', {
+              error,
+              userId: socket.data.userId,
+              orgId: socket.data.orgId,
+            });
+            return next(new Error('Unable to check the session right now'));
+          }
+          if (refusal) {
+            socket.data.forceLogoutReason = 'session_ended';
+          }
         }
 
         next();
@@ -95,7 +116,7 @@ export class NotificationService {
 
       if (socket.data.forceLogoutReason) {
         socket.emit('force_logout', { reason: socket.data.forceLogoutReason });
-        this.logger.info('force_logout on connect (missing JWT role)', {
+        this.logger.info('force_logout on connect', {
           userId,
           reason: socket.data.forceLogoutReason,
         });
