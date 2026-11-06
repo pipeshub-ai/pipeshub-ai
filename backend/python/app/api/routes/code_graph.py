@@ -32,7 +32,7 @@ from app.agents.actions.code_graph.repos import (
     repo_for_record,
     repo_not_found_message,
 )
-from app.api.connection_limit import ids_outside_connection
+from app.api.connection_limit import groups_outside_limit
 from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.service import OAuthScopes
 from app.modules.code_graph.build_state import BuildStateStore, graph_status
@@ -174,7 +174,10 @@ async def _inside_limit(
     request: Request, graph_provider: "IGraphDBProvider", org_id: str, user_id: str, repos: list[CodeRepo],
 ) -> list[CodeRepo]:
     """Of ``repos``, those a connected app's knowledge limit reaches; all of them without a limit."""
-    outside = await ids_outside_connection(request, graph_provider, org_id, user_id, [r.group_id for r in repos])
+    # A repo is readable through its files; the user need not hold a grant on the group itself.
+    outside = await groups_outside_limit(
+        request, graph_provider, org_id, user_id, {r.group_id: r.connector_id for r in repos},
+    )
     return [r for r in repos if r.group_id not in outside]
 
 

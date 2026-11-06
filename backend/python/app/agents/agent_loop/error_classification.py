@@ -33,6 +33,7 @@ import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.model_identity.errors import classify_for_user
 from app.utils.log_redaction import redact_secrets_in_text
 
@@ -313,6 +314,13 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
 
     if isinstance(exc, LLMNotConfiguredError):
         return "llm_not_configured", str(exc)
+    if isinstance(exc, PermissionVerificationUnavailableError):
+        # Not "no access": the graph could not say, so the reader is told to retry.
+        from app.modules.retrieval.retrieval_service import (
+            PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
+        )
+
+        return "permission_check_unavailable", PERMISSION_CHECK_UNAVAILABLE_MESSAGE
     if isinstance(exc, HTTPException):
         detail = exc.detail
         if isinstance(detail, dict):

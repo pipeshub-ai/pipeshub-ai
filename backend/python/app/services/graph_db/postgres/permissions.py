@@ -156,6 +156,46 @@ class PermissionsMixin(PgBase):
             access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
         return await self._q(lambda tx: access_sql.accessible_rows(tx, org, ids, vrids, access), transaction)
 
+    async def get_selection_nodes(self, org_id: str, *, group_ids: list[str], record_ids: list[str],
+                                  exact_record_ids: list[str], limit: int) -> dict[str, list[dict[str, Any]]]:
+        """What a selection covers, from the hierarchy alone (see the interface). Walks down a level at a time with single-table lookups,
+        through live nodes only, and stops once more than ``limit`` nodes are found (the caller reads that as too large). Another org reads nothing."""
+        org = current_org_id()
+        if org_id != org:
+            return {"groups": [], "records": []}
+
+        async def walk(tx: Tx, coll: str, roots: list[str], exact: list[str]) -> list[dict[str, Any]]:
+            found: dict[str, dict[str, Any]] = {}
+
+            async def live(ids: list[str]) -> list[Any]:          # at most one past the limit, as the children: a long id list is never read in full
+                return await tx.fetch("""/* pipeshub:graph.selection_nodes_live */ SELECT id, doc->>'connectorId' AS cid, doc->>'virtualRecordId' AS vrid FROM graph.nodes
+                    WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) AND id <> ALL($4::text[]) AND coalesce((doc->>'isDeleted')::boolean, false) = false
+                    LIMIT $5""", org, coll, ids, list(found), limit + 1 - len(found))
+
+            rows = await live(list(roots))
+            for hop in range(access_sql.MAX_HOPS + 1):
+                fresh = [r for r in rows if r["id"] not in found]
+                found.update((r["id"], r) for r in fresh)
+                frontier = [r["id"] for r in fresh]
+                if not frontier or len(found) > limit or hop == access_sql.MAX_HOPS:
+                    break
+                # only live children not found yet, and no more than would take the walk past the limit: a wide level is never read in full
+                rows = await tx.fetch("""/* pipeshub:graph.selection_nodes_children */ SELECT DISTINCT n.id, n.doc->>'connectorId' AS cid, n.doc->>'virtualRecordId' AS vrid
+                    FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = e.to_coll AND n.id = e.to_id
+                    WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = $2 AND e.to_coll = $2 AND e.from_id = ANY($3::text[])
+                      AND e.doc->>'relationshipType' = ANY($4::text[]) AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND n.id <> ALL($5::text[])
+                    LIMIT $6""", org, coll, frontier, ["PARENT_CHILD", "ATTACHMENT"], list(found), limit + 1 - len(found))
+            if exact and len(found) <= limit:
+                found.update((r["id"], r) for r in await live(exact))
+            return list(found.values())[:limit + 1]
+
+        async def go(tx: Tx) -> dict[str, list[dict[str, Any]]]:
+            groups = await walk(tx, "recordGroups", group_ids, []) if group_ids else []
+            records = await walk(tx, "records", record_ids, exact_record_ids) if record_ids or exact_record_ids else []
+            return {"groups": [{"id": g["id"], "connectorId": g["cid"]} for g in groups],
+                    "records": [{"id": r["id"], "vrid": r["vrid"], "connectorId": r["cid"]} for r in records]}
+        return await self._q(go, None)
+
     # ---- who holds a grant on a node, and the writes of grants -----------------------------------------------------
     async def _users_granted_on(self, node_id: str, limit: int | None, transaction: str | None) -> list[dict]:
         """The users holding a PERMISSION edge on the node or on an ancestor it inherits from (up to ``_INHERIT_HOPS``), nearest first, then by id."""

@@ -1082,7 +1082,7 @@ class TestUpdateRecord:
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {"recordName": "new"}})
         assert resp.status_code == 200
         assert resp.json()["location"] == "kb_root"
-        assert resp.json()["userPermission"] == "NONE"
+        assert resp.json()["userPermission"] is None
 
     def test_publishes_event_data_from_service_result(self):
         app, kb_svc, kafka = _make_app()
