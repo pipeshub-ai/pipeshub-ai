@@ -1166,7 +1166,7 @@ describe('UserAccountController', () => {
   });
 
   describe('password setup for users without a password', () => {
-    // userValidator sets req.user and nothing else, so the handlers must not need a bound context.
+    // Called with req.user only and no bound org context, so the handlers must not need one.
     const authedReq: any = {
       user: { userId: '507f1f77bcf86cd799439011', orgId: '507f1f77bcf86cd799439012' },
     };

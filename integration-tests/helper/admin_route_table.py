@@ -34,7 +34,7 @@ from helper import suite_extensions
 ABSENT_ID = "65f0c0ffee00000000000000"
 INVALID_ID = "not-an-id"
 
-# userAdminCheck and adminValidator both throw ForbiddenError with
+# userAdminCheck throws ForbiddenError with
 # ADMIN_ACCESS_REQUIRED_MESSAGE (user_management/services/user-admin.service.ts).
 NODE_REFUSAL_STATUS = 403
 NODE_REFUSAL_MESSAGE = "You need admin access to do this. Ask an admin in your organisation."
@@ -77,7 +77,7 @@ def _no_admin(method: str, path: str, why: str, **kw: Any) -> AdminRoute:
 _CM = "/api/v1/configurationManager"
 
 NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
-    # orgAuthConfig.routes.ts (adminValidator)
+    # orgAuthConfig.routes.ts (router-level userAdminCheck)
     AdminRoute("GET", "/api/v1/orgAuthConfig/authMethods"),
     AdminRoute("GET", "/api/v1/orgAuthConfig/signInRemoval"),
     _no_admin("POST", "/api/v1/orgAuthConfig",
