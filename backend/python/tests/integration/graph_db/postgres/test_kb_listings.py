@@ -16,7 +16,7 @@ from app.core.org_context import MissingOrgContext
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
 
 from .test_identity import w as _identity_world  # noqa: F401
-from .test_kb import FOLDER, folder, grant, kb, other_org, team, users
+from .test_kb import folder, grant, kb, other_org, team, users
 
 if TYPE_CHECKING:
     from .test_access import World
@@ -354,7 +354,3 @@ async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_
         await getattr(pg_provider, name)(*CALLS[name])
     with org_context.system("test.no-org"), pytest.raises(Exception, match="(?i)system|org"):
         await getattr(pg_provider, name)(*CALLS[name])
-
-
-def test_the_folder_mime_type_is_the_one_the_fixtures_write() -> None:
-    assert FOLDER
