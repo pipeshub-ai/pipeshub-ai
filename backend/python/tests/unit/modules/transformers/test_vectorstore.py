@@ -1623,6 +1623,86 @@ class TestProcessImageEmbeddings:
         assert result == []
         mock_create.assert_not_called()
 
+    @staticmethod
+    def _provider_returning(*results) -> MagicMock:
+        provider = MagicMock()
+        provider.supports_multimodal.return_value = True
+        provider.embed_images = AsyncMock(return_value=list(results))
+        return provider
+
+    @staticmethod
+    async def _embed_two_images(vs, provider) -> list:
+        vs.embedding_provider = "jinaAI"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+        vs._embed_documents_with_retry = AsyncMock(side_effect=lambda texts, _rid: [[0.9, 0.9] for _ in texts])
+        vs._compute_sparse_embeddings = AsyncMock(side_effect=lambda texts: [None] * len(texts))
+        chunks = [
+            {"metadata": {"blockId": "b0"}, "description": "first image"},
+            {"metadata": {"blockId": "b1"}, "description": "second image"},
+        ]
+        with patch(
+            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+            return_value=provider,
+        ):
+            return await vs._process_image_embeddings(chunks, ["a", "b"], "rec-1")
+
+    @pytest.mark.asyncio
+    async def test_a_provider_failure_raises_a_retriable_error_for_the_whole_record(self) -> None:
+        """One image failing must not end the record COMPLETED without it, even beside a good one."""
+        from app.exceptions.indexing_exceptions import EmbeddingError
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+        from app.services.messaging.error_classifier import MessageErrorClassifier
+
+        provider = self._provider_returning(
+            ImageEmbeddingResult(index=0, embedding=[0.1, 0.2]),
+            ImageEmbeddingResult(index=1, error="429 Too Many Requests"),
+        )
+
+        with pytest.raises(EmbeddingError, match="1 of 2 images.*429 Too Many Requests") as raised:
+            await self._embed_two_images(_make_vectorstore(), provider)
+
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == "transient"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", ["invalid image data", "image size must be at most 20MB"])
+    async def test_an_unusable_image_falls_back_to_its_description(self, error) -> None:
+        """A retry cannot fix the image itself, so its description is what the index gets."""
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
+        provider = self._provider_returning(
+            ImageEmbeddingResult(index=0, embedding=[0.1, 0.2]),
+            ImageEmbeddingResult(index=1, error=error),
+        )
+
+        points = await self._embed_two_images(_make_vectorstore(), provider)
+
+        assert [p.dense_vector for p in points] == [[0.1, 0.2], [0.9, 0.9]]
+        assert points[1].payload["metadata"]["blockId"] == "b1"
+
+    @pytest.mark.asyncio
+    async def test_an_unusable_image_without_a_description_is_skipped(self) -> None:
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
+        vs = _make_vectorstore()
+        vs.embedding_provider = "jinaAI"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+        provider = self._provider_returning(ImageEmbeddingResult(index=0, error="invalid image data"))
+
+        with patch(
+            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+            return_value=provider,
+        ):
+            assert await vs._process_image_embeddings([{"metadata": {}, "description": ""}], ["a"], "rec-1") == []
+
+    @pytest.mark.asyncio
+    async def test_an_unsupported_provider_falls_back_to_the_description(self) -> None:
+        provider = MagicMock()
+        provider.supports_multimodal.return_value = False
+
+        points = await self._embed_two_images(_make_vectorstore(), provider)
+
+        assert [p.dense_vector for p in points] == [[0.9, 0.9], [0.9, 0.9]]
+
     @pytest.mark.asyncio
     async def test_unsupported_provider_returns_empty(self):
         """When the factory can't resolve a provider, returns empty list without erroring."""
