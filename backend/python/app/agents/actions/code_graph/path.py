@@ -16,7 +16,7 @@ from .ops import (
     RecordAccess,
     SymbolRef,
     _readable_blocks,
-    _readable_keys,
+    _readable_neighbour_rows,
     coverage_for,
     get_record_roles,
     resolve_symbol,
@@ -24,7 +24,7 @@ from .ops import (
 from .results import touched
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Callable
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -41,6 +41,7 @@ DEFAULT_MAX_DEPTH = MAX_PATH_DEPTH
 # Ceiling on nodes expanded per side, so one hub symbol cannot walk the repo.
 _MAX_VISITED = 4000
 _FRONTIER_LIMIT = 2000
+_FRONTIER_SCAN_LIMIT = 4 * _FRONTIER_LIMIT
 # What `Foo()` runs: a Python, then a JS/TS constructor.
 _CONSTRUCTORS = frozenset({"__init__", "constructor"})
 
@@ -109,20 +110,17 @@ async def find_symbol_path_impl(
     if start_key == end_key:
         return {"found": True, "hops": []}
 
-    def readable(keys: list[str]) -> Awaitable[set[str]]:
-        return _readable_keys(graph_provider, org_id, access, keys)
-
     # `Foo()` is an edge to the class, and a path does not step from a class it
     # reached into its members: a path to a constructor is a path to its class,
     # then the one step down into it.
     target_key, constructor_hop = end_key, None
     if not undirected and end.get("name") in _CONSTRUCTORS and end.get("parentBlockId"):
-        rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
-            node_keys=[end["parentBlockId"]], node_collection=_BLOCKS,
-            relationship_types=list(STRUCTURAL_RELATIONS), direction="outbound",
-            limit=_FRONTIER_LIMIT, raise_on_error=True,
-        ) or []
-        relation = next((r.get("relationshipType") for r in rows if r.get("key") == end_key), None)
+        # Only the one row asked about is kept, so other members of a big class cannot crowd it out.
+        rows, _, _ = await _readable_neighbour_rows(
+            graph_provider, org_id, access, [end["parentBlockId"]], list(STRUCTURAL_RELATIONS), "outbound",
+            page=_FRONTIER_LIMIT, budget=_FRONTIER_SCAN_LIMIT, want=1, accept=lambda r: r.get("key") == end_key,
+        )
+        relation = next((r.get("relationshipType") for r in rows), None)
         if relation:
             target_key = end["parentBlockId"]
             constructor_hop = {"from": target_key, "to": end_key, "relation": relation,
@@ -133,7 +131,7 @@ async def find_symbol_path_impl(
     else:
         edges, capped = await _bfs_edges(
             graph_provider, start_key, target_key, max_depth=max_depth, relations=edge_types,
-            undirected=undirected, readable=readable,
+            undirected=undirected, org_id=org_id, access=access,
         )
     if edges is not None and constructor_hop:
         edges = [*edges, constructor_hop]
@@ -141,7 +139,7 @@ async def find_symbol_path_impl(
     if edges is None and not undirected:
         edges, back_capped = await _bfs_edges(
             graph_provider, end_key, start_key, max_depth=max_depth, relations=edge_types,
-            readable=readable,
+            org_id=org_id, access=access,
         )
         capped = capped or back_capped
         reversed_path = edges is not None
@@ -158,7 +156,7 @@ async def find_symbol_path_impl(
                 "`edge_types`, or start from symbols closer together."
             )
         elif not undirected and (not edge_types or RecordRelations.CALLS.value in edge_types):
-            missed["note"] = await _unproven_note(graph_provider, target_key, readable)
+            missed["note"] = await _unproven_note(graph_provider, target_key, org_id, access)
         return missed
 
     keys = {start_key, end_key}
@@ -200,23 +198,24 @@ async def find_symbol_path_impl(
 
 # Enough inbound calls to find one the caller can read without loading a hub's every caller.
 _CALLER_PROBE = 50
+_CALLER_SCAN_LIMIT = 20 * _CALLER_PROBE
 
 
 async def _unproven_note(
-    graph_provider: IGraphDBProvider, target_key: str, readable: Callable[[list[str]], Awaitable[set[str]]],
+    graph_provider: IGraphDBProvider, target_key: str, org_id: str, access: RecordAccess,
 ) -> str:
     """Why an uncapped miss is still not proof: CALLS holds only calls whose receiver type is
     known, so an untyped call, a getattr or a callback can join two symbols the graph does not.
 
     Only readable callers count: "something calls it" from a hidden file would reveal that file.
     """
-    rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
-        node_keys=[target_key], node_collection=_BLOCKS,
-        relationship_types=[RecordRelations.CALLS.value], direction="inbound",
-        limit=_CALLER_PROBE, raise_on_error=True,
-    ) or []
-    callers = [r["key"] for r in rows if r.get("collection") == _BLOCKS and r.get("key")]
-    linked = bool(callers) and bool(await readable(callers))
+    rows, _, spent = await _readable_neighbour_rows(
+        graph_provider, org_id, access, [target_key], [RecordRelations.CALLS.value], "inbound",
+        page=_CALLER_PROBE, budget=_CALLER_SCAN_LIMIT, want=1,
+        accept=lambda r: r.get("collection") == _BLOCKS and bool(r.get("key")),
+    )
+    # A spent scan cannot say nothing calls it.
+    linked = bool(rows) or spent
     reason = (
         "No chain of linked calls joins them, but calls the graph could not link (on values "
         "of unknown type, through getattr or callbacks) can. "
@@ -238,7 +237,8 @@ async def _bfs_edges(
     max_depth: int,
     relations: list[str] | None = None,
     undirected: bool = False,
-    readable: Callable[[list[str]], Awaitable[set[str]]] | None = None,
+    org_id: str = "",
+    access: RecordAccess | None = None,
 ) -> tuple[list[dict[str, str]] | None, bool]:
     """Breadth-first search from ``start_key`` towards ``end_key``.
 
@@ -258,7 +258,7 @@ async def _bfs_edges(
     identically on Arango and Neo4j, and so each hop keeps the relation type and
     direction a native call would not return.
 
-    ``readable`` keeps the search to blocks the caller may read, so a path
+    ``access`` keeps the search to blocks the caller may read, so a path
     through a hidden file neither shows nor hides a readable one (S-7).
 
     Returns ``(edges, capped)``. ``capped`` is set whenever a frontier or row
@@ -280,33 +280,28 @@ async def _bfs_edges(
         phases_by_key: dict[str, list[int]] = {}
         for key, phase in frontier:
             phases_by_key.setdefault(key, []).append(phase)
-        rows, hit_cap = await _neighbour_rows(graph_provider, phases_by_key, all_relations,
-                                              undirected=undirected)
-        capped = capped or hit_cap
-        # The shape rules first, then the access check on what survives: checking
-        # every neighbour of a hub (thousands of callers a directed walk drops anyway)
-        # made each hop one large permission query (B2: up to 43 s on a 20k-file repo).
-        candidates = [
-            row for row in rows
-            if row.get("collection") == _BLOCKS and row.get("key") and row.get("anchorKey")
-            and any(
-                (step := _next_phase(phase, row, undirected=undirected)) is not None
-                and (row["key"], step) not in visited
-                for phase in phases_by_key.get(row["anchorKey"], ())
+        def steppable(row: dict[str, Any], phases_by_key: dict[str, list[int]] = phases_by_key) -> bool:
+            return bool(
+                row.get("collection") == _BLOCKS and row.get("key") and row.get("anchorKey")
+                and any(
+                    (step := _next_phase(phase, row, undirected=undirected)) is not None
+                    and (row["key"], step) not in visited
+                    for phase in phases_by_key.get(row["anchorKey"], ())
+                )
             )
-        ]
-        allowed = None
-        if readable is not None:
-            allowed = await readable([row["key"] for row in candidates])
-        rows = candidates
+
+        # The shape rules and the access check run per page inside the fetch, so
+        # neither a hub's unreadable callers nor its dropped ones fill the cap.
+        rows, hit_cap = await _neighbour_rows(graph_provider, phases_by_key, all_relations,
+                                              undirected=undirected, accept=steppable,
+                                              org_id=org_id, access=access)
+        capped = capped or hit_cap
 
         next_frontier: list[tuple[str, int]] = []
         for row in rows:
             if row.get("collection") != _BLOCKS:
                 continue
             key = row.get("key")
-            if allowed is not None and key not in allowed:
-                continue
             anchor = row.get("anchorKey")
             if not key or not anchor:
                 continue
@@ -337,6 +332,9 @@ async def _neighbour_rows(
     relations: list[str],
     *,
     undirected: bool,
+    accept: Callable[[dict[str, Any]], bool],
+    org_id: str,
+    access: RecordAccess | None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The frontier's neighbours a walk in this shape can step to, and whether a cap bit.
 
@@ -346,11 +344,12 @@ async def _neighbour_rows(
     """
     # A provider failure propagates: `_run` turns it into an error, whereas
     # `found: False` here would be read as "no path exists".
-    async def fetch(keys: list[str], rels: list[str], direction: str) -> list[dict[str, Any]]:
-        return list(await graph_provider.get_neighbors_for_nodes_by_relationship_types(
-            node_keys=keys, node_collection=_BLOCKS, relationship_types=rels,
-            direction=direction, limit=_FRONTIER_LIMIT, raise_on_error=True,
-        ) or [])
+    async def fetch(keys: list[str], rels: list[str], direction: str) -> tuple[list[dict[str, Any]], bool]:
+        rows, over, spent = await _readable_neighbour_rows(
+            graph_provider, org_id, access, keys, rels, direction, page=_FRONTIER_LIMIT + 1,
+            budget=_FRONTIER_SCAN_LIMIT, want=_FRONTIER_LIMIT, accept=accept,
+        )
+        return rows, over or spent
 
     if undirected:
         batches = [await fetch(list(phases_by_key), relations, "any")]
@@ -360,7 +359,7 @@ async def _neighbour_rows(
         structural = [rel for rel in relations if rel in STRUCTURAL_RELATIONS]
         if climbing and structural:
             batches.append(await fetch(climbing, structural, "inbound"))
-    return [row for batch in batches for row in batch], any(len(b) >= _FRONTIER_LIMIT for b in batches)
+    return [row for rows, _ in batches for row in rows], any(hit for _, hit in batches)
 
 
 # Where a directed path is in its shape: climbing out of the start symbol's
