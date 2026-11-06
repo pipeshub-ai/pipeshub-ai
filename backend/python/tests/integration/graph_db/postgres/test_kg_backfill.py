@@ -556,6 +556,13 @@ async def test_a_take_back_leaves_the_rows_of_a_connector_whose_first_backfill_b
     the rows it acknowledges, or it deletes the rows, demotes nothing, and the batch then commits a copy with no row in the log to show it is behind."""
     p, org = await fresh_world(pg_db)
     held, release = asyncio.Event(), asyncio.Event()
+    sweep, sweeps_may_run = flush._sweep, asyncio.Event()
+
+    async def held_sweep(db, o) -> None:
+        """The sweep a commit schedules waits here: left to run, it takes the rows and sends the connector back to the walk before the test has read the cursor its batch committed."""
+        await sweeps_may_run.wait()
+        await sweep(db, o)
+    monkeypatch.setattr(flush, "_sweep", held_sweep)
 
     async def first_batch(tx) -> None:
         await lock_apps(tx, org, {"app1"}, org_wide=False)
@@ -578,12 +585,14 @@ async def test_a_take_back_leaves_the_rows_of_a_connector_whose_first_backfill_b
         await batch
         assert rows > 0                                            # the lock of app1 was held: the rows were left for the sweep
         assert (await state(pg_db, org, "app1"))[0] == "2:x"       # the batch committed its cursor
-        await flush.settle_sweeps()                               # the batch's commit started a sweep of its own: a sweep that finds another one holding the lock leaves the rows to it
-        await flush._sweep(pg_db, org)
+        sweeps_may_run.set()
+        await flush.settle_sweeps()                               # the sweeps the commits scheduled: a sweep that finds another one holding the lock leaves the rows to it
+        await sweep(pg_db, org)
         left = await run_in(pg_db, org, lambda tx: tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org))
         assert left == 0 and (await state(pg_db, org, "app1"))[:2] == (None, "legacy")       # the sweep took them and sent the connector back to the walk
     finally:
         release.set()                                              # whatever failed above, the batch is let go and awaited, so it never holds its connection
+        sweeps_may_run.set()
         if not batch.done():
             await asyncio.wait({batch}, timeout=30)
             batch.cancel()
