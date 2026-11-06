@@ -12,12 +12,12 @@ import asyncio
 
 import pytest
 
-from app.models.entities import Person
 from app.core.org_context import OrgMismatch
+from app.models.entities import Person
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
 
 from .test_access import APP, World, _org, rec
-from .test_access import w as w  # noqa: PLC0414
+from .test_access import w as w
 from .test_grants import failing, grant, in_org
 
 pytestmark = pytest.mark.integration
@@ -304,7 +304,7 @@ async def test_the_trail_runs_root_to_leaf_skips_what_the_user_cannot_see_and_is
     await p.delete_edge("u", "users", "leaf", "records", "permission")
     assert await p.get_knowledge_hub_breadcrumbs("leaf", "u", w.org) == []                        # the grant taken away closes the leaf
     await w.edge("nodeRelations", ("records", "file"), ("records", "folder"), relationshipType="PARENT_CHILD")      # a cycle ends the walk
-    assert [s["id"] for s in await p.get_knowledge_hub_breadcrumbs("file", "u", w.org)][-1] == "file"
+    assert [s["id"] for s in await p.get_knowledge_hub_breadcrumbs("file", "u", w.org)] == ["folder", "file"]      # each node once, then it stops
 
 
 async def test_a_failed_trail_is_empty_and_comes_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
