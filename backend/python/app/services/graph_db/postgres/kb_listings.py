@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 _KB = Connectors.KNOWLEDGE_BASE.value
 _TEMPLATES = CollectionNames.AGENT_TEMPLATES.value
+_ORG_FIELD = "orgId"  # the org property of a stored record, returned as a field; the org of a call is the ambient one
 _SORT_KEYS = {"name": 1, "created_at": 2, "updated_at": 3, "size": 4}
 
 
@@ -39,7 +40,7 @@ def _child_record(doc: Any, fdoc: Any) -> dict:  # noqa: ANN401
             "indexingStatus": d.get("indexingStatus"), "version": d.get("version"), "isLatestVersion": d.get("isLatestVersion", True),
             "createdAtTimestamp": d.get("createdAtTimestamp"), "updatedAtTimestamp": d.get("updatedAtTimestamp"),
             "sourceCreatedAtTimestamp": d.get("sourceCreatedAtTimestamp"), "sourceLastModifiedTimestamp": d.get("sourceLastModifiedTimestamp"),
-            "webUrl": d.get("webUrl"), "orgId": d.get("orgId"), "type": "record", "fileRecord": _file(fdoc, path=True)}
+            "webUrl": d.get("webUrl"), "orgId": d.get(_ORG_FIELD), "type": "record", "fileRecord": _file(fdoc, path=True)}
 
 
 def _folder_item(doc: Any, subs: int, recs: int, parent_id: str | None, path: str | None = None) -> dict:  # noqa: ANN401
@@ -254,7 +255,7 @@ class KbListingsMixin(PgBase):
                                 "connectorName": d.get("connectorName") or "KNOWLEDGE_BASE", "indexingStatus": d.get("indexingStatus"),
                                 "createdAtTimestamp": d.get("createdAtTimestamp"), "updatedAtTimestamp": d.get("updatedAtTimestamp"),
                                 "sourceCreatedAtTimestamp": d.get("sourceCreatedAtTimestamp"), "sourceLastModifiedTimestamp": d.get("sourceLastModifiedTimestamp"),
-                                "orgId": d.get("orgId"), "version": d.get("version"), "isDeleted": d.get("isDeleted"), "deletedByUserId": d.get("deletedByUserId"),
+                                "orgId": d.get(_ORG_FIELD), "version": d.get("version"), "isDeleted": d.get("isDeleted"), "deletedByUserId": d.get("deletedByUserId"),
                                 "isLatestVersion": d.get("isLatestVersion", True), "webUrl": d.get("webUrl"), "fileRecord": _file(f, path=False) and
                                 {k: v for k, v in _file(f, path=False).items() if k != "path"},
                                 "permission": {"role": role, "type": "USER"}, "kb_id": kb_id,
