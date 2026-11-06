@@ -465,6 +465,7 @@ class LinearConnector(BaseConnector):
         self._refreshed_issue_ids: set[str] = set()
         self._refreshed_project_ids: set[str] = set()
         self._team_visibility: dict[str, str] = {}
+        self._team_permissions: dict[str, list[Permission]] = {}
         # False once this run skipped something after an error; see full_sync_coverage
         self._read_everything = True
         # Parents of the issues this run wrote; see _sweep_placeholder_records
@@ -1197,7 +1198,8 @@ class LinearConnector(BaseConnector):
             # 3. Permissions: see team_access (team members; workspace members for public
             #    teams; parent team members for restricted teams)
             self._team_visibility[team_id] = visibility(team)
-            record_groups.append((record_group, team_permissions(team, teams_by_id)))
+            self._team_permissions[team_id] = team_permissions(team, teams_by_id)
+            record_groups.append((record_group, self._team_permissions[team_id]))
 
         self.logger.info(
             f"📥 Fetched {len(all_teams)} Linear teams, "
@@ -2313,20 +2315,38 @@ class LinearConnector(BaseConnector):
                 ),
             )
 
+    @staticmethod
+    def _project_teams(project_data: dict[str, Any], scope: set[str]) -> list[str]:
+        """The synced teams a project belongs to, sorted by id."""
+        return sorted(t["id"] for t in ((project_data.get("teams") or {}).get("nodes") or [])
+                      if t and t.get("id") in scope)
+
     def _project_home(self, project_data: dict[str, Any], scope: set[str]) -> str | None:
         """The one synced team a project is filed under: its lead team, else the first by
         id, so the choice never depends on the order teams are read.
 
-        Only this team's readers see the project and its children. Linear also shows it
-        to the readers of its other teams; filing it under those too listed its documents,
-        links and files at the top of each of them as well as under the project.
+        Filing it under every team listed its documents, links and files at the top of
+        each of them as well as under the project, so the other teams' readers are
+        granted on the project record instead (``_project_extra_permissions``).
         ``leadTeamId`` is marked internal in Linear's schema, hence the fallback."""
         lead_team_id = project_data.get("leadTeamId")
         if lead_team_id in scope:
             return lead_team_id
-        teams = sorted(t["id"] for t in ((project_data.get("teams") or {}).get("nodes") or [])
-                       if t and t.get("id") in scope)
+        teams = self._project_teams(project_data, scope)
         return teams[0] if teams else None
+
+    def _project_extra_permissions(
+        self, project_data: dict[str, Any], scope: set[str], home: str
+    ) -> list[Permission]:
+        """Linear shows a project to the readers of every team it belongs to
+        (linear.app/docs/private-teams). Those of the synced teams other than its home
+        team; its children inherit them from the project."""
+        grants = {
+            (p.entity_type, p.external_id): p
+            for team_id in self._project_teams(project_data, scope) if team_id != home
+            for p in self._team_permissions.get(team_id, [])
+        }
+        return list(grants.values())
 
     async def _fetch_full_project(self, project_id: str) -> dict[str, Any] | None:
         """A project with every nested list read to its end. None when Linear no longer
@@ -2443,8 +2463,10 @@ class LinearConnector(BaseConnector):
         for child_record, _ in batch_records:
             child_record.shared_groups_complete = project_record.shared_groups_complete
 
+        # A rewrite, so a team taken off the project takes its readers' grants with it.
+        project_record.rewrite_permissions = True
         # The project first: a child written before it finds no parent in its team.
-        return [(project_record, []), *batch_records]
+        return [(project_record, self._project_extra_permissions(full_project_data, scope, team_id)), *batch_records]
 
     async def _sync_comment_activity(self, synced_team_ids: set[str]) -> None:
         """Queue issues and projects for re-indexing when their discussion changed.

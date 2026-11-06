@@ -593,6 +593,89 @@ class TestProjectToRecords:
             assert record.shared_with_me_record_group_ids == []
             assert record.shared_groups_complete is True
 
+    @staticmethod
+    def _grants(connector, **teams) -> None:
+        from app.connectors.sources.linear.team_access import team_permissions
+        connector._team_permissions = {
+            team_id: team_permissions({"id": team_id, "visibility": kind}, {}) for team_id, kind in teams.items()}
+
+    @pytest.mark.asyncio
+    async def test_the_project_is_granted_to_the_readers_of_its_other_synced_teams(self) -> None:
+        """Union: the home team's readers through its group, the other teams' on the project."""
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "private", "team-2": "public"})
+
+        records = await connector._project_to_records("proj-1", {"team-1", "team-2"})
+
+        project_record, grants = records[0]
+        assert project_record.external_record_group_id == "team-1"
+        assert {(g.external_id, g.entity_type) for g in grants} == {
+            ("team-2", "GROUP"), ("linear-workspace-members", "GROUP")}
+        assert project_record.rewrite_permissions is True  # a team taken off the project loses its grant
+
+    @pytest.mark.asyncio
+    async def test_a_team_outside_the_sync_adds_no_reader(self) -> None:
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "private"})
+
+        records = await connector._project_to_records("proj-1", {"team-1"})
+
+        assert records[0][1] == []
+
+    @pytest.mark.asyncio
+    async def test_a_project_with_one_team_is_granted_nothing_extra(self) -> None:
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", False))
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "public"})
+
+        records = await connector._project_to_records("proj-1", {"team-1"})
+
+        assert records[0][1] == []
+
+    @pytest.mark.asyncio
+    async def test_children_inherit_from_the_project_and_carry_no_grant_of_their_own(self) -> None:
+        """One record per child, one ACL: the widened readers reach them through the project."""
+        project = _make_project_data(
+            external_links=_page([{"id": "link-1", "url": "https://example.com/spec", "label": "Spec"}]))
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "private", "team-2": "public"})
+
+        records = await connector._project_to_records("proj-1", {"team-1", "team-2"})
+
+        children = records[1:]
+        assert children
+        for record, grants in children:
+            assert grants == []
+            assert record.inherit_permissions is True
+            assert record.parent_external_record_id == "proj-1"
+            assert record.external_record_group_id == "team-1"
+            assert record.shared_with_me_record_group_ids == []
+        assert len({r.external_record_id for r, _ in records}) == len(records)
+
+    @pytest.mark.asyncio
+    async def test_a_team_taken_off_the_project_is_gone_from_the_next_grant(self) -> None:
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        self._grants(connector, **{"team-1": "private", "team-2": "public"})
+        scope = {"team-1", "team-2"}
+        assert (await connector._project_to_records("proj-1", scope))[0][1]
+
+        project["teams"] = _teams(("team-1", True))
+        records = await connector._project_to_records("proj-1", scope)
+
+        assert records[0][1] == [] and records[0][0].rewrite_permissions is True
+
     @pytest.mark.asyncio
     async def test_files_are_filed_again_on_every_read(self) -> None:
         """So they follow the project's current teams. A rebuilt file keeps its version,
