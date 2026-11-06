@@ -218,6 +218,26 @@ class TestStopGeneration:
         assert first_turn.tool_results[0].is_error is True
         assert result.cancelled is True
 
+    async def test_a_call_skipped_by_stop_still_has_its_end_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        token = CancellationToken()
+        transport = ScriptedTransport().add_tool_call(ToolCall(id="n1", name="note", arguments={"text": "a"}))
+        agent, _ = _build(transport, tool=_NoteTool(), cancellation_token=token)
+
+        async def _cancel_after_model(ctx, next_fn) -> None:
+            token.cancel()
+            await next_fn()
+
+        _use(agent, HookEvent.POST_MODEL, _cancel_after_model)
+        with caplog.at_level(logging.DEBUG):
+            await agent.run(_GOAL)
+
+        (end,) = [r for r in caplog.records if r.getMessage() == "tool_call.end"]
+        assert end.levelno == logging.INFO
+        assert log_record_fields(end) == {
+            "outcome": "skipped", "reason": "cancelled_before_execution", "error_class": "cancelled",
+            "tool": "note", "tool_call_id": "n1",
+        }
+
 
 class TestGuardrails:
     async def test_input_guardrail_block_wins_over_a_slow_model_call(self) -> None:

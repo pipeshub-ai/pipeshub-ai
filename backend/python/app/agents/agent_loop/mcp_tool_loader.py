@@ -104,16 +104,9 @@ def _log_discover_end(
             reason="no_attached_tools", source="turn", **fields,
         )
         return
-    cls = mcp_error_class(failure)
-    if error_class.level_for(cls) >= logging.ERROR:
-        error_class.log_failure(
-            log, "mcp.discover.end", failure, error_class=cls, include_error_text=False,
-            mcp_server_id=mcp_server_id, source="turn", **fields,
-        )
-        return
-    log_event(
-        log, "mcp.discover.end", level=error_class.level_for(cls), mcp_server_id=mcp_server_id, outcome="failure",
-        error_class=cls, error_type=type(failure).__name__, source="turn", **fields,
+    error_class.log_failure(
+        log, "mcp.discover.end", failure, error_class=mcp_error_class(failure), include_error_text=False,
+        mcp_server_id=mcp_server_id, source="turn", **fields,
     )
 
 

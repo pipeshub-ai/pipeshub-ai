@@ -36,6 +36,12 @@ _MAX_ERROR_BODY_CHARS = 2000
 _MAX_SUMMARY_CHARS = 200
 
 
+def _class_or(exc: BaseException, fallback: str) -> str:
+    """`classify_error`, or `fallback` where it can only say internal: these failures are upstream answers, not our bugs."""
+    cls = error_class.classify_error(exc)
+    return fallback if cls == "internal" else cls
+
+
 def connect_hint(instance: ApiToolsetInstance) -> str:
     """Who can connect `instance`: a shared credential is only an administrator's to store."""
     if instance.use_shared_credential:
@@ -127,14 +133,14 @@ class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
         except RequestBuildError as e:
             return ToolOutput(success=False, error=str(e), cause=e, end_fields={"reason": "bad_args", "error_class": "bad_request"})
         except ApiCallError as e:
-            # Our URL guard's refusal; otherwise the cause says it (a timeout, an unreachable host).
-            blocked = isinstance(e.__cause__, MCPUrlBlockedError)
-            return ToolOutput(success=False, error=str(e), cause=e, end_fields={"error_class": "forbidden"} if blocked else {})
+            # No HTTP answer: our URL guard's refusal, or the cause (a timeout, an unreachable host, a bad body).
+            cls = "forbidden" if isinstance(e.__cause__, MCPUrlBlockedError) else _class_or(e, "unavailable")
+            return ToolOutput(success=False, error=str(e), cause=e, end_fields={"error_class": cls})
         except ApiToolsetAuthError as e:
             hint = connect_hint(self._instance)
             # Not `.capitalize()`: it lowercases the rest, and the menu names must match the UI.
-            # A chained OAuth error classifies itself (expired grant or rejected client).
-            end_fields = {} if e.__cause__ is not None else {"error_class": "auth_expired"}
+            # A rejected OAuth client stays misconfigured; any other sign-in failure is the user's or the provider's.
+            end_fields = {"error_class": _class_or(e, "auth_expired")}
             return ToolOutput(success=False, error=f"{e} {hint[0].upper()}{hint[1:]}.", cause=e, end_fields=end_fields)
         except Exception as e:
             return ToolOutput(

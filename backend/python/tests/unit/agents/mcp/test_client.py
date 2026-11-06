@@ -1315,18 +1315,20 @@ class TestTheOpenSession:
         assert manager.headers["Authorization"] == "Bearer fresh"
         assert sdk.transports[0].http_clients[0].headers == {"Authorization": "Bearer fresh"}  # type: ignore[attr-defined]
 
-    async def test_a_failed_calls_stderr_is_logged_but_kept_out_of_the_error(
+    async def test_a_failed_calls_stderr_and_text_stay_out_of_the_log_and_the_error(
         self, sdk: _Script, caplog: pytest.LogCaptureFixture,
     ) -> None:
+        """A STDIO server's stderr holds earlier calls' arguments and its environment; the
+        executor's `tool_call.end` is the call's one failure line."""
         manager = await _open(sdk, _config())
-        sdk.stderr_paths[-1].write_text("exa-mcp-server crashed: SECRET_TOKEN=abc\n")  # type: ignore[attr-defined]
-        sdk.answer = _answer_with(error=MCPError(-32603, "boom"))
+        sdk.stderr_paths[-1].write_text("exa-mcp-server crashed on query sentinel-q\n")  # type: ignore[attr-defined]
+        sdk.answer = _answer_with(error=MCPError(-32603, "boom sentinel-e"))
 
-        with pytest.raises(MCPError) as caught:
+        with caplog.at_level(logging.DEBUG), pytest.raises(MCPError) as caught:
             await manager.call_tool_in_session("search", {})
 
-        assert "SECRET_TOKEN" not in str(caught.value)
-        assert "SECRET_TOKEN=abc" in caplog.text
+        assert "sentinel-q" not in str(caught.value)
+        assert "sentinel-q" not in caplog.text and "sentinel-e" not in caplog.text
         await manager.aclose()
 
     async def test_aclose_closes_the_session_and_removes_the_stderr_file(self, sdk: _Script) -> None:

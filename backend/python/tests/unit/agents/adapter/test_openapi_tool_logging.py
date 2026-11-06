@@ -17,7 +17,7 @@ from app.agents.agent_loop.openapi_tool_adapter import OpenAPIToolAdapter
 from app.agents.mcp.errors import MCPUrlBlockedError
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.openapi.auth import ApiToolsetAuthError, AuthApplier, NoAuth
-from app.agents.openapi.executor import OpenAPIHttpExecutor
+from app.agents.openapi.executor import ApiCallError, OpenAPIHttpExecutor
 from app.agents.openapi.models import CompiledOperation
 from app.agents.openapi.request_builder import RequestBuildError
 from app.utils.logger import log_record_fields
@@ -126,10 +126,21 @@ def _auth_error(cause: BaseException | None) -> ApiToolsetAuthError:
     return error
 
 
+def _no_answer(cause: BaseException) -> ApiCallError:
+    error = ApiCallError("Could not reach the API (DecodingError).")
+    error.__cause__ = cause
+    return error
+
+
 @pytest.mark.parametrize(("exc", "level", "error_class", "reason"), [
     (RequestBuildError(_SENTINEL), logging.WARNING, "bad_request", "bad_args"),
     (_auth_error(None), logging.WARNING, "auth_expired", "tool_error"),
     (_auth_error(MCPOAuthError(_SENTINEL, error_code="invalid_grant")), logging.WARNING, "auth_expired", "tool_error"),
+    # The provider's token endpoint failing is upstream, not our bug: no ERROR, no stack.
+    (_auth_error(MCPOAuthError(f"Token endpoint returned HTTP 500: {_SENTINEL}")), logging.WARNING, "auth_expired", "tool_error"),
+    (_auth_error(MCPOAuthError(_SENTINEL, error_code="invalid_request")), logging.WARNING, "auth_expired", "tool_error"),
+    (_auth_error(MCPOAuthError(f"Token response had no access_token: {_SENTINEL}")), logging.WARNING, "auth_expired", "tool_error"),
+    (_no_answer(httpx.DecodingError(_SENTINEL)), logging.WARNING, "unavailable", "tool_error"),
     # The same rejected client as on the MCP path: ours to fix.
     (_auth_error(MCPOAuthError(_SENTINEL, error_code="invalid_client")), logging.ERROR, "misconfigured", "tool_error"),
     (RuntimeError(_SENTINEL), logging.ERROR, "internal", "exception"),
@@ -140,6 +151,7 @@ async def test_each_failure_is_logged_once_by_class(
     record, fields = await _run(_Raises(exc), caplog)
 
     assert record.levelno == level
+    assert (record.exc_info is not None) == (level >= logging.ERROR)
     assert (fields["error_class"], fields["reason"]) == (error_class, reason)
     assert "error_message" not in fields
     assert [r for r in caplog.records if r.levelno >= logging.WARNING] == [record]

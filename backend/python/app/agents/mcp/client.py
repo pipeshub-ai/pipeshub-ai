@@ -795,18 +795,9 @@ class MCPClientManager:
         `CallToolResult`. `on_progress` hears the server's progress reports; it must not block.
 
         Raises MCPConnectionError if no session is open."""
-        session = self._live_session()
-        try:
-            return await self._call(session, tool_name, arguments, on_progress)
-        except Exception as e:
-            # The stderr tail is for operators only: the error travels on to the model and
-            # the tool card, and a server's stderr can echo its environment.
-            if stderr_tail := _read_stderr_tail(session.stderr_path):
-                logger.warning(
-                    f"MCP tool call {tool_name} on {self.config.id} ({self.config.name}) failed: "
-                    f"{_describe_error(e)} | subprocess stderr: {stderr_tail}"
-                )
-            raise
+        # Failures are logged once, by the tool executor. Not the server's stderr: it can echo
+        # earlier calls' arguments and its environment.
+        return await self._call(self._live_session(), tool_name, arguments, on_progress)
 
     def _live_session(self) -> _Session:
         session = self._session
