@@ -220,11 +220,12 @@ class IdentityMixin(PgBase):
 
     @_soft(list)
     async def get_users(self, org_id: str, *, active: bool = True) -> list[dict]:
-        if not self._mine(org_id):
-            return []
+        return await self._org_users(None, active=active) if self._mine(org_id) else []
+
+    async def _org_users(self, tid: str | None, *, active: bool) -> list[dict]:
         rows = await self._id_rows("""/* pipeshub:graph.get_users */ SELECT u.doc FROM graph.edges b JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
             WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $1 AND b.doc->>'entityType' = 'ORGANIZATION'
-              AND (NOT $2 OR coalesce((u.doc->>'isActive')::boolean, false))""", [current_org_id(), active], None)
+              AND (NOT $2 OR coalesce((u.doc->>'isActive')::boolean, false))""", [current_org_id(), active], tid)
         return [_arango(_doc(r["doc"]), "users") for r in rows]
 
     @_soft(lambda: ([], 0))
@@ -855,3 +856,94 @@ class IdentityMixin(PgBase):
             if moved:
                 await self.batch_create_edges(moved, coll, tid)
         await self.delete_nodes([stub_key], "users", tid)
+
+
+    # ---- the "All" team, which holds every member of the org ----------------------------------------------------------------------
+    async def _all_team(self, org_id: str, tid: str) -> str:
+        """The id of the org's "All" team, created when it is not there. Callers hold the team's lock, so two of them never both see it empty."""
+        team_id, now = f"all_{org_id}", get_epoch_timestamp_in_ms()
+        await self._id_rows("/* pipeshub:graph.all_team_lock */ SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [f"all_team:{current_org_id()}:{team_id}"], tid, write=True)
+        await self.create_node_if_absent(team_id, "teams", {"id": team_id, "name": "All", "description": "All organization members", "createdBy": "system", "orgId": org_id,
+                                                           "createdAtTimestamp": now, "updatedAtTimestamp": now}, tid)
+        return team_id
+
+    async def _join_all_team(self, team_id: str, user_keys: list[str], *, owner_if_empty: bool, tid: str) -> None:
+        """Gives each user without an edge to the team a READER one; when the team has no member the first gets OWNER and becomes its creator. The team is locked."""
+        now = get_epoch_timestamp_in_ms()
+        held = {r["from_id"] for r in await self._id_rows("""/* pipeshub:graph.all_team_members */ SELECT p.from_id FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission'
+            AND p.to_coll = 'teams' AND p.to_id = $2""", [current_org_id(), team_id], tid)}
+        edges = []
+        for key in user_keys:
+            if key in held:
+                continue
+            role = "OWNER" if owner_if_empty and not held else "READER"
+            held.add(key)
+            if role == "OWNER":
+                await self.update_node(team_id, "teams", {"createdBy": key, "updatedAtTimestamp": now}, tid)
+            edges.append({"from_id": key, "from_collection": "users", "to_id": team_id, "to_collection": "teams", "type": "USER", "role": role,
+                          "createdAtTimestamp": now, "updatedAtTimestamp": now})
+        if edges:
+            await self.batch_create_edges(edges, "permission", tid)
+
+    async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
+        """Adds the user to the org's "All" team (made when missing): OWNER if nobody is in it, else READER. Idempotent. A user who is not in the graph is not added."""
+        self._require_org(org_id)
+        async with self._atomic(None) as tid:
+            team_id = await self._all_team(org_id, tid)
+            # a read that raises, not check_collection_has_document: a lookup that failed is not "the user is not in the graph"
+            if await self._id_rows("/* pipeshub:graph.all_team_user_exists */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = $2", [current_org_id(), user_key], tid):
+                await self._join_all_team(team_id, [user_key], owner_if_empty=True, tid=tid)
+
+    async def ensure_all_team_with_users(self, org_id: str) -> None:
+        """Makes sure every active user of the org is in its "All" team: the oldest becomes OWNER if the team was empty, the rest READER. Idempotent."""
+        self._require_org(org_id)
+        async with self._atomic(None) as tid:
+            team_id = await self._all_team(org_id, tid)
+            # the raising read, not get_users: a failed read must not fill the team with nobody and report success
+            users = sorted(await self._org_users(tid, active=True), key=lambda u: u.get("createdAtTimestamp", 0))
+            await self._join_all_team(team_id, [k for u in users if (k := u.get("id"))], owner_if_empty=True, tid=tid)
+
+    # ---- what an agent still uses, and counts of connector instances ----------------------------------------------------------------
+    async def check_api_toolset_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the live agents with an operation of this API toolset attached (an entry of ``apiToolsetTools`` starting ``<instance>:``)."""
+        rows = await self._id_rows("""/* pipeshub:graph.check_api_toolset_in_use */ SELECT DISTINCT a.id AS "agentId", a.doc->>'name' AS "agentName" FROM graph.nodes a
+            WHERE a.org_id = $1 AND a.coll = 'agentInstances' AND coalesce((a.doc->>'isDeleted')::boolean, false) = false AND jsonb_typeof(a.doc->'apiToolsetTools') = 'array'
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(a.doc->'apiToolsetTools') t WHERE left(t, length($2)) = $2)""", [current_org_id(), f"{instance_id}:"], transaction)
+        return dedupe_agents_by_id([dict(r) for r in rows])
+
+    async def check_mcp_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the live agents with this MCP server instance attached."""
+        rows = await self._id_rows("""/* pipeshub:graph.check_mcp_instance_in_use */ SELECT DISTINCT a.id AS "agentId", a.doc->>'name' AS "agentName" FROM graph.nodes s
+            JOIN graph.edges e ON e.org_id = s.org_id AND e.coll = 'agentHasMcpServer' AND e.to_coll = 'agentMcpServers' AND e.to_id = s.id
+            JOIN graph.nodes a ON a.org_id = e.org_id AND a.coll = 'agentInstances' AND a.id = e.from_id AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
+            WHERE s.org_id = $1 AND s.coll = 'agentMcpServers' AND s.doc->>'instanceId' = $2""", [current_org_id(), instance_id], transaction)
+        return dedupe_agents_by_id([dict(r) for r in rows])
+
+    async def check_toolset_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the live agents using a toolset of this instance; two agents with one name count apart."""
+        rows = await self._id_rows("""/* pipeshub:graph.check_toolset_instance_in_use */ SELECT DISTINCT a.id AS "agentId", a.doc->>'name' AS "agentName" FROM graph.nodes s
+            JOIN graph.edges e ON e.org_id = s.org_id AND e.coll = 'agentHasToolset' AND e.to_coll = 'agentToolsets' AND e.to_id = s.id
+            JOIN graph.nodes a ON a.org_id = e.org_id AND a.coll = 'agentInstances' AND a.id = e.from_id AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
+            WHERE s.org_id = $1 AND s.coll = 'agentToolsets' AND s.doc->>'instanceId' = $2""", [current_org_id(), instance_id], transaction)
+        return dedupe_agents_by_id([dict(r) for r in rows])
+
+    async def check_connector_name_uniqueness(self, instance_name: str, scope: str, org_id: str, user_id: str, collection: str, edge_collection: str | None = None,
+                                              transaction: str | None = None) -> bool:
+        """Whether no other instance of the scope holds this name (without case or surrounding space): the user's own for a personal one, the org's for a team one.
+        A check that cannot be made lets the name through, as on the other stores."""
+        # edge_collection is ignored: orgAppRelation is the only relation an org holds its instances by
+        try:
+            return not await self.check_connector_name_exists(collection, instance_name, scope, org_id, user_id, transaction)
+        except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
+            raise
+        except Exception as e:
+            self.logger.error("Error checking name uniqueness: %s", e)
+            return True
+
+    @_soft(0)
+    async def count_connector_instances_by_scope(self, collection: str, scope: str, user_id: str | None = None, *, is_admin: bool = False, transaction: str | None = None) -> int:
+        """How many configured instances of the scope there are (a personal scope narrowed to the user's own when one is given)."""
+        rows = await self._id_rows("""/* pipeshub:graph.count_connector_instances_by_scope */ SELECT count(*) AS n FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
+            AND n.doc->>'scope' = $3 AND n.doc->>'isConfigured' = 'true' AND ($3 <> 'personal' OR $4::text IS NULL OR n.doc->>'createdBy' = $4)""",
+                                  [current_org_id(), collection, scope, user_id or None], transaction)
+        return rows[0]["n"]
