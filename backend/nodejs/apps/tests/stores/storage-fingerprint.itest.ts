@@ -814,7 +814,14 @@ suite('document fingerprint', function () {
               if (mine.reads[r]?.trusted !== d.trusted) failures.push(`${sch.id}: the TypeScript port and the model disagree on ${r} (${em})`);
             }
           }
-          const result = await replay(sch);
+          // a run whose clock ran past the model's ticks cannot be judged against the model: run that schedule again, bounded;
+          // a value that names two contents is a real bug whatever the clock did, so it is never retried
+          const inconclusive = (r: { failures: string[]; timingViolated: boolean }): boolean =>
+            r.failures.length > 0 && r.timingViolated && !r.failures.some((f) => f.includes('different contents'));
+          let result = await replay(sch);
+          for (let attempt = 1; attempt < 3 && inconclusive(result); attempt++) result = await replay(sch);
+          if (inconclusive(result))
+            result.failures.push(`${sch.id}: HARNESS_TIMING: inconclusive on all 3 attempts, the machine is too slow to judge this schedule`);
           failures.push(...result.failures);
         }
         expect(failures.slice(0, 10), `${failures.length} mismatches`).to.deep.equal([]);
@@ -823,7 +830,7 @@ suite('document fingerprint', function () {
   });
 
   /** Runs one schedule of the model against the real stack and reports every difference. */
-  async function replay(sch: Schedule): Promise<{ failures: string[] }> {
+  async function replay(sch: Schedule): Promise<{ failures: string[]; timingViolated: boolean }> {
     const failures: string[] = [];
     const fail = (m: string): void => { failures.push(`${sch.id}: ${m}`); };
     faults = newFaults();
@@ -848,7 +855,7 @@ suite('document fingerprint', function () {
     const real_: Record<string, { trusted: boolean; value: string; label: string }> = {};
     const labelOf: Record<string, string> = {};
     const t0 = Date.now();
-    let tickMs = 0;
+    let ticks = 0;
     const readerDone = async (r: string): Promise<void> => {
       const res = await (pending[r] as Promise<{ doc: Doc }>);
       const f = res.doc.storageFingerprint as Fp;
@@ -860,8 +867,7 @@ suite('document fingerprint', function () {
         const start = await clock();
         let now = start;
         while (now - start < 0.6 * WINDOW_MS) { await sleep(20); now = await clock(); }
-        if (now - start > 0.9 * WINDOW_MS) fail(`HARNESS_TIMING: a tick took ${now - start} ms`);
-        tickMs += now - start;
+        ticks += 1;
       } else if (actor in sch.writers) {
         const step = (sch.writers[actor] as string[])[idx];
         const g = wg[actor] as Record<string, ReturnType<Faults['gates']['arm']>>;
@@ -916,7 +922,10 @@ suite('document fingerprint', function () {
     }
     faults.gates.releaseAll();
     await Promise.race([Promise.allSettled(requests), sleep(10_000)]);
-    if (Date.now() - t0 - tickMs > 0.9 * WINDOW_MS * 3) fail(`HARNESS_TIMING: the schedule took ${Date.now() - t0 - tickMs} ms outside its ticks`);
+    // The model ages a token by its ticks only (0.6 window each); real time past that (slow steps, a long tick) lets a token expire that the
+    // model still counts live, and a token that lives through one tick expires once 0.4 window of such time has built up.
+    const overrun = Date.now() - t0 - ticks * 0.6 * WINDOW_MS;
+    const timingViolated = overrun > 0.4 * WINDOW_MS;
 
     // (a) the real trusted of every read equals the model's, for the schedule in which each B1 is adjacent to its B2 (see pruneAdjacent)
     const adjusted = runModel({ writers: sch.writers, hb: sch.hb, order: finish(pruneAdjacent(sch.writers, sch.order)) }, 'strong');
@@ -940,7 +949,7 @@ suite('document fingerprint', function () {
         const sameModel = JSON.stringify(expected[a]?.value) === JSON.stringify(expected[b]?.value);
         if (sameModel && real_[a]?.value !== real_[b]?.value) fail(`reads ${a} and ${b}: the model says the same value, the stack does not`);
       }
-    return { failures };
+    return { failures, timingViolated };
   }
 });
 
