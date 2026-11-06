@@ -161,6 +161,9 @@ CALLS = [
     ("delete_edges_to", ("y", "things", "belongsTo"), {}),
     ("delete_all_edges_for_node", ("things/x", "belongsTo"), {}),
     ("delete_inherit_permissions_relation_record_group", ("r", "g"), {}),
+    ("check_collection_has_document", ("things", "k"), {}),
+    ("check_edge_exists", ("x", "y", "belongsTo"), {}),
+    ("update_edge", ("things/x", "things/y", {"v": 1}, "belongsTo"), {}),
 ]
 
 
