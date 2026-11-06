@@ -127,9 +127,10 @@ class TestChatStreamAccess:
         assert _stream(c, "sa", "bob", body).status_code == 200
 
         messages = [r.getMessage() for r in caplog.records if r.name == "test.agent_routes"]
-        for personal in ("Bob B.", "bob@acme.test", "alice@acme.test"):
+        for personal in ("Bob B.", "bob@acme.test", "Alice", "alice@acme.test"):
             assert not any(personal in m for m in messages), f"{personal!r} was logged"
-        assert "Loaded service account agent sa" in messages
+        # Retrieval runs as the creator, so the id logged is u-alice, not the caller.
+        assert "Loaded service account agent sa (retrieval runs as user u-alice)" in messages
 
     def test_service_account_artifacts_belong_to_the_person_chatting(self, graph, loop) -> None:
         c, _ = make_client(graph)

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.config.constants.arangodb import PersonMigrationMode
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 
 LOGGER_NAME = "tests.entity_handler.user_logs"
@@ -77,13 +78,13 @@ async def test_user_added_adopting_a_person_logs_the_user_key(caplog: pytest.Log
     existing = MagicMock()
     existing.id = "graph-key-1"
     gp = _user_added_provider(existing)
-    gp.migrate_person_to_user = AsyncMock(return_value="merged")
+    gp.migrate_person_to_user = AsyncMock(return_value=PersonMigrationMode.MIGRATED)
 
     assert await _service(gp).process_event("userAdded", dict(PAYLOAD)) is True
 
     messages = _messages(caplog)
     _assert_no_personal_data(messages)
-    assert "Adopted existing person for user graph-key-1 (merged)" in messages
+    assert f"Adopted existing person for user graph-key-1 ({PersonMigrationMode.MIGRATED})" in messages
 
 
 async def test_user_added_whose_adoption_fails_logs_the_user_key(caplog: pytest.LogCaptureFixture) -> None:

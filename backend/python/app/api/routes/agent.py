@@ -4328,7 +4328,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     user_context, graph_provider, org_key,
                 )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
-                logger.debug("Loaded service account agent %s", agent_id)
+                logger.debug(
+                    "Loaded service account agent %s (retrieval runs as user %s)",
+                    agent_id,
+                    enriched_user_info.get("userId"),
+                )
             else:
                 # Standard user path: look up the user document and verify permissions.
                 user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
