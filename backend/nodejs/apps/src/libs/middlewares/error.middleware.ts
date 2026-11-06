@@ -142,7 +142,24 @@ export class ErrorMiddleware {
    * (error_class, the error with its cause; the stack only at ERROR) and,
    * from the request context, who.
    */
-  private static logRequestError(error: Error, req: Request, res: Response) {
+  private static logRequestError(
+    error: Error,
+    req: Request,
+    res: Response,
+  ): void {
+    // A failure to log must never change what the client is answered.
+    try {
+      this.writeRequestError(error, req, res);
+    } catch (logFailure) {
+      console.error('Logging the request error failed:', logFailure);
+    }
+  }
+
+  private static writeRequestError(
+    error: Error,
+    req: Request,
+    res: Response,
+  ): void {
     const status = res.headersSent
       ? res.statusCode
       : error instanceof BaseError

@@ -121,7 +121,12 @@ export function accessLog(): RequestHandler {
     trackRouting(req);
     res.once('close', () => {
       const log = (): void => {
-        logAccess(req, res, started);
+        // In a 'close' listener a throw would be an uncaught exception.
+        try {
+          logAccess(req, res, started);
+        } catch (logFailure) {
+          console.error('Logging the access line failed:', logFailure);
+        }
       };
       if (store !== undefined) runWithRequestContext(store, log);
       else log();

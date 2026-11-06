@@ -152,10 +152,12 @@ const HTTP_METHODS = new Set([
   'OPTIONS',
 ]);
 const OUTCOMES = new Set(['success', 'failure', 'partial', 'skipped']);
-const SNAKE_TOKEN = /^[a-z0-9_]{1,64}$/;
+/** A snake_case code (`error_class`, an audit `reason`). */
+export const SNAKE_TOKEN = /^[a-z0-9_]{1,64}$/;
 const TYPE_NAME = /^[A-Za-z0-9_]{1,64}$/;
 const SHOWN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
-const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/;
+/** A dotted lowercase event name (`http.request.end`). */
+export const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/;
 /** The ids PipesHub issues: Mongo ObjectId, UUID, or a `sys-`/`anon-` root. */
 const PIPESHUB_ID =
   /^(?:[a-f0-9]{24}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?:sys|anon)-[A-Za-z0-9]{1,64})$/;
@@ -213,7 +215,10 @@ function splitFields(meta: unknown): {
   const fields: Record<string, unknown> = {};
   const rest: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(meta)) {
-    const fits = FIELD_TYPES[key];
+    // Own keys only: `valueOf` or `constructor` in a payload must not reach Object.prototype.
+    const fits = Object.prototype.hasOwnProperty.call(FIELD_TYPES, key)
+      ? FIELD_TYPES[key]
+      : undefined;
     if (fits && value === undefined) continue;
     if (fits && (value === null || fits(value))) fields[key] = value;
     else rest[key] = value;

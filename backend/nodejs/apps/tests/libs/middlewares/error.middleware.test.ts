@@ -746,6 +746,24 @@ describe('ErrorMiddleware', () => {
   // Error middleware failure
   // -----------------------------------------------------------------------
   describe('Error middleware failure', () => {
+    it('answers the mapped status even when logging the error throws', () => {
+      ;(ErrorMiddleware as any).logger = {
+        error: sinon.stub().throws(new Error('provider hook broke')),
+        warn: sinon.stub().throws(new Error('provider hook broke')),
+        info: sinon.stub(),
+        debug: sinon.stub(),
+      }
+      const consoleError = sinon.stub(console, 'error')
+      const res = createMockResponse()
+
+      handler(new NotFoundError('Document not found'), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(404)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal('Document not found')
+      expect(consoleError.calledWithMatch('Logging the request error failed:')).to.be.true
+    })
+
+
     it('should send 500 with MIDDLEWARE_ERROR if the error handler itself throws', () => {
       // Force an error inside the handler by making logger throw
       const error = new BadRequestError('test')

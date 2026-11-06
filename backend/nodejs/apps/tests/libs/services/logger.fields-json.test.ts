@@ -75,6 +75,17 @@ describe('Logger: call-site fields, the stack rule and LOG_FORMAT=json', () => {
       expect(record()).to.not.have.property('error_class')
     })
 
+    it("never reads Object.prototype: keys like valueOf or constructor neither throw nor become fields, in text or JSON", () => {
+      const meta = { hasOwnProperty: 'v', valueOf: 1, propertyIsEnumerable: 'p', toLocaleString: 'l', toString: 'abc', constructor: 'k' }
+      for (const format of [undefined, 'json']) {
+        freshRoot(format)
+        expect(() => Logger.getInstance().info('payload', { ...meta })).to.not.throw()
+        expect(Object.keys(record())).to.not.include.members(Object.keys(meta))
+        expect(record().metadata).to.deep.equal(meta)
+        expect(() => consoleLine(record())).to.not.throw()
+      }
+    })
+
     it('cannot replace the standard keys', () => {
       Logger.getInstance({ service: 'S' }).info('real', { level: 'error', message: 'fake', service: 'evil', timestamp: 'x', filename: 'f', line: 1 })
       expect(record()).to.include({ level: 'info', message: 'real', service: 'S' })

@@ -1,5 +1,11 @@
 import { getRequestContext } from '../context/request-context';
-import { isPipesHubId, Logger, shownIdentity } from './logger.service';
+import {
+  EVENT_NAME,
+  isPipesHubId,
+  Logger,
+  shownIdentity,
+  SNAKE_TOKEN,
+} from './logger.service';
 
 export type AuditOutcome = 'success' | 'failure';
 
@@ -17,8 +23,6 @@ export interface AuditFields {
   reason?: string;
 }
 
-const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/;
-const REASON = /^[a-z0-9_]{1,64}$/;
 const INVALID_EVENT = 'audit.invalid_event';
 
 /** A value that is not an id PipesHub issued is rejected, never cleaned: an email must not reach the line in any form. */
@@ -49,7 +53,7 @@ export function audit(event: string, fields: AuditFields): void {
     ? 'invalid_id'
     : fields.reason === undefined
       ? null
-      : REASON.test(fields.reason)
+      : SNAKE_TOKEN.test(fields.reason)
         ? fields.reason
         : 'other';
   // The logger fills a missing request org from org_id, shown as the provider decides.

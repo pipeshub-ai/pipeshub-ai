@@ -263,13 +263,26 @@ describe('accessLog: one http.request.end line per request', () => {
   it('writes exactly one line per request on a kept-alive connection', async () => {
     const agent = new http.Agent({ keepAlive: true, maxSockets: 1 })
     try {
-      await request('/api/v1/kb/kb1/records/a', { agent })
-      await request('/api/v1/kb/kb1/records/b', { agent })
-      const lines = await accessLines(2)
-      expect(lines).to.have.length(2)
+      await request('/api/v1/kb/kb1/records/a', { agent, headers: { 'x-request-id': 'req-a' } })
+      await request('/api/v1/kb/kb1/records/b', { agent, headers: { 'x-request-id': 'req-b' } })
+      await accessLines(2)
+      // A third request on the same socket: its line can only arrive after any duplicate of the first two.
+      await request('/api/v1/kb/kb1/records/c', { agent, headers: { 'x-request-id': 'req-c' } })
+      const lines = await accessLines(3)
+      expect(lines.map((l) => l.request_id)).to.deep.equal(['req-a', 'req-b', 'req-c'])
     } finally {
       agent.destroy()
     }
+  })
+
+  it('a logger that throws inside the close listener does not become an uncaught exception', () => {
+    const consoleError = sinon.stub(console, 'error')
+    sinon.stub(Logger.prototype, 'info').throws(new Error('provider hook broke'))
+    const req: any = { method: 'GET', originalUrl: '/api/v1/x', baseUrl: '', params: {}, ip: '10.0.0.1' }
+    const res: any = Object.assign(new EventEmitter(), { headersSent: true, statusCode: 200, writableFinished: true })
+    void accessLog()(req, res, () => undefined)
+    expect(() => res.emit('close')).to.not.throw()
+    expect(consoleError.calledWithMatch('Logging the access line failed:')).to.be.true
   })
 
   it('logs with the request context even when close fires outside it', () => {
