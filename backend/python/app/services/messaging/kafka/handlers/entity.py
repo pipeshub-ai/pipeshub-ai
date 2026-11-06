@@ -287,9 +287,7 @@ class EntityEventService(BaseEventService):
     async def _handle_user_added(self, payload: dict) -> bool:
         """Handle user creation event"""
         try:
-            self.logger.info(
-                "Processing user added event for user %s in org %s", payload.get("userId"), payload.get("orgId")
-            )
+            self.logger.info("Processing user added event for user %s", payload.get("userId"))
             # raise_on_error: the providers answer None to a failed read too, and
             # "nobody" here would mint a second user for someone who is there.
             existing_user = await self.graph_provider.get_user_by_email(
@@ -390,7 +388,7 @@ class EntityEventService(BaseEventService):
             # Get or create "All" team for org and add user with PERMISSION edge
             await self._get_or_create_all_team_and_add_user(payload["orgId"], user_key)
 
-            self.logger.info("Created or updated user %s in org %s", payload["userId"], payload["orgId"])
+            self.logger.info("Created or updated user %s", payload["userId"])
             self._schedule_connector_link(payload["orgId"])
             return True
 
@@ -461,9 +459,7 @@ class EntityEventService(BaseEventService):
     async def _handle_user_updated(self, payload: dict) -> bool:
         """Handle user update event"""
         try:
-            self.logger.info(
-                "Processing user updated event for user %s in org %s", payload.get("userId"), payload.get("orgId")
-            )
+            self.logger.info("Processing user updated event for user %s", payload.get("userId"))
             # Find existing user by userId
             existing_user = await self.graph_provider.get_user_by_user_id(
                 payload["userId"],
@@ -556,19 +552,13 @@ class EntityEventService(BaseEventService):
     async def _handle_user_deleted(self, payload: dict) -> bool:
         """Handle user deletion event"""
         try:
-            self.logger.info(
-                "Processing user deleted event for user %s in org %s", payload.get("userId"), payload.get("orgId")
-            )
+            self.logger.info("Processing user deleted event for user %s", payload.get("userId"))
             # Find existing user by email
             existing_user_id = await self.graph_provider.get_entity_id_by_email(
                 payload["email"]
             )
             if not existing_user_id:
-                self.logger.error(
-                    "No graph user has the deleted user's email (user %s, org %s)",
-                    payload.get("userId"),
-                    payload.get("orgId"),
-                )
+                self.logger.error("No graph user has the deleted user's email (user %s)", payload.get("userId"))
                 return False
 
             org_id = payload["orgId"]

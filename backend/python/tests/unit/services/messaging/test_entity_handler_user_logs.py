@@ -59,8 +59,8 @@ async def test_user_added_new_user_logs_ids_only(caplog: pytest.LogCaptureFixtur
 
     messages = _messages(caplog)
     _assert_no_personal_data(messages)
-    assert "Processing user added event for user u-1 in org org-1" in messages
-    assert "Created or updated user u-1 in org org-1" in messages
+    assert "Processing user added event for user u-1" in messages
+    assert "Created or updated user u-1" in messages
 
 
 async def test_user_added_existing_user_logs_ids_only(caplog: pytest.LogCaptureFixture) -> None:
@@ -71,7 +71,7 @@ async def test_user_added_existing_user_logs_ids_only(caplog: pytest.LogCaptureF
 
     messages = _messages(caplog)
     _assert_no_personal_data(messages)
-    assert "Created or updated user u-1 in org org-1" in messages
+    assert "Created or updated user u-1" in messages
 
 
 async def test_user_added_adopting_a_person_logs_the_user_key(caplog: pytest.LogCaptureFixture) -> None:
@@ -120,7 +120,7 @@ async def test_user_updated_logs_ids_only(caplog: pytest.LogCaptureFixture) -> N
 
     messages = _messages(caplog)
     _assert_no_personal_data(messages)
-    assert "Processing user updated event for user u-1 in org org-1" in messages
+    assert "Processing user updated event for user u-1" in messages
     assert "Updated user u-1" in messages
 
 
@@ -136,7 +136,7 @@ async def test_user_deleted_logs_ids_only(caplog: pytest.LogCaptureFixture) -> N
 
     messages = _messages(caplog)
     _assert_no_personal_data(messages)
-    assert "Processing user deleted event for user u-1 in org org-1" in messages
+    assert "Processing user deleted event for user u-1" in messages
     assert "Soft-deleted graph user graph-key-1" in messages
 
 
@@ -161,4 +161,4 @@ async def test_user_deleted_with_no_graph_user_logs_ids_only(caplog: pytest.LogC
 
     errors = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME and r.levelno == logging.ERROR]
     _assert_no_personal_data(_messages(caplog))
-    assert errors == ["No graph user has the deleted user's email (user u-1, org org-1)"]
+    assert errors == ["No graph user has the deleted user's email (user u-1)"]

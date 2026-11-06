@@ -10292,7 +10292,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     # invite makes them active, and a real org member.
                     if user_record.is_active:
                         self.logger.info(
-                            f"Guest {user.email} is active in PipesHub; keeping their organization membership"
+                            "Guest user %s is active in PipesHub; keeping their organization membership", user_record.id
                         )
                     else:
                         await self.delete_edge(

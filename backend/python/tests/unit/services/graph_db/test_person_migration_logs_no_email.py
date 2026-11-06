@@ -88,10 +88,10 @@ async def test_neo4j_migration_failure_logs_user_key(caplog: pytest.LogCaptureFi
 
 # ---- callers: batch_upsert_app_users adopts a Person for each new app user, and a failed adoption is logged, not raised ----
 
-def _app_user() -> AppUser:
+def _app_user(*, is_guest: bool = False) -> AppUser:
     return AppUser(
         app_name=Connectors.SLACK, connector_id="c1", id="u1", source_user_id="src-1",
-        email=EMAIL, full_name="Alice Liddell",
+        email=EMAIL, full_name="Alice Liddell", is_guest=is_guest,
     )
 
 
@@ -115,6 +115,25 @@ async def test_batch_upsert_app_users_logs_a_failed_adoption_by_user_id(provider
     await provider.batch_upsert_app_users([_app_user()], transaction="txn-1")
 
     _assert_adoption_failure_logged_by_id(caplog)
+
+
+@pytest.mark.parametrize("provider_cls", [ArangoHTTPProvider, Neo4jProvider])
+async def test_batch_upsert_app_users_logs_an_active_guest_by_graph_key(provider_cls, caplog: pytest.LogCaptureFixture) -> None:
+    """A guest who already exists and is active keeps the org edge; the line names the stored user, not the address."""
+    provider = provider_cls.__new__(provider_cls)
+    provider.logger = logging.getLogger(LOGGER_NAME)
+    provider.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1", "id": "org-1"}])
+    provider.get_document = AsyncMock(return_value={"_id": "apps/c1", "id": "c1"})
+    provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="graph-u1", is_active=True))
+    provider.batch_create_edges = AsyncMock()
+    provider.delete_edge = AsyncMock()
+
+    await provider.batch_upsert_app_users([_app_user(is_guest=True)], transaction="txn-1")
+
+    messages = _messages(caplog)
+    assert not any(EMAIL in m or "Alice Liddell" in m for m in messages)
+    assert "Guest user graph-u1 is active in PipesHub; keeping their organization membership" in messages
+    provider.delete_edge.assert_not_awaited()
 
 
 async def test_postgres_batch_upsert_app_users_logs_a_failed_adoption_by_user_id(caplog: pytest.LogCaptureFixture) -> None:
