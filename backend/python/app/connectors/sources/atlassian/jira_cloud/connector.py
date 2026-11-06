@@ -155,7 +155,7 @@ from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
 )
-from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
+from app.sources.client.jira.jira import JiraClient
 from app.sources.external.common.atlassian import (
     AtlassianMultiSiteError,
     atlassian_cloud_site_root,
@@ -676,8 +676,9 @@ class JiraConnector(BaseConnector):
         try:
             client = await self._build_jira_client()
             rest_client = client.get_client()
-            if isinstance(rest_client, JiraRESTClientViaApiKey):
-                # Email + API token goes straight to the configured URL (OAuth goes to api.atlassian.com).
+            # Email + API token goes straight to the configured URL (OAuth goes to api.atlassian.com).
+            # So does a basic-auth or bare-token client, which only a rewritten authType builds here.
+            if not rest_client.get_base_url().startswith("https://api.atlassian.com/"):
                 rest_client.base_url = atlassian_cloud_site_root(rest_client.get_base_url())
                 client.site_url = rest_client.base_url
             self.external_client = client

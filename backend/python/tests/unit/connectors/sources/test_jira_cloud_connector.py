@@ -306,6 +306,40 @@ class TestInitCoverage:
         assert connector.data_source is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["basic", "bare_token"])
+    async def test_init_refuses_any_direct_client_to_a_host_that_is_not_atlassian(self, kind: str) -> None:
+        """A rewritten authType (BASIC_AUTH, or API_TOKEN without email) builds these; they must not reach the private network."""
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+        from app.sources.client.jira.jira import (
+            JiraClient,
+            JiraRESTClientViaToken,
+            JiraRESTClientViaUsernamePassword,
+        )
+
+        rest = (JiraRESTClientViaUsernamePassword("http://10.1.2.3:8529/x?", "u", "p", "Basic") if kind == "basic"
+                else JiraRESTClientViaToken("http://arango:8529/x?", "t", "Bearer"))
+        connector = _make_connector()
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=JiraClient(rest))), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            with pytest.raises(ConnectorInitError, match="your-company.atlassian.net"):
+                await connector.init()
+        data_source.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_init_keeps_the_oauth_gateway_url(self) -> None:
+        from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaToken
+
+        gateway = "https://api.atlassian.com/ex/jira/cloud-1"
+        client = JiraClient(JiraRESTClientViaToken(gateway, "t"))
+        client.site_url = "https://acme.atlassian.net"
+        connector = _make_connector()
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=client)), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            data_source.return_value.get_current_user = AsyncMock(side_effect=Exception("offline"))
+            assert await connector.init() is True
+        assert client.get_client().get_base_url() == gateway
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("base_url", [
         "https://acme.atlassian.net",
         "https://acme.atlassian.net/jira",                              # Jira answers there too: synced before
