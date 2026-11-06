@@ -215,7 +215,7 @@ CLASSIFICATION: dict[str, str] = {
     # ---- node upserts (partial + lazy required)
     "batch_upsert_nodes": _UP, "batch_upsert_people": _UP, "batch_upsert_app_roles": _UP,
     "batch_upsert_app_users": _UP, "batch_upsert_orgs": _UP, "batch_upsert_record_groups": _UP,
-    "batch_upsert_records": _UP, "batch_upsert_user_groups": _UP, "upsert_person_by_email": _UP,
+    "batch_upsert_records": _UP, "batch_upsert_user_groups": _UP, "upsert_person_by_email": _UP, "upsert_person_by_source_key": _UP,
     "upsert_record_under_parent": _UP, "upsert_sync_point": _UP, "store_page_token": _UP,
     # ---- node updates (partial)
     "update_node": _U, "batch_update_nodes": _U, "update_node_fields_if_match": _U,
@@ -988,7 +988,7 @@ COVERED = (
 COVERAGE_GAPS: dict[str, str] = {
     name: reason
     for names, reason in (
-        (("batch_upsert_records", "upsert_record_under_parent", "batch_upsert_people", "upsert_person_by_email",
+        (("batch_upsert_records", "upsert_record_under_parent", "batch_upsert_people", "upsert_person_by_email", "upsert_person_by_source_key",
           "batch_upsert_app_roles", "batch_upsert_app_users", "batch_upsert_orgs", "batch_upsert_record_groups",
           "batch_upsert_user_groups"), "typed model in, delegates to batch_upsert_nodes; pin through the T3 converters"),
         (("upsert_sync_point", "update_sync_point_if", "store_page_token"), "schema-less collections today"),

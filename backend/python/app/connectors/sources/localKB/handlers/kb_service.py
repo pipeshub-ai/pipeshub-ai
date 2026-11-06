@@ -1622,7 +1622,7 @@ class KnowledgeBaseService:
             folder_record.record_name = name
             folder_record.updated_at = get_epoch_timestamp_in_ms()
             processor = await self.processor_for_kb(kb_id)
-            await processor.on_record_metadata_update(folder_record)
+            await processor.on_record_metadata_update(await self._keep_creator(folder_record))
             self.logger.info(f"✅ Folder updated successfully: {folder_id} by user {user_id}")
             return {
                 "success": True,
@@ -1831,6 +1831,7 @@ class KnowledgeBaseService:
             if extra_keys:
                 self.logger.warning(f"update_record ignoring unmapped update keys: {extra_keys}")
             record.updated_at = timestamp
+            await self._keep_creator(record)
 
             processor = await self.processor_for_kb(kb_context["kb_id"])
             if file_metadata is not None:
@@ -2312,7 +2313,7 @@ class KnowledgeBaseService:
                     raise LookupError(f"record {record_id} not found after restore")
                 renamed.record_name = new_name
                 renamed.updated_at = get_epoch_timestamp_in_ms()
-                await processor.on_record_metadata_update(renamed)
+                await processor.on_record_metadata_update(await self._keep_creator(renamed))
             except Exception as e:
                 self.logger.error("❌ Restored record %s but could not rename it: %s", record_id, e)
                 rename_failed.append(record_id)
@@ -3548,6 +3549,15 @@ class KnowledgeBaseService:
         email = (user or {}).get("email")
         return SourcePerson(email=email, display_name=user.get("fullName") or None) if email else None
 
+    async def _keep_creator(self, record: FileRecord) -> FileRecord:
+        """Name the record's existing creator again before an update: a reloaded
+        record carries none, and the people step would drop the creator's edge."""
+        for person in await self.graph_provider.get_record_people(record.id, record.org_id):
+            if person.get("email"):
+                record.created_by = SourcePerson(email=person["email"], display_name=person.get("name"))
+                break
+        return record
+
     async def _upload_records(
         self, kb_id: str, user_id: str, org_id: str, files: List[Dict], parent_folder_id: Optional[str]
     ) -> Dict:
@@ -3787,7 +3797,7 @@ class KnowledgeBaseService:
             old_external_id = record.external_record_id
             record.parent_external_record_id = new_parent_id  # None => KB root (no edge)
             processor = await self.processor_for_kb(kb_id)
-            await processor.on_records_moved([(old_external_id, record, [])])
+            await processor.on_records_moved([(old_external_id, await self._keep_creator(record), [])])
 
             self.logger.info(f"✅ Record {record_id} moved → {destination}")
             return {

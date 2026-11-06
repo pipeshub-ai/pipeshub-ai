@@ -266,3 +266,12 @@ async def test_a_failed_keying_is_partial_and_a_dry_run_skips_it() -> None:
     graph = _graph([])
     await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=io.StringIO())
     graph.batch_update_nodes.assert_not_awaited()
+
+
+async def test_a_batch_that_updated_fewer_accounts_than_asked_is_partial() -> None:
+    graph, out = _graph([]), io.StringIO()
+    graph.page_entity_index_source = AsyncMock(return_value=[{"_key": "a1", "name": "Acme"}])
+    graph.batch_update_nodes = AsyncMock(return_value=False)
+    code = await backfill(graph, MagicMock(), "org-1", apply=True, logger=logging.getLogger("t"), out=out)
+    assert code == EXIT_PARTIAL
+    assert _lines(out)[-1]["accounts_keyed"] is None

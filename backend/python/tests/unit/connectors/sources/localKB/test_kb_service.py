@@ -3832,3 +3832,26 @@ class TestPushedRecordFileReplace:
         result = await svc.update_record("u", "r", {}, file_metadata={"lastModified": 1})
         assert result["success"] is True
         processor.on_record_content_update.assert_called_once()
+
+
+class TestKeepCreator:
+    @pytest.mark.asyncio
+    async def test_a_reloaded_record_is_named_after_its_existing_creator(self, service) -> None:
+        service.graph_provider.get_record_people = AsyncMock(
+            return_value=[{"id": "u1", "name": "Ann", "email": "ann@acme.com"}],
+        )
+        record = MagicMock(id="r1", org_id="org1", created_by=None)
+
+        assert await service._keep_creator(record) is record
+
+        assert record.created_by == SourcePerson(email="ann@acme.com", display_name="Ann")
+        service.graph_provider.get_record_people.assert_awaited_once_with("r1", "org1")
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_no_creator_stays_without_one(self, service) -> None:
+        service.graph_provider.get_record_people = AsyncMock(return_value=[])
+        record = MagicMock(id="r1", org_id="org1", created_by=None)
+
+        await service._keep_creator(record)
+
+        assert record.created_by is None

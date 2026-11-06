@@ -1667,9 +1667,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if await self.http_client.ensure_persistent_index(
             CollectionNames.PEOPLE.value, ["orgId", "email"], unique=True, sparse=True,
         ):
-            for index in await self.http_client.get_indexes(CollectionNames.PEOPLE.value):
-                if index.get("fields") == ["orgId", "email"] and index.get("unique") and not index.get("sparse"):
-                    await self.http_client.drop_index(index["id"])
+            try:
+                for index in await self.http_client.get_indexes(CollectionNames.PEOPLE.value):
+                    if index.get("fields") == ["orgId", "email"] and index.get("unique") and not index.get("sparse"):
+                        await self.http_client.drop_index(index["id"])
+            except Exception as exc:  # the sourceKey index below must still be created
+                self.logger.error("Could not drop the non-sparse people (orgId, email) index; drop it by hand: %s", exc)
         await self.http_client.ensure_persistent_index(
             CollectionNames.PEOPLE.value, ["orgId", "sourceKey"], unique=True, sparse=True,
         )
@@ -8940,7 +8943,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ]
         if to_insert:
             await self.http_client.execute_aql(
-                "FOR e IN @edges INSERT e IN @@collection",
+                "FOR e IN @edges UPSERT {_from: e._from, _to: e._to, edgeType: e.edgeType} "
+                "INSERT e UPDATE {} IN @@collection",
                 bind_vars={"edges": to_insert, "@collection": CollectionNames.ENTITY_RELATIONS.value},
                 txn_id=txn,
             )

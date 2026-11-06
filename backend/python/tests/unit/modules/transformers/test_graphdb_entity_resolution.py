@@ -470,3 +470,20 @@ async def test_a_name_missing_from_the_resolution_is_not_logged() -> None:
         for c in m.call_args_list for a in c.args
     )
     assert "codename" not in logged.casefold()
+
+
+class TestUnknownOrganisations:
+    """A fallback summary names no organisations because it never looked, not because there are none."""
+
+    @pytest.mark.parametrize("organizations, deletes", [(None, 0), ([], 1)])
+    async def test_links_are_replaced_only_when_the_organisations_are_known(self, organizations, deletes) -> None:
+        provider = AsyncMock()
+        transformer = _transformer(_tx_store(), provider)
+        record = MagicMock(id="rec-1", semantic_metadata=SemanticMetadata(summary="s", organizations=organizations))
+
+        assert await transformer.link_organizations(record, _resolution()) == []
+
+        assert provider.delete_record_entity_relations.await_count == deletes
+
+    def test_a_summary_only_result_leaves_the_organisations_unknown(self) -> None:
+        assert SemanticMetadata(summary="s", categories=[]).organizations is None

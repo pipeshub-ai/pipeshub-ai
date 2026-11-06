@@ -548,6 +548,10 @@ class BaseDataStore(ABC):
 class TransactionStore(BaseDataStore):
     """Abstract transaction-aware data store that operates within a transaction context"""
 
+    def is_transient_error(self, error: BaseException) -> bool:
+        """Whether *error* rolled this transaction back cleanly so it can be run again."""
+        return False
+
     @abstractmethod
     async def commit(self) -> None:
         """Commit the transaction"""

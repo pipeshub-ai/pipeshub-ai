@@ -18453,7 +18453,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         through the person_org_source_key_unique constraint."""
         try:
             label = collection_to_label(CollectionNames.PEOPLE.value)
-            props = self._arango_to_neo4j_node(person.to_arango_person(), CollectionNames.PEOPLE.value)
+            person_doc = person.to_arango_person()
+            self.validator.validate_node(CollectionNames.PEOPLE.value, person_doc)
+            props = self._arango_to_neo4j_node(person_doc, CollectionNames.PEOPLE.value)
             results = await self.client.execute_query(
                 f"""
                 MERGE (p:{label} {{sourceKey: $source_key, orgId: $org_id}})
@@ -18464,6 +18466,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             )
             return results[0]["id"] if results else None
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Upsert person by source key failed: {str(e)}")
             if raise_on_error:

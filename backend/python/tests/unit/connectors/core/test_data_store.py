@@ -308,6 +308,9 @@ class TestTransactionStore:
         await store.commit()
         assert store._committed is True
 
+    def test_a_store_that_does_not_say_is_never_transient(self):
+        assert ConcreteTransactionStore().is_transient_error(RuntimeError("x")) is False
+
     @pytest.mark.asyncio
     async def test_rollback(self):
         store = ConcreteTransactionStore()

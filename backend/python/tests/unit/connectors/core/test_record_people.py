@@ -191,6 +191,7 @@ class TestWriteBehaviour:
                 _mail(from_email="ann@acme.com", to_emails=["bob@acme.com"]), store, logging.getLogger("t"),
             )
         store.batch_create_entity_relations.assert_not_awaited()
+        store.delete_edges_between_collections.assert_not_awaited()  # the old edges survive a failed read
 
     async def test_member_reads_ask_to_raise_and_the_email_read_is_scoped_to_the_org(self) -> None:
         store = _store()

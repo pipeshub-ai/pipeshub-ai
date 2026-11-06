@@ -215,7 +215,8 @@ async def stamp_organization_keys(graph: IGraphDBProvider, org_id: str, *, page_
             for row in rows if row.get("_key")
         ]
         if docs:
-            await graph.batch_update_nodes(docs, CollectionNames.ORGS.value)
+            if await graph.batch_update_nodes(docs, CollectionNames.ORGS.value) is not True:
+                raise RuntimeError("an account was not keyed")  # False: fewer nodes updated than asked
             written += len(docs)
         if len(rows) < page_size:
             return written

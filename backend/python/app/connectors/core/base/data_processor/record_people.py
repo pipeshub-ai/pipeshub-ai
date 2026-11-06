@@ -351,16 +351,6 @@ async def link_record_people(
     if not links and not may_have_edges and not isinstance(record, LINKED_RECORD_TYPES):
         return 0
     propagate = must_propagate or (lambda _exc: False)
-    for target in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value):
-        try:
-            await store.delete_edges_between_collections(
-                record.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value, target,
-            )
-        except Exception as exc:  # stale edges are rewritten below
-            if propagate(exc) or is_programming_error(exc) or store.is_transient_error(exc) is True:
-                raise
-            logger.warning("Could not clear %s edges of record %s: %s", target, record.id, exc)
-
     resolver = _PersonResolver(record, store, propagate)
     if links:
         await resolver.prefetch(links)
@@ -392,6 +382,17 @@ async def link_record_people(
         if link.source_timestamp is not None:
             edge["sourceTimestamp"] = link.source_timestamp
         edges.append(edge)
+
+    # After the reads: where a store commits each statement, a failed read must leave the old edges.
+    for target in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value):
+        try:
+            await store.delete_edges_between_collections(
+                record.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value, target,
+            )
+        except Exception as exc:  # stale edges are rewritten below
+            if propagate(exc) or is_programming_error(exc) or store.is_transient_error(exc) is True:
+                raise
+            logger.warning("Could not clear %s edges of record %s: %s", target, record.id, exc)
 
     if resolver.failed:
         logger.warning("Record %s: %d people could not be written", record.id, resolver.failed)

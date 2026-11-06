@@ -84,3 +84,22 @@ class TestPageRecordIdsByType:
         call = (p.http_client.execute_aql if make is _arango else p.client.execute_query).await_args
         params = call.kwargs.get("bind_vars") or call.kwargs.get("parameters")
         assert params["limit"] == 7
+
+
+class TestMoveEntityRelationsToUser:
+    @pytest.mark.asyncio
+    async def test_moves_only_the_edges_the_user_lacks_and_inserts_them_idempotently(self) -> None:
+        p = _arango()
+        mine = [
+            {"_id": "entityRelations/1", "_key": "1", "_from": "records/a", "_to": "people/p", "edgeType": "AUTHORED_BY"},
+            {"_id": "entityRelations/2", "_key": "2", "_from": "records/a", "_to": "people/p", "edgeType": "CREATED_BY"},
+        ]
+        p.http_client.execute_aql = AsyncMock(side_effect=[[{"mine": mine, "theirs": ["records/a|AUTHORED_BY"]}], [], []])
+
+        assert await p._move_entity_relations_to_user("people/p", "users/u", None) == 2
+
+        insert = p.http_client.execute_aql.await_args_list[1]
+        assert "UPSERT" in insert.args[0]
+        assert insert.kwargs["bind_vars"]["edges"] == [
+            {"_from": "records/a", "edgeType": "CREATED_BY", "_to": "users/u"},
+        ]
