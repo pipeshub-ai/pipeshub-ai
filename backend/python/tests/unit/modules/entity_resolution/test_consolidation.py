@@ -711,6 +711,27 @@ class TestStrayEdges:
         assert graph.targets("late") == [(TOPICS, "c")]
         assert graph.nodes[(TOPICS, "a")]["mergedInto"] == "b"  # the loser's own redirect is the merge's to keep
 
+    @pytest.mark.parametrize("swept", [True, False], ids=["swept", "not-swept"])
+    async def test_an_unflattened_chain_undoes_from_the_middle_first(self, swept: bool) -> None:
+        """a -> b -> c where a still redirects to b: unmerging b brings a's
+        edges back with b's, so unmerging a afterwards finds them at b."""
+        graph = _chain_fixture()
+        consolidator = _consolidator(graph)
+        await consolidator.merge(TOPICS, ORG, "b", "a", dry_run=False)
+        await consolidator.merge(TOPICS, ORG, "c", "b", dry_run=False)
+        graph.nodes[(TOPICS, "a")]["mergedInto"] = "b"  # the b -> c merge stopped before flattening a
+        if swept:
+            graph.link("late", ORG, TOPICS, "a")
+            await consolidator.sweep(TOPICS, ORG, "a", dry_run=False)
+        assert (await consolidator.unmerge(TOPICS, ORG, "b", dry_run=False)).edges_moved == (3 if swept else 2)
+        assert graph.targets("rb") == [(TOPICS, "b")] and graph.targets("ra") == [(TOPICS, "b")]
+        await consolidator.unmerge(TOPICS, ORG, "a", dry_run=False)
+        assert graph.targets("ra") == [(TOPICS, "a")]
+        assert graph.targets("rb") == [(TOPICS, "b")]
+        assert graph.targets("rc") == [(TOPICS, "c")]
+        if swept:
+            assert graph.targets("late") == [(TOPICS, "a")]
+
     async def test_strays_are_paged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.modules.entity_resolution import consolidation
 
