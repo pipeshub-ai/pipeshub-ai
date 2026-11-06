@@ -140,7 +140,8 @@ async def test_one_tick_of_the_job_pages_syncs_and_advances_in_each_apps_own_org
     synced: list[tuple[str, str]] = []
 
     async def sync(vrid: str) -> None:
-        synced.append((org_context.current_org_id(), vrid))
+        if org_context.current_org_id() in orgs:      # not the apps other tests left behind
+            synced.append((org_context.current_org_id(), vrid))
     pipeline = SimpleNamespace(sync_vector_membership=sync, orgs_holding_points=lambda _v: [])
     token = org_context.push(None)
     try:
