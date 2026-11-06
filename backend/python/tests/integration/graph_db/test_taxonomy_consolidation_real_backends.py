@@ -385,3 +385,58 @@ async def test_legacy_nodes_are_paged_in_key_order_with_this_orgs_counts(backend
             break
         after = page[-1]["_key"]
     assert seen == [(k, 2) for i, k in enumerate(keys) if i != 2]
+
+
+async def test_edges_linked_to_a_merged_node_are_found_and_swept(backend) -> None:
+    """Indexing that resolved to the loser just before the merge links to it
+    afterwards; the sweep finds those edges and moves them to the winner."""
+    provider, db, run = backend
+    org = f"org-{run}"
+    win, lose = f"win-{run}", f"lose-{run}"
+    await db.topic(win, "Bug bash", org, created=1)
+    await db.topic(lose, "Bug-bash", org, created=2)
+    await db.link(f"r1-{run}", org, lose)
+    consolidator = _consolidator(provider)
+    await consolidator.merge(TOPICS, org, win, lose, dry_run=False)
+    assert await provider.find_merged_taxonomy_nodes_with_edges(TOPICS, org, 10) == []
+
+    await db.link(f"r2-{run}", org, lose, extracted="bug-bash")
+    await db.link(f"x1-{run}", f"other-{run}", lose)  # another org's record is not ours to move
+    rows = await provider.find_merged_taxonomy_nodes_with_edges(TOPICS, org, 10)
+    assert [(r["_key"], r["mergedInto"], r["records"]) for r in rows] == [(lose, win, 1)]
+    assert await provider.find_merged_taxonomy_nodes_with_edges(TOPICS, org, 10, after_key=lose) == []
+
+    (stray,) = await consolidator.stray_nodes(TOPICS, org)
+    result = await consolidator.sweep(TOPICS, org, stray.key, dry_run=False)
+    assert result.edges_moved == 1
+    assert await db.edges(f"r2-{run}") == [(win, "bug-bash", lose)]
+    assert await db.edges(f"x1-{run}") == [(lose, None, None)]
+    assert await consolidator.stray_nodes(TOPICS, org) == []
+
+
+async def test_strays_on_a_chain_sweep_to_its_end_and_each_undo_restores_them(backend) -> None:
+    provider, db, run = backend
+    org = f"org-{run}"
+    a, b, c = (f"{n}-{run}" for n in "abc")
+    await db.topic(a, "bug-bash", org, created=3)
+    await db.topic(b, "Bug bash", org, created=2)
+    await db.topic(c, "Bugbash", org, created=1)
+    await db.link(f"ra-{run}", org, a)
+    await db.link(f"rb-{run}", org, b)
+    consolidator = _consolidator(provider)
+    await consolidator.merge(TOPICS, org, b, a, dry_run=False)
+    await consolidator.merge(TOPICS, org, c, b, dry_run=False)
+    await db.link(f"la-{run}", org, a)
+    await db.link(f"lb-{run}", org, b)
+
+    assert [s.key for s in await consolidator.stray_nodes(TOPICS, org)] == sorted([a, b])
+    for stray in await consolidator.stray_nodes(TOPICS, org):
+        await consolidator.sweep(TOPICS, org, stray.key, dry_run=False)
+    assert await db.edges(f"la-{run}") == [(c, None, a)]
+    assert await db.edges(f"lb-{run}") == [(c, None, b)]
+
+    await consolidator.unmerge(TOPICS, org, a, dry_run=False)
+    assert [t for t, _, _ in await db.edges(f"ra-{run}")] == [a]
+    assert [t for t, _, _ in await db.edges(f"la-{run}")] == [a]
+    await consolidator.unmerge(TOPICS, org, b, dry_run=False)
+    assert [t for t, _, _ in await db.edges(f"lb-{run}")] == [b]
