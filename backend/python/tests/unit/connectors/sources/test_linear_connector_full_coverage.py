@@ -726,6 +726,33 @@ class TestProjectToRecords:
         assert written[0][1] == [] and written[0][0].rewrite_permissions is True
 
     @pytest.mark.asyncio
+    async def test_a_project_written_without_this_runs_team_permissions_is_rewritten_by_the_next_sync(self) -> None:
+        """The guarded write keeps the stored grants and leaves no grants fingerprint, so the
+        next sync that has read the teams refreshes the project and drops what is stale."""
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", True), ("team-2", False))
+        project["leadTeamId"] = "team-1"
+        connector = self._connector(project)
+        connector._team_permissions = {}
+        scope = {"team-1", "team-2"}
+        guarded = (await connector._project_to_records("proj-1", scope))[0][0]
+        assert guarded.rewrite_permissions is False
+        stored = MagicMock(external_record_id="proj-1", external_record_group_id="team-1",
+                           external_revision_id=guarded.external_revision_id)
+        connector._refreshed_project_ids = set()  # the next sync, which reads the teams
+        self._grants(connector, **{"team-1": "private", "team-2": "private"})
+        listed = {"proj-1": {"id": "proj-1", "teams": project["teams"]}}
+        connector._reconciler.run_projects = AsyncMock(return_value=(0, listed, {"proj-1": stored}))
+        processor = connector.data_entities_processor
+        processor.on_new_records = AsyncMock()
+        processor.on_record_content_update = AsyncMock()
+
+        await connector._sync_deleted_projects([(MagicMock(external_group_id=t), []) for t in sorted(scope)])
+
+        project_record, grants = processor.on_new_records.await_args.args[0][0]
+        assert project_record.rewrite_permissions is True and [g.external_id for g in grants] == ["team-2"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("change", ["other team made private", "other team taken out of the sync"])
     async def test_what_its_synced_teams_grant_changing_refreshes_the_project(self, change) -> None:
         """Neither moves the project's updatedAt nor its teams; the grants it was written with do."""
