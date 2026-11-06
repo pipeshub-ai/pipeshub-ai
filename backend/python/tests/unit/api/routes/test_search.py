@@ -1180,10 +1180,10 @@ class TestSearchWithoutQueryRewrite:
         lines = [
             call.args[0] % call.args[1:]
             for call in logger.info.call_args_list
-            if call.args and str(call.args[0]).startswith("⏱")
+            if call.args and str(call.args[0]).startswith("%s total=")
         ]
         assert len(lines) == 1
-        assert lines[0].startswith("⏱ search total=")
+        assert lines[0].startswith("search total=")
         assert "query_transform=" in lines[0] and "retrieval=" in lines[0]
         assert lines[0].endswith("| rewrite=off queries=1")
 

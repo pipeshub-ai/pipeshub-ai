@@ -24,6 +24,7 @@ from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
 from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
+from app.agents.agent_loop.turn_log import log_turn_end
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.api.middlewares.auth import (
@@ -1684,7 +1685,7 @@ async def _stream_chat_via_agent_loop(
         for pending in background_tasks:
             pending.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
-        logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
+        log_turn_end(logger_, "error", exc=exc, code="llm_initialization_failed", run_id=query_info.runId)
         error_code, user_message = classify_exception(exc)
         if error_code == "unknown":
             user_message = CHAT_MODEL_START_FAILED

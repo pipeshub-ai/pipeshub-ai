@@ -1,6 +1,7 @@
 """Unit tests for app.modules.retrieval.retrieval_service.RetrievalService."""
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,6 +20,7 @@ from app.modules.retrieval.retrieval_service import (
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.services.vector_db.search_retry import VectorSearchUnavailableError
 from app.utils.chat_helpers import attach_connector_instance_names
+from app.utils.logger import log_record_fields
 
 # ---------------------------------------------------------------------------
 # Helpers to build a RetrievalService without real FastEmbedSparse / model load
@@ -2678,6 +2680,32 @@ class TestSearchWithFiltersBranches:
         )
         assert result["status"] == "success"
         assert len(result["searchResults"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_results_without_metadata_are_counted_once_never_dumped(
+        self, retrieval_service, mock_graph_provider, caplog
+    ) -> None:
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {"_key": "rec1", "virtualRecordId": "vr1", "origin": "drive", "recordName": "Doc", "mimeType": "text/plain"}
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {"score": 0.8, "content": "content-sentinel", "citationType": "vectordb|document"},
+            {"score": 0.7, "content": "content-sentinel", "citationType": "vectordb|document", "metadata": {}},
+            {"score": 0.9, "content": "with metadata", "citationType": "vectordb|document",
+             "metadata": {"virtualRecordId": "vr1", "orgId": "o1"}},
+        ])
+        retrieval_service.logger = logging.getLogger("tests.retrieval")
+
+        with caplog.at_level(logging.DEBUG, logger="tests.retrieval"):
+            await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
+
+        skipped = [r for r in caplog.records if r.getMessage() == "retrieval.results_skipped"]
+        assert [(r.levelno, log_record_fields(r)) for r in skipped] == [
+            (logging.WARNING, {"reason": "no_metadata", "count": 2}),
+        ]
+        assert not [r for r in caplog.records if "sentinel" in r.getMessage()]
 
     @pytest.mark.asyncio
     async def test_virtual_id_not_in_record_map_goes_to_final(
