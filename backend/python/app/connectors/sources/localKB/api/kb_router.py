@@ -1525,7 +1525,7 @@ async def update_record(
             # fallback below, not in a failed answer for a write that went through.
             if isinstance(e, HTTPException) and e.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
                 raise
-            logger.error(f"❌ Failed to enrich update record response: {str(e)}")
+            logger.exception("❌ Failed to enrich update record response")    # the traceback keeps the store's error a 503 carries as its cause
             # Return with required fields even if enrichment fails. For a
             # connected app with a limit, the enrichment's own limit check may be
             # what failed: nothing above the record is named then.
