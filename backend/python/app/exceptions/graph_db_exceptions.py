@@ -39,6 +39,32 @@ class GraphLockUnavailableError(GraphDBError):
     """
 
 
+class GraphMemoryLimitError(GraphDBError):
+    """A bulk write was larger than the graph server's transaction memory pool.
+
+    Sending it again fails the same way, so it is not a transient error and no
+    retry loop runs it twice. Not a ``TransientError`` subclass on purpose, and
+    raised outside the handler of the driver's error so that nothing in its
+    ``__cause__`` / ``__context__`` chain looks transient either. The statement
+    rolled back whole: whatever it was rewriting is as it was.
+
+    ``groups`` names the groups an aggregated error left unwritten.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str | None = None,
+        size: int | None = None,
+        groups: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.operation = operation
+        self.size = size
+        self.groups = groups or []
+
+
 class KnowledgeHubListingTooLarge(GraphDBError):
     """The database gave up on a listing for want of memory.
 

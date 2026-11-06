@@ -1,0 +1,146 @@
+"""One user group the graph server's memory pool refuses must not take the others with it.
+
+``on_new_user_groups`` writes the whole call in one transaction. When a group's member
+replace fails with ``GraphMemoryLimitError`` that transaction rolls back, and the call is
+written again group by group, each in a transaction of its own.
+"""
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from app.config.constants.arangodb import Connectors as ConnectorsEnum
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.sources.localKB.push.retry import is_attempt_lost
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError
+from app.models.entities import AppUserGroup
+
+
+class _Store:
+    """Transactions that keep what was written only when they exit without an error."""
+
+    def __init__(self, refused: set[str]) -> None:
+        self.refused = refused
+        self.committed: list[str] = []
+        self.transactions = 0
+        self.replaces = 0
+
+    def transaction(self, **_kwargs: object) -> object:
+        self.transactions += 1
+        store = self
+        written: list[str] = []
+
+        class Ctx:
+            async def __aenter__(self_) -> MagicMock:
+                tx = AsyncMock()
+                tx.explicit = True
+                tx.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="existing"))
+                tx.written = written
+                return tx
+
+            async def __aexit__(self_, exc_type, exc, tb) -> bool:
+                if exc_type is None:
+                    store.committed.extend(written)
+                return False
+
+        return Ctx()
+
+
+def _group(name: str) -> AppUserGroup:
+    return AppUserGroup(
+        app_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1", source_user_group_id=name, name=name,
+    )
+
+
+def _processor(store: _Store) -> DataSourceEntitiesProcessor:
+    proc = DataSourceEntitiesProcessor(MagicMock(), MagicMock(), AsyncMock())
+    proc.org_id = "org-1"
+    proc.data_store_provider.transaction = store.transaction
+    proc._access_changed = AsyncMock()
+
+    async def write_edges(tx_store, to_id, to_collection, permissions, *, replace) -> None:
+        store.replaces += 1
+        # to_id is the group's id: the upsert stub below records which group this is
+        name = tx_store.current
+        if name in store.refused:
+            raise GraphMemoryLimitError(f"{name} too large", operation="group replace", size=9)
+        tx_store.written.append(name)
+
+    proc._write_permission_edges = write_edges
+    return proc
+
+
+def _wire(proc: DataSourceEntitiesProcessor) -> None:
+    """Each tx store learns the group being written from the upsert call."""
+    original = proc._write_user_group
+
+    async def write_user_group(tx_store, user_group, members, *, replace_members) -> bool:
+        tx_store.current = user_group.name
+        return await original(tx_store, user_group, members, replace_members=replace_members)
+
+    proc._write_user_group = write_user_group
+
+
+class TestIsolation:
+    @pytest.mark.asyncio
+    async def test_the_group_the_pool_refuses_is_skipped_and_the_others_commit(self) -> None:
+        store = _Store({"B"})
+        proc = _processor(store)
+        _wire(proc)
+
+        with pytest.raises(GraphMemoryLimitError) as raised:
+            await proc.on_new_user_groups([(_group("A"), []), (_group("B"), []), (_group("C"), [])])
+
+        assert store.committed == ["A", "C"]
+        assert raised.value.groups == ["B"]
+        assert "B" in str(raised.value) and "NEO4J_HEAP_MAX" in str(raised.value)
+        # one transaction for the fast path, then one per group
+        assert store.transactions == 1 + 3
+        # access is re-evaluated for the connector of the groups that did commit
+        proc._access_changed.assert_awaited_once_with({"conn-1"})
+        # not a retry loop: A and C are written once each in the fallback, B tried twice (fast path, alone)
+        assert store.replaces == 2 + 3
+        # nothing in the aggregated error looks transient to a retry loop
+        assert raised.value.__cause__ is None and raised.value.__context__ is None
+        assert not is_attempt_lost(raised.value)
+
+    @pytest.mark.asyncio
+    async def test_without_an_error_the_call_is_one_transaction(self) -> None:
+        store = _Store(set())
+        proc = _processor(store)
+        _wire(proc)
+
+        await proc.on_new_user_groups([(_group("A"), []), (_group("B"), []), (_group("C"), [])])
+
+        assert store.transactions == 1
+        assert store.committed == ["A", "B", "C"]
+        proc._access_changed.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_one_group_alone_raises_and_writes_nothing_else(self) -> None:
+        store = _Store({"B"})
+        proc = _processor(store)
+        _wire(proc)
+
+        with pytest.raises(GraphMemoryLimitError):
+            await proc.on_new_user_groups([(_group("B"), [])])
+
+        assert store.transactions == 1
+        assert store.committed == []
+        proc._access_changed.assert_not_awaited()
+        proc.logger.error.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_every_group_refused_commits_nothing_and_names_them_all(self) -> None:
+        store = _Store({"A", "B"})
+        proc = _processor(store)
+        _wire(proc)
+
+        with pytest.raises(GraphMemoryLimitError) as raised:
+            await proc.on_new_user_groups([(_group("A"), []), (_group("B"), [])])
+
+        assert raised.value.groups == ["A", "B"]
+        assert store.committed == []
