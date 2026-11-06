@@ -9649,23 +9649,6 @@
      "u-alice"
     ],
     {}
-   ],
-   [
-    "check_agent_permission",
-    [
-     "private",
-     "k-alice",
-     "org-1"
-    ],
-    {}
-   ],
-   [
-    "get_agent",
-    [
-     "private",
-     "org-1"
-    ],
-    {}
    ]
   ],
   "committed": 0,

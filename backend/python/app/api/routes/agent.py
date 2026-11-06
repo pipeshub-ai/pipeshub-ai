@@ -107,7 +107,6 @@ from app.modules.agents.service.builders import (  # noqa: F401 - moved; re-expo
     _refuse_limit_over_the_cap,
     _remove_knowledge_nodes,
     _remove_mcp_servers,
-    _resolve_mcp_attachments,
     _resolve_service_account_binding,
     _toolset_attachments_unreadable,
     sa_forces_org_sharing,

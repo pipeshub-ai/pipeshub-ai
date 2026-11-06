@@ -58,7 +58,10 @@ vi.mock('../../../../components/workspace-right-panel', () => ({
       </div>
     ) : null,
 }));
-vi.mock('../../../../components', () => ({
+vi.mock('../../../../components', async () => ({
+  // The real hook and input: they only read the FormField context this mock leaves empty.
+  useFormValidation: (await import('../../../../components/use-form-validation')).useFormValidation,
+  LabeledTextField: (await import('../../../../components/form-field')).LabeledTextField,
   FormField: ({ label, description, error, children }: { label: string; description?: string; error?: string; children: React.ReactNode }) => (
     <div role="group" aria-label={label}>
       {children}

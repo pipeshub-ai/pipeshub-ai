@@ -1,5 +1,5 @@
 import { mutate } from 'swr';
-import { apiClient, sharedGet } from '@/lib/api';
+import { apiClient } from '@/lib/api';
 import { SWR_NS } from '@/lib/api/swr-cache';
 import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
 
@@ -68,8 +68,8 @@ export const ORG_KEYS = {
 export const OrgApi = {
   /** GET /api/v1/org — fetch current org details */
   async getOrg(): Promise<OrgResponse> {
-    // The rail's footer reads the same org as the app starts: one request between them.
-    return sharedGet<OrgResponse>(BASE_URL);
+    const { data } = await apiClient.get<OrgResponse>(BASE_URL);
+    return data;
   },
 
   /** GET /api/v1/org/logo — download logo and return a data URL (null when the org has no logo, i.e. 204); throws when the read fails. */

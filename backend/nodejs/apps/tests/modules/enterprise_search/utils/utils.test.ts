@@ -31,6 +31,7 @@ import {
   updateMessageById,
   updateUserQueryContent,
   retireMessagesById,
+  deleteMessagesById,
   getMessages,
   appendMessageFeedback,
   attachMessages,
@@ -2053,11 +2054,6 @@ describe('Enterprise Search Utils', () => {
   describe('markAgentConversationFailed', () => {
     beforeEach(() => {
       stubSessionWrite()
-    })
-
-    let markAgentConversationFailed: any
-
-    before(() => {
     })
 
     it('should mark agent conversation as failed', async () => {

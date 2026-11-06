@@ -876,7 +876,7 @@ describe('es_controller editing the last question', () => {
 
     it('keeps the card rows when the user leaves mid-answer and the edited question cannot be saved', async () => {
       const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-      sinon.stub(searchUtils, 'updateUserQueryContent').resolves(null as never)
+      sinon.stub(searchUtils, 'updateTurnUserQuery').resolves(null as never)
       const run = await start({ edit: 'What changed in v2?', turn: 'card' })
       const before = rowsOf(run)
 

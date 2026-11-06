@@ -2478,11 +2478,14 @@ export const buildSessionError = (
       mergedMetadata.set(key, value);
     }
   }
+  // The session document is read on every load; the stack belongs in the log.
+  if (stack !== undefined) {
+    logger.error('Conversation error', { messageId, errorType: aguiCode, stack });
+  }
   return {
     message: errorMessage,
     errorType: aguiCode,
     messageId,
-    stack,
     metadata: mergedMetadata,
   };
 };

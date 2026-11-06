@@ -625,6 +625,27 @@ async def _assert_mcp_servers_exist(
     return {instance_id: instance for instance_id, instance in zip(instance_ids, instances) if instance}
 
 
+def _bind_mcp_attachments_to_instances(
+    mcp_servers_with_tools: dict[str, dict[str, Any]], instances: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """The attachments with their name and type taken from the stored servers, not the request:
+    otherwise a request could label a server anything, or leave out its type to slip past the
+    one-server-per-type rule."""
+    bound: dict[str, dict[str, Any]] = {}
+    seen_type_ids: dict[str, str] = {}
+    for instance_id, attachment in mcp_servers_with_tools.items():
+        instance = instances.get(instance_id) or {}
+        type_id = instance.get("typeId") or None
+        if type_id:
+            other = seen_type_ids.setdefault(type_id, instance_id)
+            if other != instance_id:
+                raise InvalidRequestError(
+                    f"Cannot attach two MCP server instances of the same type ('{type_id}') to one agent."
+                )
+        bound[instance_id] = {**attachment, "name": instance.get("name") or attachment["name"], "typeId": type_id}
+    return bound
+
+
 async def _attached_personal_instances(
     instance_ids: set[str], config_service: ConfigurationService, org_id: str,
 ) -> dict[str, dict[str, Any]]:

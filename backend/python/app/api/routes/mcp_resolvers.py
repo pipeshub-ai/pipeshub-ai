@@ -26,6 +26,17 @@ async def get_mcp_instance(
     """Single MCP instance by ID: an org instance, or `user_id`'s own personal one."""
     return await mcp_service.get_instance(instance_id, config_service, org_id, user_id)
 
+async def unusable_agent_mcp_server_ids(
+    attached: list[dict[str, Any]],
+    config_service: ConfigurationService,
+    org_id: str,
+    user_id: str | None,
+) -> frozenset[str]:
+    """Ids of an agent's attached MCP servers that `user_id` may not use: none here."""
+    del attached, config_service, org_id, user_id
+    return frozenset()
+
+
 
 def mask_mcp_instance_for_response(
     instance: dict[str, Any],

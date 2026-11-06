@@ -128,8 +128,6 @@ describe('fork route: the artifacts of a forked chat', () => {
     seed(`Done\n\n${card}`)
     fetchStub.resolves(reply(200, { copies: [copied], failed: [] }))
     sinon.stub(getConversationRepository(), 'appendMessages').rejects(new Error('mongo down'))
-    sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
 
     const out = await fork()
 
@@ -142,8 +140,6 @@ describe('fork route: the artifacts of a forked chat', () => {
     seed(`Done\n\n${card}`)
     fetchStub.resolves(reply(200, { copies: [copied], failed: [] }))
     sinon.stub(getConversationRepository(), 'appendMessages').rejects(new Error('mongo down'))
-    sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
     discard.rejects(new Error('connectors down'))
 
     const out = await fork()
@@ -154,8 +150,6 @@ describe('fork route: the artifacts of a forked chat', () => {
   it('has nothing to remove when no artifact was copied', async () => {
     seed('Plain answer')
     sinon.stub(getConversationRepository(), 'appendMessages').rejects(new Error('mongo down'))
-    sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
 
     const out = await fork()
 

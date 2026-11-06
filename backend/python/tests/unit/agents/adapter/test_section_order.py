@@ -298,4 +298,7 @@ class TestConversationSections:
     def test_sender_is_turn_after_request_context(self) -> None:
         vol = dict(PIPESHUB_SECTION_ORDER)
         assert vol["sender_context"] == Volatility.TURN
-        assert SECTION_NAMES.index("sender_context") == SECTION_NAMES.index("request_context") + 1
+        # After the request context, with only other per-turn sections (the entity filter) between them.
+        start, sender = SECTION_NAMES.index("request_context"), SECTION_NAMES.index("sender_context")
+        assert start < sender
+        assert all(vol[name] == Volatility.TURN for name in SECTION_NAMES[start:sender])
