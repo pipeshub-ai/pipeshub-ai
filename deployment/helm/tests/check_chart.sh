@@ -48,6 +48,7 @@ INGRESS=(
   --set 'ingress.hosts[0].paths[0].pathType=Prefix'
 )
 LOCAL=(-f values-local.yaml)
+PGPW="--set postgres.auth.passwords.admin=ci-admin --set postgres.auth.passwords.node=ci-node --set postgres.auth.passwords.connectors=ci-conn --set postgres.auth.passwords.indexing=ci-idx --set postgres.auth.passwords.query=ci-qry --set postgres.auth.passwords.kv=ci-kv --set postgres.auth.passwords.jobs=ci-jobs --set postgres.auth.passwords.migrate=ci-mig --set postgres.auth.passwords.backup=ci-bak"
 
 # name, then the helm arguments for that variant. They come after SECRETS so a
 # variant can override one of them.
@@ -60,6 +61,10 @@ VARIANTS=(
   "local-extras|${LOCAL[*]} --set networkPolicy.enabled=true ${INGRESS[*]}"
   "local-external-secrets|${LOCAL[*]} --set secretManagement.externalSecrets.enabled=true --set secretManagement.externalSecrets.secretStoreRef.name=vault --set secretManagement.externalSecrets.remoteRefs.secretKey=pipeshub/secret-key --set secretManagement.externalSecrets.remoteRefs.mongodbPassword=pipeshub/mongo --set secretManagement.externalSecrets.remoteRefs.redisPassword=pipeshub/redis --set secretManagement.externalSecrets.remoteRefs.neo4jPassword=pipeshub/neo4j"
   "local-existing-secrets|${LOCAL[*]} --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-app"
+  "local-address-limit|${LOCAL[*]} --set addressRateLimitPerMinute=5"
+  "local-postgres|${LOCAL[*]} --set postgres.enabled=true ${PGPW}"
+  "local-postgres-extras|${LOCAL[*]} --set postgres.enabled=true ${PGPW} --set networkPolicy.enabled=true --set postgres.major=17"
+  "local-postgres-existing-secret|${LOCAL[*]} --set postgres.enabled=true --set postgres.auth.existingSecret=pipeshub-postgres"
   "defaults-dind|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
   "cloud|-f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
@@ -195,6 +200,118 @@ check_docker_proxy defaults-dind
 check_docker_proxy eks
 check_docker_proxy eks-single-az
 
+# PostgreSQL (postgres.enabled): what the pods are allowed, where the secrets live, and that the schema is migrated before the app serves.
+check_postgres() { # variant, chart-owned Secret (yes|no)
+  local doc="$OUT/$1.yaml"
+  [[ -f "$doc" ]] || return 0
+  if python3 - "$doc" "$2" <<'PY'; then echo "ok $1: postgres pods restricted, secrets only in Secrets, migrate before the app"; else failed=1; fi
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+by = lambda kind, name: next((d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name), None)
+errors = []
+sts = by("StatefulSet", "ci-pipeshub-ai-postgres")
+app = by("Deployment", "ci-pipeshub-ai")
+if not sts or not app:
+    errors.append("missing the PostgreSQL StatefulSet or the application Deployment")
+else:
+    pod = sts["spec"]["template"]["spec"]
+    psc = pod["securityContext"]
+    if not (psc.get("runAsNonRoot") and psc.get("runAsUser") not in (None, 0)):
+        errors.append("the PostgreSQL pod can run as root")
+    if pod.get("automountServiceAccountToken") is not False:
+        errors.append("the PostgreSQL pod mounts a service account token")
+    for c in pod["containers"]:
+        sc = c.get("securityContext") or {}
+        if sc.get("readOnlyRootFilesystem") is not True or sc.get("allowPrivilegeEscalation") is not False or sc.get("capabilities", {}).get("drop") != ["ALL"]:
+            errors.append(f"container {c['name']} is not read-only / no-escalation / capabilities dropped")
+        if not (c.get("resources") or {}).get("requests"):
+            errors.append(f"container {c['name']} has no resource requests")
+    init = app["spec"]["template"]["spec"].get("initContainers") or []
+    if [i["name"] for i in init] != ["pg-migrate"]:
+        errors.append(f"application init containers are {[i['name'] for i in init]}, expected ['pg-migrate']")
+    else:
+        i = init[0]
+        sc = i["securityContext"]
+        if sc.get("runAsNonRoot") is not True or sc.get("readOnlyRootFilesystem") is not True or sc.get("allowPrivilegeEscalation") is not False:
+            errors.append("pg-migrate is not restricted")
+        if "db.migrate" not in " ".join(i["command"]):
+            errors.append("pg-migrate does not run db.migrate")
+        if [e["name"] for e in i["env"] if "valueFrom" not in e and e["name"] == "PG_MIGRATE_URL"]:
+            errors.append("PG_MIGRATE_URL is a literal, not a Secret reference")
+    main = next(c for c in app["spec"]["template"]["spec"]["containers"] if c["name"] == "pipeshub-ai")
+    env = {e["name"]: e for e in main["env"]}
+    if env.get("DOC_STORE", {}).get("value") != "postgres":
+        errors.append("the application does not get DOC_STORE=postgres")
+    for n in ("PG_NODE_URL", "PG_JOBS_URL"):
+        if "secretKeyRef" not in (env.get(n, {}).get("valueFrom") or {}):
+            errors.append(f"{n} is not a Secret reference")
+    if "PG_MIGRATE_URL" in env:
+        errors.append("the DDL login is in the application container")
+    for d in docs:
+        if d["kind"] == "ConfigMap" and "postgres" in yaml.dump(d.get("data") or {}).lower() and ("postgresql://" in yaml.dump(d.get("data") or {}) or "password" in yaml.dump(d.get("data") or {}).lower()):
+            errors.append(f"ConfigMap {d['metadata']['name']} holds PostgreSQL credentials")
+    sec = by("Secret", "ci-pipeshub-ai-postgres")
+    if (sys.argv[2] == "yes") != (sec is not None):
+        errors.append("the chart-owned PostgreSQL Secret is present or absent unexpectedly")
+for e in errors:
+    print(f"!! {sys.argv[1]}: {e}")
+sys.exit(1 if errors else 0)
+PY
+}
+check_postgres local-postgres yes
+check_postgres local-postgres-extras yes
+check_postgres local-postgres-existing-secret no
+# With the app's NetworkPolicy on, no policy but the PostgreSQL one may select the PostgreSQL pods (policies add up: the app policy admits the
+# whole namespace, so a second one selecting them would undo the first). A pod is selected by a policy when its labels satisfy the selector.
+check_postgres_policies() { # variant
+  local doc="$OUT/$1.yaml"
+  [[ -f "$doc" ]] || return 0
+  if python3 - "$doc" <<'PY'; then echo "ok $1: only the PostgreSQL policy selects the PostgreSQL pods"; else failed=1; fi
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+sts = next(d for d in docs if d["kind"] == "StatefulSet" and d["metadata"]["name"] == "ci-pipeshub-ai-postgres")
+labels = sts["spec"]["template"]["metadata"]["labels"]
+def selects(sel):
+    for k, v in (sel.get("matchLabels") or {}).items():
+        if labels.get(k) != v:
+            return False
+    for e in sel.get("matchExpressions") or []:
+        has, val = e["key"] in labels, labels.get(e["key"])
+        op = e["operator"]
+        if (op == "In" and val not in e["values"]) or (op == "NotIn" and has and val in e["values"]) \
+           or (op == "Exists" and not has) or (op == "DoesNotExist" and has):
+            return False
+    return True
+errors = []
+policies = [d for d in docs if d["kind"] == "NetworkPolicy"]
+if not any(p["metadata"]["name"] == "ci-pipeshub-ai-postgres" for p in policies):
+    errors.append("the PostgreSQL NetworkPolicy is missing")
+for p in policies:
+    if p["metadata"]["name"] != "ci-pipeshub-ai-postgres" and selects(p["spec"]["podSelector"]):
+        errors.append(f"NetworkPolicy {p['metadata']['name']} also selects the PostgreSQL pods")
+for e in errors:
+    print(f"!! {sys.argv[1]}: {e}")
+sys.exit(1 if errors else 0)
+PY
+}
+check_postgres_policies local-postgres-extras
+expect local-postgres 'checksum/postgres-secret' present 'app.kubernetes.io/component: main'
+expect local-postgres 'checksum/postgres-secret' present 'name: ci-pipeshub-ai-postgres'
+expect local-postgres-existing-secret 'checksum/postgres-secret' absent
+expect local-postgres 'startupProbe' present
+expect local-postgres 'failureThreshold: 90' present 'name: ci-pipeshub-ai-postgres'
+expect local-postgres 'pg_isready -h 127.0.0.1 -U postgres -d pipeshub && test -s /pgbouncer-auth/userlist.txt' present 'name: ci-pipeshub-ai-postgres'
+# The per-address limit is passed to the application (60 by default, the value when set).
+expect local-neo4j-kafka 'name: ADDRESS_RATE_LIMIT_PER_MINUTE' present
+expect local-neo4j-kafka 'value: "60"' present 'name: ADDRESS_RATE_LIMIT_PER_MINUTE'
+expect local-address-limit 'value: "5"' present 'name: ADDRESS_RATE_LIMIT_PER_MINUTE'
+expect local-postgres 'DOC_STORE' present
+expect local-neo4j-kafka 'PG_NODE_URL' absent
+expect local-neo4j-kafka 'pg-migrate' absent
+expect local-neo4j-kafka 'ci-pipeshub-ai-postgres' absent
+expect local-postgres-extras 'kind: NetworkPolicy' present 'name: ci-pipeshub-ai-postgres'
+expect local-postgres 'postgresql://' absent 'kind: ConfigMap'
+
 # A rotated key must restart both sides together. Secrets the chart does not
 # create carry no checksum: the chart cannot see their value.
 if [[ -f "$OUT/local-neo4j-kafka.yaml" && -f "$OUT/local-existing-secrets.yaml" && -f "$OUT/local-external-secrets.yaml" ]]; then
@@ -249,6 +366,13 @@ REFUSED=(
   "both mongodb charts|cannot both be true|--set mongodb.enabled=true --set mongodb.builtin.enabled=true --set persistence.enabled=false --set config.sandboxMode=local --set config.sandboxAllowLocal=true"
   "local sandbox without the dev flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set config.sandboxAllowLocal=false"
   "local sandbox with a string false flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set-string config.sandboxAllowLocal=false"
+  "postgres without passwords|postgres.auth.passwords.admin is required|${LOCAL[*]} --set postgres.enabled=true"
+  "postgres with one password missing|postgres.auth.passwords.kv is required|${LOCAL[*]} --set postgres.enabled=true ${PGPW/--set postgres.auth.passwords.kv=ci-kv/}"
+  "postgres password that is not URL-safe|may use only A-Z a-z 0-9|${LOCAL[*]} --set postgres.enabled=true ${PGPW} --set postgres.auth.passwords.node=a@b"
+  "postgres password set to null|postgres.auth.passwords.migrate is required|${LOCAL[*]} --set postgres.enabled=true ${PGPW} --set postgres.auth.passwords.migrate=null"
+  "postgres password with a percent sign|postgres.auth.passwords.backup may use only A-Z a-z 0-9|${LOCAL[*]} --set postgres.enabled=true ${PGPW} --set postgres.auth.passwords.backup=bad%value"
+  "postgres major 16|postgres.major must be 17 or 18|${LOCAL[*]} --set postgres.enabled=true ${PGPW} --set postgres.major=16"
+  "postgres with external secrets but no Secret|postgres.auth.existingSecret is required with secretManagement.externalSecrets.enabled|${LOCAL[*]} --set postgres.enabled=true ${PGPW} --set secretManagement.externalSecrets.enabled=true --set secretManagement.externalSecrets.secretStoreRef.name=vault --set secretManagement.externalSecrets.remoteRefs.secretKey=pipeshub/secret-key"
 )
 for entry in "${REFUSED[@]}"; do
   IFS='|' read -r name message rest <<<"$entry"

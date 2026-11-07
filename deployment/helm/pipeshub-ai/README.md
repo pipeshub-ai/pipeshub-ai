@@ -210,6 +210,22 @@ Redis Cluster and MemoryDB never support `SELECT` (`REDIS_DB`); it is only
 honoured when `redis.mode` is `standalone` (and a non-standalone `redis.mode` requires `redis.external.enabled=true` — the bundled subchart is a replication deployment, not a Redis Cluster). Use `redis.keyNamespace` for
 isolation instead.
 
+## PostgreSQL as the document store (opt-in)
+
+For a **new** install the Node API can keep its documents in PostgreSQL instead of MongoDB (`DOC_STORE=postgres`). It is off by default and the chart renders exactly as before. `postgres.enabled=true` adds one PostgreSQL server with a PgBouncer pooler beside it (one StatefulSet, a Service on 5432 and 6432, its own service account without a token) and an init container `pg-migrate` on every application pod that runs `python -m db.migrate` before the pod serves. MongoDB and the other stores keep running, and existing MongoDB data is **not** moved.
+
+```bash
+helm install pipeshub ./pipeshub-ai \
+  --set postgres.enabled=true \
+  --set postgres.auth.passwords.admin=... --set postgres.auth.passwords.node=... # and connectors, indexing, query, kv, jobs, migrate, backup
+```
+
+- **Passwords** are required (no defaults), all nine of them (`admin`, `node`, `connectors`, `indexing`, `query`, `kv`, `jobs`, `migrate`, `backup`), letters, digits and `. _ ~ -` only (they go into connection URLs), and live in a Secret: the chart's own, or yours (`postgres.auth.existingSecret`, required with external secrets). They are never put in a ConfigMap or printed in `NOTES.txt`. A Secret of your own is **not checked at render time** (the chart does not use `lookup`): it needs the keys `admin-password`, `node-password`, `connectors-password`, `indexing-password`, `query-password`, `kv-password`, `jobs-password`, `migrate-password`, `backup-password`, `node-url`, `jobs-url` and `migrate-url` (formats in `values.yaml`); a missing key shows up as `CreateContainerConfigError` naming it in `kubectl describe pod`. **Set the passwords once.** The roles are created with them when the data volume is first initialised and are never altered afterwards, so changing a value on a running release rolls the pods (the Secret is checksummed) onto URLs the database does not accept until you also run `ALTER ROLE ... PASSWORD` for that login on the server (ideally with a SCRAM verifier).
+- **Images**: `pipeshubai/postgres:<major>-1` (built from `deployment/docker-compose/postgres`) and `pipeshubai/pipeshub-migrate:<image.tag>` (from `backend/db/Dockerfile`). Neither is published yet: build and push them, or set `postgres.image` and `postgres.migrateImage`.
+- **Migration order and idempotence**: the init container waits for the server, then runs the migrations. At head it changes nothing, several replicas serialise on the runner's advisory lock, and a failed run changes nothing on an installed database. Exit 4 (catalog or security-surface check) keeps the pod from starting: `kubectl logs <pod> -c pg-migrate`. The DDL login is in that init container only.
+- **Pods**: the server runs as uid 999 with a read-only root filesystem, all capabilities dropped and no privilege escalation; the data volume is the only writable path besides small `emptyDir`s. With `networkPolicy.enabled` and `postgres.enabled`, the application's policy (which admits the whole namespace) is scoped to exclude the PostgreSQL pod, and the PostgreSQL pod gets a policy of its own that admits only the application's pods on 5432 and 6432 (the application's own egress rules must allow those ports to it).
+- **Upgrade of an existing release**: with `postgres.enabled=false` nothing changes. Enabling it on a release is additive (new Secret, Service, ServiceAccount and StatefulSet; the application Deployment gains an init container and three variables, so its pods roll). `postgres.major` is fixed for the life of the volume; there is no in-place major upgrade. Turning `postgres.enabled` off again, or `helm uninstall`, removes the server and the chart's Secret but **keeps the data volume** (`data-<release>-postgres-0`, the StatefulSet's default retention); delete it with `kubectl delete pvc data-<release>-postgres-0` when you are sure.
+
 ## Qdrant API key
 
 Qdrant and the app share one API key, stored as `qdrant-api-key` in the
