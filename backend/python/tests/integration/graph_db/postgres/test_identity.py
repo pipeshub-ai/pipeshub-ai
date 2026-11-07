@@ -257,6 +257,10 @@ CALLS = [
     ("delete_edges_to_groups", ("u", "users", "permission")), ("ensure_app_membership", ("u", "users", "c")),
     ("ensure_team_app_edge", ("c", "o")), ("upsert_authenticated_as", ("a", "b", "c", "o")), ("remove_authenticated_as", ("c",)),
     ("get_user_apps", ("u",)), ("get_user_app_ids", ("u",)),
+    ("add_user_to_all_team", ("o", "u")), ("ensure_all_team_with_users", ("o",)), ("check_api_toolset_in_use", ("i",)), ("check_mcp_instance_in_use", ("i",)),
+    ("check_toolset_instance_in_use", ("i",)), ("check_connector_name_uniqueness", ("n", "team", "o", "u", "apps")),
+    ("count_connector_instances_by_scope", ("apps", "team")),
+    ("get_agent", ("a",)), ("get_agents_by_model_key", ("o", "m")), ("get_agents_by_web_search_provider", ("o", "p")),
 ]
 
 

@@ -2816,6 +2816,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Parse worker pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down parse worker pool: {e}")
+    try:
+        from app.modules.parsers.pdf.docling_processor import shutdown_docling_pool
+        shutdown_docling_pool()
+    except Exception as e:
+        logger.error(f"❌ Error shutting down the Docling executor: {e}")
 
     # Stop the resource governor's sample loop after consumers (which hold
     # its gates) have drained, so nothing races a limit change mid-shutdown.

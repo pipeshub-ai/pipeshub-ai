@@ -327,6 +327,9 @@ class TestSyncRecordGroupEntity:
         orch.graph_provider.get_record_organizations = AsyncMock(return_value=[
             {"id": "acme", "name": "Acme"}, {"id": "blank", "name": " "},
         ])
+        orch.graph_provider.get_organization_record_reach = AsyncMock(return_value={
+            "acme": {"records": 0, "inferred": True}, "blank": {"records": 0, "inferred": True},
+        })
         ctx = self._make_ctx_with_group(record_group_id="rg-1")
         ctx.record.record_type = "DEAL"
 
@@ -338,6 +341,27 @@ class TestSyncRecordGroupEntity:
         assert [(e.entity_id, e.name) for e in linked.args[0]] == [("acme", "Acme")]
         assert linked.args[0][0].connector_ids == ["conn-1"]
         orch.graph_provider.get_record_organizations.assert_awaited_once_with("rec-001", "org-1")
+
+    @pytest.mark.asyncio
+    async def test_an_organisation_the_record_only_names_waits_for_a_second_record(self) -> None:
+        """KG-13 3b: a deal that names "Stray Co" once must not make it
+        searchable at index time, before the threshold allows it."""
+        orch = self._make_orchestrator_with_evs()
+        orch.graph_provider.get_record_people = AsyncMock(return_value=[])
+        orch.graph_provider.get_record_organizations = AsyncMock(return_value=[
+            {"id": "acme", "name": "Acme"}, {"id": "stray", "name": "Stray Co"},
+        ])
+        orch.graph_provider.get_organization_record_reach = AsyncMock(return_value={
+            "acme": {"records": 0, "inferred": True}, "stray": {"records": 1, "inferred": False},
+        })
+        ctx = self._make_ctx_with_group(record_group_id="rg-1")
+        ctx.record.record_type = "DEAL"
+
+        await orch._sync_record_identity_entities(ctx)
+
+        calls = orch.entity_vector_store.upsert_entities_batch.await_args_list
+        linked = next(c for c in calls if c.args[0][0].entity_type == EntityType.ORGANIZATION)
+        assert [e.entity_id for e in linked.args[0]] == ["acme"]
 
     @pytest.mark.asyncio
     async def test_only_account_records_look_up_an_account(self) -> None:
@@ -816,6 +840,42 @@ class TestStageEnrichment:
         orch.graphdb.apply.assert_not_awaited()
         orch.entity_vector_store.upsert_entities_batch.assert_awaited_once_with(touched)
         orch.persist_named_entities.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_links_the_organisations_the_classification_names(self) -> None:
+        """Indexing classifies through this stage, not ``apply``: a record must
+        link here to the organisations it names, and their points be written."""
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        orch.entity_vector_store = AsyncMock()
+        taxonomy, organisation = MagicMock(), MagicMock()
+        resolution = MagicMock()
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=[taxonomy])
+        orch.graphdb.resolution_of = MagicMock(return_value=resolution)
+        orch.graphdb.link_organizations = AsyncMock(return_value=[organisation])
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = SemanticMetadata(summary="A plan.", organizations=["Acme"])
+
+        await orch.write_enrichment(ctx)
+
+        orch.graphdb.link_organizations.assert_awaited_once_with(ctx.record, resolution)
+        orch.entity_vector_store.upsert_entities_batch.assert_awaited_once_with([taxonomy, organisation])
+
+    @pytest.mark.asyncio
+    async def test_no_resolution_leaves_the_organisation_links_alone(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=[])
+        orch.graphdb.resolution_of = MagicMock(return_value=None)
+        orch.graphdb.link_organizations = AsyncMock(return_value=[])
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = SemanticMetadata(summary="A plan.")
+
+        await orch.write_enrichment(ctx)
+
+        orch.graphdb.link_organizations.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_the_other_records_of_the_content_share_the_owners_summary(self) -> None:

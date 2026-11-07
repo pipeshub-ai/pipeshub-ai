@@ -1512,7 +1512,31 @@
       "webSearch": "Búsqueda web",
       "internalAndWebSearch": "Búsqueda interna + web"
     },
-    "searchDegraded": "Es posible que los resultados estén incompletos."
+    "searchDegraded": "Es posible que los resultados estén incompletos.",
+    "compare": {
+      "toggle": "Comparar modelos",
+      "pickTwo": "Elige {{max}} modelos para comparar.",
+      "pickedHint": "Cada pregunta la responden ambos modelos, lado a lado.",
+      "costNote": "Cada pregunta se ejecuta en ambos modelos, por lo que consume aproximadamente el doble. En el modo Agente, ambos pueden usar herramientas; las acciones que requieren aprobación se piden por separado en cada columna.",
+      "pillLabel": "Comparar {{picked}}/{{max}}",
+      "stop": "Detener",
+      "retry": "Reintentar",
+      "failed": "Este modelo no pudo responder. Inténtalo de nuevo.",
+      "useAnswer": "Usar esta respuesta",
+      "useAnswerLabel": "Usar la respuesta de {{model}}",
+      "columnLabel": "Respuesta de {{model}}",
+      "chooseConflict": "Esta respuesta aún no se puede conservar. Espera a que termine e inténtalo de nuevo.",
+      "chooseFailed": "No se pudo conservar esta respuesta. Inténtalo de nuevo.",
+      "primaryFallback": "Modelo",
+      "starting": "Iniciando...",
+      "status": {
+        "starting": "Iniciando",
+        "waiting": "En espera",
+        "streaming": "Respondiendo",
+        "done": "Listo",
+        "error": "Error"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -4822,6 +4846,8 @@
     "serviceAgentBadgeTooltip": "Este agente de servicio usa sus propias credenciales de conjunto de herramientas. Busca en el conocimiento con el acceso de quien lo creó, por lo que todos los que lo usan ven resultados de lo que esa persona puede leer.",
     "convertToServiceAgentTooltip": "Permanente: conjuntos de herramientas a nivel de agente, compartido con toda la organización y búsqueda de conocimiento con el acceso de quien lo creó. No se puede deshacer.",
     "convertToServiceAgentTooltipNewAgent": "Crea este agente como agente de servicio: conjuntos de herramientas a nivel de agente, compartido con toda la organización y búsqueda de conocimiento con tu acceso.",
+    "convertToServiceAgentTooltipNoOrg": "Permanente: conjuntos de herramientas a nivel de agente y búsqueda de conocimiento con el acceso de quien lo creó. Use el botón Compartir para controlar quién puede acceder. No se puede deshacer.",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "Crea este agente como agente de servicio: conjuntos de herramientas a nivel de agente y búsqueda de conocimiento con tu acceso. Use el botón Compartir para controlar quién puede acceder.",
     "agentActionsMenuAria": "Menú del agente",
     "agentMenuCreateAsServiceAgent": "Crear como agente de servicio",
     "agentMenuConvertToServiceAgent": "Convertir a agente de servicio",

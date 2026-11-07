@@ -183,11 +183,17 @@ def _sent(execute: AsyncMock, name: str) -> list[dict]:
 async def test_nodes_are_written_in_one_lock_order() -> None:
     provider, execute = _provider()
 
-    await provider.batch_upsert_nodes(
-        [{"_key": "c", "v": 1}, {"_key": "a", "v": 1}, {"_key": "c", "v": 2}, {"_key": "b", "v": 1}], "apps",
-    )
+    def app(key: str, created_at: int) -> dict:
+        return {
+            "_key": key, "name": "n", "type": "t", "appGroup": "g", "scope": "team", "isActive": True,
+            "createdAtTimestamp": created_at,
+        }
 
-    assert [(n["id"], n["v"]) for n in _sent(execute, "nodes")] == [("a", 1), ("b", 1), ("c", 1), ("c", 2)], (
+    await provider.batch_upsert_nodes([app("c", 1), app("a", 1), app("c", 2), app("b", 1)], "apps")
+
+    assert [(n["id"], n["createdAtTimestamp"]) for n in _sent(execute, "nodes")] == [
+        ("a", 1), ("b", 1), ("c", 1), ("c", 2)
+    ], (
         "sorted by id, and a node written twice keeps its last write last"
     )
 
@@ -231,7 +237,9 @@ async def test_a_people_upsert_that_lost_a_conflict_raises_for_its_block_to_re_r
     provider, execute = _provider()
     execute.side_effect = deadlock()
     person = MagicMock()
-    person.to_arango_person.return_value = {"_key": "p1", "email": "a@example.com"}
+    person.to_arango_person.return_value = {
+        "_key": "p1", "email": "a@example.com", "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+    }
 
     with pytest.raises(TransientError, match="DeadlockDetected"):
         await provider.batch_upsert_people([person])

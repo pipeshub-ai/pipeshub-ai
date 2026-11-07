@@ -767,11 +767,15 @@ class EntityRelations(Enum):
     INVOLVED_IN = "INVOLVED_IN"
     # Record -> member edges written by record_people (KG-13)
     AUTHORED_BY = "AUTHORED_BY"
+    # Who last changed the record's current version (source-reported)
+    LAST_MODIFIED_BY = "LAST_MODIFIED_BY"
     ADDRESSED_TO = "ADDRESSED_TO"
     REVIEWED_BY = "REVIEWED_BY"
     OWNED_BY = "OWNED_BY"
     # Record -> the CRM account (external organisation) it belongs to (KG-13).
     FOR_ACCOUNT = "FOR_ACCOUNT"
+    # Record -> an organisation its content names (KG-13 slice 3b, EXTRACTED).
+    MENTIONS = "MENTIONS"
 
 
 class EntityOrigin(str, Enum):

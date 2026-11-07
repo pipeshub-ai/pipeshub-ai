@@ -463,6 +463,7 @@ class SinkOrchestrator(Transformer):
             ACCOUNT_RECORD_TYPES,
         )
         from app.models.entities import EntityRecord, EntityType
+        from app.modules.entity_resolution.organizations import searchable_organizations
 
         lookups = [(EntityType.PERSON, self.graph_provider.get_record_people)]
         # Only CRM records link to an account; spare every other record the
@@ -477,6 +478,18 @@ class SinkOrchestrator(Transformer):
                 self.logger.warning("%s lookup failed for record %s (non-fatal): %s", entity_type.value, record_id, exc)
                 failed += 1
                 continue
+            if entity_type is EntityType.ORGANIZATION and nodes:
+                # The record may only name an organisation (KG-13 3b), which is
+                # searchable only once enough records do.
+                try:
+                    searchable = await searchable_organizations(
+                        self.graph_provider, org_id, [n["id"] for n in nodes if n.get("id")],
+                    )
+                except Exception as exc:
+                    self.logger.warning("organization reach lookup failed for record %s (non-fatal): %s", record_id, exc)
+                    failed += 1
+                    continue
+                nodes = [n for n in nodes if n.get("id") in searchable]
             entities = []
             for node in nodes or []:
                 # Named as the rebuild names them (a person's full name, else
@@ -955,7 +968,7 @@ class SinkOrchestrator(Transformer):
         )
 
     async def write_enrichment(self, ctx: TransformContext, *, index_summary: bool = True) -> None:
-        """The summary point, graph taxonomy and the entity points it touches, of a
+        """The summary point, graph taxonomy, organisation links and the entity points they touch, of a
         prepared classification (``prepare_enrichment``), for ``ctx.record``.
 
         ``extractionStatus`` is not written: the classify stage's headline owns it,
@@ -969,10 +982,13 @@ class SinkOrchestrator(Transformer):
             return
         if index_summary:
             await self.write_summary_point(ctx)
+        resolution = self.graphdb.resolution_of(ctx)
         with stage("graph.enrich"):
-            touched_entities = await self.graphdb.write_taxonomy(
-                record.id, metadata, resolution=self.graphdb.resolution_of(ctx)
-            )
+            touched_entities = await self.graphdb.write_taxonomy(record.id, metadata, resolution=resolution)
+            if resolution is not None:
+                touched_entities = [
+                    *(touched_entities or []), *await self.graphdb.link_organizations(record, resolution),
+                ]
         await self._upsert_touched_entities(ctx, touched_entities)
 
     async def enrich(self, ctx: TransformContext) -> None:

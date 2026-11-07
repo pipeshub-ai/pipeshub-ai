@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
-_CALLS = {"fetch", "fetchrow", "fetchval", "execute", "executemany"}
+_CALLS = {"fetch", "fetch_custom_plan", "fetchrow", "fetchval", "execute", "executemany"}
 _KEYWORD_START = re.compile(r"(select|insert|update|delete|with|merge|set|reset|declare|create|listen|unlisten|"
                             r"prepare|execute|deallocate|discard|close|fetch|move|savepoint|release|rollback|commit|begin|end|abort|start)\b", re.I)
 _TAG = re.compile(r"/\*\s*pipeshub:[A-Za-z0-9_.]{1,80}\s*\*/")

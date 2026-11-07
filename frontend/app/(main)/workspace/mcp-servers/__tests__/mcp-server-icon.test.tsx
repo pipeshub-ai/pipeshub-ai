@@ -61,6 +61,11 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="zoom" name="Zoom" />)).toBe('zoom icon');
   });
 
+  it("shows PayPal's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="paypal" name="PayPal" />)).toBe('paypal icon');
+    expect(logo(<McpServerIcon typeId={null} name="PayPal" />)).toBe('paypal icon');
+  });
+
   it("shows Hugging Face's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="huggingface" name="Hugging Face" />)).toBe('huggingface icon');
     expect(logo(<McpServerIcon typeId={null} name="Hugging Face" />)).toBe('huggingface icon');
@@ -100,5 +105,10 @@ describe('McpServerIcon', () => {
   it("shows Trello's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="trello" name="Trello" />)).toBe('trello icon');
     expect(logo(<McpServerIcon typeId={null} name="Trello" />)).toBe('trello icon');
+  });
+
+  it("shows Cloudflare's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="cloudflare" name="Cloudflare" />)).toBe('cloudflare icon');
+    expect(logo(<McpServerIcon typeId={null} name="Cloudflare" />)).toBe('cloudflare icon');
   });
 });

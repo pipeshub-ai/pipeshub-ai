@@ -8,9 +8,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from docling.exceptions import ConversionError
-
-from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+from app.modules.parsers.pdf.docling_processor import DoclingProcessor, lease_scope
 from app.services.parsing.interface import (
     IParser,
     ParseError,
@@ -18,6 +16,11 @@ from app.services.parsing.interface import (
     ParseResult,
     ParserProvider,
 )
+from app.utils.lazy_heavy import ensure_docling
+
+# The parsing route's own wait for a slot: a conversion that cannot get a lane in that
+# time is answered as backpressure instead of holding the request open.
+LEASE_WAIT_SECONDS = 120.0
 
 _SUPPORTED_FORMATS = ["pdf", "docx", "doc", "pptx", "ppt", "md", "mdx"]
 
@@ -52,8 +55,12 @@ class LocalDoclingParser:
         stem = Path(record_name).stem
         doc_name = f"{stem}{target_ext}"
 
+        await ensure_docling()
+        from docling.exceptions import ConversionError
+
         try:
-            conv_res = await self._processor.parse_document(doc_name, content)
+            with lease_scope(LEASE_WAIT_SECONDS):
+                conv_res = await self._processor.parse_document(doc_name, content)
         except ConversionError as exc:
             msg = str(exc)
             if "File format not allowed" in msg:

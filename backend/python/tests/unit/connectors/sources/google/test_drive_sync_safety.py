@@ -131,7 +131,11 @@ _CORRUPT_KEY = json.dumps({
 class TestUnreadableServiceAccountKey:
     """Turning on a connector whose saved key is not a usable key file says so, instead of 'try again'."""
 
-    @pytest.mark.parametrize("saved_key", ["this is not a key file", _CORRUPT_KEY], ids=["not-json", "corrupt-key"])
+    @pytest.mark.parametrize(
+        "saved_key",
+        ["this is not a key file", _CORRUPT_KEY, "[]", '"a key file"', "null"],
+        ids=["not-json", "corrupt-key", "json-list", "json-string", "json-null"],
+    )
     async def test_init_names_the_key_as_the_problem(self, saved_key: str) -> None:
         from unittest.mock import AsyncMock, MagicMock
 

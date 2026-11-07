@@ -1162,6 +1162,7 @@ class TestProcessMessageWrapper:
         instead of leaking it — otherwise a handful of duplicate deliveries
         for one record can exhaust MAX_CONCURRENT_INDEXING for everyone."""
         consumer.running = True
+        consumer._requeue_message = AsyncMock()
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
 
@@ -1303,6 +1304,7 @@ class TestProcessMessageWrapper:
         (which reverts IN_PROGRESS) runs — otherwise the cancellation is
         only observed by the consumer loop and the record is stuck."""
         consumer.running = True
+        consumer._requeue_message = AsyncMock()
         # Exhausted: acquire() never resolves, forcing the timeout below to
         # fire while the handler is suspended there.
         consumer.parsing_semaphore = asyncio.Semaphore(0)
@@ -1573,12 +1575,13 @@ class TestTimingSummary:
         assert [s["outcome"] for s in summaries] == ["stopped"]
 
     @pytest.mark.asyncio
-    async def test_losing_the_record_lease_to_a_duplicate_reads_contended(
+    async def test_losing_the_record_lease_reads_requeued(
         self, consumer, summaries
     ) -> None:
         async def try_acquire(pool, _owner, _limit, _lease_seconds) -> bool:
             return not pool.startswith("record:")
 
+        consumer._requeue_message = AsyncMock()
         self._gated(consumer, try_acquire)
         with (
             patch.object(
@@ -1593,7 +1596,7 @@ class TestTimingSummary:
             result = await consumer._IndexingKafkaConsumer__process_message_wrapper(self._message())
 
         assert result is False
-        assert [s["outcome"] for s in summaries] == ["contended"]
+        assert [s["outcome"] for s in summaries] == ["requeued"]
 
     @pytest.mark.asyncio
     async def test_a_record_handed_back_for_want_of_a_parse_slot_reads_requeued(

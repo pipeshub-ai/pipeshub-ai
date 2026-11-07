@@ -36,6 +36,7 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_fence_rows": (([11], [3], ["fenced"], [3], [9]), "kg.records"),
     "kg.w_queue_add": ((9, 5, "rows", "reach", True), "kg.restamp_queue"),
     "kg.w_queue_touch": ((9, 0, "worker-1", 1, None), "kg.restamp_queue"),
+    "kg.w_queue_release": ((9, "worker-1"), "kg.restamp_queue"),
     "kg.w_queue_done": ((9,), "kg.restamp_queue"),
     "kg.w_stamps_set": (([11], [3], ["rec"], [3], [b"\x00" * 8], [None], [False], [False], [False], [False], [None], [True]), "kg.records"),
 }
@@ -93,7 +94,7 @@ def test_every_kg_table_requires_the_per_org_policy_and_is_plain_with_org_first_
         assert keys and [k for k in keys if k[1] != "org_id"] == [], keys
 
 
-@pytest.mark.parametrize("name", [n for n in CALLS if not n.endswith(("_delete", "_ack", "_done", "_touch"))])
+@pytest.mark.parametrize("name", [n for n in CALLS if not n.endswith(("_delete", "_ack", "_done", "_touch", "_release"))])
 def test_a_set_writes_the_session_org_and_leaves_the_other_orgs_row_as_it_was(pdb, name):
     args, table = CALLS[name]
     with conn(pdb) as c:
@@ -174,6 +175,7 @@ BAD = {
     "kg.w_fence_rows": [([11, 12], [3], ["s"], [3], [9]), ([11], [4], ["s"], [3], [9]), ([11], [3], [""], [3], [9]), ([None], [3], ["s"], [3], [9])],
     "kg.w_queue_add": [(0, 5, "rows", "r", True), (9, -1, "rows", "r", True), (9, 5, "bogus", "r", True), (9, 5, "rows", "", True), (9, 5, "rows", "r", None), (None, 5, "rows", "r", True)],
     "kg.w_queue_touch": [(0, 0, "w", 1, None), (9, -1, "w", 1, None), (9, 0, "", 1, None), (9, 0, "w", -1, None), (9, 0, "w", 1, "x" * 513)],
+    "kg.w_queue_release": [(0, "w"), (9, ""), (9, "x" * 129), (9, None), (None, "w")],
     "kg.w_queue_done": [(0,), (None,)],
     "kg.w_stamps_set": [([11, 12], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([None], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [4], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([11], [3], [""], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
@@ -440,6 +442,25 @@ def test_a_job_is_claimed_by_compare_and_set_on_the_database_clock_and_deleted_o
         assert call(c, "kg.w_queue_done", ORG_A, (9,)) == [(True,)]
         assert call(c, "kg.w_queue_done", ORG_A, (9,)) == [(False,)]
         assert len(rows(c, "kg.restamp_queue", ORG_B)) == 1
+        clean(c)
+
+
+def test_a_worker_gives_back_only_its_own_claim_in_the_session_org(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        for org in (ORG_A, ORG_B):
+            assert call(c, "kg.w_queue_add", org, (9, 5, "rows", "reach", True)) == [(True,)]
+        [(beat,)] = call(c, "kg.w_queue_touch", ORG_A, (9, 0, "w1", 1, "cur"))
+        assert call(c, "kg.w_queue_touch", ORG_B, (9, 0, "w1", 1, None))[0][0] is not None
+        assert call(c, "kg.w_queue_release", ORG_A, (9, "w2")) == [(False,)]                                    # not the holder
+        assert call(c, "kg.w_queue_release", ORG_A, (8, "w1")) == [(False,)]                                    # not a job
+        assert c.execute("SELECT claimed_by FROM kg.restamp_queue WHERE org_id = %s", (ORG_A,)).fetchone()[0] == "w1"
+        assert call(c, "kg.w_queue_release", ORG_A, (9, "w1")) == [(True,)]
+        r = c.execute("SELECT claimed_by, heartbeat_ms, attempts, cursor FROM kg.restamp_queue WHERE org_id = %s", (ORG_A,)).fetchone()
+        assert tuple(r) == (None, beat, 1, "cur")                                                               # only the claim: the cursor and the attempt count stay for the next claimant
+        assert call(c, "kg.w_queue_release", ORG_A, (9, "w1")) == [(False,)]                                    # nothing left to give back
+        assert c.execute("SELECT claimed_by FROM kg.restamp_queue WHERE org_id = %s", (ORG_B,)).fetchone()[0] == "w1"      # the same worker's claim of the same id in another org is untouched
+        assert call(c, "kg.w_queue_touch", ORG_A, (9, beat, "w2", 2, "cur"))[0][0] is not None                  # the next claimant takes it on the heartbeat it read
         clean(c)
 
 

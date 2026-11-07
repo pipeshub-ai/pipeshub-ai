@@ -54,6 +54,7 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.retrieval.selection_scope import (
     limits_rows,
     resolve_request_scopes,
+    resolve_user_key,
     within_connection,
 )
 from app.modules.retrieval.title_hits import UnindexedMatch, find_unindexed_matches
@@ -543,8 +544,7 @@ async def _unindexed_matches(
         if limits_rows(filter_groups):
             # Apps a selection or limit reaches only through folders or records
             # are not in ``apps``; without them a strict scope reaches nothing.
-            found = await graph_provider.get_user_by_user_id(user_id=user_id)
-            user_key = (found.get("_key") or found.get("id")) if found else None
+            user_key = await resolve_user_key(graph_provider, user_id)
             if user_key:
                 _, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, filter_groups)
                 source_ids += [c for sc in scopes for c in sorted(sc.connector_ids - sc.app_ids)]

@@ -36,7 +36,6 @@ from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.containers.query import QueryAppContainer
-from app.events.processor import convert_record_dict_to_record
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import (
     Block,
@@ -45,6 +44,7 @@ from app.models.blocks import (
     CitationMetadata,
     DataFormat,
 )
+from app.models.record_convert import convert_record_dict_to_record
 from app.modules.parsers import parse_pool
 from app.modules.parsers.parse_pool import ParseWorkerError
 from app.modules.parsers.parse_pool_lanes import interactive_parsing

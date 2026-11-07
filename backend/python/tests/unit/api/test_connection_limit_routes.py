@@ -1106,6 +1106,7 @@ class TestReviewFindingsOnTheRelatedStack:
         assert response["kb"] == {} and record["recordName"] == "budget.xlsx"
         for field in ("parentNodeId", "externalParentId", "recordGroupId", "externalGroupId"):
             assert record[field] is None, field
+        assert response["userPermission"] is None   # unknown, not "NONE": that reads as a revoked permission
 
     @pytest.mark.asyncio
     async def test_an_unlimited_update_whose_enrichment_fails_is_unchanged(self) -> None:

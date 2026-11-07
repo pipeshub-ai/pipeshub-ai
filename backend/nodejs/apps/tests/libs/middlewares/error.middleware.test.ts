@@ -18,6 +18,7 @@ import { RedisServiceNotInitializedError } from '../../../src/libs/errors/redis.
 import { ConnectionError } from '../../../src/libs/errors/database.errors'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../src/libs/errors/backend-error'
 import { Logger } from '../../../src/libs/services/logger.service'
+import { MongoNetworkError, MongoServerSelectionError } from 'mongodb'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -95,17 +96,21 @@ describe('ErrorMiddleware', () => {
   // headersSent guard
   // -----------------------------------------------------------------------
   describe('headersSent guard', () => {
-    it('should do nothing when headers have already been sent', () => {
-      const error = new Error('test')
+    it('does not answer once headers have been sent, but still logs the failure once', () => {
+      const error = new Error('stream broke')
       const req = createMockRequest()
       const res = createMockResponse()
       res.headersSent = true
+      res.statusCode = 200
       const next = createMockNext()
 
       handler(error, req, res, next)
 
       expect(res.status.called).to.be.false
       expect(res.json.called).to.be.false
+      expect(loggerErrorStub.calledOnce).to.be.true
+      expect(loggerErrorStub.firstCall.args[0]).to.equal('http.request.error')
+      expect(loggerErrorStub.firstCall.args[1]).to.include({ status: 200, error_class: 'internal', error })
     })
   })
 
@@ -127,7 +132,14 @@ describe('ErrorMiddleware', () => {
 
         expect(loggerWarnStub.calledOnce).to.be.true
         expect(loggerErrorStub.called).to.be.false
-        expect(loggerWarnStub.firstCall.args[1].error).to.not.have.property('stack')
+        expect(loggerWarnStub.firstCall.args[0]).to.equal('http.request.error')
+        expect(loggerWarnStub.firstCall.args[1]).to.include({
+          method: 'GET',
+          status: error.statusCode,
+          error_type: error.name,
+          outcome: 'failure',
+          error,
+        })
         expect(res.status.calledWith(error.statusCode)).to.be.true
         expect(res.json.firstCall.args[0].error.message).to.equal(error.message)
       })
@@ -138,7 +150,19 @@ describe('ErrorMiddleware', () => {
 
       expect(loggerErrorStub.calledOnce).to.be.true
       expect(loggerWarnStub.called).to.be.false
-      expect(loggerErrorStub.firstCall.args[1].error).to.have.property('stack')
+      expect(loggerErrorStub.firstCall.args[1]).to.include({ status: 500, error_class: 'internal' })
+    })
+
+    it('names the class of each answer the same way the Python side does', () => {
+      const cases: [Error, string][] = [
+        [new BadRequestError('x'), 'bad_request'],
+        [new UnauthorizedError('x'), 'auth_expired'],
+        [new ForbiddenError('x'), 'forbidden'],
+        [new NotFoundError('x'), 'not_found'],
+        [new ServiceUnavailableError('x'), 'unavailable'],
+      ]
+      for (const [error] of cases) handler(error, createMockRequest(), createMockResponse(), createMockNext())
+      expect(loggerWarnStub.getCalls().map((call) => call.args[1].error_class)).to.deep.equal(cases.map(([, cls]) => cls))
     })
 
     it('logs an error that is not ours at error', () => {
@@ -468,18 +492,46 @@ describe('ErrorMiddleware', () => {
       const body = res.json.firstCall.args[0]
       expect(body.error.code).to.equal('HTTP_SERVICE_UNAVAILABLE')
       expect(body.error.message).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
-      expect(loggerErrorStub.calledOnce).to.be.true
+      // Degraded, not our bug: one WARN, and no ERROR line from anywhere.
+      expect(loggerWarnStub.calledOnce).to.be.true
+      expect(loggerErrorStub.called).to.be.false
     })
 
-    it('logs the cause it could not show the reader', () => {
+    it('logs one line with the cause it could not show the reader', () => {
       const logged = sinon.stub(Logger.prototype, 'error')
+      const original = refused()
 
-      handler(refused(), createMockRequest({ method: 'GET', path: '/api/v1/teams/user/teams' }), createMockResponse(), createMockNext())
+      handler(original, createMockRequest({ method: 'GET', path: '/api/v1/teams/user/teams' }), createMockResponse(), createMockNext())
 
-      const call = logged.getCalls().find((c) => (c.args[0] as string).includes('Could not reach the service'))
-      expect(call, 'cause logged').to.exist
-      expect(call!.args[0]).to.include('GET /api/v1/teams/user/teams')
-      expect(call!.args[1]).to.deep.equal({ cause: 'ECONNREFUSED' })
+      expect(logged.called, 'no "Could not reach" line').to.be.false
+      const fields = loggerWarnStub.firstCall.args[1]
+      expect(fields).to.include({ status: 503, error_class: 'unavailable', error_type: 'ServiceUnavailableError' })
+      expect(fields.error.cause).to.equal(original)
+    })
+
+    it('logs our own database being down as one ERROR with the stack, not as an unreachable upstream', () => {
+      const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:27017'), { code: 'ECONNREFUSED' })
+      const network = new MongoNetworkError('connect ECONNREFUSED 127.0.0.1:27017', { cause: refused })
+      const mongoDown = new MongoServerSelectionError('connect ECONNREFUSED 127.0.0.1:27017', { error: network } as never)
+      const res = createMockResponse()
+
+      handler(mongoDown, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+      expect(loggerWarnStub.called).to.be.false
+      expect(loggerErrorStub.calledOnce).to.be.true
+      expect(loggerErrorStub.firstCall.args[1]).to.include({
+        status: 500,
+        error_class: 'internal',
+        error_type: 'MongoServerSelectionError',
+        error: mongoDown,
+      })
+    })
+
+    it('logs a timed-out call as timeout at warn', () => {
+      handler(new DOMException('The operation was aborted due to timeout', 'TimeoutError'), createMockRequest(), createMockResponse(), createMockNext())
+
+      expect(loggerWarnStub.firstCall.args[1]).to.include({ status: 504, error_class: 'timeout' })
     })
 
     it('answers a host that does not resolve with 503 too', () => {
@@ -714,6 +766,24 @@ describe('ErrorMiddleware', () => {
   // Error middleware failure
   // -----------------------------------------------------------------------
   describe('Error middleware failure', () => {
+    it('answers the mapped status even when logging the error throws', () => {
+      ;(ErrorMiddleware as any).logger = {
+        error: sinon.stub().throws(new Error('provider hook broke')),
+        warn: sinon.stub().throws(new Error('provider hook broke')),
+        info: sinon.stub(),
+        debug: sinon.stub(),
+      }
+      const consoleError = sinon.stub(console, 'error')
+      const res = createMockResponse()
+
+      handler(new NotFoundError('Document not found'), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(404)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal('Document not found')
+      expect(consoleError.calledWithMatch('Logging the request error failed:')).to.be.true
+    })
+
+
     it('should send 500 with MIDDLEWARE_ERROR if the error handler itself throws', () => {
       // Force an error inside the handler by making logger throw
       const error = new BadRequestError('test')
@@ -742,7 +812,7 @@ describe('ErrorMiddleware', () => {
   // Request context logging
   // -----------------------------------------------------------------------
   describe('Request context', () => {
-    it('should sanitize authorization and cookie headers before logging', () => {
+    it('logs no request header at all', () => {
       const error = new BadRequestError('test')
       const req = createMockRequest({
         headers: {
@@ -760,7 +830,7 @@ describe('ErrorMiddleware', () => {
       const logged = JSON.stringify(loggerWarnStub.firstCall.args)
       expect(logged).to.not.contain('secret-token')
       expect(logged).to.not.contain('session=abc')
-      expect(logged).to.contain('application/json')
+      expect(logged).to.not.contain('application/json')
     })
 
     // A Google connector callback that failed auth: the request's query and its
@@ -803,9 +873,11 @@ describe('ErrorMiddleware', () => {
         ]) {
           expect(logged).to.not.contain(secret)
         }
-        expect(logged).to.contain('/api/v1/connectors/oauth/callback')
-        expect(logged).to.contain('/connectors/oauth/callback/Drive')
-        expect(logged).to.contain('mocha')
+        // The route template stands in for the URL; no query, Referer or header is logged.
+        expect(calls[0]!.args[1]).to.include({ method: 'GET', route: 'unmatched' })
+        expect(logged).to.not.contain('/connectors/oauth/callback/Drive')
+        // (the error's own stack names mocha's files, so the user agent is checked on the fields)
+        expect(JSON.stringify({ ...calls[0]!.args[1], error: undefined })).to.not.contain('mocha')
       })
     }
   })

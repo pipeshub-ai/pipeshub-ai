@@ -283,7 +283,7 @@ class UpdateRecordResponse(BaseModel):
     location: str = Field(..., description="The location of the record, e.g., 'kb_root' or 'folder'.")
     folderId: Optional[str] = Field(None, description="The ID of the parent folder, if the record is in a folder.")
     kb: Dict[str, Any] = Field(..., description="Information about the knowledge base containing the record.")
-    userPermission: str = Field(..., description="The permission role of the user who performed the update.")
+    userPermission: Optional[str] = Field(None, description="The permission role of the user who performed the update. Null when it could not be read.")
 
 class DeleteRecordResponse(BaseModel):
     """Response model for deleting a record"""

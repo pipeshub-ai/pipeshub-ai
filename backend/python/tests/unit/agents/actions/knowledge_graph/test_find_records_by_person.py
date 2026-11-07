@@ -365,10 +365,12 @@ class TestEveryLinkedEdgeIsReachable:
         from app.models.entities import (
             CommentRecord,
             DealRecord,
+            FileRecord,
             MailRecord,
             ProjectRecord,
             PullRequestRecord,
             RecordType,
+            SourcePerson,
             TicketRecord,
         )
 
@@ -388,6 +390,9 @@ class TestEveryLinkedEdgeIsReachable:
             PullRequestRecord(record_type=RecordType.PULL_REQUEST, creator_email="c@x.com",
                               assignee_email=["a@x.com"], review_email=["v@x.com"], **base),
             DealRecord(record_type=RecordType.DEAL, owner_id="s4", **base),
+            FileRecord(record_type=RecordType.FILE, is_file=True, authored_by=SourcePerson(source_id="s5"),
+                       created_by=SourcePerson(source_id="s6"), last_modified_by=SourcePerson(source_id="s7"),
+                       owners=[SourcePerson(email="o@x.com")], **base),
         ]
         return {link.edge_type.value for record in records for link in person_links(record)}
 

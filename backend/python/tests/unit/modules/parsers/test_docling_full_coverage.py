@@ -33,12 +33,12 @@ def _make_mock_config():
 
 def _make_processor():
     """Create a DoclingProcessor with mocked converter."""
-    with patch("app.modules.parsers.pdf.docling_processor.DocumentConverter") as MockConverter, \
-         patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions"), \
-         patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
+    with patch("docling.document_converter.DocumentConverter") as MockConverter, \
+         patch("docling.document_converter.PdfFormatOption"), \
+         patch("docling.document_converter.WordFormatOption"), \
+         patch("docling.document_converter.MarkdownFormatOption"), \
+         patch("docling.datamodel.pipeline_options.ThreadedPdfPipelineOptions"), \
+         patch("docling.backend.pypdfium2_backend.PyPdfiumDocumentBackend"):
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor
         processor = DoclingProcessor(_make_mock_logger(), _make_mock_config())
     return processor
@@ -145,7 +145,7 @@ class TestParseDocumentInWorker:
         mock_converter.convert.return_value = mock_conv_result
 
         with patch("app.modules.parsers.pdf.docling_processor._get_converter", return_value=mock_converter), \
-             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream:
+             patch("docling.datamodel.base_models.DocumentStream") as MockStream:
             MockStream.return_value = MagicMock()
             from app.modules.parsers.pdf.docling_processor import _parse_document_in_worker
             result = _parse_document_in_worker("test.pdf", b"pdf content")
@@ -163,7 +163,7 @@ class TestParseDocumentInWorker:
         mock_converter.convert.return_value = mock_conv_result
 
         with patch("app.modules.parsers.pdf.docling_processor._get_converter", return_value=mock_converter), \
-             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream:
+             patch("docling.datamodel.base_models.DocumentStream") as MockStream:
             MockStream.return_value = MagicMock()
             from app.modules.parsers.pdf.docling_processor import _parse_document_in_worker
             with pytest.raises(DocumentProcessingError, match="Failed to parse document"):
@@ -179,7 +179,7 @@ class TestParseDocumentInWorker:
         mock_converter.convert.return_value = mock_conv_result
 
         with patch("app.modules.parsers.pdf.docling_processor._get_converter", return_value=mock_converter), \
-             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream:
+             patch("docling.datamodel.base_models.DocumentStream") as MockStream:
             MockStream.return_value = MagicMock()
             from app.modules.parsers.pdf.docling_processor import _parse_document_in_worker
             _parse_document_in_worker("report.pdf", b"content here")
@@ -281,13 +281,13 @@ class TestGetConverter:
 
     def test_get_converter_creates_document_converter(self):
         """_get_converter returns a DocumentConverter instance."""
-        with patch("app.modules.parsers.pdf.docling_processor.DocumentConverter") as MockConverter, \
-             patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions") as MockPipelineOpts, \
-             patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend") as MockBackend, \
-             patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption") as MockPdfFmt, \
-             patch("app.modules.parsers.pdf.docling_processor.WordFormatOption") as MockWordFmt, \
-             patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption") as MockMdFmt, \
-             patch("app.modules.parsers.pdf.docling_processor.InputFormat") as MockInputFmt:
+        with patch("docling.document_converter.DocumentConverter") as MockConverter, \
+             patch("docling.datamodel.pipeline_options.ThreadedPdfPipelineOptions") as MockPipelineOpts, \
+             patch("docling.backend.pypdfium2_backend.PyPdfiumDocumentBackend") as MockBackend, \
+             patch("docling.document_converter.PdfFormatOption") as MockPdfFmt, \
+             patch("docling.document_converter.WordFormatOption") as MockWordFmt, \
+             patch("docling.document_converter.MarkdownFormatOption") as MockMdFmt, \
+             patch("docling.datamodel.base_models.InputFormat") as MockInputFmt:
 
             mock_converter = MagicMock()
             MockConverter.return_value = mock_converter

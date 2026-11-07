@@ -50,6 +50,7 @@ from app.services.resource_governor import (
     gate_pool,
     parse_cost,
 )
+from app.services.resource_governor.lanes import LaneWaitTimeout
 from app.services.resource_governor.memory_domain import (
     parse_admission_cap,
     stamp_admitted_here,
@@ -296,6 +297,21 @@ async def parse_file(
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={"success": False, "error": exc.to_dict()},
+            )
+        except LaneWaitTimeout:
+            # A local conversion found no CPU lane in time: retryable, like a full gate.
+            logger.warning("Parse deferred: record='%s' waited too long for a CPU lane", record_name)
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
+                        "message": "Parsing service is at capacity; retry later.",
+                        "details": {"tier": tier.value, "reason": "cpu_lane"},
+                    },
+                },
             )
         except Exception:  # noqa: BLE001
             parse_ms = (time.monotonic() - parse_start) * 1000

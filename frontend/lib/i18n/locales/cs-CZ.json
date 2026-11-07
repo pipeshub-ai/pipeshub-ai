@@ -1645,7 +1645,31 @@
       "webSearch": "Vyhledávání na webu",
       "internalAndWebSearch": "Interní + webové vyhledávání"
     },
-    "searchDegraded": "Výsledky mohou být neúplné."
+    "searchDegraded": "Výsledky mohou být neúplné.",
+    "compare": {
+      "toggle": "Porovnat modely",
+      "pickTwo": "Vyberte {{max}} modely k porovnání.",
+      "pickedHint": "Na každou otázku odpoví oba modely vedle sebe.",
+      "costNote": "Každá otázka běží na obou modelech, takže spotřebuje zhruba dvojnásobek. V režimu Agent mohou oba modely používat nástroje; akce vyžadující schválení se zobrazí zvlášť v každém sloupci.",
+      "pillLabel": "Porovnání {{picked}}/{{max}}",
+      "stop": "Zastavit",
+      "retry": "Zkusit znovu",
+      "failed": "Tento model nedokázal odpovědět. Zkuste to znovu.",
+      "useAnswer": "Použít tuto odpověď",
+      "useAnswerLabel": "Použít odpověď od {{model}}",
+      "columnLabel": "Odpověď od {{model}}",
+      "chooseConflict": "Tuto odpověď zatím nelze ponechat. Počkejte, až se dokončí, a zkuste to znovu.",
+      "chooseFailed": "Tuto odpověď se nepodařilo ponechat. Zkuste to znovu.",
+      "primaryFallback": "Model",
+      "starting": "Spouští se...",
+      "status": {
+        "starting": "Spouští se",
+        "waiting": "Čeká",
+        "streaming": "Odpovídá",
+        "done": "Hotovo",
+        "error": "Selhalo"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "Vzhled",
@@ -4987,6 +5011,8 @@
     "serviceAgentBadgeTooltip": "Tento servisní agent používá vlastní přihlašovací údaje sad nástrojů. Ve znalostech vyhledává s přístupem svého autora, takže všichni, kdo ho používají, vidí výsledky z toho, co může číst autor.",
     "convertToServiceAgentTooltip": "Trvalé: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s přístupem autora. Nelze vrátit zpět.",
     "convertToServiceAgentTooltipNewAgent": "Vytvoří tohoto agenta jako servisního agenta: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s vaším přístupem.",
+    "convertToServiceAgentTooltipNoOrg": "Trvalé: sady nástrojů na úrovni agenta a vyhledávání ve znalostech s přístupem autora. Pomocí tlačítka Sdílet určete, kdo k němu má přístup. Nelze vrátit zpět.",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "Vytvoří tohoto agenta jako servisního agenta: sady nástrojů na úrovni agenta a vyhledávání ve znalostech s vaším přístupem. Pomocí tlačítka Sdílet určete, kdo k němu má přístup.",
     "agentActionsMenuAria": "Nabídka agenta",
     "agentMenuCreateAsServiceAgent": "Vytvořit jako servisního agenta",
     "agentMenuConvertToServiceAgent": "Převést na servisního agenta",

@@ -286,6 +286,36 @@ class TestResumeSyncServices:
         assert started == {"owed": False, "plain": True}
         assert [c.kwargs["connector_id"] for c in publish.await_args_list] == ["owed"]
 
+    async def test_boot_logs_user_count_not_user_details(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Every boot walks every org's users; only their count may reach the log."""
+        from app.connectors_main import resume_sync_services
+
+        logger_name = "tests.connectors_main.resume_users"
+        mock_container = _make_container()
+        mock_container.logger.return_value = logging.getLogger(logger_name)
+        mock_container.connectors_map = {}
+        gp = _make_graph_provider()
+        gp.get_all_orgs = AsyncMock(return_value=[{"_key": "org1"}])
+        gp.get_org_apps = AsyncMock(return_value=[{"_key": "app1", "type": "Slack"}])
+        gp.get_users = AsyncMock(return_value=[
+            {"_key": "user1", "email": "alice@example.com", "fullName": "Alice Liddell"},
+            {"_key": "user2", "email": "bob@example.com", "fullName": "Bob Builder"},
+        ])
+        ds = _make_data_store(gp)
+        caplog.set_level(logging.DEBUG, logger=logger_name)
+
+        with patch(
+            "app.connectors_main.ConnectorFactory.create_and_start_sync",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ):
+            assert await resume_sync_services(mock_container, ds) is True
+
+        messages = [r.getMessage() for r in caplog.records if r.name == logger_name]
+        assert "Found 2 users for organization org1" in messages
+        for personal in ("alice@example.com", "bob@example.com", "Alice Liddell", "Bob Builder"):
+            assert not any(personal in m for m in messages), personal
+
     async def test_connector_none_not_stored(self):
         """If ConnectorFactory returns None, it should not be stored."""
         from app.connectors_main import resume_sync_services

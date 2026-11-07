@@ -9,7 +9,7 @@ import {
   InternalServerError,
 } from '../../errors/http.errors';
 import { ownUnit } from './token-unit';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import {
   Params,
   assertOrg,

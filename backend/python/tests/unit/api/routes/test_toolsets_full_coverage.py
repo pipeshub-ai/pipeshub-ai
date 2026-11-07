@@ -1568,8 +1568,8 @@ class TestHandleToolsetOAuthCallbackFlows:
         cs.set_config.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_callback_auth_status_update_exception_still_succeeds(self):
-        """Lines 2390-2391 — auth status update exception doesn't block."""
+    async def test_callback_auth_record_read_failure_is_server_error(self):
+        """A callback that can't read the record it must update must not report the toolset connected."""
         from app.api.routes.toolsets import handle_toolset_oauth_callback
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=RuntimeError("etcd fail"))
@@ -1595,7 +1595,9 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
              patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
             result = await handle_toolset_oauth_callback(req, code="code", state=encoded_state, error=None, base_url=None, config_service=cs)
-        assert result["success"] is True
+        assert result["success"] is False
+        assert "oauth_error=server_error" in result["redirect_url"]
+        cs.set_config.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_refresh_scheduling_failure_still_succeeds(self):
