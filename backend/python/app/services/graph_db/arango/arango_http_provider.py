@@ -4060,7 +4060,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         UPSERT is not atomic across concurrent writers, so two of them can both
         miss and insert; the unique index then fails the second statement with
         1210. The edge exists by then, so the statement runs once more and its
-        UPSERT takes the update branch."""
+        UPSERT takes the update branch (outside a transaction only)."""
         query = f"""
         FOR edge IN @edges
             UPSERT {{ _from: edge._from, _to: edge._to, edgeType: edge.edgeType }}
@@ -4073,7 +4073,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             return await self.http_client.execute_aql(query, bind_vars, txn_id=txn)
         except ArangoQueryError as exc:
-            if exc.error_num != ARANGO_UNIQUE_CONSTRAINT_VIOLATED:
+            # Inside a transaction a retry cannot see the other writer's edge, and
+            # the server reports that clash as a 1200 write conflict the caller reruns.
+            if exc.error_num != ARANGO_UNIQUE_CONSTRAINT_VIOLATED or txn is not None:
                 raise
             return await self.http_client.execute_aql(query, bind_vars, txn_id=txn)
 

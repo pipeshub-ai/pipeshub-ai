@@ -71,3 +71,11 @@ async def test_failed_cleanup_or_index_build_does_not_stop_setup() -> None:
     p.http_client.ensure_persistent_index = AsyncMock(return_value=False)  # duplicates left: build refused
     await p._ensure_indexes()
     assert p.http_client.ensure_persistent_index.await_count > 1
+
+
+async def test_unique_violation_inside_a_transaction_is_not_retried() -> None:
+    p = _provider()
+    p.http_client.execute_aql = AsyncMock(side_effect=_unique_violation())
+    with pytest.raises(ArangoQueryError):
+        await p.batch_create_entity_relations([EDGE], transaction="txn1")
+    assert p.http_client.execute_aql.await_count == 1

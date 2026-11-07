@@ -118,3 +118,26 @@ async def test_refused_index_build_keeps_every_edge_and_setup_goes_on(arango) ->
 
     assert await _count(provider, prefix) == 2
     assert await _unique_index(provider) is None
+
+
+async def test_stream_transaction_clash_is_a_conflict_and_the_rerun_leaves_one_edge(arango) -> None:
+    provider, prefix = arango
+    await provider._ensure_indexes()
+    edge = _edge(prefix, 300)
+    first = await provider.begin_transaction(read=[], write=[COLL])
+    second = await provider.begin_transaction(read=[], write=[COLL])
+    await provider.http_client.execute_aql("RETURN 1", txn_id=second)  # the snapshot predates the commit
+    await provider.batch_create_entity_relations([dict(edge)], transaction=first)
+    await provider.commit_transaction(first)
+
+    # The server reports the clash inside a transaction as 1200, which is_write_conflict
+    # (and so the sync's _must_propagate) already treats as "run the transaction again".
+    with pytest.raises(Exception) as caught:
+        await provider.batch_create_entity_relations([dict(edge)], transaction=second)
+    assert provider.is_write_conflict(caught.value)
+    await provider.rollback_transaction(second)
+
+    rerun = await provider.begin_transaction(read=[], write=[COLL])
+    assert await provider.batch_create_entity_relations([dict(edge)], transaction=rerun) is True
+    await provider.commit_transaction(rerun)
+    assert await _count(provider, prefix) == 1
