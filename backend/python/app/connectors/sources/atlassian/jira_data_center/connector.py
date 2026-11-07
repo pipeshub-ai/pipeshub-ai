@@ -3494,6 +3494,15 @@ class JiraDataCenterConnector(BaseConnector):
             await self._reread_stored_issues(
                 project_key, project_id, jira_users, stats, changed_levels, every_issue=reread == "project"
             )
+        if self._reread_whole_project:
+            # Jira refused the JQL naming children, here or in the pass above. Every stored issue is read
+            # before the digests are saved, and the parents wait in the checkpoint until it has been.
+            if reread != "project":
+                self.logger.info(f"Reading every stored issue of project {project_key}, as Jira refused the JQL naming children")
+                await self._reread_stored_issues(project_key, project_id, jira_users, stats, None, every_issue=True)
+                reread = "project"
+            if not self._issue_build_failures:
+                await self._update_project_sync_checkpoint(project_key, child_parents="{}")
         levels_to_save = levels_after_walk(levels_to_save, self._issue_build_failures)
         if is_new_project or levels_to_save != stored_levels:
             await self._record_security_levels(project_key, levels_to_save, force=security.defer_checkpoint)
@@ -3561,6 +3570,8 @@ class JiraDataCenterConnector(BaseConnector):
         if self._issue_build_failures != failures_before:
             self.logger.warning(f"Some child issues of {project_key} could not be read again; reading them next sync")
             return
+        if self._reread_whole_project:
+            return  # the whole-project read at the end of the sync reads them; it clears the parents
         await self._update_project_sync_checkpoint(project_key, child_parents="{}")
 
     async def _reread_children(
@@ -6483,6 +6494,12 @@ class JiraDataCenterConnector(BaseConnector):
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
+            if (not settled or skipped_holders) and getattr(record, "access_rule", None) != AccessRule.RESTRICTED:
+                # Stored open, and the issue is not known to be without a level now: closed, not left readable
+                # by the project. (A stored leveled issue keeps its grants below; its level is not stored.)
+                issue_record.access_rule = AccessRule.RESTRICTED
+                issue_record.rewrite_permissions = True
+                return (issue_record, [])
             if not settled or skipped_holders:
                 # The level could not be read in full (a null level always can), or a holder did not
                 # resolve (application roles are read by the sync): writing would replace the stored

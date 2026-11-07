@@ -579,3 +579,15 @@ async def test_a_reindex_with_an_unreadable_scheme_strips_nobody(world: dict[str
         members_readable=False, members_by_level={}, defer_checkpoint=True, read_status=503)
     await _reindex(world, _edited("leveled epic", "2024-07-01T10:00:00.000+0000"))
     assert not await _mismatches(world, _readers(), by_key)
+
+
+async def test_a_reindex_closes_a_stored_open_issue_that_now_has_a_level_it_cannot_read(world: dict[str, Any]) -> None:
+    """The project must not keep reading what Jira now hides, while the holders cannot be read."""
+    by_key = await _stored_open(world)
+    world["connector"]._issue_security[PROJECT_ID] = _context(
+        members_readable=False, members_by_level={}, defer_checkpoint=True, read_status=503)
+
+    await _reindex(world, _edited("plain task", "2024-07-01T10:00:00.000+0000", security={"id": "10102", "name": "x"}))
+
+    expected = dict.fromkeys(by_key, PROJECT_READERS) | {"PROJ-1": set()}
+    assert not await _mismatches(world, expected, by_key)
