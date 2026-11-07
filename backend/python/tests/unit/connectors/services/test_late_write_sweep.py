@@ -16,6 +16,7 @@ from app.connectors.services.late_write_sweep import (
     RETRY_MS,
     STALE_MS,
     LateWriteSweeper,
+    LateWriteSweepIntentError,
     list_pending_late_write_sweeps,
     record_pending_late_write_sweep,
     retry_delay_ms,
@@ -32,8 +33,14 @@ class Config:
 
     def __init__(self) -> None:
         self.kv: dict[str, object] = {}
+        self.read_error: Exception | None = None
 
-    async def get_config(self, key, default=None, use_cache=True, **_kw) -> object:
+    async def get_config(self, key, default=None, use_cache=True, *, raise_on_error=False, **_kw) -> object:
+        if self.read_error is not None:
+            # As ConfigurationService: a store failure reads as the default unless asked to raise.
+            if raise_on_error:
+                raise self.read_error
+            return default
         return self.kv.get(key, default)
 
     async def set_config(self, key, value, **_kw) -> bool:
@@ -50,9 +57,10 @@ class Config:
 class Graph:
     """``passes`` are what each sweep pass returns, (removed, left), or an exception to raise."""
 
-    def __init__(self, app: dict | None = None, passes: list | None = None) -> None:
+    def __init__(self, app: dict | None = None, passes: list | None = None, groups: list | Exception = ()) -> None:
         self.app = app
         self.passes = list(passes or [])
+        self.groups = groups
         self.swept_in: list[str | None] = []
         self.swept_groups: list[list[str]] = []
 
@@ -60,6 +68,12 @@ class Graph:
         if isinstance(self.app, Exception):
             raise self.app
         return self.app
+
+    async def get_nodes_by_filters(self, collection, filters, return_fields=None, transaction=None, **_kw) -> list:
+        assert collection == "recordGroups" and filters == {"connectorId": CONNECTOR}
+        if isinstance(self.groups, Exception):
+            raise self.groups
+        return [{"_key": g} for g in self.groups]
 
     async def sweep_deleted_connector_writes(self, connector_id: str, record_group_ids=()) -> tuple[int, int]:
         assert connector_id == CONNECTOR
@@ -78,7 +92,7 @@ def sweeper(graph: Graph, config: Config, *, now: int = NOW, leader: bool = True
 
 async def recorded(*, age_ms: int, **fields: object) -> Config:
     config = Config()
-    await record_pending_late_write_sweep(config, org_id=ORG, connector_id=CONNECTOR, now_ms=NOW - age_ms)
+    await record_pending_late_write_sweep(config, Graph(), org_id=ORG, connector_id=CONNECTOR, now_ms=NOW - age_ms)
     config.kv[KEY] = {**config.kv[KEY], **fields}
     return config
 
@@ -112,7 +126,7 @@ async def test_every_pass_sweeps_the_groups_read_before_the_delete() -> None:
     """Links written late carry a record group and no connector; the groups are gone after the delete."""
     config = Config()
     await record_pending_late_write_sweep(
-        config, org_id=ORG, connector_id=CONNECTOR, record_group_ids=["rg1", "", "rg2", "rg1"],
+        config, Graph(groups=["rg1", "", "rg2", "rg1"]), org_id=ORG, connector_id=CONNECTOR,
         now_ms=NOW - GRACE_MS - 1,
     )
     graph = Graph(passes=[(0, 0)])
@@ -124,9 +138,28 @@ async def test_every_pass_sweeps_the_groups_read_before_the_delete() -> None:
 async def test_a_retried_delete_keeps_the_groups_the_first_attempt_read() -> None:
     """The first attempt may have removed some groups before it failed; their links still need sweeping."""
     config = Config()
-    await record_pending_late_write_sweep(config, org_id=ORG, connector_id=CONNECTOR, record_group_ids=["rg1", "rg2"])
-    await record_pending_late_write_sweep(config, org_id=ORG, connector_id=CONNECTOR, record_group_ids=["rg2"])
+    await record_pending_late_write_sweep(config, Graph(groups=["rg1", "rg2"]), org_id=ORG, connector_id=CONNECTOR)
+    await record_pending_late_write_sweep(config, Graph(groups=["rg2"]), org_id=ORG, connector_id=CONNECTOR)
     assert intent(config)["recordGroupIds"] == ["rg1", "rg2"]
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_intent_that_cannot_be_read_refuses_the_delete() -> None:
+    """Rewritten from an unknown earlier value, the intent would drop the groups the first attempt saved."""
+    config = Config()
+    await record_pending_late_write_sweep(config, Graph(groups=["rg1"]), org_id=ORG, connector_id=CONNECTOR)
+    config.read_error = ConnectionError("store down")
+    with pytest.raises(LateWriteSweepIntentError):
+        await record_pending_late_write_sweep(config, Graph(), org_id=ORG, connector_id=CONNECTOR)
+    assert intent(config)["recordGroupIds"] == ["rg1"]
+
+
+@pytest.mark.asyncio
+async def test_groups_that_cannot_be_read_refuse_the_delete() -> None:
+    config = Config()
+    with pytest.raises(LateWriteSweepIntentError):
+        await record_pending_late_write_sweep(config, Graph(groups=RuntimeError("timeout")), org_id=ORG, connector_id=CONNECTOR)
+    assert intent(config) is None
 
 
 @pytest.mark.asyncio

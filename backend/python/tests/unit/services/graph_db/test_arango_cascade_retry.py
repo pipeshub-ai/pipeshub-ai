@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.arango.arango_http_provider import (
+    _LINK_DELETE_BATCH,
+    ArangoHTTPProvider,
+)
 from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
 
 CONFLICT = Exception('{"errorNum": 1200, "errorMessage": "conflict: write-write conflict"}')
@@ -210,7 +213,7 @@ async def test_a_late_write_pass_removes_the_links_of_the_deleted_groups(p) -> N
     async def aql(query, bind_vars=None, txn_id=None) -> list:
         queries.append((query, bind_vars or {}))
         if "REMOVE e IN @@links" in query:
-            return [1, 1]
+            return [2]
         return [0]
 
     p.http_client.execute_aql = AsyncMock(side_effect=aql)
@@ -220,6 +223,27 @@ async def test_a_late_write_pass_removes_the_links_of_the_deleted_groups(p) -> N
     removal, count = (q for q in queries if q[1].get("@links") == "recordLinks")
     assert "FILTER e.recordGroupId IN @groups" in removal[0] and removal[1]["groups"] == ["rg1"]
     assert "FILTER e.recordGroupId IN @groups" in count[0] and count[1]["groups"] == ["rg1"]
+
+
+@pytest.mark.asyncio
+async def test_the_links_of_a_large_repo_go_in_bounded_statements(p) -> None:
+    """One unbounded REMOVE of a repo's links could exceed the query's memory and fail every pass."""
+    removed = [_LINK_DELETE_BATCH, _LINK_DELETE_BATCH, 7]
+    statements: list[str] = []
+
+    async def aql(query, bind_vars=None, txn_id=None) -> list:
+        if "REMOVE e IN @@links" in query:
+            statements.append(query)
+            assert bind_vars["batch"] == _LINK_DELETE_BATCH
+            return [removed.pop(0)]
+        return [3]
+
+    p.http_client.execute_aql = AsyncMock(side_effect=aql)
+    del p._count_connector_blocks_and_stage_states
+
+    assert await p.sweep_deleted_connector_writes("c1", ["rg1"]) == (2 * _LINK_DELETE_BATCH + 7, 3)
+    assert len(statements) == 3
+    assert all("LIMIT @batch" in q and "COLLECT WITH COUNT" in q for q in statements)
 
 
 @pytest.mark.asyncio

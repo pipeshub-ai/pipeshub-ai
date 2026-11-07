@@ -28,7 +28,7 @@ from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable
     from logging import Logger
 
     from app.config.configuration_service import ConfigurationService
@@ -67,24 +67,34 @@ _STORE = ConnectorIntentStore(PENDING_DIRECTORY, LateWriteSweepIntentError, "lat
 
 async def record_pending_late_write_sweep(
     config_service: ConfigurationService,
+    graph_provider: IGraphDBProvider,
     *,
     org_id: str,
     connector_id: str,
-    record_group_ids: Sequence[str] = (),
     now_ms: int | None = None,
 ) -> None:
-    """Raises ``LateWriteSweepIntentError`` when the KV store refuses the write.
+    """Raises ``LateWriteSweepIntentError`` when the KV store refuses the write, or when the
+    connector's record groups or an earlier intent cannot be read.
 
-    ``record_group_ids`` are the connector's groups, read before the delete removes them:
-    the links indexing writes late carry a group and no connector (see
+    The intent keeps the connector's record groups, read here before the delete removes
+    them: the links indexing writes late carry a group and no connector (see
     ``IGraphDBProvider.sweep_deleted_connector_writes``)."""
-    # A retried delete may run after the first attempt removed some groups; keep those too.
     try:
-        earlier = await config_service.get_config(_STORE.key(connector_id), use_cache=False)
-    except Exception:
-        earlier = None
+        rows = await graph_provider.get_nodes_by_filters(
+            collection=CollectionNames.RECORD_GROUPS.value,
+            filters={"connectorId": connector_id},
+            return_fields=["_key"],
+            raise_on_error=True,
+        )
+        # A retried delete may run after the first attempt removed some groups; keep those too.
+        earlier = await config_service.get_config(_STORE.key(connector_id), use_cache=False, raise_on_error=True)
+    except Exception as e:
+        raise LateWriteSweepIntentError(
+            f"could not read the record groups to sweep for connector {connector_id}"
+        ) from e
     kept = earlier.get("recordGroupIds") if isinstance(earlier, dict) else None
-    groups = list(dict.fromkeys(str(g) for g in [*(kept if isinstance(kept, list) else []), *record_group_ids] if g))
+    read = [row.get("_key") for row in rows or []]
+    groups = list(dict.fromkeys(str(g) for g in [*(kept if isinstance(kept, list) else []), *read] if g))
     await _STORE.record(
         config_service, org_id=org_id, connector_id=connector_id, now_ms=now_ms, recordGroupIds=groups,
     )

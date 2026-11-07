@@ -801,6 +801,8 @@ def _created_ends(results: list | None, collection: str) -> list:
 
 # Stage states removed per statement, as records are: a connector can hold millions.
 _STAGE_STATE_DELETE_BATCH = 5000
+# Record links a deleted connector's late-write sweep removes per statement.
+_LINK_DELETE_BATCH = 5000
 # Virtual records whose stage states one statement removes.
 _STAGE_STATE_VRID_BATCH = 1000
 
@@ -1327,6 +1329,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             await self.http_client.ensure_persistent_index(CollectionNames.STAGE_STATES.value, list(fields))
         await self.http_client.ensure_persistent_index(
             CollectionNames.STAGE_STATES.value, _STAGE_STATE_PAGE_FIELDS, name=_STAGE_STATE_PAGE_INDEX
+        )
+        # SPARSE: recordLinks.recordGroupId, the late-write sweep's lookup of a deleted
+        # connector's links (the edge index covers only _from and _to).
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_LINKS.value, ["recordGroupId"], sparse=True,
         )
         # SINGLE: virtualRecordToDocIdMapping.virtualRecordId, the fallback of
         # get_document_id_by_virtual_record_id when the keyed lookup misses
@@ -12297,16 +12304,29 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         connector, and the group is gone with the connector."""
         if not record_group_ids:
             return 0
-        rows = await self.http_client.execute_aql(
-            query="""
-            FOR e IN @@links
-                FILTER e.recordGroupId IN @groups
-                REMOVE e IN @@links
-                RETURN 1
-            """,
-            bind_vars={"@links": CollectionNames.RECORD_LINKS.value, "groups": record_group_ids},
-        )
-        return len(rows or [])
+        # A repo's CONTAINS, CALLS and IMPORTS links run to millions: bounded statements, one count each.
+        query = """
+        FOR e IN @@links
+            FILTER e.recordGroupId IN @groups
+            LIMIT @batch
+            REMOVE e IN @@links
+            COLLECT WITH COUNT INTO removed
+            RETURN removed
+        """
+        total = 0
+        while True:
+            rows = await self.http_client.execute_aql(
+                query=query,
+                bind_vars={
+                    "@links": CollectionNames.RECORD_LINKS.value,
+                    "groups": record_group_ids,
+                    "batch": _LINK_DELETE_BATCH,
+                },
+            )
+            deleted = int(rows[0]) if rows else 0
+            total += deleted
+            if deleted < _LINK_DELETE_BATCH:
+                return total
 
     async def _sweep_writes_during_delete(
         self, connector_id: str, record_group_ids: Sequence[str] = (),

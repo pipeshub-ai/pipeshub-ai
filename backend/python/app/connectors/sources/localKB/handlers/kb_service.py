@@ -1109,7 +1109,7 @@ class KnowledgeBaseService:
                     self.config_service, org_id=org_id, connector_id=kb_id,
                 )
                 await record_pending_late_write_sweep(
-                    self.config_service, org_id=org_id, connector_id=kb_id,
+                    self.config_service, self.graph_provider, org_id=org_id, connector_id=kb_id,
                 )
             except (EntityCleanupIntentError, StorageReleaseIntentError, LateWriteSweepIntentError):
                 self.logger.error("❌ Could not record the cleanup owed by KB %s; not deleting it", kb_id)
