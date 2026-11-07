@@ -34,7 +34,8 @@ class FullSyncCoverage:
     ``lists_everything``: False for a source that only ever shows part of what it
     holds (an RSS feed lists only its latest entries). A node the sync did not see
     may still be there, so nothing is unlinked; a retry would see no more, so none
-    is owed. Overrides ``complete``.
+    is owed. Overrides ``complete``, except that a complete run still gives each
+    group whose members it read exactly those members.
     """
 
     complete: bool = True

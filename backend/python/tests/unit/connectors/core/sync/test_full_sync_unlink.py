@@ -187,7 +187,8 @@ async def test_a_source_that_lists_only_part_of_itself_unlinks_nothing_and_owes_
     complete: bool, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A feed, say: not seeing a node is normal, so it is no error and a retry would see no more.
-    It overrides ``complete``."""
+    It overrides ``complete``. Group members read in full are still replaced, so a member
+    removed at the source loses the group's access."""
     monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
     for _ in range(3):
         gp = _graph_provider()
@@ -200,10 +201,27 @@ async def test_a_source_that_lists_only_part_of_itself_unlinks_nothing_and_owes_
             await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
 
         gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
-        connector.data_entities_processor.finish_full_sync_memberships.assert_not_awaited()
+        finish = connector.data_entities_processor.finish_full_sync_memberships
+        assert finish.await_count == (1 if complete else 0)
+        if complete:
+            assert finish.await_args.args[1].by_collection[RECORDS] == {"r1"}
         assert not _owed(gp)
         assert not [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert sync_runner._INCOMPLETE_FULL_SYNC_RETRYING == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lists_everything", [True, False])
+async def test_a_full_sync_owes_another_when_replacing_members_failed(lists_everything: bool) -> None:
+    gp = _graph_provider()
+    connector = _connector(None, FullSyncCoverage(lists_everything=lists_everything))
+    connector.run_sync = _writes_one_record(connector)
+    connector.data_entities_processor.finish_full_sync_memberships = AsyncMock(side_effect=RuntimeError("db down"))
+
+    await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+    gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+    assert _owed(gp)
 
 
 @pytest.mark.asyncio

@@ -645,6 +645,28 @@ def _begin_full_sync_run(
 _INCOMPLETE_FULL_SYNC_RETRYING: set[str] = set()
 
 
+async def _finish_full_sync_memberships(
+    connector: "BaseConnector",
+    connector_id: str,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    seen: FullSyncSeen,
+) -> bool:
+    """Give groups whose members came one at a time the full list, in one write
+    each; only now is that list known to be complete. False when that failed
+    and another full sync is owed."""
+    finish = getattr(getattr(connector, "data_entities_processor", None), "finish_full_sync_memberships", None)
+    if not callable(finish):
+        return True
+    try:
+        await finish(connector_id, seen)
+    except Exception as e:
+        logger.error(f"Could not give the groups the members the full sync of {connector_id} read: {e}")
+        await note_structure_change(graph_provider, connector_id, logger)  # part of it may have run
+        return False
+    return True
+
+
 async def _unlink_what_full_sync_missed(
     connector: "BaseConnector",
     connector_id: str,
@@ -665,7 +687,10 @@ async def _unlink_what_full_sync_missed(
         coverage = FullSyncCoverage()
     if not coverage.lists_everything:
         logger.debug(f"Full sync of {connector_id}: the source lists only part of itself; nothing is unlinked")
-        return True
+        if not coverage.complete:
+            return True
+        # The groups' members were still read in full, so a member removed at the source goes.
+        return await _finish_full_sync_memberships(connector, connector_id, graph_provider, logger, seen)
     if not coverage.complete:
         logger.warning(
             f"Full sync of {connector_id} skipped part of the source after an error; "
@@ -683,12 +708,9 @@ async def _unlink_what_full_sync_missed(
         # A sync that wrote nothing at all most likely failed without saying so.
         logger.warning(f"Full sync of {connector_id} wrote nothing; leaving every link in place")
         return True
+    if not await _finish_full_sync_memberships(connector, connector_id, graph_provider, logger, seen):
+        return False
     try:
-        # Groups whose members came one at a time get the full list now, in one
-        # write each; only now is that list known to be complete.
-        finish = getattr(getattr(connector, "data_entities_processor", None), "finish_full_sync_memberships", None)
-        if callable(finish):
-            await finish(connector_id, seen)
         deleted, ok = await graph_provider.unlink_nodes_missed_by_full_sync(
             connector_id,
             seen.by_collection,
