@@ -1165,7 +1165,10 @@ class IndexingPipeline:
         Returns:
             Dict with deletion statistics:
                 - virtual_record_ids_processed: Number of virtual record IDs eligible for deletion
-                - success: Boolean indicating success
+                - virtual_record_ids_skipped: Number whose points stayed because a check or a delete failed
+                - success: False when a skipped id or a refusal left points behind. The
+                  sweeper cannot reach a skipped id that a record, live or trashed, still
+                  holds, so the caller must retry; acknowledging would strand its points.
 
         Raises:
             EmbeddingDeletionError: If there's an error during the deletion process
@@ -1244,7 +1247,8 @@ class IndexingPipeline:
                     "virtual_record_ids_deleted": 0,
                     "virtual_record_ids_rewritten": len(rewritten_virtual_record_ids),
                     "virtual_record_ids_processed": len(rewritten_virtual_record_ids),
-                    "success": True,
+                    "virtual_record_ids_skipped": len(skipped_virtual_record_ids),
+                    "success": not skipped_virtual_record_ids,
                 }
 
             # Confirming pass: "no records remain" can be a stale read on a lagging
@@ -1285,7 +1289,8 @@ class IndexingPipeline:
                     "virtual_record_ids_deleted": 0,
                     "virtual_record_ids_rewritten": len(rewritten_virtual_record_ids),
                     "virtual_record_ids_processed": len(rewritten_virtual_record_ids),
-                    "success": True,
+                    "virtual_record_ids_skipped": len(skipped_virtual_record_ids),
+                    "success": not skipped_virtual_record_ids,
                 }
 
             self.logger.info(
@@ -1320,6 +1325,7 @@ class IndexingPipeline:
                     "virtual_record_ids_deleted": 0,
                     "virtual_record_ids_rewritten": len(rewritten_virtual_record_ids),
                     "virtual_record_ids_processed": len(rewritten_virtual_record_ids),
+                    "virtual_record_ids_skipped": len(skipped_virtual_record_ids),
                     "success": False,
                 }
 
@@ -1348,6 +1354,7 @@ class IndexingPipeline:
 
                 except Exception as e:
                     self.logger.error(f"❌ Failed to delete embeddings for batch {batch_num}: {e}")
+                    skipped_virtual_record_ids.extend(batch)
                     # Continue with next batch even if one fails
                     continue
 
@@ -1370,8 +1377,9 @@ class IndexingPipeline:
                 "virtual_record_ids_deleted": len(safe_virtual_record_ids),
                 "virtual_record_ids_rewritten": len(rewritten_virtual_record_ids),
                 "virtual_record_ids_processed": len(safe_virtual_record_ids) + len(rewritten_virtual_record_ids),
+                "virtual_record_ids_skipped": len(skipped_virtual_record_ids),
                 "stored_content_pending": len(storage_pending),
-                "success": True
+                "success": not skipped_virtual_record_ids,
             }
 
         except Exception as e:
