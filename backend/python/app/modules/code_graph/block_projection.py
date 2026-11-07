@@ -25,8 +25,8 @@ from app.modules.code_graph.family_rules import rules_for
 from app.modules.code_graph.guards import lang_family
 from app.modules.code_graph.module_refs import includes_changed_ref, module_ref
 from app.modules.code_graph.version import PARSER_VERSION
-from app.modules.parsers.code_parser.models import DECLARATION, RETURNS, STATIC
 from app.modules.parsers.code_parser.languages.csharp import GLOBAL_USING
+from app.modules.parsers.code_parser.models import DECLARATION, RETURNS, STATIC
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Iterator
