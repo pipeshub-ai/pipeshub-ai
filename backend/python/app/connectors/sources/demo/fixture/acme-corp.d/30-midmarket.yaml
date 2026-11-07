@@ -102,6 +102,24 @@ people:
   groups:
   - all-staff
   - engineering-readers
+- id: leila
+  name: Leila Brandt
+  email: leila@acme-demo.example
+  title: Account executive, Mid-market
+  team: midmarket-sales
+  kind: member
+  groups:
+  - all-staff
+  - sales-readers
+- id: marco
+  name: Marco Silva
+  email: marco@acme-demo.example
+  title: Account executive, Mid-market
+  team: midmarket-sales
+  kind: member
+  groups:
+  - all-staff
+  - sales-readers
 - id: greta
   name: Greta Holm
   email: greta.holm@orrin.example
@@ -242,7 +260,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5001
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Low · **Product:** Billing
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-02-10 · **Priority:** Low ·
+    **Product:** Billing
 
 
     Their card payment was reported as declined in the console but appears on their statement. They want to avoid
@@ -270,7 +289,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5002
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-02-05 · **Priority:** Normal · **Product:**
+    Acme Flow
 
 
     The run history page for their main Acme Flow spins and never renders. The flow has about 25 runs in the last
@@ -296,7 +316,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5003
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** High · **Product:** Acme Flow
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-02-11 · **Priority:** High · **Product:**
+    Acme Flow
 
 
     Records synced by Acme Flow show times shifted by the UTC offset in the target system for the Account tier field.
@@ -321,7 +342,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5004
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Normal · **Product:** Billing
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-02-09 · **Priority:** Normal
+    · **Product:** Billing
 
 
     Invoices no longer carry their purchase order number, so their accounts payable team rejects them. 120 invoices
@@ -345,7 +367,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5005
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Closed · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Closed · **Resolved:** 2026-02-11 · **Priority:** Normal ·
+    **Product:** SSO
 
 
     Users in nested Google Workspace groups get no workspace role. Only direct members of the mapped group are given
@@ -369,7 +392,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5006
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Closed · **Priority:** Low · **Product:** Billing
+  body: '**Customer:** Marlow Retail Group · **Status:** Closed · **Resolved:** 2026-02-08 · **Priority:** Low ·
+    **Product:** Billing
 
 
     Invoices no longer carry their purchase order number, so their accounts payable team rejects them. 40 invoices
@@ -393,7 +417,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5007
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Normal · **Product:** Billing
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-02-13 · **Priority:** Normal ·
+    **Product:** Billing
 
 
     Their card payment was reported as declined in the console but appears on their statement. They want to avoid
@@ -419,7 +444,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5008
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** High · **Product:** Billing
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-02-06 · **Priority:** High
+    · **Product:** Billing
 
 
     Their card payment was reported as declined in the console but appears on their statement. They want to avoid
@@ -473,7 +499,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5010
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Closed · **Priority:** Low · **Product:** Acme Flow
+  body: '**Customer:** Tidewater Energy · **Status:** Closed · **Resolved:** 2026-02-07 · **Priority:** Low · **Product:**
+    Acme Flow
 
 
     The Acme Flow connector to their CRM asks for re-authorisation every few days. The refresh token is being rejected
@@ -497,7 +524,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5011
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** High · **Product:** Mobile app
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-02-08 · **Priority:** High · **Product:**
+    Mobile app
 
 
     Edits made offline in the mobile app disappear after the device reconnects. Their field team lost 4 inspection
@@ -523,7 +551,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5012
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Low · **Product:** API
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-02-18 · **Priority:** Low · **Product:**
+    API
 
 
     Listing records with the cursor API returns some records twice when the page size is 60. Their nightly reconciliation
@@ -549,7 +578,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5013
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** High · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-02-10 · **Priority:** High · **Product:**
+    SSO
 
 
     Users in nested OneLogin groups get no workspace role. Only direct members of the mapped group are given access;
@@ -577,7 +607,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5014
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Normal · **Product:** API
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-02-11 · **Priority:** Normal ·
+    **Product:** API
 
 
     Webhook deliveries fail signature verification on their side since Friday. They verify with the secret shown
@@ -603,7 +634,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5015
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Normal · **Product:** Billing
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-02-12 · **Priority:** Normal · **Product:**
+    Billing
 
 
     Invoices no longer carry their purchase order number, so their accounts payable team rejects them. 40 invoices
@@ -627,7 +659,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5016
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Closed · **Priority:** Normal · **Product:** Mobile app
+  body: '**Customer:** Halden Freight · **Status:** Closed · **Resolved:** 2026-02-13 · **Priority:** Normal · **Product:**
+    Mobile app
 
 
     Push notifications stopped for their users on Android 15 since Wednesday. In-app notifications still appear.
@@ -654,7 +687,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5017
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Normal · **Product:** Billing
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-02-12 · **Priority:** Normal
+    · **Product:** Billing
 
 
     The latest invoice bills 120 seats; the admin console shows fewer active seats. They need a corrected invoice
@@ -680,7 +714,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5018
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-02-17 · **Priority:** Normal · **Product:**
+    SSO
 
 
     Users in nested Google Workspace groups get no workspace role. Only direct members of the mapped group are given
@@ -704,7 +739,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5019
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** Low · **Product:** Mobile app
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-02-15 · **Priority:** Low · **Product:**
+    Mobile app
 
 
     Photo attachments fail to upload over cellular with a generic error; over Wi-Fi they work. Affects about 120
@@ -756,7 +792,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5021
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-02-15 · **Priority:** Normal ·
+    **Product:** Acme Flow
 
 
     An Acme Flow mapping fails with ''value not allowed'' for the picklist field Batch ID. The value exists in both
@@ -782,7 +819,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5022
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Priority:** Normal · **Product:** Exports
+  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-02-13 · **Priority:** Normal · **Product:**
+    Exports
 
 
     The weekly export completes in the audit log but the notification email with the download link does not arrive
@@ -834,7 +872,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5024
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-02-20 · **Priority:** Normal ·
+    **Product:** Acme Flow
 
 
     The Acme Flow connector to their CRM asks for re-authorisation every few days. The refresh token is being rejected
@@ -858,7 +897,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5025
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Closed · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Customer:** Tidewater Energy · **Status:** Closed · **Resolved:** 2026-02-21 · **Priority:** Normal ·
+    **Product:** Acme Flow
 
 
     The run history page for their main Acme Flow spins and never renders. The flow has about 120 runs in the last
@@ -882,7 +922,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5026
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Closed · **Priority:** Normal · **Product:** API
+  body: '**Customer:** Pelican Air · **Status:** Closed · **Resolved:** 2026-02-22 · **Priority:** Normal · **Product:**
+    API
 
 
     Webhook deliveries fail signature verification on their side since Friday. They verify with the secret shown
@@ -934,7 +975,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5028
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** Urgent · **Product:** API
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-02-21 · **Priority:** Urgent ·
+    **Product:** API
 
 
     Their integration receives 429 Too Many Requests at about 15 requests per minute, below the documented limit
@@ -960,7 +1002,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5029
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Priority:** High · **Product:** Exports
+  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-02-24 · **Priority:** High · **Product:**
+    Exports
 
 
     Exported files whose project names contain accents arrive with question marks in the file name. Their archive
@@ -988,7 +1031,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5030
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Closed · **Priority:** Normal · **Product:** Mobile app
+  body: '**Customer:** Tidewater Energy · **Status:** Closed · **Resolved:** 2026-02-22 · **Priority:** Normal ·
+    **Product:** Mobile app
 
 
     Push notifications stopped for their users on Android 15 since Wednesday. In-app notifications still appear.
@@ -1013,7 +1057,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5031
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Normal · **Product:** Billing
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-02-26 · **Priority:** Normal · **Product:**
+    Billing
 
 
     The latest invoice bills 25 seats; the admin console shows fewer active seats. They need a corrected invoice
@@ -1041,7 +1086,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5032
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Low · **Product:** Acme Flow
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-02-27 · **Priority:** Low · **Product:**
+    Acme Flow
 
 
     The run history page for their main Acme Flow spins and never renders. The flow has about 6 runs in the last
@@ -1067,7 +1113,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5033
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Low · **Product:** Acme Flow
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-02-23 · **Priority:** Low · **Product:**
+    Acme Flow
 
 
     The run history page for their main Acme Flow spins and never renders. The flow has about 6 runs in the last
@@ -1119,7 +1166,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5035
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Solved · **Priority:** Urgent · **Product:** Mobile app
+  body: '**Customer:** Halden Freight · **Status:** Solved · **Resolved:** 2026-03-01 · **Priority:** Urgent · **Product:**
+    Mobile app
 
 
     Photo attachments fail to upload over cellular with a generic error; over Wi-Fi they work. Affects about 15
@@ -1145,7 +1193,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5036
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-02-26 · **Priority:** Normal ·
+    **Product:** SSO
 
 
     Users removed from the identity provider stay active in the workspace. SCIM logs show the DELETE calls returning
@@ -1173,7 +1222,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5037
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** Low · **Product:** SSO
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-02-28 · **Priority:** Low · **Product:**
+    SSO
 
 
     New users created on first SSO login get the Viewer role instead of Editor although the Entra ID attribute maps
@@ -1199,7 +1249,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5038
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Priority:** High · **Product:** Exports
+  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-03-02 · **Priority:** High · **Product:**
+    Exports
 
 
     The scheduled CSV export has arrived without the Renewal date column since Monday. 8 downstream reports read
@@ -1225,7 +1276,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5039
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** Low · **Product:** Mobile app
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-03-01 · **Priority:** Low · **Product:**
+    Mobile app
 
 
     Edits made offline in the mobile app disappear after the device reconnects. Their field team lost 60 inspection
@@ -1251,7 +1303,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5040
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Closed · **Priority:** Low · **Product:** Acme Flow
+  body: '**Customer:** Pelican Air · **Status:** Closed · **Resolved:** 2026-02-28 · **Priority:** Low · **Product:**
+    Acme Flow
 
 
     An Acme Flow mapping fails with ''value not allowed'' for the picklist field Account tier. The value exists
@@ -1277,7 +1330,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5041
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Closed · **Priority:** High · **Product:** SSO
+  body: '**Customer:** Marlow Retail Group · **Status:** Closed · **Resolved:** 2026-02-27 · **Priority:** High
+    · **Product:** SSO
 
 
     Since Wednesday, users signing in through Entra ID land back on the sign-in page. The SAML response carries
@@ -1303,7 +1357,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5042
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Low · **Product:** Exports
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-03-02 · **Priority:** Low ·
+    **Product:** Exports
 
 
     The weekly export completes in the audit log but the notification email with the download link does not arrive
@@ -1329,7 +1384,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5043
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Low · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-03-02 · **Priority:** Low · **Product:**
+    SSO
 
 
     New users created on first SSO login get the Viewer role instead of Editor although the Entra ID attribute maps
@@ -1357,7 +1413,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5044
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Closed · **Priority:** Urgent · **Product:** Acme Flow
+  body: '**Customer:** Halden Freight · **Status:** Closed · **Resolved:** 2026-03-03 · **Priority:** Urgent · **Product:**
+    Acme Flow
 
 
     An Acme Flow mapping fails with ''value not allowed'' for the picklist field Renewal date. The value exists
@@ -1383,7 +1440,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5045
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Priority:** Low · **Product:** Exports
+  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-03-02 · **Priority:** Low · **Product:**
+    Exports
 
 
     Exported files whose project names contain accents arrive with question marks in the file name. Their archive
@@ -1407,7 +1465,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5046
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** High · **Product:** API
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-03-06 · **Priority:** High · **Product:**
+    API
 
 
     Webhook deliveries fail signature verification on their side since Tuesday. They verify with the secret shown
@@ -1435,7 +1494,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5047
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** High · **Product:** SSO
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-03-12 · **Priority:** High · **Product:**
+    SSO
 
 
     Users removed from the identity provider stay active in the workspace. SCIM logs show the DELETE calls returning
@@ -1463,7 +1523,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5048
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Normal · **Product:** Billing
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-03-08 · **Priority:** Normal
+    · **Product:** Billing
 
 
     Invoices no longer carry their purchase order number, so their accounts payable team rejects them. 12 invoices
@@ -1487,7 +1548,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5049
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** Normal · **Product:** Exports
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-03-07 · **Priority:** Normal · **Product:**
+    Exports
 
 
     Exports to their S3 bucket fail with AccessDenied after they rotated the bucket policy. The role ARN in the
@@ -1513,7 +1575,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5050
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** Normal · **Product:** Exports
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-03-11 · **Priority:** Normal · **Product:**
+    Exports
 
 
     The weekly export completes in the audit log but the notification email with the download link does not arrive
@@ -1541,7 +1604,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5051
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Urgent · **Product:** API
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-03-06 · **Priority:** Urgent · **Product:**
+    API
 
 
     Listing records with the cursor API returns some records twice when the page size is 25. Their nightly reconciliation
@@ -1569,7 +1633,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5052
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Solved · **Priority:** Urgent · **Product:** Exports
+  body: '**Customer:** Halden Freight · **Status:** Solved · **Resolved:** 2026-03-10 · **Priority:** Urgent · **Product:**
+    Exports
 
 
     Date columns in the Excel export show serial numbers such as 46112 instead of dates for users whose locale is
@@ -1621,7 +1686,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5054
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** High · **Product:** Acme Flow
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-03-08 · **Priority:** High · **Product:**
+    Acme Flow
 
 
     The run history page for their main Acme Flow spins and never renders. The flow has about 60 runs in the last
@@ -1649,7 +1715,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5055
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Low · **Product:** Exports
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-03-12 · **Priority:** Low ·
+    **Product:** Exports
 
 
     Exports to their S3 bucket fail with AccessDenied after they rotated the bucket policy. The role ARN in the
@@ -1673,7 +1740,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5056
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Solved · **Priority:** High · **Product:** Mobile app
+  body: '**Customer:** Halden Freight · **Status:** Solved · **Resolved:** 2026-03-11 · **Priority:** High · **Product:**
+    Mobile app
 
 
     Photo attachments fail to upload over cellular with a generic error; over Wi-Fi they work. Affects about 40
@@ -1697,7 +1765,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5057
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Normal · **Product:** API
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-03-15 · **Priority:** Normal ·
+    **Product:** API
 
 
     After renewing a personal API token its scopes revert to read-only, breaking their write integration. Happened
@@ -1721,7 +1790,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5058
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Low · **Product:** API
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-03-13 · **Priority:** Low · **Product:**
+    API
 
 
     Listing records with the cursor API returns some records twice when the page size is 120. Their nightly reconciliation
@@ -1745,7 +1815,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5059
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-03-11 · **Priority:** Normal
+    · **Product:** SSO
 
 
     Users in nested OneLogin groups get no workspace role. Only direct members of the mapped group are given access;
@@ -1769,7 +1840,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5060
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Closed · **Priority:** Low · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Closed · **Resolved:** 2026-03-17 · **Priority:** Low · **Product:**
+    SSO
 
 
     New users created on first SSO login get the Viewer role instead of Editor although the OneLogin attribute maps
@@ -1819,7 +1891,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5062
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Closed · **Priority:** Normal · **Product:** Exports
+  body: '**Customer:** Pelican Air · **Status:** Closed · **Resolved:** 2026-03-17 · **Priority:** Normal · **Product:**
+    Exports
 
 
     The scheduled CSV export has arrived without the Account tier column since Wednesday. 15 downstream reports
@@ -1845,7 +1918,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5063
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-03-18 · **Priority:** Normal · **Product:**
+    SSO
 
 
     Since Tuesday, users signing in through OneLogin land back on the sign-in page. The SAML response carries the
@@ -1869,7 +1943,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5064
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Priority:** High · **Product:** SSO
+  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-03-21 · **Priority:** High · **Product:**
+    SSO
 
 
     Since Wednesday, users signing in through Google Workspace land back on the sign-in page. The SAML response
@@ -1897,7 +1972,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5065
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-03-22 · **Priority:** Normal ·
+    **Product:** SSO
 
 
     Users removed from the identity provider stay active in the workspace. SCIM logs show the DELETE calls returning
@@ -1923,7 +1999,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5066
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Urgent · **Product:** API
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-03-22 · **Priority:** Urgent ·
+    **Product:** API
 
 
     Their integration receives 429 Too Many Requests at about 4 requests per minute, below the documented limit
@@ -1951,7 +2028,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5067
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-03-19 · **Priority:** Normal ·
+    **Product:** Acme Flow
 
 
     The run history page for their main Acme Flow spins and never renders. The flow has about 12 runs in the last
@@ -1975,7 +2053,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5068
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Low · **Product:** SSO
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-03-19 · **Priority:** Low ·
+    **Product:** SSO
 
 
     Users removed from the identity provider stay active in the workspace. SCIM logs show the DELETE calls returning
@@ -2027,7 +2106,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5070
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Normal · **Product:** API
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-03-22 · **Priority:** Normal · **Product:**
+    API
 
 
     Webhook deliveries fail signature verification on their side since Wednesday. They verify with the secret shown
@@ -2051,7 +2131,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5071
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Low · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-03-19 · **Priority:** Low · **Product:**
+    SSO
 
 
     Users removed from the identity provider stay active in the workspace. SCIM logs show the DELETE calls returning
@@ -2075,7 +2156,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5072
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** Urgent · **Product:** SSO
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-03-25 · **Priority:** Urgent · **Product:**
+    SSO
 
 
     Since Tuesday, users signing in through Entra ID land back on the sign-in page. The SAML response carries the
@@ -2101,7 +2183,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5073
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Closed · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Marlow Retail Group · **Status:** Closed · **Resolved:** 2026-03-19 · **Priority:** Normal
+    · **Product:** SSO
 
 
     Users in nested Google Workspace groups get no workspace role. Only direct members of the mapped group are given
@@ -2129,7 +2212,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5074
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-03-27 · **Priority:** Normal · **Product:**
+    SSO
 
 
     Users in nested Okta groups get no workspace role. Only direct members of the mapped group are given access;
@@ -2153,7 +2237,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5075
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Closed · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Customer:** Halden Freight · **Status:** Closed · **Resolved:** 2026-03-23 · **Priority:** Normal · **Product:**
+    Acme Flow
 
 
     An Acme Flow mapping fails with ''value not allowed'' for the picklist field Owner email. The value exists in
@@ -2179,7 +2264,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5076
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Closed · **Priority:** Urgent · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Closed · **Resolved:** 2026-03-26 · **Priority:** Urgent ·
+    **Product:** SSO
 
 
     New users created on first SSO login get the Viewer role instead of Editor although the OneLogin attribute maps
@@ -2205,7 +2291,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5077
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Closed · **Priority:** Low · **Product:** API
+  body: '**Customer:** Pelican Air · **Status:** Closed · **Resolved:** 2026-03-21 · **Priority:** Low · **Product:**
+    API
 
 
     After renewing a personal API token its scopes revert to read-only, breaking their write integration. Happened
@@ -2285,7 +2372,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5080
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Closed · **Priority:** Normal · **Product:** Billing
+  body: '**Customer:** Marlow Retail Group · **Status:** Closed · **Resolved:** 2026-03-26 · **Priority:** Normal
+    · **Product:** Billing
 
 
     The latest invoice bills 120 seats; the admin console shows fewer active seats. They need a corrected invoice
@@ -2309,7 +2397,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5081
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** Normal · **Product:** API
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-03-28 · **Priority:** Normal · **Product:**
+    API
 
 
     Listing records with the cursor API returns some records twice when the page size is 8. Their nightly reconciliation
@@ -2337,7 +2426,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5082
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Low · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-03-24 · **Priority:** Low · **Product:**
+    SSO
 
 
     New users created on first SSO login get the Viewer role instead of Editor although the Google Workspace attribute
@@ -2365,7 +2455,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5083
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** Normal · **Product:** Mobile app
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-03-27 · **Priority:** Normal ·
+    **Product:** Mobile app
 
 
     The mobile app crashes right after the splash screen on iOS 19 devices. 4 field staff cannot open it; the previous
@@ -2389,7 +2480,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5084
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Solved · **Priority:** High · **Product:** Acme Flow
+  body: '**Customer:** Halden Freight · **Status:** Solved · **Resolved:** 2026-03-27 · **Priority:** High · **Product:**
+    Acme Flow
 
 
     An Acme Flow mapping fails with ''value not allowed'' for the picklist field Cost centre. The value exists in
@@ -2415,7 +2507,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5085
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** High · **Product:** API
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-03-26 · **Priority:** High · **Product:**
+    API
 
 
     Their integration receives 429 Too Many Requests at about 3 requests per minute, below the documented limit
@@ -2443,7 +2536,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5086
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Solved · **Priority:** Low · **Product:** Mobile app
+  body: '**Customer:** Halden Freight · **Status:** Solved · **Resolved:** 2026-03-31 · **Priority:** Low · **Product:**
+    Mobile app
 
 
     Photo attachments fail to upload over cellular with a generic error; over Wi-Fi they work. Affects about 60
@@ -2467,7 +2561,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5087
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** Normal · **Product:** Mobile app
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-03-28 · **Priority:** Normal ·
+    **Product:** Mobile app
 
 
     Edits made offline in the mobile app disappear after the device reconnects. Their field team lost 8 inspection
@@ -2495,7 +2590,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5088
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Normal · **Product:** API
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-04-03 · **Priority:** Normal ·
+    **Product:** API
 
 
     Webhook deliveries fail signature verification on their side since Wednesday. They verify with the secret shown
@@ -2547,7 +2643,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5090
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Low · **Product:** Acme Flow
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-03-28 · **Priority:** Low · **Product:**
+    Acme Flow
 
 
     An Acme Flow mapping fails with ''value not allowed'' for the picklist field Account tier. The value exists
@@ -2571,7 +2668,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5091
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Solved · **Priority:** Low · **Product:** Mobile app
+  body: '**Customer:** Halden Freight · **Status:** Solved · **Resolved:** 2026-04-02 · **Priority:** Low · **Product:**
+    Mobile app
 
 
     Photo attachments fail to upload over cellular with a generic error; over Wi-Fi they work. Affects about 6 users.
@@ -2598,7 +2696,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5092
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** Normal · **Product:** API
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-04-03 · **Priority:** Normal · **Product:**
+    API
 
 
     After renewing a personal API token its scopes revert to read-only, breaking their write integration. Happened
@@ -2624,7 +2723,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5093
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Closed · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Closed · **Resolved:** 2026-04-04 · **Priority:** Normal ·
+    **Product:** SSO
 
 
     Since Wednesday, users signing in through Entra ID land back on the sign-in page. The SAML response carries
@@ -2650,7 +2750,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5094
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Priority:** Low · **Product:** SSO
+  body: '**Customer:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-04-01 · **Priority:** Low · **Product:**
+    SSO
 
 
     Users removed from the identity provider stay active in the workspace. SCIM logs show the DELETE calls returning
@@ -2676,7 +2777,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5095
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** High · **Product:** Billing
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-04-02 · **Priority:** High
+    · **Product:** Billing
 
 
     Their billing contact gets a permissions error when downloading receipts from the billing page, although the
@@ -2704,7 +2806,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5096
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-04-02 · **Priority:** Normal ·
+    **Product:** SSO
 
 
     Since Tuesday, users signing in through Okta land back on the sign-in page. The SAML response carries the right
@@ -2730,7 +2833,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5097
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** High · **Product:** Exports
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-04-09 · **Priority:** High
+    · **Product:** Exports
 
 
     Exported files whose project names contain accents arrive with question marks in the file name. Their archive
@@ -2780,7 +2884,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5099
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Low · **Product:** Billing
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-04-02 · **Priority:** Low ·
+    **Product:** Billing
 
 
     The latest invoice bills 120 seats; the admin console shows fewer active seats. They need a corrected invoice
@@ -2927,7 +3032,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5105
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-04-04 · **Priority:** Normal · **Product:**
+    Acme Flow
 
 
     The run history page for their main Acme Flow spins and never renders. The flow has about 3 runs in the last
@@ -3037,7 +3143,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5109
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-04-09 · **Priority:** Normal ·
+    **Product:** SSO
 
 
     Since Wednesday, users signing in through Google Workspace land back on the sign-in page. The SAML response
@@ -3061,7 +3168,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5110
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-04-08 · **Priority:** Normal · **Product:**
+    SSO
 
 
     Users in nested Okta groups get no workspace role. Only direct members of the mapped group are given access;
@@ -3117,7 +3225,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5112
   mentions_orgs:
   - orrin
-  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Priority:** Low · **Product:** Exports
+  body: '**Customer:** Orrin Biotech · **Status:** Solved · **Resolved:** 2026-04-16 · **Priority:** Low · **Product:**
+    Exports
 
 
     Exported files whose project names contain accents arrive with question marks in the file name. Their archive
@@ -3168,7 +3277,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5114
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Urgent · **Product:** Billing
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-04-14 · **Priority:** Urgent · **Product:**
+    Billing
 
 
     Invoices no longer carry their purchase order number, so their accounts payable team rejects them. 12 invoices
@@ -3222,7 +3332,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5116
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** Normal · **Product:** Mobile app
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-04-15 · **Priority:** Normal ·
+    **Product:** Mobile app
 
 
     Edits made offline in the mobile app disappear after the device reconnects. Their field team lost 25 inspection
@@ -3248,7 +3359,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5117
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Urgent · **Product:** Acme Flow
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-04-15 · **Priority:** Urgent · **Product:**
+    Acme Flow
 
 
     An Acme Flow mapping fails with ''value not allowed'' for the picklist field Batch ID. The value exists in both
@@ -3272,7 +3384,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5118
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Solved · **Priority:** Normal · **Product:** Mobile app
+  body: '**Customer:** Halden Freight · **Status:** Solved · **Resolved:** 2026-04-17 · **Priority:** Normal · **Product:**
+    Mobile app
 
 
     Push notifications stopped for their users on Android 15 since Monday. In-app notifications still appear.
@@ -3297,7 +3410,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5119
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Closed · **Priority:** Normal · **Product:** SSO
+  body: '**Customer:** Marlow Retail Group · **Status:** Closed · **Resolved:** 2026-04-16 · **Priority:** Normal
+    · **Product:** SSO
 
 
     New users created on first SSO login get the Viewer role instead of Editor although the Entra ID attribute maps
@@ -3345,7 +3459,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5121
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Solved · **Priority:** Low · **Product:** Mobile app
+  body: '**Customer:** Halden Freight · **Status:** Solved · **Resolved:** 2026-04-14 · **Priority:** Low · **Product:**
+    Mobile app
 
 
     The mobile app crashes right after the splash screen on Android 15 devices. 6 field staff cannot open it; the
@@ -3397,7 +3512,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5123
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** High · **Product:** Mobile app
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-04-19 · **Priority:** High
+    · **Product:** Mobile app
 
 
     Edits made offline in the mobile app disappear after the device reconnects. Their field team lost 25 inspection
@@ -3445,7 +3561,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5125
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Low · **Product:** SSO
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-04-19 · **Priority:** Low ·
+    **Product:** SSO
 
 
     New users created on first SSO login get the Viewer role instead of Editor although the Entra ID attribute maps
@@ -3549,7 +3666,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5129
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Solved · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Customer:** Halden Freight · **Status:** Solved · **Resolved:** 2026-04-25 · **Priority:** Normal · **Product:**
+    Acme Flow
 
 
     Records synced by Acme Flow show times shifted by the UTC offset in the target system for the Account tier field.
@@ -3574,7 +3692,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5130
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Solved · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Customer:** Halden Freight · **Status:** Solved · **Resolved:** 2026-04-18 · **Priority:** Normal · **Product:**
+    Acme Flow
 
 
     Records synced by Acme Flow show times shifted by the UTC offset in the target system for the Owner email field.
@@ -3621,7 +3740,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5132
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** High · **Product:** SSO
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-04-23 · **Priority:** High
+    · **Product:** SSO
 
 
     Users removed from the identity provider stay active in the workspace. SCIM logs show the DELETE calls returning
@@ -3649,7 +3769,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5133
   mentions_orgs:
   - quarry
-  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Priority:** High · **Product:** API
+  body: '**Customer:** Quarry Lane Bank · **Status:** Solved · **Resolved:** 2026-04-27 · **Priority:** High · **Product:**
+    API
 
 
     After renewing a personal API token its scopes revert to read-only, breaking their write integration. Happened
@@ -3703,7 +3824,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5135
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Low · **Product:** Mobile app
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-04-30 · **Priority:** Low ·
+    **Product:** Mobile app
 
 
     Edits made offline in the mobile app disappear after the device reconnects. Their field team lost 4 inspection
@@ -3841,7 +3963,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5141
   mentions_orgs:
   - marlow
-  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Priority:** Normal · **Product:** Billing
+  body: '**Customer:** Marlow Retail Group · **Status:** Solved · **Resolved:** 2026-04-24 · **Priority:** Normal
+    · **Product:** Billing
 
 
     Their billing contact gets a permissions error when downloading receipts from the billing page, although the
@@ -3865,7 +3988,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5142
   mentions_orgs:
   - pelican
-  body: '**Customer:** Pelican Air · **Status:** Solved · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Customer:** Pelican Air · **Status:** Solved · **Resolved:** 2026-04-25 · **Priority:** Normal · **Product:**
+    Acme Flow
 
 
     Records synced by Acme Flow show times shifted by the UTC offset in the target system for the Account tier field.
@@ -3952,7 +4076,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5146
   mentions_orgs:
   - halden
-  body: '**Customer:** Halden Freight · **Status:** Solved · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Customer:** Halden Freight · **Status:** Solved · **Resolved:** 2026-04-30 · **Priority:** Normal · **Product:**
+    Acme Flow
 
 
     The run history page for their main Acme Flow spins and never renders. The flow has about 40 runs in the last
@@ -3976,7 +4101,8 @@ records:
   web_url: https://zendesk.acme-demo.example/agent/tickets/5147
   mentions_orgs:
   - tidewater
-  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Priority:** High · **Product:** Acme Flow
+  body: '**Customer:** Tidewater Energy · **Status:** Solved · **Resolved:** 2026-04-30 · **Priority:** High · **Product:**
+    Acme Flow
 
 
     An Acme Flow mapping fails with ''value not allowed'' for the picklist field Owner email. The value exists in
@@ -4075,7 +4201,8 @@ records:
     to: zd-5003
   mentions_orgs:
   - tidewater
-  body: '**Status:** Done · **Priority:** High · **Product:** Acme Flow · **Customer:** Tidewater Energy
+  body: '**Status:** Done · **Resolved:** 2026-02-11 · **Priority:** High · **Product:** Acme Flow · **Customer:**
+    Tidewater Energy
 
 
     Escalated from Zendesk #5003. Records synced by Acme Flow show times shifted by the UTC offset in the target
@@ -4099,7 +4226,8 @@ records:
     to: zd-5008
   mentions_orgs:
   - marlow
-  body: '**Status:** Done · **Priority:** High · **Product:** Billing · **Customer:** Marlow Retail Group
+  body: '**Status:** Done · **Resolved:** 2026-02-06 · **Priority:** High · **Product:** Billing · **Customer:**
+    Marlow Retail Group
 
 
     Escalated from Zendesk #5008. Their card payment was reported as declined in the console but appears on their
@@ -4147,7 +4275,8 @@ records:
     to: zd-5013
   mentions_orgs:
   - quarry
-  body: '**Status:** Done · **Priority:** High · **Product:** SSO · **Customer:** Quarry Lane Bank
+  body: '**Status:** Done · **Resolved:** 2026-02-10 · **Priority:** High · **Product:** SSO · **Customer:** Quarry
+    Lane Bank
 
 
     Escalated from Zendesk #5013. Users in nested OneLogin groups get no workspace role. Only direct members of
@@ -4171,7 +4300,8 @@ records:
     to: zd-5014
   mentions_orgs:
   - quarry
-  body: '**Status:** Done · **Priority:** Normal · **Product:** API · **Customer:** Quarry Lane Bank
+  body: '**Status:** Done · **Resolved:** 2026-02-11 · **Priority:** Normal · **Product:** API · **Customer:** Quarry
+    Lane Bank
 
 
     Escalated from Zendesk #5014. Webhook deliveries fail signature verification on their side since Friday. They
@@ -4243,7 +4373,8 @@ records:
     to: zd-5028
   mentions_orgs:
   - tidewater
-  body: '**Status:** Done · **Priority:** Urgent · **Product:** API · **Customer:** Tidewater Energy
+  body: '**Status:** Done · **Resolved:** 2026-02-21 · **Priority:** Urgent · **Product:** API · **Customer:** Tidewater
+    Energy
 
 
     Escalated from Zendesk #5028. Their integration receives 429 Too Many Requests at about 15 requests per minute,
@@ -4267,7 +4398,8 @@ records:
     to: zd-5029
   mentions_orgs:
   - orrin
-  body: '**Status:** Done · **Priority:** High · **Product:** Exports · **Customer:** Orrin Biotech
+  body: '**Status:** Done · **Resolved:** 2026-02-24 · **Priority:** High · **Product:** Exports · **Customer:**
+    Orrin Biotech
 
 
     Escalated from Zendesk #5029. Exported files whose project names contain accents arrive with question marks
@@ -4291,7 +4423,8 @@ records:
     to: zd-5031
   mentions_orgs:
   - pelican
-  body: '**Status:** Done · **Priority:** Normal · **Product:** Billing · **Customer:** Pelican Air
+  body: '**Status:** Done · **Resolved:** 2026-02-26 · **Priority:** Normal · **Product:** Billing · **Customer:**
+    Pelican Air
 
 
     Escalated from Zendesk #5031. The latest invoice bills 25 seats; the admin console shows fewer active seats.
@@ -4339,7 +4472,8 @@ records:
     to: zd-5035
   mentions_orgs:
   - halden
-  body: '**Status:** Done · **Priority:** Urgent · **Product:** Mobile app · **Customer:** Halden Freight
+  body: '**Status:** Done · **Resolved:** 2026-03-01 · **Priority:** Urgent · **Product:** Mobile app · **Customer:**
+    Halden Freight
 
 
     Escalated from Zendesk #5035. Photo attachments fail to upload over cellular with a generic error; over Wi-Fi
@@ -4363,7 +4497,8 @@ records:
     to: zd-5038
   mentions_orgs:
   - orrin
-  body: '**Status:** Done · **Priority:** High · **Product:** Exports · **Customer:** Orrin Biotech
+  body: '**Status:** Done · **Resolved:** 2026-03-02 · **Priority:** High · **Product:** Exports · **Customer:**
+    Orrin Biotech
 
 
     Escalated from Zendesk #5038. The scheduled CSV export has arrived without the Renewal date column since Monday.
@@ -4387,7 +4522,8 @@ records:
     to: zd-5041
   mentions_orgs:
   - marlow
-  body: '**Status:** Done · **Priority:** High · **Product:** SSO · **Customer:** Marlow Retail Group
+  body: '**Status:** Done · **Resolved:** 2026-02-27 · **Priority:** High · **Product:** SSO · **Customer:** Marlow
+    Retail Group
 
 
     Escalated from Zendesk #5041. Since Wednesday, users signing in through Entra ID land back on the sign-in page.
@@ -4411,7 +4547,8 @@ records:
     to: zd-5044
   mentions_orgs:
   - halden
-  body: '**Status:** Done · **Priority:** Urgent · **Product:** Acme Flow · **Customer:** Halden Freight
+  body: '**Status:** Done · **Resolved:** 2026-03-03 · **Priority:** Urgent · **Product:** Acme Flow · **Customer:**
+    Halden Freight
 
 
     Escalated from Zendesk #5044. An Acme Flow mapping fails with ''value not allowed'' for the picklist field Renewal
@@ -4435,7 +4572,8 @@ records:
     to: zd-5047
   mentions_orgs:
   - orrin
-  body: '**Status:** Done · **Priority:** High · **Product:** SSO · **Customer:** Orrin Biotech
+  body: '**Status:** Done · **Resolved:** 2026-03-12 · **Priority:** High · **Product:** SSO · **Customer:** Orrin
+    Biotech
 
 
     Escalated from Zendesk #5047. Users removed from the identity provider stay active in the workspace. SCIM logs
@@ -4459,7 +4597,8 @@ records:
     to: zd-5050
   mentions_orgs:
   - orrin
-  body: '**Status:** Done · **Priority:** Normal · **Product:** Exports · **Customer:** Orrin Biotech
+  body: '**Status:** Done · **Resolved:** 2026-03-11 · **Priority:** Normal · **Product:** Exports · **Customer:**
+    Orrin Biotech
 
 
     Escalated from Zendesk #5050. The weekly export completes in the audit log but the notification email with the
@@ -4483,7 +4622,8 @@ records:
     to: zd-5051
   mentions_orgs:
   - pelican
-  body: '**Status:** Done · **Priority:** Urgent · **Product:** API · **Customer:** Pelican Air
+  body: '**Status:** Done · **Resolved:** 2026-03-06 · **Priority:** Urgent · **Product:** API · **Customer:** Pelican
+    Air
 
 
     Escalated from Zendesk #5051. Listing records with the cursor API returns some records twice when the page size
@@ -4507,7 +4647,8 @@ records:
     to: zd-5052
   mentions_orgs:
   - halden
-  body: '**Status:** Done · **Priority:** Urgent · **Product:** Exports · **Customer:** Halden Freight
+  body: '**Status:** Done · **Resolved:** 2026-03-10 · **Priority:** Urgent · **Product:** Exports · **Customer:**
+    Halden Freight
 
 
     Escalated from Zendesk #5052. Date columns in the Excel export show serial numbers such as 46112 instead of
@@ -4555,7 +4696,8 @@ records:
     to: zd-5054
   mentions_orgs:
   - tidewater
-  body: '**Status:** Done · **Priority:** High · **Product:** Acme Flow · **Customer:** Tidewater Energy
+  body: '**Status:** Done · **Resolved:** 2026-03-08 · **Priority:** High · **Product:** Acme Flow · **Customer:**
+    Tidewater Energy
 
 
     Escalated from Zendesk #5054. The run history page for their main Acme Flow spins and never renders. The flow
@@ -4579,7 +4721,8 @@ records:
     to: zd-5064
   mentions_orgs:
   - orrin
-  body: '**Status:** Done · **Priority:** High · **Product:** SSO · **Customer:** Orrin Biotech
+  body: '**Status:** Done · **Resolved:** 2026-03-21 · **Priority:** High · **Product:** SSO · **Customer:** Orrin
+    Biotech
 
 
     Escalated from Zendesk #5064. Since Wednesday, users signing in through Google Workspace land back on the sign-in
@@ -4603,7 +4746,8 @@ records:
     to: zd-5066
   mentions_orgs:
   - quarry
-  body: '**Status:** Done · **Priority:** Urgent · **Product:** API · **Customer:** Quarry Lane Bank
+  body: '**Status:** Done · **Resolved:** 2026-03-22 · **Priority:** Urgent · **Product:** API · **Customer:** Quarry
+    Lane Bank
 
 
     Escalated from Zendesk #5066. Their integration receives 429 Too Many Requests at about 4 requests per minute,
@@ -4651,7 +4795,8 @@ records:
     to: zd-5076
   mentions_orgs:
   - quarry
-  body: '**Status:** Done · **Priority:** Urgent · **Product:** SSO · **Customer:** Quarry Lane Bank
+  body: '**Status:** Done · **Resolved:** 2026-03-26 · **Priority:** Urgent · **Product:** SSO · **Customer:** Quarry
+    Lane Bank
 
 
     Escalated from Zendesk #5076. New users created on first SSO login get the Viewer role instead of Editor although
@@ -4699,7 +4844,8 @@ records:
     to: zd-5084
   mentions_orgs:
   - halden
-  body: '**Status:** Done · **Priority:** High · **Product:** Acme Flow · **Customer:** Halden Freight
+  body: '**Status:** Done · **Resolved:** 2026-03-27 · **Priority:** High · **Product:** Acme Flow · **Customer:**
+    Halden Freight
 
 
     Escalated from Zendesk #5084. An Acme Flow mapping fails with ''value not allowed'' for the picklist field Cost
@@ -4723,7 +4869,8 @@ records:
     to: zd-5085
   mentions_orgs:
   - orrin
-  body: '**Status:** Done · **Priority:** High · **Product:** API · **Customer:** Orrin Biotech
+  body: '**Status:** Done · **Resolved:** 2026-03-26 · **Priority:** High · **Product:** API · **Customer:** Orrin
+    Biotech
 
 
     Escalated from Zendesk #5085. Their integration receives 429 Too Many Requests at about 3 requests per minute,
@@ -4771,7 +4918,8 @@ records:
     to: zd-5095
   mentions_orgs:
   - marlow
-  body: '**Status:** Done · **Priority:** High · **Product:** Billing · **Customer:** Marlow Retail Group
+  body: '**Status:** Done · **Resolved:** 2026-04-02 · **Priority:** High · **Product:** Billing · **Customer:**
+    Marlow Retail Group
 
 
     Escalated from Zendesk #5095. Their billing contact gets a permissions error when downloading receipts from
@@ -4795,7 +4943,8 @@ records:
     to: zd-5105
   mentions_orgs:
   - orrin
-  body: '**Status:** Done · **Priority:** Normal · **Product:** Acme Flow · **Customer:** Orrin Biotech
+  body: '**Status:** Done · **Resolved:** 2026-04-04 · **Priority:** Normal · **Product:** Acme Flow · **Customer:**
+    Orrin Biotech
 
 
     Escalated from Zendesk #5105. The run history page for their main Acme Flow spins and never renders. The flow
@@ -4843,7 +4992,8 @@ records:
     to: zd-5110
   mentions_orgs:
   - orrin
-  body: '**Status:** Done · **Priority:** Normal · **Product:** SSO · **Customer:** Orrin Biotech
+  body: '**Status:** Done · **Resolved:** 2026-04-08 · **Priority:** Normal · **Product:** SSO · **Customer:** Orrin
+    Biotech
 
 
     Escalated from Zendesk #5110. Users in nested Okta groups get no workspace role. Only direct members of the
@@ -4867,7 +5017,8 @@ records:
     to: zd-5114
   mentions_orgs:
   - pelican
-  body: '**Status:** Done · **Priority:** Urgent · **Product:** Billing · **Customer:** Pelican Air
+  body: '**Status:** Done · **Resolved:** 2026-04-14 · **Priority:** Urgent · **Product:** Billing · **Customer:**
+    Pelican Air
 
 
     Escalated from Zendesk #5114. Invoices no longer carry their purchase order number, so their accounts payable
@@ -4891,7 +5042,8 @@ records:
     to: zd-5132
   mentions_orgs:
   - marlow
-  body: '**Status:** Done · **Priority:** High · **Product:** SSO · **Customer:** Marlow Retail Group
+  body: '**Status:** Done · **Resolved:** 2026-04-23 · **Priority:** High · **Product:** SSO · **Customer:** Marlow
+    Retail Group
 
 
     Escalated from Zendesk #5132. Users removed from the identity provider stay active in the workspace. SCIM logs
@@ -4915,7 +5067,8 @@ records:
     to: zd-5133
   mentions_orgs:
   - quarry
-  body: '**Status:** Done · **Priority:** High · **Product:** API · **Customer:** Quarry Lane Bank
+  body: '**Status:** Done · **Resolved:** 2026-04-27 · **Priority:** High · **Product:** API · **Customer:** Quarry
+    Lane Bank
 
 
     Escalated from Zendesk #5133. After renewing a personal API token its scopes revert to read-only, breaking their
@@ -4963,7 +5116,8 @@ records:
     to: zd-5147
   mentions_orgs:
   - tidewater
-  body: '**Status:** Done · **Priority:** High · **Product:** Acme Flow · **Customer:** Tidewater Energy
+  body: '**Status:** Done · **Resolved:** 2026-04-30 · **Priority:** High · **Product:** Acme Flow · **Customer:**
+    Tidewater Energy
 
 
     Escalated from Zendesk #5147. An Acme Flow mapping fails with ''value not allowed'' for the picklist field Owner
@@ -4997,6 +5151,330 @@ records:
     Support has reproduced it and needs an engineering fix or a confirmed workaround.
 
     '
+- id: jira-int-140
+  container: jira-int
+  type: TICKET
+  title: 'INT-140: Flow run history page will not load (Orrin Biotech, Halden Freight, Tidewater Energy)'
+  author: theo
+  assignee: lin
+  created: '2026-03-19T20:30:00Z'
+  updated: '2026-03-23T20:30:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-140
+  relations:
+  - type: RELATED
+    to: zd-5002
+  - type: RELATED
+    to: zd-5075
+  - type: RELATED
+    to: zd-5054
+  mentions_orgs:
+  - orrin
+  - halden
+  - tidewater
+  body: '**Status:** In progress · **Priority:** High · **Product:** Acme Flow · **Customer:** Orrin Biotech, Halden
+    Freight, Tidewater Energy
+
+
+    One fault reported by 3 customers: Zendesk #5002 (Orrin Biotech), Zendesk #5075 (Halden Freight), Zendesk #5054
+    (Tidewater Energy). Support has reproduced it for each.
+
+    '
+- id: jira-int-141
+  container: jira-int
+  type: TICKET
+  title: 'INT-141: Flow mapping rejects a picklist value (Halden Freight, Pelican Air)'
+  author: ravi
+  assignee: lin
+  created: '2026-03-20T08:30:00Z'
+  updated: '2026-03-23T08:30:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-141
+  relations:
+  - type: RELATED
+    to: zd-5075
+  - type: RELATED
+    to: zd-5033
+  mentions_orgs:
+  - halden
+  - pelican
+  body: '**Status:** Done · **Resolved:** 2026-03-23 · **Priority:** High · **Product:** Acme Flow · **Customer:**
+    Halden Freight, Pelican Air
+
+
+    One fault reported by 2 customers: Zendesk #5075 (Halden Freight), Zendesk #5033 (Pelican Air). Support has
+    reproduced it for each.
+
+    '
+- id: jira-int-142
+  container: jira-int
+  type: TICKET
+  title: 'INT-142: API returns 429 below the documented limit (Tidewater Energy, Pelican Air, Orrin Biotech)'
+  author: theo
+  assignee: kofi
+  created: '2026-04-02T10:00:00Z'
+  updated: '2026-04-04T10:00:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-142
+  relations:
+  - type: RELATED
+    to: zd-5028
+  - type: RELATED
+    to: zd-5104
+  - type: RELATED
+    to: zd-5081
+  mentions_orgs:
+  - tidewater
+  - pelican
+  - orrin
+  body: '**Status:** Done · **Resolved:** 2026-04-04 · **Priority:** High · **Product:** API · **Customer:** Tidewater
+    Energy, Pelican Air, Orrin Biotech
+
+
+    One fault reported by 3 customers: Zendesk #5028 (Tidewater Energy), Zendesk #5104 (Pelican Air), Zendesk #5081
+    (Orrin Biotech). Support has reproduced it for each.
+
+    '
+- id: jira-int-143
+  container: jira-int
+  type: TICKET
+  title: 'INT-143: Pagination cursor repeats records (Pelican Air, Quarry Lane Bank, Tidewater Energy)'
+  author: ama
+  assignee: kofi
+  created: '2026-03-25T23:45:00Z'
+  updated: '2026-03-29T23:45:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-143
+  relations:
+  - type: RELATED
+    to: zd-5051
+  - type: RELATED
+    to: zd-5088
+  - type: RELATED
+    to: zd-5028
+  mentions_orgs:
+  - pelican
+  - quarry
+  - tidewater
+  body: '**Status:** Done · **Resolved:** 2026-03-29 · **Priority:** High · **Product:** API · **Customer:** Pelican
+    Air, Quarry Lane Bank, Tidewater Energy
+
+
+    One fault reported by 3 customers: Zendesk #5051 (Pelican Air), Zendesk #5088 (Quarry Lane Bank), Zendesk #5028
+    (Tidewater Energy). Support has reproduced it for each.
+
+    '
+- id: jira-int-144
+  container: jira-int
+  type: TICKET
+  title: 'INT-144: Scheduled export email never arrives (Orrin Biotech, Pelican Air, Marlow Retail Group)'
+  author: theo
+  assignee: lin
+  created: '2026-03-31T17:00:00Z'
+  updated: '2026-04-08T17:00:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-144
+  relations:
+  - type: RELATED
+    to: zd-5050
+  - type: RELATED
+    to: zd-5062
+  - type: RELATED
+    to: zd-5097
+  mentions_orgs:
+  - orrin
+  - pelican
+  - marlow
+  body: '**Status:** In progress · **Priority:** High · **Product:** Exports · **Customer:** Orrin Biotech, Pelican
+    Air, Marlow Retail Group
+
+
+    One fault reported by 3 customers: Zendesk #5050 (Orrin Biotech), Zendesk #5062 (Pelican Air), Zendesk #5097
+    (Marlow Retail Group). Support has reproduced it for each.
+
+    '
+- id: jira-int-145
+  container: jira-int
+  type: TICKET
+  title: 'INT-145: CSV export drops the Renewal date column (Pelican Air, Orrin Biotech)'
+  author: mira
+  assignee: lin
+  created: '2026-03-12T01:15:00Z'
+  updated: '2026-03-15T01:15:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-145
+  relations:
+  - type: RELATED
+    to: zd-5062
+  - type: RELATED
+    to: zd-5045
+  mentions_orgs:
+  - pelican
+  - orrin
+  body: '**Status:** Done · **Resolved:** 2026-03-15 · **Priority:** High · **Product:** Exports · **Customer:**
+    Pelican Air, Orrin Biotech
+
+
+    One fault reported by 2 customers: Zendesk #5062 (Pelican Air), Zendesk #5045 (Orrin Biotech). Support has reproduced
+    it for each.
+
+    '
+- id: jira-int-146
+  container: jira-int
+  type: TICKET
+  title: 'INT-146: Group mapping ignores nested groups (Marlow Retail Group, Orrin Biotech)'
+  author: ama
+  assignee: pablo
+  created: '2026-03-11T13:15:00Z'
+  updated: '2026-03-22T13:15:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-146
+  relations:
+  - type: RELATED
+    to: zd-5059
+  - type: RELATED
+    to: zd-5037
+  mentions_orgs:
+  - marlow
+  - orrin
+  body: '**Status:** Done · **Resolved:** 2026-03-22 · **Priority:** High · **Product:** SSO · **Customer:** Marlow
+    Retail Group, Orrin Biotech
+
+
+    One fault reported by 2 customers: Zendesk #5059 (Marlow Retail Group), Zendesk #5037 (Orrin Biotech). Support
+    has reproduced it for each.
+
+    '
+- id: jira-int-147
+  container: jira-int
+  type: TICKET
+  title: 'INT-147: SSO login loops back to the sign-in page (Orrin Biotech, Quarry Lane Bank, Marlow Retail Group)'
+  author: ravi
+  assignee: kofi
+  created: '2026-04-29T20:00:00Z'
+  updated: '2026-04-30T17:00:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-147
+  relations:
+  - type: RELATED
+    to: zd-5063
+  - type: RELATED
+    to: zd-5065
+  - type: RELATED
+    to: zd-5150
+  mentions_orgs:
+  - orrin
+  - quarry
+  - marlow
+  body: '**Status:** In review · **Priority:** High · **Product:** SSO · **Customer:** Orrin Biotech, Quarry Lane
+    Bank, Marlow Retail Group
+
+
+    One fault reported by 3 customers: Zendesk #5063 (Orrin Biotech), Zendesk #5065 (Quarry Lane Bank), Zendesk
+    #5150 (Marlow Retail Group). Support has reproduced it for each.
+
+    '
+- id: jira-int-148
+  container: jira-int
+  type: TICKET
+  title: 'INT-148: Purchase order number missing from invoices (Pelican Air, Marlow Retail Group, Quarry Lane Bank)'
+  author: mira
+  assignee: kofi
+  created: '2026-04-07T20:15:00Z'
+  updated: '2026-04-17T20:15:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-148
+  relations:
+  - type: RELATED
+    to: zd-5114
+  - type: RELATED
+    to: zd-5006
+  - type: RELATED
+    to: zd-5007
+  mentions_orgs:
+  - pelican
+  - marlow
+  - quarry
+  body: '**Status:** In review · **Priority:** High · **Product:** Billing · **Customer:** Pelican Air, Marlow Retail
+    Group, Quarry Lane Bank
+
+
+    One fault reported by 3 customers: Zendesk #5114 (Pelican Air), Zendesk #5006 (Marlow Retail Group), Zendesk
+    #5007 (Quarry Lane Bank). Support has reproduced it for each.
+
+    '
+- id: jira-int-149
+  container: jira-int
+  type: TICKET
+  title: 'INT-149: Card payment declined but charged (Quarry Lane Bank, Pelican Air, Marlow Retail Group)'
+  author: ravi
+  assignee: kofi
+  created: '2026-04-08T06:15:00Z'
+  updated: '2026-04-12T06:15:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-149
+  relations:
+  - type: RELATED
+    to: zd-5098
+  - type: RELATED
+    to: zd-5114
+  - type: RELATED
+    to: zd-5004
+  mentions_orgs:
+  - quarry
+  - pelican
+  - marlow
+  body: '**Status:** Done · **Resolved:** 2026-04-12 · **Priority:** High · **Product:** Billing · **Customer:**
+    Quarry Lane Bank, Pelican Air, Marlow Retail Group
+
+
+    One fault reported by 3 customers: Zendesk #5098 (Quarry Lane Bank), Zendesk #5114 (Pelican Air), Zendesk #5004
+    (Marlow Retail Group). Support has reproduced it for each.
+
+    '
+- id: jira-int-150
+  container: jira-int
+  type: TICKET
+  title: 'INT-150: Offline edits lost after sync (Marlow Retail Group, Tidewater Energy)'
+  author: ama
+  assignee: lin
+  created: '2026-04-22T21:15:00Z'
+  updated: '2026-04-25T21:15:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-150
+  relations:
+  - type: RELATED
+    to: zd-5135
+  - type: RELATED
+    to: zd-5030
+  mentions_orgs:
+  - marlow
+  - tidewater
+  body: '**Status:** Done · **Resolved:** 2026-04-25 · **Priority:** High · **Product:** Mobile app · **Customer:**
+    Marlow Retail Group, Tidewater Energy
+
+
+    One fault reported by 2 customers: Zendesk #5135 (Marlow Retail Group), Zendesk #5030 (Tidewater Energy). Support
+    has reproduced it for each.
+
+    '
+- id: jira-int-151
+  container: jira-int
+  type: TICKET
+  title: 'INT-151: Offline edits lost after sync (Marlow Retail Group, Halden Freight, Tidewater Energy)'
+  author: mira
+  assignee: pablo
+  created: '2026-04-15T13:30:00Z'
+  updated: '2026-04-19T13:30:00Z'
+  web_url: https://jira.acme-demo.example/browse/INT-151
+  relations:
+  - type: RELATED
+    to: zd-5123
+  - type: RELATED
+    to: zd-5035
+  - type: RELATED
+    to: zd-5083
+  mentions_orgs:
+  - marlow
+  - halden
+  - tidewater
+  body: '**Status:** Done · **Resolved:** 2026-04-19 · **Priority:** High · **Product:** Mobile app · **Customer:**
+    Marlow Retail Group, Halden Freight, Tidewater Energy
+
+
+    One fault reported by 3 customers: Zendesk #5123 (Marlow Retail Group), Zendesk #5035 (Halden Freight), Zendesk
+    #5083 (Tidewater Energy). Support has reproduced it for each.
+
+    '
 - id: sf-case-quarry-2001
   container: sf-acct-quarry
   type: CASE
@@ -5009,7 +5487,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02001/view
   mentions_orgs:
   - quarry
-  body: '**Account:** Quarry Lane Bank · **Status:** Closed · **Priority:** Normal · **Product:** Billing
+  body: '**Account:** Quarry Lane Bank · **Status:** Closed · **Resolved:** 2026-02-13 · **Priority:** Normal ·
+    **Product:** Billing
 
 
     ## Description
@@ -5033,7 +5512,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02002/view
   mentions_orgs:
   - tidewater
-  body: '**Account:** Tidewater Energy · **Status:** Closed · **Priority:** Low · **Product:** Acme Flow
+  body: '**Account:** Tidewater Energy · **Status:** Closed · **Resolved:** 2026-02-07 · **Priority:** Low · **Product:**
+    Acme Flow
 
 
     ## Description
@@ -5057,7 +5537,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02003/view
   mentions_orgs:
   - tidewater
-  body: '**Account:** Tidewater Energy · **Status:** Closed · **Priority:** High · **Product:** Mobile app
+  body: '**Account:** Tidewater Energy · **Status:** Closed · **Resolved:** 2026-02-08 · **Priority:** High · **Product:**
+    Mobile app
 
 
     ## Description
@@ -5105,7 +5586,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02005/view
   mentions_orgs:
   - pelican
-  body: '**Account:** Pelican Air · **Status:** Closed · **Priority:** Normal · **Product:** API
+  body: '**Account:** Pelican Air · **Status:** Closed · **Resolved:** 2026-02-22 · **Priority:** Normal · **Product:**
+    API
 
 
     ## Description
@@ -5129,7 +5611,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02006/view
   mentions_orgs:
   - tidewater
-  body: '**Account:** Tidewater Energy · **Status:** Closed · **Priority:** Urgent · **Product:** API
+  body: '**Account:** Tidewater Energy · **Status:** Closed · **Resolved:** 2026-02-21 · **Priority:** Urgent ·
+    **Product:** API
 
 
     ## Description
@@ -5153,7 +5636,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02007/view
   mentions_orgs:
   - orrin
-  body: '**Account:** Orrin Biotech · **Status:** Closed · **Priority:** High · **Product:** Exports
+  body: '**Account:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-02-24 · **Priority:** High · **Product:**
+    Exports
 
 
     ## Description
@@ -5201,7 +5685,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02009/view
   mentions_orgs:
   - tidewater
-  body: '**Account:** Tidewater Energy · **Status:** Closed · **Priority:** Low · **Product:** Mobile app
+  body: '**Account:** Tidewater Energy · **Status:** Closed · **Resolved:** 2026-03-01 · **Priority:** Low · **Product:**
+    Mobile app
 
 
     ## Description
@@ -5225,7 +5710,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02010/view
   mentions_orgs:
   - marlow
-  body: '**Account:** Marlow Retail Group · **Status:** Closed · **Priority:** High · **Product:** SSO
+  body: '**Account:** Marlow Retail Group · **Status:** Closed · **Resolved:** 2026-02-27 · **Priority:** High ·
+    **Product:** SSO
 
 
     ## Description
@@ -5249,7 +5735,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02011/view
   mentions_orgs:
   - marlow
-  body: '**Account:** Marlow Retail Group · **Status:** Closed · **Priority:** Low · **Product:** Exports
+  body: '**Account:** Marlow Retail Group · **Status:** Closed · **Resolved:** 2026-03-02 · **Priority:** Low ·
+    **Product:** Exports
 
 
     ## Description
@@ -5273,7 +5760,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02012/view
   mentions_orgs:
   - halden
-  body: '**Account:** Halden Freight · **Status:** Closed · **Priority:** Urgent · **Product:** Acme Flow
+  body: '**Account:** Halden Freight · **Status:** Closed · **Resolved:** 2026-03-03 · **Priority:** Urgent · **Product:**
+    Acme Flow
 
 
     ## Description
@@ -5297,7 +5785,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02013/view
   mentions_orgs:
   - orrin
-  body: '**Account:** Orrin Biotech · **Status:** Closed · **Priority:** Low · **Product:** Exports
+  body: '**Account:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-03-02 · **Priority:** Low · **Product:**
+    Exports
 
 
     ## Description
@@ -5321,7 +5810,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02014/view
   mentions_orgs:
   - orrin
-  body: '**Account:** Orrin Biotech · **Status:** Closed · **Priority:** High · **Product:** API
+  body: '**Account:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-03-06 · **Priority:** High · **Product:**
+    API
 
 
     ## Description
@@ -5345,7 +5835,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02015/view
   mentions_orgs:
   - orrin
-  body: '**Account:** Orrin Biotech · **Status:** Closed · **Priority:** High · **Product:** SSO
+  body: '**Account:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-03-12 · **Priority:** High · **Product:**
+    SSO
 
 
     ## Description
@@ -5369,7 +5860,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02016/view
   mentions_orgs:
   - pelican
-  body: '**Account:** Pelican Air · **Status:** Closed · **Priority:** Urgent · **Product:** API
+  body: '**Account:** Pelican Air · **Status:** Closed · **Resolved:** 2026-03-06 · **Priority:** Urgent · **Product:**
+    API
 
 
     ## Description
@@ -5417,7 +5909,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02018/view
   mentions_orgs:
   - orrin
-  body: '**Account:** Orrin Biotech · **Status:** Closed · **Priority:** High · **Product:** SSO
+  body: '**Account:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-03-21 · **Priority:** High · **Product:**
+    SSO
 
 
     ## Description
@@ -5441,7 +5934,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02019/view
   mentions_orgs:
   - tidewater
-  body: '**Account:** Tidewater Energy · **Status:** Closed · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Account:** Tidewater Energy · **Status:** Closed · **Resolved:** 2026-03-19 · **Priority:** Normal ·
+    **Product:** Acme Flow
 
 
     ## Description
@@ -5465,7 +5959,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02020/view
   mentions_orgs:
   - quarry
-  body: '**Account:** Quarry Lane Bank · **Status:** Closed · **Priority:** Low · **Product:** SSO
+  body: '**Account:** Quarry Lane Bank · **Status:** Closed · **Resolved:** 2026-03-19 · **Priority:** Low · **Product:**
+    SSO
 
 
     ## Description
@@ -5489,7 +5984,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02021/view
   mentions_orgs:
   - halden
-  body: '**Account:** Halden Freight · **Status:** Closed · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Account:** Halden Freight · **Status:** Closed · **Resolved:** 2026-03-23 · **Priority:** Normal · **Product:**
+    Acme Flow
 
 
     ## Description
@@ -5513,7 +6009,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02022/view
   mentions_orgs:
   - pelican
-  body: '**Account:** Pelican Air · **Status:** Closed · **Priority:** Low · **Product:** API
+  body: '**Account:** Pelican Air · **Status:** Closed · **Resolved:** 2026-03-21 · **Priority:** Low · **Product:**
+    API
 
 
     ## Description
@@ -5561,7 +6058,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02024/view
   mentions_orgs:
   - orrin
-  body: '**Account:** Orrin Biotech · **Status:** Closed · **Priority:** Normal · **Product:** API
+  body: '**Account:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-03-28 · **Priority:** Normal · **Product:**
+    API
 
 
     ## Description
@@ -5585,7 +6083,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02025/view
   mentions_orgs:
   - halden
-  body: '**Account:** Halden Freight · **Status:** Closed · **Priority:** High · **Product:** Acme Flow
+  body: '**Account:** Halden Freight · **Status:** Closed · **Resolved:** 2026-03-27 · **Priority:** High · **Product:**
+    Acme Flow
 
 
     ## Description
@@ -5609,7 +6108,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02026/view
   mentions_orgs:
   - halden
-  body: '**Account:** Halden Freight · **Status:** Closed · **Priority:** Low · **Product:** Mobile app
+  body: '**Account:** Halden Freight · **Status:** Closed · **Resolved:** 2026-03-31 · **Priority:** Low · **Product:**
+    Mobile app
 
 
     ## Description
@@ -5633,7 +6133,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02027/view
   mentions_orgs:
   - pelican
-  body: '**Account:** Pelican Air · **Status:** Closed · **Priority:** Low · **Product:** Acme Flow
+  body: '**Account:** Pelican Air · **Status:** Closed · **Resolved:** 2026-03-28 · **Priority:** Low · **Product:**
+    Acme Flow
 
 
     ## Description
@@ -5657,7 +6158,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02028/view
   mentions_orgs:
   - quarry
-  body: '**Account:** Quarry Lane Bank · **Status:** Closed · **Priority:** Normal · **Product:** SSO
+  body: '**Account:** Quarry Lane Bank · **Status:** Closed · **Resolved:** 2026-04-02 · **Priority:** Normal ·
+    **Product:** SSO
 
 
     ## Description
@@ -5681,7 +6183,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02029/view
   mentions_orgs:
   - orrin
-  body: '**Account:** Orrin Biotech · **Status:** Closed · **Priority:** Normal · **Product:** Acme Flow
+  body: '**Account:** Orrin Biotech · **Status:** Closed · **Resolved:** 2026-04-04 · **Priority:** Normal · **Product:**
+    Acme Flow
 
 
     ## Description
@@ -5705,7 +6208,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02030/view
   mentions_orgs:
   - halden
-  body: '**Account:** Halden Freight · **Status:** Closed · **Priority:** Low · **Product:** Mobile app
+  body: '**Account:** Halden Freight · **Status:** Closed · **Resolved:** 2026-04-14 · **Priority:** Low · **Product:**
+    Mobile app
 
 
     ## Description
@@ -5753,7 +6257,8 @@ records:
   web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500MM02032/view
   mentions_orgs:
   - quarry
-  body: '**Account:** Quarry Lane Bank · **Status:** Closed · **Priority:** High · **Product:** API
+  body: '**Account:** Quarry Lane Bank · **Status:** Closed · **Resolved:** 2026-04-27 · **Priority:** High · **Product:**
+    API
 
 
     ## Description
@@ -5786,5 +6291,594 @@ records:
 
 
     Raised by the account''s admin through the customer portal; mirrored in Zendesk as #5149.
+
+    '
+- id: sf-deal-mm-001
+  container: sf-acct-orrin
+  type: DEAL
+  title: 'Opportunity MM-001: Orrin Biotech new business'
+  owner: leila
+  created: '2026-01-29T08:45:00Z'
+  updated: '2026-03-04T08:45:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00001/view
+  mentions_orgs:
+  - orrin
+  body: '**Account:** Orrin Biotech · **Stage:** Closed Won · **Amount (ARR):** $9,000 · **Close date:** 2026-03-04
+    · **Type:** New business
+
+
+    ## Description
+
+    New business for Orrin Biotech, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-002
+  container: sf-acct-orrin
+  type: DEAL
+  title: 'Opportunity MM-002: Orrin Biotech expansion'
+  owner: leila
+  created: '2026-01-18T13:00:00Z'
+  updated: '2026-03-27T13:00:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00002/view
+  mentions_orgs:
+  - orrin
+  body: '**Account:** Orrin Biotech · **Stage:** Closed Won · **Amount (ARR):** $66,000 · **Close date:** 2026-03-27
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Orrin Biotech, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-003
+  container: sf-acct-orrin
+  type: DEAL
+  title: 'Opportunity MM-003: Orrin Biotech expansion'
+  owner: leila
+  created: '2025-12-27T08:45:00Z'
+  updated: '2026-02-17T08:45:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00003/view
+  mentions_orgs:
+  - orrin
+  body: '**Account:** Orrin Biotech · **Stage:** Closed Won · **Amount (ARR):** $25,000 · **Close date:** 2026-02-17
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Orrin Biotech, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-004
+  container: sf-acct-orrin
+  type: DEAL
+  title: 'Opportunity MM-004: Orrin Biotech new business'
+  owner: leila
+  created: '2026-02-19T13:45:00Z'
+  updated: '2026-03-24T13:45:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00004/view
+  mentions_orgs:
+  - orrin
+  body: '**Account:** Orrin Biotech · **Stage:** Closed Won · **Amount (ARR):** $125,000 · **Close date:** 2026-03-24
+    · **Type:** New business
+
+
+    ## Description
+
+    New business for Orrin Biotech, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-005
+  container: sf-acct-halden
+  type: DEAL
+  title: 'Opportunity MM-005: Halden Freight renewal'
+  owner: marco
+  created: '2026-02-03T17:15:00Z'
+  updated: '2026-04-01T17:15:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00005/view
+  mentions_orgs:
+  - halden
+  body: '**Account:** Halden Freight · **Stage:** Closed Won · **Amount (ARR):** $22,000 · **Close date:** 2026-04-01
+    · **Type:** Renewal
+
+
+    ## Description
+
+    Renewal for Halden Freight, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-006
+  container: sf-acct-halden
+  type: DEAL
+  title: 'Opportunity MM-006: Halden Freight expansion'
+  owner: marco
+  created: '2026-01-15T08:00:00Z'
+  updated: '2026-02-05T08:00:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00006/view
+  mentions_orgs:
+  - halden
+  body: '**Account:** Halden Freight · **Stage:** Closed Lost · **Amount (ARR):** $58,000 · **Close date:** 2026-02-05
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Halden Freight, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-007
+  container: sf-acct-halden
+  type: DEAL
+  title: 'Opportunity MM-007: Halden Freight renewal'
+  owner: marco
+  created: '2026-04-05T07:30:00Z'
+  updated: '2026-04-29T07:30:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00007/view
+  mentions_orgs:
+  - halden
+  body: '**Account:** Halden Freight · **Stage:** Closed Won · **Amount (ARR):** $28,000 · **Close date:** 2026-04-29
+    · **Type:** Renewal
+
+
+    ## Description
+
+    Renewal for Halden Freight, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-008
+  container: sf-acct-halden
+  type: DEAL
+  title: 'Opportunity MM-008: Halden Freight expansion'
+  owner: marco
+  created: '2026-02-27T11:45:00Z'
+  updated: '2026-04-15T11:45:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00008/view
+  mentions_orgs:
+  - halden
+  body: '**Account:** Halden Freight · **Stage:** Closed Lost · **Amount (ARR):** $61,000 · **Close date:** 2026-04-15
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Halden Freight, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-009
+  container: sf-acct-halden
+  type: DEAL
+  title: 'Opportunity MM-009: Halden Freight new business'
+  owner: marco
+  created: '2026-01-07T16:00:00Z'
+  updated: '2026-02-05T16:00:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00009/view
+  mentions_orgs:
+  - halden
+  body: '**Account:** Halden Freight · **Stage:** Closed Won · **Amount (ARR):** $120,000 · **Close date:** 2026-02-05
+    · **Type:** New business
+
+
+    ## Description
+
+    New business for Halden Freight, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-010
+  container: sf-acct-marlow
+  type: DEAL
+  title: 'Opportunity MM-010: Marlow Retail Group expansion'
+  owner: leila
+  created: '2026-02-27T12:45:00Z'
+  updated: '2026-03-26T12:45:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00010/view
+  mentions_orgs:
+  - marlow
+  body: '**Account:** Marlow Retail Group · **Stage:** Closed Won · **Amount (ARR):** $121,000 · **Close date:**
+    2026-03-26 · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Marlow Retail Group, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-011
+  container: sf-acct-marlow
+  type: DEAL
+  title: 'Opportunity MM-011: Marlow Retail Group expansion'
+  owner: leila
+  created: '2026-01-18T15:45:00Z'
+  updated: '2026-02-25T15:45:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00011/view
+  mentions_orgs:
+  - marlow
+  body: '**Account:** Marlow Retail Group · **Stage:** Closed Won · **Amount (ARR):** $70,000 · **Close date:**
+    2026-02-25 · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Marlow Retail Group, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-012
+  container: sf-acct-marlow
+  type: DEAL
+  title: 'Opportunity MM-012: Marlow Retail Group renewal'
+  owner: leila
+  created: '2026-02-01T11:30:00Z'
+  updated: '2026-03-24T11:30:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00012/view
+  mentions_orgs:
+  - marlow
+  body: '**Account:** Marlow Retail Group · **Stage:** Closed Won · **Amount (ARR):** $51,000 · **Close date:**
+    2026-03-24 · **Type:** Renewal
+
+
+    ## Description
+
+    Renewal for Marlow Retail Group, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-013
+  container: sf-acct-marlow
+  type: DEAL
+  title: 'Opportunity MM-013: Marlow Retail Group renewal'
+  owner: leila
+  created: '2026-03-07T17:45:00Z'
+  updated: '2026-03-27T17:45:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00013/view
+  mentions_orgs:
+  - marlow
+  body: '**Account:** Marlow Retail Group · **Stage:** Closed Lost · **Amount (ARR):** $110,000 · **Close date:**
+    2026-03-27 · **Type:** Renewal
+
+
+    ## Description
+
+    Renewal for Marlow Retail Group, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-014
+  container: sf-acct-marlow
+  type: DEAL
+  title: 'Opportunity MM-014: Marlow Retail Group new business'
+  owner: leila
+  created: '2026-01-30T10:45:00Z'
+  updated: '2026-04-08T10:45:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00014/view
+  mentions_orgs:
+  - marlow
+  body: '**Account:** Marlow Retail Group · **Stage:** Closed Lost · **Amount (ARR):** $91,000 · **Close date:**
+    2026-04-08 · **Type:** New business
+
+
+    ## Description
+
+    New business for Marlow Retail Group, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-015
+  container: sf-acct-marlow
+  type: DEAL
+  title: 'Opportunity MM-015: Marlow Retail Group expansion'
+  owner: leila
+  created: '2026-01-24T11:15:00Z'
+  updated: '2026-03-06T11:15:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00015/view
+  mentions_orgs:
+  - marlow
+  body: '**Account:** Marlow Retail Group · **Stage:** Closed Won · **Amount (ARR):** $28,000 · **Close date:**
+    2026-03-06 · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Marlow Retail Group, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-016
+  container: sf-acct-quarry
+  type: DEAL
+  title: 'Opportunity MM-016: Quarry Lane Bank expansion'
+  owner: marco
+  created: '2025-12-13T08:00:00Z'
+  updated: '2026-02-03T08:00:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00016/view
+  mentions_orgs:
+  - quarry
+  body: '**Account:** Quarry Lane Bank · **Stage:** Closed Lost · **Amount (ARR):** $124,000 · **Close date:** 2026-02-03
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Quarry Lane Bank, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-017
+  container: sf-acct-quarry
+  type: DEAL
+  title: 'Opportunity MM-017: Quarry Lane Bank expansion'
+  owner: marco
+  created: '2026-03-22T10:45:00Z'
+  updated: '2026-04-15T10:45:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00017/view
+  mentions_orgs:
+  - quarry
+  body: '**Account:** Quarry Lane Bank · **Stage:** Closed Lost · **Amount (ARR):** $39,000 · **Close date:** 2026-04-15
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Quarry Lane Bank, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-018
+  container: sf-acct-quarry
+  type: DEAL
+  title: 'Opportunity MM-018: Quarry Lane Bank expansion'
+  owner: marco
+  created: '2026-02-21T14:45:00Z'
+  updated: '2026-04-08T14:45:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00018/view
+  mentions_orgs:
+  - quarry
+  body: '**Account:** Quarry Lane Bank · **Stage:** Closed Lost · **Amount (ARR):** $43,000 · **Close date:** 2026-04-08
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Quarry Lane Bank, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-019
+  container: sf-acct-quarry
+  type: DEAL
+  title: 'Opportunity MM-019: Quarry Lane Bank renewal'
+  owner: marco
+  created: '2025-12-28T15:00:00Z'
+  updated: '2026-03-11T15:00:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00019/view
+  mentions_orgs:
+  - quarry
+  body: '**Account:** Quarry Lane Bank · **Stage:** Closed Won · **Amount (ARR):** $114,000 · **Close date:** 2026-03-11
+    · **Type:** Renewal
+
+
+    ## Description
+
+    Renewal for Quarry Lane Bank, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-020
+  container: sf-acct-quarry
+  type: DEAL
+  title: 'Opportunity MM-020: Quarry Lane Bank expansion'
+  owner: marco
+  created: '2026-03-28T08:15:00Z'
+  updated: '2026-04-17T08:15:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00020/view
+  mentions_orgs:
+  - quarry
+  body: '**Account:** Quarry Lane Bank · **Stage:** Closed Lost · **Amount (ARR):** $80,000 · **Close date:** 2026-04-17
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Quarry Lane Bank, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-021
+  container: sf-acct-tidewater
+  type: DEAL
+  title: 'Opportunity MM-021: Tidewater Energy expansion'
+  owner: marco
+  created: '2026-01-29T10:15:00Z'
+  updated: '2026-03-25T10:15:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00021/view
+  mentions_orgs:
+  - tidewater
+  body: '**Account:** Tidewater Energy · **Stage:** Closed Won · **Amount (ARR):** $32,000 · **Close date:** 2026-03-25
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Tidewater Energy, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-022
+  container: sf-acct-tidewater
+  type: DEAL
+  title: 'Opportunity MM-022: Tidewater Energy expansion'
+  owner: marco
+  created: '2026-01-17T12:15:00Z'
+  updated: '2026-02-23T12:15:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00022/view
+  mentions_orgs:
+  - tidewater
+  body: '**Account:** Tidewater Energy · **Stage:** Closed Won · **Amount (ARR):** $36,000 · **Close date:** 2026-02-23
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Tidewater Energy, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-023
+  container: sf-acct-tidewater
+  type: DEAL
+  title: 'Opportunity MM-023: Tidewater Energy renewal'
+  owner: marco
+  created: '2025-12-28T13:30:00Z'
+  updated: '2026-02-06T13:30:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00023/view
+  mentions_orgs:
+  - tidewater
+  body: '**Account:** Tidewater Energy · **Stage:** Closed Won · **Amount (ARR):** $136,000 · **Close date:** 2026-02-06
+    · **Type:** Renewal
+
+
+    ## Description
+
+    Renewal for Tidewater Energy, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-024
+  container: sf-acct-tidewater
+  type: DEAL
+  title: 'Opportunity MM-024: Tidewater Energy renewal'
+  owner: marco
+  created: '2026-01-27T08:30:00Z'
+  updated: '2026-03-18T08:30:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00024/view
+  mentions_orgs:
+  - tidewater
+  body: '**Account:** Tidewater Energy · **Stage:** Closed Lost · **Amount (ARR):** $102,000 · **Close date:** 2026-03-18
+    · **Type:** Renewal
+
+
+    ## Description
+
+    Renewal for Tidewater Energy, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-025
+  container: sf-acct-tidewater
+  type: DEAL
+  title: 'Opportunity MM-025: Tidewater Energy renewal'
+  owner: marco
+  created: '2026-02-08T09:30:00Z'
+  updated: '2026-03-13T09:30:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00025/view
+  mentions_orgs:
+  - tidewater
+  body: '**Account:** Tidewater Energy · **Stage:** Closed Lost · **Amount (ARR):** $63,000 · **Close date:** 2026-03-13
+    · **Type:** Renewal
+
+
+    ## Description
+
+    Renewal for Tidewater Energy, worked by Marco Silva.
+
+    '
+- id: sf-deal-mm-026
+  container: sf-acct-pelican
+  type: DEAL
+  title: 'Opportunity MM-026: Pelican Air new business'
+  owner: leila
+  created: '2025-12-20T10:00:00Z'
+  updated: '2026-02-04T10:00:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00026/view
+  mentions_orgs:
+  - pelican
+  body: '**Account:** Pelican Air · **Stage:** Closed Lost · **Amount (ARR):** $81,000 · **Close date:** 2026-02-04
+    · **Type:** New business
+
+
+    ## Description
+
+    New business for Pelican Air, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-027
+  container: sf-acct-pelican
+  type: DEAL
+  title: 'Opportunity MM-027: Pelican Air expansion'
+  owner: leila
+  created: '2025-12-14T17:15:00Z'
+  updated: '2026-02-19T17:15:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00027/view
+  mentions_orgs:
+  - pelican
+  body: '**Account:** Pelican Air · **Stage:** Closed Won · **Amount (ARR):** $95,000 · **Close date:** 2026-02-19
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Pelican Air, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-028
+  container: sf-acct-pelican
+  type: DEAL
+  title: 'Opportunity MM-028: Pelican Air expansion'
+  owner: leila
+  created: '2025-12-22T10:15:00Z'
+  updated: '2026-02-20T10:15:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00028/view
+  mentions_orgs:
+  - pelican
+  body: '**Account:** Pelican Air · **Stage:** Closed Won · **Amount (ARR):** $31,000 · **Close date:** 2026-02-20
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Pelican Air, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-029
+  container: sf-acct-pelican
+  type: DEAL
+  title: 'Opportunity MM-029: Pelican Air expansion'
+  owner: leila
+  created: '2026-01-21T10:00:00Z'
+  updated: '2026-02-23T10:00:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00029/view
+  mentions_orgs:
+  - pelican
+  body: '**Account:** Pelican Air · **Stage:** Closed Won · **Amount (ARR):** $113,000 · **Close date:** 2026-02-23
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Pelican Air, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-030
+  container: sf-acct-pelican
+  type: DEAL
+  title: 'Opportunity MM-030: Pelican Air new business'
+  owner: leila
+  created: '2026-02-02T13:30:00Z'
+  updated: '2026-03-26T13:30:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00030/view
+  mentions_orgs:
+  - pelican
+  body: '**Account:** Pelican Air · **Stage:** Closed Won · **Amount (ARR):** $12,000 · **Close date:** 2026-03-26
+    · **Type:** New business
+
+
+    ## Description
+
+    New business for Pelican Air, worked by Leila Brandt.
+
+    '
+- id: sf-deal-mm-031
+  container: sf-acct-pelican
+  type: DEAL
+  title: 'Opportunity MM-031: Pelican Air expansion'
+  owner: leila
+  created: '2026-03-16T15:30:00Z'
+  updated: '2026-04-10T15:30:00Z'
+  web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006MM00031/view
+  mentions_orgs:
+  - pelican
+  body: '**Account:** Pelican Air · **Stage:** Closed Lost · **Amount (ARR):** $88,000 · **Close date:** 2026-04-10
+    · **Type:** Expansion
+
+
+    ## Description
+
+    Expansion for Pelican Air, worked by Leila Brandt.
 
     '
