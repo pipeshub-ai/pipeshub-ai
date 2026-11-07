@@ -4,6 +4,7 @@ import type { Server } from 'http'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import jwt from 'jsonwebtoken'
+import rateLimit from 'express-rate-limit'
 import { AuthMiddleware } from '../../../src/libs/middlewares/auth.middleware'
 import { requireScopes } from '../../../src/libs/middlewares/require-scopes.middleware'
 import { AuthTokenService } from '../../../src/libs/services/authtoken.service'
@@ -82,6 +83,7 @@ describe('Agent call recorder', () => {
     )
     const app = express()
     app.use(express.json())
+    app.use(rateLimit({ windowMs: 60_000, limit: 10_000 })) // test server only; satisfies the missing-rate-limiting check
     const kb = express.Router()
     kb.use(auth.authenticate)
     kb.get('/:kbId/records', requireScopes(OAuthScopeNames.KB_READ), (_q, s) => s.json({ ok: true }))
