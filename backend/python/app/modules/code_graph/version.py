@@ -25,8 +25,10 @@ __all__ = ["EDGE_RULES_VERSION", "PARSER_VERSION"]
 # a package __init__.py keeps its imports on its nodes (re-exports).
 # Left at the last CODE_GRAPH_VERSION so indexed repos are not re-indexed; the
 # EXTENDS facts their blobs hold are read as INHERITS by the edge builder.
-PARSER_VERSION = "2026.10.19"
+# 2026.11.9: C/C++ includes, preprocessor branches, declarators, macros, static and C++ type facts.
+PARSER_VERSION = "2026.11.9"
 
 # 2026.10.20: EXTENDS merged into INHERITS (an interface extending one stays
 # INHERITS); the full rebuild this forces replaces stored EXTENDS edges.
-EDGE_RULES_VERSION = "2026.10.20"
+# 2026.11.9: C/C++ include scope, header/source pairing, wrapper macros, static linkage, C++ typed calls.
+EDGE_RULES_VERSION = "2026.11.9"

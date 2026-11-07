@@ -1,8 +1,8 @@
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, List, Literal, Optional
 from uuid import uuid4
-import hashlib
+
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 if TYPE_CHECKING:
@@ -197,6 +197,8 @@ class CodeMetadata(BaseModel):
     signature: Optional[str] = None
     docstring: Optional[str] = None
     decorators: Optional[list[str]] = None
+    # Words resolution reads (C/C++: "declaration" for no body, "static", "returns:<Class>").
+    modifiers: Optional[list[str]] = None
     # Repo-unique, human-readable resolution identity. The graph block key is
     # hashed from this, so the blob and the graph must agree on it exactly.
     qualified_name: Optional[str] = None  # "method:Outer.Inner.run"
@@ -208,6 +210,9 @@ class CodeMetadata(BaseModel):
     # Receiver-variable -> declared type for the whole file. Cannot be rebuilt
     # without re-parsing, so the file-summary block carries it.
     type_table: Optional[dict[str, str]] = None
+    # C/C++ function-like macro -> [line, names its body calls]; on the file-summary block, and resident on its
+    # node, as a header's macros are read for files an incremental build is not re-resolving.
+    macro_table: Optional[dict[str, list]] = None
 
 class MediaMetadata(BaseModel):
     """Metadata for media blocks (image, video, audio)"""
