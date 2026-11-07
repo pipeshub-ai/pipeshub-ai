@@ -15,6 +15,7 @@ from collections import Counter
 from typing import TYPE_CHECKING
 
 from app.modules.code_graph.resolvers import IN_REPO, RESOLVERS
+from app.modules.code_graph.ts_config import TsConfigs
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -58,10 +59,13 @@ class ImportResolution:
     qualified names of the blocks, not by a path). The built-in branches never do.
     """
 
-    def __init__(self, file_paths: set[str], index: SymbolIndex | None = None) -> None:
-        """*file_paths*: every file of the repo; *index*: the build's symbol index, handed to registered resolvers."""
+    def __init__(self, file_paths: set[str], index: SymbolIndex | None = None,
+                 ts_configs: TsConfigs | None = None) -> None:
+        """*file_paths*: every file of the repo; *index*: the build's symbol index, handed to registered resolvers;
+        *ts_configs*: the repo's tsconfig/jsconfig settings."""
         self._files = file_paths
         self._index = index
+        self._ts_configs = ts_configs if ts_configs is not None else TsConfigs({})
         # Every trailing run of a Python module's path segments -> its files, so
         # an absolute import looks itself up instead of scanning all files with
         # the same basename (every `__init__.py`, per unresolved dotted import,
@@ -155,6 +159,11 @@ class ImportResolution:
     # -- javascript / typescript ----------------------------------------
 
     def _resolve_js(self, specifier: str, from_file: str) -> str | None:
+        if not specifier.startswith("."):
+            for base in self._ts_configs.candidates(specifier, from_file):
+                hit = self._js_file(base)
+                if hit:
+                    return hit
         if specifier.startswith(_JS_ROOT_ALIASES):
             return self._resolve_js_alias(specifier[2:], from_file)
         if not specifier.startswith("."):
@@ -166,9 +175,9 @@ class ImportResolution:
     def _resolve_js_workspace(self, specifier: str) -> str | None:
         """`@excalidraw/element[/sub]` -> that workspace package's entry or sub-path.
 
-        tsconfig `paths` and package.json names are not read here (the build has
-        file paths only), so the package is matched by folder name, and only when
-        one workspace folder of that name holds the target.
+        Reached when no tsconfig `paths` entry placed it; package.json names are not
+        read, so the package is matched by folder name, and only when one workspace
+        folder of that name holds the target.
         """
         parts = specifier.split("/")
         if len(parts) < 2:
@@ -250,8 +259,9 @@ class ImportResolution:
     def _resolve_js_alias(self, rest: str, from_file: str) -> str | None:
         """`@/lib/http` against the importing file's ancestors, then their `src/`.
 
-        tsconfig is not read, so the alias root is taken to be the nearest
-        ancestor (or its `src/`) that holds the target.
+        Reached when no tsconfig `paths` entry placed it (none read, or a vite-only
+        alias), so the alias root is taken to be the nearest ancestor (or its `src/`)
+        that holds the target.
         """
         directory = posixpath.dirname(from_file)
         while True:
