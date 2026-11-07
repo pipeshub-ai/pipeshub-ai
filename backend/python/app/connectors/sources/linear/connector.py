@@ -2403,7 +2403,8 @@ class LinearConnector(BaseConnector):
         if not project_id:
             return []
         full_project_data = await self._fetch_full_project(project_id)
-        if full_project_data is None:
+        # Trashed projects leave through the deletion sync; a comment on one must not write it back.
+        if full_project_data is None or full_project_data.get("trashed"):
             return []
 
         team_id = self._project_home(full_project_data, scope)

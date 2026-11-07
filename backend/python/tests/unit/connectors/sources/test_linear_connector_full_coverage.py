@@ -494,6 +494,23 @@ class TestProjectToRecords:
         assert "proj-1" not in connector._refreshed_project_ids
 
     @pytest.mark.asyncio
+    async def test_trashed_project_yields_nothing(self) -> None:
+        project = _make_project_data(trashed=True)
+        project["teams"] = _teams(("team-1", True))
+        connector = self._connector(project)
+        assert await connector._project_to_records("proj-1", {"team-1"}) == []
+        connector.data_entities_processor.get_record_by_external_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_comment_on_a_trashed_project_does_not_write_it_back(self) -> None:
+        project = _make_project_data(trashed=True)
+        project["teams"] = _teams(("team-1", True))
+        connector = self._connector(project)
+        connector.data_entities_processor.on_new_records = AsyncMock()
+        await connector._refresh_projects(["proj-1"], {"team-1"})
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_project_of_unsynced_teams_yields_nothing(self) -> None:
         project = _make_project_data()
         project["teams"] = _teams(("team-9", False))
