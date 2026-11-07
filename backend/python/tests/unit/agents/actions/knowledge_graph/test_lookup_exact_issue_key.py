@@ -46,11 +46,14 @@ PP_8, PP_80, PP_81 = _ticket("PP-8"), _ticket("PP-80"), _ticket("PP-81")
 NEIGHBOURS_FIRST = [PP_80, PP_81, PP_8]
 
 
-def _exact_weburl(rows: list[dict[str, Any]]) -> AsyncMock:
-    async def lookup(url: str, org_id: str | None = None) -> dict[str, Any] | None:
-        return next((r for r in rows if r["webUrl"] == url), None)
+def _stub_exact_weburls(provider: Provider, rows: list[dict[str, Any]]) -> None:
+    """The URL fallback: the rows stored under exactly the URL asked for, never a near neighbour's."""
+    async def lookup(urls: list[str], org_id: str, per_address: int = 2) -> list[dict[str, Any]]:
+        return [{**r, "id": r["_key"]} for r in rows if r["webUrl"] in urls][:per_address]
 
-    return AsyncMock(side_effect=lookup)
+    provider.get_records_by_weburls = AsyncMock(side_effect=lookup)  # type: ignore[method-assign]
+    provider.get_record_by_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    provider.get_document = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
 
 def _grant_every_node(provider: Provider) -> None:
@@ -71,7 +74,7 @@ def _neo4j(rows: list[dict[str, Any]]) -> Neo4jProvider:
     provider.client = MagicMock()
     provider.client.execute_query = AsyncMock(side_effect=execute_query)
     provider._neo4j_to_arango_node = MagicMock(side_effect=lambda node, _collection: node)  # type: ignore[method-assign]
-    provider.get_record_by_weburl = _exact_weburl(rows)  # type: ignore[method-assign]
+    _stub_exact_weburls(provider, rows)
     _grant_every_node(provider)
     return provider
 
@@ -87,7 +90,7 @@ def _arango(rows: list[dict[str, Any]]) -> ArangoHTTPProvider:
     provider.http_client = MagicMock()
     provider.http_client.execute_aql = AsyncMock(side_effect=execute_aql)
     provider._create_typed_record_from_arango = MagicMock(side_effect=lambda record, _ticket: record)  # type: ignore[method-assign]
-    provider.get_record_by_weburl = _exact_weburl(rows)  # type: ignore[method-assign]
+    _stub_exact_weburls(provider, rows)
     _grant_every_node(provider)
     return provider
 
