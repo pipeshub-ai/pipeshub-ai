@@ -14,7 +14,7 @@ import sys
 from collections import Counter
 from typing import TYPE_CHECKING
 
-from app.modules.code_graph.resolvers import RESOLVERS
+from app.modules.code_graph.resolvers import IN_REPO, RESOLVERS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -301,6 +301,11 @@ class ImportResolution:
             return resolver(specifier, from_file, self._files, self._index) if resolver else None
         except (ValueError, IndexError):
             return None
+
+    def in_repo(self, specifier: str, from_file: str, family: str | None) -> bool:
+        """Whether an unplaced specifier still names repo code, by the family's rule (none: it does not)."""
+        check = IN_REPO.get(family or "")
+        return bool(check and specifier and from_file and check(specifier, from_file, self._files, self._index))
 
     def walk_barrel_chain(self, target_file: str,
                           re_exports: dict[str, set[str]]) -> str:

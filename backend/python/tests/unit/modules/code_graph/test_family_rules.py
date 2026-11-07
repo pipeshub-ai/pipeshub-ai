@@ -24,7 +24,8 @@ def test_the_rows_reproduce_the_former_family_branches() -> None:
     assert go.bare_call_reaches_method == "never" and not go.bare_names_from_imported_modules
     js = rules_for("js")
     assert js.lexical_module_scope and js.bare_call_reaches_method == "any"
-    for family in ("py", "c", "rust", "php", "ruby", None, "no-such-family"):
+    # The rust row: test_rust_resolution.
+    for family in ("py", "c", "php", "ruby", None, "no-such-family"):
         assert rules_for(family) == FamilyRules(), family
 
 
@@ -34,6 +35,8 @@ def test_the_defaults_are_the_builders_former_shared_behaviour() -> None:
     assert rules.bare_names_from_imported_modules and not rules.lexical_module_scope
     assert rules.out_of_line_methods == "same_folder"
     assert rules.enclosing_type is None and rules.implicit_scope is None
+    assert rules.qualified_path_separator is None and not rules.impl_blocks_name_their_type
+    assert not rules.uncallable_kinds and not rules.typed_receiver_chains and rules.file_wide_receiver_types
 
 
 @pytest.fixture
@@ -91,7 +94,7 @@ async def test_the_enclosing_type_hook_gives_a_block_its_type(graph, index_file,
     await _build(graph)
     assert _targets(graph, CALLS, "pkg/a.py") == set()
 
-    def class_a(index, block_id) -> str:
+    def class_a(index, block_id, bindings) -> str:
         return next(c for c in index.candidates("A") if c in index.type_blocks)
     override("py", enclosing_type=class_a)
     await _build(graph)

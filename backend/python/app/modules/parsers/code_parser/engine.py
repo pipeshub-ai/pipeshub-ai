@@ -189,10 +189,32 @@ def _name_via_declarator(node: Node, src: bytes) -> str | None:
     return None
 
 
+# A type written with arguments, a reference, a path or `dyn`, and the field that holds what it wraps.
+_TYPE_WRAPPERS = {"generic_type": "type", "reference_type": "type", "pointer_type": "type",
+                  "scoped_type_identifier": "name", "dynamic_type": "trait", "abstract_type": "trait"}
+
+
+def _type_head(node: Node, src: bytes) -> str:
+    """The type a written type is about: `Foo<T>`, `&'a mut Foo` and `crate::m::Foo` all name `Foo`.
+
+    A Rust impl is named by the type it implements for, the way a compiler index
+    names it; the written text (`Renderer<'a>`) named its methods `Renderer<'a>.new`,
+    so no edge into them matched the type's own name.
+    """
+    cur = node
+    for _ in range(8):
+        inner = _field(cur, _TYPE_WRAPPERS[cur.type]) if cur.type in _TYPE_WRAPPERS else None
+        if inner is None:
+            break
+        cur = inner
+    return _text(cur, src)
+
+
 def _name_of(node: Node, src: bytes, cfg: LanguageConfig) -> str | None:
-    named = _field(node, cfg.name_field_overrides.get(node.type, cfg.name_field))
+    override = cfg.name_field_overrides.get(node.type)
+    named = _field(node, override or cfg.name_field)
     if named is not None:
-        return _text(named, src)
+        return _type_head(named, src) if override else _text(named, src)
     if cfg.unwrap_declarator:
         name = _name_via_declarator(node, src)
         if name:
@@ -1021,6 +1043,9 @@ def _callee_info(
     node: Node, src: bytes, cfg: LanguageConfig,
 ) -> tuple[str | None, bool, str | None, str | None]:
     """Return (name, is_member, receiver, qualified_prefix) for a call node."""
+    own = languages.CALLEE_HANDLERS.get(cfg.name)
+    if own is not None:
+        return own(node, src, cfg)
     if cfg.import_handler_name not in _REFERENCE_CALLEE_HANDLERS:
         return _generic_callee(node, src, cfg)
     target = _field(node, cfg.call_function_field) or _field(node, "constructor")
@@ -1170,6 +1195,8 @@ class _Walker:
         self.builtins = _BUILTIN_GLOBALS.get(cfg.name, frozenset())
         self.import_handler = _IMPORT_HANDLERS.get(cfg.import_handler_name)
         self._scope_tables: dict[int, dict[str, str]] = {}
+        # Macro invocation start byte -> its arguments parsed as code (languages.MACRO_ARGUMENT_HANDLERS).
+        self._macro_arguments: dict[int, Node] = {}
         self.heritage_handler = _HERITAGE_HANDLERS.get(cfg.heritage_handler_name)
 
     # -- symbols --------------------------------------------------------
@@ -1195,6 +1222,9 @@ class _Walker:
         handler = _TYPE_TABLE_HANDLERS.get(self.cfg.type_table_handler_name)
         if handler:
             handler(root, self.src, self.out.type_table, self.cfg)
+        arguments = languages.MACRO_ARGUMENT_HANDLERS.get(self.cfg.name)
+        if arguments:
+            self._macro_arguments = arguments(root, self.src, _get_parser(self.cfg).parse, self.cfg)
         self._scope(root, 0, len(self.src), (), None, container_kind=None)
         return self.out
 
@@ -1654,6 +1684,9 @@ class _Walker:
             if ntype in cfg.import_types or ntype in cfg.export_types:
                 self._run_handler(child, enclosing)
                 continue
+            if (arguments := self._macro_arguments.get(child.start_byte)) is not None and ntype == "macro_invocation":
+                stack.extend(reversed(arguments.named_children))
+                continue
             if ntype in cfg.call_types:
                 self._emit_call(child, enclosing)
             elif ntype in cfg.jsx_element_types:
@@ -1712,6 +1745,11 @@ class _Walker:
         has to drop."""
         if not receiver:
             return None
+        own = languages.RECEIVER_TYPE_HANDLERS.get(self.cfg.name)
+        if own is not None:   # the file-wide guess as below: none for a chained receiver's `f()`
+            chained = receiver.endswith(")") and qualifier != receiver
+            return own(node, self.src, self._scope_tables, self.cfg,
+                       None if chained else self.out.type_table.get(receiver))
         if receiver.endswith(")") and qualifier != receiver:
             # `a.f().g()` keeps only `f()`, the key of a bare `function f()`'s return type;
             # the builder evaluates the whole chain.
