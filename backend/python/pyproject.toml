@@ -395,8 +395,13 @@ exclude = ["modules", "build*", "dist*", "*.egg-info*", "venv*", ".venv*"]
 # cchardet has no wheels for Python 3.12+ and fails to build from source.
 # talon declares it as a dependency; chardet (direct dep above) plus the
 # sys.modules shim in gmail cover runtime needs.
+# unclecode-litellm (crawl4ai's pin) is a fork that installs into the same litellm/ directory as the
+# real litellm. Installed together, whichever file lands last wins and the tree is a mix of two
+# releases. Excluding it makes crawl4ai use the real litellm pinned above (it only imports public
+# names: completion, acompletion, batch_completion, aembedding, exceptions.RateLimitError).
+# uv reads this from the working directory, so install from backend/python.
 [tool.uv]
-exclude-dependencies = ["cchardet"]
+exclude-dependencies = ["cchardet", "unclecode-litellm"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
