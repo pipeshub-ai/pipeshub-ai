@@ -19,7 +19,7 @@ __all__ = ["MODULE_PREFIX", "module_ref", "module_refs_of_path"]
 
 MODULE_PREFIX = "module:"
 
-_CODE_EXTENSIONS = frozenset({"py", "pyi", "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"})
+_CODE_EXTENSIONS = frozenset({"py", "pyi", "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "cs", "php"})
 # A file named like this is imported by its directory (`./utils` is
 # utils/index.ts, `pkg` is pkg/__init__.py).
 _DIRECTORY_MODULE_STEMS = frozenset({"index", "__init__", "mod"})

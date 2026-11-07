@@ -858,6 +858,8 @@ block_schema = {
             "parserVersion": {"type": ["string", "null"]},
             "kind": {"type": ["string", "null"]},
             "subType": {"type": ["string", "null"]},
+            "modifiers": {"type": ["array", "null"], "items": {"type": "string"}},
+            "typeParamCount": {"type": ["number", "null"]},
             "isBlockGroup": {"type": "boolean"},
             "isExternal": {"type": "boolean"},
             "index": {"type": ["number", "null"]},

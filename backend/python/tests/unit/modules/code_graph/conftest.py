@@ -141,8 +141,9 @@ class FakeGraphProvider:
         if collection == CollectionNames.RECORDS.value:
             # The repo's code files, empty ones included, as the builder lists them.
             return [{"_key": record_id} for record_id in self.code_files]
+        fields = [f for f in return_fields or ("name", "kind") if f != "_key"]
         return [
-            {"_key": key, "name": doc.get("name"), "kind": doc.get("kind")}
+            {"_key": key, **{f: doc.get(f) for f in fields}}
             for key, doc in self.blocks.items()
             if all(doc.get(field) == value for field, value in filters.items())
         ]

@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 __all__ = [
+    "DECLARATION",
+    "EXPLICIT",
     "FILLER_KINDS",
     "HEADER_KIND",
     "ParsedFile",
@@ -43,6 +45,11 @@ class Relation:
 # file tile it exactly -- without them, imports, module-level code, comments and
 # whitespace are simply dropped.
 FILLER_KINDS = frozenset({"imports", "statements", "comment", "header"})
+# The modifier of a function or method declared without a body: what runs is elsewhere.
+DECLARATION = "declaration"
+# The modifier prefix of an explicit interface implementation (`explicit:IHandler` on C#'s
+# `Task IHandler.Handle(..)`): it implements IHandler.Handle and is no member of its own type by that name.
+EXPLICIT = "explicit:"
 
 # A container's members are what its children tile around; `header` covers the
 # span from the container's start to its first member.
@@ -69,12 +76,17 @@ class ParsedSymbol:
     parent_chain: tuple[str, ...] = ()
     text: str = ""
     decorators: tuple[str, ...] = ()
+    # Words resolution reads: DECLARATION (no body), then the language's (languages.MODIFIER_HANDLERS; C#:
+    # "partial", "extension", "this:<Type>").
+    modifiers: tuple[str, ...] = ()
     is_exported: bool = False
     # Index into ParsedFile.symbols of the immediately enclosing container, or
     # None at file level. Drives both block nesting and the tiling invariant.
     parent: int | None = None
     # True when this container has members that tile it.
     is_container: bool = False
+    # Type parameters the declaration takes (`class Foo<T, U>`: 2).
+    type_param_count: int = 0
 
     @property
     def is_filler(self) -> bool:
@@ -111,6 +123,8 @@ class PendingEdgeFact:
     # in `import * as ns`. Calls are written against this name.
     local_name: str | None = None
     context: str | None = None
+    # A type reference's type-argument count (`IHandler<int>`: 1), where the language reads it (C# bases).
+    type_args: int | None = None
     # EXPORTS names a symbol in *this* file; resolving it against the whole repo
     # would happily bind to a same-named symbol elsewhere.
     restrict_to_file: bool = False
@@ -143,6 +157,8 @@ class PendingEdgeFact:
             out["localName"] = self.local_name
         if self.context:
             out["context"] = self.context
+        if self.type_args is not None:
+            out["typeArgs"] = self.type_args
         if self.restrict_to_file:
             out["restrictToFile"] = True
         return out
