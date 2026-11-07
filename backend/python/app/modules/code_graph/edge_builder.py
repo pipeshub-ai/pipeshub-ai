@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations, RecordTypes
-from app.modules.code_graph.family_rules import rules_for
+from app.modules.code_graph.family_rules import FamilyRules, rules_for
 from app.modules.code_graph.guards import (
     is_test_path,
     lang_family,
@@ -897,12 +897,7 @@ class _Builder:
                 [cid for module in sorted(modules) for cid in self._defined_in(module, name)],
                 family, relation,
             )
-            if len(imported) > 1 and rules.scope_levels:
-                for level in rules.scope_levels(self.index, call_file):
-                    nearest = [cid for cid in imported if self.index.file_by_block.get(cid) in level]
-                    if nearest:
-                        imported = nearest
-                        break
+            imported = self._nearest_scope_level(imported, call_file, rules)
             if imported:
                 candidates, confidence, resolution = imported, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE
             elif rules.lexical_module_scope and relation in _CALL_RELATIONS:
@@ -1770,9 +1765,13 @@ class _Builder:
         if len(candidates) > 1:
             same_file = [cid for cid in candidates
                          if self.index.file_by_block.get(cid) == from_file]
-            with_evidence = same_file or [
-                cid for cid in candidates if self._has_module_evidence(cid, from_file)
-            ]
+            # The scope a heritage fact resolves in (`_resolve_direct`), so the base chain and INHERITS agree.
+            rules = rules_for(family)
+            scope = set(rules.implicit_scope(self.index, from_file)) if rules.implicit_scope else set()
+            with_evidence = same_file or self._nearest_scope_level([
+                cid for cid in candidates
+                if self._has_module_evidence(cid, from_file) or self.index.file_by_block.get(cid) in scope
+            ], from_file, rules)
             candidates = with_evidence or candidates
             candidates = prefer_non_test(candidates, self.index.file_by_block, from_file)
             candidates = self._by_arity(candidates, type_args, family)
@@ -1780,6 +1779,16 @@ class _Builder:
                 candidates, self.index.file_by_block, from_file
             )
         return candidates[0] if len(candidates) == 1 else None
+
+    def _nearest_scope_level(self, candidates: list[str], from_file: str, rules: FamilyRules) -> list[str]:
+        """Among several in-scope candidates, those of the nearest level the family's lookup order has
+        (C#: innermost namespace first); unchanged without such an order."""
+        if len(candidates) > 1 and rules.scope_levels:
+            for level in rules.scope_levels(self.index, from_file):
+                nearest = [cid for cid in candidates if self.index.file_by_block.get(cid) in level]
+                if nearest:
+                    return nearest
+        return candidates
 
     def _by_arity(self, candidates: list[str], type_args: int | None, family: str | None) -> list[str]:
         """`IHandler<int>` beside `IHandler<T>` and a plain `IHandler`: the one taking that many type

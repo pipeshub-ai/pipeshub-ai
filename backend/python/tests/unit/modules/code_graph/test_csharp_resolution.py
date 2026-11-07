@@ -283,3 +283,19 @@ def test_the_csharp_row_and_its_extensions() -> None:
     assert rules.implicit_scope is namespace_scope and rules.type_parts is partial_parts
     assert rules_for("jvm").type_parts is None
     assert "module:src/Orders/Order" in module_refs_of_path("src/Orders/Order.cs")
+
+
+@pytest.mark.asyncio
+async def test_the_base_chain_takes_the_in_scope_base_a_nearer_one_does_not_win(graph, index_file) -> None:
+    # The same-folder Base is in another namespace: path proximity would pick it, C#'s scope does not.
+    await _repo(index_file, {
+        "src/Billing/Invoice.cs": b"namespace Shop.Billing;\n"
+                                  b"public class Invoice : Base { public void Go() { base.Save(); Load(); } }\n",
+        "src/Billing/Base.cs": b"namespace Shop.Legacy;\n"
+                               b"public class Base { public void Save() {} public void Load() {} }\n",
+        "core/Base.cs": b"namespace Shop.Billing;\npublic class Base { public void Save() {} public void Load() {} }\n",
+    })
+    await _build(graph)
+    assert _targets(graph, INHERITS, "src/Billing/Invoice.cs") == {"core/Base.cs::class:Shop.Billing.Base"}
+    assert _targets(graph, CALLS, "src/Billing/Invoice.cs") == {
+        "core/Base.cs::method:Shop.Billing.Base.Save", "core/Base.cs::method:Shop.Billing.Base.Load"}
