@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
 CHANNEL = "pipeshub_acl_cache"
-_NOTIFY = "/* pipeshub:acl.notify */ SELECT pg_notify('pipeshub_acl_cache', $1)"
+_NOTIFY = "/* pipeshub:acl.notify */ SELECT pg_notify($1, $2)"
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,10 @@ class PgCacheBus:
         apply: Callable[[str, str, str], Awaitable[None]],
         flush: Callable[[], Awaitable[None]],
         runtime: RuntimeDb | None = None,
+        channel: str = CHANNEL,
     ) -> None:
-        self._apply, self._flush = apply, flush
+        """``channel``: one per cache, so each cache hears only its own changes (they share the process's LISTEN connection)."""
+        self._apply, self._flush, self._channel = apply, flush, channel
         self._rt = runtime or RuntimeDb()
         self._dsn = listen_dsn(self._rt.cfg)
         self._listener: PgListener | None = None
@@ -52,11 +54,11 @@ class PgCacheBus:
     def start(self) -> None:
         if self._dsn is None:
             return
-        self._listener = PgListener(self._dsn, CHANNEL, self._on_notify, on_reconnect=self._on_reconnect)
+        self._listener = PgListener(self._dsn, self._channel, self._on_notify, on_reconnect=self._on_reconnect)
         self._task = self._listener.start()
 
     def healthy(self) -> bool:
-        return self._dsn is not None and ListenHub.for_dsn(self._dsn).healthy(channel=CHANNEL)
+        return self._dsn is not None and ListenHub.for_dsn(self._dsn).healthy(channel=self._channel)
 
     def _on_notify(self, payload: str) -> None:
         try:
@@ -74,7 +76,7 @@ class PgCacheBus:
         payload = json.dumps({"k": kind, "o": org_id, "i": scope_id}, separators=(",", ":"))
         db = await self._rt.db()
         async with db.runtime_uow(write=True) as tx:
-            await tx.execute(_NOTIFY, payload)
+            await tx.execute(_NOTIFY, self._channel, payload)
 
     async def stop(self) -> None:
         if self._listener is not None:

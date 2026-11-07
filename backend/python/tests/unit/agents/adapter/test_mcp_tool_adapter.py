@@ -28,6 +28,12 @@ from app.agents.mcp.models import MCPToolInfo
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
 from tests.unit.agents.adapter.conftest import make_context
+from tests.unit.agents.mcp.refresh_failures import (
+    BODY_SECRET,
+    TOKEN_HOST,
+    lock_contention_error,
+    token_endpoint_error,
+)
 
 
 def _server() -> ResolvedMCPServer:
@@ -695,6 +701,12 @@ class TestAFailedCallIsLoggedSafely:
 
         assert not record.exc_info
 
+    async def test_a_refresh_the_provider_couldnt_answer_is_tagged_unreachable(self, caplog: pytest.LogCaptureFixture) -> None:
+        record = await self._failure_record(await token_endpoint_error(503, {"error": "temporarily_unavailable"}), caplog)
+
+        assert not record.exc_info
+        assert "(unreachable)" in record.getMessage()
+
     async def test_an_unexpected_error_keeps_its_stack(self, caplog: pytest.LogCaptureFixture) -> None:
         record = await self._failure_record(KeyError("structuredContent"), caplog)
 
@@ -728,6 +740,34 @@ class TestExecuteFailure:
         assert output.success is False
         assert "Reconnect it in Workspace" in output.error
         assert "/services/mcp" not in output.error
+
+    async def test_a_provider_outage_during_the_refresh_asks_to_try_again(self) -> None:
+        outage = await token_endpoint_error(503, {"error": "temporarily_unavailable", "trace": BODY_SECRET})
+        adapter = _make_adapter(_FakeSessionManager(exc=outage))
+
+        output = await adapter.execute(query="PA")
+
+        assert output.error == (
+            "The sign-in to the Jira MCP MCP server couldn't be renewed: its sign-in provider is down or busy. "
+            "Try again in a few minutes."
+        )
+        assert BODY_SECRET not in output.error and TOKEN_HOST not in output.error
+
+    async def test_another_processs_refresh_asks_to_try_again(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager(exc=await lock_contention_error()))
+
+        output = await adapter.execute(query="PA")
+
+        assert "Try again in a few minutes" in output.error
+        assert "Reconnect" not in output.error
+        assert "/services/mcp" not in output.error
+
+    async def test_a_refused_refresh_still_asks_to_reconnect(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager(exc=await token_endpoint_error(400, {"error": "invalid_grant"})))
+
+        output = await adapter.execute(query="PA")
+
+        assert "Reconnect it in Workspace" in output.error
 
     async def test_oauth_error_never_shows_the_token_endpoint_body(self) -> None:
         adapter = _make_adapter(

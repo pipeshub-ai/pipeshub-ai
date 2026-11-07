@@ -343,5 +343,5 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 const DOCSTORE_TABLES_SQL = `SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition
     AND n.nspname IN ('identity', 'conversation', 'content', 'platform', 'oauth', 'integrations')
-    AND NOT (n.nspname = 'platform' AND (c.relname IN ('deployment_profile', 'consumer_inbox', 'jobs', 'kv_entries') OR c.relname LIKE 'queue\\_%' OR c.relname LIKE 'sched\\_%'))
+    AND NOT (n.nspname = 'platform' AND (c.relname IN ('deployment_profile', 'consumer_inbox', 'jobs', 'kv_entries', 'cache_entries') OR c.relname LIKE 'queue\\_%' OR c.relname LIKE 'sched\\_%'))
   ORDER BY 1, 2`

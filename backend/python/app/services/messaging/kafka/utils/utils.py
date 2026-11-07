@@ -1,13 +1,15 @@
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
 from app.services.messaging.kafka.config.kafka_config import kafka_security_kwargs
 from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
 from app.edition_services import (
     EntityEventService,
     EventService,
-    RecordEventHandler,
 )
 from app.connectors.services.code_graph_event_service import CodeGraphEventService
 from app.containers.connector import ConnectorAppContainer
@@ -186,7 +188,7 @@ class KafkaUtils:
     async def create_record_event_handler(
         app_container: IndexingAppContainer,
         producer: Any = None,
-    ) -> RecordEventHandler:
+    ) -> "RecordEventHandler":
         """Build the record event handler.
 
         Separate from ``create_record_message_handler`` because the consumer
@@ -194,6 +196,11 @@ class KafkaUtils:
         puts a record into a terminal status when its message is discarded — and
         two instances would mean two graph clients for one job.
         """
+        # Imported here: the record handler pulls in the event processor and the whole
+        # parser stack, which services that only use other helpers in this module
+        # (the connector service) must not load.
+        from app.edition_services import RecordEventHandler
+
         logger = app_container.logger()
         event_processor = getattr(app_container, '_event_processor', None)
         if not event_processor:
@@ -209,7 +216,7 @@ class KafkaUtils:
     async def create_record_message_handler(
         app_container: IndexingAppContainer,
         producer: Any = None,
-        record_event_service: RecordEventHandler | None = None,
+        record_event_service: "RecordEventHandler | None" = None,
     ) -> IndexingMessageHandler:
         """Create a message handler for record events.
 

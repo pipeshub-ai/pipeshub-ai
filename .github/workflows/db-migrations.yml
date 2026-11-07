@@ -7,6 +7,7 @@ on:
       - 'main'
     paths:
       - 'backend/db/**'
+      - 'deployment/docker-compose/postgres/pg-roles.sh'
       - 'backend/python/app/edition.py'
       - 'scripts/assert_no_skips.py'
       - '.github/workflows/db-migrations.yml'
@@ -29,7 +30,7 @@ jobs:
         include:
           - shard: rls
             files: tests/test_rls.py tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
-            min_tests: 448
+            min_tests: 449
             suites: ''
           - shard: integration
             files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py

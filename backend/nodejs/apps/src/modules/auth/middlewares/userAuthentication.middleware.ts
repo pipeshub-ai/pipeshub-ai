@@ -6,6 +6,7 @@ import {
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { asAccount } from '../../../libs/context/orgContext';
+import { setContextIdentity } from '../../../libs/context/request-context';
 
 export const authSessionMiddleware = async (
   req: AuthSessionRequest,
@@ -29,6 +30,10 @@ export const authSessionMiddleware = async (
     req.sessionInfo = session;
     // A stored session names the account once the address was matched; before that there is no organisation to bind.
     if (session.orgId && session.userId && session.userId !== 'NOT_FOUND') {
+      setContextIdentity({
+        orgId: String(session.orgId),
+        userId: session.userId,
+      });
       return asAccount(String(session.orgId), session.userId, 'session', next);
     }
     next();
