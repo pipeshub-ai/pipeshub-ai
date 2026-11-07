@@ -6,6 +6,7 @@ from app.config.constants.arangodb import AccessRule, Connectors, OriginTypes
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     UNREADABLE_AUTH,
     UNREADABLE_KEEPS_STORED_ACCESS,
+    UNREADABLE_NOT_LISTED,
     UNREADABLE_OTHER,
     UNREADABLE_PERMISSION,
     UNREADABLE_ROLES,
@@ -18,11 +19,14 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     apply_issue_access_settled,
     classify_project_mapping,
     classify_scheme_response,
+    hold_levels_naming_unread_roles,
     level_reads_alike,
+    plan_level_reread,
     refuses_a_scope,
     resolve_scheme_knowledge,
     scheme_has_no_levels,
     unreadable_reason,
+    unreadable_security_notices,
 )
 from app.models.entities import Record, RecordType
 from app.models.permission import EntityType
@@ -527,3 +531,107 @@ class TestLevelReadsAlike:
 
     def test_a_personal_connector_enforces_no_levels(self) -> None:
         assert not level_reads_alike(self._context([{"type": "group"}], enforce=False), "10")
+
+
+class TestVisibleProjectNotFound:
+    BODY = {"errorMessages": ["The project has no issue security scheme."], "errors": {}}
+
+    def test_a_404_with_error_messages_from_a_project_the_caller_lists_is_no_scheme(self) -> None:
+        assert classify_scheme_response(404, self.BODY, project_is_visible=True) == (SchemeKnowledge.NONE, None)
+
+    @pytest.mark.parametrize("body", [None, {}, {"message": "Not Found"}, {"errorMessages": []}], ids=str)
+    def test_a_404_without_a_message_may_be_a_route_the_server_lacks_and_stays_unknown(self, body) -> None:
+        assert classify_scheme_response(404, body, project_is_visible=True) == (SchemeKnowledge.UNKNOWN, None)
+
+    def test_without_the_flag_it_is_unknown(self) -> None:
+        assert classify_scheme_response(404, self.BODY) == (SchemeKnowledge.UNKNOWN, None)
+
+    def test_a_forbidden_read_is_never_no_scheme(self) -> None:
+        assert classify_scheme_response(403, self.BODY, project_is_visible=True) == (SchemeKnowledge.UNKNOWN, None)
+
+
+class TestMembersRouteMissing:
+    @pytest.mark.parametrize("status", [404, 405, 501])
+    def test_a_scheme_whose_members_route_the_server_lacks_has_its_own_reason(self, status) -> None:
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, scheme_id="1", read_status=status)
+        assert unreadable_reason(context) == UNREADABLE_NOT_LISTED
+        assert UNREADABLE_NOT_LISTED not in UNREADABLE_KEEPS_STORED_ACCESS  # such issues are hidden
+
+    def test_a_transient_read_is_still_transient(self) -> None:
+        context = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, scheme_id="1", read_status=503, defer_checkpoint=True)
+        assert unreadable_reason(context) == UNREADABLE_TRANSIENT
+
+
+def _with_users(**levels: list) -> IssueSecurityContext:
+    return IssueSecurityContext(
+        knowledge=SchemeKnowledge.PRESENT, scheme_id="1", members_readable=True,
+        members_by_level={lid: [{"type": "user", "parameter": p} for p in people] for lid, people in levels.items()},
+    )
+
+
+class TestPlanLevelReread:
+    def test_a_project_stored_before_levels_were_tracked_reads_every_leveled_issue_once(self) -> None:
+        security = _with_users(**{"1": ["a"]})
+        reread, levels, to_save = plan_level_reread(security, None, is_new_project=False, app_roles_mapping={})
+        assert (reread, levels) == ("leveled", None)
+        assert to_save == security.level_fingerprints()
+        # With the digest saved, the next sync reads nothing.
+        assert plan_level_reread(security, to_save, is_new_project=False, app_roles_mapping={})[0] is None
+
+    def test_a_project_with_no_scheme_and_no_digest_reads_nothing(self) -> None:
+        none = IssueSecurityContext(knowledge=SchemeKnowledge.NONE)
+        assert plan_level_reread(none, None, is_new_project=False, app_roles_mapping={}) == (None, None, {})
+
+    def test_a_new_project_reads_nothing_and_saves_the_digests(self) -> None:
+        security = _with_users(**{"1": ["a"]})
+        assert plan_level_reread(security, None, is_new_project=True, app_roles_mapping={}) == (
+            None, None, security.level_fingerprints())
+
+    def test_only_the_level_whose_holders_changed_is_read(self) -> None:
+        before = _with_users(**{"1": ["a"], "2": ["b"]}).level_fingerprints()
+        now = _with_users(**{"1": ["a", "c"], "2": ["b"]})
+        assert plan_level_reread(now, before, is_new_project=False, app_roles_mapping={})[:2] == ("levels", ["1"])
+
+    def test_a_level_gone_or_a_scheme_removed_reads_the_whole_project(self) -> None:
+        before = _with_users(**{"1": ["a"], "2": ["b"]}).level_fingerprints()
+        assert plan_level_reread(_with_users(**{"1": ["a"]}), before, is_new_project=False, app_roles_mapping={})[0] == "project"
+        none = IssueSecurityContext(knowledge=SchemeKnowledge.NONE)
+        assert plan_level_reread(none, before, is_new_project=False, app_roles_mapping={})[0] == "project"
+
+    def test_a_transient_read_keeps_the_digests_and_marks_a_retry(self) -> None:
+        before = _with_users(**{"1": ["a"]}).level_fingerprints()
+        down = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, defer_checkpoint=True)
+        assert plan_level_reread(down, before, is_new_project=False, app_roles_mapping={}) == (
+            None, None, {**before, "*": "retry"})
+        # Once readable again, the marker reads every leveled issue.
+        assert plan_level_reread(_with_users(**{"1": ["a"]}), {**before, "*": "retry"}, is_new_project=False,
+                                 app_roles_mapping={})[0] == "leveled"
+
+    def test_a_lasting_refusal_closes_once_and_is_not_walked_again(self) -> None:
+        refused = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, read_status=403, scheme_forbidden=True)
+        reread, _, to_save = plan_level_reread(refused, None, is_new_project=False, app_roles_mapping={})
+        assert (reread, to_save) == ("leveled", {"*": "unreadable"})
+        assert plan_level_reread(refused, to_save, is_new_project=False, app_roles_mapping={})[0] is None
+
+
+class TestHoldLevelsNamingUnreadRoles:
+    def test_a_level_naming_an_application_role_is_unknown_while_the_roles_are_unread(self) -> None:
+        security = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "applicationRole", "parameter": "jira-software"}]})
+        held = hold_levels_naming_unread_roles(security, app_roles_unread=True)
+        assert held.members_readable is False and held.defer_checkpoint is True
+
+    def test_other_levels_and_read_roles_are_untouched(self) -> None:
+        security = _with_users(**{"1": ["a"]})
+        assert hold_levels_naming_unread_roles(security, app_roles_unread=True).members_readable is True
+
+
+class TestUnreadableNotices:
+    def test_one_notice_per_reason_names_the_effect_and_the_projects(self) -> None:
+        notices = unreadable_security_notices({"B": UNREADABLE_PERMISSION, "A": UNREADABLE_PERMISSION, "C": UNREADABLE_TRANSIENT})
+        by_reason = {n[0]: n for n in notices}
+        assert by_reason[UNREADABLE_PERMISSION][1:3] == ("are hidden from everyone", ["A", "B"])
+        assert "Administer Jira" in by_reason[UNREADABLE_PERMISSION][3]
+        assert by_reason[UNREADABLE_TRANSIENT][1] == "keep the access they had"
