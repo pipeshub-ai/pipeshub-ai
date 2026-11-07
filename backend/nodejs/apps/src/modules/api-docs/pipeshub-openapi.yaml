@@ -63198,8 +63198,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The API could not be reached, or answered with something that is not HTTP. The connectors
-            service answers `502`, which the gateway reports as `500 INTERNAL_ERROR`.
+            The API could not be reached, answered with something that is not HTTP, or its OAuth server
+            is down or rate-limiting, so no access token could be had. The connectors service answers
+            `502`, which the gateway reports as `500 INTERNAL_ERROR`.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:

@@ -18,7 +18,9 @@ from app.agents.mcp.oauth_client import (
     refresh_access_token,
     request_client_credentials_token,
 )
+from app.agents.openapi.executor import ApiCallError
 from app.agents.openapi.models import ApiToolsetCredentials, AuthScheme, AuthType
+from app.utils.oauth_errors import is_transient_status
 
 if TYPE_CHECKING:
     import httpx
@@ -141,6 +143,12 @@ class OAuthTokenSource:
             try:
                 fresh = await self._obtain(tokens)
             except MCPOAuthError as e:
+                # Down or rate-limiting: the sign-in is still good, so don't send the user to sign in again.
+                if is_transient_status(e.status):
+                    raise ApiCallError(
+                        "The API's OAuth server is down or busy, so PipesHub couldn't get an access token. "
+                        "Try again in a few minutes."
+                    ) from e
                 raise ApiToolsetAuthError(
                     "Couldn't get an access token from the API's OAuth server. Check the API action's "
                     "OAuth settings, or sign in again."
