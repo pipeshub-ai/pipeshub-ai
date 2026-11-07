@@ -19,4 +19,12 @@ __all__ = ["RESOLVERS", "Resolver"]
 
 Resolver = Callable[[str, str, set[str], "SymbolIndex | None"], "str | None"]
 
-RESOLVERS: dict[str, Resolver] = {}
+
+def _registry() -> dict[str, Resolver]:
+    # Imported here: a resolver module imports this package.
+    from app.modules.code_graph.resolvers import c_family
+
+    return {"c": c_family.resolve}
+
+
+RESOLVERS = _registry()

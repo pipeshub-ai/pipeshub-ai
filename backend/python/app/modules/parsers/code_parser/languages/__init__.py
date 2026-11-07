@@ -8,11 +8,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.modules.parsers.code_parser.languages import c_family
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-__all__ = ["HERITAGE_HANDLERS", "IMPORT_HANDLERS", "TYPE_TABLE_HANDLERS"]
+__all__ = ["HERITAGE_HANDLERS", "IMPORT_HANDLERS", "MACRO_TABLE_HANDLERS", "MODIFIER_HANDLERS", "TYPE_TABLE_HANDLERS"]
 
-IMPORT_HANDLERS: dict[str, Callable] = {}
-HERITAGE_HANDLERS: dict[str, Callable] = {}
-TYPE_TABLE_HANDLERS: dict[str, Callable] = {}
+IMPORT_HANDLERS: dict[str, Callable] = {"c_family": c_family.imports}
+HERITAGE_HANDLERS: dict[str, Callable] = {"cpp": c_family.heritage}
+TYPE_TABLE_HANDLERS: dict[str, Callable] = {"cpp": c_family.type_table}
+# (root, source, table, config) -> macros the table's caps dropped; the table is name -> [line, called names].
+MACRO_TABLE_HANDLERS: dict[str, Callable] = {"c_family": c_family.macro_table}
+# Keyed by language name: (definition node, source) -> the symbol's modifiers.
+MODIFIER_HANDLERS: dict[str, Callable] = {"c": c_family.modifiers, "cpp": c_family.cpp_modifiers}
