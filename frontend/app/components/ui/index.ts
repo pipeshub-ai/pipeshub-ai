@@ -14,6 +14,7 @@ export { MaterialIcon } from './MaterialIcon';
 export { ConnectorIcon } from './ConnectorIcon';
 export type { ConnectorType } from './ConnectorIcon';
 export { Select } from './Select';
+export { FootNote } from './foot-note';
 export { FileIcon } from './file-icon';
 export { FileTypeIcon, FILE_TYPE_ICON_MAP } from './file-type-icons';
 export type { FileTypeIconComponentProps } from './file-type-icons';
