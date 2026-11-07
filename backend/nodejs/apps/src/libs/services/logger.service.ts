@@ -326,7 +326,7 @@ const isSerializedError = (value: unknown): value is Record<string, unknown> =>
   isPlainObject(value) && typeof value.name === 'string' && 'message' in value;
 
 /**
- * One JSON object per line with the Python keys (docs/logging.md): timestamp,
+ * One JSON object per line, with these keys in order: timestamp,
  * level, logger, filename, line, message, request_id, identity, the other
  * fields, `error` (a serialised Error), everything else under `metadata`, stack.
  */

@@ -302,7 +302,7 @@ persistence:
 config:
   nodeEnv: "production"
   logLevel: "info"
-  # text (default) or json: one JSON object per log line, same keys in the Node and Python services.
+  # text (default) or json: json prints one JSON object per log line.
   logFormat: "text"
   # Mask stored secrets in admin config API responses (HIDE_SECRET_CONFIG).
   # false matches the docker-compose default: one org's admins see what they stored.

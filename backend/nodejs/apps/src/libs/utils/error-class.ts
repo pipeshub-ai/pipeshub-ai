@@ -1,6 +1,6 @@
 /**
- * Why a request or call failed, in the names the Python side uses
- * (`app/utils/error_class.py`), and the one level policy that goes with them.
+ * Why a request or call failed, as one of a fixed set of class names, and the
+ * one level policy that goes with them.
  * Pure: no logging here.
  */
 import { BaseError } from '../errors/base.error';
@@ -157,7 +157,7 @@ export function classifyRequestError(
     : classifyStatus(answeredStatus);
 }
 
-/** The level policy (P1b): our fault ERROR, cancelled INFO, every other class WARN; unknown ERROR. */
+/** The level policy: our fault ERROR, cancelled INFO, every other class WARN; unknown ERROR. */
 export function levelFor(errorClass: ErrorClass): 'error' | 'warn' | 'info' {
   if (errorClass === 'cancelled') return 'info';
   return WARN_CLASSES.has(errorClass) ? 'warn' : 'error';
