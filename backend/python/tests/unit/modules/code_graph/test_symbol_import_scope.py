@@ -136,6 +136,26 @@ async def test_a_use_run_as_the_module_loads_sees_the_import_until_the_def_runs(
     assert (CALLS, "function:build", "app/models.py") in pairs, pairs
 
 
+BASE_CHAIN = IMPORT_BASE_THEN_DEF.replace(b"class Base:\n    pass", b"class Base:\n    def run(self):\n        return 2") \
+    .replace(b"class Late(Base):\n    pass", b"class Late(Base):\n    def go(self):\n        return self.run()") \
+    .replace(b"class Early(Base):\n    pass", b"class Early(Base):\n    def go(self):\n        return self.run()")
+
+
+async def test_the_base_chain_takes_the_same_base_as_the_heritage_edge(graph, index_file) -> None:
+    """`self.run()` walks the base INHERITS names: the file's own Base for `Late`, the imported one for `Early`."""
+    await index_file("recP", "app/__init__.py", b"", "python")
+    await index_file("recU", "app/util.py", b"class Base:\n    def run(self):\n        return 1\n", "python")
+    await index_file("recF", "app/models.py", BASE_CHAIN, "python")
+    await build_code_graph_edges(graph_provider=graph, facts_source=graph, org_id=ORG_ID, record_group_id=GROUP_ID)
+    calls = set()
+    for e in graph.code_edges(CALLS):
+        src = graph.blocks.get(e["_from"].partition("/")[2], {})
+        dst = graph.blocks.get(e["_to"].partition("/")[2], {})
+        if dst.get("qualifiedName") == "method:Base.run":
+            calls.add((src.get("qualifiedName"), graph.code_files[dst["recordId"]]))
+    assert calls == {("method:Late.go", "app/models.py"), ("method:Early.go", "app/util.py")}, calls
+
+
 DECORATED = b'''
 from app.util import helper
 

@@ -2546,7 +2546,8 @@ class _Builder:
             return []
         family = self._family_of(block_id)
         found = (self._resolve_type_name(fact.get("toName") or "", row.file_path or "", family,
-                                         fact.get("qualifiedPrefix"), type_args=fact.get("typeArgs"))
+                                         fact.get("qualifiedPrefix"), type_args=fact.get("typeArgs"),
+                                         caller=block_id, line=fact.get("line"))
                  for fact in row.pending_edges if fact.get("relation") in _TYPE_RELATIONS)
         return [target for target in found if target]
 
@@ -2632,13 +2633,17 @@ class _Builder:
         return parent.name if parent else None
 
     def _resolve_type_name(self, name: str, from_file: str, family: str | None,
-                           qualified_prefix: str | None = None, *, type_args: int | None = None) -> str | None:
+                           qualified_prefix: str | None = None, *, type_args: int | None = None,
+                           caller: str | None = None, line: int | None = None) -> str | None:
         """Name -> type block. Deliberately without `_resolve_direct`'s counters:
         a heritage hop taken while resolving a call is not itself a resolution
-        the run should report on."""
+        the run should report on. *caller* and *line* place the use, as in `_resolve_direct`."""
         if not name:
             return None
         bound = self.symbol_bindings.get(from_file, {}).get(name) if not qualified_prefix else None
+        if bound is not None and self._own_definition_wins(from_file, name, caller, family,
+                                                           self.symbol_binding_sites, line):
+            bound = None  # the file's own later definition, as INHERITS takes it in `_resolve_direct`
         if bound == _EXTERNAL:
             return None
         if bound in self.index.type_blocks:
