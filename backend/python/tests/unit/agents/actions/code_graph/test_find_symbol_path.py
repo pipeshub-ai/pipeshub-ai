@@ -234,6 +234,40 @@ class TestCallsToFollow:
         assert calls[1]["could_run"] == ["src/v.py::render"]
         assert "untrusted" in out
 
+    async def test_one_line_of_many_calls_stays_within_the_lookup_cap(self, monkeypatch) -> None:
+        tool = self._tool()
+        searched = []
+
+        async def read(**_kwargs) -> dict:
+            return {"code": "def h():\n    " + " + ".join(f"f{i}()" for i in range(20)) + "\n"}
+
+        async def search(**kwargs) -> dict:
+            searched.append(kwargs["pattern"])
+            return {"matches": []}
+
+        monkeypatch.setattr(cg, "read_code_impl", read)
+        monkeypatch.setattr(cg, "search_code_impl", search)
+        await tool._with_next_calls({"found": False}, "c1", None, "src/h.py", "function:h", include_tests=False)
+        assert len(searched) == cg._NEXT_CALLS * 2
+
+    async def test_same_named_non_callables_do_not_hide_the_definition(self, monkeypatch) -> None:
+        tool = self._tool()
+
+        async def read(**_kwargs) -> dict:
+            return {"code": "def h(self):\n    return self.fetch()\n"}
+
+        async def search(**kwargs) -> dict:
+            assert kwargs["limit"] > cg._NEXT_CANDIDATES, "filter by kind before taking two"
+            return {"matches": [{"file_path": "src/a.py", "qualified_name": "field:A.fetch", "kind": "field"},
+                                {"file_path": "src/b.py", "qualified_name": "field:B.fetch", "kind": "field"},
+                                {"file_path": "src/l.py", "qualified_name": "method:L.fetch", "kind": "method"}]}
+
+        monkeypatch.setattr(cg, "read_code_impl", read)
+        monkeypatch.setattr(cg, "search_code_impl", search)
+        out = await tool._with_next_calls({"found": False}, "c1", None, "src/h.py", "method:H.h",
+                                          include_tests=False)
+        assert out["calls_to_follow"]["calls"][0]["could_run"] == ["src/l.py::L.fetch"]
+
     async def test_a_capped_search_adds_no_leads(self, monkeypatch) -> None:
         tool = self._tool()
 

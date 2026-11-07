@@ -62,7 +62,7 @@ from .query import (
 )
 from .read import DEFAULT_MAX_LINES, outline_impl, read_code_impl
 from .results import as_untrusted, attach_graph_status, without_marker
-from .search import DEFAULT_SEARCH_LIMIT, search_code_impl
+from .search import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, search_code_impl
 from .semantic import DEFAULT_SEMANTIC_LIMIT, search_semantic_impl
 
 if TYPE_CHECKING:
@@ -931,6 +931,8 @@ class CodeGraph:
                     if name in _NOT_CALLS or name.startswith("__") or any(n == name for n, _ in seen):
                         continue
                     seen.append((name, line.strip()[:120]))
+                    if len(seen) >= _NEXT_CALLS * 2:
+                        break
                 if len(seen) >= _NEXT_CALLS * 2:
                     break
             calls = []
@@ -938,8 +940,9 @@ class CodeGraph:
                 found = await search_code_impl(
                     graph_provider=self._graph_provider, blob_store=self._blob_store,
                     connector_id=connector_id, org_id=self._org_id, user_id=self._user_id,
-                    pattern=name, mode="identifier", repo=repo, limit=_NEXT_CANDIDATES,
-                    include_tests=include_tests,
+                    pattern=name, mode="identifier", repo=repo,
+                    # Fields and other non-callables share the name; filter them before taking two.
+                    limit=MAX_SEARCH_LIMIT, include_tests=include_tests,
                 )
                 runs = [f"{c.get('file_path')}::{(c.get('qualified_name') or '').split(':', 1)[-1]}"
                         for c in found.get("matches") or [] if c.get("kind") in ("method", "function", "class")]
