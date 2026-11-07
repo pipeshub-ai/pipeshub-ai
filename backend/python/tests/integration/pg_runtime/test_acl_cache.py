@@ -31,6 +31,8 @@ def _lines(proc: subprocess.Popen, until: str, limit: float = 30) -> list[dict]:
         line = proc.stdout.readline()
         if not line:
             break
+        if not line.startswith("{"):  # the child's own log lines share its stdout
+            continue
         msg = json.loads(line)
         out.append(msg)
         if until in msg:
