@@ -98,7 +98,7 @@ def sql_connector_instance_ids(instances: list[dict] | None, org_id: str) -> fro
             continue
         if not instance.get("isConfigured"):
             continue
-        # `get_user_connector_instances` does not filter on org, so apply the tenant check here.
+        # `get_user_connector_instances` does not filter on org, so apply the org check here.
         instance_org_id = instance.get("orgId")
         if instance_org_id and instance_org_id != org_id:
             continue

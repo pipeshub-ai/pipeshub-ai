@@ -4,7 +4,7 @@ Redis Cluster is plain open-source Redis, so OSS ships this (Open Decision
 2) both so `REDIS_MODE=cluster` works against a self-hosted Redis Cluster
 and so OSS CI can run the full contract-test suite against a real 3-master
 cluster and prove the rest of the refactor is cluster-safe. AWS MemoryDB is
-protocol-compatible with Redis Cluster; an EE ``memorydb`` provider extends
+protocol-compatible with Redis Cluster; an extension ``memorydb`` provider extends
 this class to add IAM ``credentials_provider`` rotation, a NAT map for
 private VPC addressing, and TLS-by-default, then registers itself with
 :class:`app.services.redis.connection_provider_factory.RedisConnectionProviderFactory`.

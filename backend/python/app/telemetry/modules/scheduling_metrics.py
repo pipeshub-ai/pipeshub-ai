@@ -7,7 +7,7 @@ when something happened. Instrumentation lives here; the consumers call it.
 
 **Cardinality.** Fairness is per (org, connector), but a per-connector label
 would put an unbounded series count on a busy install. Dispatch share is
-labelled by org only -- bounded by customer count, and the same choice
+labelled by org only -- bounded by org count, and the same choice
 ``activity_metrics`` already makes -- while connector-level activity is
 exposed as a *count* of active keys rather than one series per key.
 """

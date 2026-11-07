@@ -31,7 +31,7 @@ from tests.support.redis_provider_matrix import PROVIDERS
 _LANE_TOPICS = ["record-events.0", "record-events.1", "record-events.2"]
 
 # `PROVIDERS` (standalone/cluster) comes from `tests/support/redis_provider_matrix.py`
-# (T4) so an EE `conftest.py` can append a `memorydb` entry and run this same
+# (T4) so an extension `conftest.py` can append a `memorydb` entry and run this same
 # suite against it with no changes here.
 
 

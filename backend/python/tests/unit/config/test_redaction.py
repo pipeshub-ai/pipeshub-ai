@@ -49,7 +49,7 @@ def hidden(monkeypatch):
 
 @pytest.fixture
 def shown(monkeypatch):
-    # "false" shows in both editions; EE treats an unset flag as hidden.
+    # "false" shows in every build; another build may treat an unset flag as hidden.
     monkeypatch.setenv("HIDE_SECRET_CONFIG", "false")
     monkeypatch.delenv("PLATFORM_POLICY_CREATION", raising=False)
     monkeypatch.delenv("PLATFORM_POLICY_SIGNUP", raising=False)

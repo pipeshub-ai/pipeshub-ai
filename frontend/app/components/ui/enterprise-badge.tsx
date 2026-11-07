@@ -10,7 +10,7 @@ export interface EnterpriseBadgeProps {
 }
 
 /**
- * "Available in EE" tag for a feature that is part of the Enterprise Edition, shown where the
+ * "Available in EE" tag for a feature that is not part of this build, shown where the
  * feature would be. A text label, like `BetaBadge`; never place it inside a `<button>`.
  */
 export function EnterpriseBadge({ tooltip }: EnterpriseBadgeProps) {

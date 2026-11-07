@@ -32,7 +32,7 @@ class RedisService(IKeyValueService):
         try:
             # Get typed Redis configuration and build a client through the
             # connection provider -- never `redis.asyncio.from_url()` directly,
-            # so REDIS_MODE=cluster (or an EE MemoryDB mode) works with no
+            # so REDIS_MODE=cluster (or an extension MemoryDB mode) works with no
             # change to this class.
             redis_config = await config_service.get_redis_config()
             provider = get_redis_provider(

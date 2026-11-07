@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Live test of deploy.sh --existing-cluster. Builds a stand-in for a customer
-# cluster: one untainted node group in one zone, plus the add-ons, StorageClass
+# Live test of deploy.sh --existing-cluster. Builds a stand-in for an existing# cluster: one untainted node group in one zone, plus the add-ons, StorageClass
 # and load balancer controller that mode expects. Creates billable resources.
 #
 #   deployment/helm/tests/existing_cluster_e2e.sh up      # cluster + prerequisites, about 30 minutes

@@ -296,7 +296,7 @@ class ConnectorFactory:
                 processor_cls = connector_processor_cls
             # `is True`: a MagicMock connector class would otherwise opt in. A store
             # scoped to another org (or to none, "") must never back a shared
-            # processor; OSS stores carry no org and are single-tenant.
+            # processor; OSS stores carry no org and are single-org.
             store_org_id = getattr(data_store_provider, "org_id", None)
             if (
                 org_id

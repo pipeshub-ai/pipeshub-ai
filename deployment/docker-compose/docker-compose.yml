@@ -197,7 +197,7 @@ services:
       # "cluster" (Redis Cluster / AWS MemoryDB's wire protocol) when
       # REDIS_HOST/PORT above are overridden to point at one. REDIS_DB is
       # rejected outright once REDIS_MODE != standalone -- use
-      # REDIS_KEY_NAMESPACE for tenant isolation instead.
+      # REDIS_KEY_NAMESPACE for deployment isolation instead.
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}

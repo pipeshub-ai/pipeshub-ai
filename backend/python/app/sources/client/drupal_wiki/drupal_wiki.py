@@ -71,7 +71,7 @@ def normalize_base_url(base_url: str) -> str:
 # carries a secret or a whole body.
 # ---------------------------------------------------------------------------
 
-# A reason is a sentence, not a document: a body can echo customer content.
+# A reason is a sentence, not a document: a body can echo user content.
 MAX_REASON_CHARS = 300
 
 _HTML_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)

@@ -68,7 +68,7 @@ class TestTTLConfig:
 
 class TestKeying:
     def test_key_is_scoped_per_org(self) -> None:
-        """A document id alone would share a URL across tenants."""
+        """A document id alone would share a URL across orgs."""
         a = BlobStorage._signed_url_key("org-a", "doc-1")
         b = BlobStorage._signed_url_key("org-b", "doc-1")
         assert a != b
@@ -232,7 +232,7 @@ class TestSignedUrlKeyNamespacing:
     """`REDIS_KEY_NAMESPACE` has to reach these keys too (R9).
 
     Every signed-URL key is `sigurl:<org>:<doc>`, and org ids do not differ
-    between a staging and a production copy of the same tenant -- so two
+    between a staging and a production copy of the same org -- so two
     deployments sharing one Redis would serve each other's signed URLs, which
     are bearer credentials for blob content.
     """

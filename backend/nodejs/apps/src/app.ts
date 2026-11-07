@@ -217,16 +217,16 @@ export class Application {
 
       // Import REDIS_PROVIDER_MODULE (R10) before any container -- and
       // therefore any RedisService/RedisDistributedKeyValueStore/streams
-      // client -- resolves REDIS_MODE against the provider registry. An EE
+      // client -- resolves REDIS_MODE against the provider registry. An extension
       // `memorydb` module that self-registers on import is otherwise never
       // loaded, since nothing else in this process imports it.
       await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
 
-      // Resolve rotating credentials (F1) -- e.g. an EE MemoryDB provider's
+      // Resolve rotating credentials (F1) -- e.g. an extension MemoryDB provider's
       // IAM token -- before `loadConfigurationManagerConfig()` below builds
       // the bootstrap KV store's Redis client. Node ends up with two
       // fingerprints (env config for the KV store, KV-stored config for
-      // services), so `prepare()` on the EE provider must prime a
+      // services), so `prepare()` on the extension provider must prime a
       // process-level credential cache rather than per-instance state for
       // one call to cover both.
       await getPreparedRedisProvider();
@@ -888,8 +888,8 @@ export class Application {
     // tried (the delegation allow-list and its audit log).
     //
     // Imported from `./config` rather than the module, because this is one of
-    // the routers that differs by edition: Community gets a stub that
-    // explains the capability is not built in, Enterprise gets the real one.
+    // the routers that differs by edition: this build gets a stub that
+    // explains the capability is not built in, and another build can supply the real one.
     this.app.use(
       '/api/v1/service-account-delegations',
       createDelegationRouter(this.oauthProviderContainer),

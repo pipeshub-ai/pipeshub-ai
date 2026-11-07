@@ -91,7 +91,7 @@ function makeService(
     .returns({ exec: async () => ({ clientId: `svc-system:${orgId}` }) } as any);
 
   return {
-    // Built as the Enterprise edition does. The exchange logic is shared
+    // Built with delegation enabled. The exchange logic is shared
     // between editions; only whether it is offered differs, and that has its
     // own test.
     service: new TokenExchangeService(
@@ -514,7 +514,7 @@ describe('TokenExchangeService', () => {
 
       // The error class prefixes and upper-cases its code.
       expect(code.toLowerCase()).to.contain('unsupported_grant_type')
-      expect(message).to.contain('Enterprise')
+      expect(message).to.contain('not available in this edition')
 
       // Nothing was looked up, so a hand-written allow-list row changes
       // nothing here.

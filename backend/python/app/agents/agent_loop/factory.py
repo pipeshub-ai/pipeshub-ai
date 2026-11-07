@@ -382,7 +382,7 @@ def _chat_context_profile(
 
 def _composed_agents_enabled() -> bool:
     """Kill-switch for domain-agent composition (see `domain_agents.py`) —
-    customer-facing setting, exists so a deployment can fall back to the
+    user-facing setting, exists so a deployment can fall back to the
     flat all-tools agent without a code change."""
     return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"
 

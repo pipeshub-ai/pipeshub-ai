@@ -167,7 +167,7 @@ class TestRedisUpsertQuery:
             await redis_service.delete_collection(col)
 
     async def test_filter_isolation(self, redis_service):
-        """orgId filter must not leak across tenants."""
+        """orgId filter must not leak across orgs."""
         col = make_collection("redis_filter")
         cfg = make_collection_config()
         points_a = sample_points("org-a")

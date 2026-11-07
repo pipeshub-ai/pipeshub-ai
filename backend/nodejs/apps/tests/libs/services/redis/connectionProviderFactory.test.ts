@@ -178,7 +178,7 @@ describe('RedisConnectionProviderFactory', () => {
     it('does not throw when the configured module cannot be imported', async () => {
       process.env.REDIS_PROVIDER_MODULE = '@pipeshub-ee/does-not-exist';
       await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
-      // Logged, not thrown -- a missing/misconfigured EE module must not
+      // Logged, not thrown -- a missing/misconfigured extension module must not
       // crash OSS startup.
     });
 
@@ -194,7 +194,7 @@ describe('RedisConnectionProviderFactory', () => {
       // Node's counterpart to Python's
       // `test_module_registering_a_mode_makes_it_available`: importing a
       // real module (not a mock) must be enough for its `register()` side
-      // effect to land in the shared registry, exactly as an EE
+      // effect to land in the shared registry, exactly as an extension
       // `REDIS_PROVIDER_MODULE=@pipeshub-ee/redis-memorydb-provider` would.
       process.env.REDIS_MODE = FIXTURE_MODE;
       process.env.REDIS_PROVIDER_MODULE = require.resolve(
@@ -212,7 +212,7 @@ describe('RedisConnectionProviderFactory', () => {
 
     it('skips the import when REDIS_MODE is already registered', async () => {
       // The Docker image runs Node and Python from one .env, so this is
-      // routinely a Python dotted path Node cannot resolve. An EE edition
+      // routinely a Python dotted path Node cannot resolve. An extension edition
       // switch has already registered the mode by the time preInit runs.
       RedisConnectionProviderFactory.register(
         'fake',
@@ -235,7 +235,7 @@ describe('RedisConnectionProviderFactory', () => {
 describe('credentials over unverified TLS', () => {
   // TLS with verification off is encrypted but *unauthenticated*: a MITM can
   // present any cert, terminate the session, and harvest the password. The
-  // guard lives in the factory so an EE-registered provider is covered too.
+  // guard lives in the factory so an extension-registered provider is covered too.
   const withTls = (over: Partial<RedisConnectionConfig>): RedisConnectionConfig => ({
     host: 'localhost',
     port: 6379,

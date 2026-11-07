@@ -245,7 +245,7 @@ class TokenRefreshService:
         """Internal method to refresh tokens (called with lock held)"""
         try:
             # 1. Get the OAuth connectors from database. Only they hold a token; a
-            # tenant can have thousands of collection Apps, and loading every App
+            # org can have thousands of collection Apps, and loading every App
             # here would stall this service's event loop on each pass.
             connectors = []
             for auth_type in self._OAUTH_AUTH_TYPES:

@@ -8,7 +8,7 @@ faked.
 
 Two scenarios, because they have genuinely different outcomes:
 
-- **Two users, one org** (``TestTwoUsersInOneOrg``): the single-tenant OSS
+- **Two users, one org** (``TestTwoUsersInOneOrg``): the single-org OSS
   case. Both users share an ``orgId``, so fairness depends entirely on the
   second key level, ``connectorId``.
 - **Concurrent producers** (``TestConcurrentProducers``): two orgs syncing at
@@ -317,7 +317,7 @@ class TestConcurrentProducers:
 
 @pytest.mark.asyncio
 class TestTwoUsersInOneOrg:
-    """The single-tenant OSS case, which is the whole reason the default key
+    """The single-org OSS case, which is the whole reason the default key
     is two levels.
 
     Both users belong to the same org, so every record carries an identical

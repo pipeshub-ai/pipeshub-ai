@@ -387,7 +387,7 @@ class KnowledgeBaseService:
         - User has a role that satisfies required_roles → success.
         - User has a role but below required_roles → 403 (insufficient permission).
         - User has NO role on the KB → 404. Existence is hidden from callers with no
-          relationship to the KB to prevent cross-tenant id enumeration (we do not
+          relationship to the KB to prevent cross-org id enumeration (we do not
           distinguish "forbidden" from "not found" for them).
 
         Args:
@@ -423,7 +423,7 @@ class KnowledgeBaseService:
 
         if not user_role:
             # No permission edge at all → 404 (do NOT reveal whether the KB exists;
-            # this prevents cross-tenant id enumeration). A user who HAS a role but
+            # this prevents cross-org id enumeration). A user who HAS a role but
             # below required_roles gets a 403 below — that only leaks KB existence to
             # legitimate members, which is fine.
             self.logger.warning(f"⚠️ User {user_key} has no access to KB {kb_id}")
@@ -495,7 +495,7 @@ class KnowledgeBaseService:
             CollectionNames.TEAMS.value, "id", team_ids, ["id", "orgId"]
         )
         in_org = {t.get("id") for t in teams or [] if org_id and t.get("orgId") == org_id}
-        # Another org's team reads as missing, so team ids can't be probed across tenants.
+        # Another org's team reads as missing, so team ids can't be probed across orgs.
         missing = [team_id for team_id in team_ids if team_id not in in_org]
         if missing:
             self.logger.warning(f"Share refused: teams {missing} are not in org {org_id}")

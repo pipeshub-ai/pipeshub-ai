@@ -444,7 +444,7 @@ describe('Application', () => {
 
       expect(loadStub.calledOnce).to.be.true;
       // Must run before the broker config (and therefore any Redis client
-      // construction) is resolved, or an EE `memorydb` provider that
+      // construction) is resolved, or an extension `memorydb` provider that
       // self-registers on import would never be loaded in time.
       const ensureTopicsStub =
         messageBrokerModule.ensureMessageTopicsExist as sinon.SinonStub;
@@ -462,7 +462,7 @@ describe('Application', () => {
       await app.initialize();
 
       expect(prepareStub.calledOnce).to.be.true;
-      // An EE MemoryDB provider's `prepare()` resolves rotating IAM
+      // An extension MemoryDB provider's `prepare()` resolves rotating IAM
       // credentials (R21); it must run before this call builds the
       // bootstrap KV store's Redis client, or that client is built with a
       // stale/absent credential.

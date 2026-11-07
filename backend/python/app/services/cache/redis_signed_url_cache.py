@@ -23,7 +23,7 @@ class RedisSignedUrlCache(ISignedUrlCache):
         # `AccessibleRecordsCache` applies it to its own keys. Without it, two
         # deployments sharing one Redis serve each other's signed URLs --
         # every key is `sigurl:<org>:<doc>`, and org ids do not differ between
-        # a staging and a production copy of the same tenant.
+        # a staging and a production copy of the same org.
         self._prefix = f"{key_namespace}:" if key_namespace else ""
 
     def _key(self, key: str) -> str:

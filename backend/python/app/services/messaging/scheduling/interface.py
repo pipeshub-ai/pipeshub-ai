@@ -25,7 +25,7 @@ FairnessKey = tuple[str, ...]
 class FairnessKeyExtractor(Protocol):
     """Extracts the fairness grouping key from a message.
 
-    ``orgId`` groups by customer; ``connectorId`` groups by the individual
+    ``orgId`` groups by org; ``connectorId`` groups by the individual
     connector instance, which is what separates one user's sync from
     another's inside a single org.
     """
@@ -92,8 +92,8 @@ class FairSchedulerConfig:
     """
 
     enabled: bool = False
-    # Outermost level first. ``orgId`` separates customers; ``connectorId``
-    # separates individual users' syncs within one customer -- every user in
+    # Outermost level first. ``orgId`` separates orgs; ``connectorId``
+    # separates individual users' syncs within one org -- every user in
     # an org shares its ``orgId``, so grouping by org alone gives a
     # single-org install exactly one queue and no fairness at all.
     key_fields: tuple[str, ...] = ("orgId", "connectorId")

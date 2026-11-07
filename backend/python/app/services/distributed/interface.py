@@ -3,7 +3,7 @@
 ``DistributedConcurrencyManager`` (leases) and ``RetryManager`` (retry
 counts) are the Redis-backed implementations; the indexing consumers and
 ``MessagingFactory`` depend on these interfaces so a future non-Redis
-implementation (or an EE one with different semantics) is a drop-in.
+implementation (or an extension one with different semantics) is a drop-in.
 """
 from __future__ import annotations
 
