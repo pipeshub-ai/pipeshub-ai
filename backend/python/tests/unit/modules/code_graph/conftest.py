@@ -88,6 +88,10 @@ class FakeGraphProvider:
             return [{field: doc.get(field) for field in return_fields} for doc in page]
         return page
 
+    async def get_edges_from_node(self, node_id, edge_collection, transaction=None, *,
+                                  raise_on_error=False) -> list[dict]:
+        return [dict(edge) for edge in self.edges if edge.get("_from") == node_id]
+
     async def get_edges_by_target_keys(
         self, target_keys, edge_collection, filters=None, return_field="_from",
         transaction=None, raise_on_error=False,

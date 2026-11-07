@@ -98,3 +98,31 @@ async def test_a_file_read_for_its_types_can_still_be_bound_in_a_later_round(gra
     await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
                                  touched_record_ids={"r4"}, facts_source=graph)
     assert _targets(graph, calls, "app/src/run.rs") == full
+
+
+ALIASED = {
+    "core/src/lib.rs": b"pub mod store;\npub mod daemon;\npub mod impls;\n",
+    "core/src/store.rs": b"pub trait Store { fn save(&self); }\n",
+    "core/src/daemon.rs": b"pub struct Daemon {}\n",
+    "core/src/impls.rs": b"use crate::store::Store;\nuse crate::daemon::Daemon as Settings;\n"
+                         b"impl Store for Settings { fn save(&self) {} }\n",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edited", [
+    b"use crate::store::Store;\n",                                                     # the impl and its alias go
+    b"use crate::store::Store;\nimpl Store for Settings { fn save(&self) {} }\n",     # only the alias goes
+], ids=["impl-and-alias", "alias"])
+async def test_dropping_the_alias_an_impl_names_its_type_by_drops_the_type_s_heritage(graph, index_file,
+                                                                                    edited) -> None:
+    await _repo(index_file, ALIASED)
+    await _build(graph)
+    assert _targets(graph, IMPLEMENTS, "core/src/daemon.rs") == {STORE}
+    graph.changed_names.clear()
+    await index_file("r3", "core/src/impls.rs", edited, "rust")
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={"r3"}, facts_source=graph)
+    assert _targets(graph, IMPLEMENTS, "core/src/daemon.rs") == set()
+    await _build(graph)
+    assert _targets(graph, IMPLEMENTS, "core/src/daemon.rs") == set()
