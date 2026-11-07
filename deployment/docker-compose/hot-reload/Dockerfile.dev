@@ -48,7 +48,10 @@ WORKDIR /app/python
 COPY ./backend/python/pyproject.toml ./
 
 # Install Python dependencies + watchdog for hot reload (watchmedo command)
-RUN uv pip install --system -e . && \
+# A base image published before the fork was excluded still carries unclecode-litellm. Removing it
+# deletes litellm/ files the real package also owns, so litellm is reinstalled right after.
+RUN uv pip uninstall --system unclecode-litellm && \
+    uv pip install --system --reinstall-package litellm -e . && \
     uv pip install --system watchdog && \
     # Download ML models (no-op when already present in the base image)
     python -c "import nltk; nltk.download('punkt', quiet=True)" && \

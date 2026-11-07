@@ -287,7 +287,7 @@ class EntityEventService(BaseEventService):
     async def _handle_user_added(self, payload: dict) -> bool:
         """Handle user creation event"""
         try:
-            self.logger.info(f"📥 Processing user added event: {payload}")
+            self.logger.info("Processing user added event for user %s", payload.get("userId"))
             # raise_on_error: the providers answer None to a failed read too, and
             # "nobody" here would mint a second user for someone who is there.
             existing_user = await self.graph_provider.get_user_by_email(
@@ -388,9 +388,7 @@ class EntityEventService(BaseEventService):
             # Get or create "All" team for org and add user with PERMISSION edge
             await self._get_or_create_all_team_and_add_user(payload["orgId"], user_key)
 
-            self.logger.info(
-                f"✅ Successfully created/updated user: {payload['email']}"
-            )
+            self.logger.info("Created or updated user %s", payload["userId"])
             self._schedule_connector_link(payload["orgId"])
             return True
 
@@ -461,7 +459,7 @@ class EntityEventService(BaseEventService):
     async def _handle_user_updated(self, payload: dict) -> bool:
         """Handle user update event"""
         try:
-            self.logger.info(f"📥 Processing user updated event: {payload}")
+            self.logger.info("Processing user updated event for user %s", payload.get("userId"))
             # Find existing user by userId
             existing_user = await self.graph_provider.get_user_by_user_id(
                 payload["userId"],
@@ -542,7 +540,7 @@ class EntityEventService(BaseEventService):
                     {"isActive": None},
                 )
 
-            self.logger.info(f"✅ Successfully updated user: {payload['email']}")
+            self.logger.info("Updated user %s", payload["userId"])
             return True
 
         except SchemaValidationError:
@@ -554,13 +552,13 @@ class EntityEventService(BaseEventService):
     async def _handle_user_deleted(self, payload: dict) -> bool:
         """Handle user deletion event"""
         try:
-            self.logger.info(f"📥 Processing user deleted event: {payload}")
+            self.logger.info("Processing user deleted event for user %s", payload.get("userId"))
             # Find existing user by email
             existing_user_id = await self.graph_provider.get_entity_id_by_email(
                 payload["email"]
             )
             if not existing_user_id:
-                self.logger.error(f"User not found with mail: {payload['email']}")
+                self.logger.error("No graph user has the deleted user's email (user %s)", payload.get("userId"))
                 return False
 
             org_id = payload["orgId"]
@@ -578,7 +576,7 @@ class EntityEventService(BaseEventService):
             )
             # At once, not after the cleanup below: until it moves, a scope read before the delete is still served.
             await notify_principals_changed(org_id)
-            self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
+            self.logger.info("Soft-deleted graph user %s", existing_user_id)
             if payload.get("userId"):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
                 await self._remove_personal_toolsets("user", payload["orgId"], payload["userId"])
@@ -808,14 +806,9 @@ class EntityEventService(BaseEventService):
         try:
             mode = await self.graph_provider.migrate_person_to_user(email, user_key, org_id)
             if mode:
-                self.logger.info(
-                    f"✅ Adopted existing person for {email} ({mode})"
-                )
+                self.logger.info("Adopted existing person for user %s (%s)", user_key, mode)
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to adopt existing person for {email}: {str(e)}",
-                exc_info=True,
-            )
+            self.logger.error("Failed to adopt existing person for user %s: %s", user_key, e, exc_info=True)
 
     async def _start_requeue_of_parked_records(self, connector_id: str) -> None:
         """Queue again, in the background, what was parked while the connector was off.

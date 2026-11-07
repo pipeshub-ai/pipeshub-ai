@@ -34,7 +34,9 @@ function describeGuardViolation(violation: ArrayGuardViolation): string {
 }
 
 export class ValidationMiddleware {
-  private static logger = Logger.getInstance();
+  private static logger = Logger.getInstance({
+    service: 'ValidationMiddleware',
+  });
 
   // First modify the validation method to include headers
   static validate(schema: z.ZodObject, options: ValidatorOptions = {}) {

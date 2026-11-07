@@ -672,7 +672,7 @@ async def test_lease_released_when_the_document_stream_cannot_be_built(
     def boom(**kwargs: object) -> None:
         raise ValueError("bad stream")
 
-    monkeypatch.setattr(dp, "DocumentStream", boom)
+    monkeypatch.setattr("docling.datamodel.base_models.DocumentStream", boom)
     with pytest.raises(ValueError):
         await processor.parse_document("a.pdf", PDF)
     assert budget.held_count()[0] == 0

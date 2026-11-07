@@ -60,8 +60,29 @@ def plain(value: object) -> object:
     return json.loads(json.dumps(value, default=str))
 
 
-def body_without_lane_branch(name: str, qualified: str) -> dict[str, object]:
-    """The function's statements minus the one ``if (route := ...)`` branch, hashed, and its arguments."""
+def _is_lazy_docling_statement(stmt: ast.stmt) -> bool:
+    """``await ensure_docling()`` and a function-level import from ``docling``."""
+    if isinstance(stmt, ast.ImportFrom):
+        return (stmt.module or "").startswith("docling.")
+    return isinstance(stmt, ast.Expr) and ast.unparse(stmt.value) == "await ensure_docling()"
+
+
+class _UndoLazyCall(ast.NodeTransformer):
+    """Turns the worker-thread helper call back into the direct converter call it wraps."""
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
+        if ast.unparse(node) == "asyncio.to_thread(self._convert_in_process, source, kwargs)":
+            return ast.parse("asyncio.to_thread(self.converter.convert, source, **kwargs)", mode="eval").body
+        return node
+
+
+def body_without_lane_branch(name: str, qualified: str, undo_lazy_import: bool = False) -> dict[str, object]:
+    """The function's statements minus the one ``if (route := ...)`` branch, hashed, and its arguments.
+
+    With ``undo_lazy_import`` the three edits that defer the ``docling`` import are reversed first
+    (no ``await ensure_docling()``, no function-level ``docling`` import, the converter called
+    directly in the worker thread), so the hash can be compared with main's."""
     tree = ast.parse((ROOT / MODULES[name]).read_text())
     nodes: list[ast.stmt] = tree.body
     node: ast.AST | None = None
@@ -70,5 +91,7 @@ def body_without_lane_branch(name: str, qualified: str) -> dict[str, object]:
         nodes = getattr(node, "body", [])
     assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     kept = [s for s in node.body if not _is_lane_branch(s)]
+    if undo_lazy_import:
+        kept = [_UndoLazyCall().visit(s) for s in kept if not _is_lazy_docling_statement(s)]
     digest = hashlib.sha256("".join(ast.dump(s, include_attributes=False) for s in kept).encode()).hexdigest()[:16]
     return {"body": digest, "args": [a.arg for a in node.args.args]}

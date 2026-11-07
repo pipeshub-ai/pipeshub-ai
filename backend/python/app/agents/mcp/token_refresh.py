@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "MCPTokenRefreshError",
+    "MCPRefreshLockTimeoutError",
     "resolve_client_credentials",
     "refresh_credential_record",
 ]
@@ -66,7 +67,7 @@ async def _cluster_refresh_lock(instance_id: str, owner_id: str, config_service:
     deadline = time.monotonic() + CLUSTER_LOCK_WAIT_SECONDS
     while not await config_service.create_config_if_absent(key, {"owner": token}, ttl_seconds=CLUSTER_LOCK_TTL_SECONDS):
         if time.monotonic() >= deadline:
-            raise MCPTokenRefreshError(
+            raise MCPRefreshLockTimeoutError(
                 f"Another process is still refreshing the token at {get_mcp_credentials_path(instance_id, owner_id)}"
             )
         await asyncio.sleep(_CLUSTER_LOCK_POLL_SECONDS)
@@ -86,6 +87,11 @@ class MCPTokenRefreshError(ValueError):
     the HTTP call itself and propagate through this module unchanged. Subclasses
     `ValueError` for compatibility with callers (and tests) written against the pre-Phase-2
     `_perform_token_refresh`, which raised a bare `ValueError` for these same conditions."""
+
+
+class MCPRefreshLockTimeoutError(MCPTokenRefreshError):
+    """Another process held this credential's refresh lock for `CLUSTER_LOCK_WAIT_SECONDS`: the
+    refresh is busy, the sign-in isn't known to be bad."""
 
 
 async def resolve_client_credentials(

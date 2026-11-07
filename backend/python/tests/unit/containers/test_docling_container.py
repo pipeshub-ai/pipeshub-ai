@@ -30,7 +30,9 @@ class TestDoclingAppContainerInstantiation:
         assert container.config_service is not None
 
     def test_container_utils_on_class(self):
-        assert DoclingAppContainer.container_utils is not None
+        # The docling service calls none of the shared factories; carrying them loaded the
+        # whole parser and indexing stack into its process.
+        assert not hasattr(DoclingAppContainer, "container_utils")
 
     def test_wiring_config_modules(self):
         container = DoclingAppContainer()
@@ -119,7 +121,9 @@ class TestDoclingAppContainerInstantiationFullCoverage:
         assert container.config_service is not None
 
     def test_container_utils_on_class(self):
-        assert DoclingAppContainer.container_utils is not None
+        # The docling service calls none of the shared factories; carrying them loaded the
+        # whole parser and indexing stack into its process.
+        assert not hasattr(DoclingAppContainer, "container_utils")
 
     def test_wiring_config_modules(self):
         container = DoclingAppContainer()

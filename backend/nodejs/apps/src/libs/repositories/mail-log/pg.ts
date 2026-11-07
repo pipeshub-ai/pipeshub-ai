@@ -2,7 +2,7 @@
  * PostgreSQL implementation of the mail log (`DOC_STORE=postgres`). The row belongs to the org of the unit it is written in:
  * an entry that names another org, or a call with no org at all, is refused (the caller logs that the audit record was not saved).
  */
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { assertOrg, inUnit, newObjectId } from '../pg-util';
 import type { MailLogEntry, MailLogRepository } from './types';
 import type { Importable, ImportStats, NeutralDoc } from '../import';
