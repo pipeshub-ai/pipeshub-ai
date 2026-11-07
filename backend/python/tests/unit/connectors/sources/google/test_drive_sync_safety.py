@@ -304,6 +304,7 @@ class TestRunReport:
 
         monkeypatch.setattr(team_connector.asyncio, "sleep", AsyncMock())
         conn = object.__new__(team_connector.GoogleDriveTeamConnector)
+        conn.connector_id = "conn-1"
         conn.logger = MagicMock()
         conn.max_concurrent_batches = 10
         conn._sync_ledger = MagicMock()
