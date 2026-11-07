@@ -662,15 +662,20 @@ def apply_issue_access_settled(
         # An issue filed under another one, or a stub, only follows it. A top-level issue is
         # also read by the people the project's Browse holders name on it (its reporter, say),
         # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
-        grants = [] if record.parent_external_record_id or getattr(record, "is_placeholder", False) else (
-            browse_holder_grants(
-                context.browse_holders or [], project_key=project_key, fields=fields or {},
-                user_by_id=users, reporter_email=reporter_email, assignee_email=assignee_email,
-            )
-        )
+        top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
+        if top_level and context.browse_holders is None:
+            # Holders unread: keep the stored grants (nobody is taken as "no holder") and stay OPEN so
+            # a stored reporter grant still opens the issue. The next sync that reads them settles it.
+            record.access_rule = AccessRule.OPEN
+            record.rewrite_permissions = False
+            return [], [], True
+        grants = browse_holder_grants(
+            context.browse_holders or [], project_key=project_key, fields=fields or {},
+            user_by_id=users, reporter_email=reporter_email, assignee_email=assignee_email,
+        ) if top_level else []
         record.access_rule = AccessRule.OPEN if grants else AccessRule.STRICT
         record.rewrite_permissions = True
-        return grants, [], context.browse_holders is not None
+        return grants, [], True
 
     if present and security is None:
         # A null level is a positive "no level", whatever the scheme state: replace any stale grants.

@@ -1468,8 +1468,54 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert {p.email for p in perms} == {"rep@x.com"} and record.access_rule == AccessRule.OPEN
 
     @pytest.mark.asyncio
-    async def test_a_reindex_that_cannot_read_the_scheme_leaves_the_stored_record_alone(self) -> None:
+    async def test_a_reindex_that_cannot_read_the_scheme_still_applies_the_change_and_keeps_the_grants(self) -> None:
         c = _reindex_connector(_issue(None, updated="2025-01-01T00:00:00.000+0000"), [_resp(404, {"errorMessages": [
-            "Security level for project 10000 does not exist."]}), _resp(503, {})])
+            "Security level for project 10000 does not exist."]}), _resp(403, {})])
         c._browse_issue_holders = {}
-        assert await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]}) is None
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert record.source_updated_at == c._parse_jira_timestamp("2025-01-01T00:00:00.000+0000")
+        assert perms == [] and record.rewrite_permissions is False and record.access_rule == AccessRule.OPEN
+
+    @pytest.mark.asyncio
+    async def test_a_sync_with_unread_holders_does_not_rewrite_a_top_level_issue(self) -> None:
+        record, perms, _ = await _build(_connector(), _issue(), self._none(None))
+        assert perms == [] and record.rewrite_permissions is False and record.access_rule == AccessRule.OPEN
+
+    def test_a_story_stays_where_it_was_filed_while_the_holders_are_unread(self) -> None:
+        c = _connector()
+        c._parent_levels["500"] = _ParentLevel(level_id=None, project_id=PROJECT_ID)
+        assert c._files_under_parent({"project": {"id": PROJECT_ID}}, "500", self._none(None)) is None
+
+    async def _sync_stored(self, stored: str | None, holders: list | None, fail_in_walk: bool = False) -> JiraConnector:
+        c = _connector()
+        if holders is not None:
+            c._browse_issue_holders["PROJ"] = holders
+        point = {"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+                 "security_levels": json.dumps(_present().level_fingerprints())}
+        if stored is not None:
+            point["browse_holders"] = stored
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(return_value=point)
+        c.issues_sync_point.update_sync_point = AsyncMock()
+        c._load_issue_security = AsyncMock(return_value=_present())
+
+        async def fetch(*a, **kw) -> AsyncIterator:
+            if fail_in_walk:
+                raise RuntimeError("crash mid-walk")
+            return
+            yield
+
+        c._fetch_issues_batched = fetch
+        with contextlib.suppress(RuntimeError):
+            await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        return c
+
+    @pytest.mark.asyncio
+    async def test_the_unread_marker_is_saved_before_the_walk_so_a_crash_cannot_lose_it(self) -> None:
+        c = await self._sync_stored("abc", None, fail_in_walk=True)
+        assert self._saved_digests(c) == ["?"]
+
+    @pytest.mark.asyncio
+    async def test_unread_holders_of_a_project_that_never_had_any_are_taken_as_none(self) -> None:
+        c = await self._sync_stored(None, None)
+        assert c._issue_security[PROJECT_ID].browse_holders == [] and self._saved_digests(c) == []

@@ -604,9 +604,15 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         _, grants, _ = self._apply([{"type": "reporter"}, {"type": "assignee"}], assignee_email="rep@ex.com")
         assert grants == {(EntityType.USER, "rep@ex.com")}
 
-    def test_unread_holders_are_not_settled(self) -> None:
-        _, grants, settled = self._apply(None)
-        assert grants == set() and settled is False
+    def test_unread_holders_keep_the_stored_grants_of_a_top_level_issue(self) -> None:
+        record, grants, settled = self._apply(None)
+        assert grants == set() and settled is True
+        # Not rewritten, so a stored reporter grant stays; OPEN so that grant still opens the issue.
+        assert record.rewrite_permissions is False and record.access_rule == AccessRule.OPEN
+
+    def test_unread_holders_still_close_a_child_to_its_parent_alone(self) -> None:
+        record, grants, _ = self._apply(None, record=_record(parent_external_record_id="99"))
+        assert grants == set() and record.access_rule == AccessRule.STRICT and record.rewrite_permissions is True
 
     def test_the_fingerprint_tells_none_unknown_and_a_change(self) -> None:
         def fp(holders: list[dict] | None) -> str:

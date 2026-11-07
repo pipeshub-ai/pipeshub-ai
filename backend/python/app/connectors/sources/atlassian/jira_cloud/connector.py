@@ -4246,11 +4246,18 @@ class JiraConnector(BaseConnector):
             security, stored_levels, is_new_project=is_new_project
         )
         # A change of who the Browse holders name on each issue moves no issue's `updated`.
-        browse = security.browse_fingerprint()
         stored_browse = (project_sync_data or {}).get("browse_holders") or ""
+        if security.browse_holders is None and not stored_browse:
+            security.browse_holders = []  # nothing was granted this way before, so nothing is lost
+        browse = security.browse_fingerprint()
         if not is_new_project and browse not in ("?", stored_browse):
             reread, changed_levels = "project", None
         browse_to_save = browse if browse != "?" or stored_browse else stored_browse
+        if browse == "?" and stored_browse not in ("", "?"):
+            # Saved before the walk, as the level marker is: issues written meanwhile keep their
+            # stored grants, and only this marker makes the next sync that reads them re-read.
+            await self._update_project_sync_checkpoint(project_key, browse_holders="?")
+            stored_browse = "?"
         unreadable = not readable and security.knowledge != SchemeKnowledge.NONE
         if security.defer_checkpoint or (unreadable and reread):
             # Saved before the walk: a page that fails later leaves issues written with their
@@ -5016,6 +5023,8 @@ class JiraConnector(BaseConnector):
         project_id = self._issue_project_id({"fields": fields})
         if not project_id or parent.project_id != project_id:
             return False
+        if security is not None and security.browse_holders is None:
+            return None  # whether its reporter or assignee reads it alone is unknown: keep it where it was filed
         if security is not None and security.browse_holders:
             # Its reporter or assignee may read it without reading the epic.
             return False
