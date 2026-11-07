@@ -31,7 +31,9 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
 )
-from app.connectors.sources.atlassian.jira_data_center.connector import JiraDataCenterConnector
+from app.connectors.sources.atlassian.jira_data_center.connector import (
+    JiraDataCenterConnector,
+)
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
@@ -190,7 +192,7 @@ def _user_holder(name: str) -> dict[str, Any]:
     return {"type": "user", "parameter": PEOPLE[name], "user": {"key": PEOPLE[name], "name": name}}
 
 
-def _context(**overrides: Any) -> IssueSecurityContext:
+def _context(**overrides: object) -> IssueSecurityContext:
     values: dict[str, Any] = {
         "knowledge": SchemeKnowledge.PRESENT, "scheme_id": "10050", "members_readable": True,
         "members_by_level": {
@@ -230,7 +232,7 @@ async def _open_project(world: dict[str, Any], context: IssueSecurityContext | N
 SOURCE: dict[str, dict] = {}  # the Jira being read: issue id -> its current payload
 
 
-async def _get_source_issue(issue_id: str, _fields: list[str], *_: Any, **__: Any) -> MagicMock:
+async def _get_source_issue(issue_id: str, _fields: list[str], *_: object, **__: object) -> MagicMock:
     issue = SOURCE.get(str(issue_id))
     return MagicMock(status=200 if issue else 404, json=MagicMock(return_value=issue or {}))
 
@@ -411,7 +413,7 @@ async def _stored_open(world: dict[str, Any]) -> dict[str, str]:
     for issue, _ in ISSUES.values():
         await _write(world, [issue])
     by_key = await _ticket_ids(world)
-    assert not await _mismatches(world, {key: PROJECT_READERS for key in by_key}, by_key)
+    assert not await _mismatches(world, dict.fromkeys(by_key, PROJECT_READERS), by_key)
     return by_key
 
 
@@ -421,7 +423,7 @@ class _Source:
     def __init__(self) -> None:
         self.jql: list[str] = []
 
-    async def __call__(self, *, jql: str, **_: Any) -> MagicMock:
+    async def __call__(self, *, jql: str, **_: object) -> MagicMock:
         self.jql.append(jql)
         if "updated >=" in jql:
             rows = []

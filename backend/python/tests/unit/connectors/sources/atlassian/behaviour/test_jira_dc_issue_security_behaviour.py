@@ -12,32 +12,57 @@ from typing import Any, Optional
 
 import httpx
 import pytest
-from atlassian_behaviour_fakes import json_response
-from test_jira_dc_sync_behaviour import (  # noqa: F401  (fixtures)
+from atlassian_behaviour_fakes import (
+    AtlassianApiStub,
+    FakeCheckpointStore,
+    json_response,
+)
+from test_jira_dc_sync_behaviour import (
     API,
-    BASE,
     EPIC_FIELD,
     IssueSearch,
+    JiraRecordsDb,
     attachment,
-    db,
-    jira,
     make_connector,
-    search,
     stub_site,
-    store,
-    tickets,
     ts,
 )
 
 from app.config.constants.arangodb import AccessRule
+from app.connectors.sources.atlassian.jira_data_center.connector import (
+    JiraDataCenterConnector,
+)
 from app.models.entities import AppUser, RecordType, TicketRecord
-from app.models.permission import EntityType
+from app.sources.client.http.http_client import HTTPClient
 
 SCHEME = "10050"
 SECRET, TEAM, NOBODY = "10101", "10102", "10103"
 
 
-def holder(kind: str, **parts: Any) -> dict[str, Any]:
+@pytest.fixture
+def db() -> JiraRecordsDb:
+    return JiraRecordsDb()
+
+
+@pytest.fixture
+def store() -> FakeCheckpointStore:
+    return FakeCheckpointStore()
+
+
+@pytest.fixture
+def jira(atlassian_api: AtlassianApiStub, monkeypatch: pytest.MonkeyPatch) -> AtlassianApiStub:
+    """Every real ``HTTPClient`` talks to the stub (init already makes a request)."""
+
+    async def _ensure_client(self: HTTPClient) -> httpx.AsyncClient:
+        if self.client is None:
+            atlassian_api.install(self)
+        return self.client
+
+    monkeypatch.setattr(HTTPClient, "_ensure_client", _ensure_client)
+    return atlassian_api
+
+
+def holder(kind: str, **parts: object) -> dict[str, Any]:
     return {"type": kind, **parts}
 
 
@@ -88,7 +113,7 @@ def jql_search() -> SecuredSearch:
 def sec_issue(
     iid: str, key: str, *, level: Optional[str] = None, updated: str = ts(1), kind: str = "Task",
     parent: Optional[str] = None, epic: Optional[str] = None, reporter: str = "carol", assignee: Optional[str] = None,
-    attachments: Optional[list[dict[str, Any]]] = None, **extra: Any,
+    attachments: Optional[list[dict[str, Any]]] = None, **extra: object,
 ) -> dict[str, Any]:
     """A DC issue in a project with a scheme: ``security`` is present, null when it has no level."""
     people = {"alice": "alice-key", "bob": "bob-key", "carol": "carol-key"}
@@ -110,7 +135,7 @@ def sec_issue(
 
 
 def serve_scheme(
-    jira: Any, levels: dict[str, list[dict[str, Any]]], scheme: str = SCHEME, *, members: object = None,
+    jira: AtlassianApiStub, levels: dict[str, list[dict[str, Any]]], scheme: str = SCHEME, *, members: object = None,
 ) -> None:
     """The project's scheme and, unless ``members`` replaces it, the holders of each level."""
     jira.on("GET", f"{API}/project/ENG/issuesecuritylevelscheme", {
@@ -121,12 +146,12 @@ def serve_scheme(
             members if members is not None else {"values": rows, "isLast": True})
 
 
-def no_scheme(jira: Any) -> None:
+def no_scheme(jira: AtlassianApiStub) -> None:
     jira.on("GET", f"{API}/project/ENG/issuesecuritylevelscheme",
             json_response({"errorMessages": ["The project has no issue security scheme."], "errors": {}}, status=404))
 
 
-def readers(db: Any, external_id: str) -> set[tuple[str, str]]:
+def readers(db: JiraRecordsDb, external_id: str) -> set[tuple[str, str]]:
     """Who the connector granted the issue to: (kind, email or id)."""
     return {
         (str(p.entity_type.value if hasattr(p.entity_type, "value") else p.entity_type), p.email or p.external_id)
@@ -138,7 +163,7 @@ def hidden_from_project(record: TicketRecord) -> bool:
     return record.access_rule == AccessRule.RESTRICTED
 
 
-async def sync(connector: Any, jql_search: SecuredSearch, recent: Optional[list[dict[str, Any]]] = None) -> None:
+async def sync(connector: JiraDataCenterConnector, jql_search: SecuredSearch, recent: Optional[list[dict[str, Any]]] = None) -> None:
     jql_search.recent = list(recent or [])
     jql_search.jql.clear()
     await connector.run_sync()
@@ -529,7 +554,7 @@ class TestHierarchy:
 
 
 class TestReindex:
-    def stored(self, connector: Any, db: Any, issue_id: str = "2") -> TicketRecord:
+    def stored(self, connector: JiraDataCenterConnector, db: JiraRecordsDb, issue_id: str = "2") -> TicketRecord:
         record = TicketRecord(
             id=f"t-{issue_id}", org_id="org-1", external_record_id=issue_id, record_name="[ENG-2] old",
             record_type=RecordType.TICKET, origin="CONNECTOR", connector_name="JIRA DATA CENTER",

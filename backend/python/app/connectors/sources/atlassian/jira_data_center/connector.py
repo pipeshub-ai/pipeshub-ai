@@ -4746,10 +4746,12 @@ class JiraDataCenterConnector(BaseConnector):
                 parent_record_type = None
 
                 security = self._issue_security.get(project_id)
-                if parent_external_id and not issue_data["is_subtask"]:
-                    # A record inherits the record it is filed under; a sub-task always follows its parent.
-                    if not await self._files_under_parent(fields, parent_external_id, security):
-                        parent_external_id = None
+                # A record inherits the record it is filed under; a sub-task always follows its parent.
+                if (
+                    parent_external_id and not issue_data["is_subtask"]
+                    and not await self._files_under_parent(fields, parent_external_id, security)
+                ):
+                    parent_external_id = None
                 if parent_external_id:
                     parent_record_id = parent_external_id
                     parent_record_type = RecordType.TICKET
