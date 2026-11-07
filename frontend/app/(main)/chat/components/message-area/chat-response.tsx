@@ -8,6 +8,7 @@ import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
 import { SearchDegradedNote } from './search-degraded-note';
 import { AnswerContent } from './answer-content';
+import { QuoteSelectionLayer } from './quote-selection-toolbar';
 import { StatusMessageComponent } from './status-message';
 import { MessageActions } from './message-actions';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
@@ -259,6 +260,10 @@ export const ChatResponse = React.memo(function ChatResponse({
   const updateSlot = useChatStore((s) => s.updateSlot);
   const setPreviewFile = useChatStore((s) => s.setPreviewFile);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
+  // Someone a chat was shared with reads it; the server only lets its owner edit or quote.
+  const isChatOwner = useChatStore((st) =>
+    activeSlotId ? st.slots[activeSlotId]?.isOwner !== false : true,
+  );
 
   /** Attachment currently shown in the lightweight text preview dialog (pasted-text attachments only). */
   const [textPreviewAttachment, setTextPreviewAttachment] = useState<AttachmentRef | null>(null);
@@ -870,12 +875,14 @@ export const ChatResponse = React.memo(function ChatResponse({
                       : undefined,
                 }}
               >
-                <AnswerContent
-                  content={answerShown}
-                  citationMaps={effectiveCitationMaps}
-                  citationCallbacks={wrappedCallbacks}
-                  isStreaming={isStreaming}
-                />
+                <QuoteSelectionLayer enabled={!isStreaming && isChatOwner}>
+                  <AnswerContent
+                    content={answerShown}
+                    citationMaps={effectiveCitationMaps}
+                    citationCallbacks={wrappedCallbacks}
+                    isStreaming={isStreaming}
+                  />
+                </QuoteSelectionLayer>
               </Box>
             )}
 
@@ -998,10 +1005,6 @@ export const ChatResponse = React.memo(function ChatResponse({
   // asked again), never while the card is still waiting.
   const rowHasCard = askQuestionMatchesRow || Boolean(persistedAskUserQuestion);
   const cardAnswered = Object.keys(persistedAskUserQuestionAnswers ?? {}).length > 0;
-  // Someone a chat was shared with reads it; the server only lets its owner edit.
-  const isChatOwner = useChatStore((st) =>
-    activeSlotId ? st.slots[activeSlotId]?.isOwner !== false : true,
-  );
   const canEditQuestion =
     isChatOwner &&
     isLastMessage &&
