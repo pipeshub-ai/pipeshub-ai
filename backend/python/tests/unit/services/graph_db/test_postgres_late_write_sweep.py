@@ -15,10 +15,12 @@ from app.services.graph_db.postgres.provider import PostgresGraphProvider
 class Tx:
     """``named`` is what each batch's SELECT finds, per collection, in order."""
 
-    def __init__(self, named: dict[str, list[int]], left: int) -> None:
+    def __init__(self, named: dict[str, list[int]], left: int, links: list[int] = (), links_left: int = 0) -> None:
         self.named = {coll: list(sizes) for coll, sizes in named.items()}
         self.left = left
+        self.links, self.links_left = list(links), links_left
         self.selects: list[tuple] = []
+        self.link_deletes: list[tuple] = []
 
     async def fetch(self, sql: str, *args: object) -> list[dict]:
         assert "late_write_named" in sql
@@ -29,6 +31,13 @@ class Tx:
         return [{"id": f"{coll}-{i}"} for i in range(size)]
 
     async def fetchval(self, sql: str, *args: object) -> int:
+        if "late_write_links_left" in sql:
+            assert args == ("org1", ["nodeRelations", "recordLinks"], ["rg1"])
+            return self.links_left
+        if "late_write_links" in sql:
+            assert args == ("org1", ["nodeRelations", "recordLinks"], ["rg1"], pg_delete._CHUNK) and "doc->>'recordGroupId'" in sql
+            self.link_deletes.append(args)
+            return self.links.pop(0) if self.links else 0
         assert "late_write_left" in sql and args == ("org1", ["blocks", "stageStates"], "c1")
         return self.left
 
@@ -60,8 +69,27 @@ async def test_a_pass_removes_the_blocks_and_stage_states_batch_by_batch_then_co
     with for_org("org1", job="t"):
         assert await p.sweep_deleted_connector_writes("c1", ["rg1"]) == (pg_delete._CHUNK + 3, 0)
     assert [a[1] for a in tx.selects] == ["blocks", "blocks", "stageStates"]
-    assert writes == [True, True, True, False]
+    assert writes == [True, True, True, True, False]  # the three node batches, one link batch, then the count
     assert [c.args[2] for c in removed_as_found.await_args_list] == ["blocks", "blocks", "stageStates"]
+
+
+@pytest.mark.asyncio
+async def test_links_of_the_groups_are_removed_in_batches_and_counted_in_what_is_left() -> None:
+    """The link writer checks the ends without locking them, so a link can commit after its block and its edges went."""
+    tx = Tx({"blocks": [], "stageStates": []}, left=1, links=[pg_delete._CHUNK, 3], links_left=2)
+    p, _ = provider(tx)
+    with for_org("org1", job="t"):
+        assert await p.sweep_deleted_connector_writes("c1", ["rg1", "", "rg1"]) == (pg_delete._CHUNK + 3, 3)
+    assert len(tx.link_deletes) == 2
+
+
+@pytest.mark.asyncio
+async def test_without_groups_no_link_is_touched() -> None:
+    tx = Tx({"blocks": [], "stageStates": []}, left=0, links=[7], links_left=7)
+    p, _ = provider(tx)
+    with for_org("org1", job="t"):
+        assert await p.sweep_deleted_connector_writes("c1") == (0, 0)
+    assert tx.link_deletes == []
 
 
 @pytest.mark.asyncio

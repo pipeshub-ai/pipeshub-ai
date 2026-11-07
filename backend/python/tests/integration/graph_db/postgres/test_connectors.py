@@ -97,12 +97,21 @@ async def test_the_late_write_pass_removes_what_indexing_wrote_after_the_delete_
     await w.nodes("blocks", {"_key": "c2-b2", "connectorId": "c2", "recordId": "c2-r1"})
     await w.edge("recordLinks", ("blocks", "c2-b2"), ("blocks", "c1-late-b"), relationshipType="CALLS")
 
-    assert await w.p.sweep_deleted_connector_writes("c1", ["c1-rg"]) == (2, 0)
+    async def dangling(tx: Tx) -> None:
+        """A code link whose statement saw its blocks commits after they went: the writer does not lock the ends, and no foreign key ties them."""
+        for group, end in (("c1-rg", "c1-gone"), ("c2-rg", "c2-gone")):
+            await tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc)
+                VALUES ($1, 'nodeRelations', 'blocks', $2, 'blocks', $3, jsonb_build_object('relationshipType', 'CALLS', 'recordGroupId', $4::text))""",
+                             w.org, f"{end}-a", f"{end}-b", group)
+    await w.p._q(dangling, None, write=True)
+
+    assert await w.p.sweep_deleted_connector_writes("c1", ["c1-rg"]) == (3, 0)
     nodes, edges = await snapshot(w)
     assert ("blocks", "c1-late-b") not in nodes and ("stageStates", "v1:2:entities") not in nodes
     assert ("blocks", "c2-b2") in nodes and ("stageStates", "x1:1:entities") in nodes
     assert not [e for e in edges if "c1-late-b" in (e[2], e[4])]                 # the block goes with every edge around it
-    assert await w.p.sweep_deleted_connector_writes("c1") == (0, 0)
+    assert not [e for e in edges if e[2] == "c1-gone-a"] and [e for e in edges if e[2] == "c2-gone-a"]      # only the deleted connector's groups
+    assert await w.p.sweep_deleted_connector_writes("c1", ["c1-rg"]) == (0, 0)
 
 
 async def test_the_scopes_of_a_deleted_connector_are_dropped_and_those_of_a_failed_delete_are_kept(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
