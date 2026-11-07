@@ -28,7 +28,8 @@ __all__ = ["EDGE_RULES_VERSION", "PARSER_VERSION"]
 # 2026.11.8: Rust use paths, impls named by their type, traits, type table, callees, receiver chains, macro args.
 # 2026.11.9: C/C++ includes, preprocessor branches, declarators, macros, static and C++ type facts.
 # 2026.11.13: C# and PHP namespace, import, heritage and type-table facts; C# modifiers and typeParamCount.
-PARSER_VERSION = "2026.11.13"
+# 2026.11.17: a function or method without a body is a declaration in every language, not only C/C++ and C#.
+PARSER_VERSION = "2026.11.17"
 
 # 2026.10.20: EXTENDS merged into INHERITS (an interface extending one stays
 # INHERITS); the full rebuild this forces replaces stored EXTENDS edges.

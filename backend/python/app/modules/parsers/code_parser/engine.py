@@ -2065,12 +2065,13 @@ class _Walker:
         return True
 
     def _modifiers(self, def_node: Node | None, kind: str) -> tuple[str, ...]:
-        """The words of a language with a modifier handler, after DECLARATION for a function or method with no
-        body (a C++ pure virtual, a C# or PHP interface or abstract method): what runs is elsewhere. A language without a handler has none."""
-        handler = languages.MODIFIER_HANDLERS.get(self.cfg.name)
-        if def_node is None or handler is None:
+        """DECLARATION for a function or method with no body, in every language (an interface or abstract method,
+        a C++ pure virtual, a TS overload signature): what runs is elsewhere. Then the words of a language with a
+        modifier handler (C/C++, C#); a language without one has no others."""
+        if def_node is None:
             return ()
-        words = handler(def_node, self.src)
+        handler = languages.MODIFIER_HANDLERS.get(self.cfg.name)
+        words = handler(def_node, self.src) if handler else ()
         if kind in _CALLABLE_KINDS and _body_of(def_node, self.cfg) is None:
             words = (DECLARATION, *words)
         return words
