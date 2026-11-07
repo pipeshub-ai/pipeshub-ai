@@ -3154,7 +3154,7 @@ class TestDeleteToolsetOAuthConfig:
         request = MagicMock()
         config_service = AsyncMock()
 
-        async def mock_get_config(path, default=None, use_cache=True):
+        async def mock_get_config(path, default=None, use_cache=True, **_kwargs):
             if "oauths" in path:
                 return [{"_id": "cfg-1", "orgId": "o1"}]
             if "instances" in path:
@@ -3177,7 +3177,7 @@ class TestDeleteToolsetOAuthConfig:
         request = MagicMock()
         config_service = AsyncMock()
 
-        async def mock_get_config(path, default=None, use_cache=True):
+        async def mock_get_config(path, default=None, use_cache=True, **_kwargs):
             if "oauths" in path:
                 return [{"_id": "cfg-1", "orgId": "o1"}]
             if "instances" in path:
@@ -3208,7 +3208,7 @@ class TestGetInstanceStatus:
 
         config_service = AsyncMock()
 
-        async def mock_get_config(path, default=None, use_cache=True):
+        async def mock_get_config(path, default=None, use_cache=True, **_kwargs):
             if "toolset-instances" in path:
                 return [{"_id": "i1", "orgId": "o1", "instanceName": "My Jira", "toolsetType": "jira", "authType": "OAUTH"}]
             if "toolsets/i1/u1" in path:
@@ -3526,7 +3526,7 @@ class TestUpdateToolsetOAuthConfig:
 
         call_count = [0]
 
-        async def mock_get_config(path, default=None, use_cache=True):
+        async def mock_get_config(path, default=None, use_cache=True, **_kwargs):
             if "oauths" in path:
                 call_count[0] += 1
                 if call_count[0] == 1:
@@ -3703,7 +3703,7 @@ class TestCreateToolsetInstanceFull:
 
         config_service = AsyncMock()
 
-        async def mock_get_config(path, default=None, use_cache=True):
+        async def mock_get_config(path, default=None, use_cache=True, **_kwargs):
             if "oauths" in path:
                 return [{"_id": "cfg-1", "orgId": "o1"}]
             if "instances" in path:
@@ -3753,7 +3753,7 @@ class TestCreateToolsetInstanceFull:
 
         config_service = AsyncMock()
 
-        async def mock_get_config(path, default=None, use_cache=True):
+        async def mock_get_config(path, default=None, use_cache=True, **_kwargs):
             if "oauths" in path:
                 return []
             if "instances" in path:
@@ -3791,7 +3791,7 @@ class TestUpdateToolsetInstanceOAuth:
 
         config_service = AsyncMock()
 
-        async def mock_get_config(path, default=None, use_cache=True):
+        async def mock_get_config(path, default=None, use_cache=True, **_kwargs):
             if "instances" in path:
                 return [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "instanceName": "My Jira", "authType": "OAUTH", "oauthConfigId": "cfg-1"}]
             if "oauths" in path:
@@ -5311,7 +5311,7 @@ class TestCreateToolsetInstanceRoute:
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
 
-        async def mock_get(path, default=None, use_cache=True):
+        async def mock_get(path, default=None, use_cache=True, **_kwargs):
             if "endpoints" in path:
                 return {"frontend": {"publicEndpoint": "https://app.example.com"}}
             return default or []
@@ -6769,7 +6769,7 @@ class TestListToolsetOAuthConfigsNonAdmin:
             {"_id": "oc-1", "orgId": "o1", "config": {"clientId": "cid", "clientSecret": "secret"}}
         ]
 
-        async def config_side_effect(path, default=None, use_cache=True):
+        async def config_side_effect(path, default=None, use_cache=True, **_kwargs):
             if "oauths/" in path:
                 return configs
             return default
@@ -7817,7 +7817,7 @@ class TestGetAuthenticatedToolsets:
             {"_id": "inst2", "orgId": "o2", "toolsetType": "confluence"},
         ]
 
-        async def mock_get_config(path, default=None):
+        async def mock_get_config(path, default=None, **_kwargs):
             if "toolset-instances" in path:
                 return instances
             # Auth path - only inst1 is authenticated
@@ -7851,7 +7851,7 @@ class TestGetAuthenticatedToolsets:
             {"_id": "inst3", "orgId": "o1", "toolsetType": "slack"},
         ]
 
-        async def mock_get_config(path, default=None):
+        async def mock_get_config(path, default=None, **_kwargs):
             if "toolset-instances" in path:
                 return instances
             # Only inst1 and inst3 are authenticated
@@ -7885,7 +7885,7 @@ class TestGetAuthenticatedToolsets:
         config_service = AsyncMock()
         instances = [{"_id": "inst1", "orgId": "o1", "toolsetType": "jira"}]
 
-        async def mock_get_config(path, default=None):
+        async def mock_get_config(path, default=None, **_kwargs):
             if "toolset-instances" in path:
                 return instances
             if "inst1" in path:
@@ -7921,7 +7921,7 @@ class TestGetAuthenticatedToolsets:
         config_service = AsyncMock()
         instances = [{"_id": "inst1", "orgId": "o1", "toolsetType": "unknown"}]
 
-        async def mock_get_config(path, default=None):
+        async def mock_get_config(path, default=None, **_kwargs):
             if "toolset-instances" in path:
                 return instances
             if "inst1" in path:
@@ -7953,7 +7953,7 @@ class TestGetAuthenticatedToolsets:
             "updatedAtTimestamp": 1234567900,
         }]
 
-        async def mock_get_config(path, default=None):
+        async def mock_get_config(path, default=None, **_kwargs):
             if "toolset-instances" in path:
                 return instances
             return {"isAuthenticated": True}

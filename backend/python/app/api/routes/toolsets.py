@@ -495,9 +495,17 @@ def _get_instances_path(org_id: str) -> str:
     return DEFAULT_TOOLSET_INSTANCES_PATH
 
 
+async def _save_config(config_service: ConfigurationService, key: str, value: dict | list) -> None:
+    """``set_config`` reports a failed store write as False, never as an exception."""
+    if not await config_service.set_config(key, value):
+        raise RuntimeError(f"The config store did not save {key}")
+
+
 async def _load_toolset_instances(
     org_id: str,
-    config_service: ConfigurationService
+    config_service: ConfigurationService,
+    *,
+    raise_on_error: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Load toolset instances from etcd with proper validation and error handling.
@@ -505,6 +513,8 @@ async def _load_toolset_instances(
     Args:
         org_id: Organization ID
         config_service: Configuration service for etcd access
+        raise_on_error: Fail on an unreadable store instead of reading it as no instances,
+            for a caller that acts on the list (a write, or a check that guards one)
 
     Returns:
         List of toolset instance dictionaries
@@ -514,7 +524,7 @@ async def _load_toolset_instances(
     """
     instances_path = _get_instances_path(org_id)
     try:
-        instances_data = await config_service.get_config(instances_path, default=[])
+        instances_data = await config_service.get_config(instances_path, default=[], raise_on_error=raise_on_error)
         instances = _validate_list(value=instances_data, field_name="toolset instances")
         logger.debug(f"Loaded {len(instances)} toolset instances from {instances_path}")
         return [i for i in instances if i.get("orgId") == org_id]
@@ -793,15 +803,22 @@ def _parse_request_json(request: Request, data: bytes) -> dict[str, Any]:
 
 async def _get_oauth_configs_for_type(
     toolset_type: str,
-    config_service: ConfigurationService
+    config_service: ConfigurationService,
+    *,
+    raise_on_error: bool = False,
 ) -> list[dict[str, Any]]:
-    """Get the list of OAuth configs stored for a toolset type."""
+    """Get the list of OAuth configs stored for a toolset type.
+
+    ``raise_on_error`` for a read that is written back: the list is shared by every org,
+    so an unreadable one saved back as empty would delete every OAuth app of the type."""
     path = _get_toolset_oauth_config_path(toolset_type)
     try:
-        configs = await config_service.get_config(path, default=[], use_cache=False)
-        return configs if isinstance(configs, list) else []
+        configs = await config_service.get_config(path, default=[], use_cache=False, raise_on_error=raise_on_error)
     except Exception:
+        if raise_on_error:
+            raise
         return []
+    return configs if isinstance(configs, list) else []
 
 
 async def _create_or_update_toolset_oauth_config(
@@ -825,7 +842,7 @@ async def _create_or_update_toolset_oauth_config(
         raise InvalidAuthConfigError(str(e)) from e
 
     try:
-        oauth_configs = await _get_oauth_configs_for_type(toolset_type, config_service)
+        oauth_configs = await _get_oauth_configs_for_type(toolset_type, config_service, raise_on_error=True)
 
         if oauth_config_id:
             # Try to update existing
@@ -852,7 +869,7 @@ async def _create_or_update_toolset_oauth_config(
                     cfg["updatedBy"] = user_id
                     oauth_configs[idx] = cfg
                     path = _get_toolset_oauth_config_path(toolset_type)
-                    await config_service.set_config(path, oauth_configs)
+                    await _save_config(config_service, path, oauth_configs)
                     return oauth_config_id
             # Not found - fall through to create
             logger.warning("OAuth config not found, creating new one")
@@ -884,7 +901,7 @@ async def _create_or_update_toolset_oauth_config(
         }
         oauth_configs.append(new_cfg)
         path = _get_toolset_oauth_config_path(toolset_type)
-        await config_service.set_config(path, oauth_configs)
+        await _save_config(config_service, path, oauth_configs)
         return new_cfg["_id"]
 
     except InvalidAuthConfigError:
@@ -1446,7 +1463,7 @@ async def create_toolset_instance(
 
     instances_path = _get_instances_path(org_id)
     try:
-        await config_service.set_config(instances_path, instances)
+        await _save_config(config_service, instances_path, instances)
     except Exception as e:
         logger.error(f"Failed to save toolset instance to {instances_path}: {e}", exc_info=True)
         raise HTTPException(
@@ -1849,7 +1866,7 @@ async def update_toolset_instance(
 
     instances_path = _get_instances_path(org_id)
     try:
-        await config_service.set_config(instances_path, instances)
+        await _save_config(config_service, instances_path, instances)
     except Exception as e:
         logger.error(f"Failed to update toolset instance in {instances_path}: {e}", exc_info=True)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update toolset instance. Please try again.") from e
@@ -1929,7 +1946,7 @@ async def delete_toolset_instance(
     instances_path = _get_instances_path(org_id)
     try:
         # set_config will automatically invalidate cache for this path
-        await config_service.set_config(instances_path, updated)
+        await _save_config(config_service, instances_path, updated)
         logger.info("Toolset instance deleted successfully.")
     except Exception as e:
         logger.error(f"Failed to delete toolset instance from {instances_path}: {e}", exc_info=True)
@@ -2284,7 +2301,7 @@ async def authenticate_toolset_instance(
 
     auth_path = _get_user_auth_path(instance_id, user_id)
     try:
-        await config_service.set_config(auth_path, user_auth)
+        await _save_config(config_service, auth_path, user_auth)
     except Exception as e:
         logger.error(f"Failed to save user auth for instance {instance_id}: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save credentials.") from e
@@ -2318,7 +2335,7 @@ async def update_toolset_credentials(
     auth_path = _get_user_auth_path(instance_id, user_id)
 
     try:
-        existing_auth = await config_service.get_config(auth_path, default=None)
+        existing_auth = await config_service.get_config(auth_path, default=None, raise_on_error=True)
         if not existing_auth or not isinstance(existing_auth, dict):
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="No existing credentials found for this instance. Please authenticate first.")
 
@@ -2326,7 +2343,7 @@ async def update_toolset_credentials(
         existing_auth["updatedAt"] = get_epoch_timestamp_in_ms()
         existing_auth["updatedBy"] = user_id
 
-        await config_service.set_config(auth_path, existing_auth)
+        await _save_config(config_service, auth_path, existing_auth)
     except HTTPException:
         raise
     except Exception as e:
@@ -2737,37 +2754,35 @@ async def handle_toolset_oauth_callback(
         if setup_error_response is not None:
             return setup_error_response
 
-        # Update auth record (user or agent depending on flow)
-        try:
-            updated_auth = await config_service.get_config(auth_storage_path, use_cache=False) or {}
-            if not isinstance(updated_auth, dict):
-                updated_auth = {}
-            updated_auth["isAuthenticated"] = True
-            updated_auth["authType"] = "OAUTH"
-            updated_auth["instanceId"] = instance_id
-            updated_auth["toolsetType"] = toolset_type
-            updated_auth["orgId"] = org_id
-            # Store current instance's oauthConfigId (from callback flow, not stale data)
-            # This ensures we always have the CURRENT config, handling admin config switches.
-            # A personal instance has none: token refresh then reads the client on the instance.
-            if personal:
-                updated_auth.pop("oauthConfigId", None)
-                updated_auth["scope"] = toolset_store.SCOPE_PERSONAL
-            else:
-                updated_auth["oauthConfigId"] = oauth_config_id
-            instance_inherited = instance.get("inheritedFromOrgId")
-            if instance_inherited:
-                updated_auth["inheritedFromOrgId"] = instance_inherited
-            elif "inheritedFromOrgId" in updated_auth:
-                del updated_auth["inheritedFromOrgId"]
-            updated_auth["updatedAt"] = get_epoch_timestamp_in_ms()
-            if is_agent_flow:
-                updated_auth["agentKey"] = agent_key_from_state
-            else:
-                updated_auth["updatedBy"] = user_id
-            await config_service.set_config(auth_storage_path, updated_auth)
-        except Exception as e:
-            logger.warning(f"Could not update auth status for instance {instance_id}: {e}")
+        # Update auth record (user or agent depending on flow). A failed read or write reaches
+        # the outer except: a record without isAuthenticated must not be reported as connected.
+        updated_auth = await config_service.get_config(auth_storage_path, use_cache=False, raise_on_error=True) or {}
+        if not isinstance(updated_auth, dict):
+            updated_auth = {}
+        updated_auth["isAuthenticated"] = True
+        updated_auth["authType"] = "OAUTH"
+        updated_auth["instanceId"] = instance_id
+        updated_auth["toolsetType"] = toolset_type
+        updated_auth["orgId"] = org_id
+        # Store current instance's oauthConfigId (from callback flow, not stale data)
+        # This ensures we always have the CURRENT config, handling admin config switches.
+        # A personal instance has none: token refresh then reads the client on the instance.
+        if personal:
+            updated_auth.pop("oauthConfigId", None)
+            updated_auth["scope"] = toolset_store.SCOPE_PERSONAL
+        else:
+            updated_auth["oauthConfigId"] = oauth_config_id
+        instance_inherited = instance.get("inheritedFromOrgId")
+        if instance_inherited:
+            updated_auth["inheritedFromOrgId"] = instance_inherited
+        elif "inheritedFromOrgId" in updated_auth:
+            del updated_auth["inheritedFromOrgId"]
+        updated_auth["updatedAt"] = get_epoch_timestamp_in_ms()
+        if is_agent_flow:
+            updated_auth["agentKey"] = agent_key_from_state
+        else:
+            updated_auth["updatedBy"] = user_id
+        await _save_config(config_service, auth_storage_path, updated_auth)
 
         # Schedule token refresh
         try:
@@ -2907,6 +2922,9 @@ async def update_toolset_oauth_config(
     auth_config = body.get("authConfig", {})
     auth_config["type"] = "OAUTH"
 
+    # Read before changing the app: an unreadable list must fail the update, not sign nobody out.
+    instances = await _load_toolset_instances(org_id, config_service, raise_on_error=True)
+
     registry = _get_registry(request)
     new_oauth_id = await _create_or_update_toolset_oauth_config(
         toolset_type=toolset_type,
@@ -2919,10 +2937,13 @@ async def update_toolset_oauth_config(
         base_url=base_url,
         oauth_config_id=oauth_config_id,
     )
+    if not new_oauth_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to save the OAuth app. Please try again.",
+        )
 
     # Deauthenticate all users of all instances using this OAuth config (parallel)
-    instances = await _load_toolset_instances(org_id, config_service)
-
     affected_instances = [i for i in instances if i.get("oauthConfigId") == oauth_config_id and i.get("orgId") == org_id]
 
     total_deauthed = 0
@@ -2968,7 +2989,7 @@ async def delete_toolset_oauth_config(
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"OAuth configuration '{oauth_config_id}' not found.")
 
     # Safe-delete: reject if any instance references this oauth config
-    instances = await _load_toolset_instances(org_id, config_service)
+    instances = await _load_toolset_instances(org_id, config_service, raise_on_error=True)
 
     using_instances = [i for i in instances if i.get("oauthConfigId") == oauth_config_id and i.get("orgId") == org_id]
     if using_instances:
@@ -2987,11 +3008,11 @@ async def delete_toolset_oauth_config(
         )
 
     # Remove from the list
-    all_configs = await _get_oauth_configs_for_type(toolset_type, config_service)
-    updated_configs = [c for c in all_configs if c.get("_id") != oauth_config_id]
     path = _get_toolset_oauth_config_path(toolset_type)
     try:
-        await config_service.set_config(path, updated_configs)
+        all_configs = await _get_oauth_configs_for_type(toolset_type, config_service, raise_on_error=True)
+        updated_configs = [c for c in all_configs if c.get("_id") != oauth_config_id]
+        await _save_config(config_service, path, updated_configs)
     except Exception as e:
         logger.error(f"Failed to delete OAuth config: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete OAuth configuration.") from e
@@ -3484,7 +3505,7 @@ async def authenticate_agent_toolset(
 
     auth_path = _get_agent_auth_path(instance_id, agent_key)
     try:
-        await config_service.set_config(auth_path, agent_auth)
+        await _save_config(config_service, auth_path, agent_auth)
     except Exception as e:
         logger.error(f"Failed to save agent auth for instance {instance_id}, agent {agent_key}: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save agent credentials.") from e
@@ -3516,14 +3537,14 @@ async def update_agent_toolset_credentials(
 
     auth_path = _get_agent_auth_path(instance_id, agent_key)
     try:
-        existing_auth = await config_service.get_config(auth_path, default=None)
+        existing_auth = await config_service.get_config(auth_path, default=None, raise_on_error=True)
         if not existing_auth or not isinstance(existing_auth, dict):
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="No existing credentials found for this instance. Please authenticate first.")
 
         existing_auth["auth"] = auth
         existing_auth["updatedAt"] = get_epoch_timestamp_in_ms()
         existing_auth["agentKey"] = agent_key  # track which agent these creds belong to
-        await config_service.set_config(auth_path, existing_auth)
+        await _save_config(config_service, auth_path, existing_auth)
     except HTTPException:
         raise
     except Exception as e:
