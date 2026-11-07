@@ -285,6 +285,10 @@ class IdentityMixin(PgBase):
             ORDER BY lower(coalesce(o.doc->>'fullName', o.doc->>'email', '')) COLLATE "C", o.id COLLATE "C" """, [current_org_id(), wanted, max(1, limit)], None)
         return [dict(r) for r in rows]
 
+    async def find_people(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        # Entity resolution over people nodes is not ported; [] keeps the members path working. The role walk (entity_access.py) starts from users only.
+        return []
+
     async def get_graph_user_keys_by_mongo_user_ids(self, user_ids: list[str], org_id: str | None = None, *, chunk_size: int) -> dict[str, str]:
         if not user_ids:
             return {}

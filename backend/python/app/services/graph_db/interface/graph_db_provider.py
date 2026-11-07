@@ -8628,6 +8628,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def find_people(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """People of ``org_id`` who are not members (``people`` nodes) that a
+        person query names. ``query`` is matched case-insensitively, spaces
+        collapsed: full name or first + last name equals it; when none does,
+        full name or a word of it starts with it (3+ characters). An email
+        matches only when ``query`` is one whole address and equals the node's
+        email: never a fragment, prefix or domain, and a query holding "@"
+        that is not a whole address matches nobody. No permission check, so a
+        caller must not show a person until a record linking them is readable
+        (``entity_permissions.readable_person_offsets``).
+
+        Returns:
+            ``{"id", "fullName", "email"}`` ordered by name, at most ``limit``.
+
+        Raises:
+            Exception: on any query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_taxonomy_entity_membership(
         self,
         refs: list[dict[str, Any]],

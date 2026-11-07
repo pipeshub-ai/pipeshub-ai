@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from app.config.constants.arangodb import Connectors, PermissionModel
+from app.config.constants.arangodb import CollectionNames, Connectors, PermissionModel
 from app.core.org_context import spawn_in_request
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval.selection_scope import (
@@ -992,31 +992,34 @@ async def list_accessible_person_records(
     graph_provider: "IGraphDBProvider",
     context: EntityAccessContext,
     *,
-    user_ids: list[str],
+    nodes: list[tuple[str, str]],
     edge_types: Iterable[str],
     record_types: list[str] | None = None,
     limit: int = 20,
     cursor: str | None = None,
 ) -> EntityRecordPage:
-    """Records linked to a person (one or more User nodes of one email) by
+    """Records linked to a person (one or more User or Person nodes of one
+    email, as ``(collection, id)``) by
     ``edge_types`` that the user can access, paged and decided exactly as
     :func:`list_accessible_entity_records`. Edge types outside the
     person allow-list are dropped."""
     return await _list_ref_records(
-        graph_provider, context, _person_ref(user_ids, edge_types),
+        graph_provider, context, _person_ref(nodes, edge_types),
         record_types=record_types, limit=limit, cursor=cursor,
     )
 
 
-def _person_ref(user_ids: Iterable[str], edge_types: Iterable[str]) -> dict[str, Any]:
+def _person_ref(nodes: Iterable[tuple[str, str]], edge_types: Iterable[str]) -> dict[str, Any]:
     wanted = set(edge_types)
     out_types = [t for t in PERSON_EDGES_TO_USER if t in wanted]
     in_types = [t for t in PERSON_EDGES_FROM_USER if t in wanted]
-    ids = list(dict.fromkeys(i for i in user_ids if i))
-    if not ids or not (out_types or in_types):
-        raise ValueError("A person listing needs a user and at least one relation")
+    found = list(dict.fromkeys((c, i) for c, i in nodes if i))
+    ids = [i for c, i in found if c == CollectionNames.USERS.value]
+    person_ids = [i for c, i in found if c == CollectionNames.PEOPLE.value]
+    if not found or not (out_types or in_types):
+        raise ValueError("A person listing needs a person and at least one relation")
     return {
-        "id": ids[0], "type": PERSON_ENTITY_TYPE, "userIds": ids,
+        "id": found[0][1], "type": PERSON_ENTITY_TYPE, "userIds": ids, "personIds": person_ids,
         "outTypes": out_types, "inTypes": in_types,
     }
 
@@ -1084,12 +1087,12 @@ async def first_readable_offsets(
 async def readable_person_offsets(
     graph_provider: "IGraphDBProvider",
     context: EntityAccessContext,
-    people: list[list[str]],
+    people: list[list[tuple[str, str]]],
     *,
     edge_types: Iterable[str],
     record_types: list[str] | None = None,
 ) -> list[int | None]:
-    """For each person (the user ids of one email), the candidate offset of
+    """For each person (the ``(collection, id)`` nodes of one email), the candidate offset of
     their newest record linked by ``edge_types`` that the user can read, or
     None: none readable, or the probe ran out of time first (see
     :func:`first_readable_offsets`). A person decided None must not be

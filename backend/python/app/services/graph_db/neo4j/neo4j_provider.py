@@ -169,6 +169,7 @@ from app.services.graph_db.common.utils import (
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     jira_issue_browse_url_regex,
+    is_full_address,
     person_query_ref,
     record_taxonomy_refs,
     restore_items,
@@ -22914,16 +22915,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         another org."""
         if entity_type == PERSON_ENTITY_TYPE:
             relation = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+            # One branch per node label and direction, each starting at an indexed id list.
+            branches = "\n                UNION\n                ".join(
+                f"""WITH ref
+                MATCH {pattern}
+                WHERE p.id IN ref.{ids} AND p.orgId = $org_id AND r.edgeType IN ref.{types}
+                RETURN rec"""
+                for label, ids in (("User", "userIds"), (collection_to_label(CollectionNames.PEOPLE.value), "personIds"))
+                for pattern, types in (
+                    (f"(rec:Record)-[r:{relation}]->(p:{label})", "outTypes"),
+                    (f"(p:{label})-[r:{relation}]->(rec:Record)", "inTypes"),
+                )
+            )
             return f"""CALL {{
-                WITH ref
-                MATCH (rec:Record)-[r:{relation}]->(p:User)
-                WHERE p.id IN ref.userIds AND p.orgId = $org_id AND r.edgeType IN ref.outTypes
-                RETURN rec
-                UNION
-                WITH ref
-                MATCH (p:User)-[r:{relation}]->(rec:Record)
-                WHERE p.id IN ref.userIds AND p.orgId = $org_id AND r.edgeType IN ref.inTypes
-                RETURN rec
+                {branches}
               }}
               WITH *"""
         relationship, entity_match = self._entity_node_match(entity_type)
@@ -23239,6 +23244,47 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 AND (toLower(o.email) IN people OR 'id:' + o.id IN people)
             RETURN o.id AS id, o.fullName AS fullName, o.email AS email
             ORDER BY toLower(coalesce(o.fullName, o.email, '')), o.id
+            """,
+            parameters={"org_id": org_id, "q": wanted, "limit": max(1, limit)},
+        )
+        return [dict(row) for row in rows or [] if row.get("id")]
+
+    async def find_people(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_people`."""
+        wanted = " ".join((query or "").split()).lower()
+        if not org_id or not wanted:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        label = collection_to_label(CollectionNames.PEOPLE.value)
+        if "@" in wanted:
+            if not is_full_address(wanted):
+                return []
+            rows = await self.client.execute_query(
+                f"""
+                MATCH (p:{label}) WHERE p.orgId = $org_id AND toLower(p.email) = $q
+                RETURN p.id AS id, p.fullName AS fullName, p.email AS email
+                ORDER BY p.id LIMIT $limit
+                """,
+                parameters={"org_id": org_id, "q": wanted, "limit": max(1, limit)},
+            )
+            return [dict(row) for row in rows or [] if row.get("id")]
+        words = "[w IN split(toLower({}), ' ') WHERE w <> '']"
+        joined = "reduce(s = '', w IN {} | s + CASE WHEN s = '' THEN '' ELSE ' ' END + w)"
+        name = joined.format(words.format("coalesce(p.fullName, '')"))
+        parts = joined.format(words.format("coalesce(p.firstName, '') + ' ' + coalesce(p.lastName, '')"))
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (p:{label}) WHERE p.orgId = $org_id
+            WITH p, {name} AS name, {parts} AS parts
+            WITH p, name, name = $q OR parts = $q AS exact,
+                 size($q) >= 3 AND (name STARTS WITH $q OR any(w IN split(name, ' ') WHERE w STARTS WITH $q)) AS prefix
+            WHERE exact OR prefix
+            WITH collect({{p: p, name: name, exact: exact}}) AS hits
+            WITH [h IN hits WHERE h.exact] AS exact_hits, hits
+            UNWIND (CASE WHEN size(exact_hits) > 0 THEN exact_hits ELSE hits END) AS h
+            RETURN h.p.id AS id, h.p.fullName AS fullName, h.p.email AS email
+            ORDER BY h.name, h.p.id LIMIT $limit
             """,
             parameters={"org_id": org_id, "q": wanted, "limit": max(1, limit)},
         )

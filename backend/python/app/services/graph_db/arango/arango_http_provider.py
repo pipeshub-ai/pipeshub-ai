@@ -216,6 +216,7 @@ from app.services.graph_db.common.utils import (
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     jira_issue_browse_url_regex,
+    is_full_address,
     person_query_ref,
     record_status_field,
     restore_items,
@@ -21671,8 +21672,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             relations = CollectionNames.ENTITY_RELATIONS.value
             # Gated on the org too: this org's record may name a user of another org.
             scope = f"""LET people = (
-                    FOR uid IN ref.userIds
-                        LET person_node = DOCUMENT(CONCAT("{CollectionNames.USERS.value}/", uid))
+                    FOR node_id IN UNION(
+                        (FOR uid IN ref.userIds RETURN CONCAT("{CollectionNames.USERS.value}/", uid)),
+                        (FOR pid IN ref.personIds RETURN CONCAT("{CollectionNames.PEOPLE.value}/", pid)))
+                        LET person_node = DOCUMENT(node_id)
                         FILTER person_node != null AND person_node.orgId == @org_id
                         RETURN person_node._id
                 )"""
@@ -22104,6 +22107,50 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         rows = await self.execute_query(
             query_aql, bind_vars={"org_id": org_id, "q": wanted, "limit": max(1, limit)},
+        )
+        return [dict(row) for row in rows or [] if row and row.get("id")]
+
+    async def find_people(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_people`."""
+        wanted = " ".join((query or "").split()).lower()
+        if not org_id or not wanted:
+            return []
+        people = CollectionNames.PEOPLE.value
+        bind_vars = {"org_id": org_id, "q": wanted, "limit": max(1, limit)}
+        if "@" in wanted:
+            if not is_full_address(wanted):
+                return []
+            rows = await self.execute_query(
+                f"""
+                FOR p IN {people}
+                    FILTER p.orgId == @org_id AND LOWER(p.email) == @q
+                    SORT p._key LIMIT @limit
+                    RETURN {{id: p._key, fullName: p.fullName, email: p.email}}
+                """,
+                bind_vars=bind_vars,
+            )
+            return [dict(row) for row in rows or [] if row and row.get("id")]
+        words = 'CONCAT_SEPARATOR(" ", SPLIT(LOWER({}), " ")[* FILTER CURRENT != ""])'
+        name = words.format('NOT_NULL(p.fullName, "")')
+        parts = words.format('CONCAT(NOT_NULL(p.firstName, ""), " ", NOT_NULL(p.lastName, ""))')
+        rows = await self.execute_query(
+            f"""
+            LET hits = (
+                FOR p IN {people}
+                    FILTER p.orgId == @org_id
+                    LET name = {name}
+                    LET exact = name == @q OR {parts} == @q
+                    FILTER exact OR (LENGTH(@q) >= 3 AND (STARTS_WITH(name, @q)
+                        OR LENGTH(SPLIT(name, " ")[* FILTER STARTS_WITH(CURRENT, @q)]) > 0))
+                    RETURN {{id: p._key, fullName: p.fullName, email: p.email, name: name, exact: exact}}
+            )
+            LET has_exact = LENGTH(hits[* FILTER CURRENT.exact]) > 0
+            FOR h IN hits
+                FILTER h.exact OR NOT has_exact
+                SORT h.name, h.id LIMIT @limit
+                RETURN {{id: h.id, fullName: h.fullName, email: h.email}}
+            """,
+            bind_vars=bind_vars,
         )
         return [dict(row) for row in rows or [] if row and row.get("id")]
 
