@@ -391,8 +391,10 @@ describe('AIServiceCommand', () => {
       } catch (err) {
         expect(err).to.equal(failure)
       }
-      expect(logged.callCount).to.equal(1)
-      const [, meta] = logged.firstCall.args
+      // The stub is on the prototype, so it also sees any other logger in this process.
+      const own = logged.getCalls().filter((c) => c.args[0] === 'AI service streaming command failed')
+      expect(own).to.have.lengthOf(1)
+      const [, meta] = own[0].args
       expect(meta.error).to.equal(failure)
       expect(meta.error.cause.code).to.equal('ECONNREFUSED')
     })
