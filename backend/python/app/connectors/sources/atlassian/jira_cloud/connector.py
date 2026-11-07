@@ -84,7 +84,6 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
 from app.connectors.sources.atlassian.core.jira_issue_security import (
-    UNREADABLE_KEEPS_STORED_ACCESS,
     UNREADABLE_REASONS,
     IssueSecurityContext,
     SchemeKnowledge,
@@ -93,13 +92,16 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     classify_scheme_response,
     collect_paged_values,
     custom_field_ids_from_members,
+    hold_levels_naming_unread_roles,
     http_status_is_transient,
     index_members,
     level_reads_alike,
+    plan_level_reread,
     read_security_level,
     refuses_a_scope,
     scheme_has_no_levels,
     unreadable_reason,
+    unreadable_security_notices,
 )
 from app.connectors.sources.atlassian.core.html_utils import (
     attachment_images_not_inlined,
@@ -4373,23 +4375,13 @@ class JiraConnector(BaseConnector):
     async def _warn_unreadable_security(self) -> None:
         """One warning per reason for the projects whose issue security levels could not be
         applied this sync, and one notification for the connector's owner."""
-        by_reason: dict[str, list[str]] = {}
-        for project_key, reason in self._unreadable_security.items():
-            by_reason.setdefault(reason, []).append(project_key)
         lines: list[str] = []
-        for reason, project_keys in by_reason.items():
-            effect = (
-                "keep the access they had" if reason in UNREADABLE_KEEPS_STORED_ACCESS
-                else "are hidden from everyone"
-            )
+        for reason, effect, project_keys, line in unreadable_security_notices(self._unreadable_security):
             self.logger.warning(
                 "Issues with a security level in %s project(s) %s until their levels can be read; %s: %s",
-                len(project_keys), effect, UNREADABLE_REASONS[reason], ", ".join(sorted(project_keys)),
+                len(project_keys), effect, UNREADABLE_REASONS[reason], ", ".join(project_keys),
             )
-            lines.append(
-                f"{', '.join(sorted(project_keys))}: {UNREADABLE_REASONS[reason]}. Issues with a "
-                f"security level there {effect} until their levels can be read."
-            )
+            lines.append(line)
         if lines:
             await self.notify(
                 type=NotificationType.CONNECTOR_WARNING,
@@ -4399,55 +4391,14 @@ class JiraConnector(BaseConnector):
             )
 
     def _hold_levels_naming_unread_roles(self, security: IssueSecurityContext) -> IssueSecurityContext:
-        """A level naming an application role is unknown, not narrower, while the role list
-        could not be read in full: its issues keep their stored grants until a sync reads it."""
-        if self._app_roles_unread and any(
-            isinstance(holder, dict) and holder.get("type") == "applicationRole"
-            for holders in security.members_by_level.values() for holder in holders
-        ):
-            security.members_readable = False
-            security.defer_checkpoint = True
-        return security
+        return hold_levels_naming_unread_roles(security, app_roles_unread=self._app_roles_unread)
 
     def _plan_level_reread(
         self, security: IssueSecurityContext, stored: dict[str, str] | None, *, is_new_project: bool,
     ) -> tuple[str | None, list[str] | None, dict[str, str]]:
-        """Decide the second pass over already-stored issues, and the level map saved after it.
-
-        No issue's ``updated`` moves when a level gains or loses a member, or when a level or
-        the scheme is removed, so the checkpoint keeps a digest per level. ``"*"`` in it marks
-        issues written while their level could not be applied: ``retry`` after a transient
-        read (the stored grants were kept), ``unreadable`` after a lasting one (they were
-        closed). Returns ``(pass, level_ids, to_save)``; the pass is ``"levels"`` (only
-        ``level_ids``), ``"leveled"`` (every issue with a level), ``"project"`` (every issue,
-        since one may have lost its level without an update) or None.
-        """
-        stored_real = {k: v for k, v in (stored or {}).items() if k != "*"}
-        marker = (stored or {}).get("*")
-        if security.defer_checkpoint:
-            # Nothing was settled this sync: keep the digests and re-read once it is.
-            return None, None, {**stored_real, "*": "retry"}
-        if security.knowledge == SchemeKnowledge.NONE:
-            # A removed scheme clears the issues' levels without changing their `updated`.
-            return ("project" if stored and not is_new_project else None), None, {}
-        if not security.members_readable or security.knowledge != SchemeKnowledge.PRESENT:
-            # Close every leveled issue once; a lasting failure does not repeat the walk.
-            closed = is_new_project or marker == "unreadable"
-            return (None if closed else "leveled"), None, {**stored_real, "*": "unreadable"}
-        current = security.level_fingerprints(self._app_roles_mapping)
-        if is_new_project:
-            return None, None, current
-        if stored is None:
-            # Synced before levels were tracked: every leveled issue, holder-less levels included.
-            return "leveled", None, current
-        if stored_real.keys() - current.keys():
-            # A level lost its last holder or was deleted. Jira rejects a deleted level's id in
-            # JQL, and an issue moved out of it to no level matches no level predicate.
-            return "project", None, current
-        if marker is not None:
-            return "leveled", None, current
-        changed = sorted(lid for lid in current if stored_real.get(lid) != current[lid])
-        return ("levels" if changed else None), changed or None, current
+        return plan_level_reread(
+            security, stored, is_new_project=is_new_project, app_roles_mapping=self._app_roles_mapping
+        )
 
     async def _record_security_levels(
         self, project_key: str, levels: dict[str, str], *, force: bool = False,

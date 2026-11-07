@@ -225,6 +225,7 @@ UNREADABLE_SCOPE = "scope"
 UNREADABLE_AUTH = "auth"
 UNREADABLE_PERMISSION = "permission"
 UNREADABLE_ROLES = "roles"
+UNREADABLE_NOT_LISTED = "not_listed"
 UNREADABLE_TRANSIENT = "transient"
 UNREADABLE_OTHER = "other"
 
@@ -236,6 +237,10 @@ UNREADABLE_REASONS = {
     UNREADABLE_AUTH: "Jira refused the connector's authorisation (HTTP 401). Reconnect the connector",
     UNREADABLE_PERMISSION: "the sync account lacks the Administer Jira permission (HTTP 403)",
     UNREADABLE_ROLES: "a level names an application role whose members could not be read this sync",
+    UNREADABLE_NOT_LISTED: (
+        "this Jira server does not list who holds each issue security level (HTTP 404, 405 or 501), "
+        "so no one can be shown an issue that has one"
+    ),
     UNREADABLE_TRANSIENT: "Jira did not answer this sync (rate limit, server or network error)",
     UNREADABLE_OTHER: "the read failed",
 }
@@ -260,6 +265,8 @@ def unreadable_reason(context: IssueSecurityContext) -> str | None:
         return UNREADABLE_ROLES
     if context.defer_checkpoint:
         return UNREADABLE_TRANSIENT
+    if context.knowledge == SchemeKnowledge.PRESENT and context.read_status in (404, 405, 501):
+        return UNREADABLE_NOT_LISTED
     return UNREADABLE_OTHER
 
 
@@ -268,8 +275,13 @@ def classify_scheme_response(
     body: object,
     *,
     project_style: str | None = None,
+    project_is_visible: bool = False,
 ) -> tuple[SchemeKnowledge, str | None]:
     """A 200 body with an ``id`` is a scheme. A bare 404 or a 403 is unknown.
+
+    ``project_is_visible``: the caller lists this project, so a 404 whose JSON body carries
+    error messages is the server answering "no scheme" (Data Center documents 404 only for a
+    project that is missing or hidden). A 404 with no such body may be a route the server lacks.
 
     Jira answers "this project has no issue security scheme" with 404 and
     ``Security level for project {id} does not exist``. A 403, or a 404 that
@@ -286,6 +298,8 @@ def classify_scheme_response(
         and isinstance(body, dict)
     ):
         messages = body.get("errorMessages") or []
+        if project_is_visible and any(isinstance(message, str) and message for message in messages):
+            return SchemeKnowledge.NONE, None
         if any(
             isinstance(message, str)
             and "security level for project" in message.lower()
@@ -704,3 +718,81 @@ def apply_attachment_access(record: Record) -> list[Permission]:
     record.access_rule = AccessRule.STRICT
     record.rewrite_permissions = True
     return []
+
+
+def hold_levels_naming_unread_roles(
+    security: IssueSecurityContext, *, app_roles_unread: bool,
+) -> IssueSecurityContext:
+    """A level naming an application role is unknown, not narrower, while the role list
+    could not be read in full: its issues keep their stored grants until a sync reads it."""
+    if app_roles_unread and any(
+        isinstance(holder, dict) and holder.get("type") == HOLDER_APPLICATION_ROLE
+        for holders in security.members_by_level.values() for holder in holders
+    ):
+        security.members_readable = False
+        security.defer_checkpoint = True
+    return security
+
+
+def plan_level_reread(
+    security: IssueSecurityContext,
+    stored: dict[str, str] | None,
+    *,
+    is_new_project: bool,
+    app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
+) -> tuple[str | None, list[str] | None, dict[str, str]]:
+    """Decide the second pass over already-stored issues, and the level map saved after it.
+
+    No issue's ``updated`` moves when a level gains or loses a member, or when a level or
+    the scheme is removed, so the checkpoint keeps a digest per level. ``"*"`` in it marks
+    issues written while their level could not be applied: ``retry`` after a transient
+    read (the stored grants were kept), ``unreadable`` after a lasting one (they were
+    closed). Returns ``(pass, level_ids, to_save)``; the pass is ``"levels"`` (only
+    ``level_ids``), ``"leveled"`` (every issue with a level), ``"project"`` (every issue,
+    since one may have lost its level without an update) or None. A project synced before
+    levels were tracked has no map, which reads as ``"leveled"``: that is the one-time re-read
+    that closes issues stored open before levels were applied.
+    """
+    stored_real = {k: v for k, v in (stored or {}).items() if k != "*"}
+    marker = (stored or {}).get("*")
+    if security.defer_checkpoint:
+        # Nothing was settled this sync: keep the digests and re-read once it is.
+        return None, None, {**stored_real, "*": "retry"}
+    if security.knowledge == SchemeKnowledge.NONE:
+        # A removed scheme clears the issues' levels without changing their `updated`.
+        return ("project" if stored and not is_new_project else None), None, {}
+    if not security.members_readable or security.knowledge != SchemeKnowledge.PRESENT:
+        # Close every leveled issue once; a lasting failure does not repeat the walk.
+        closed = is_new_project or marker == "unreadable"
+        return (None if closed else "leveled"), None, {**stored_real, "*": "unreadable"}
+    current = security.level_fingerprints(app_roles_mapping)
+    if is_new_project:
+        return None, None, current
+    if stored is None:
+        # Synced before levels were tracked: every leveled issue, holder-less levels included.
+        return "leveled", None, current
+    if stored_real.keys() - current.keys():
+        # A level lost its last holder or was deleted. An issue moved out of it to no level
+        # matches no level predicate.
+        return "project", None, current
+    if marker is not None:
+        return "leveled", None, current
+    changed = sorted(lid for lid in current if stored_real.get(lid) != current[lid])
+    return ("levels" if changed else None), changed or None, current
+
+
+def unreadable_security_notices(unreadable: dict[str, str]) -> list[tuple[str, str, list[str], str]]:
+    """``(reason, effect, project keys, message)`` per reason, for the projects (key ->
+    ``UNREADABLE_*`` reason) whose issue security levels could not be applied this sync."""
+    by_reason: dict[str, list[str]] = {}
+    for project_key, reason in unreadable.items():
+        by_reason.setdefault(reason, []).append(project_key)
+    notices = []
+    for reason, project_keys in by_reason.items():
+        effect = "keep the access they had" if reason in UNREADABLE_KEEPS_STORED_ACCESS else "are hidden from everyone"
+        keys = sorted(project_keys)
+        notices.append((reason, effect, keys, (
+            f"{', '.join(keys)}: {UNREADABLE_REASONS[reason]}. Issues with a "
+            f"security level there {effect} until their levels can be read."
+        )))
+    return notices
