@@ -560,17 +560,17 @@ def test_the_one_running_job_index_comes_and_goes_with_the_platform_job_function
         assert c.execute(index).fetchone()[0] is True
 
 
-def test_the_runtime_tables_come_and_go_with_platform_0003_and_0004(db):
-    """The key-value, queue and scheduler tables are internal tables the four service roles may use; a downgrade takes them and their registry rows away."""
+def test_the_runtime_tables_come_and_go_with_platform_0003_to_0005(db):
+    """The key-value, queue, scheduler and cache tables are internal tables the service roles may use; a downgrade takes them and their registry rows away."""
     cluster, name = db
     url = cluster.url(name, MIGRATE)
-    tables = ("kv_entries", "queue_messages", "queue_groups", "queue_deliveries", "sched_jobs", "sched_repeats")
+    tables = ("kv_entries", "queue_messages", "queue_groups", "queue_deliveries", "sched_jobs", "sched_repeats", "cache_entries")
     assert run_migrate(url).returncode == 0
     with connect(cluster, name) as c:
         for t in tables:
             assert c.execute("SELECT class FROM kernel.rls_registry WHERE rel = %s::regclass", (f"platform.{t}",)).fetchone()[0] == "internal"
             who = {  # who may use each table: the Node API everything; the Python services the key-value and queue tables; the config-only role just key-value
-                "sched_jobs": {"pipeshub_node"}, "sched_repeats": {"pipeshub_node"},
+                "sched_jobs": {"pipeshub_node"}, "sched_repeats": {"pipeshub_node"}, "cache_entries": {"pipeshub_node"},
                 "kv_entries": {"pipeshub_node", "pipeshub_connectors", "pipeshub_indexing", "pipeshub_query", "pipeshub_kv"},
             }.get(t, {"pipeshub_node", "pipeshub_connectors", "pipeshub_indexing", "pipeshub_query"})
             for role in ("pipeshub_node", "pipeshub_connectors", "pipeshub_indexing", "pipeshub_query", "pipeshub_kv", "pipeshub_jobs"):
