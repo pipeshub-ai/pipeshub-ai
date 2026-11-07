@@ -1180,7 +1180,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         except Exception as e:
             # Only the "is ready" notice depends on it; the steps below must still run.
-            logger.error(f"❌ Failed to start the first-sync watch: {e}", exc_info=True)
+            logger.error(f"Failed to start the first-sync watch: {e}", exc_info=True)
 
         try:
             await start_reconciler()
