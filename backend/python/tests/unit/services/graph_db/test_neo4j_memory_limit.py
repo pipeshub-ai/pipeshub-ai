@@ -23,7 +23,10 @@ from app.connectors.core.base.data_store.graph_data_store import (
 )
 from app.connectors.sources.localKB.push.retry import is_attempt_lost
 from app.exceptions import graph_db_exceptions as exceptions
-from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, is_graph_memory_refusal
+from app.exceptions.graph_db_exceptions import (
+    GraphMemoryLimitError,
+    is_graph_memory_refusal,
+)
 from app.services.graph_db.neo4j.neo4j_client import MEMORY_LIMIT_CODES, Neo4jClient
 from app.services.graph_db.neo4j.neo4j_provider import BULK_EDGE_ROWS, Neo4jProvider
 
