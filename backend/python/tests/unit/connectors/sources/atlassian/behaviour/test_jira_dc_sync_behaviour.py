@@ -999,6 +999,9 @@ class TestHierarchyLinks:
         jira.on("GET", f"{API}/issue/ENG-404", json_response({"errorMessages": ["gone"]}, status=404))
         jira.on("GET", f"{API}/issue/ENG-500", json_response({}, status=500))
         jira.on("GET", f"{API}/issue/INIT-1", {"id": "5001", "key": "INIT-1"})
+        # A parent in another project is read for its level before the issue is filed under it.
+        jira.on("GET", f"{API}/issue/5001", {"id": "5001", "key": "INIT-1", "fields": {
+            "project": {"id": "20000", "key": "INIT"}, "security": None}})
         with_parent_link = issue("1005", "ENG-5", ts(4))
         with_parent_link["fields"]["customfield_10200"] = {"data": {"key": "INIT-1"}}
         search.add("ENG", 0, [

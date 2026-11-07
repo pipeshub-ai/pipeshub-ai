@@ -118,12 +118,27 @@ class TestAncestorStub:
 
 
 class TestParentGate:
-    async def test_a_project_without_a_scheme_files_as_before_and_reads_nothing(self) -> None:
+    async def test_a_project_without_a_scheme_files_under_a_parent_of_its_own_as_before_and_reads_nothing(self) -> None:
         connector = _connector()
         connector._get_issue_with_retry = AsyncMock()
+        connector._issue_key_to_id_cache = {"P-5": "5"}
         none = IssueSecurityContext(knowledge=SchemeKnowledge.NONE)
-        assert await connector._files_under_parent({}, "5", none) is True
+        assert await connector._files_under_parent({"project": {"id": "10", "key": "P"}}, "5", none) is True
         connector._get_issue_with_retry.assert_not_awaited()
+
+    @pytest.mark.parametrize(("parent_level", "files"), [(None, True), ("20", False)])
+    async def test_a_parent_in_another_project_is_read_even_when_the_story_project_has_no_scheme(
+        self, parent_level, files,
+    ) -> None:
+        """Its level decides: a story under another project's leveled epic would be hidden from its own readers."""
+        connector = _connector()
+        connector._issue_key_to_id_cache = {"Q-5": "5"}
+        parent = {"id": "5", "fields": {"project": {"id": "99", "key": "Q"},
+                                        "security": {"id": parent_level} if parent_level else None}}
+        connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=parent)))
+        none = IssueSecurityContext(knowledge=SchemeKnowledge.NONE)
+        assert await connector._files_under_parent({"project": {"id": "10", "key": "P"}}, "5", none) is files
+        connector._get_issue_with_retry.assert_awaited_once()
 
     async def test_a_parent_that_cannot_be_read_holds_the_story_instead_of_guessing(self) -> None:
         connector = _connector()

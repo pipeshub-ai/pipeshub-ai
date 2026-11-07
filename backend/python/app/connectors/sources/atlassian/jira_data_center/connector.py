@@ -4603,10 +4603,15 @@ class JiraDataCenterConnector(BaseConnector):
         epic's readers too. Jira does not copy an epic's level onto its stories, so the story
         stays under a leveled epic only when it has the same level and that level grants the
         same people on every issue (``level_reads_alike``), and the epic is in its project.
-        A project with no scheme has no level to weigh and keeps filing as before.
+        A parent in a project with no scheme, read from the same project, has no level to weigh
+        and keeps filing as before; a parent in another project is read, since it may have one.
         """
-        if security is None or not security.enforce or security.knowledge == SchemeKnowledge.NONE:
+        if security is None or not security.enforce:
             return True
+        if security.knowledge == SchemeKnowledge.NONE:
+            parent_key = next((k for k, i in self._issue_key_to_id_cache.items() if i == str(parent_id)), "")
+            if parent_key and parent_key.rsplit("-", 1)[0] == str((fields.get("project") or {}).get("key") or ""):
+                return True
         parent = await self._parent_level(parent_id)
         if parent is None:
             return False

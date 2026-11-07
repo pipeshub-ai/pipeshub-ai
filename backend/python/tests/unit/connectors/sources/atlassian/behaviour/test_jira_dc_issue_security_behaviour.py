@@ -553,6 +553,23 @@ class TestHierarchy:
         assert hidden_from_project(db.records["3"])
 
 
+    async def test_a_story_in_a_project_with_no_scheme_leaves_a_leveled_epic_of_another_project(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        stub_site(jira, jql_search)  # ENG has no scheme; the epic is in OTH, which has one
+        jira.on("GET", f"{API}/issue/OTH-7", {"id": "700", "key": "OTH-7"})
+        jira.on("GET", f"{API}/issue/700", {"id": "700", "key": "OTH-7", "fields": {
+            "project": {"id": "20000", "key": "OTH"}, "security": {"id": SECRET}}})
+        story = sec_issue("6", "ENG-6", kind="Story", epic="OTH-7")
+        jql_search.put(story)
+        connector, _ = await make_connector(db, store)
+
+        await sync(connector, jql_search, recent=[story])
+
+        # The people who read the story in ENG are not the epic's, so it hangs off its own project.
+        assert db.records["6"].parent_external_record_id is None and not hidden_from_project(db.records["6"])
+
+
 class TestReindex:
     def stored(self, connector: JiraDataCenterConnector, db: JiraRecordsDb, issue_id: str = "2") -> TicketRecord:
         record = TicketRecord(
