@@ -63,3 +63,11 @@ async def test_other_errors_still_raise() -> None:
     p.http_client.execute_aql = AsyncMock(side_effect=ArangoQueryError("Query failed", 400, json.dumps({"errorNum": 1620})))
     with pytest.raises(ArangoQueryError):
         await p.batch_create_entity_relations([EDGE])
+
+
+async def test_failed_cleanup_or_index_build_does_not_stop_setup() -> None:
+    p = _provider()
+    p._dedupe_entity_relations = AsyncMock(side_effect=RuntimeError("boom"))
+    p.http_client.ensure_persistent_index = AsyncMock(return_value=False)  # duplicates left: build refused
+    await p._ensure_indexes()
+    assert p.http_client.ensure_persistent_index.await_count > 1

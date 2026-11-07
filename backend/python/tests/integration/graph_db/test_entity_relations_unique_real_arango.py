@@ -98,3 +98,23 @@ async def test_concurrent_writers_of_one_edge_leave_one(arango) -> None:
     # The index itself refuses a raw second insert.
     with pytest.raises(Exception, match="1210|unique constraint"):
         await provider.http_client.execute_aql(f"INSERT @e INTO {COLL}", {"e": _edge(prefix, 100)})
+
+
+async def test_refused_index_build_keeps_every_edge_and_setup_goes_on(arango) -> None:
+    provider, prefix = arango
+    client = provider.http_client
+    index = await _unique_index(provider)
+    if index:
+        await client.drop_index(index["id"])
+    await client.execute_aql(
+        f"FOR e IN @edges INSERT e INTO {COLL}", {"edges": [_edge(prefix), _edge(prefix)]}
+    )
+
+    async def broken_cleanup(*_a: object, **_k: object) -> None:
+        raise RuntimeError("cleanup unavailable")
+
+    provider._dedupe_entity_relations = broken_cleanup
+    await provider._ensure_indexes()  # must not raise
+
+    assert await _count(provider, prefix) == 2
+    assert await _unique_index(provider) is None

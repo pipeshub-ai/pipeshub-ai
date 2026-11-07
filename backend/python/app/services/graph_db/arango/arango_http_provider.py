@@ -1688,7 +1688,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             i.get("unique") and i.get("fields") == entity_fields
             for i in await self.http_client.get_indexes(CollectionNames.ENTITY_RELATIONS.value)
         ):
-            await self._dedupe_entity_relations()
+            try:
+                await self._dedupe_entity_relations()
+            except Exception as exc:  # the index build below then fails and logs; startup goes on
+                self.logger.error("Could not remove duplicate entityRelations edges: %s", exc)
         await self.http_client.ensure_persistent_index(
             CollectionNames.ENTITY_RELATIONS.value, entity_fields, unique=True,
         )
