@@ -92,7 +92,7 @@ def openai_wrong_host_message(wrong_host: str, called_url: str | None, key_label
 # operation path to. A pasted full URL (".../v1/responses") doubles that path,
 # and the provider's 404 then reads as "model not found".
 OPENAI_SDK_BASE_URL_PROVIDERS = frozenset({
-    "openAI", "openAICompatible", "litellmProxy", "lmStudio", "together",
+    "openAI", "openAICompatible", "litellmProxy", "lmStudio", "openLLM", "together",
 })
 _OPENAI_OPERATION_PATHS = (
     "/chat/completions", "/completions", "/responses", "/embeddings", "/models",

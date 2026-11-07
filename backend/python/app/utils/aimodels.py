@@ -25,6 +25,7 @@ from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_REASONING_EFFORT,
     EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
+    OPENLLM_PLACEHOLDER_API_KEY,
     OPENROUTER_BASE_URL,
     REASONING_EFFORT_VALUES,
     REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS,
@@ -386,6 +387,7 @@ class LLMProvider(Enum):
     OLLAMA = "ollama"
     OPENAI = "openAI"
     OPENAI_COMPATIBLE = "openAICompatible"
+    OPENLLM = "openLLM"
     OPENROUTER = "openRouter"
     TOGETHER = "together"
     VERTEX_AI = "vertexAI"
@@ -1153,6 +1155,7 @@ _OPENAI_FAMILY = frozenset({
     LLMProvider.AZURE_AI.value,
     LLMProvider.OPENAI_COMPATIBLE.value,
     LLMProvider.LITELLM_PROXY.value,
+    LLMProvider.OPENLLM.value,
     LLMProvider.OPENROUTER.value,
 })
 
@@ -2373,6 +2376,24 @@ def _get_generator_model_impl(
             base_url=configuration["endpoint"], model_name=model_name, api_mode=api_mode,
         ))
         return _guard_clients(ChatOpenAI(**litellm_proxy_kwargs), _OPENAI_ROOT_CLIENTS, configuration.get("endpoint"))
+
+    elif provider == LLMProvider.OPENLLM.value:
+        from langchain_openai import ChatOpenAI
+        openllm_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            # Omitted unless the admin set one: the gateway refuses temperature for
+            # models it runs through a native runtime (claude_code/*).
+            temperature=configuration.get("temperature"),
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=str(configuration.get("apiKey") or "").strip() or OPENLLM_PLACEHOLDER_API_KEY,
+            base_url=configuration["endpoint"],
+            stream_usage=True,
+        )
+        openllm_kwargs.update(_reasoning_effort_kwargs(
+            reasoning_effort, config, provider=provider,
+            base_url=configuration["endpoint"], model_name=model_name, api_mode=api_mode,
+        ))
+        return _guard_clients(ChatOpenAI(**openllm_kwargs), _OPENAI_ROOT_CLIENTS, configuration.get("endpoint"))
 
     elif provider == LLMProvider.OPENROUTER.value:
         from langchain_openai import ChatOpenAI

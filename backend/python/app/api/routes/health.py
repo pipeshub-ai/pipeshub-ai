@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflict
 from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
+from app.config.constants.ai_models import OPENLLM_KEY_REQUIRED_MESSAGE
 from app.config.constants.service import config_node_constants
 from app.core import org_context
 from app.services.ai_models.decision import PredicateQuestion, get_decision_model
@@ -133,6 +134,7 @@ def _llm_health_check_needs_outbound(provider: str, configuration: dict[str, Any
     if provider in (
         LLMProvider.OPENAI_COMPATIBLE.value,
         LLMProvider.LITELLM_PROXY.value,
+        LLMProvider.OPENLLM.value,
     ):
         endpoint = configuration.get("endpoint") or configuration.get("baseUrl") or ""
         return not _endpoint_is_local(str(endpoint))
@@ -347,6 +349,13 @@ def _rejected_settings_message(
                 f"foundation model in every Region the profile routes to "
                 f"(arn:aws:bedrock:*::foundation-model/...).{extra}"
             )
+    if (
+        code == "auth_error"
+        and _normalize_provider_key(model_config.get("provider")) == "openllm"
+        and not str(configuration.get("apiKey") or "").strip()
+        and not _endpoint_is_local(str(configuration.get("endpoint") or ""))
+    ):
+        return OPENLLM_KEY_REQUIRED_MESSAGE
     if code == "auth_error":
         return (
             f"The API key for {name} was rejected by {provider}. "

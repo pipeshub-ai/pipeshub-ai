@@ -33,6 +33,15 @@ class OCRProvider(Enum):
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
+# The local OpenLLM daemon, as reached from a PipesHub container.
+OPENLLM_DEFAULT_ENDPOINT = "http://host.docker.internal:8787/v1"
+# The OpenAI client needs a non-empty key. The local daemon accepts any bearer that
+# does not start with "sk-llm-" (that prefix is a cloud key) and runs it as the saved login.
+OPENLLM_PLACEHOLDER_API_KEY = "openllm"
+OPENLLM_KEY_REQUIRED_MESSAGE = (
+    "An OpenLLM API key is required for the hosted endpoint. Create one at https://www.openllm.sh."
+)
+
 class AzureOpenAILLM(Enum):
     AZURE_OPENAI_VERSION = "2025-04-01-preview"
 
