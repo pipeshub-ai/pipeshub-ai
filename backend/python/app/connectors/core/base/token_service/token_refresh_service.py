@@ -9,7 +9,7 @@ import weakref
 from datetime import datetime, timedelta
 from typing import Optional
 
-from app.core.org_context import spawn_detached
+from app.core.org_context import for_org, spawn_detached, system
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import (
@@ -244,25 +244,38 @@ class TokenRefreshService:
     async def _refresh_all_tokens_internal(self) -> None:
         """Internal method to refresh tokens (called with lock held)"""
         try:
-            # 1. Get the OAuth connectors from database. Only they hold a token; a
-            # tenant can have thousands of collection Apps, and loading every App
-            # here would stall this service's event loop on each pass.
-            connectors = []
-            for auth_type in self._OAUTH_AUTH_TYPES:
-                connectors.extend(await self.graph_provider.get_nodes_by_filters(
-                    CollectionNames.APPS.value, {"authType": auth_type},
-                ))
-
-            # 2. Filter for authenticated OAuth connectors
-            authenticated_connectors = await self._filter_authenticated_oauth_connectors(connectors)
-
-            self.logger.debug(f"Found {len(authenticated_connectors)} authenticated OAuth connectors to refresh")
-
-            # 3. Process each connector for refresh
-            await self._process_connectors_for_refresh(authenticated_connectors)
+            # Org by org: the graph is org-scoped (Postgres refuses an unbound read), and a
+            # refresh's deauth writes and the timer it arms act for the connector's org.
+            with system("token_refresh"):
+                orgs = await self.graph_provider.get_all_orgs(active=False)
+            for org in orgs:
+                org_id = org.get("_key") or org.get("id")
+                if org_id:
+                    with for_org(str(org_id), job="token_refresh"):
+                        await self._refresh_org_tokens(str(org_id))
 
         except Exception as e:
             self.logger.error(f"❌ Error refreshing tokens: {e}", exc_info=True)
+
+    async def _refresh_org_tokens(self, org_id: str) -> None:
+        """Refresh or schedule the tokens of one org's OAuth connectors (called under that org)."""
+        # 1. Get the OAuth connectors from database. Only they hold a token; a
+        # tenant can have thousands of collection Apps, and loading every App
+        # here would stall this service's event loop on each pass. The orgId
+        # filter matters where the store ignores the bound org (Arango, Neo4j).
+        connectors = []
+        for auth_type in self._OAUTH_AUTH_TYPES:
+            connectors.extend(await self.graph_provider.get_nodes_by_filters(
+                CollectionNames.APPS.value, {"authType": auth_type, "orgId": org_id},
+            ))
+
+        # 2. Filter for authenticated OAuth connectors
+        authenticated_connectors = await self._filter_authenticated_oauth_connectors(connectors)
+
+        self.logger.debug(f"Found {len(authenticated_connectors)} authenticated OAuth connectors to refresh")
+
+        # 3. Process each connector for refresh
+        await self._process_connectors_for_refresh(authenticated_connectors)
 
     # ============================================================================
     # Helper Methods for OAuth Config Building
