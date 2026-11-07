@@ -19,12 +19,12 @@ from typing import TYPE_CHECKING
 
 import httpx
 import pytest
-import yaml
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
 import app.connectors.sources.demo.connector as demo_connector
+from app.connectors.sources.demo.fixture_loader import load_fixture
 from app.connectors.sources.demo.harness import kb_harness
 from app.connectors.sources.demo.harness.answer_judge import AnswerJudge
 
@@ -33,7 +33,7 @@ FIXTURE = Path(demo_connector.__file__).resolve().parent / "fixture" / "acme-cor
 
 @pytest.fixture(scope="module")
 def fx() -> dict:
-    return yaml.safe_load(FIXTURE.read_text(encoding="utf-8"))
+    return load_fixture(FIXTURE)
 
 
 def _question(fx: dict, qid: str) -> dict:
@@ -467,3 +467,54 @@ def test_pack_answers_are_checked_only_by_exact_tokens_or_judged_facts(fx: dict)
     extra = {q["id"]: sorted(k for k in q if k.startswith("answer_") and k not in ANSWER_CONTENT_KEYS) for q in questions}
     assert not {qid: keys for qid, keys in extra.items() if keys}, extra
 
+
+
+def _sign_in_server(throttled: int, retry_after: str | None = "2") -> tuple[httpx.MockTransport, list[str]]:
+    """The sign-in routes, answering the first ``throttled`` authenticate calls with 429."""
+    calls: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("/initAuth"):
+            return httpx.Response(200, headers={"x-session-token": "s"}, json={})
+        if calls.count(request.url.path) <= throttled:
+            return httpx.Response(429, headers={"Retry-After": retry_after} if retry_after else {}, json={})
+        return httpx.Response(200, json={"accessToken": "jwt"})
+
+    return httpx.MockTransport(handle), calls
+
+
+def _use_transport(monkeypatch: pytest.MonkeyPatch, transport: httpx.MockTransport) -> list[float]:
+    real_client = httpx.Client
+    slept: list[float] = []
+    monkeypatch.setattr(kb_harness.httpx, "Client", lambda **kw: real_client(transport=transport, **kw))
+    monkeypatch.setattr(kb_harness.time, "sleep", slept.append)
+    return slept
+
+
+def test_a_throttled_sign_in_waits_as_told_and_signs_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Signing in nine personas back to back passes the server's per-IP limit
+    # of ten sign-ins a minute; the limit is a wait, not a failure.
+    transport, calls = _sign_in_server(throttled=2)
+    slept = _use_transport(monkeypatch, transport)
+
+    assert kb_harness.login("http://pipeshub", "a@b.c", "pw") == "jwt"
+    assert slept == [2.0, 2.0]
+    assert calls.count("/api/v1/userAccount/authenticate") == 3
+
+
+def test_a_throttled_sign_in_without_retry_after_waits_a_minute(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport, _ = _sign_in_server(throttled=1, retry_after=None)
+    slept = _use_transport(monkeypatch, transport)
+
+    assert kb_harness.login("http://pipeshub", "a@b.c", "pw") == "jwt"
+    assert slept == [60.0]
+
+
+def test_a_sign_in_still_throttled_after_every_wait_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport, _ = _sign_in_server(throttled=99)
+    slept = _use_transport(monkeypatch, transport)
+
+    with pytest.raises(httpx.HTTPStatusError, match="429"):
+        kb_harness.login("http://pipeshub", "a@b.c", "pw")
+    assert len(slept) == kb_harness.LOGIN_THROTTLE_RETRIES

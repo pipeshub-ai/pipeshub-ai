@@ -543,3 +543,12 @@ def test_a_model_error_names_its_class_and_status_but_not_a_key() -> None:
     detail = judge.judge(ANSWER, [NO_APPROVAL]).detail
     assert "StatusError (HTTP 401)" in detail and "Incorrect API key provided" in detail
     assert "sk-abc123" not in detail and "xyz9" not in detail
+
+
+def test_the_prompt_says_how_an_answer_states_a_count() -> None:
+    prompt = " ".join(aj.SYSTEM_PROMPT.split())
+    # On 2026-10-31 judges split on "There are 9": one read "5 open and 4 pending"
+    # as contradicting it, another took "11 and 3" as stating 14.
+    assert "counts of separate parts that add up to it" in prompt
+    assert "a list or table it presents as complete with exactly that many entries" in prompt
+    assert "A count of only part of the set, or a list the answer marks as partial" in prompt

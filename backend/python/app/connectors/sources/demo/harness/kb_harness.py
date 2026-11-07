@@ -45,7 +45,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-import yaml
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -53,15 +52,18 @@ if TYPE_CHECKING:
     from pipeshub_sdk import Pipeshub
 
 try:
+    from app.connectors.sources.demo.fixture_loader import load_fixture, split_threads
     from app.connectors.sources.demo.harness.answer_judge import (
         AnswerJudge,
         check_content,
     )
+    from app.connectors.sources.demo.rendering import render_bodies
 except ImportError:  # run as a script (acceptance.sh), with this folder on the path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from answer_judge import AnswerJudge, check_content  # type: ignore[no-redef]
+    from fixture_loader import load_fixture, split_threads  # type: ignore[no-redef]
+    from rendering import render_bodies  # type: ignore[no-redef]
 
-SYSTEM_LABEL = {"GITHUB": "GitHub", "JIRA": "Jira", "SLACK": "Slack", "DRIVE": "Google Drive", "SERVICENOW": "ServiceNow"}
-TYPE_LABEL = {"PULL_REQUEST": "Pull request", "TICKET": "Ticket", "MESSAGE": "Chat message", "FILE": "Document", "COMMENT": "Review comment"}
 
 
 def load_env(path: str) -> dict[str, str]:
@@ -73,44 +75,38 @@ def load_env(path: str) -> dict[str, str]:
     return env
 
 
+LOGIN_THROTTLE_RETRIES = 3
+# The sign-in limiter's window; waited when a 429 carries no Retry-After.
+LOGIN_THROTTLE_WAIT_SECONDS = 60.0
+
+
+def _post_waiting_out_throttle(c: httpx.Client, path: str, **kwargs: object) -> httpx.Response:
+    # The server allows ten sign-ins a minute per IP, and a harness signing in
+    # every persona back to back passes that.
+    for _ in range(LOGIN_THROTTLE_RETRIES):
+        r = c.post(path, **kwargs)
+        if r.status_code != 429:
+            return r
+        time.sleep(float(r.headers.get("Retry-After") or LOGIN_THROTTLE_WAIT_SECONDS))
+    return c.post(path, **kwargs)
+
+
 def login(origin: str, email: str, password: str) -> str:
     with httpx.Client(base_url=origin, timeout=60) as c:
-        r = c.post("/api/v1/userAccount/initAuth", json={"email": email}); r.raise_for_status()
+        r = _post_waiting_out_throttle(c, "/api/v1/userAccount/initAuth", json={"email": email})
+        r.raise_for_status()
         session = r.headers["x-session-token"]
-        r = c.post("/api/v1/userAccount/authenticate",
-                   json={"method": "password", "email": email, "credentials": {"password": password}},
-                   headers={"x-session-token": session}); r.raise_for_status()
+        r = _post_waiting_out_throttle(
+            c, "/api/v1/userAccount/authenticate",
+            json={"method": "password", "email": email, "credentials": {"password": password}},
+            headers={"x-session-token": session},
+        )
+        r.raise_for_status()
         return r.json()["accessToken"]
 
 
 def safe_name(title: str) -> str:
     return re.sub(r"[^A-Za-z0-9 ._#-]+", "", title).strip()[:120]
-
-
-def render(rec: dict, fx: dict) -> str:
-    people = {p["id"]: p for p in fx["people"]}
-    containers = {c["id"]: c for c in fx["containers"]}
-    c = containers[rec["container"]]
-    author = people[rec["author"]]["name"]
-    head = [
-        f"# {rec['title']}",
-        "",
-        f"**System:** {SYSTEM_LABEL[c['system']]} · **Type:** {TYPE_LABEL[rec['type']]} · **In:** {c['name']}",
-        f"**Author:** {author} · **Date:** {str(rec['created'])[:10]}",
-        "",
-    ]
-    return "\n".join(head) + rec["body"].rstrip() + "\n"
-
-
-def render_thread(t: dict, msgs: list[dict], fx: dict) -> str:
-    people = {p["id"]: p for p in fx["people"]}
-    containers = {c["id"]: c for c in fx["containers"]}
-    c = containers[t["container"]]
-    out = [f"# {t['title']}", "", f"**System:** Slack · **Type:** Thread · **In:** {c['name']}", ""]
-    for m in msgs:
-        out.append(f"**{people[m['author']]['name']}** · {str(m['created'])[:16].replace('T', ' ')}")
-        out.append(m["body"].rstrip()); out.append("")
-    return "\n".join(out)
 
 
 def group_of(rec: dict, fx: dict) -> str:
@@ -174,20 +170,16 @@ def upload_plan(fx: dict) -> tuple[list[tuple[str, str]], dict[str, list[tuple[s
     shared: list[tuple[str, str]] = []
     restricted: dict[str, list[tuple[str, str]]] = defaultdict(list)
     threads = {t["id"]: t for t in fx.get("threads", [])}
-    by_thread: dict[str, list[dict]] = defaultdict(list)
+    bodies = render_bodies(fx)
+    singles, by_thread = split_threads(fx)
 
     def place(group: str, item: tuple[str, str]) -> None:
         (restricted[group] if group in closed else shared).append(item)
 
-    for r in fx["records"]:
-        if r.get("thread") and r["thread"] in threads:
-            by_thread[r["thread"]].append(r)
-            continue
-        place(group_of(r, fx), (safe_name(r["title"]) + ".md", render(r, fx)))
+    for r in singles:
+        place(group_of(r, fx), (safe_name(r["title"]) + ".md", bodies[r["id"]]))
     for tid, msgs in by_thread.items():
-        t = threads[tid]
-        msgs.sort(key=lambda m: str(m["created"]))
-        place(group_of(msgs[0], fx), (safe_name(t["title"]) + ".md", render_thread(t, msgs, fx)))
+        place(group_of(msgs[0], fx), (safe_name(threads[tid]["title"]) + ".md", bodies[tid]))
     return shared, dict(restricted)
 
 
@@ -461,7 +453,7 @@ def main() -> None:
 
     env = load_env(args.env)
     origin = env["PIPESHUB_ORIGIN"].rstrip("/")
-    fx = yaml.safe_load(open(args.fixture))
+    fx = load_fixture(Path(args.fixture))
     # Checked before any upload, so a typo fails in seconds rather than after indexing.
     questions = select_questions(fx, set(args.only.split(",")) if args.only else None)
     if args.persona in ("alice", "bob"):

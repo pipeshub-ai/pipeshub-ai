@@ -138,6 +138,18 @@ more";
 - a different time: "will sign off on Monday" does not support "signed off on \
 Monday", and "by Friday" does not support "on Friday".
 
+When the prompt says who the answer was written for, "you" and "your" in the \
+answer mean that person: for an answer written for Chioma Obi, "the ticket \
+assigned to you" states "the ticket assigned to Chioma Obi".
+
+A claim that there are some number of items is stated by an answer that gives \
+that total, or gives counts of separate parts that add up to it ("11 tickets \
+and 3 cases" states 14), or gives a list or table it presents as complete with \
+exactly that many entries. It conflicts with a different total, parts that add \
+up to a different number, or a complete list of a different length. A count of \
+only part of the set, or a list the answer marks as partial ("including", "at \
+least", "there may be more"), neither states the claim nor conflicts with it.
+
 The answer is given as numbered sentences. For every claim, first write one or \
 two sentences of reasoning. Then list in conflicting_sentence_ids the number of \
 every sentence that says something incompatible with the claim, or leave it \
@@ -307,10 +319,11 @@ def _stated_ids(got: _ReplyClaim) -> list[int]:
     return []
 
 
-def build_prompt(sentences: list[str], claims: list[str]) -> str:
+def build_prompt(sentences: list[str], claims: list[str], reader: str | None = None) -> str:
+    to = f'The answer was written for {reader}: "you" and "your" in it mean {reader}.\n\n' if reader else ""
     listed = "\n".join(f"{i}. {c}" for i, c in enumerate(claims, start=1))
     numbered = "\n".join(f"[{i}] {sentence}" for i, sentence in enumerate(sentences, start=1))
-    return f"Claims:\n{listed}\n\nAnswer, as numbered sentences:\n<<<ANSWER\n{numbered}\nANSWER>>>"
+    return f"{to}Claims:\n{listed}\n\nAnswer, as numbered sentences:\n<<<ANSWER\n{numbered}\nANSWER>>>"
 
 
 class AnswerJudge:
@@ -347,7 +360,13 @@ class AnswerJudge:
                 self._sleep(self._backoff_s * 2 ** (attempt - 1))
         raise AssertionError("unreachable")
 
-    def judge(self, answer: str, must_state: list[str], must_not_state: list[str] | None = None) -> JudgeResult:
+    def judge(
+        self,
+        answer: str,
+        must_state: list[str],
+        must_not_state: list[str] | None = None,
+        reader: str | None = None,
+    ) -> JudgeResult:
         kinds: list[tuple[str, ClaimKind]] = [(c, "must_state") for c in must_state]
         kinds += [(c, "must_not_state") for c in must_not_state or []]
         if not kinds:
@@ -356,7 +375,7 @@ class AnswerJudge:
             return JudgeResult.error(f"judge misconfigured: {self._config_error}")
         sentences = split_sentences(answer)
         try:
-            raw = self._complete(build_prompt(sentences, [c for c, _ in kinds]))
+            raw = self._complete(build_prompt(sentences, [c for c, _ in kinds], reader))
         except Exception as exc:
             code = _status_code(exc)
             status = f" (HTTP {code})" if code else ""
