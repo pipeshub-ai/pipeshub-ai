@@ -13,23 +13,11 @@ from functools import lru_cache
 from io import BytesIO
 from typing import TYPE_CHECKING
 
-from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
-from docling.datamodel.base_models import DocumentStream, InputFormat
-from docling.datamodel.pipeline_options import (
-    TableFormerMode,
-    TableStructureOptions,
-    ThreadedPdfPipelineOptions,
-)
-from docling.document_converter import (
-    DocumentConverter,
-    MarkdownFormatOption,
-    PdfFormatOption,
-    WordFormatOption,
-)
 from docling_core.types.doc.document import DoclingDocument
 
 if TYPE_CHECKING:
     from docling.datamodel.document import ConversionResult
+    from docling.document_converter import DocumentConverter
 
     from app.services.resource_governor import ResourceGovernor
 
@@ -46,6 +34,7 @@ from app.services.resource_governor.lanes import (
     parse_lanes_mode,
 )
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
+from app.utils.lazy_heavy import ensure_docling, require_off_loop
 from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count  # noqa: F401 - re-exported
 from app.utils.pool_worker import run_and_release, start_housekeeping
 from app.utils.worker_scaling import scaled
@@ -58,8 +47,17 @@ SUCCESS_STATUS = "success"
 # freed gate admitted the next.
 DOCUMENT_TIMEOUT_SECONDS = 40 * 60
 
-# The only formats callers hand to DoclingProcessor (see LocalDoclingParser).
-DOCLING_ROUTED_FORMATS = (InputFormat.PDF, InputFormat.DOCX, InputFormat.PPTX, InputFormat.MD)
+# The module imports nothing from ``docling`` at load (see ``app.utils.lazy_heavy``): the
+# library is imported by ``ensure_docling()`` before the first conversion, and the
+# functions below import what they need from it when they run.
+
+
+def docling_routed_formats() -> tuple:
+    """The only formats callers hand to DoclingProcessor (see LocalDoclingParser)."""
+    from docling.datamodel.base_models import InputFormat
+
+    return (InputFormat.PDF, InputFormat.DOCX, InputFormat.PPTX, InputFormat.MD)
+
 
 # Wired by each service's lifespan (see parsing_main.py/indexing_main.py/
 # docling_main.py) once a ResourceGovernor is constructed for that process —
@@ -116,7 +114,21 @@ def _get_process_pool() -> ProcessPoolExecutor:
 
 
 @lru_cache(maxsize=1)
-def _get_converter() -> DocumentConverter:
+def _get_converter() -> "DocumentConverter":
+    from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import (
+        TableFormerMode,
+        TableStructureOptions,
+        ThreadedPdfPipelineOptions,
+    )
+    from docling.document_converter import (
+        DocumentConverter,
+        MarkdownFormatOption,
+        PdfFormatOption,
+        WordFormatOption,
+    )
+
     # Stage batch sizes and queue depth are held far below docling's defaults (4 / 100)
     # to cap how many pages the threaded pipeline keeps in flight, trading throughput
     # for a lower CPU and RAM ceiling on low-resource deployments.
@@ -135,7 +147,7 @@ def _get_converter() -> DocumentConverter:
     # list a record routed here as PDF/DOCX/PPTX/MD could reach the JSON, METS, HTML
     # or LaTeX backends just by looking like one of those formats.
     return DocumentConverter(
-        allowed_formats=list(DOCLING_ROUTED_FORMATS),
+        allowed_formats=list(docling_routed_formats()),
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options, backend=PyPdfiumDocumentBackend),
             InputFormat.DOCX: WordFormatOption(),
@@ -147,6 +159,8 @@ def _get_converter() -> DocumentConverter:
 def _parse_document_in_worker(
     doc_name: str, content: bytes, page_range: tuple[int, int] | None = None
 ) -> str:
+    from docling.datamodel.base_models import DocumentStream
+
     source = DocumentStream(name=doc_name, stream=BytesIO(content))
     kwargs: dict = {}
     if page_range is not None:
@@ -420,6 +434,9 @@ async def _convert_in_thread(
     processor: "DoclingProcessor", lease: _Held, doc_name: str, raw: bytes, page_range: tuple[int, int] | None
 ) -> DoclingDocument:
     try:
+        await ensure_docling()
+        from docling.datamodel.base_models import DocumentStream
+
         source = DocumentStream(name=doc_name, stream=BytesIO(raw))
     except BaseException:
         lease.release()
@@ -489,10 +506,26 @@ async def _convert_in_executor(
 
 
 class DoclingProcessor():
+    # Set only to replace the shared converter on one instance; instances made without
+    # ``__init__`` still read it.
+    _converter: "DocumentConverter | None" = None
+
     def __init__(self, logger: logging.Logger, config: object) -> None:
         self.logger = logger
         self.config = config
-        self.converter = _get_converter()
+
+    @property
+    def converter(self) -> "DocumentConverter":
+        """The shared converter, built on first use, unless one was set on this instance.
+        Imports ``docling``: call it from a worker thread, or after ``await ensure_docling()``."""
+        if self._converter is not None:
+            return self._converter
+        require_off_loop()
+        return _get_converter()
+
+    @converter.setter
+    def converter(self, value: "DocumentConverter") -> None:
+        self._converter = value
 
     async def parse_document(
         self,
@@ -539,13 +572,16 @@ class DoclingProcessor():
                 raise
             return DoclingDocument.model_validate_json(serialized_doc)
 
+        await ensure_docling()
+        # Loaded by now, so this import costs a dictionary lookup on the loop thread.
+        from docling.datamodel.base_models import DocumentStream
+
         source = DocumentStream(name=doc_name, stream=BytesIO(raw_content))
         kwargs: dict = {}
         if page_range is not None:
             kwargs["page_range"] = page_range
-        conv_res: ConversionResult = await asyncio.to_thread(
-            self.converter.convert, source, **kwargs
-        )
+        # The converter is built on first use, in the worker thread rather than here.
+        conv_res: ConversionResult = await asyncio.to_thread(self._convert_in_process, source, kwargs)
         conv_res.input._backend.unload()
         if conv_res.status.value != SUCCESS_STATUS:
             raise DocumentProcessingError(
@@ -554,6 +590,9 @@ class DoclingProcessor():
             )
 
         return conv_res.document
+
+    def _convert_in_process(self, source: object, kwargs: dict) -> "ConversionResult":
+        return self.converter.convert(source, **kwargs)
 
     async def create_blocks(
         self,

@@ -35,7 +35,6 @@ from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.telemetry.setup import setup_telemetry
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
-from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
 from app.utils.memory_release import limit_malloc_arenas
 from app.utils.process_hardening import mark_process_non_dumpable
@@ -104,6 +103,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # module-level singleton since it has its own FastAPI app/state (see
     # set_resource_governor's docstring).
     worker_count = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
+    # Imported here: this module pulls in the LLM provider libraries, which this service
+    # otherwise never loads.
+    from app.utils.llm import is_local_cpu_embedding_configured
+
     governor = ResourceGovernor(
         logger=logger,
         env_parse=messaging_env.env_max_concurrent_parsing,
