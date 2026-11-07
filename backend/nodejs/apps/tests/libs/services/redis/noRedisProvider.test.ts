@@ -27,6 +27,22 @@ describe('REDIS_MODE=postgres / inprocess in the provider factory', () => {
     await p.close()
   })
 
+  it('refuses every Redis-only feature by name and lets the lifecycle calls through', async () => {
+    process.env.REDIS_MODE = 'inprocess'
+    const p = getRedisProvider()
+    expect(() => p.createPubSubClient()).to.throw(/REDIS_MODE=inprocess runs without a Redis server: Redis pub\/sub/)
+    expect(() => p.scanKeys('app:*')).to.throw(/a keyspace scan is not available/)
+    expect(() => p.connectionUrl()).to.throw(/a Redis URL is not available/)
+    let loaded: unknown
+    try { await p.loadScript('return 1') } catch (e) { loaded = e }
+    expect((loaded as Error).message).to.equal('REDIS_MODE=inprocess runs without a Redis server')
+    expect(p.isCluster).to.equal(false)
+    expect(p.keySlot('app:k')).to.equal(0)
+    await p.prepare()
+    expect(() => p.release({} as never)).to.not.throw()
+    await p.close()
+  })
+
   it('chooses the mode: the setting, else postgres when both stores are PostgreSQL, else standalone', () => {
     expect(defaultRedisMode()).to.equal('standalone')
     process.env.KV_STORE_TYPE = 'postgres'

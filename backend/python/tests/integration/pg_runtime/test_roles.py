@@ -13,6 +13,7 @@ TABLES = [
     "queue_deliveries",
     "sched_jobs",
     "sched_repeats",
+    "cache_entries",
 ]
 
 
@@ -58,7 +59,7 @@ async def test_the_kv_role_holds_nothing_else(runtime) -> None:
         assert await can("pipeshub_kv", "kv_entries")
         for t in TABLES:
             assert not await can("pipeshub_kv", t), t
-        for t in ("sched_jobs", "sched_repeats"):  # only the Node API schedules
+        for t in ("sched_jobs", "sched_repeats", "cache_entries"):  # only the Node API schedules and holds sessions
             for role in ("pipeshub_connectors", "pipeshub_indexing", "pipeshub_query"):
                 assert not await can(role, t), (role, t)
             assert await can("pipeshub_node", t)
