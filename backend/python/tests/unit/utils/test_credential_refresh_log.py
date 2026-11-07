@@ -469,12 +469,18 @@ class TestSmallLines:
         assert log_record_fields(line).items() >= {"next_refresh_at": "2026-11-06T09:30:05Z", "delay_s": 60}.items()
 
     def test_strike_and_deauthenticated(self, records: _Records) -> None:
-        CR.log_strike(_logger(), strike=2, max_strikes=3)
-        CR.log_deauthenticated(_logger(), reason="refresh_token_invalid", strikes=3, path="background")
+        rejected_client = _raised(RefreshTokenInvalidError(f"rejected. {_provider_error(401, 'invalid_client')}"),
+                                  _provider_error(401, "invalid_client"))
+        CR.log_strike(_logger(), strike=2, max_strikes=3, cause=rejected_client)
+        CR.log_deauthenticated(_logger(), reason="refresh_token_invalid", strikes=3)
 
         strike, deauth = records
-        assert (strike.levelno, log_record_fields(strike)["strike"], log_record_fields(strike)["counted"]) == (
-            logging.INFO, "2/3", True,
+        fields = log_record_fields(strike)
+        assert (strike.levelno, fields["strike"], fields["counted"], fields["error_class"], fields["oauth_error"]) == (
+            logging.INFO, "2/3", True, "misconfigured", "invalid_client",
         )
+        assert "error_message" not in fields
+        assert SEEDED_RT not in TextFormatter().format(strike)
         assert deauth.levelno == logging.WARNING
         assert log_record_fields(deauth)["reason"] == "refresh_token_invalid"
+        assert "path" not in log_record_fields(deauth)

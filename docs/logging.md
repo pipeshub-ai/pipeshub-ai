@@ -199,8 +199,8 @@ refresh of one credential reads the same everywhere:
 | `credential_refresh.start` | DEBUG | |
 | `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `invalid_grant`, `config_missing`, `save_failed`, `recursion`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error` |
 | `credential_refresh.check_failed` | the failure's level; DEBUG when the attempt's `end` already logged it | as a failed `end` |
-| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated) |
-| `credential_refresh.deauthenticated` | WARNING | `reason`, `strikes`, `path`, `app_disabled_event` (`sent`, `direct_write`) |
+| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated), the cause's `error_class` and `oauth_error` |
+| `credential_refresh.deauthenticated` | WARNING | `reason`, `strikes`, `app_disabled_event` (`sent`, `direct_write`) |
 | `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields |
 
 Every line in a refresh carries `refresh_kind` (`connector`, `toolset`, `mcp`), `trigger` (`scan`, `scheduled`, `on_demand`), the

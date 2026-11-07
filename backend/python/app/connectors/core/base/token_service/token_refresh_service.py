@@ -699,14 +699,14 @@ class TokenRefreshService:
                 # credential. Counting it would deactivate a working connector.
                 log_strike(
                     self.logger, strike=self._invalid_refresh_failures.get(connector_id, 0),
-                    max_strikes=MAX_REFRESH_TOKEN_INVALID_FAILURES, counted=False,
+                    max_strikes=MAX_REFRESH_TOKEN_INVALID_FAILURES, cause=error, counted=False,
                 )
                 return
 
         failures = self._invalid_refresh_failures.get(connector_id, 0) + 1
         self._invalid_refresh_failures[connector_id] = failures
-        # The cause is on the attempt's credential_refresh.end line; this is only the decision.
-        log_strike(self.logger, strike=failures, max_strikes=MAX_REFRESH_TOKEN_INVALID_FAILURES)
+        # The full cause is on the attempt's credential_refresh.end line; the strike carries only its class and OAuth code.
+        log_strike(self.logger, strike=failures, max_strikes=MAX_REFRESH_TOKEN_INVALID_FAILURES, cause=error)
 
         if failures < MAX_REFRESH_TOKEN_INVALID_FAILURES:
             return
@@ -741,7 +741,7 @@ class TokenRefreshService:
             if updated:
                 log_deauthenticated(
                     self.logger, reason="refresh_token_invalid", strikes=MAX_REFRESH_TOKEN_INVALID_FAILURES,
-                    path="background", app_disabled_event="sent" if event_sent else "direct_write",
+                    app_disabled_event="sent" if event_sent else "direct_write",
                 )
             else:
                 log_event(self.logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_updated")

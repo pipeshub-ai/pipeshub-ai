@@ -147,12 +147,20 @@ def log_scheduled(logger: logging.Logger, *, next_refresh_at: datetime, delay_s:
     )
 
 
-def log_strike(logger: logging.Logger, *, strike: int, max_strikes: int, counted: bool = True) -> None:
-    """A rejected refresh token: ``counted=False`` when it was already rotated (a lost race)."""
-    log_event(logger, EVENT_STRIKE, strike=f"{strike}/{max_strikes}", counted=counted)
+def log_strike(
+    logger: logging.Logger, *, strike: int, max_strikes: int, cause: BaseException, counted: bool = True,
+) -> None:
+    """A rejected refresh token: ``counted=False`` when it was already rotated (a lost race). The cause's
+    class and OAuth code (never its text) are on the line: the ``end`` that said it may be a DEBUG repeat."""
+    cls, _ = _classified(cause)
+    log_event(logger, EVENT_STRIKE, strike=f"{strike}/{max_strikes}", counted=counted,
+              error_class=cls, oauth_error=_first(cause, _oauth_error))
 
 
-def log_deauthenticated(logger: logging.Logger, *, reason: str, strikes: int, path: str, **fields: object) -> None:
+def log_deauthenticated(
+    logger: logging.Logger, *, reason: str, strikes: int, path: str | None = None, **fields: object,
+) -> None:
+    """``path`` only where one kind has more than one (MCP: background or route); ``trigger`` already says how."""
     log_event(logger, EVENT_DEAUTHENTICATED, level=logging.WARNING, reason=reason, strikes=strikes, path=path, **fields)
 
 
@@ -208,14 +216,18 @@ def _logged_level(exc: BaseException) -> int | None:
     return max(levels) if levels else None
 
 
-def _log_failed(logger: logging.Logger, event: str, exc: BaseException, once_key: str, **fields: object) -> None:
+def _classified(exc: BaseException) -> tuple[str, str | None]:
+    """(error_class, reason): the tag refines classify_error, except that our rejected client stays misconfigured."""
     reason = _reason(exc)
     cls = classify_error(exc)
     tagged = ERROR_CLASS_BY_REASON.get(reason)
     if cls == "misconfigured" and tagged not in (None, cls):
-        reason = None  # the provider rejected our client, not the grant the tag names
-    elif tagged:
-        cls = tagged
+        return cls, None  # the provider rejected our client, not the grant the tag names
+    return tagged or cls, reason
+
+
+def _log_failed(logger: logging.Logger, event: str, exc: BaseException, once_key: str, **fields: object) -> None:
+    cls, reason = _classified(exc)
     quiet = cls == "misconfigured" and not log_once(f"{JOB}:{once_key}", MISCONFIGURED_REPEAT_S)
     log_refresh_failure(logger, event, exc, level=logging.DEBUG if quiet else None, error_class=cls, reason=reason, **fields)
 

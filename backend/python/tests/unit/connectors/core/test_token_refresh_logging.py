@@ -331,13 +331,14 @@ class TestFailedRefresh:
         assert {(f["error_class"], f["reason"], f["oauth_error"], f["http_status"]) for f in map(_fields, ends)} == {
             ("auth_expired", "invalid_grant", "invalid_grant", 400),
         }
-        assert [(r.levelno, _fields(r)["strike"], _fields(r)["counted"]) for r in _events(caplog, CR.EVENT_STRIKE)] == [
-            (logging.INFO, "1/3", True), (logging.INFO, "2/3", True), (logging.INFO, "3/3", True),
-        ]
+        assert [
+            (r.levelno, _fields(r)["strike"], _fields(r)["counted"], _fields(r)["error_class"], _fields(r)["oauth_error"])
+            for r in _events(caplog, CR.EVENT_STRIKE)
+        ] == [(logging.INFO, f"{n}/3", True, "auth_expired", "invalid_grant") for n in (1, 2, 3)]
         [deauth] = _events(caplog, CR.EVENT_DEAUTHENTICATED)
         assert deauth.levelno == logging.WARNING
         assert _fields(deauth).items() >= {
-            "reason": "refresh_token_invalid", "strikes": 3, "path": "background", "app_disabled_event": "sent",
+            "reason": "refresh_token_invalid", "strikes": 3, "app_disabled_event": "sent",
             "connector_id": "c1", "org_id": "o1", "trigger": "scan",
         }.items()
         assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
@@ -428,6 +429,28 @@ class TestFailedRefresh:
         assert _fields(line).items() >= {"connector_id": "c1", "trigger": "scheduled", "error_class": "internal"}.items()
         _assert_no_secrets(caplog)
 
+    async def test_rejected_client_strikes_carry_their_cause_after_the_error_line(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, endpoint: FakeTokenEndpoint,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # QA F2/F1: on demand, invalid_client is ERROR once, then its repeats are DEBUG. At INFO, the strikes still say why.
+        endpoint.answers = [(401, f'{{"error": "invalid_client", "error_description": "client of {SEEDED_RT} unknown"}}')] * 3
+        config.store[_key("c1")] = _config()
+        caplog.set_level(logging.INFO, logger=LOGGER)
+
+        for _ in range(trs.MAX_REFRESH_TOKEN_INVALID_FAILURES):
+            with pytest.raises(RefreshTokenInvalidError):
+                await service.refresh_now("c1", TYPE, SEEDED_RT)
+
+        assert [r.levelno for r in _events(caplog, CR.EVENT_END)] == [logging.ERROR]
+        assert {(_fields(r)["error_class"], _fields(r)["oauth_error"]) for r in _events(caplog, CR.EVENT_STRIKE)} == {
+            ("misconfigured", "invalid_client"),
+        }
+        [deauth] = _events(caplog, CR.EVENT_DEAUTHENTICATED)
+        assert _fields(deauth)["trigger"] == "on_demand"
+        assert "path" not in _fields(deauth)
+        _assert_no_secrets(caplog)
+
     async def test_superseded_rejection_is_a_strike_that_does_not_count(
         self, service: trs.TokenRefreshService, config: FakeConfigStore, caplog: pytest.LogCaptureFixture,
     ) -> None:
@@ -436,7 +459,9 @@ class TestFailedRefresh:
         await service._handle_refresh_token_invalid("c1", RefreshTokenInvalidError("rejected"), SEEDED_RT)
 
         [strike] = _events(caplog, CR.EVENT_STRIKE)
-        assert (_fields(strike)["strike"], _fields(strike)["counted"]) == ("0/3", False)
+        assert (_fields(strike)["strike"], _fields(strike)["counted"], _fields(strike)["error_class"]) == (
+            "0/3", False, "auth_expired",
+        )
         assert "c1" not in service._invalid_refresh_failures
 
     async def test_missing_client_credentials_are_an_error_once_per_hour(
