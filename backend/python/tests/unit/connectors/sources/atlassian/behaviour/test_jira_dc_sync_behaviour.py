@@ -233,6 +233,8 @@ def stub_site(api: AtlassianApiStub, search: IssueSearch) -> None:
         {"type": "atlassian-group-role-actor", "name": "devs"},
     ]})
     api.on("GET", f"{API}/issue/ENG-1", {"id": "1001", "key": "ENG-1"})
+    api.on("GET", f"{API}/project/ENG/issuesecuritylevelscheme", json_response(
+        {"errorMessages": ["The project has no issue security scheme."], "errors": {}}, status=404))
     api.on("POST", f"{API}/search", search)
 
 
