@@ -223,7 +223,7 @@ def _line(out: str, marker: str) -> str:
 
 
 class TestRenderedLineFreshInterpreter:
-    """The P1b repro: the line a service prints, with nothing but the import-time wiring."""
+    """The line a service prints, with nothing but the import-time wiring."""
 
     def test_request_line_carries_org_and_user(self) -> None:
         line = _line(_run("""
