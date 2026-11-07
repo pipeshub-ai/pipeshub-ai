@@ -21,6 +21,7 @@ def _env(runtime, **extra: str) -> dict[str, str]:
         "PG_POOLER": "none",
         "PG_RUNTIME_SERVICE": "connectors",
         "REDIS_MODE": "",
+        "LOG_LEVEL": "ERROR",  # logs share stdout with the JSON lines these tests read
         **extra,
     }
 
@@ -31,8 +32,6 @@ def _lines(proc: subprocess.Popen, until: str, limit: float = 30) -> list[dict]:
         line = proc.stdout.readline()
         if not line:
             break
-        if not line.startswith("{"):  # the child's own log lines share its stdout
-            continue
         msg = json.loads(line)
         out.append(msg)
         if until in msg:
