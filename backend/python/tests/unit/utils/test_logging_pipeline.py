@@ -317,6 +317,13 @@ class TestOneStream:
         L._install_console_handler()
         assert logging.getLogger().handlers == [foreign]
 
+    def test_a_script_that_configures_root_first_keeps_stdout_for_itself(self) -> None:
+        # The tests/integration child scripts answer their parent in JSON on stdout and rely on this.
+        out, err = _out(_run("import logging; logging.basicConfig(); " + _PRELUDE.strip().replace("\n", "; ")
+                             + "; mod.info('mod-line'); svc.warning('svc-line'); print('{}')"))
+        assert out == "{}\n"
+        assert "mod-line" in err and "svc-line" in err
+
     def test_import_writes_module_and_service_lines_to_stdout(self) -> None:
         out, err = _out(_run(_PRELUDE + "mod.info('mod-line'); svc.error('svc-line')"))
         lines = out.splitlines()

@@ -141,6 +141,8 @@ describe('ErrorMiddleware: a failed axios call is logged without its request (re
   /** The axios error as the middleware logged it; at warn it is the cause of the 4xx we answered. */
   const loggedError = (error: unknown, level: 'error' | 'warn' = 'error') => {
     const thrown = level === 'error' ? error : withCause(new BadRequestError('Bad request'), error)
+    // The stub is on the shared root, and the awaited HTTP call let timers other files left running log on it.
+    winstonLog.resetHistory()
     ErrorMiddleware.handleError()(thrown as Error, { method: 'POST', params: {} } as any, response(), sinon.stub())
     expect(winstonLog.callCount).to.equal(1)
     const record = winstonLog.firstCall.args[0]
@@ -257,6 +259,7 @@ describe('ErrorMiddleware: a failed axios call is logged without its request (re
     const logger = Logger.getInstance()
     const error = await jsonTokenCall()
     const wrapped = Object.assign(new Error('wrap'), { cause: error })
+    winstonLog.resetHistory()
     logger.error('as meta', error)
     logger.error('under error', { error })
     logger.error('under err', { err: error })
