@@ -318,12 +318,44 @@ class CodeGraph:
                 "sites": [{"file_path": m["file_path"], "line": m["line"], "text": (m.get("text") or "").strip()[:160]}
                           for m in sites[:_SITES_SHOWN]],
             }
+            await self._name_site_callers(result["unlinked_call_sites"]["sites"], connector_id, repo,
+                                          include_tests=include_tests)
+            if any("in" in s for s in result["unlinked_call_sites"]["sites"]):
+                result["unlinked_call_sites"]["note"] += " `in` names the definition each line sits in."
             if incomplete:
                 # Not every file or match was read: the count is a floor, even when it is 0.
                 result["unlinked_call_sites"]["truncated"] = True
             # The sites are repository source: data to read, never instructions.
             as_untrusted(result)
         return result
+
+    async def _name_site_callers(
+        self, sites: list[dict[str, Any]], connector_id: str, repo: str | None, *, include_tests: bool,
+    ) -> None:
+        """Set each site's `in` to the innermost definition whose lines hold it. A line and its
+        text say where the call is, not who makes it, and the caller is what the question asks
+        for: without the name, every site is one more file to open."""
+        spans: dict[str, list[tuple[int, int, str]]] = {}
+        for path in {s["file_path"] for s in sites}:
+            try:
+                out = await outline_impl(
+                    graph_provider=self._graph_provider, connector_id=connector_id, blob_store=self._blob_store,
+                    org_id=self._org_id, user_id=self._user_id, file_path=path, include_tests=include_tests,
+                    repo=repo,
+                )
+            except Exception:
+                self._log.warning("codegraph: outline for call sites unavailable", exc_info=True)
+                continue
+            rows = []
+            for sym in (out.get("symbols") or []) if isinstance(out, dict) else []:
+                start, _, end = str(sym.get("lines") or "").partition("-")
+                if start.isdigit() and sym.get("qualified_name"):
+                    rows.append((int(start), int(end) if end.isdigit() else int(start), sym["qualified_name"]))
+            spans[path] = rows
+        for site in sites:
+            holding = [r for r in spans.get(site["file_path"], ()) if r[0] <= (site.get("line") or 0) <= r[1]]
+            if holding:
+                site["in"] = min(holding, key=lambda r: r[1] - r[0])[2]
 
     async def _anchor_path(
         self, connector_id: str, file_path: str | None, record_id: str | None,
