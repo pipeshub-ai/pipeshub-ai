@@ -292,7 +292,11 @@ class TestManagerWithRegistry:
         sid, _ = await manager.get_or_create(
             SandboxType.CODING, ctx=SandboxContext(org_id="org-a"),
         )
-        assert governor.snapshot()["total"] == 1
+        # The local backend isn't metered: it takes a slot only while a call runs.
+        assert governor.snapshot()["total"] == 0
+        async with manager.slot(SandboxType.CODING, sid):
+            assert governor.snapshot()["total"] == 1
+        assert governor.snapshot()["total"] == 0
 
         await manager.destroy(SandboxType.CODING, sid)
         assert governor.snapshot()["total"] == 0

@@ -104,3 +104,28 @@ class TestSandboxResourceGovernor:
 
         await asyncio.gather(*[_cycle() for _ in range(20)])
         assert gov.snapshot()["total"] == 0
+
+    async def test_acquire_waits_for_a_released_slot(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_per_org=1))
+        held = await gov.acquire(org_id="a")
+        told: list[bool] = []
+
+        async def on_wait() -> None:
+            told.append(True)
+
+        waiter = asyncio.create_task(gov.acquire(org_id="a", wait_s=5, on_wait=on_wait))
+        await asyncio.sleep(0.02)
+        assert told == [True] and not waiter.done()
+
+        await gov.release(held)
+        lease = await asyncio.wait_for(waiter, 1)
+        assert gov.snapshot()["total"] == 1
+        await gov.release(lease)
+
+    async def test_acquire_wait_times_out(self) -> None:
+        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        held = await gov.acquire()
+        with pytest.raises(SandboxLimitExceeded):
+            await gov.acquire(wait_s=0.05)
+        assert gov.snapshot()["total"] == 1
+        await gov.release(held)
