@@ -363,9 +363,12 @@ With `KnowledgeGraphPolicy.record_query` on, the model is offered
 `find_records` and none of `find_records_by_entity`,
 `find_records_by_person` and `find_records_by_value`
 (`entity_search_surface.MERGED_INTO_FIND_RECORDS`): not at the top level,
-not by the progressive grant (which grants `find_records`), and not to the
-exploration child, which takes `find_records` in place of
-`find_records_by_person`. Other tools' text names `find_records` instead of
+and not to the exploration child, which takes `find_records` in place of
+`find_records_by_person`. `find_records` is granted from the first turn: it
+needs no id, and it stands in for the people and value listings a first turn
+holds with the flag off. Withheld until a search ran, a count or "assigned to"
+question had no listing tool, and the model walked containers with `navigate`
+or tried web search first. Other tools' text names `find_records` instead of
 them. In the full arm with named entities the knowledge-graph tools offered
 drop from 8 to 6 (timeline aside), and `find_records`' definition is no
 larger than the three it replaces together (`test_find_records_surface`).

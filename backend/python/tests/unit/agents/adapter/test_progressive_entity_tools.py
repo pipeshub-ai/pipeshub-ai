@@ -248,20 +248,21 @@ def _record_query_context(*, entities_found: bool = False) -> AgentContext:
 
 @pytest.mark.asyncio
 class TestRecordQueryGrant:
-    """With the record-query flag, find_records takes find_records_by_entity's
-    place: granted after the first search of either kind, never both tools."""
+    """With the record-query flag, find_records is granted from the first turn
+    (``factory._initial_entity_tool_grant``), so no search grants anything and
+    find_records_by_entity never joins it."""
 
     @pytest.mark.parametrize("tool_path", ["/tools/knowledgegraph/search", _SEARCH_ENTITIES_PATH])
-    async def test_a_search_grants_find_records_and_not_the_entity_listing(self, tool_path: str) -> None:
-        from app.agents.agent_loop.hooks.progressive_tools import RECORD_QUERY_TOOL_NAME
-
-        spec = _spec("caller", tool_names=["knowledgegraph__search", SEARCH_ENTITIES_TOOL_NAME])
+    async def test_a_search_grants_nothing(self, tool_path: str) -> None:
+        """An agent created without find_records (one not given the listing
+        tools) does not gain it from a search."""
+        names = ["knowledgegraph__search", SEARCH_ENTITIES_TOOL_NAME]
+        spec = _spec("caller", tool_names=list(names))
         ctx = _result_ctx(_tool_scope(spec, ToolRegistry()), tool_path=tool_path)
 
-        await progressive_entity_tools(_record_query_context())(ctx, _noop_next)
+        await progressive_entity_tools(_record_query_context(entities_found=True))(ctx, _noop_next)
 
-        assert RECORD_QUERY_TOOL_NAME in spec.tool_names
-        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME not in spec.tool_names
+        assert spec.tool_names == names
 
     async def test_without_the_flag_a_plain_search_still_grants_nothing(self) -> None:
         from app.agents.agent_loop.hooks.progressive_tools import RECORD_QUERY_TOOL_NAME

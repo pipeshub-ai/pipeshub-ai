@@ -1,7 +1,8 @@
 """``progressive_entity_tools``: POST_TOOL_USE hook that grants
-``knowledgegraph__find_records_by_entity`` once ``search_entities`` has run,
-or, with the record-query flag, ``knowledgegraph__find_records`` once any
-search has run (``docs/record-query.md``). Never both: the two would overlap.
+``knowledgegraph__find_records_by_entity`` once ``search_entities`` has run.
+With the record-query flag it grants nothing: ``knowledgegraph__find_records``
+takes that tool's place and is granted from the first turn
+(``factory._initial_entity_tool_grant``, ``docs/record-query.md``).
 
 ``find_records_by_entity`` needs an entityId, and ``search_entities`` is the
 only tool that produces one, so its schema is left out of the initial grant
@@ -35,8 +36,6 @@ PROGRESSIVE_TOOL_NAMES: frozenset[str] = frozenset({PROGRESSIVE_FIND_RECORDS_TOO
 ENTITY_TOOL_NAMES: frozenset[str] = frozenset(
     {SEARCH_ENTITIES_TOOL_NAME, PROGRESSIVE_FIND_RECORDS_TOOL_NAME, RECORD_QUERY_TOOL_NAME}
 )
-# find_records needs no entity id, so any search shows it is a records question.
-_SEARCH_TRIGGER_NAMES = frozenset({"knowledgegraph__search", "knowledgegraph_search"})
 # `resolve_tool_name` falls back to a single-underscore join when the path
 # is not registered (see `_tool_naming.py`), so both spellings trigger.
 _ENTITY_SEARCH_TRIGGER_NAMES = frozenset(
@@ -80,16 +79,11 @@ def progressive_entity_tools(context: "AgentContext") -> "Middleware[ToolResultC
         from app.agents.agent_loop.hooks._tool_naming import resolve_tool_name
 
         name = progressive_tool_name(context.tool_state)
-        called = resolve_tool_name(ctx)
-        if name == RECORD_QUERY_TOOL_NAME:
-            if called not in _ENTITY_SEARCH_TRIGGER_NAMES | _SEARCH_TRIGGER_NAMES:
-                return
-        else:
-            if called not in _ENTITY_SEARCH_TRIGGER_NAMES:
-                return
-            # A failed or empty search leaves no entityId to pass it.
-            if not context.tool_state.get(ENTITY_INDEX_CACHE_KEY):
-                return
+        if name == RECORD_QUERY_TOOL_NAME or resolve_tool_name(ctx) not in _ENTITY_SEARCH_TRIGGER_NAMES:
+            return
+        # A failed or empty search leaves no entityId to pass it.
+        if not context.tool_state.get(ENTITY_INDEX_CACHE_KEY):
+            return
 
         run_scope = ctx.scope.turn.run if ctx.scope is not None else None
         if run_scope is not None:

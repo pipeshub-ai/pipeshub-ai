@@ -1,7 +1,9 @@
 """`PipesHubAgentFactory.create()` entity-tool grant: `search_entities` is
 granted from the first turn, `find_records_by_entity` starts hidden until
 `search_entities` runs (or an earlier turn used an entity tool), and both are
-hidden when no entity vector store is wired. The unlock hook itself is
+hidden when no entity vector store is wired. With record query on,
+`find_records` takes the listing tools' place and is granted from the first
+turn. The unlock hook itself is
 covered in `test_progressive_entity_tools.py`.
 """
 
@@ -224,12 +226,22 @@ class TestRecordQueryToolGrant:
 
         assert "knowledgegraph__find_records" not in agent.spec.tool_names
 
-    async def test_with_the_flag_neither_listing_tool_is_in_the_first_grant(self) -> None:
+    async def test_with_the_flag_find_records_is_in_the_first_grant(self) -> None:
+        """It replaces the people and value listings, which main offers from
+        the first turn; withheld, a count or "assigned to" question had no
+        listing tool until a search happened to run."""
         _context, agent, _runtime = await _create(record_query=True)
 
-        assert "knowledgegraph__find_records" not in agent.spec.tool_names
+        assert "knowledgegraph__find_records" in agent.spec.tool_names
         assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME not in agent.spec.tool_names
         assert SEARCH_ENTITIES_TOOL_NAME in agent.spec.tool_names
+
+    async def test_with_the_flag_the_explorer_gets_find_records_from_the_start(self) -> None:
+        _context, _agent, runtime = await _create("react", record_query=True)
+
+        explorer = runtime.tool_registry.resolve_by_name("internal_exploration_agent")._spec
+        assert "knowledgegraph__find_records" in explorer.tool_names
+        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME not in explorer.tool_names
 
     async def test_with_the_flag_history_grants_find_records_only(self) -> None:
         history = [{"role": "bot_response", "content": "…", "tool_results": [
