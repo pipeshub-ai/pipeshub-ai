@@ -20,6 +20,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.modules.parsers.code_parser import languages
 from app.modules.parsers.code_parser.lang_config import (
     COMMENT_NODE_TYPES,
     LANGUAGES,
@@ -506,9 +507,20 @@ def _heritage_java(node: Node, src: bytes, out: list[PendingEdgeFact], idx: int)
                 ))
 
 
-_IMPORT_HANDLERS = {"python": _imports_python, "js": _imports_js, "java": _imports_java, "go": _imports_go}
-_HERITAGE_HANDLERS = {"python": _heritage_python, "js": _heritage_js, "ts": _heritage_ts,
-                      "java": _heritage_java}
+def _with_languages(core: dict, added: dict, kind: str) -> dict:
+    """*core* plus a language module's handlers; a module may add names, never replace a core one."""
+    reused = sorted(core.keys() & added.keys())
+    if reused:
+        raise ValueError(f"languages.{kind} reuses core handler names: {reused}")
+    return {**core, **added}
+
+
+_IMPORT_HANDLERS = _with_languages(
+    {"python": _imports_python, "js": _imports_js, "java": _imports_java, "go": _imports_go},
+    languages.IMPORT_HANDLERS, "IMPORT_HANDLERS")
+_HERITAGE_HANDLERS = _with_languages(
+    {"python": _heritage_python, "js": _heritage_js, "ts": _heritage_ts, "java": _heritage_java},
+    languages.HERITAGE_HANDLERS, "HERITAGE_HANDLERS")
 # Handlers whose call sites are read as references (`a.b.c()` with its qualifier
 # and receiver). Every other grammar keeps the generic callee reader, even when
 # it has an import handler.
@@ -992,13 +1004,13 @@ def _collect_type_table_go(root: Node, src: bytes, table: dict[str, str], cfg: L
             table.setdefault(name, next(iter(types)))
 
 
-_TYPE_TABLE_HANDLERS = {
+_TYPE_TABLE_HANDLERS = _with_languages({
     "python": _collect_type_table_python,
     "js": _collect_type_table_js,
     "ts": _collect_type_table_ts,
     "java": _collect_type_table_java,
     "go": _collect_type_table_go,
-}
+}, languages.TYPE_TABLE_HANDLERS, "TYPE_TABLE_HANDLERS")
 
 
 # --------------------------------------------------------------------------

@@ -264,6 +264,11 @@ class TestAbstractMethodInventory:
         "get_records_pending_duplicate_reconcile",
         "move_taxonomy_edges",
         "find_legacy_taxonomy_nodes",
+        "find_merged_taxonomy_nodes_with_edges",
+        "find_organizations",
+        "create_organization_if_absent",
+        "delete_record_entity_relations",
+        "get_organization_record_reach",
         "update_node_fields_if_match",
         "create_node_if_absent",
         "get_switch_pointers",
@@ -366,6 +371,8 @@ class TestAbstractMethodInventory:
         "batch_upsert_people",
         "get_person_by_email",
         "upsert_person_by_email",
+        "upsert_person_by_source_key",
+        "get_person_by_source_key",
         "ensure_app_membership",
         "create_edges_if_absent",
         "migrate_person_to_user",
@@ -586,6 +593,19 @@ class TestAbstractMethodInventory:
 
 class TestConcreteMethodCalls:
     """Verify that async abstract methods on a concrete subclass can be awaited."""
+
+    @pytest.mark.asyncio
+    async def test_replace_edges_to_default_deletes_then_creates(self) -> None:
+        """The default (ArangoDB) path is not the diffed Neo4j statement: delete all, then create."""
+        instance = _make_concrete_class()()
+        calls: list[str] = []
+        instance.delete_edges_to = AsyncMock(side_effect=lambda *a, **k: calls.append("delete"))
+        instance.batch_create_edges = AsyncMock(side_effect=lambda *a, **k: calls.append("create"))
+        await instance.replace_edges_to("g1", "groups", [{"x": 1}], "permission")
+        assert calls == ["delete", "create"]
+        calls.clear()
+        await instance.replace_edges_to("g1", "groups", [], "permission")
+        assert calls == ["delete"]
 
     @pytest.mark.asyncio
     async def test_connect_can_be_awaited(self):

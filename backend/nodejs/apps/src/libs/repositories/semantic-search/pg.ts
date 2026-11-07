@@ -4,7 +4,7 @@
  */
 import { BadRequestError } from '../../errors/http.errors';
 import { insertCitation } from '../conversation/pg';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { CitationSqlRow, citationDto } from '../conversation/pg-rows';
 import {
   Params,

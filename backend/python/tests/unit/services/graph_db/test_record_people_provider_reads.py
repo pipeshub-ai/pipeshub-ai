@@ -38,6 +38,33 @@ class TestGetUserBySourceId:
 
 
 @pytest.mark.parametrize("make", [_arango, _neo4j], ids=["arango", "neo4j"])
+class TestGetUserByEmailOrg:
+    """The same address can exist in several organisations."""
+
+    @staticmethod
+    def _call(p, make) -> tuple[str, dict]:
+        if make is _arango:
+            args = p.http_client.execute_aql.await_args
+            return args.args[0], args.kwargs["bind_vars"]
+        args = p.client.execute_query.await_args
+        return args.args[0], args.kwargs["parameters"]
+
+    @pytest.mark.asyncio
+    async def test_with_an_org_the_lookup_is_restricted_to_it(self, make) -> None:
+        p = make()
+        await p.get_user_by_email("ann@acme.com", org_id="org-1")
+        query, params = self._call(p, make)
+        assert "orgId" in query and params == {"email": "ann@acme.com", "org_id": "org-1"}
+
+    @pytest.mark.asyncio
+    async def test_without_one_it_is_not(self, make) -> None:
+        p = make()
+        await p.get_user_by_email("ann@acme.com")
+        query, params = self._call(p, make)
+        assert "orgId" not in query and params == {"email": "ann@acme.com"}
+
+
+@pytest.mark.parametrize("make", [_arango, _neo4j], ids=["arango", "neo4j"])
 class TestPageRecordIdsByType:
     @pytest.mark.asyncio
     async def test_a_zero_limit_returns_no_ids_and_runs_no_query(self, make) -> None:
@@ -57,3 +84,22 @@ class TestPageRecordIdsByType:
         call = (p.http_client.execute_aql if make is _arango else p.client.execute_query).await_args
         params = call.kwargs.get("bind_vars") or call.kwargs.get("parameters")
         assert params["limit"] == 7
+
+
+class TestMoveEntityRelationsToUser:
+    @pytest.mark.asyncio
+    async def test_moves_only_the_edges_the_user_lacks_and_inserts_them_idempotently(self) -> None:
+        p = _arango()
+        mine = [
+            {"_id": "entityRelations/1", "_key": "1", "_from": "records/a", "_to": "people/p", "edgeType": "AUTHORED_BY"},
+            {"_id": "entityRelations/2", "_key": "2", "_from": "records/a", "_to": "people/p", "edgeType": "CREATED_BY"},
+        ]
+        p.http_client.execute_aql = AsyncMock(side_effect=[[{"mine": mine, "theirs": ["records/a|AUTHORED_BY"]}], [], []])
+
+        assert await p._move_entity_relations_to_user("people/p", "users/u", None) == 2
+
+        insert = p.http_client.execute_aql.await_args_list[1]
+        assert "UPSERT" in insert.args[0]
+        assert insert.kwargs["bind_vars"]["edges"] == [
+            {"_from": "records/a", "edgeType": "CREATED_BY", "_to": "users/u"},
+        ]

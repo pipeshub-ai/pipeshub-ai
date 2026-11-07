@@ -193,7 +193,8 @@ class FakeRecordsDb:
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
             self.record_groups[group.external_group_id] = group
-            self.record_group_permissions[group.external_group_id] = list(permissions)
+            if permissions is not None:  # None: the grants are unknown and the stored ones stay
+                self.record_group_permissions[group.external_group_id] = list(permissions)
 
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.app_users.extend(users)
@@ -290,6 +291,10 @@ class FakeRecordsDb:
 
     async def on_record_content_update(self, record: Record, permissions: list[Any] | None = None) -> None:
         self.content_updates.append(record)
+        # The processor upserts the record before it publishes updateRecord.
+        self.records[record.external_record_id] = record
+        if permissions is not None:
+            self.record_permissions[record.external_record_id] = list(permissions)
 
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append((record, permissions))

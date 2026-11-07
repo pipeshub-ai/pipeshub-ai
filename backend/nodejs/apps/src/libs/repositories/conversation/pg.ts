@@ -17,7 +17,7 @@ import type { Tx as PgKernelTx } from '../../db';
 import { CONVERSATION_STATUS } from '../../../modules/enterprise_search/constants/constants';
 import { BadRequestError, InternalServerError } from '../../errors/http.errors';
 import { ConflictError, NotFoundError } from '../errors';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import {
   Params,
   assertOrg,
@@ -962,6 +962,19 @@ export class PgConversationRepository
       );
       return new Map(rows.map((r) => [r.project_id, r.n]));
     });
+  }
+
+  // Compare models is off on this store (ChatCompareFeature), so no session ever has a branch.
+  listBranches(): Promise<ChatSessionDto[]> {
+    return Promise.resolve([]);
+  }
+
+  listStaleBranches(): Promise<ChatSessionDto[]> {
+    return Promise.resolve([]);
+  }
+
+  discardBranches(): Promise<void> {
+    return Promise.resolve();
   }
 
   async unlinkProject(projectId: string, tx?: Tx): Promise<void> {

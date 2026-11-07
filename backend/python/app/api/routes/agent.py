@@ -86,6 +86,7 @@ from app.modules.retrieval.selection_scope import (
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
 )
+from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.interface.graph_db_provider import (
     SELECTION_APPS_FILTER_KEY,
     IGraphDBProvider,
@@ -95,6 +96,7 @@ from app.services.model_identity.runtime import assert_identity_allowed, call_sc
 from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.telemetry.modules.schema_metrics import record_schema_rejection
 from app.utils.aimodels import model_default_reasoning_effort
 from app.utils.attachment_utils import (
     keep_accessible_attachments,
@@ -574,7 +576,9 @@ async def _resolve_service_account_binding(
 
 
 async def _only_an_administrator_may_bind(
-    request: Request, config_service: ConfigurationService,
+    request: Request,
+    config_service: ConfigurationService,
+    detail: str = "Only an administrator can choose the service account an agent searches as.",
 ) -> None:
     """Refuse a change of binding from anyone who does not administer the org.
 
@@ -603,13 +607,7 @@ async def _only_an_administrator_may_bind(
             ),
         )
     if not role.is_admin:
-        raise HTTPException(
-            status_code=HttpStatusCode.FORBIDDEN.value,
-            detail=(
-                "Only an administrator can choose the service account an agent "
-                "searches as."
-            ),
-        )
+        raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail=detail)
 
 
 async def _checked_service_account_binding(
@@ -2512,7 +2510,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
             "systemPrompt": body["systemPrompt"].strip(),
             "tools": body.get("tools", []),
             "models": body.get("models", []),
-            "memory": body.get("memory", {"type": []}),
+            "memory": body["memory"] if body.get("memory") is not None else {"type": []},
             "tags": body.get("tags", []),
             "orgId": user_context["orgId"],
             "isActive": True,
@@ -2531,7 +2529,16 @@ async def create_agent_template(request: Request) -> JSONResponse:
             "updatedAtTimestamp": time,
         }
 
-        result = await services["graph_provider"].batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value)
+        try:
+            result = await services["graph_provider"].batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value)
+        except SchemaValidationError as e:
+            # The body carried a value the template schema refuses: the caller's mistake, and retrying cannot help.
+            # Only the field path goes back; the collection and schema detail stay in the log.
+            _log.error(f"Template rejected by schema validation (collection={e.collection}): {e}")
+            record_schema_rejection(e.collection)
+            err = e.original_error
+            path = ".".join(str(p) for p in err.path) if err is not None and getattr(err, "path", None) else ""
+            raise HTTPException(status_code=400, detail=f"Invalid agent template: {path}" if path else "Invalid agent template") from e
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create agent template")
 
@@ -2707,6 +2714,8 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
 
         body = _parse_request_body(await request.body())
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        if "memory" in body and body["memory"] is None:
+            body["memory"] = {"type": []}
 
         result = await services["graph_provider"].update_agent_template(template_id, body, user_doc["_key"])
         if not result:
@@ -3480,6 +3489,21 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
         final_shared = bool(body.get("shareWithOrg", agent.get("shareWithOrg", False)))
         final_service_account = bool(body.get("isServiceAccount", agent.get("isServiceAccount", False)))
+
+        # A service agent searches as its creator until it is bound, and is shared
+        # with the whole organisation, so an editor converting someone else's agent
+        # would hand everyone the owner's access. Only the owner or an
+        # administrator may decide that.
+        converting = final_service_account and not agent.get("isServiceAccount")
+        if converting and perm.get("user_role") != "OWNER":
+            await _only_an_administrator_may_bind(
+                request,
+                services["config_service"],
+                detail="Only the agent's owner or an administrator can turn it into a service agent.",
+            )
+        # A conversion shares the agent as a matter of course and is checked above.
+        if final_shared and not agent.get("shareWithOrg") and not converting and not perm.get("can_share", False):
+            raise PermissionDeniedError("share this agent with the organisation")
 
         if "serviceAccountUserId" in body:
             body["serviceAccountUserId"] = await _checked_service_account_binding(

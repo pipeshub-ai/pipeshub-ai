@@ -257,8 +257,8 @@ class TestValidateNodeUpdate:
             with pytest.raises(SchemaValidationError):
                 validator.validate_node_update("testCol", {"name": 123})
 
-    def test_allows_additional_properties(self):
-        """Updates should allow extra fields even if schema forbids them."""
+    def test_rejects_additional_properties(self):
+        """Updates enforce additionalProperties:false, as ArangoDB does."""
         schema = {
             "type": "object",
             "properties": {
@@ -271,8 +271,8 @@ class TestValidateNodeUpdate:
         with patch(
             "app.schema.node_validator.get_node_schema", return_value=schema
         ):
-            # Should not raise - additional properties allowed in updates
-            validator.validate_node_update("testCol", {"name": "Bob", "extra": "ok"})
+            with pytest.raises(SchemaValidationError):
+                validator.validate_node_update("testCol", {"name": "Bob", "extra": "ok"})
 
     def test_strips_id_field(self):
         schema = {

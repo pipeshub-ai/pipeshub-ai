@@ -48,6 +48,7 @@ from app.connectors.core.sync.full_sync_coverage import (
 from app.connectors.core.sync.run_context import get_run_sync_id
 from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, is_graph_memory_refusal
 from app.models.entities import (
     AppMetadata,
     AppRole,
@@ -100,6 +101,8 @@ from app.services.messaging.record_titles import (
     build_record_title_message,
     clean_record_title,
 )
+from app.schema.node_validator import SchemaValidationError
+from app.telemetry.modules.schema_metrics import record_schema_rejection
 from app.telemetry.modules.soft_delete_metrics import record_restored, record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge, remaining_record_keys
@@ -300,6 +303,60 @@ def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None =
     return bool(connector_id and doc_connector and doc_connector != connector_id)
 
 
+# What a save of unchanged content does with each stored indexing status. Every
+# status is in exactly one set (a unit test enforces it), so a new status cannot
+# fall through to "queue it again on every sync" unnoticed.
+#
+# Outcomes indexing reached for this content. The same bytes give the same
+# outcome, so they are kept: a sync is not a retry. A retry is asked for
+# (Reindex), or follows a new revision.
+INDEXING_OUTCOME_STATUSES = frozenset({
+    ProgressStatus.COMPLETED.value,
+    ProgressStatus.EMPTY.value,
+    ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+    ProgressStatus.PASSWORD_PROTECTED.value,
+    ProgressStatus.FAILED.value,
+})
+# Work already asked for. Its event exists, and the stranded-record sweep (QUEUED)
+# or the stale IN_PROGRESS scan re-sends a lost one; another event would index
+# the record twice.
+INDEXING_PENDING_STATUSES = frozenset({
+    ProgressStatus.QUEUED.value,
+    ProgressStatus.IN_PROGRESS.value,
+})
+# Not indexed, for a reason the save may now answer: no event was acknowledged
+# (NOT_STARTED), the connector chose not to index (AUTO_INDEX_OFF), or the record
+# waits on something outside its content (PAUSED, ENABLE_MULTIMODAL_MODELS).
+# SKIPPED is a stage status listed for completeness. The save's own status decides.
+INDEXING_REOPENED_STATUSES = frozenset({
+    ProgressStatus.NOT_STARTED.value,
+    ProgressStatus.AUTO_INDEX_OFF.value,
+    ProgressStatus.PAUSED.value,
+    ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
+    ProgressStatus.SKIPPED.value,
+})
+
+
+def _requests_index_event(record: Record) -> bool:
+    """Whether a saved record asked for an indexing event.
+
+    A save leaves a record NOT_STARTED exactly when it wants one, and
+    ``_mark_queued_after_publish`` moves it to QUEUED once the event is
+    acknowledged. Every other status is an outcome, pending work or a choice
+    not to index, so publishing for it would only repeat work.
+    """
+    if record.indexing_status != ProgressStatus.NOT_STARTED.value:
+        return False
+    if record.is_internal or record.is_placeholder:
+        return False
+    # A Knowledge Base folder has no content to index.
+    return not (
+        record.origin == OriginTypes.UPLOAD
+        and isinstance(record, FileRecord)
+        and record.is_file is False
+    )
+
+
 def _system_file_reason(record: Record) -> str | None:
     """Why a synced file is not content, or None. A Knowledge Base upload is the user's
     explicit choice and is kept: a push that stores nothing is retried until its deadline."""
@@ -429,14 +486,29 @@ class DataSourceEntitiesProcessor:
         """Log a failure a retried method is about to raise: as a warning when
         retry_on_deadlock will run the method again, which it reports itself, and
         as an error when nothing will."""
+        if isinstance(error, SchemaValidationError):
+            self._report_schema_rejection(error)
+            return
         log = self.logger.warning if will_retry(self, error) else self.logger.error
         log(message, exc_info=exc_info)
+
+    def _report_schema_rejection(self, error: SchemaValidationError) -> None:
+        """Log and count a schema rejection once, however many handlers it passes through."""
+        if getattr(error, "schema_reported", False):
+            return
+        error.schema_reported = True
+        self.logger.error("Graph write rejected by schema validation (collection=%s): %s", error.collection, error)
+        record_schema_rejection(error.collection)
 
     def _must_propagate(self, error: Exception, tx_store: TransactionStore | None) -> bool:
         """Whether a handler that logs a failure and goes on has to let this one
         through: a conflict the caller resolves by running its transaction
-        again, or a failure that ended the explicit transaction of ``tx_store``,
-        after which every later statement fails."""
+        again, a failure that ended the explicit transaction of ``tx_store``,
+        after which every later statement fails, or a schema rejection: a
+        permanent error that would otherwise commit the block without its write."""
+        if isinstance(error, SchemaValidationError):
+            self._report_schema_rejection(error)
+            return True
         provider = self.data_store_provider
         if (
             is_transient_conflict(error)
@@ -1885,7 +1957,9 @@ class DataSourceEntitiesProcessor:
 
         return moved
 
-    async def _handle_record_people(self, record: Record, tx_store: TransactionStore) -> None:
+    async def _handle_record_people(
+        self, record: Record, tx_store: TransactionStore, *, may_have_edges: bool = True,
+    ) -> None:
         """Link the record to the members it names (assignee, sender,
         reviewer...) and to the CRM account it belongs to; see
         ``record_people`` and ``record_organizations``."""
@@ -1893,7 +1967,7 @@ class DataSourceEntitiesProcessor:
         def propagate(error: Exception) -> bool:
             return self._must_propagate(error, tx_store)
 
-        await link_record_people(record, tx_store, self.logger, propagate)
+        await link_record_people(record, tx_store, self.logger, propagate, may_have_edges=may_have_edges)
         await link_record_organization(record, tx_store, self.logger, propagate)
 
     async def _handle_message_entity_edges(self, message: MessageRecord, tx_store: TransactionStore) -> None:
@@ -2012,6 +2086,39 @@ class DataSourceEntitiesProcessor:
             ProgressStatus.QUEUED.value,
         ):
             record.queued_at = get_epoch_timestamp_in_ms()
+
+    @staticmethod
+    def _keeps_stored_indexing(record: Record, existing_record: Record, *, reindex_restored: bool) -> bool:
+        """Whether a connector save leaves the stored indexing state as it is.
+
+        It does when the content indexing saw is unchanged and the stored status
+        is an outcome for that content or work already under way. The connector's
+        own status (the model's QUEUED default, or AUTO_INDEX_OFF from a filter)
+        then applies only to what is not yet indexed: AUTO_INDEX_OFF still stops a
+        QUEUED record before indexing starts, but cannot take back an outcome.
+
+        Resetting the status instead made every sync queue each unchanged file
+        that was not COMPLETED again, and erase its outcome until indexing
+        reached it (a file share's unsupported files counted as queued).
+
+        A stub (also a real record a narrowed filter turns back into one) is
+        never indexed, so it keeps the AUTO_INDEX_OFF the save gave it.
+        """
+        if record.is_placeholder or reindex_restored:
+            return False
+        if record.external_revision_id != existing_record.external_revision_id:
+            return False
+        stored = existing_record.indexing_status
+        if (
+            stored == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+            and DataSourceEntitiesProcessor._file_type_changed(record, existing_record)
+        ):
+            # The type can become supported with the revision unchanged (an object
+            # store's MD5 does not move): the outcome was for the old type.
+            return False
+        if stored == ProgressStatus.QUEUED.value:
+            return record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+        return stored in INDEXING_OUTCOME_STATUSES or stored in INDEXING_PENDING_STATUSES
 
     @staticmethod
     def _reindexes_on_restore(record: Record, existing_record: Record) -> bool:
@@ -2207,6 +2314,19 @@ class DataSourceEntitiesProcessor:
                     resolved = await self._resolve_principal(permission.email, tx_store)
                     if resolved:
                         from_id, from_collection = resolved
+                elif permission.external_id:
+                    # A source that hides emails grants by its own user id. A failed read is raised, as for
+                    # groups and roles: taken for "no such user", a replace would remove that user's grant.
+                    user = await tx_store.get_user_by_source_id(
+                        permission.external_id, record.connector_id, raise_on_error=True,
+                    )
+                    if user is None:
+                        self.logger.warning(
+                            "User with source id %s for connector %s not found; record %s gets no grant from it",
+                            permission.external_id, record.connector_id, record.id,
+                        )
+                        continue
+                    from_id, from_collection = user.id, CollectionNames.USERS.value
 
             elif permission.entity_type == EntityType.GROUP.value:
                 user_group = None
@@ -2502,7 +2622,9 @@ class DataSourceEntitiesProcessor:
             self._log_failure(f"Failed to update permissions for record {record.id}: {e}", e, exc_info=True)
             raise
 
-    async def _write_content_edges(self, record: Record, tx_store: TransactionStore) -> None:
+    async def _write_content_edges(
+        self, record: Record, tx_store: TransactionStore, *, may_have_edges: bool,
+    ) -> None:
         """The edges a record's own content implies: links, people, mentions."""
         # Handle related external records (issue links, project links, FK relations, etc.)
         # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
@@ -2529,7 +2651,7 @@ class DataSourceEntitiesProcessor:
 
         # Edges to the members a ticket, project, mail, comment, pull request
         # or deal names (ASSIGNED_TO, AUTHORED_BY, ADDRESSED_TO, ...).
-        await self._handle_record_people(record, tx_store)
+        await self._handle_record_people(record, tx_store, may_have_edges=may_have_edges)
 
         # Create message entity relation edges (MENTIONED_IN, INVOLVED_IN) if record is a MessageRecord
         if isinstance(record, MessageRecord):
@@ -2755,45 +2877,40 @@ class DataSourceEntitiesProcessor:
             #       the new URL on every sync, and
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
+            keeps_stored_indexing = False
             if record.origin != OriginTypes.UPLOAD:
-                # A stub (also a real record a narrowed filter turns back into one) is
-                # never indexed: it keeps the AUTO_INDEX_OFF set above, not re-queued.
-                if existing_record.indexing_status == ProgressStatus.COMPLETED.value and not record.is_placeholder:
-                    if record.external_revision_id != existing_record.external_revision_id:
-                        # Real content change on an already-indexed record: re-queue it,
-                        # even when the connector stamped AUTO_INDEX_OFF for a manual-only
-                        # filter. Honouring that stamp here downgraded a COMPLETED record
-                        # to AUTO_INDEX_OFF on every source change, which both lost the
-                        # fact that it had been indexed and left its stale vectors in
-                        # place with no event to correct them. Manual-only still holds for
-                        # records the user never indexed: this branch is reached only when
-                        # the stored status is already COMPLETED.
-                        record.indexing_status = ProgressStatus.NOT_STARTED.value
-                    else:
-                        # Unchanged content stays COMPLETED (blocks re-publish
-                        # below). Resetting unconditionally made every full
-                        # re-sync re-embed the entire already-indexed set, and
-                        # clobbered AUTO_INDEX_OFF on manually-indexed records.
-                        record.indexing_status = ProgressStatus.COMPLETED.value
-                        # Indexing owns these fields and, with nothing to re-index,
-                        # may never write them again: left at the model defaults the
-                        # upsert would erase them. They come from this row, the one
-                        # whose status decides the skip. A reindexed restore starts clean.
-                        if not reindex_restored:
-                            self._preserve_indexing_state(record, existing_record)
-                elif (
-                    existing_record.indexing_status == ProgressStatus.PASSWORD_PROTECTED.value
-                    and record.external_revision_id == existing_record.external_revision_id
-                    and not reindex_restored
-                ):
-                    # The same bytes need the same password: queuing the record again
-                    # on every full sync would only repeat the verdict. A changed
-                    # revision takes the normal path and is indexed again.
+                keeps_stored_indexing = self._keeps_stored_indexing(
+                    record, existing_record, reindex_restored=reindex_restored
+                )
+                if keeps_stored_indexing:
+                    # Indexing owns these fields and, with nothing to re-index, may
+                    # never write them again: left at the model defaults the upsert
+                    # would erase them. They come from this row, the one whose status
+                    # decides the skip.
                     self._preserve_indexing_state(record, existing_record)
+                elif (
+                    existing_record.indexing_status == ProgressStatus.COMPLETED.value
+                    and not record.is_placeholder
+                ):
+                    # Real content change on an already-indexed record: re-queue it,
+                    # even when the connector stamped AUTO_INDEX_OFF for a manual-only
+                    # filter. Honouring that stamp here downgraded a COMPLETED record
+                    # to AUTO_INDEX_OFF on every source change, which both lost the
+                    # fact that it had been indexed and left its stale vectors in
+                    # place with no event to correct them. Manual-only still holds for
+                    # records the user never indexed: this branch is reached only when
+                    # the stored status is already COMPLETED.
+                    record.indexing_status = ProgressStatus.NOT_STARTED.value
             elif record.external_revision_id == existing_record.external_revision_id:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).
+                keeps_stored_indexing = True
                 record.indexing_status = existing_record.indexing_status
+            if not keeps_stored_indexing and record.indexing_status == ProgressStatus.QUEUED.value:
+                # The model's QUEUED default asks for indexing. Stored as NOT_STARTED
+                # it is published, and turns QUEUED only once the event is acknowledged
+                # (see the same remap for a new record above).
+                record.indexing_status = ProgressStatus.NOT_STARTED.value
             if not record.weburl:
                 record.weburl = existing_record.weburl
             # Same fall-back rule for source timestamps: connectors whose source
@@ -2823,11 +2940,12 @@ class DataSourceEntitiesProcessor:
             # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
             if existing_record.is_placeholder and not record.is_placeholder:
                 record.is_placeholder = False
-            if record.external_revision_id != existing_record.external_revision_id:
-                if publishes_event:
-                    self._stamp_queued_at(record)
-            elif record.is_placeholder and not (
-                record.rewrite_permissions or record.access_rule == AccessRule.RESTRICTED
+            if publishes_event and not keeps_stored_indexing:
+                self._stamp_queued_at(record)
+            if (
+                record.external_revision_id == existing_record.external_revision_id
+                and record.is_placeholder
+                and not (record.rewrite_permissions or record.access_rule == AccessRule.RESTRICTED)
             ):
                 # The record is upserted below whether or not its content changed,
                 # so a changed restriction reaches the node without a content edit.
@@ -2909,7 +3027,7 @@ class DataSourceEntitiesProcessor:
         # saved over the real record (an ancestor backfill racing the record's
         # own sync) would replace the real record's edges with nothing.
         if not record.is_placeholder:
-            await self._write_content_edges(record, tx_store)
+            await self._write_content_edges(record, tx_store, may_have_edges=existing_record is not None)
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
         # A full sync no longer deletes permission edges before it starts, so the
@@ -2958,10 +3076,14 @@ class DataSourceEntitiesProcessor:
             if current_status == ProgressStatus.QUEUED.value:
                 self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
                 return
-            record["indexingStatus"] = ProgressStatus.QUEUED.value
-            await tx_store.batch_upsert_nodes([record], CollectionNames.RECORDS.value)
+            # Only the status: re-upserting the whole stored document would make strict validation see every legacy key.
+            await tx_store.batch_update_nodes(
+                [{"_key": record_id, "indexingStatus": ProgressStatus.QUEUED.value}], CollectionNames.RECORDS.value
+            )
             self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
         except Exception as e:
+            if self._must_propagate(e, tx_store):
+                raise
             # Log but don't fail the main operation if status update fails
             self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
@@ -3041,55 +3163,15 @@ class DataSourceEntitiesProcessor:
         # Before the indexing events and for every record, AUTO_INDEX_OFF ones included:
         # the filters below are about whether there is anything to index.
         await self._publish_record_titles((title_changes or {}).values())
-        publishable: list[Record] = []
-        for record in records_to_publish:
-            # Skip publishing indexing events for records with AUTO_INDEX_OFF status
-            if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
-                self.logger.debug(
-                    f"Skipping automatic indexing event for record {record.id} "
-                    f"with AUTO_INDEX_OFF status"
-                )
-                continue
-
-            if record.is_internal:
-                self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
-                continue
-
-            # Already indexed and unchanged — the COMPLETED status was carried
-            # forward from the stored record precisely so this publish can be
-            # skipped; there is nothing for the indexing consumer to redo.
-            # FAILED is a verdict the connector reached itself (a page that
-            # answered an error), stored with its reason: indexing would only
-            # fetch it again, fail the same way, and replace that reason.
-            if record.indexing_status in (
-                ProgressStatus.COMPLETED.value,
-                ProgressStatus.PASSWORD_PROTECTED.value,
-                ProgressStatus.FAILED.value,
-            ):
-                self.logger.debug(
-                    f"Skipping indexing event for already-settled record {record.id} "
-                    f"({record.indexing_status})"
-                )
-                continue
-
-            # KB folders carry no indexable content; they are created COMPLETED
-            # and must not emit a newRecord event (the indexing consumer would
-            # skip them anyway, but this avoids leaving them stuck non-COMPLETED).
-            if (
-                record.origin == OriginTypes.UPLOAD
-                and isinstance(record, FileRecord)
-                and record.is_file is False
-            ):
-                self.logger.debug(f"Skipping newRecord event for KB folder {record.id}")
-                continue
-
-            if record.is_placeholder:
-                self.logger.debug(
-                    f"Skipping automatic indexing event for placeholder record {record.id}"
-                )
-                continue
-
-            publishable.append(record)
+        # Only what the save asked to index: an unchanged record keeps its outcome or
+        # its pending event, and a status the publish does not know is never re-sent.
+        publishable = [record for record in records_to_publish if _requests_index_event(record)]
+        if len(publishable) < len(records_to_publish):
+            self.logger.debug(
+                "Publishing indexing events for %d of %d saved records; the rest are unchanged, "
+                "pending, not to be indexed or have nothing to index",
+                len(publishable), len(records_to_publish),
+            )
 
         await self._flush_pending_blob_moves(pending_moves)
 
@@ -3114,6 +3196,56 @@ class DataSourceEntitiesProcessor:
 
         await self._publish_membership_sync(moved_virtual_record_ids)
 
+    async def _write_records_slice(
+        self,
+        batch_slice: list[tuple[Record, list[Permission]]],
+        narrowed_connectors: set[str],
+        *,
+        replace_permissions: bool,
+    ) -> tuple[list[Record], list[PendingMove], list[tuple[str, str | None]], dict[str, Record]]:
+        """Write one slice of records in one transaction; returns what to publish once it committed."""
+        records_to_publish: list[Record] = []
+        # Deliberately a separate list from records_to_publish: the publish
+        # filters (AUTO_INDEX_OFF, internal, COMPLETED, KB folders,
+        # placeholders) are about whether there is anything to *index*. A
+        # COMPLETED, unchanged record that merely moved between groups is
+        # exactly the case this exists for, and every one of those filters
+        # would drop it.
+        moved_virtual_record_ids: list[tuple[str, str | None]] = []
+        title_changes: dict[str, Record] = {}
+        pending_moves: list[PendingMove] = []
+        async with self._drop_access_after(narrowed_connectors), self._sync_transaction(explicit=True) as store:
+            tx_store = _BatchLookups(store)
+            # Per slice, not for the whole batch: the slices before this one
+            # have moved their blobs, so the stored paths are where they are.
+            old_path_map = await self._snapshot_old_paths(batch_slice, tx_store)
+            for record, permissions in batch_slice:
+                pre_old_path = old_path_map.get(
+                    record.external_record_id, _NO_OLD_PATH,
+                )
+                replace = replace_permissions or bool(record.rewrite_permissions)
+                processed_record, moves = await self._process_record(
+                    record, permissions, tx_store, moved_virtual_record_ids,
+                    pre_old_path=pre_old_path,
+                    narrowed_connectors=narrowed_connectors,
+                    permissions_fetched=True,
+                    replace_permissions=replace,
+                    title_changes=title_changes,
+                )
+                pending_moves.extend(moves)
+
+                if processed_record:
+                    records_to_publish.append(processed_record)
+        return records_to_publish, pending_moves, moved_virtual_record_ids, title_changes
+
+    def _quarantine_record(self, record: Record, error: SchemaValidationError) -> None:
+        """Skip a record whose write the schema refused: it cannot succeed on a re-run."""
+        self._report_schema_rejection(error)
+        self.logger.error(
+            "Record %s quarantined, skipped: write rejected by schema validation (collection=%s): %s",
+            record.id, error.collection, error,
+        )
+
     @retry_on_deadlock()
     async def on_new_records(
         self,
@@ -3129,44 +3261,30 @@ class DataSourceEntitiesProcessor:
             narrowed_connectors: set[str] = set()
             for start in range(0, len(records_with_permissions), _RECORDS_PER_TRANSACTION):
                 batch_slice = records_with_permissions[start:start + _RECORDS_PER_TRANSACTION]
-                records_to_publish: list[Record] = []
-                # Deliberately a separate list from records_to_publish: the publish
-                # filters (AUTO_INDEX_OFF, internal, COMPLETED, KB folders,
-                # placeholders) are about whether there is anything to *index*. A
-                # COMPLETED, unchanged record that merely moved between groups is
-                # exactly the case this exists for, and every one of those filters
-                # would drop it.
-                moved_virtual_record_ids: list[tuple[str, str | None]] = []
-                title_changes: dict[str, Record] = {}
-                pending_moves: list[PendingMove] = []
-                async with self._drop_access_after(narrowed_connectors), self._sync_transaction(explicit=True) as store:
-                    tx_store = _BatchLookups(store)
-                    # Per slice, not for the whole batch: the slices before this one
-                    # have moved their blobs, so the stored paths are where they are.
-                    old_path_map = await self._snapshot_old_paths(batch_slice, tx_store)
-                    for record, permissions in batch_slice:
-                        pre_old_path = old_path_map.get(
-                            record.external_record_id, _NO_OLD_PATH,
-                        )
-                        replace = replace_permissions or bool(record.rewrite_permissions)
-                        processed_record, moves = await self._process_record(
-                            record, permissions, tx_store, moved_virtual_record_ids,
-                            pre_old_path=pre_old_path,
-                            narrowed_connectors=narrowed_connectors,
-                            permissions_fetched=True,
-                            replace_permissions=replace,
-                            title_changes=title_changes,
-                        )
-                        pending_moves.extend(moves)
-
-                        if processed_record:
-                            records_to_publish.append(processed_record)
+                try:
+                    written = [await self._write_records_slice(batch_slice, narrowed_connectors, replace_permissions=replace_permissions)]
+                except SchemaValidationError:
+                    # A permanent rejection must not hold the other records of the slice
+                    # (or, through an unadvanced checkpoint, every later sync) hostage:
+                    # redo the slice one record per transaction and quarantine the bad ones.
+                    written = []
+                    for item in batch_slice:
+                        try:
+                            one = await self._write_records_slice([item], narrowed_connectors, replace_permissions=replace_permissions)
+                        except SchemaValidationError as e:
+                            self._quarantine_record(item[0], e)
+                            continue
+                        # This record's transaction has committed: its post-commit work runs now,
+                        # before the next record is written, so an error on a later record (a
+                        # deadlock, say) cannot leave it unpublished with a re-run finding it unchanged.
+                        await self._after_slice_committed(*one)
                 # Before the next slice starts: a re-run finds this slice's records
                 # unchanged and would redo none of it. A slice that rolled back
                 # does not get here.
-                await self._after_slice_committed(
-                    records_to_publish, pending_moves, moved_virtual_record_ids, title_changes
-                )
+                for records_to_publish, pending_moves, moved_virtual_record_ids, title_changes in written:
+                    await self._after_slice_committed(
+                        records_to_publish, pending_moves, moved_virtual_record_ids, title_changes
+                    )
         except Exception as e:
             self._log_failure(f"Transaction on_new_records failed: {str(e)}", e)
             raise e
@@ -3711,6 +3829,8 @@ class DataSourceEntitiesProcessor:
                                 parent_outside_group=placement.parent_outside_group,
                             )
 
+                        await self._handle_record_people(new_record, tx_store)
+
                         # As in _process_record: only a complete, fetched list
                         # replaces the grants, and only on the record's first
                         # such write in a full sync.
@@ -3782,7 +3902,7 @@ class DataSourceEntitiesProcessor:
             def _publishable(candidates: list[Record]) -> list[Record]:
                 return [r for r in candidates if _is_publishable(r)]
 
-            new_batch = _publishable(new_records_to_publish)
+            new_batch = [r for r in new_records_to_publish if _requests_index_event(r)]
             if new_batch:
                 # `acked` is used, not discarded (it was): the CAS below is what
                 # turns NOT_STARTED into QUEUED, and only for records whose event
@@ -5460,81 +5580,150 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning("on_new_user_groups received an empty list; skipping processing.")
                 return
 
-            async with self._sync_transaction() as tx_store:
-                for user_group, members in user_groups:
-                    # Set the org_id on the object, as it's needed for the doc
-                    user_group.org_id = self.org_id
-
-                    self.logger.debug(f"Processing user group: {user_group.name} with id {user_group.id}")
-
-                    # Check if the user group already exists in the DB
-                    # Raising: None below means "create", with the fresh id already
-                    # on the object, so a lookup that failed would write a second
-                    # group for the same external id -- and split its members and
-                    # permission edges across the two. Pseudo-groups for users
-                    # without an email come through here too.
-                    existing_user_group = await tx_store.get_user_group_by_external_id(
-                        connector_id=user_group.connector_id,
-                        external_id=user_group.source_user_group_id,
-                        raise_on_error=True,
-                    )
-
-                    if existing_user_group is None:
-                        # The ID is already set by default_factory, but we log
-                        self.logger.debug(f"Creating new user group with id: {user_group.id}")
-                    else:
-                        # Overwrite the new UUID with the existing one
-                        user_group.id = existing_user_group.id
-                        self.logger.debug(f"Updating existing user group with id: {user_group.id}")
-                        user_group.updated_at = get_epoch_timestamp_in_ms()
-
-                    # 1. Upsert the user group document
-                    # (This uses batch_upsert_user_groups and the to_arango... method)
-                    await tx_store.batch_upsert_user_groups([user_group])
-
-
-                    user_group_permissions = []
-                    # Set the 'to' side of the edge to be this user group
-                    to_id = user_group.id
-                    to_collection = CollectionNames.GROUPS.value
-
-                    for member in members:
-                        resolved = None
-                        if member.email:
-                            resolved = await self._resolve_principal(member.email, tx_store)
-
-                        if not resolved:
-                            self.logger.warning(f"Could not resolve principal for email {member.email} for UserGroup permission.")
-                            continue
-
-                        permission = Permission(
-                            external_id=member.id,
-                            email=member.email,
-                            type=PermissionType.READ,
-                            entity_type=EntityType.USER
-                        )
-                        from_id, from_collection = resolved
-
-                        user_group_permissions.append(
-                            permission.to_arango_permission(from_id, from_collection, to_id, to_collection)
-                        )
-
-                    # Batch create (upsert) all permission edges for this user group
-                    if user_group_permissions:
-                        self.logger.debug(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
-                    await self._write_permission_edges(
-                        tx_store, to_id, to_collection, user_group_permissions,
-                        replace=replace_members and existing_user_group is not None,
-                    )
-                    self._note_full_sync_seen(user_group.connector_id, CollectionNames.GROUPS.value, user_group.id)
-                    if existing_user_group is not None:
-                        rewritten.add(user_group.connector_id)
-
-            await self._access_changed(rewritten)
+            refused = False
+            try:
+                async with self._sync_transaction() as tx_store:
+                    for user_group, members in user_groups:
+                        if await self._write_user_group(tx_store, user_group, members, replace_members=replace_members):
+                            rewritten.add(user_group.connector_id)
+            except Exception as e:
+                # A refusal of the combined write: a marked one, or the pool's own error from groups that
+                # are each small and add up. Either way the groups are written apart.
+                if len(user_groups) == 1 or not is_graph_memory_refusal(e):
+                    raise
+                refused = True
+            skipped: list[str] = []
+            if refused:
+                # With explicit transactions the combined write rolled back whole; without them each
+                # statement committed on its own, so groups written before the refusal stand. Either
+                # way, a group the server's memory pool refused must not take the others with it: write
+                # them apart, each group's upsert and its replace in one transaction of their own. The
+                # connectors collected by the combined attempt stay in ``rewritten``: dropping access
+                # for a superset is harmless, missing one leaves a stale access list. Done after the
+                # handler has ended, so the aggregated error below carries no earlier error as its context.
+                try:
+                    skipped = await self._write_user_groups_apart(user_groups, rewritten, replace_members=replace_members)
+                finally:
+                    # The groups written before another error stay committed, so their access
+                    # lists must drop whatever happens to the rest.
+                    await self._access_changed(rewritten)
+            else:
+                await self._access_changed(rewritten)
+            if skipped:
+                raise GraphMemoryLimitError(
+                    f"{len(skipped)} of {len(user_groups)} user groups were not written because the graph "
+                    "server's transaction memory pool refused their member list (the others are written and "
+                    f"not retried): {', '.join(skipped[:20])}. Raise NEO4J_HEAP_MAX (with NEO4J_MEMORY_LIMIT)",
+                    operation="group replace",
+                    groups=skipped,
+                )
 
         except Exception as e:
             self._log_failure(f"Transaction on_new_user_groups failed: {str(e)}", e)
             raise e
+
+    async def _write_user_groups_apart(
+        self,
+        user_groups: list[tuple[AppUserGroup, list[AppUser]]],
+        rewritten: set[str],
+        *,
+        replace_members: bool,
+    ) -> list[str]:
+        """Write each group in a transaction of its own. A group the memory pool refuses is skipped
+        and named in the result; the others commit, and the connectors of those that replaced existing
+        members are added to *rewritten*."""
+        skipped: list[str] = []
+        for user_group, members in user_groups:
+            refused = False
+            try:
+                async with self._sync_transaction() as tx_store:
+                    if await self._write_user_group(tx_store, user_group, members, replace_members=replace_members):
+                        rewritten.add(user_group.connector_id)
+            except GraphMemoryLimitError:
+                refused = True
+            # Any other error, the pool's own unmarked one included, propagates: a group under the bulk
+            # size is refused for want of room a neighbour holds, which the caller's bounded retry outlasts.
+            if refused:
+                # Its transaction rolled back whole, so its previous members stand.
+                skipped.append(user_group.source_user_group_id or user_group.id)
+        return skipped
+
+    async def _write_user_group(
+        self,
+        tx_store: TransactionStore,
+        user_group: AppUserGroup,
+        members: list[AppUser],
+        *,
+        replace_members: bool,
+    ) -> bool:
+        """Upsert one user group and write its member edges in *tx_store*. True when the group existed
+        before, so its members were rewritten."""
+        # Set the org_id on the object, as it's needed for the doc
+        user_group.org_id = self.org_id
+
+        self.logger.debug(f"Processing user group: {user_group.name} with id {user_group.id}")
+
+        # Check if the user group already exists in the DB
+        # Raising: None below means "create", with the fresh id already
+        # on the object, so a lookup that failed would write a second
+        # group for the same external id -- and split its members and
+        # permission edges across the two. Pseudo-groups for users
+        # without an email come through here too.
+        existing_user_group = await tx_store.get_user_group_by_external_id(
+            connector_id=user_group.connector_id,
+            external_id=user_group.source_user_group_id,
+            raise_on_error=True,
+        )
+
+        if existing_user_group is None:
+            # The ID is already set by default_factory, but we log
+            self.logger.debug(f"Creating new user group with id: {user_group.id}")
+        else:
+            # Overwrite the new UUID with the existing one
+            user_group.id = existing_user_group.id
+            self.logger.debug(f"Updating existing user group with id: {user_group.id}")
+            user_group.updated_at = get_epoch_timestamp_in_ms()
+
+        # 1. Upsert the user group document
+        # (This uses batch_upsert_user_groups and the to_arango... method)
+        await tx_store.batch_upsert_user_groups([user_group])
+
+
+        user_group_permissions = []
+        # Set the 'to' side of the edge to be this user group
+        to_id = user_group.id
+        to_collection = CollectionNames.GROUPS.value
+
+        for member in members:
+            resolved = None
+            if member.email:
+                resolved = await self._resolve_principal(member.email, tx_store)
+
+            if not resolved:
+                self.logger.warning(f"Could not resolve principal for email {member.email} for UserGroup permission.")
+                continue
+
+            permission = Permission(
+                external_id=member.id,
+                email=member.email,
+                type=PermissionType.READ,
+                entity_type=EntityType.USER
+            )
+            from_id, from_collection = resolved
+
+            user_group_permissions.append(
+                permission.to_arango_permission(from_id, from_collection, to_id, to_collection)
+            )
+
+        # Batch create (upsert) all permission edges for this user group
+        if user_group_permissions:
+            self.logger.debug(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
+        await self._write_permission_edges(
+            tx_store, to_id, to_collection, user_group_permissions,
+            replace=replace_members and existing_user_group is not None,
+        )
+        self._note_full_sync_seen(user_group.connector_id, CollectionNames.GROUPS.value, user_group.id)
+        return existing_user_group is not None
 
     @retry_on_deadlock()
     async def on_new_app_roles(self, roles: list[tuple[AppRole, list[AppUser]]]) -> None:

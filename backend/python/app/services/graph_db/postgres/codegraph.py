@@ -17,6 +17,7 @@ from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.services.graph_db.interface.graph_db_provider import CodeFileInfo
 from app.services.graph_db.postgres.base import (
     _LINK_COLLS,
+    _VALIDATOR,
     PgBase,
     _arango,
     _doc,
@@ -214,6 +215,7 @@ class CodeGraphMixin(PgBase):
                 raise ValueError("ensure_nodes requires every node to carry an id")
             d = {k: v for k, v in n.items() if k not in ("_key", "_id")}
             d["id"] = n.get("id") or n["_key"]
+            _VALIDATOR.validate_node(collection, d)
             docs.append({"id": d["id"], "doc": d})
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.ensure_nodes */ INSERT INTO graph.nodes (org_id, coll, id, doc)
             SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb) FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb)
@@ -250,6 +252,7 @@ class CodeGraphMixin(PgBase):
             fc = e.get("from_collection") or (e["_from"].split("/")[0] if "/" in e.get("_from", "") else "")
             tc = e.get("to_collection") or (e["_to"].split("/")[0] if "/" in e.get("_to", "") else "")
             props = {k: v for k, v in e.items() if k not in ("from_id", "to_id", "from_collection", "to_collection", "_from", "_to")}
+            _VALIDATOR.validate_edge(_LINKS, props)
             key = _ekey(_LINKS, props)       # the type, and the constraint name where there is one: two foreign keys of one type between one pair are two edges
             same = groups.setdefault((fk, tk, key), [])
             # The same edge named once with its collections and once without is one edge; repeats apply in order, a null clears the property (``r += props``).
@@ -296,30 +299,49 @@ class CodeGraphMixin(PgBase):
         return [_neighbour(r, r["key"], r["coll"]) for r in rows]
 
     async def get_neighbors_for_nodes_by_relationship_types(self, node_keys: list[str], node_collection: str, relationship_types: list[str], direction: str,
-                                                            limit: int = 5000, transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict[str, Any]]:
+                                                            limit: int = 5000, transaction: str | None = None, *,
+                                                            raise_on_error: bool = False, after: str | None = None) -> list[dict[str, Any]]:
         org = current_org_id()
         if not node_keys or not relationship_types:
             return []
         if direction not in ("outbound", "inbound", "any"):
             raise ValueError(f"direction must be 'outbound', 'inbound' or 'any', got {direction!r}")
         out, inn, both = direction in ("outbound", "any"), direction in ("inbound", "any"), direction == "any"
+        paged = after is not None
         try:
-            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT e.anchor, e.coll, e.key, e.dir,
-                coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.doc FROM (
-                SELECT e.from_id AS anchor, e.to_coll AS coll, e.to_id AS key, 'outbound' AS dir, e.ekey, e.doc FROM graph.edges e
-                  WHERE $7::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = ANY($4::text[])
-                UNION ALL
-                SELECT e.to_id, e.from_coll, e.from_id, 'inbound', e.ekey, e.doc FROM graph.edges e
-                  WHERE $8::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = ANY($4::text[])
-                    AND NOT ($9::bool AND e.from_coll = e.to_coll AND e.from_id = e.to_id)) e
-                WHERE coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($5::text[]) LIMIT $6""",
-                                                      org, _LINK_COLLS, node_collection, node_keys, relationship_types, limit, out, inn, both), transaction)
+            if paged:
+                # cursor = the row's sort key, ending in the edge's own key so parallel edges never tie; ORDER BY before LIMIT makes a page the next slice of the ordered edges.
+                rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT e.anchor, e.coll, e.key, e.dir,
+                    coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.doc,
+                    concat_ws(chr(1), e.anchor, e.dir, e.coll, e.key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.edge_coll, e.ekey) COLLATE "C" AS page_key FROM (
+                    SELECT e.from_id AS anchor, e.to_coll AS coll, e.to_id AS key, 'outbound' AS dir, e.ekey, e.doc, e.coll AS edge_coll FROM graph.edges e
+                      WHERE $7::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = ANY($4::text[])
+                    UNION ALL
+                    SELECT e.to_id, e.from_coll, e.from_id, 'inbound', e.ekey, e.doc, e.coll FROM graph.edges e
+                      WHERE $8::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = ANY($4::text[])
+                        AND NOT ($9::bool AND e.from_coll = e.to_coll AND e.from_id = e.to_id)) e
+                    WHERE coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($5::text[])
+                      AND concat_ws(chr(1), e.anchor, e.dir, e.coll, e.key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.edge_coll, e.ekey) COLLATE "C" > $10::text
+                    ORDER BY page_key LIMIT $6""",
+                                                          org, _LINK_COLLS, node_collection, node_keys, relationship_types, limit, out, inn, both, after), transaction)
+            else:
+                rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT e.anchor, e.coll, e.key, e.dir,
+                    coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.doc FROM (
+                    SELECT e.from_id AS anchor, e.to_coll AS coll, e.to_id AS key, 'outbound' AS dir, e.ekey, e.doc FROM graph.edges e
+                      WHERE $7::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = ANY($4::text[])
+                    UNION ALL
+                    SELECT e.to_id, e.from_coll, e.from_id, 'inbound', e.ekey, e.doc FROM graph.edges e
+                      WHERE $8::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = ANY($4::text[])
+                        AND NOT ($9::bool AND e.from_coll = e.to_coll AND e.from_id = e.to_id)) e
+                    WHERE coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($5::text[]) LIMIT $6""",
+                                                          org, _LINK_COLLS, node_collection, node_keys, relationship_types, limit, out, inn, both), transaction)
         except Exception:
             if raise_on_error:
                 raise
             self.logger.exception("get_neighbors_for_nodes_by_relationship_types failed")
             return []
-        return [{"anchorKey": r["anchor"], "direction": r["dir"], **_neighbour(r, r["key"], r["coll"])} for r in rows]
+        return [{"anchorKey": r["anchor"], "direction": r["dir"], **_neighbour(r, r["key"], r["coll"]),
+                 **({"cursor": r["page_key"]} if paged else {})} for r in rows]
 
     async def get_edges_by_target_keys(self, target_keys: list[str], edge_collection: str, filters: dict[str, Any] | None = None,
                                        return_field: str = "_from", transaction: str | None = None, *, raise_on_error: bool = False) -> list[str]:
@@ -464,6 +486,7 @@ class CodeGraphMixin(PgBase):
             return []
         if "indexingStatus" in fields:
             fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
+        _VALIDATOR.validate_node_update("records", fields)
         # Locks are taken in id order, and the revision is read after the lock.
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.compare_and_set_record_fields */ WITH l AS (SELECT id FROM graph.nodes
             WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'contentRev' = $3 ORDER BY id FOR UPDATE)
@@ -486,12 +509,14 @@ class CodeGraphMixin(PgBase):
 
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
         org = current_org_id()
+        _VALIDATOR.validate_node(_STAGES, document)
         return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.stage_state_create */ WITH i AS (INSERT INTO graph.nodes (org_id, coll, id, doc)
             VALUES ($1, $2, $3, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each($4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)) ON CONFLICT (org_id, coll, id) DO NOTHING RETURNING 1) SELECT count(*) FROM i""",
                                                   org, _STAGES, document["id"], _j(document)), None, write=True))
 
     async def stage_state_compare_and_set(self, key: str, expected: str, new: str, fields: dict[str, Any], *, expected_attempt: int | None = None) -> bool:
         org = current_org_id()
+        _VALIDATOR.validate_node_update(_STAGES, {**fields, "status": new})
         return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.stage_state_compare_and_set */ WITH u AS (UPDATE graph.nodes n
             SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $5::jsonb || jsonb_build_object('status', $4::text)) AS _nv WHERE _nv.value <> 'null'::jsonb)
             WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->>'status' = $6 AND ($7::bigint IS NULL OR (n.doc->>'attempt')::bigint = $7)

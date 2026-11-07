@@ -1818,8 +1818,10 @@ async def _republish_stranded_records(
                 # "put in line for indexing" time. updatedAt cannot carry this
                 # alone: connectors may fill it with source-system time (a Jira
                 # issue last edited a year ago), which made every freshly synced
-                # row look stranded and sent it twice; it stays in the max for
-                # rows written before queuedAtTimestamp existed.
+                # row look stranded and sent it twice. Nor can it join the max: a
+                # metadata save moves it, and a row whose event was lost would
+                # never age while its source keeps changing. It stands in only
+                # for rows written before queuedAtTimestamp existed.
                 # lastRepublishedAt is our own: publishing changes nothing about
                 # the row, so without it a record stays eligible and every tick
                 # sends another copy of the same event -- worst precisely when
@@ -1832,8 +1834,9 @@ async def _republish_stranded_records(
                 # park, often hours older.
                 clocks: list[float] = []
                 for value in (
-                    record.get("queuedAtTimestamp"),
-                    record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
+                    record.get("queuedAtTimestamp")
+                    if record.get("queuedAtTimestamp") is not None
+                    else record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
                     record.get("lastRepublishedAt"),
                     enabled_at.get(connector_id) if parked_while_off else None,
                 ):
@@ -2813,6 +2816,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Parse worker pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down parse worker pool: {e}")
+    try:
+        from app.modules.parsers.pdf.docling_processor import shutdown_docling_pool
+        shutdown_docling_pool()
+    except Exception as e:
+        logger.error(f"❌ Error shutting down the Docling executor: {e}")
 
     # Stop the resource governor's sample loop after consumers (which hold
     # its gates) have drained, so nothing races a limit change mid-shutdown.

@@ -44,7 +44,10 @@ from app.modules.parsers.parse_pool import (
     set_resource_governor as set_parse_pool_governor,
 )
 from app.modules.parsers.parse_pool import shutdown_parse_pool
-from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+from app.modules.parsers.pdf.docling_processor import (
+    DoclingProcessor,
+    shutdown_docling_pool,
+)
 from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
 )
@@ -321,6 +324,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cleared first, or the next submit in this process starts a new pool.
     set_parse_pool_governor(None)
     shutdown_parse_pool()
+    shutdown_docling_pool()
     governor.stop()
     governor_task.cancel()
     try:

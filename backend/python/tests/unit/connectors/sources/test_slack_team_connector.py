@@ -72,6 +72,7 @@ def _make_connector():
     c._slack_executor = None
     c._thread_pool_lease = MagicMock(shutdown_and_drain=AsyncMock())
     c._unreadable_channels = []
+    c._archived_channel_ids = set()
     c._channel_list_failed = False
     c._resilience_loaded = True
     c._resilience = None
@@ -3572,6 +3573,7 @@ class TestPopulateChannelFilterCache:
         n = {"p": 0}
 
         async def clist(**kwargs):
+            assert "exclude_archived" not in kwargs  # archived channels can be chosen in a filter
             n["p"] += 1
             if n["p"] == 1:
                 return MagicMock(
@@ -4106,6 +4108,47 @@ class TestSlackConnectorCoverageExtended:
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             got, complete = await c._fetch_thread_replies_raw("C1", "1.0", ctx)
         assert len(got) >= 1
+        assert complete is True
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_replies_raw_later_page_gone_is_incomplete(self) -> None:
+        from app.connectors.sources.slack.team.connector import (
+            ProcessingContext,
+            RateLimiter,
+            SlackConnector,
+        )
+
+        c = _connector_pipeline_ready()
+        rl = RateLimiter(limits={2: 10, 3: 10, 4: 10}, headroom=1.0)
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {}, {"C1": "x"}, rl)
+        pages = iter([
+            MagicMock(success=True, data={"messages": [{"ts": "1.0"}, {"ts": "1.1"}],
+                                          "response_metadata": {"next_cursor": "z"}}),
+            MagicMock(success=False, error="not_in_channel"),
+        ])
+        ds = MagicMock()
+        ds.conversations_replies = AsyncMock(side_effect=lambda **kw: next(pages))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            got, complete = await c._fetch_thread_replies_raw("C1", "1.0", ctx)
+        assert [m["ts"] for m in got] == ["1.1"]
+        assert complete is False
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_replies_raw_first_page_gone_is_complete(self) -> None:
+        from app.connectors.sources.slack.team.connector import (
+            ProcessingContext,
+            RateLimiter,
+            SlackConnector,
+        )
+
+        c = _connector_pipeline_ready()
+        rl = RateLimiter(limits={2: 10, 3: 10, 4: 10}, headroom=1.0)
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {}, {"C1": "x"}, rl)
+        ds = MagicMock()
+        ds.conversations_replies = AsyncMock(return_value=MagicMock(success=False, error="thread_not_found"))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            got, complete = await c._fetch_thread_replies_raw("C1", "1.0", ctx)
+        assert got == []
         assert complete is True
 
     @pytest.mark.asyncio

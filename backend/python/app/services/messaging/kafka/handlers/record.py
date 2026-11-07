@@ -32,10 +32,10 @@ from app.config.constants.service import (
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.events.events import EventProcessor
-from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import EntityType
+from app.models.record_convert import convert_record_dict_to_record
 from app.modules.code_graph import deleted_files, edge_build_trigger
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.build_state import (
