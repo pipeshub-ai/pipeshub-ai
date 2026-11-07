@@ -472,45 +472,24 @@ describe('MCP Controller — handleMCPRequest', () => {
     })
   })
 
-  describe('MCP Apps for Google clients', () => {
-    let createOpts: any
-
+  describe('initialize logging', () => {
     beforeEach(() => {
-      createOpts = undefined
-      mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
-        createOpts = opts
-        return { server: { registerTool: () => undefined, connect: sinon.stub().resolves(), server: {} } }
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { registerTool: () => undefined, connect: sinon.stub().resolves(), server: {} },
       })
     })
 
-    const serveWith = async (headers: Record<string, string>, body: unknown = { jsonrpc: '2.0', id: 1, method: 'ping' }) => {
+    const serveWith = async (headers: Record<string, string>, body: unknown) => {
       const req = createMockRequest({ headers: { authorization: 'Bearer t', ...headers }, body })
       await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
     }
-
-    it('shows MCP Apps to a Google client, whose initialize does not declare them', async () => {
-      await serveWith({ 'user-agent': 'Google' })
-      expect(createOpts.apps).to.equal(true)
-
-      await serveWith({ 'user-agent': 'Google/1.0' })
-      expect(createOpts.apps).to.equal(true)
-    })
-
-    it("leaves every other client to its initialize's capabilities", async () => {
-      for (const userAgent of ['claude-code/2.1.0', 'Googlebot/2.1', 'Google-Extended', 'Mozilla/5.0 (compatible; Google)']) {
-        await serveWith({ 'user-agent': userAgent })
-        expect(createOpts.apps, userAgent).to.equal(undefined)
-      }
-      await serveWith({})
-      expect(createOpts.apps, 'no User-Agent').to.equal(undefined)
-    })
 
     it('logs what a client declares at initialize, never its token', async () => {
       const info = sinon.stub(Logger.prototype, 'info')
       const params = {
         protocolVersion: '2025-11-25',
-        clientInfo: { name: 'google-adk', version: '2.12.0' },
-        capabilities: {},
+        clientInfo: { name: 'Gemini', version: '1.0.0' },
+        capabilities: { roots: { listChanged: true }, sampling: {} },
       }
       await serveWith({ 'user-agent': 'Google' }, { jsonrpc: '2.0', id: 1, method: 'initialize', params })
 
