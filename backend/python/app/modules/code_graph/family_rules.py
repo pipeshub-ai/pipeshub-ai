@@ -78,6 +78,9 @@ class FamilyRules:
     # Files whose function-like macros a call sees besides those defined above it in its own file, so a call
     # through a wrapper macro reaches the one function it expands to (C/C++: what its includes include).
     macro_scope: Callable[[SymbolIndex, str], Iterable[str]] | None = None
+    # The files that see these files' definitions through their includes, transitively, so a file whose include
+    # list changed re-resolves all of them, not only its direct includers (C/C++).
+    includers: Callable[[SymbolIndex, set[str]], set[str]] | None = None
     # (call file, defining file) -> whether a definition marked STATIC there (C/C++ internal linkage) is in
     # the call's translation unit; one that is not is never reached, by a name guess, a paired source or a
     # qualifier; one that may be (the hook says None) leaves the call with no edge. None: the family has no
@@ -111,10 +114,11 @@ _RULES: dict[str, FamilyRules] = {
                         uncallable_kinds=frozenset({"module", "field", "type_alias"})),
     # C/C++: a bare call inside a method is first `this->name()`; an out-of-line method (`Foo::bar`) is
     # found anywhere in the repo and belongs to the class its owner names.
-    "c": FamilyRules(bare_call_reaches_method="same_class", out_of_line_methods="repo", out_of_line_under_namespaces=True,
-                     enclosing_type=c_family.owner_type, implicit_scope=c_family.include_scope,
+    "c": FamilyRules(bare_call_reaches_method="same_class", out_of_line_methods="repo",
+                     out_of_line_under_namespaces=True, enclosing_type=c_family.owner_type,
+                     implicit_scope=c_family.include_scope,
                      inferred_scope=c_family.paired_sources, type_scope=c_family.scoped_types,
-                     resident_imports=True, macro_scope=c_family.include_scope,
+                     resident_imports=True, macro_scope=c_family.include_scope, includers=c_family.includers,
                      same_unit=c_family.same_unit, implicit_member_receivers=True,
                      qualified_callees=c_family.qualified_callees, evaluated_receivers=True),
 }

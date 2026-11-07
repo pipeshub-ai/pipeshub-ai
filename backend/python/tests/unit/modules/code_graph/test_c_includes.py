@@ -2,8 +2,13 @@
 import pytest
 
 from app.config.constants.arangodb import RecordRelations
-from app.modules.code_graph.module_refs import module_ref, module_refs_of_path
-from app.modules.code_graph.resolvers.c_family import in_repo, resolve
+from app.modules.code_graph.block_projection import changed_includes
+from app.modules.code_graph.module_refs import (
+    includes_changed_ref,
+    module_ref,
+    module_refs_of_path,
+)
+from app.modules.code_graph.resolvers.c_family import resolve
 from app.modules.parsers.code_parser.engine import parse_code
 
 from .test_import_binding import _build, _targets
@@ -21,24 +26,19 @@ def test_an_include_is_looked_for_beside_the_includer_then_by_its_path_nearest_f
     assert resolve("util.h", "lib/x/a.c", FILES, None) == "lib/x/util.h"                  # the nearest
     assert resolve("util.h", "tools/a.c", FILES, None) is None                            # a tie names none
     assert resolve("stdio.h", "src/net/conn.c", FILES, None) is None                      # a system header
-    # What resolve cannot place: a quoted repo header (a tie, a hidden -I path) is unresolved, never an
-    # outside library; an angle include is a repo header only when resolve places it by its path.
-    assert in_repo("util.h", "tools/a.c", FILES, None) and in_repo("other/conn.h", "a.c", FILES, None)
-    assert not in_repo("stdio.h", "src/net/conn.c", FILES, None)
 
 
 def test_an_angle_include_is_repo_code_only_when_its_path_places_it() -> None:
     files = {"src/config.h", "src/oatpp/core/Types.hpp", "src/main.c", "src/lib/x.c", "lib/conf/config.h"}
-    # Quoted "config.h" with repo config.h files: placed by name, or, when two tie, unresolved but repo code.
+    # Quoted "config.h" with repo config.h files: placed by name, or, when two tie, unresolved.
     assert resolve("config.h", "src/main.c", files, None) == "src/config.h"
-    assert resolve("config.h", "tools/x.c", files, None) is None and in_repo("config.h", "tools/x.c", files, None)
+    assert resolve("config.h", "tools/x.c", files, None) is None
     # Angle <config.h> with a repo config.h: a system or vendored header, never the repo's.
     assert resolve("<config.h>", "src/main.c", files, None) is None
-    assert not in_repo("<config.h>", "src/main.c", files, None)
     # Angle <oatpp/core/Types.hpp>: its path places it in the repo.
     assert resolve("<oatpp/core/Types.hpp>", "src/main.c", files, None) == "src/oatpp/core/Types.hpp"
     # <stdio.h>: outside.
-    assert resolve("<stdio.h>", "src/main.c", files, None) is None and not in_repo("<stdio.h>", "src/main.c", files, None)
+    assert resolve("<stdio.h>", "src/main.c", files, None) is None
     assert module_ref("<oatpp/core/Types.hpp>", "src/main.c") == "module:oatpp/core/Types"
     # The parser keeps the form: an angle include in its brackets, a quoted one bare.
     facts = parse_code(b'#include <oatpp/core/Types.hpp>\n#include "util.h"\n#include <stdio.h>\n', "c").pending
@@ -89,3 +89,14 @@ async def test_a_cpp_base_class_is_inherited_without_its_template_arguments(grap
     await _build(graph)
     assert _targets(graph, INHERITS, "geo/square.hpp") == {"geo/shape.hpp::class:geo.Shape",
                                                            "geo/shape.hpp::class:geo.Holder"}
+
+
+def test_only_a_changed_include_list_marks_a_c_file_for_its_transitive_includers() -> None:
+    def rows(*includes: str) -> list[dict]:
+        return [{"pendingEdges": [{"relation": IMPORTS_FROM, "toName": i} for i in includes]},
+                {"pendingEdges": '[{"relation": "CALLS", "toName": "f"}]'}]   # Neo4j's JSON form
+    mark = {includes_changed_ref("src/a.h")}
+    assert changed_includes("src/a.h", rows("b.h"), rows("b.h")) == set()          # a body edit: no mark
+    assert changed_includes("src/a.h", rows("b.h"), rows("b.h", "<c/d.h>")) == mark
+    assert changed_includes("src/a.h", rows("b.h"), ()) == mark                    # emptied or deleted
+    assert changed_includes("app/m.py", rows("b.h"), ()) == set()                  # only C/C++ keeps includes

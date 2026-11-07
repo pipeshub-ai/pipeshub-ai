@@ -24,7 +24,10 @@ from app.modules.code_graph.guards import (
     prefer_non_test,
 )
 from app.modules.code_graph.import_resolution import ImportResolution
-from app.modules.code_graph.module_refs import module_refs_of_path
+from app.modules.code_graph.module_refs import (
+    INCLUDES_CHANGED_PREFIX,
+    module_refs_of_path,
+)
 from app.modules.code_graph.symbol_index import BlockRow, SymbolIndex
 from app.modules.parsers.code_parser.languages import c_family as c_family_parser
 from app.modules.parsers.code_parser.languages.rust import HELD, POINTED, PRELUDE
@@ -1318,7 +1321,8 @@ class _Builder:
             if bound is not None:
                 return bound
         chain = fact.get("qualifiedPrefix")
-        if family not in ("js", "py"):  # C++ evaluates a written chain or call (`engine()->f()`), `x.f()` being typed above
+        if family not in ("js", "py"):
+            # C++ evaluates a written chain or call (`engine()->f()`); a plain `x.f()` was typed above.
             chain = c_family_parser.dotted(chain) if rules.evaluated_receivers and chain \
                 and (chain != receiver or chain.endswith(")")) else None
         if not receiver_type and chain:
@@ -2698,7 +2702,23 @@ def _select_reresolve_set(index: SymbolIndex, touched: set[str] | None,
         for record_id, names in index.referenced_names_by_record.items():
             if record_id not in selected and names & changed_names:
                 selected.add(record_id)
+        selected |= _transitive_includers(index, changed_names)
     return selected
+
+
+def _transitive_includers(index: SymbolIndex, changed_names: set[str]) -> set[str]:
+    """The records that see a file whose include list changed through their includes, at any depth: their
+    direct includers are selected by the file's `module:` names, the rest only here."""
+    by_family: dict[str, set[str]] = {}
+    for name in changed_names:
+        if name.startswith(INCLUDES_CHANGED_PREFIX):
+            path = name[len(INCLUDES_CHANGED_PREFIX):]
+            by_family.setdefault(lang_family(None, path) or "", set()).add(path)
+    out: set[str] = set()
+    for family, paths in by_family.items():
+        hook = rules_for(family).includers
+        out.update(index.record_by_file[p] for p in (hook(index, paths) if hook else ()) if p in index.record_by_file)
+    return out
 
 
 def _with_impl_partners(index: SymbolIndex, reresolve: set[str], touched: set[str] = frozenset(),

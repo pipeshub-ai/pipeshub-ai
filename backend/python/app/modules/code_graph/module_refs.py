@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import posixpath
 
-__all__ = ["MODULE_PREFIX", "module_ref", "module_refs_of_path"]
+__all__ = ["INCLUDES_CHANGED_PREFIX", "MODULE_PREFIX", "includes_changed_ref", "module_ref", "module_refs_of_path"]
 
 MODULE_PREFIX = "module:"
+# A changed name saying a file's own include list changed: every file including it, transitively, sees other
+# files through it now (C/C++).
+INCLUDES_CHANGED_PREFIX = "includes-changed:"
 
 _C_FAMILY_EXTENSIONS = frozenset({"c", "h", "cc", "hh", "cpp", "hpp", "cxx", "hxx"})
 _CODE_EXTENSIONS = frozenset({"py", "pyi", "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"}) | _C_FAMILY_EXTENSIONS
@@ -84,3 +87,8 @@ def module_refs_of_path(file_path: str) -> set[str]:
         MODULE_PREFIX + "/".join(p[i:])
         for p in paths for i in range(len(p)) if p[i:]
     }
+
+
+def includes_changed_ref(file_path: str) -> str:
+    """The changed name that re-selects every file including *file_path*, transitively."""
+    return INCLUDES_CHANGED_PREFIX + file_path

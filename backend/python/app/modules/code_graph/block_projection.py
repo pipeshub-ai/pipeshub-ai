@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.modules.code_graph.family_rules import rules_for
 from app.modules.code_graph.guards import lang_family
-from app.modules.code_graph.module_refs import module_ref
+from app.modules.code_graph.module_refs import includes_changed_ref, module_ref
 from app.modules.code_graph.version import PARSER_VERSION
 from app.modules.parsers.code_parser.models import DECLARATION, RETURNS, STATIC
 
@@ -38,6 +38,7 @@ __all__ = [
     "FILE_SUMMARY_QUALIFIED_NAME",
     "RESIDENT_RELATIONS",
     "block_key_for",
+    "changed_includes",
     "changed_macros",
     "drop_code_file_blocks",
     "serialize_block_for_graph",
@@ -263,18 +264,37 @@ def changed_macros(before: Iterable[dict[str, Any]], after: Iterable[dict[str, A
     def callees(docs: Iterable[dict[str, Any]]) -> dict[str, Any]:
         out: dict[str, Any] = {}
         for doc in docs:
-            table = doc.get("macroTable")
-            if isinstance(table, str):  # Neo4j stores a map as JSON
-                try:
-                    table = json.loads(table)
-                except ValueError:
-                    table = None
+            table = _decoded(doc.get("macroTable"))
             for name, entry in (table if isinstance(table, dict) else {}).items():
                 out[name] = entry[1] if isinstance(entry, list) and len(entry) > 1 else entry
         return out
 
     old, new = callees(before), callees(after)
     return {name for name in old.keys() | new.keys() if old.get(name) != new.get(name)}
+
+
+def changed_includes(file_path: str | None, before: Iterable[dict[str, Any]],
+                     after: Iterable[dict[str, Any]]) -> set[str]:
+    """The file's include-change mark when its `#include` list changed (added, edited, emptied or deleted), for a
+    family whose include facts stay on its nodes: every file including it, transitively, sees through it."""
+    if not file_path or not rules_for(lang_family(None, file_path)).resident_imports:
+        return set()
+
+    def includes(rows: Iterable[dict[str, Any]]) -> set[str]:
+        return {fact.get("toName") for row in rows for fact in _decoded(row.get("pendingEdges")) or ()
+                if isinstance(fact, dict) and fact.get("relation") == RecordRelations.IMPORTS_FROM.value}
+
+    return {includes_changed_ref(file_path)} if includes(before) != includes(after) else set()
+
+
+def _decoded(value: Any) -> Any:  # noqa: ANN401 -- a stored map or list, or its JSON
+    """A stored map or list; Neo4j keeps one as JSON."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return value
 
 
 def _changed_linkage(before: Iterable[dict[str, Any]], after: Iterable[dict[str, Any]]) -> set[str]:
@@ -443,7 +463,7 @@ async def write_code_file_blocks_to_graph(
             lambda: graph_provider.get_nodes_by_filters(
                 collection=CollectionNames.BLOCKS.value,
                 filters={"recordId": context.record_id},
-                return_fields=["_key", "name", "kind", "macroTable", "modifiers", "contentHash"],
+                return_fields=["_key", "name", "kind", "pendingEdges", "macroTable", "modifiers", "contentHash"],
             ),
             what="load existing blocks", log=log,
         ),
@@ -464,7 +484,8 @@ async def write_code_file_blocks_to_graph(
     changed = {
         name for key, name in (*before.items(), *after.items())
         if name and key[1] != "file_summary" and (key not in before or key not in after)
-    } | changed_macros(existing, docs) | _changed_linkage(existing, docs) | _changed_member_types(existing, docs)
+    } | changed_macros(existing, docs) | _changed_linkage(existing, docs) | _changed_member_types(existing, docs) \
+        | changed_includes(context.file_path, existing, docs)
 
     # referencedNames is written to the codeFiles node, not a block. The edge
     # builder queries it alongside filePath, avoiding a block-scan join.
@@ -542,7 +563,7 @@ async def drop_code_file_blocks(
         lambda: graph_provider.get_nodes_by_filters(
             collection=CollectionNames.BLOCKS.value,
             filters={"recordId": record_id},
-            return_fields=["name", "kind", "macroTable"],
+            return_fields=["name", "kind", "pendingEdges", "macroTable"],
         ),
         what="load existing blocks", log=log,
     ) or []
@@ -550,14 +571,15 @@ async def drop_code_file_blocks(
         row.get("name") for row in existing
         if row.get("name") and row.get("kind") != "file_summary"
     } | changed_macros(existing, ())
-    if removed:
+    if removed or any(row.get("pendingEdges") for row in existing):
         code_file = await _with_retry(
             lambda: graph_provider.get_document(
                 record_id, CollectionNames.CODE_FILES.value, raise_on_error=True
             ),
             what="load codeFiles node", log=log,
         )
-        if code_file:
+        removed |= changed_includes((code_file or {}).get("filePath"), existing, ())
+        if code_file and removed:
             await _with_retry(
                 lambda: graph_provider.update_node(
                     record_id, CollectionNames.CODE_FILES.value,

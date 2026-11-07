@@ -38,6 +38,9 @@ def test_the_rows_reproduce_the_former_family_branches() -> None:
     assert not any(rules_for(f).resident_imports for f in ("py", "js", "go", "jvm", "csharp", "php", "rust"))
     # Only C/C++ expands wrapper macros (test_c_wrapper_macros).
     assert c.macro_scope is not None
+    # Only C/C++ re-selects transitive includers when a file's include list changes (test_incremental_equivalence).
+    assert c.includers is not None
+    assert all(rules_for(f).includers is None for f in ("py", "js", "go", "jvm", "csharp", "php", "rust"))
     assert all(rules_for(f).macro_scope is None for f in ("py", "js", "go", "jvm", "csharp", "php", "rust"))
     # Only C/C++ has internal linkage, a `static` function's translation unit (test_c_static_linkage).
     assert c.same_unit is not None
@@ -49,7 +52,7 @@ def test_the_rows_reproduce_the_former_family_branches() -> None:
                    or rules_for(f).qualified_callees for f in others)
     assert replace(c, bare_call_reaches_method="any", out_of_line_methods="same_folder", implicit_scope=None,
                    inferred_scope=None, enclosing_type=None, type_scope=None, resident_imports=False,
-                   macro_scope=None, out_of_line_under_namespaces=False, same_unit=None,
+                   macro_scope=None, includers=None, out_of_line_under_namespaces=False, same_unit=None,
                    implicit_member_receivers=False, qualified_callees=None, evaluated_receivers=False) == FamilyRules()
 
 

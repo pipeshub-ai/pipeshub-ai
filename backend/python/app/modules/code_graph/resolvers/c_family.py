@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 
     from app.modules.code_graph.symbol_index import SymbolIndex
 
-__all__ = ["in_repo", "include_scope", "owner_type", "paired_sources", "qualified_callees", "resolve", "same_unit",
-           "scoped_types"]
+__all__ = ["include_scope", "includers", "owner_type", "paired_sources", "qualified_callees", "resolve",
+           "same_unit", "scoped_types"]
 
 _IMPORTS_FROM = "IMPORTS_FROM"
 _HEADERS = (".h", ".hh", ".hpp", ".hxx")
@@ -74,16 +74,6 @@ def resolve(specifier: str, from_file: str, files: set[str], index: SymbolIndex 
     return nearest[0] if len(nearest) == 1 else None
 
 
-def in_repo(specifier: str, from_file: str, files: set[str], index: SymbolIndex | None) -> bool:
-    """Whether a quoted include `resolve` cannot place still names a repo header (a tie between two, or a
-    path the product's missing -I flags hide), so it is unresolved rather than an outside library. An angle
-    include `resolve` cannot place by its path stays outside: a repo `config.h` must not capture a system
-    or vendored `<config.h>`."""
-    angle, spec = _form(specifier)
-    tail = posixpath.normpath(spec).lstrip("/") if spec else ""
-    return not angle and bool(tail) and bool(_by_basename(files, index).get(tail.rsplit("/", 1)[-1]))
-
-
 def _form(specifier: str) -> tuple[bool, str]:
     """(an angle include, the path it names): `<a/x.h>` -> (True, "a/x.h"), `a/x.h` -> (False, "a/x.h")."""
     spec = specifier.replace("\\", "/").strip()
@@ -98,17 +88,42 @@ def _includes(index: SymbolIndex, file_path: str) -> list[str]:
     if file_path not in cache:
         if "_c_files" not in index.__dict__:
             index.__dict__["_c_files"] = set(index.record_by_file)
-        files = index.__dict__["_c_files"]
-        record = index.record_by_file.get(file_path)
-        found: dict[str, None] = {}
-        for block_id in index.blocks_by_record.get(record, ()) if record else ():
-            for fact in index.rows[block_id].pending_edges:
-                if fact.get("relation") == _IMPORTS_FROM and fact.get("toName"):
-                    target = resolve(fact["toName"], file_path, files, index)
-                    if target and target != file_path:
-                        found[target] = None
-        cache[file_path] = list(found)
+        cache[file_path] = _resolved_includes(index, file_path, index.__dict__["_c_files"])
     return cache[file_path]
+
+
+def _resolved_includes(index: SymbolIndex, file_path: str, files: set[str]) -> list[str]:
+    """What *file_path*'s `#include`s name among *files*."""
+    record = index.record_by_file.get(file_path)
+    found: dict[str, None] = {}
+    for block_id in index.blocks_by_record.get(record, ()) if record else ():
+        for fact in index.rows[block_id].pending_edges:
+            if fact.get("relation") == _IMPORTS_FROM and fact.get("toName"):
+                target = resolve(fact["toName"], file_path, files, index)
+                if target and target != file_path:
+                    found[target] = None
+    return list(found)
+
+
+def includers(index: SymbolIndex, paths: set[str]) -> set[str]:
+    """Every C/C++ file that includes one of *paths*, directly or through other headers: what it sees through
+    them changes when their own includes do. A path no longer in the repo (a deleted header) is placed as if it
+    still were, so the files that included it are found too."""
+    gone = paths - index.record_by_file.keys()
+    files = set(index.record_by_file) | gone
+    included_by: dict[str, set[str]] = {}
+    for path in index.record_by_file:
+        if path.endswith((*_SOURCES, *_HEADERS)):
+            for target in _resolved_includes(index, path, files) if gone else _includes(index, path):
+                included_by.setdefault(target, set()).add(path)
+    found: set[str] = set()
+    todo = list(paths)
+    while todo:
+        for path in included_by.get(todo.pop(), ()):
+            if path not in found:
+                found.add(path)
+                todo.append(path)
+    return found
 
 
 def include_scope(index: SymbolIndex, file_path: str) -> list[str]:

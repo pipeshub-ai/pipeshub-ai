@@ -522,3 +522,49 @@ async def test_c_incremental_build_matches_full_build(case: str) -> None:
     assert {res for row, res in calls if row.startswith("src/main.c")} == {"module-import"}
     wrapped = sorted(row.split("::")[1] for row, res in calls if res == "wrapper")
     assert wrapped == C_WRAPPED.get(case, C_WRAPPED["base"]), case
+
+
+# A header's own include list changing: main.c sees d.h only through outer.h -> inner.h, so it is re-resolved
+# though neither file it includes directly was touched.
+DEEP_H = '#include "d.h"\nint pad(void);\n'
+TRANSITIVE_BASE = {
+    "src/d.h": "int deep(int x);\n",
+    "src/d.c": '#include "d.h"\nint deep(int x) { return x; }\n',
+    "lib/e.c": "int deep(int x) { return -x; }\n",   # a second `deep`, so only the include scope places the call
+    "src/inner.h": "int pad(void);\n",
+    "src/outer.h": '#include "inner.h"\n',
+    "src/main.c": '#include "outer.h"\nint run(void) { return deep(1); }\n',
+}
+TRANSITIVE_EDITS: dict[str, tuple[dict[str, str], dict[str, str | None]]] = {   # case -> (base changes, edit)
+    "include-added": ({}, {"src/inner.h": DEEP_H}),
+    "include-removed": ({"src/inner.h": DEEP_H}, {"src/inner.h": "int pad(void);\n"}),
+    "header-deleted": ({"src/inner.h": DEEP_H}, {"src/inner.h": None}),
+}
+
+
+@pytest.mark.parametrize("case", sorted(TRANSITIVE_EDITS))
+async def test_a_header_include_change_re_resolves_its_transitive_includers(case: str) -> None:
+    parser = CodeFileParser()
+    base_changes, edit = TRANSITIVE_EDITS[case]
+    base = {**TRANSITIVE_BASE, **base_changes}
+    graph = await full_c_graph(parser, base)
+    edited = {path: text for path, text in edit.items() if text is not None}
+    deleted_names: set[str] = set()
+    for path in edit.keys() - edited.keys():
+        deleted_names |= await defined_names(graph, ORG_ID, c_rid(path))
+        await graph.delete_blocks_for_records([c_rid(path)])
+        graph.code_files.pop(c_rid(path))
+        graph.blobs.pop(c_rid(path))
+    for path, text in edited.items():
+        await project_c(graph, parser, path, text)
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={c_rid(p) for p in edited}, deleted_names=deleted_names,
+                                 facts_source=graph)
+
+    expected = await full_c_graph(parser, {p: t for p, t in {**base, **edit}.items() if t is not None})
+    got, want = code_edges(graph), code_edges(expected)
+    assert got == want, ("missing: " + "; ".join(describe(expected, want - got))
+                         + "\nextra: " + "; ".join(describe(graph, got - want)))
+    main = {(describe(graph, {edge})[0], edge[3]) for edge in got if edge[2] == "CALLS"}
+    sees = DEEP_H in {**base, **edit}.values()
+    assert any(row.startswith("src/main.c") and res == "module-import" for row, res in main) == sees, main
