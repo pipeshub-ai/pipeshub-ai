@@ -92,3 +92,16 @@ async def test_a_base_whose_walk_fails_is_left_out_not_reported_empty(monkeypatc
     out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.speak", None,
                                     include_tests=False)
     assert list(out["through_overridden_methods"]["by_base"]) == ["src/pet.py::method:Pet.speak"]
+
+
+async def test_the_answer_stands_when_the_override_walk_returns_an_error(monkeypatch) -> None:
+    async def neighbours(**kwargs) -> dict:
+        assert kwargs["edge_types"] == ["OVERRIDES"], "no base walk after the override walk failed"
+        return {"error": "walk failed"}
+
+    monkeypatch.setattr(cg, "get_neighbour_impl", neighbours)
+    tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
+                         "graph_provider": FakeGraphProvider(), "blob_store": object()})
+    out = await tool._with_dispatch({"neighbors": []}, CONN, "src/dog.py", None, "method:Dog.speak", None,
+                                    include_tests=False)
+    assert out == {"neighbors": []}

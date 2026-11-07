@@ -1132,6 +1132,10 @@ class CodeGraph:
             up = await get_neighbour_impl(**common, file_path=path, qualified_name=qualified_name,
                                           direction="outbound", edge_types=["OVERRIDES"],
                                           depth=_DISPATCH_BASES)
+            if up.get("error"):
+                self._log.warning("codegraph: overridden methods of %s unavailable: %s",
+                                  qualified_name, up["error"])
+                return result
             bases = [(n["file_path"], n["qualified_name"]) for n in up.get("neighbors") or []
                      if n.get("relation") == "OVERRIDES" and n.get("file_path") and n.get("qualified_name")]
             through: dict[str, Any] = {}
