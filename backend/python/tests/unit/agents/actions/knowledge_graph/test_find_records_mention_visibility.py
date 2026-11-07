@@ -84,7 +84,7 @@ def _wiring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(recall, "admitted_node_ids", admitted)
     monkeypatch.setattr(op, "load_entity_access_context", AsyncMock(return_value=CONTEXT))
     monkeypatch.setattr(op, "cite_listed_records", AsyncMock(return_value={}))
-    monkeypatch.setattr(op, "_search", lambda state, passages=None: AsyncMock(
+    monkeypatch.setattr(op, "_search", lambda state, context, passages=None: AsyncMock(
         return_value=list(state["graph_provider"].searched)))
 
 

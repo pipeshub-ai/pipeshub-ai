@@ -250,19 +250,21 @@ async def test_the_recall_search_is_the_search_tools_call_within_the_turns_scope
     })
     state = _state(retrieval_service=retrieval, user_id="user-1",
                    filters={"apps": ["jira"], "strictScope": True}, is_placeholder_agent=False)
-    search = op._search(state)
+    search = op._search(state, CONTEXT)
     assert await search("ravi open", {"source_created_after_ms": 1}) == ["r2", "r1", "r3"]
     kwargs = retrieval.search_with_filters.await_args.kwargs
     assert kwargs["queries"] == ["ravi open"] and kwargs["limit"] == op.RECALL_TOP_K
     assert kwargs["filter_groups"]["apps"] == ["jira"] and kwargs["filter_groups"]["strictScope"] is True
     assert kwargs["time_range"] == {"source_created_after_ms": 1} and kwargs["user_id"] == "user-1"
+    # The org the access check resolved, never one read off the state.
+    assert kwargs["org_id"] == CONTEXT.org_id
 
 
 async def test_a_search_that_answers_with_an_error_status_is_a_failed_check(engine: AsyncMock) -> None:
     retrieval = MagicMock()
     retrieval.search_with_filters = AsyncMock(return_value={"status_code": 503, "message": "down"})
     with pytest.raises(RuntimeError):
-        await op._search(_state(retrieval_service=retrieval))("x", None)
+        await op._search(_state(retrieval_service=retrieval), CONTEXT)("x", None)
 
 
 async def test_a_cursor_page_runs_no_new_search_and_says_the_check_ran_on_the_first_page(
@@ -304,7 +306,7 @@ def _judged_run(monkeypatch: pytest.MonkeyPatch, possible: list[dict[str, Any]],
     """The recall check returns ``possible``; its search saw ``passages``."""
     from app.modules.retrieval.record_query.recall import RecallCheck
 
-    def search(state: Any, sink: dict[str, list[str]] | None = None) -> Any:  # noqa: ANN401
+    def search(state: Any, context: Any, sink: dict[str, list[str]] | None = None) -> Any:  # noqa: ANN401
         if sink is not None:
             sink.update(passages)
         return None
@@ -396,7 +398,7 @@ async def test_the_recall_search_keeps_each_hits_passages_for_the_judge(engine: 
         {"metadata": {"recordId": "r2"}, "content": ["not text"]},
     ]})
     passages: dict[str, list[str]] = {}
-    await op._search(_state(retrieval_service=retrieval), passages)("x", None)
+    await op._search(_state(retrieval_service=retrieval), CONTEXT, passages)("x", None)
     assert passages == {"r1": ["first", "second"], "vid:v1": ["first", "second"]}
 
 

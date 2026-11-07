@@ -196,7 +196,7 @@ async def execute_find_records(
         passages: dict[str, list[str]] = {}
         # Beside the engine, so it adds no wait of its own; a pure describe has nothing to recall.
         recall_task = None if _no_recall(query) else start_search(
-            query, _names(state, people), _search(state, passages),
+            query, _names(state, people), _search(state, context, passages),
         )
         try:
             result = await run_record_query(state["graph_provider"], context, query, apps=apps or None,
@@ -283,7 +283,9 @@ def _passage_key(record_id: str = "", virtual_id: str = "") -> str:
     return f"vid:{virtual_id}" if virtual_id else record_id
 
 
-def _search(state: ChatState, passages: dict[str, list[str]] | None = None) -> Any:  # noqa: ANN401
+def _search(
+    state: ChatState, context: EntityAccessContext, passages: dict[str, list[str]] | None = None,
+) -> Any:  # noqa: ANN401
     """The recall check's search: the search tool's retrieval call, within
     the turn's scope and permissions, record ids best first. ``passages``
     collects each hit's text, best first, by record id and by virtual record
@@ -299,7 +301,7 @@ def _search(state: ChatState, passages: dict[str, list[str]] | None = None) -> A
         if filters.get("entityFilters"):
             groups["entityFilters"] = filters["entityFilters"]
         found = await retrieval.search_with_filters(
-            queries=[text], org_id=state.get("org_id") or "", user_id=state.get("user_id") or "",
+            queries=[text], org_id=context.org_id, user_id=state.get("user_id") or "",
             limit=RECALL_TOP_K, filter_groups=groups, time_range=time_range,
         )
         if not isinstance(found, dict) or found.get("status_code", 200) >= 400:

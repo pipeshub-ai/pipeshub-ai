@@ -21,6 +21,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.core.org_context import spawn_in_request
 from app.modules.retrieval.entity_permissions import admitted_node_ids
 from app.modules.retrieval.record_fields import FieldKind
 from app.modules.retrieval.record_fields import field as field_spec
@@ -126,7 +127,7 @@ def start_search(query: RecordQuery, names: Mapping[str, str], search: Search, *
     terms = recall_terms(query, names)
     if not terms:
         return None
-    return asyncio.create_task(asyncio.wait_for(search(" ".join(terms), search_time_range(query)), deadline_seconds))
+    return spawn_in_request(asyncio.wait_for(search(" ".join(terms), search_time_range(query)), deadline_seconds))
 
 
 def _recall_pushdown(resolved: RecordQuery, hit_ids: list[str]) -> Pushdown:
