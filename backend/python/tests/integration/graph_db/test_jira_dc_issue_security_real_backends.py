@@ -477,6 +477,37 @@ async def test_an_upgrade_with_a_scheme_that_cannot_be_read_hides_the_leveled_is
     assert not await _mismatches(world, expected, by_key)
 
 
+@pytest.mark.parametrize("why", ["transient", "application_roles"])
+async def test_an_upgrade_while_the_levels_are_unread_for_now_hides_the_leveled_issues_stored_open(
+    world: dict[str, Any], why: str,
+) -> None:
+    """Issues stored open have no grants of their own to keep. A 429, 5xx or network error on the scheme or
+    its holders, or application roles that cannot be read, must not leave them readable by the project."""
+    by_key = await _stored_open(world)
+    connector = world["connector"]
+    if why == "transient":
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, defer_checkpoint=True, read_status=503)
+    else:
+        context = _context(members_by_level={"10101": [{"type": "applicationRole", "parameter": "jira-software"}]})
+        connector._app_roles_unread = True
+    connector._load_issue_security = AsyncMock(return_value=context)
+    connector._search_issues_with_retry = _Source()
+    await connector._update_project_sync_checkpoint(
+        PROJECT_KEY, last_sync_time=get_epoch_timestamp_in_ms(), last_issue_updated=get_epoch_timestamp_in_ms() - 1000)
+
+    await connector._sync_project_issues(_project(world), _users(world), None)
+
+    leveled = {issue["key"] for issue, _ in ISSUES.values() if issue["fields"]["security"]}
+    expected = {key: (set() if key in leveled else PROJECT_READERS) for key in by_key}
+    assert not await _mismatches(world, expected, by_key)
+
+    # Once the levels can be read, the holders get their issues.
+    connector._app_roles_unread = False
+    connector._load_issue_security = AsyncMock(return_value=_context())
+    await connector._sync_project_issues(_project(world), _users(world), None)
+    assert not await _mismatches(world, _readers(), by_key)
+
+
 async def test_a_holder_keeps_a_secured_issue_when_its_level_cannot_be_read_during_a_full_sync(world: dict[str, Any]) -> None:
     """A full sync's first write of an existing record replaces its grants. A read that failed for now
     must not take the issue from the person who holds its level."""
@@ -487,12 +518,24 @@ async def test_a_holder_keeps_a_secured_issue_when_its_level_cannot_be_read_duri
     connector._issue_security[PROJECT_ID] = down
     run = processor.begin_full_sync_run(world["connector_id"])
     try:
-        await _write(world, [_edited("leveled epic", "2024-06-16T10:00:00.000+0000")], again=True)
+        await _write(world, [ISSUES["leveled epic"][0]], again=True)  # unchanged at the source
     finally:
         processor.end_full_sync_run(world["connector_id"], run)
 
     # PROJ-2 stays alice's.
     assert not await _mismatches(world, _readers(), by_key)
+
+
+async def test_an_issue_changed_while_its_level_cannot_be_read_does_not_keep_the_old_levels_holders(world: dict[str, Any]) -> None:
+    """Its level may be another now, which Jira hides from the old holders."""
+    await _sync_project(world)
+    by_key = await _ticket_ids(world)
+    world["connector"]._issue_security[PROJECT_ID] = _context(
+        members_readable=False, members_by_level={}, defer_checkpoint=True, read_status=503)
+
+    await _write(world, [_edited("leveled epic", "2024-06-16T10:00:00.000+0000")])
+
+    assert not await _mismatches(world, {**_readers(), "PROJ-2": set(), "PROJ-11": set()}, by_key)  # PROJ-11 hangs under it
 
 
 async def test_an_issue_written_while_the_level_is_unreadable_is_hidden_until_it_can_be_read(world: dict[str, Any]) -> None:

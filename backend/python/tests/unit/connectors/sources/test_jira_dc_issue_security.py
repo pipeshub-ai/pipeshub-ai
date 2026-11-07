@@ -111,10 +111,22 @@ class TestAncestorStub:
         assert stub.access_rule == AccessRule.RESTRICTED
         assert [g.email for g in grants] == ["alice@example.com"]
 
-    def test_a_stub_in_a_project_this_sync_did_not_read_is_left_alone(self) -> None:
+    def test_a_leveled_stub_in_a_project_this_sync_did_not_read_is_closed_not_open(self) -> None:
         connector = _connector()
         issue = {"id": "9", "fields": {"project": {"id": "99", "key": "Q"}, "security": {"id": "1"}}}
-        assert connector._secure_ancestor_stub(_ticket(), issue, {}) == []
+        stub = _ticket(is_placeholder=True)
+        assert connector._secure_ancestor_stub(stub, issue, {}) == []
+        assert stub.access_rule == AccessRule.RESTRICTED and stub.rewrite_permissions is True
+
+    @pytest.mark.parametrize("security", [None, "missing"])
+    def test_a_stub_with_no_level_in_such_a_project_is_left_alone(self, security) -> None:
+        connector = _connector()
+        fields = {"project": {"id": "99", "key": "Q"}}
+        if security != "missing":
+            fields["security"] = None
+        stub = _ticket(is_placeholder=True)
+        assert connector._secure_ancestor_stub(stub, {"id": "9", "fields": fields}, {}) == []
+        assert stub.access_rule == AccessRule.OPEN
 
 
 class TestParentGate:
@@ -152,3 +164,39 @@ class TestParentGate:
         connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=404))
         security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True)
         assert await connector._files_under_parent({"project": {"id": "10"}}, "5", security) is False
+
+
+def _issue(iid: str, key: str, *, level: str | None = None) -> dict:
+    return {"id": iid, "key": key, "fields": {
+        "summary": key, "status": {"name": "Open"}, "priority": {"name": "High"},
+        "issuetype": {"name": "Task", "subtask": False}, "project": {"id": "10", "key": "P"},
+        "created": "2024-01-01T00:00:00.000+0000", "updated": "2024-01-02T00:00:00.000+0000",
+        "reporter": None, "assignee": None, "creator": None, "attachment": [],
+        "security": {"id": level} if level else None}}
+
+
+class TestCostPerIssue:
+    async def test_the_users_are_aliased_once_for_a_batch_not_once_per_issue(self) -> None:
+        connector = _connector()
+        connector._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "user", "parameter": "a-key", "user": {"key": "a-key"}}]})
+        users = [_user(f"u{n}", f"u{n}@example.com") for n in range(50)]
+        calls: list[int] = []
+        real = connector._users_with_usernames
+        connector._users_with_usernames = lambda by_key: (calls.append(len(by_key)), real(by_key))[1]
+
+        built = await connector._build_issue_records(
+            [_issue(str(n), f"P-{n}", level="1" if n % 2 else None) for n in range(1, 21)], "10", users)
+
+        assert len([r for r, _ in built if isinstance(r, TicketRecord)]) == 20
+        assert calls == [50], "one pass over the users for the batch of twenty issues"
+
+
+class TestGroupHolders:
+    def test_a_group_holder_is_the_group_named_in_parameter_as_the_permission_scheme_reads_it(self) -> None:
+        rows = [{"issueSecurityLevelId": "1", "holder": {"type": "group", "parameter": "devs", "value": "gid-7"}},
+                {"issueSecurityLevelId": "1", "holder": {"type": "projectLead"}}]
+        fixed = JiraDataCenterConnector._groups_by_name(rows)
+        assert fixed[0]["holder"]["value"] == "devs" and fixed[1] == rows[1]
+        assert rows[0]["holder"]["value"] == "gid-7", "the server's rows are not changed"

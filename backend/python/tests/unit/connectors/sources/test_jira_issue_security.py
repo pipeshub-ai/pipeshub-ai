@@ -9,6 +9,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     UNREADABLE_NOT_LISTED,
     UNREADABLE_OTHER,
     UNREADABLE_PERMISSION,
+    UNREADABLE_REASONS,
     UNREADABLE_ROLES,
     UNREADABLE_SCOPE,
     UNREADABLE_TRANSIENT,
@@ -635,3 +636,72 @@ class TestUnreadableNotices:
         assert by_reason[UNREADABLE_PERMISSION][1:3] == ("are hidden from everyone", ["A", "B"])
         assert "Administer Jira" in by_reason[UNREADABLE_PERMISSION][3]
         assert by_reason[UNREADABLE_TRANSIENT][1] == "keep the access they had"
+
+
+class TestDeferredReadOnAProjectNeverTightened:
+    """Issues stored open have no grants of their own to keep, so a read that fails for now closes them."""
+
+    DOWN = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, defer_checkpoint=True, read_status=503)
+
+    def test_the_first_deferred_read_closes_the_leveled_issues_and_marks_the_pass_done(self) -> None:
+        reread, levels, to_save = plan_level_reread(self.DOWN, None, is_new_project=False, app_roles_mapping={})
+        assert (reread, levels, to_save) == ("leveled", None, {"*": "held"})
+        # A read that keeps failing does not repeat the pass.
+        assert plan_level_reread(self.DOWN, to_save, is_new_project=False, app_roles_mapping={})[:3] == (
+            None, None, {"*": "held"})
+        # Once it reads, every leveled issue is read again.
+        assert plan_level_reread(_with_users(**{"1": ["a"]}), to_save, is_new_project=False,
+                                 app_roles_mapping={})[0] == "leveled"
+
+    def test_a_project_already_tightened_keeps_its_grants_and_a_new_one_has_none_to_close(self) -> None:
+        tightened = _with_users(**{"1": ["a"]}).level_fingerprints()
+        assert plan_level_reread(self.DOWN, tightened, is_new_project=False, app_roles_mapping={}) == (
+            None, None, {**tightened, "*": "retry"})
+        assert plan_level_reread(self.DOWN, None, is_new_project=True, app_roles_mapping={})[0] is None
+
+    def test_a_project_with_no_scheme_has_nothing_to_close(self) -> None:
+        none = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, defer_checkpoint=True)
+        assert plan_level_reread(none, None, is_new_project=False, app_roles_mapping={})[0] is None
+
+    def test_a_level_naming_unread_roles_on_a_project_never_tightened_is_closed_too(self) -> None:
+        security = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "applicationRole", "parameter": "jira-software"}]})
+        held = hold_levels_naming_unread_roles(security, app_roles_unread=True)
+        assert plan_level_reread(held, None, is_new_project=False, app_roles_mapping={})[0] == "leveled"
+
+    def test_the_notice_says_hidden_for_such_a_project_and_kept_for_the_others(self) -> None:
+        notices = unreadable_security_notices(
+            {"A": UNREADABLE_TRANSIENT, "B": UNREADABLE_TRANSIENT}, never_tightened={"A"})
+        effects = {tuple(n[2]): n[1] for n in notices}
+        assert effects == {("A",): "are hidden from everyone", ("B",): "keep the access they had"}
+
+
+class TestUnresolvedUserHolders:
+    def _grants(self, holder, users=None):
+        record = _record()
+        context = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={"1": [holder]})
+        return apply_issue_access_settled(
+            record, {"security": {"id": "1"}}, is_subtask=False, project_key="P", context=context,
+            user_by_account_id=users or {},
+        )
+
+    def test_a_user_who_resolves_to_no_email_is_skipped_not_dropped_silently(self) -> None:
+        grants, skipped, _ = self._grants({"type": "user", "parameter": "someone", "user": {"name": "someone"}})
+        assert grants == [] and skipped == ["user"]
+
+    def test_a_user_with_an_email_on_the_holder_is_granted(self) -> None:
+        grants, skipped, _ = self._grants(
+            {"type": "user", "parameter": "k", "user": {"key": "k", "emailAddress": "k@example.com"}})
+        assert [g.email for g in grants] == ["k@example.com"] and skipped == []
+
+    def test_a_deactivated_user_is_not_a_skipped_holder(self) -> None:
+        _, skipped, _ = self._grants({"type": "user", "parameter": "k", "user": {"key": "k", "active": False}})
+        assert skipped == []
+
+
+class TestNotListedWording:
+    def test_the_reason_names_the_server_without_saying_data_center(self) -> None:
+        assert "Data Center" not in UNREADABLE_REASONS[UNREADABLE_NOT_LISTED]
+        assert "does not list who holds" in UNREADABLE_REASONS[UNREADABLE_NOT_LISTED]

@@ -238,8 +238,8 @@ UNREADABLE_REASONS = {
     UNREADABLE_PERMISSION: "the sync account lacks the Administer Jira permission (HTTP 403)",
     UNREADABLE_ROLES: "a level names an application role whose members could not be read this sync",
     UNREADABLE_NOT_LISTED: (
-        "this Jira server does not list who holds each issue security level (HTTP 404, 405 or 501), "
-        "so no one can be shown an issue that has one"
+        "Jira does not list who holds each issue security level (HTTP 404, 405 or 501), "
+        "so an issue that has a level cannot be shown to anyone"
     ),
     UNREADABLE_TRANSIENT: "Jira did not answer this sync (rate limit, server or network error)",
     UNREADABLE_OTHER: "the read failed",
@@ -489,7 +489,8 @@ def _permissions_for_holder(
         if inactive:
             return grants, False, None
         add_user(email)
-        return grants, False, None
+        # A person who resolves to no e-mail is unread, not outside the level.
+        return grants, False, None if email else HOLDER_USER
 
     if holder_type == HOLDER_PROJECT_ROLE:
         role = holder.get("projectRole") if isinstance(holder.get("projectRole"), dict) else {}
@@ -545,6 +546,7 @@ def _permissions_for_holder(
             return grants, True, holder_type
         present_key = next(key for key in keys if key in fields)
         value_at_field = fields.get(present_key)
+        unresolved = False
         for entry in _field_entries(value_at_field):
             if holder_type == HOLDER_GROUP_FIELD:
                 add_group(entry.get("groupId") or entry.get("name") or entry.get("value"))
@@ -552,7 +554,8 @@ def _permissions_for_holder(
                 email, inactive = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
                 if not inactive:
                     add_user(email)
-        return grants, False, None
+                    unresolved = unresolved or not email
+        return grants, False, holder_type if unresolved else None
 
     return grants, False, str(holder_type) if holder_type else "unknown"
 
@@ -746,8 +749,8 @@ def plan_level_reread(
     No issue's ``updated`` moves when a level gains or loses a member, or when a level or
     the scheme is removed, so the checkpoint keeps a digest per level. ``"*"`` in it marks
     issues written while their level could not be applied: ``retry`` after a transient
-    read (the stored grants were kept), ``unreadable`` after a lasting one (they were
-    closed). Returns ``(pass, level_ids, to_save)``; the pass is ``"levels"`` (only
+    read (the stored grants were kept), ``held`` after one on a project never tightened (its
+    leveled issues were closed), ``unreadable`` after a lasting one (they were closed). Returns ``(pass, level_ids, to_save)``; the pass is ``"levels"`` (only
     ``level_ids``), ``"leveled"`` (every issue with a level), ``"project"`` (every issue,
     since one may have lost its level without an update) or None. A project synced before
     levels were tracked has no map, which reads as ``"leveled"``: that is the one-time re-read
@@ -756,8 +759,15 @@ def plan_level_reread(
     stored_real = {k: v for k, v in (stored or {}).items() if k != "*"}
     marker = (stored or {}).get("*")
     if security.defer_checkpoint:
-        # Nothing was settled this sync: keep the digests and re-read once it is.
-        return None, None, {**stored_real, "*": "retry"}
+        # Nothing was settled this sync: keep the digests and re-read once it is. A project never
+        # tightened has no grants of its own to keep, so its leveled issues are closed meanwhile.
+        # ``held`` marks that pass done, so a read that keeps failing does not repeat it.
+        held = marker == "held"
+        never_tightened = (
+            not stored_real and not is_new_project and not held and security.knowledge != SchemeKnowledge.NONE
+        )
+        return ("leveled" if never_tightened else None), None, {
+            **stored_real, "*": "held" if never_tightened or held else "retry"}
     if security.knowledge == SchemeKnowledge.NONE:
         # A removed scheme clears the issues' levels without changing their `updated`.
         return ("project" if stored and not is_new_project else None), None, {}
@@ -781,15 +791,20 @@ def plan_level_reread(
     return ("levels" if changed else None), changed or None, current
 
 
-def unreadable_security_notices(unreadable: dict[str, str]) -> list[tuple[str, str, list[str], str]]:
-    """``(reason, effect, project keys, message)`` per reason, for the projects (key ->
-    ``UNREADABLE_*`` reason) whose issue security levels could not be applied this sync."""
-    by_reason: dict[str, list[str]] = {}
+def unreadable_security_notices(
+    unreadable: dict[str, str], never_tightened: frozenset[str] | set[str] = frozenset(),
+) -> list[tuple[str, str, list[str], str]]:
+    """``(reason, effect, project keys, message)`` per reason and effect, for the projects (key ->
+    ``UNREADABLE_*`` reason) whose issue security levels could not be applied this sync.
+    ``never_tightened``: projects with no grants of their own stored yet, whose leveled issues are
+    hidden even after a read that may pass."""
+    by_reason: dict[tuple[str, str], list[str]] = {}
     for project_key, reason in unreadable.items():
-        by_reason.setdefault(reason, []).append(project_key)
+        keeps = reason in UNREADABLE_KEEPS_STORED_ACCESS and project_key not in never_tightened
+        effect = "keep the access they had" if keeps else "are hidden from everyone"
+        by_reason.setdefault((reason, effect), []).append(project_key)
     notices = []
-    for reason, project_keys in by_reason.items():
-        effect = "keep the access they had" if reason in UNREADABLE_KEEPS_STORED_ACCESS else "are hidden from everyone"
+    for (reason, effect), project_keys in by_reason.items():
         keys = sorted(project_keys)
         notices.append((reason, effect, keys, (
             f"{', '.join(keys)}: {UNREADABLE_REASONS[reason]}. Issues with a "
